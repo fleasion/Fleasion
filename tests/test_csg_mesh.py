@@ -9,7 +9,9 @@ from fleasion.cache.tools.solidmodel_converter.csg_mesh import (
 )
 
 
-def _vertex(px, py, pz, nx=0.0, ny=1.0, nz=0.0):
+def _vertex(
+    px: float, py: float, pz: float, nx: float = 0.0, ny: float = 1.0, nz: float = 0.0
+) -> CSGVertex:
     return CSGVertex(
         px=px,
         py=py,
@@ -41,7 +43,7 @@ def _vertex(px, py, pz, nx=0.0, ny=1.0, nz=0.0):
     )
 
 
-def test_csgmdl_v5_quantized_vectors_roundtrip_with_offset_encoding():
+def test_csgmdl_v5_quantized_vectors_roundtrip_with_offset_encoding() -> None:
     vertices = [
         _vertex(0.0, 0.0, 0.0, nx=1.0, ny=0.0, nz=0.0),
         _vertex(1.0, 0.0, 0.0, nx=0.0, ny=-1.0, nz=0.0),
@@ -58,7 +60,7 @@ def test_csgmdl_v5_quantized_vectors_roundtrip_with_offset_encoding():
     assert math.isclose(parsed.vertices[0].ty, 1.0)
 
 
-def test_csgmdl_v4_counted_range_list_is_used_as_submesh_boundaries():
+def test_csgmdl_v4_counted_range_list_is_used_as_submesh_boundaries() -> None:
     vertices = [
         _vertex(0.0, 0.0, 0.0),
         _vertex(1.0, 0.0, 0.0),

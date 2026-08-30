@@ -11,7 +11,9 @@ import os
 import shutil
 import stat
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..utils import format_count, log_buffer
 from .stash_paths import resource_stash_dir
@@ -51,6 +53,41 @@ CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
 APPLEBLOX_CLIENT_SETTINGS_REL = Path('MacOS') / 'ClientSettings' / 'ClientAppSettings.json'
 
 LOD_LEVELS = ('L0', 'L12', 'L23', 'L34')
+
+
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
+type FlagValue = str | bool | int
+
+
+if TYPE_CHECKING:
+
+    def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str: ...
+
+    def _setting_int_source(settings: Mapping[str, object], key: str, default: int) -> object: ...
+
+    def _setting_value(settings: Mapping[str, object], key: str) -> object: ...
+
+    def _json_object(value: object) -> JsonObject | None: ...
+
+    def _int_value(value: object) -> int: ...
+else:
+
+    def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str:
+        return settings.get(key, default)
+
+    def _setting_int_source(settings: Mapping[str, object], key: str, default: int) -> object:
+        return settings.get(key, default)
+
+    def _setting_value(settings: Mapping[str, object], key: str) -> object:
+        return settings.get(key)
+
+    def _json_object(value: object) -> JsonObject | None:
+        return value if isinstance(value, dict) else None
+
+    def _int_value(value: object) -> int:
+        return int(value)
 
 
 def _clear_read_only(path: Path) -> None:
@@ -113,7 +150,7 @@ def client_settings_paths_for_resource_dir(roblox_dir: Path) -> list[Path]:
     return [path for path, _stash_rel in client_settings_targets_for_resource_dir(roblox_dir)]
 
 
-def _sober_flag_value(value: str):
+def _sober_flag_value(value: str) -> FlagValue:
     lowered = value.lower()
     if lowered == 'true':
         return True
@@ -128,7 +165,7 @@ def _sober_flag_value(value: str):
 class FastFlagManager:
     """Builds and writes ``ClientAppSettings.json`` from a UI settings dict."""
 
-    def __init__(self, roblox_dirs: list[Path], stash_dir: Path):
+    def __init__(self, roblox_dirs: list[Path], stash_dir: Path) -> None:
         self._roblox_dirs = roblox_dirs
         self._stash_dir = stash_dir
 
@@ -136,12 +173,12 @@ class FastFlagManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def build_json(self, settings: dict) -> dict:
+    def build_json(self, settings: Mapping[str, object]) -> dict[str, str]:
         """Convert a UI settings dict into the flags dict that becomes ClientAppSettings.json."""
         flags: dict[str, str] = {}
 
         # ── Rendering Mode ──────────────────────────────────────────
-        mode = settings.get('rendering_mode', 'Default')
+        mode = _setting_str(settings, 'rendering_mode', 'Default')
         if mode != 'Default':
             flag_key = f'Rendering.Mode.{mode}'
             if flag_key in PRESET_FLAGS:
@@ -151,7 +188,7 @@ class FastFlagManager:
                 flags[PRESET_FLAGS['Rendering.Mode.DisableD3D11']] = 'True'
 
         # ── MSAA ────────────────────────────────────────────────────
-        msaa = settings.get('msaa', 'Default')
+        msaa = _setting_str(settings, 'msaa', 'Default')
         if msaa != 'Default':
             # Strip "x" suffix and any "(Lowest)"/"(Highest)" suffix (e.g., "1x (Lowest)" -> "1")
             msaa_val = msaa.replace('x', '').split(' ')[0]
@@ -165,7 +202,7 @@ class FastFlagManager:
             flags[PRESET_FLAGS['Rendering.ManualFullscreen']] = 'True'
 
         # ── Texture Quality ─────────────────────────────────────────
-        tex = settings.get('texture_quality', 'Default')
+        tex = _setting_str(settings, 'texture_quality', 'Default')
         if tex != 'Default':
             # Extract numeric value from "Level X" or "Level X (Lowest/Highest)" format
             tex_val = tex.replace('Level ', '').split(' ')[0]
@@ -175,7 +212,7 @@ class FastFlagManager:
         # ── Mesh LOD (mirrors Fishstrap MeshQuality setter) ─────────
         # Slider: 0 = Default (no flag), 1 = Level 0, 2 = Level 1, 3 = Level 2, 4 = Level 3
         if settings.get('mesh_lod_enabled'):
-            level = int(settings.get('mesh_lod', 4))
+            level = _int_value(_setting_int_source(settings, 'mesh_lod', 4))
             if level > 0:  # 0 = Default means no flag written
                 level = max(1, min(level, len(LOD_LEVELS)))  # 1-4 maps to Level 0-3
                 for i, lod_name in enumerate(LOD_LEVELS):
@@ -186,7 +223,7 @@ class FastFlagManager:
         # ── FRM Quality Override ────────────────────────────────────
         # Slider: 0 = Default (no flag), 1-21 = quality level
         if settings.get('frm_quality_enabled'):
-            val = int(settings.get('frm_quality', 21))
+            val = _int_value(_setting_int_source(settings, 'frm_quality', 21))
             if val > 0:  # 0 = Default means no flag written
                 flags[PRESET_FLAGS['Rendering.FRMQualityOverride']] = str(val)
 
@@ -197,13 +234,13 @@ class FastFlagManager:
             flags[EXTRA_FLAGS['pause_voxelizer']] = 'True'
 
         for key in ('grass_max', 'grass_min', 'grass_motion'):
-            val = settings.get(key)
+            val = _setting_value(settings, key)
             if val is not None and val != '':
-                flags[EXTRA_FLAGS[key]] = str(int(val))
+                flags[EXTRA_FLAGS[key]] = str(_int_value(val))
 
         return flags
 
-    def write(self, settings: dict) -> set[Path]:
+    def write(self, settings: Mapping[str, object]) -> set[Path]:
         """Build flags and write settings, returning dirs blocked by permissions."""
         flags = self.build_json(settings)
         content = json.dumps(flags, indent=2).encode('utf-8') if flags else b'{}'
@@ -235,14 +272,17 @@ class FastFlagManager:
             if sober_config is not None:
                 stash_config = install_stash / 'sober_config.json'
                 try:
-                    config_payload = {}
+                    config_payload: JsonObject = {}
                     if sober_config.exists():
                         if not stash_config.exists():
                             stash_config.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(sober_config, stash_config)
                         try:
-                            loaded = json.loads(sober_config.read_text(encoding='utf-8'))
-                            if isinstance(loaded, dict):
+                            loaded_value: object = json.loads(
+                                sober_config.read_text(encoding='utf-8')
+                            )
+                            loaded = _json_object(loaded_value)
+                            if loaded is not None:
                                 config_payload = loaded
                         except json.JSONDecodeError:
                             config_payload = {}
@@ -276,15 +316,13 @@ class FastFlagManager:
             if wrote_dir:
                 written_dirs += 1
 
-        message = (
-            f'Wrote {format_count(flags, "flag")} to {format_count(written_dirs, "Roblox dir")}'
-        )
+        message = f'Wrote {format_count(len(flags), "flag")} to {format_count(written_dirs, "Roblox dir")}'
         if failed:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
         log_buffer.log('FastFlags', message)
         return failed_dirs
 
-    def reassert_macos_bootstrapper_flags(self, settings: dict) -> int:
+    def reassert_macos_bootstrapper_flags(self, settings: Mapping[str, object]) -> int:
         """Merge Fleasion flags into settings rewritten just before a macOS launch.
 
         AppleBlox removes and recreates ``Contents/MacOS/ClientSettings`` during
@@ -315,12 +353,10 @@ class FastFlagManager:
 
             try:
                 try:
-                    existing = json.loads(target.read_text(encoding='utf-8'))
+                    existing_value: object = json.loads(target.read_text(encoding='utf-8'))
+                    existing = _json_object(existing_value) or {}
                 except UnicodeDecodeError, json.JSONDecodeError:
                     existing = {}
-                if not isinstance(existing, dict):
-                    existing = {}
-
                 merged = {**existing, **flags}
                 if merged == existing:
                     continue
@@ -390,10 +426,13 @@ class FastFlagManager:
                     elif sober_config.exists():
                         restore_read_only = _is_read_only(sober_config)
                         try:
-                            payload = json.loads(sober_config.read_text(encoding='utf-8'))
+                            payload_value: object = json.loads(
+                                sober_config.read_text(encoding='utf-8')
+                            )
+                            payload = _json_object(payload_value) or {}
                         except json.JSONDecodeError:
                             payload = {}
-                        if isinstance(payload, dict) and 'fflags' in payload:
+                        if 'fflags' in payload:
                             payload.pop('fflags', None)
                             _clear_read_only(sober_config)
                             try:

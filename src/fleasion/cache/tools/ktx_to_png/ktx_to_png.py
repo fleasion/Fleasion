@@ -199,7 +199,7 @@ def _extend_sign(val: int, bits: int) -> int:
     return val - (1 << bits) if val & sign_bit else val
 
 
-def _clamp255(x) -> int:
+def _clamp255(x: int) -> int:
     if x < 0:
         return 0
     if x > 255:
@@ -681,7 +681,8 @@ def _decode_ktx2_etc(data: bytes) -> np.ndarray | None:
         or layer_count != 0
         or face_count != 1
         or level_count <= 0
-        or supercompression not in (
+        or supercompression
+        not in (
             _KTX2_SUPERCOMPRESSION_NONE,
             _KTX2_SUPERCOMPRESSION_ZSTD,
         )
@@ -827,10 +828,6 @@ def _get_ktx_dll():
 
 def _read_u32(ptr_int: int, offset: int) -> int:
     return ctypes.c_uint32.from_address(ptr_int + offset).value
-
-
-def _read_u64(ptr_int: int, offset: int) -> int:
-    return ctypes.c_uint64.from_address(ptr_int + offset).value
 
 
 def _read_ptr(ptr_int: int, offset: int) -> int:

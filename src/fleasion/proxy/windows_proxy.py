@@ -6,7 +6,7 @@ import platform
 import re
 import subprocess
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from .upstream import HttpProxyConfig
@@ -15,50 +15,55 @@ from .upstream import HttpProxyConfig
 @dataclass
 class WindowsProxyInfo:
     wininet_enabled: bool = False
-    wininet_proxy_server: Optional[str] = None
-    wininet_auto_config_url: Optional[str] = None
-    winhttp_proxy_server: Optional[str] = None
+    wininet_proxy_server: str | None = None
+    wininet_auto_config_url: str | None = None
+    winhttp_proxy_server: str | None = None
     macos_http_enabled: bool = False
-    macos_http_proxy_server: Optional[str] = None
+    macos_http_proxy_server: str | None = None
     macos_https_enabled: bool = False
-    macos_https_proxy_server: Optional[str] = None
-    macos_auto_config_url: Optional[str] = None
+    macos_https_proxy_server: str | None = None
+    macos_auto_config_url: str | None = None
 
 
-def _query_reg_value(key, name: str):
-    try:
-        import winreg
+if TYPE_CHECKING:
 
-        value, _ = winreg.QueryValueEx(key, name)
-        return value
-    except Exception:
-        return None
+    def _read_wininet_registry() -> tuple[bool, str | None, str | None]: ...
+else:
+
+    def _read_wininet_registry() -> tuple[bool, str | None, str | None]:
+        def query(key: object, name: str) -> object | None:
+            try:
+                value, _ = winreg.QueryValueEx(key, name)
+                return value
+            except Exception:
+                return None
+
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Internet Settings',
+            ) as key:
+                enabled = bool(int(query(key, 'ProxyEnable') or 0))
+                proxy_server = query(key, 'ProxyServer')
+                auto_config_url = query(key, 'AutoConfigURL')
+                return (
+                    enabled,
+                    str(proxy_server) if proxy_server else None,
+                    str(auto_config_url) if auto_config_url else None,
+                )
+        except Exception:
+            return False, None, None
 
 
-def _read_wininet() -> tuple[bool, Optional[str], Optional[str]]:
+def _read_wininet() -> tuple[bool, str | None, str | None]:
     if platform.system() != 'Windows':
         return False, None, None
-
-    try:
-        import winreg
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r'Software\Microsoft\Windows\CurrentVersion\Internet Settings',
-        ) as key:
-            enabled = bool(int(_query_reg_value(key, 'ProxyEnable') or 0))
-            proxy_server = _query_reg_value(key, 'ProxyServer')
-            auto_config_url = _query_reg_value(key, 'AutoConfigURL')
-            return (
-                enabled,
-                str(proxy_server) if proxy_server else None,
-                str(auto_config_url) if auto_config_url else None,
-            )
-    except Exception:
-        return False, None, None
+    return _read_wininet_registry()
 
 
-def _read_winhttp_proxy() -> Optional[str]:
+def _read_winhttp_proxy() -> str | None:
     if platform.system() != 'Windows':
         return None
 
@@ -85,7 +90,7 @@ def _read_winhttp_proxy() -> Optional[str]:
     return None
 
 
-def _proxy_target(host: Optional[str], port: object) -> Optional[str]:
+def _proxy_target(host: str | None, port: object) -> str | None:
     host_text = str(host or '').strip()
     if not host_text:
         return None
@@ -102,7 +107,7 @@ def _proxy_target(host: Optional[str], port: object) -> Optional[str]:
 
 def _parse_scutil_proxy_output(
     text: str,
-) -> tuple[bool, Optional[str], bool, Optional[str], Optional[str]]:
+) -> tuple[bool, str | None, bool, str | None, str | None]:
     values: dict[str, str] = {}
     for line in (text or '').splitlines():
         match = re.match(r'\s*([A-Za-z0-9]+)\s*:\s*(.*?)\s*$', line)
@@ -125,7 +130,7 @@ def _parse_scutil_proxy_output(
     return http_enabled, http_proxy, https_enabled, https_proxy, auto_config_url
 
 
-def _read_macos_proxies() -> tuple[bool, Optional[str], bool, Optional[str], Optional[str]]:
+def _read_macos_proxies() -> tuple[bool, str | None, bool, str | None, str | None]:
     if platform.system() != 'Darwin':
         return False, None, False, None, None
 
@@ -162,7 +167,7 @@ def detect_windows_proxy() -> WindowsProxyInfo:
     )
 
 
-def _host_port_from_target(target: str) -> Optional[tuple[str, int]]:
+def _host_port_from_target(target: str) -> tuple[str, int] | None:
     target = target.strip()
     if not target:
         return None
@@ -194,7 +199,7 @@ def _host_port_from_target(target: str) -> Optional[tuple[str, int]]:
     return None
 
 
-def parse_static_http_proxy(proxy_server: Optional[str]) -> Optional[HttpProxyConfig]:
+def parse_static_http_proxy(proxy_server: str | None) -> HttpProxyConfig | None:
     """Parse simple WinINET/WinHTTP proxy strings into an HTTP CONNECT proxy."""
     if not proxy_server:
         return None
@@ -223,7 +228,7 @@ def parse_static_http_proxy(proxy_server: Optional[str]) -> Optional[HttpProxyCo
     return None
 
 
-def detected_http_proxy(info: WindowsProxyInfo) -> Optional[HttpProxyConfig]:
+def detected_http_proxy(info: WindowsProxyInfo) -> HttpProxyConfig | None:
     if platform.system() == 'Darwin':
         if info.macos_https_enabled:
             proxy = parse_static_http_proxy(info.macos_https_proxy_server)

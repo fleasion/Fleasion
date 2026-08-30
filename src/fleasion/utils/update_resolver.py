@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from functools import cached_property
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, TypeIs
 from urllib.parse import urlsplit
 
 import requests
@@ -14,6 +14,14 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from typing import ClassVar
     from urllib.parse import SplitResult
+
+
+def _is_object_mapping(value: object) -> TypeIs[Mapping[object, object]]:
+    return isinstance(value, Mapping)
+
+
+def _is_object_list(value: object) -> TypeIs[list[object]]:
+    return isinstance(value, list)
 
 
 class ReleaseCandidate(NamedTuple):
@@ -142,16 +150,16 @@ class UpdateResolver:
 
         prerelease_channel = current.is_prerelease or current.is_devrelease
         releases: Sequence[object]
-        if isinstance(release_data, Mapping):
+        if _is_object_mapping(release_data):
             releases = (release_data,)
-        elif isinstance(release_data, list):
+        elif _is_object_list(release_data):
             releases = release_data
         else:
             return None
 
         candidates: list[ReleaseCandidate] = []
         for release in releases:
-            if not isinstance(release, Mapping):
+            if not _is_object_mapping(release):
                 continue
             candidate = self._release_candidate(
                 current,

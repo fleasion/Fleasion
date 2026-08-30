@@ -12,6 +12,7 @@ import shutil
 import stat
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeIs
 
 from ..utils import log_buffer
 from .stash_paths import resource_stash_dir
@@ -52,12 +53,16 @@ def validate_font_bytes(data: bytes) -> bool:
     return any(header == magic for magic in FONT_HEADERS.values())
 
 
+def _is_object_list(value: object) -> TypeIs[list[object]]:
+    return isinstance(value, list)
+
+
 def _load_generated_family_names(marker_path: Path) -> set[str]:
     try:
-        value = json.loads(marker_path.read_text(encoding='utf-8'))
+        value: object = json.loads(marker_path.read_text(encoding='utf-8'))
     except OSError, json.JSONDecodeError:
         return set()
-    if not isinstance(value, list):
+    if not _is_object_list(value):
         return set()
     return {
         name
@@ -101,7 +106,9 @@ def apply_custom_font(
         if dst_font.exists() and not stash_font.exists() and not generated_font_marker.exists():
             stash_font.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dst_font, stash_font)
-        elif not dst_font.exists() and not stash_font.exists() and not generated_font_marker.exists():
+        elif (
+            not dst_font.exists() and not stash_font.exists() and not generated_font_marker.exists()
+        ):
             generated_font_marker.parent.mkdir(parents=True, exist_ok=True)
             generated_font_marker.touch()
 

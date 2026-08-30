@@ -8,23 +8,22 @@ import json
 import os
 import re
 import select
-import signal
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urlsplit
 
 from .logging import log_buffer
 from .paths import (
     APP_CACHE_DIR,
-    ROBLOX_PROCESS,
-    ROBLOX_STUDIO_PROCESS,
     STORAGE_DB,
     STORAGE_DB_GDK,
     USER_HOME,
@@ -43,9 +42,7 @@ ROBLOX_STUDIO_APP_CANDIDATES = (
     Path('/Applications/RobloxStudio.app'),
     USER_HOME / 'Applications' / 'RobloxStudio.app',
 )
-FROSTSTRAP_VERSIONS_DIR = (
-    USER_HOME / 'Library' / 'Application Support' / 'Froststrap' / 'Versions'
-)
+FROSTSTRAP_VERSIONS_DIR = USER_HOME / 'Library' / 'Application Support' / 'Froststrap' / 'Versions'
 FROSTSTRAP_MOD_BACKUP_DIR = (
     USER_HOME / 'Library' / 'Application Support' / 'Froststrap' / 'ModBackup'
 )
@@ -69,39 +66,114 @@ _NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY = 1
 _CF_STRING_ENCODING_UTF8 = 0x08000100
 
 
-def _launch_services_framework():
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
+
+
+class _CFunction(Protocol):
+    argtypes: list[object]
+    restype: object
+
+    def __call__(self, *args: object) -> object: ...
+
+
+class _KeventLike(Protocol):
+    ident: int
+    fflags: int
+
+
+class _KqueueLike(Protocol):
+    def control(
+        self,
+        changelist: list[object] | None,
+        max_events: int,
+        timeout: float,
+    ) -> list[_KeventLike]: ...
+
+    def close(self) -> None: ...
+
+
+if TYPE_CHECKING:
+
+    def _json_object(value: object) -> JsonObject | None: ...
+
+    def _c_function(library: ctypes.CDLL, name: str) -> _CFunction: ...
+
+    def _pointer_value(value: object) -> int | None: ...
+
+    def _int_value(value: object) -> int: ...
+
+    def _new_kqueue() -> _KqueueLike: ...
+
+    def _new_vnode_event(fd: int) -> object: ...
+
+    def _kq_rename_delete_mask() -> int: ...
+else:
+
+    def _json_object(value: object) -> JsonObject | None:
+        return value if isinstance(value, dict) else None
+
+    def _c_function(library: ctypes.CDLL, name: str) -> _CFunction:
+        return getattr(library, name)
+
+    def _pointer_value(value: object) -> int | None:
+        return value
+
+    def _int_value(value: object) -> int:
+        return value
+
+    def _new_kqueue() -> _KqueueLike:
+        return select.kqueue()
+
+    def _new_vnode_event(fd: int) -> object:
+        return select.kevent(
+            fd,
+            filter=select.KQ_FILTER_VNODE,
+            flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
+            fflags=(
+                select.KQ_NOTE_WRITE
+                | select.KQ_NOTE_EXTEND
+                | select.KQ_NOTE_RENAME
+                | select.KQ_NOTE_DELETE
+            ),
+        )
+
+    def _kq_rename_delete_mask() -> int:
+        return select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE
+
+
+def _launch_services_framework() -> ctypes.CDLL | None:
     if sys.platform != 'darwin':
         return None
     try:
-        return ctypes.CDLL(
-            '/System/Library/Frameworks/CoreServices.framework/CoreServices'
-        )
+        return ctypes.CDLL('/System/Library/Frameworks/CoreServices.framework/CoreServices')
     except OSError:
         return None
 
 
-def _cf_string(core_foundation, value: str):
-    create = core_foundation.CFStringCreateWithCString
+def _cf_string(core_foundation: ctypes.CDLL, value: str) -> int | None:
+    create = _c_function(core_foundation, 'CFStringCreateWithCString')
     create.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
     create.restype = ctypes.c_void_p
-    return create(None, value.encode('utf-8'), _CF_STRING_ENCODING_UTF8)
+    return _pointer_value(create(None, value.encode('utf-8'), _CF_STRING_ENCODING_UTF8))
 
 
-def _cf_string_value(core_foundation, value_ref) -> str | None:
+def _cf_string_value(core_foundation: ctypes.CDLL, value_ref: int | None) -> str | None:
     if not value_ref:
         return None
-    get_cstring = core_foundation.CFStringGetCString
+    get_cstring = _c_function(core_foundation, 'CFStringGetCString')
     get_cstring.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
     get_cstring.restype = ctypes.c_bool
     buffer = ctypes.create_string_buffer(4096)
-    if not get_cstring(value_ref, buffer, len(buffer), _CF_STRING_ENCODING_UTF8):
+    if not bool(get_cstring(value_ref, buffer, len(buffer), _CF_STRING_ENCODING_UTF8)):
         return None
     return buffer.value.decode('utf-8', errors='replace')
 
 
-def _cf_release(core_foundation, value_ref) -> None:
+def _cf_release(core_foundation: ctypes.CDLL, value_ref: int | None) -> None:
     if value_ref:
-        release = core_foundation.CFRelease
+        release = _c_function(core_foundation, 'CFRelease')
         release.argtypes = [ctypes.c_void_p]
         release.restype = None
         release(value_ref)
@@ -119,15 +191,15 @@ def get_default_url_handler(scheme: str) -> str | None:
     if not scheme_ref:
         return None
     try:
-        copy_default = launch_services.LSCopyDefaultHandlerForURLScheme
+        copy_default = _c_function(launch_services, 'LSCopyDefaultHandlerForURLScheme')
         copy_default.argtypes = [ctypes.c_void_p]
         copy_default.restype = ctypes.c_void_p
-        handler_ref = copy_default(scheme_ref)
+        handler_ref = _pointer_value(copy_default(scheme_ref))
         try:
             return _cf_string_value(core_foundation, handler_ref)
         finally:
             _cf_release(core_foundation, handler_ref)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return None
     finally:
         _cf_release(core_foundation, scheme_ref)
@@ -148,11 +220,11 @@ def set_default_url_handler(scheme: str, bundle_id: str) -> bool:
         _cf_release(core_foundation, bundle_ref)
         return False
     try:
-        set_default = launch_services.LSSetDefaultHandlerForURLScheme
+        set_default = _c_function(launch_services, 'LSSetDefaultHandlerForURLScheme')
         set_default.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         set_default.restype = ctypes.c_int32
-        return set_default(scheme_ref, bundle_ref) == 0
-    except (AttributeError, OSError):
+        return _int_value(set_default(scheme_ref, bundle_ref)) == 0
+    except AttributeError, OSError:
         return False
     finally:
         _cf_release(core_foundation, scheme_ref)
@@ -172,7 +244,7 @@ def appleblox_data_dir() -> Path:
     if raw_override and '\x00' not in raw_override:
         try:
             override = Path(raw_override)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             override = None
         if override is not None and override.is_absolute():
             return override
@@ -182,18 +254,19 @@ def appleblox_data_dir() -> Path:
 def _appleblox_custom_app_path() -> Path | None:
     """Return AppleBlox's configured Roblox bundle, when present and valid."""
     try:
-        payload = json.loads(APPLEBLOX_ROBLOX_CONFIG.read_text(encoding='utf-8'))
-        if not isinstance(payload, dict):
+        payload: object = json.loads(APPLEBLOX_ROBLOX_CONFIG.read_text(encoding='utf-8'))
+        payload_map = _json_object(payload)
+        if payload_map is None:
             return None
-        installation = payload.get('installation')
-        if not isinstance(installation, dict):
+        installation = _json_object(payload_map.get('installation'))
+        if installation is None:
             return None
         raw_path = installation.get('custom_path')
         if not isinstance(raw_path, str) or not raw_path.strip() or '\x00' in raw_path:
             return None
         app_path = Path(raw_path).expanduser()
         return app_path if app_path.suffix == '.app' else None
-    except (OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError):
+    except OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError:
         return None
 
 
@@ -662,27 +735,13 @@ class MacOSRobloxUriInterceptor:
 
     def _player_logs(self) -> set[Path]:
         try:
-            return {
-                path
-                for path in self._log_dir.glob('*_Player_*_last.log')
-                if path.is_file()
-            }
+            return {path for path in self._log_dir.glob('*_Player_*_last.log') if path.is_file()}
         except OSError:
             return set()
 
     @staticmethod
-    def _vnode_event(fd: int):
-        return select.kevent(
-            fd,
-            filter=select.KQ_FILTER_VNODE,
-            flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
-            fflags=(
-                select.KQ_NOTE_WRITE
-                | select.KQ_NOTE_EXTEND
-                | select.KQ_NOTE_RENAME
-                | select.KQ_NOTE_DELETE
-            ),
-        )
+    def _vnode_event(fd: int) -> object:
+        return _new_vnode_event(fd)
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -693,9 +752,9 @@ class MacOSRobloxUriInterceptor:
                 continue
 
             tracked: _TrackedMacOSPlayerLog | None = None
-            queue = None
+            queue: _KqueueLike | None = None
             try:
-                queue = select.kqueue()
+                queue = _new_kqueue()
                 queue.control([self._vnode_event(directory_fd)], 0, 0)
                 tracked = self._discover_new_log(queue, tracked)
                 while not self._stop_event.is_set():
@@ -713,10 +772,7 @@ class MacOSRobloxUriInterceptor:
                         continue
                     tracked_events = [event for event in events if event.ident == tracked.fd]
                     if tracked_events:
-                        if any(
-                            event.fflags & (select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE)
-                            for event in tracked_events
-                        ):
+                        if any(event.fflags & _kq_rename_delete_mask() for event in tracked_events):
                             tracked = self._close_tracked(tracked)
                             continue
                         tracked.needs_read = True
@@ -732,7 +788,7 @@ class MacOSRobloxUriInterceptor:
                             continue
                     if time.monotonic() - tracked.opened_at >= _URI_LOG_CLASSIFICATION_SECONDS:
                         tracked = self._close_tracked(tracked)
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 # A Roblox updater can replace the log directory while the
                 # watcher is armed.  Reopen it rather than retaining a stale FD.
                 pass
@@ -751,7 +807,7 @@ class MacOSRobloxUriInterceptor:
 
     def _discover_new_log(
         self,
-        queue,
+        queue: _KqueueLike,
         tracked: _TrackedMacOSPlayerLog | None,
     ) -> _TrackedMacOSPlayerLog | None:
         logs = self._player_logs()
@@ -763,7 +819,7 @@ class MacOSRobloxUriInterceptor:
             path = max(new_logs, key=lambda candidate: candidate.stat().st_mtime_ns)
             fd = os.open(path, os.O_RDONLY)
             queue.control([self._vnode_event(fd)], 0, 0)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return None
         return _TrackedMacOSPlayerLog(
             path=path,
@@ -830,7 +886,7 @@ class MacOSRobloxUriInterceptor:
             self._claimed_pid = launch.pid
         try:
             os.kill(launch.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
+        except OSError, ProcessLookupError:
             with self._state_lock:
                 if self._claimed_pid == launch.pid:
                     self._claimed_pid = None
@@ -884,7 +940,7 @@ def is_studio_running() -> bool:
     return _first_process_pid(ROBLOX_STUDIO_PROCESS) is not None
 
 
-def get_roblox_player_exe_path() -> Optional[Path]:
+def get_roblox_player_exe_path() -> Path | None:
     """Return the running or installed Roblox Player executable path."""
     pid = _first_process_pid(ROBLOX_PROCESS)
     if pid is not None:
@@ -894,7 +950,7 @@ def get_roblox_player_exe_path() -> Optional[Path]:
     return _known_player_executable()
 
 
-def get_roblox_studio_exe_path() -> Optional[Path]:
+def get_roblox_studio_exe_path() -> Path | None:
     """Return the running or installed Roblox Studio executable path."""
     pid = _first_process_pid(ROBLOX_STUDIO_PROCESS)
     if pid is not None:
@@ -1105,7 +1161,7 @@ def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
     return found
 
 
-def resolve_roblox_player_exe_for_launch() -> Optional[Path]:
+def resolve_roblox_player_exe_for_launch() -> Path | None:
     """Return the Roblox Player executable path used for launch fallbacks."""
     return get_roblox_player_exe_path()
 
@@ -1139,9 +1195,7 @@ def _wait_for_local_proxy(proxy_url: str, timeout: float = 10.0) -> bool:
         if remaining < 0:
             return False
         try:
-            with socket.create_connection(
-                (host, port), timeout=min(0.5, max(0.1, remaining))
-            ):
+            with socket.create_connection((host, port), timeout=min(0.5, max(0.1, remaining))):
                 return True
         except OSError:
             if remaining <= 0:
@@ -1159,8 +1213,7 @@ def _claim_env_proxy_relaunch(*, force: bool = False) -> bool:
             return False
         if (
             not force
-            and
-            _env_proxy_relaunch_at is not None
+            and _env_proxy_relaunch_at is not None
             and now - _env_proxy_relaunch_at < _ENV_PROXY_RELAUNCH_TTL_SECONDS
         ):
             return False
@@ -1177,16 +1230,14 @@ def _finish_env_proxy_relaunch(success: bool) -> None:
             _env_proxy_relaunch_at = time.monotonic()
 
 
-_DETACHED_POPEN_KWARGS = {
-    'stdin': subprocess.DEVNULL,
-    'stdout': subprocess.DEVNULL,
-    'stderr': subprocess.DEVNULL,
-    'start_new_session': True,
-}
-
-
-def _detached_popen(args: list[str]) -> subprocess.Popen:
-    return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
+def _detached_popen(args: list[str]) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def relaunch_roblox_with_proxy_env(
@@ -1207,9 +1258,7 @@ def relaunch_roblox_with_proxy_env(
     proxy variables while retaining normal macOS bundle launch behavior.
     """
     exe_path = (
-        Path(source_exe_path)
-        if source_exe_path is not None
-        else get_roblox_player_exe_path()
+        Path(source_exe_path) if source_exe_path is not None else get_roblox_player_exe_path()
     )
     app_path = _app_for_executable(exe_path) if exe_path is not None else None
     if exe_path is None or app_path is None:
@@ -1300,8 +1349,7 @@ def relaunch_roblox_with_proxy_env(
             if '-600' not in launch_error or attempt == 2:
                 log_buffer.log(
                     'Launcher',
-                    f'Roblox Env Proxy relaunch failed: '
-                    f'{launch_error or launch_result.returncode}',
+                    f'Roblox Env Proxy relaunch failed: {launch_error or launch_result.returncode}',
                 )
                 return False
             time.sleep(0.5)
@@ -1356,12 +1404,12 @@ def launch_as_standard_user(target: str | Path) -> bool:
     return False
 
 
-def open_folder(path: Path):
+def open_folder(path: Path) -> None:
     """Open a folder in Finder."""
     _detached_popen(['open', str(path)])
 
 
-def show_message_box(title: str, message: str, icon: int = 0x40):
+def show_message_box(title: str, message: str, icon: int = 0x40) -> None:
     """Show a simple macOS alert."""
     script = 'display alert ' + json.dumps(title) + ' message ' + json.dumps(message)
     try:

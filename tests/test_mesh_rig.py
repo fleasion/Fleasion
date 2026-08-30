@@ -1,13 +1,26 @@
 import json
 import struct
+from typing import Literal, cast
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from fleasion.cache import mesh_rig
 
+type _Vec2 = tuple[float, float]
+type _Vec3 = tuple[float, float, float]
+type _Mat3 = tuple[float, float, float, float, float, float, float, float, float]
+type _JsonObject = dict[str, object]
+type _AccessorDType = Literal['<u2', '<f4']
+type _AccessorArray = NDArray[np.uint16] | NDArray[np.float32]
 
-def _vertex(position, uv=(0.0, 0.0), color=(255, 255, 255, 255)):
+
+def _vertex(
+    position: _Vec3,
+    uv: _Vec2 = (0.0, 0.0),
+    color: tuple[int, int, int, int] = (255, 255, 255, 255),
+) -> bytes:
     return struct.pack(
         '<8f4b4B',
         *position,
@@ -24,16 +37,16 @@ def _vertex(position, uv=(0.0, 0.0), color=(255, 255, 255, 255)):
 
 
 def _bone(
-    name_offset,
-    parent,
-    position,
-    rotation=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-):
+    name_offset: int,
+    parent: int,
+    position: _Vec3,
+    rotation: _Mat3 = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+) -> bytes:
     transform = (*rotation, *position)
     return struct.pack('<IHHf12f', name_offset, parent, parent, 1.0, *transform)
 
 
-def _rigged_v4(*, invalid_subset_index=False, rotated=False):
+def _rigged_v4(*, invalid_subset_index: bool = False, rotated: bool = False) -> bytes:
     names = b'Root\0Child\0'
     header = struct.pack('<HHIIHHIHBB', 24, 0, 3, 1, 2, 2, len(names), 1, 1, 0)
     vertices = b''.join(
@@ -72,13 +85,13 @@ def _rigged_v4(*, invalid_subset_index=False, rotated=False):
     return b'version 4.01\n' + header + vertices + envelopes + faces + lods + bones + names + subset
 
 
-def _chunk(name, version, payload):
+def _chunk(name: str, version: int, payload: bytes) -> bytes:
     return (
         name.encode('ascii').ljust(8, b'\0') + struct.pack('<II', version, len(payload)) + payload
     )
 
 
-def _rigged_v6():
+def _rigged_v6() -> bytes:
     fixed_layout = _rigged_v4()[13 + 24 :]
     vertices = fixed_layout[: 3 * 40]
     envelopes = fixed_layout[3 * 40 : 3 * 40 + 3 * 8]
@@ -107,12 +120,39 @@ def _rigged_v6():
     )
 
 
-def _glb_document_and_binary(glb):
+def _json_object(value: object) -> _JsonObject:
+    assert isinstance(value, dict)
+    mapping = cast('dict[object, object]', value)
+    assert all(isinstance(key, str) for key in mapping)
+    return cast('_JsonObject', mapping)
+
+
+def _json_list(value: object) -> list[object]:
+    assert isinstance(value, list)
+    return cast('list[object]', value)
+
+
+def _json_object_list(value: object) -> list[_JsonObject]:
+    return [_json_object(item) for item in _json_list(value)]
+
+
+def _json_number_list(value: object) -> list[int | float]:
+    items = _json_list(value)
+    assert all(isinstance(item, int | float) for item in items)
+    return cast('list[int | float]', items)
+
+
+def _json_int(value: object) -> int:
+    assert isinstance(value, int)
+    return value
+
+
+def _glb_document_and_binary(glb: bytes) -> tuple[_JsonObject, bytes]:
     magic, version, total_length = struct.unpack_from('<4sII', glb, 0)
     assert (magic, version, total_length) == (b'glTF', 2, len(glb))
     json_length, json_type = struct.unpack_from('<I4s', glb, 12)
     assert json_type == b'JSON'
-    document = json.loads(glb[20 : 20 + json_length])
+    document = _json_object(json.loads(glb[20 : 20 + json_length]))
     binary_header = 20 + json_length
     binary_length, binary_type = struct.unpack_from('<I4s', glb, binary_header)
     assert binary_type == b'BIN\0'
@@ -120,19 +160,38 @@ def _glb_document_and_binary(glb):
     return document, binary
 
 
-def _accessor_array(document, binary, accessor_index, dtype, width):
-    accessor = document['accessors'][accessor_index]
-    view = document['bufferViews'][accessor['bufferView']]
-    values = np.frombuffer(
-        binary,
-        dtype=dtype,
-        count=accessor['count'] * width,
-        offset=view.get('byteOffset', 0) + accessor.get('byteOffset', 0),
-    )
-    return values.reshape(accessor['count'], width)
+def _accessor_array(
+    document: _JsonObject,
+    binary: bytes,
+    accessor_index: int,
+    dtype: _AccessorDType,
+    width: int,
+) -> _AccessorArray:
+    accessors = _json_list(document['accessors'])
+    accessor = _json_object(accessors[accessor_index])
+    buffer_views = _json_list(document['bufferViews'])
+    view = _json_object(buffer_views[_json_int(accessor['bufferView'])])
+    count = _json_int(accessor['count'])
+    view_offset = _json_int(view.get('byteOffset', 0))
+    accessor_offset = _json_int(accessor.get('byteOffset', 0))
+    if dtype == '<u2':
+        values = np.frombuffer(
+            binary,
+            dtype=np.dtype('<u2'),
+            count=count * width,
+            offset=view_offset + accessor_offset,
+        )
+    else:
+        values = np.frombuffer(
+            binary,
+            dtype=np.dtype('<f4'),
+            count=count * width,
+            offset=view_offset + accessor_offset,
+        )
+    return values.reshape(count, width)
 
 
-def test_v4_subset_indices_are_remapped_to_global_bones():
+def test_v4_subset_indices_are_remapped_to_global_bones() -> None:
     rig = mesh_rig.parse_rigged_mesh(_rigged_v4())
 
     assert rig is not None
@@ -146,7 +205,9 @@ def test_v4_subset_indices_are_remapped_to_global_bones():
     assert rig.vertices[2].weights[:2] == pytest.approx((128 / 255, 127 / 255))
 
 
-def test_v6_skinning_chunk_uses_the_same_validated_rig_model(monkeypatch):
+def test_v6_skinning_chunk_uses_the_same_validated_rig_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(mesh_rig.mesh_processing, 'DRACO_AVAILABLE', False)
 
     rig = mesh_rig.parse_rigged_mesh(_rigged_v6())
@@ -158,25 +219,30 @@ def test_v6_skinning_chunk_uses_the_same_validated_rig_model(monkeypatch):
     assert mesh_rig.has_embedded_rig(_rigged_v6())
 
 
-def test_glb_contains_geometry_skin_hierarchy_and_inverse_bind_matrices():
+def test_glb_contains_geometry_skin_hierarchy_and_inverse_bind_matrices() -> None:
     document, binary = _glb_document_and_binary(mesh_rig.export_glb(_rigged_v4()))
+    asset = _json_object(document['asset'])
+    skins = _json_object_list(document['skins'])
+    nodes = _json_object_list(document['nodes'])
+    meshes = _json_object_list(document['meshes'])
 
-    assert document['asset']['version'] == '2.0'
-    assert document['skins'][0]['joints'] == [0, 1]
-    assert document['skins'][0]['skeleton'] == 0
-    assert document['nodes'][0]['name'] == 'Root'
-    assert document['nodes'][0]['children'] == [1]
-    assert document['nodes'][1]['name'] == 'Child'
-    assert document['nodes'][2]['mesh'] == 0
-    assert document['nodes'][2]['skin'] == 0
+    assert asset['version'] == '2.0'
+    assert skins[0]['joints'] == [0, 1]
+    assert skins[0]['skeleton'] == 0
+    assert nodes[0]['name'] == 'Root'
+    assert nodes[0]['children'] == [1]
+    assert nodes[1]['name'] == 'Child'
+    assert nodes[2]['mesh'] == 0
+    assert nodes[2]['skin'] == 0
 
-    attributes = document['meshes'][0]['primitives'][0]['attributes']
-    joints = _accessor_array(document, binary, attributes['JOINTS_0'], '<u2', 4)
-    weights = _accessor_array(document, binary, attributes['WEIGHTS_0'], '<f4', 4)
+    primitives = _json_object_list(meshes[0]['primitives'])
+    attributes = _json_object(primitives[0]['attributes'])
+    joints = _accessor_array(document, binary, _json_int(attributes['JOINTS_0']), '<u2', 4)
+    weights = _accessor_array(document, binary, _json_int(attributes['WEIGHTS_0']), '<f4', 4)
     inverse_binds = _accessor_array(
         document,
         binary,
-        document['skins'][0]['inverseBindMatrices'],
+        _json_int(skins[0]['inverseBindMatrices']),
         '<f4',
         16,
     )
@@ -186,21 +252,22 @@ def test_glb_contains_geometry_skin_hierarchy_and_inverse_bind_matrices():
     assert inverse_binds[1][13] == pytest.approx(-1.0)
 
 
-def test_glb_converts_world_space_bone_frames_to_parent_local_matrices():
+def test_glb_converts_world_space_bone_frames_to_parent_local_matrices() -> None:
     document, _binary = _glb_document_and_binary(mesh_rig.export_glb(_rigged_v4(rotated=True)))
+    nodes = _json_object_list(document['nodes'])
 
-    child_matrix = document['nodes'][1]['matrix']
+    child_matrix = _json_number_list(nodes[1]['matrix'])
     assert child_matrix[:12] == pytest.approx(
         (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
     )
     assert child_matrix[12:15] == pytest.approx((0.0, -1.0, 0.0))
 
 
-def test_invalid_subset_bone_mapping_is_rejected():
+def test_invalid_subset_bone_mapping_is_rejected() -> None:
     with pytest.raises(mesh_rig.MeshRigError, match='invalid bone'):
         mesh_rig.parse_rigged_mesh(_rigged_v4(invalid_subset_index=True))
 
 
-def test_static_mesh_does_not_report_a_rig():
+def test_static_mesh_does_not_report_a_rig() -> None:
     assert not mesh_rig.has_embedded_rig(b'version 2.00\n')
     assert mesh_rig.parse_rigged_mesh(b'version 2.00\n') is None

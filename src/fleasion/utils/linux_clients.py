@@ -16,6 +16,33 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import Literal, Protocol, TypedDict, Unpack
+
+
+class CommandRunner(Protocol):
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        env: Mapping[str, str],
+        capture_output: bool,
+        text: Literal[True],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]: ...
+
+
+class _QueryHandlerKwargs(TypedDict, total=False):
+    home: str | Path | None
+    environ: Mapping[str, str] | None
+    which: Callable[[str], str | None] | None
+    run: CommandRunner | None
+
+
+def _command_runner(run: CommandRunner | None) -> CommandRunner:
+    if run is None:
+        return subprocess.run
+    return run
+
 
 ROBLOX_URI_SCHEMES = (
     'x-scheme-handler/roblox',
@@ -247,13 +274,13 @@ def _flatpak_probe_env(
 def _flatpak_info_succeeds(
     executable: str | Path | None,
     app_id: str,
-    run: Callable[..., subprocess.CompletedProcess] | None,
+    run: CommandRunner | None,
     *,
     env: Mapping[str, str],
 ) -> bool:
     if executable is None:
         return False
-    runner = subprocess.run if run is None else run
+    runner = _command_runner(run)
     try:
         result = runner(
             [str(executable), 'info', app_id],
@@ -272,7 +299,7 @@ def detect_installed_clients(
     home: str | Path | None = None,
     environ: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] | None = None,
-    run: Callable[..., subprocess.CompletedProcess] | None = None,
+    run: CommandRunner | None = None,
 ) -> tuple[LinuxClientInstallation, ...]:
     """Detect registered Flatpak clients in deterministic registry order."""
     environment = os.environ if environ is None else environ
@@ -302,7 +329,7 @@ def query_default_roblox_handlers(
     home: str | Path | None = None,
     environ: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] | None = None,
-    run: Callable[..., subprocess.CompletedProcess] | None = None,
+    run: CommandRunner | None = None,
 ) -> tuple[str, ...]:
     """Return successful desktop-handler answers in scheme-priority order."""
     environment = dict(os.environ if environ is None else environ)
@@ -311,7 +338,7 @@ def query_default_roblox_handlers(
     xdg_mime = find_executable('xdg-mime')
     if xdg_mime is None:
         return ()
-    runner = subprocess.run if run is None else run
+    runner = _command_runner(run)
     handlers: list[str] = []
     for scheme in ROBLOX_URI_SCHEMES:
         try:
@@ -330,7 +357,7 @@ def query_default_roblox_handlers(
     return tuple(handlers)
 
 
-def query_default_roblox_handler(**kwargs) -> str | None:
+def query_default_roblox_handler(**kwargs: Unpack[_QueryHandlerKwargs]) -> str | None:
     handlers = query_default_roblox_handlers(**kwargs)
     return handlers[0] if handlers else None
 
@@ -342,7 +369,7 @@ def select_linux_client(
     home: str | Path | None = None,
     environ: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] | None = None,
-    run: Callable[..., subprocess.CompletedProcess] | None = None,
+    run: CommandRunner | None = None,
 ) -> LinuxClientInstallation | None:
     """Resolve ``auto`` or a registered key to an installed client."""
     normalized = str(selection).strip().casefold()

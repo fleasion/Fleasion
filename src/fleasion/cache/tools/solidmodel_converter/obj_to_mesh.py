@@ -21,7 +21,11 @@ CONVERTED_MESHES_DIR = LOCAL_APPDATA / 'FleasionNT' / 'Temp' / 'ConvertedMeshes'
 
 def parse_obj_for_mesh(
     obj_content: str,
-) -> tuple[list[tuple[float, ...]], list[tuple[int, int, int, int]], list[tuple[int, int, int]]]:
+) -> tuple[
+    list[tuple[float, float, float, float, float, float, float, float, float]],
+    list[tuple[int, int, int, int]],
+    list[tuple[int, int, int]],
+]:
     """Parse OBJ text to extract interleaved vertices, colors, and faces.
 
     Returns:
@@ -37,12 +41,12 @@ def parse_obj_for_mesh(
 
     unique_verts: dict[tuple[int, int, int], int] = {}
 
-    vertices_out: list[tuple[float, ...]] = []
+    vertices_out: list[tuple[float, float, float, float, float, float, float, float, float]] = []
     colors_out: list[tuple[int, int, int, int]] = []
     indices_out: list[tuple[int, int, int]] = []
 
-    for line in obj_content.splitlines():
-        line = line.strip()
+    for raw_line in obj_content.splitlines():
+        line = raw_line.strip()
         if not line or line.startswith('#'):
             continue
 
@@ -73,7 +77,7 @@ def parse_obj_for_mesh(
         elif parts[0] == 'vt':
             raw_vt.append((float(parts[1]), float(parts[2])))
         elif parts[0] == 'f':
-            face_verts = []
+            face_verts: list[tuple[int, int, int]] = []
             for face_part in parts[1:]:
                 indices_split = face_part.split('/')
                 v_idx = int(indices_split[0]) - 1
@@ -88,7 +92,7 @@ def parse_obj_for_mesh(
             # Triangulate face (simple fan triangulation)
             for i in range(1, len(face_verts) - 1):
                 tri = [face_verts[0], face_verts[i], face_verts[i + 1]]
-                tri_indices = []
+                tri_indices: list[int] = []
                 for tv_idx, tvt_idx, tvn_idx in tri:
                     if tv_idx < 0 or tv_idx >= len(raw_v):
                         continue
@@ -122,13 +126,13 @@ def parse_obj_for_mesh(
                     tri_indices.append(unique_verts[key])
 
                 if len(tri_indices) == 3:
-                    indices_out.append(tuple(tri_indices))
+                    indices_out.append((tri_indices[0], tri_indices[1], tri_indices[2]))
 
     return vertices_out, colors_out, indices_out
 
 
 def export_v2_mesh(
-    vertices: list[tuple[float, ...]],
+    vertices: list[tuple[float, float, float, float, float, float, float, float, float]],
     colors: list[tuple[int, int, int, int]],
     indices: list[tuple[int, int, int]],
 ) -> bytes:

@@ -4,11 +4,35 @@ Generates a local CA and per-host leaf certificates for TLS MITM interception.
 No openssl binary required - everything is done in-process.
 """
 
+from __future__ import annotations
+
 import datetime
 import ipaddress
 import logging
-from pathlib import Path
-from typing import Iterable, Tuple
+from typing import TYPE_CHECKING, Protocol, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
+    from types import ModuleType
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.asymmetric.types import (
+        CertificateIssuerPrivateKeyTypes,
+        PrivateKeyTypes,
+    )
+
+
+class _SerializationModule(Protocol):
+    Encoding: type[serialization.Encoding]
+    PublicFormat: type[serialization.PublicFormat]
+
+
+class _RsaModule(Protocol):
+    RSAPublicKey: type[rsa.RSAPublicKey]
+
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +52,7 @@ LEAF_CERT_VALIDITY_DAYS = 825
 NOT_VALID_BEFORE_SKEW_MINUTES = 5
 
 
-def _crypto():
+def _crypto() -> tuple[ModuleType, type[object], ModuleType, ModuleType, ModuleType]:
     """Lazy import of cryptography modules."""
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -41,13 +65,13 @@ def _crypto():
 def _as_utc(dt: datetime.datetime) -> datetime.datetime:
     """Normalize X.509 datetime values to timezone-aware UTC."""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=datetime.timezone.utc)
-    return dt.astimezone(datetime.timezone.utc)
+        return dt.replace(tzinfo=datetime.UTC)
+    return dt.astimezone(datetime.UTC)
 
 
-def _cert_valid_for(cert, min_remaining_days: int) -> bool:
+def _cert_valid_for(cert: x509.Certificate, min_remaining_days: int) -> bool:
     """Return True if cert is currently valid and has enough time remaining."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
 
     not_before_utc = getattr(cert, 'not_valid_before_utc', None)
     not_after_utc = getattr(cert, 'not_valid_after_utc', None)
@@ -63,7 +87,11 @@ def _cert_valid_for(cert, min_remaining_days: int) -> bool:
     return (not_after_utc - now) > min_remaining
 
 
-def _cert_matches_private_key(cert, private_key, serialization) -> bool:
+def _cert_matches_private_key(
+    cert: x509.Certificate,
+    private_key: PrivateKeyTypes,
+    serialization: _SerializationModule,
+) -> bool:
     """Return True if *private_key* matches *cert*'s public key."""
     cert_pub = cert.public_key().public_bytes(
         serialization.Encoding.DER,
@@ -76,17 +104,25 @@ def _cert_matches_private_key(cert, private_key, serialization) -> bool:
     return cert_pub == key_pub
 
 
-def _leaf_signed_by_ca(leaf_cert, ca_cert, rsa_mod) -> bool:
+def _leaf_signed_by_ca(
+    leaf_cert: x509.Certificate,
+    ca_cert: x509.Certificate,
+    rsa_mod: _RsaModule,
+) -> bool:
     """Return True if *leaf_cert* verifies with *ca_cert*'s public key."""
     from cryptography.hazmat.primitives.asymmetric import ec as ec_mod, padding
 
     ca_public_key = ca_cert.public_key()
+    signature_hash_algorithm = leaf_cert.signature_hash_algorithm
+    if signature_hash_algorithm is None:
+        return False
+
     if isinstance(ca_public_key, rsa_mod.RSAPublicKey):
         ca_public_key.verify(
             leaf_cert.signature,
             leaf_cert.tbs_certificate_bytes,
             padding.PKCS1v15(),
-            leaf_cert.signature_hash_algorithm,
+            signature_hash_algorithm,
         )
         return True
 
@@ -94,7 +130,7 @@ def _leaf_signed_by_ca(leaf_cert, ca_cert, rsa_mod) -> bool:
         ca_public_key.verify(
             leaf_cert.signature,
             leaf_cert.tbs_certificate_bytes,
-            ec_mod.ECDSA(leaf_cert.signature_hash_algorithm),
+            ec_mod.ECDSA(signature_hash_algorithm),
         )
         return True
 
@@ -114,9 +150,10 @@ def _normalise_hosts(hosts: Iterable[str]) -> list[str]:
     return normalized
 
 
-def _san_entries_for_hosts(hosts: Iterable[str]):
-    x509, _, _, _, _ = _crypto()
-    san_entries = []
+def _san_entries_for_hosts(hosts: Iterable[str]) -> list[x509.GeneralName]:
+    from cryptography import x509
+
+    san_entries: list[x509.GeneralName] = []
     for host in _normalise_hosts(hosts):
         try:
             san_entries.append(x509.IPAddress(ipaddress.ip_address(host)))
@@ -125,8 +162,9 @@ def _san_entries_for_hosts(hosts: Iterable[str]):
     return san_entries
 
 
-def _cert_san_names(cert) -> tuple[set[str], set[str]]:
-    x509, _, _, _, _ = _crypto()
+def _cert_san_names(cert: x509.Certificate) -> tuple[set[str], set[str]]:
+    from cryptography import x509
+
     try:
         san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         san_dns = {name.lower() for name in san.get_values_for_type(x509.DNSName)}
@@ -136,18 +174,21 @@ def _cert_san_names(cert) -> tuple[set[str], set[str]]:
         return set(), set()
 
 
-def _cert_allows_server_auth(cert) -> bool:
-    x509, _, _, _, _ = _crypto()
+def _cert_allows_server_auth(cert: x509.Certificate) -> bool:
+    from cryptography import x509
+    from cryptography.x509.oid import ExtendedKeyUsageOID
+
     try:
         eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
-        return x509.ExtendedKeyUsageOID.SERVER_AUTH in eku
+        return ExtendedKeyUsageOID.SERVER_AUTH in eku
     except x509.ExtensionNotFound:
         # Absence of EKU is less restrictive than a wrong EKU.
         return True
 
 
-def _cert_has_authority_key_identifier(cert) -> bool:
-    x509, _, _, _, _ = _crypto()
+def _cert_has_authority_key_identifier(cert: x509.Certificate) -> bool:
+    from cryptography import x509
+
     try:
         cert.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier)
         return True
@@ -155,8 +196,9 @@ def _cert_has_authority_key_identifier(cert) -> bool:
         return False
 
 
-def _cert_has_subject_key_identifier(cert) -> bool:
-    x509, _, _, _, _ = _crypto()
+def _cert_has_subject_key_identifier(cert: x509.Certificate) -> bool:
+    from cryptography import x509
+
     try:
         cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
         return True
@@ -164,7 +206,7 @@ def _cert_has_subject_key_identifier(cert) -> bool:
         return False
 
 
-def _cert_covers_hosts(cert, hosts: Iterable[str]) -> bool:
+def _cert_covers_hosts(cert: x509.Certificate, hosts: Iterable[str]) -> bool:
     san_dns, san_ips = _cert_san_names(cert)
     for host in _normalise_hosts(hosts):
         try:
@@ -178,7 +220,7 @@ def _cert_covers_hosts(cert, hosts: Iterable[str]) -> bool:
     return True
 
 
-def generate_ca(ca_dir: Path) -> Tuple[Path, Path]:
+def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
     """Generate a CA key + self-signed cert and save to ca_dir.
 
     Returns (ca_cert_path, ca_key_path).  Skips generation if both files
@@ -190,7 +232,8 @@ def generate_ca(ca_dir: Path) -> Tuple[Path, Path]:
 
     if ca_cert_path.exists() and ca_key_path.exists():
         try:
-            x509, _, _, serialization, _ = _crypto()
+            from cryptography import x509
+            from cryptography.hazmat.primitives import serialization
             from cryptography.hazmat.primitives.serialization import (
                 load_pem_private_key,
             )
@@ -208,7 +251,11 @@ def generate_ca(ca_dir: Path) -> Tuple[Path, Path]:
         except Exception as exc:
             logger.warning('Failed to load existing Fleasion CA; regenerating (%s)', exc)
 
-    x509, NameOID, hashes, serialization, rsa = _crypto()
+    _crypto()
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name(
@@ -217,7 +264,7 @@ def generate_ca(ca_dir: Path) -> Tuple[Path, Path]:
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'Fleasion'),
         ]
     )
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     not_valid_before = now - datetime.timedelta(minutes=NOT_VALID_BEFORE_SKEW_MINUTES)
     cert = (
         x509.CertificateBuilder()
@@ -260,7 +307,7 @@ def generate_ca(ca_dir: Path) -> Tuple[Path, Path]:
 
 def generate_host_cert(
     host: str, ca_cert_path: Path, ca_key_path: Path, ca_dir: Path
-) -> Tuple[Path, Path]:
+) -> tuple[Path, Path]:
     """Generate a leaf certificate for *host* signed by our CA.
 
     Returns (cert_path, key_path).  Uses cached files if they already exist.
@@ -270,8 +317,11 @@ def generate_host_cert(
     cert_path = ca_dir / f'{safe_host}.crt'
     key_path = ca_dir / f'{safe_host}.key'
 
-    x509, NameOID, hashes, serialization, rsa = _crypto()
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
     # Load CA once here so we can validate cached leaf cert issuer before reusing it.
     ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
@@ -284,6 +334,8 @@ def generate_host_cert(
             cn_values = cached_leaf.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
             cn_ok = bool(cn_values and cn_values[0].value == host)
 
+            san_dns: set[str]
+            san_ips: set[str]
             try:
                 san = cached_leaf.extensions.get_extension_for_class(
                     x509.SubjectAlternativeName
@@ -331,10 +383,12 @@ def generate_host_cert(
 
     if not _cert_matches_private_key(ca_cert, ca_key, serialization):
         raise ValueError('CA cert/key pair is mismatched')
+    # A CA key used here is a certificate issuer key; the loader's union is broader.
+    ca_signing_key = cast('CertificateIssuerPrivateKeyTypes', ca_key)
 
     # Generate a fresh key for this leaf cert
     leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     not_valid_before = now - datetime.timedelta(minutes=NOT_VALID_BEFORE_SKEW_MINUTES)
 
     san_entries = _san_entries_for_hosts([host])
@@ -354,7 +408,7 @@ def generate_host_cert(
             critical=False,
         )
         .add_extension(
-            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_signing_key.public_key()),
             critical=False,
         )
         .add_extension(
@@ -372,10 +426,10 @@ def generate_host_cert(
             critical=True,
         )
         .add_extension(
-            x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]),
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
             critical=False,
         )
-        .sign(ca_key, hashes.SHA256())
+        .sign(ca_signing_key, hashes.SHA256())
     )
 
     cert_path.write_bytes(leaf_cert.public_bytes(serialization.Encoding.PEM))
@@ -396,7 +450,7 @@ def generate_multi_host_cert(
     ca_cert_path: Path,
     ca_key_path: Path,
     ca_dir: Path,
-) -> Tuple[Path, Path]:
+) -> tuple[Path, Path]:
     """Generate a reusable leaf certificate whose SAN covers every host."""
     ca_dir.mkdir(parents=True, exist_ok=True)
     normalized_hosts = _normalise_hosts(hosts)
@@ -404,8 +458,11 @@ def generate_multi_host_cert(
     cert_path = ca_dir / f'{safe_name}.crt'
     key_path = ca_dir / f'{safe_name}.key'
 
-    x509, NameOID, hashes, serialization, rsa = _crypto()
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
     ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
 
@@ -456,9 +513,11 @@ def generate_multi_host_cert(
     ca_key = load_pem_private_key(ca_key_path.read_bytes(), password=None)
     if not _cert_matches_private_key(ca_cert, ca_key, serialization):
         raise ValueError('CA cert/key pair is mismatched')
+    # A CA key used here is a certificate issuer key; the loader's union is broader.
+    ca_signing_key = cast('CertificateIssuerPrivateKeyTypes', ca_key)
 
     leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     not_valid_before = now - datetime.timedelta(minutes=NOT_VALID_BEFORE_SKEW_MINUTES)
 
     leaf_cert = (
@@ -479,7 +538,7 @@ def generate_multi_host_cert(
             critical=False,
         )
         .add_extension(
-            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_signing_key.public_key()),
             critical=False,
         )
         .add_extension(
@@ -497,10 +556,10 @@ def generate_multi_host_cert(
             critical=True,
         )
         .add_extension(
-            x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]),
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
             critical=False,
         )
-        .sign(ca_key, hashes.SHA256())
+        .sign(ca_signing_key, hashes.SHA256())
     )
 
     cert_path.write_bytes(leaf_cert.public_bytes(serialization.Encoding.PEM))

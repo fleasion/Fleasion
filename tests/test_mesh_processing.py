@@ -1,31 +1,27 @@
 import gzip
 import struct
 from types import SimpleNamespace
+from typing import Never
+
+import pytest
 
 from fleasion.cache import mesh_processing
 
-
-EARLY_MESH = (
-    b"version 1.00\n"
-    b"1\n"
-    b"[0,0,0][0,1,0][0,0,0]"
-    b"[1,0,0][0,1,0][1,0,0]"
-    b"[0,1,0][0,1,0][0,1,0]"
-)
+EARLY_MESH = b'version 1.00\n1\n[0,0,0][0,1,0][0,0,0][1,0,0][0,1,0][1,0,0][0,1,0][0,1,0][0,1,0]'
 
 
-def test_mesh_data_detection_accepts_early_meshes_and_gzip_wrappers():
+def test_mesh_data_detection_accepts_early_meshes_and_gzip_wrappers() -> None:
     assert mesh_processing.is_mesh_data(EARLY_MESH)
     assert mesh_processing.is_mesh_data(gzip.compress(EARLY_MESH))
 
 
-def test_early_mesh_converts_to_obj():
+def test_early_mesh_converts_to_obj() -> None:
     obj = mesh_processing.convert(EARLY_MESH)
 
     assert obj is not None
-    assert "v 0.0 0.0 0.0" in obj
-    assert "v 0.5 0.0 0.0" in obj
-    assert "f 1/1/1 2/2/2 3/3/3" in obj
+    assert 'v 0.0 0.0 0.0' in obj
+    assert 'v 0.5 0.0 0.0' in obj
+    assert 'f 1/1/1 2/2/2 3/3/3' in obj
 
 
 def _chunk(name: str, version: int, payload: bytes) -> bytes:
@@ -80,7 +76,7 @@ def _v6_mesh() -> bytes:
     )
 
 
-def test_v6_raw_coremesh_converts_without_draco(monkeypatch):
+def test_v6_raw_coremesh_converts_without_draco(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mesh_processing, 'DRACO_AVAILABLE', False)
 
     obj = mesh_processing.convert(_v6_mesh())
@@ -94,16 +90,16 @@ def test_v6_raw_coremesh_converts_without_draco(monkeypatch):
     assert 'f 2/2/2 4/4/4 3/3/3' not in obj
 
 
-def test_chunked_mesh_rejects_a_chunk_that_exceeds_the_file():
+def test_chunked_mesh_rejects_a_chunk_that_exceeds_the_file() -> None:
     malformed = b'version 6.00\n' + b'COREMESH' + struct.pack('<II', 1, 100) + b'\0'
 
     assert mesh_processing.convert(malformed) is None
 
 
-def test_v7_draco_length_is_part_of_coremesh_payload(monkeypatch):
-    decoded = []
+def test_v7_draco_length_is_part_of_coremesh_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    decoded: list[bytes] = []
 
-    def decode(data):
+    def decode(data: bytes) -> SimpleNamespace:
         decoded.append(data)
         return SimpleNamespace(
             points=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
@@ -125,12 +121,16 @@ def test_v7_draco_length_is_part_of_coremesh_payload(monkeypatch):
     assert '# Vertices: 3, Faces: 1' in obj
 
 
-def test_v7_rejects_a_mismatched_draco_length(monkeypatch):
+def test_v7_rejects_a_mismatched_draco_length(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mesh_processing, 'DRACO_AVAILABLE', True)
+
+    def fail_decode(_data: bytes) -> Never:
+        raise AssertionError('decoded')
+
     monkeypatch.setattr(
         mesh_processing,
         'DracoPy',
-        SimpleNamespace(decode=lambda _data: (_ for _ in ()).throw(AssertionError('decoded'))),
+        SimpleNamespace(decode=fail_decode),
     )
     coremesh = struct.pack('<I', 100) + b'too short'
     data = b'version 7.00\n' + _chunk('COREMESH', 2, coremesh)

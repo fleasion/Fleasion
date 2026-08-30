@@ -44,7 +44,7 @@ def _global_settings_stash_path(stash_dir: Path, roblox_dir: Path) -> Path:
 class GlobalSettingsManager:
     """Manage GlobalBasicSettings_13.xml for the current platform/client roots."""
 
-    def __init__(self, stash_dir: Path):
+    def __init__(self, stash_dir: Path) -> None:
         self._stash_dir = stash_dir
         self._user_roblox_dirs = self._find_all_user_roblox_dirs()
 

@@ -5,17 +5,37 @@ from __future__ import annotations
 import base64
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from .logging import log_buffer
 
-try:
-    import win32crypt  # type: ignore
-except Exception:
-    win32crypt = None
+
+class _Win32Crypt(Protocol):
+    CryptProtectData: Callable[
+        [bytes, str | None, object | None, object | None, object | None, int], bytes
+    ]
+    CryptUnprotectData: Callable[
+        [bytes, object | None, object | None, object | None, int], tuple[object, bytes]
+    ]
 
 
-def _get_fernet_cipher(key_file: Path, *, create: bool = True):
+class _FernetCipher(Protocol):
+    def encrypt(self, data: bytes) -> bytes: ...
+    def decrypt(self, token: bytes) -> bytes: ...
+
+
+if TYPE_CHECKING:
+    win32crypt: _Win32Crypt | None
+else:
+    try:
+        import win32crypt
+    except Exception:
+        win32crypt = None
+
+
+def _get_fernet_cipher(key_file: Path, *, create: bool = True) -> _FernetCipher | None:
     try:
         from cryptography.fernet import Fernet
     except Exception as exc:

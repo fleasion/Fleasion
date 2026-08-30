@@ -80,7 +80,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101"]  # pytest uses plain assert
+# Translation tables intentionally contain non-ASCII punctuation and long literal values;
+# changing those literals for style would alter localization data or reduce its fidelity.
+"src/fleasion/translations/*.py" = ["RUF001", "E501", "FURB156"]
+"tests/**/*.py" = ["S101", "INP001"]  # pytest uses plain assert; tests need not be packages
 
 [tool.ruff.format]
 quote-style = "single"

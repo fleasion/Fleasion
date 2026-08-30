@@ -1,13 +1,12 @@
 """Delete cache window."""
 
-from ..localization import tr
-
 import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QLabel, QTextEdit, QVBoxLayout
 
+from ..localization import tr
 from ..utils import delete_cache, get_icon_path, log_buffer
 
 
@@ -19,7 +18,7 @@ class DeleteCacheWindow(QDialog):
     log_signal = Signal(str)
     done_signal = Signal()
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(tr('ui.gui.delete_cache.clear_cache'))
         self.setFixedSize(400, 200)
@@ -35,14 +34,14 @@ class DeleteCacheWindow(QDialog):
         self._set_icon()
         self._start_deletion()
 
-    def _set_icon(self):
+    def _set_icon(self) -> None:
         """Set window icon."""
         if icon_path := get_icon_path():
             from PySide6.QtGui import QIcon
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(20, 20, 20, 20)
@@ -73,11 +72,11 @@ class DeleteCacheWindow(QDialog):
         font.setPointSize(9)
         return font
 
-    def _append_log(self, message: str):
+    def _append_log(self, message: str) -> None:
         """Append a log message."""
         self.status_text.append(message)
 
-    def _on_done(self):
+    def _on_done(self) -> None:
         """Called when deletion is complete."""
         self.status_text.append('\nDone.')
         # Keep the completion message visible briefly, then dismiss the
@@ -85,10 +84,10 @@ class DeleteCacheWindow(QDialog):
         # merely appending "Done." otherwise leaves it open indefinitely.
         QTimer.singleShot(self._CLOSE_AFTER_DONE_MS, self.accept)
 
-    def _start_deletion(self):
+    def _start_deletion(self) -> None:
         """Start the cache deletion in a background thread."""
 
-        def perform():
+        def perform() -> None:
             for msg in delete_cache():
                 log_buffer.log('Cache', msg)
                 self.log_signal.emit(msg)

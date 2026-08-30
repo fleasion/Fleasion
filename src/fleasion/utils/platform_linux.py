@@ -15,18 +15,44 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Literal, TypedDict, overload
 
 from ..localization import tr
 from .linux_clients import (
     LINUX_CLIENTS_BY_KEY,
     SOBER_CLIENT,
+    LinuxClientDescriptor,
     LinuxClientInstallation,
-    detect_installed_clients,
     get_linux_client,
-    select_linux_client,
 )
+
+if TYPE_CHECKING:
+
+    def _detect_installed_clients(*, home: str | Path) -> tuple[LinuxClientInstallation, ...]: ...
+
+    def _select_linux_client(
+        selection: str,
+        *,
+        installed: tuple[LinuxClientInstallation, ...],
+        home: str | Path,
+    ) -> LinuxClientInstallation | None: ...
+else:
+    from .linux_clients import detect_installed_clients, select_linux_client
+
+    def _detect_installed_clients(*, home: str | Path) -> tuple[LinuxClientInstallation, ...]:
+        return detect_installed_clients(home=home)
+
+    def _select_linux_client(
+        selection: str,
+        *,
+        installed: tuple[LinuxClientInstallation, ...],
+        home: str | Path,
+    ) -> LinuxClientInstallation | None:
+        return select_linux_client(selection, installed=installed, home=home)
+
+
 from .logging import log_buffer
 from .metadata import APP_NAME
 from .paths import (
@@ -36,6 +62,42 @@ from .paths import (
     USER_HOME,
     get_icon_path,
 )
+
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
+
+
+class DetachedPopenKwargs(TypedDict):
+    stdin: int
+    stdout: int
+    stderr: int
+    start_new_session: bool
+
+
+class DesktopInstallResult(TypedDict):
+    desktop_entry: str
+    launcher: str
+    installed_app: str | None
+    installed_icon: str | None
+    removed_deprecated_entries: list[str]
+    sober_uri_handler_restored: bool
+    roblox_uri_handler_restored: bool
+
+
+if TYPE_CHECKING:
+
+    def _json_object(value: object) -> JsonObject | None: ...
+
+    def _client_key(value: object) -> str | None: ...
+else:
+
+    def _json_object(value: object) -> JsonObject | None:
+        return value if isinstance(value, dict) else None
+
+    def _client_key(value: object) -> str | None:
+        return value
+
 
 SOBER_APP_ID = SOBER_CLIENT.app_id
 SOBER_FLATPAK_ROOT = USER_HOME / '.var' / 'app' / SOBER_APP_ID
@@ -186,8 +248,9 @@ def _configured_linux_client_preference() -> str:
     if _linux_client_preference is not None:
         return _linux_client_preference
     try:
-        payload = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
-        value = str(payload.get('linux_client', 'auto') if isinstance(payload, dict) else 'auto')
+        payload: object = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
+        payload_map = _json_object(payload)
+        value = str(payload_map.get('linux_client', 'auto') if payload_map is not None else 'auto')
     except OSError, UnicodeDecodeError, json.JSONDecodeError:
         value = 'auto'
     return _normalized_linux_client_preference(value)
@@ -195,14 +258,14 @@ def _configured_linux_client_preference() -> str:
 
 def linux_client_installations() -> tuple[LinuxClientInstallation, ...]:
     """Return installed clients using metadata-only discovery."""
-    return detect_installed_clients(home=USER_HOME)
+    return _detect_installed_clients(home=USER_HOME)
 
 
 def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve the configured/desktop-selected installed Linux Roblox client."""
     preference = _configured_linux_client_preference()
     installed = linux_client_installations()
-    return select_linux_client(preference, installed=installed, home=USER_HOME)
+    return _select_linux_client(preference, installed=installed, home=USER_HOME)
 
 
 def selected_linux_client_key() -> str:
@@ -210,7 +273,7 @@ def selected_linux_client_key() -> str:
     return selected.key if selected is not None else _configured_linux_client_preference()
 
 
-def _configured_linux_client_descriptor():
+def _configured_linux_client_descriptor() -> LinuxClientDescriptor | None:
     return LINUX_CLIENTS_BY_KEY.get(_configured_linux_client_preference())
 
 
@@ -338,6 +401,10 @@ def _process_command(pid: int) -> Path | None:
     return Path(value) if value else None
 
 
+if TYPE_CHECKING:
+    _ = _process_command
+
+
 def wait_for_roblox_window(timeout: float = 60.0) -> bool:
     """Wait until the selected Linux Roblox client is running."""
     deadline = time.time() + timeout
@@ -370,7 +437,7 @@ def is_studio_running() -> bool:
     return False
 
 
-def get_roblox_player_exe_path() -> Optional[Path]:
+def get_roblox_player_exe_path() -> Path | None:
     """Linux clients do not expose a stable RobloxPlayerBeta.exe path.
 
     The running process is the Flatpak launcher or wrapper, not the resource
@@ -382,7 +449,7 @@ def get_roblox_player_exe_path() -> Optional[Path]:
     return None
 
 
-def get_roblox_studio_exe_path() -> Optional[Path]:
+def get_roblox_studio_exe_path() -> Path | None:
     """Roblox Studio is not supported through Sober."""
     return None
 
@@ -551,13 +618,13 @@ def find_linux_global_settings_dirs() -> list[Path]:
     return [installation.paths.data_root]
 
 
-def resolve_roblox_player_exe_for_launch() -> Optional[Path]:
+def resolve_roblox_player_exe_for_launch() -> Path | None:
     """Return the selected client's Flatpak launcher path."""
     installation = get_selected_linux_client_installation()
     return installation.executable if installation is not None else None
 
 
-_DETACHED_POPEN_KWARGS = {
+_DETACHED_POPEN_KWARGS: DetachedPopenKwargs = {
     'stdin': subprocess.DEVNULL,
     'stdout': subprocess.DEVNULL,
     'stderr': subprocess.DEVNULL,
@@ -592,7 +659,7 @@ def _host_subprocess_env() -> dict[str, str]:
     return env
 
 
-def _standard_user_popen(args: list[str]) -> subprocess.Popen:
+def _standard_user_popen(args: list[str]) -> subprocess.Popen[bytes]:
     env = _host_subprocess_env()
     if os.geteuid() != 0:
         return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)
@@ -624,40 +691,83 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen:
     return subprocess.Popen(args, env=env, preexec_fn=_demote, **_DETACHED_POPEN_KWARGS)
 
 
-def _standard_user_run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+@overload
+def _standard_user_run(
+    args: list[str],
+    *,
+    capture_output: bool = False,
+    text: Literal[True],
+    timeout: float,
+) -> subprocess.CompletedProcess[str]: ...
+
+
+@overload
+def _standard_user_run(
+    args: list[str],
+    *,
+    capture_output: bool = False,
+    text: Literal[False] = False,
+    timeout: float,
+) -> subprocess.CompletedProcess[bytes]: ...
+
+
+def _standard_user_run(
+    args: list[str],
+    *,
+    capture_output: bool = False,
+    text: bool = False,
+    timeout: float,
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     """Run a host command as the desktop user, including under elevation."""
     env = _host_subprocess_env()
-    if os.geteuid() != 0:
-        return subprocess.run(args, env=env, **kwargs)
-
     user_home = Path(os.environ.get('FLEASION_USER_HOME') or USER_HOME)
-    try:
-        stat = user_home.stat()
-        uid = stat.st_uid
-        gid = stat.st_gid
-        if pwd is None:
-            raise KeyError(uid)
-        pw_entry = pwd.getpwuid(uid)
-    except Exception:
-        return subprocess.run(args, env=env, **kwargs)
+    preexec_fn = None
+    if os.geteuid() == 0:
+        try:
+            stat = user_home.stat()
+            uid = stat.st_uid
+            gid = stat.st_gid
+            if pwd is None:
+                raise KeyError(uid)
+            pw_entry = pwd.getpwuid(uid)
+        except Exception:
+            pass
+        else:
+            env.update(
+                {
+                    'HOME': str(user_home),
+                    'USER': pw_entry.pw_name,
+                    'LOGNAME': pw_entry.pw_name,
+                    'XDG_RUNTIME_DIR': f'/run/user/{uid}',
+                }
+            )
 
-    env.update(
-        {
-            'HOME': str(user_home),
-            'USER': pw_entry.pw_name,
-            'LOGNAME': pw_entry.pw_name,
-            'XDG_RUNTIME_DIR': f'/run/user/{uid}',
-        }
+            def _demote() -> None:
+                os.setgid(gid)
+                os.setuid(uid)
+
+            preexec_fn = _demote
+
+    if text:
+        return subprocess.run(
+            args,
+            env=env,
+            preexec_fn=preexec_fn,
+            capture_output=capture_output,
+            text=True,
+            timeout=timeout,
+        )
+    return subprocess.run(
+        args,
+        env=env,
+        preexec_fn=preexec_fn,
+        capture_output=capture_output,
+        text=False,
+        timeout=timeout,
     )
 
-    def _demote() -> None:
-        os.setgid(gid)
-        os.setuid(uid)
 
-    return subprocess.run(args, env=env, preexec_fn=_demote, **kwargs)
-
-
-def _desktop_open_commands(target: str):
+def _desktop_open_commands(target: str) -> Iterator[list[str]]:
     """Yield available desktop opener commands in fallback order."""
     for executable, extra_args in DESKTOP_OPENERS:
         resolved = shutil.which(executable)
@@ -790,10 +900,11 @@ def _read_linux_proxy_override_state() -> str | None:
     try:
         if LINUX_PROXY_OVERRIDE_STATE.is_symlink():
             return None
-        payload = json.loads(LINUX_PROXY_OVERRIDE_STATE.read_text(encoding='utf-8'))
+        payload: object = json.loads(LINUX_PROXY_OVERRIDE_STATE.read_text(encoding='utf-8'))
     except OSError, UnicodeError, json.JSONDecodeError:
         return None
-    key = payload.get('client') if isinstance(payload, dict) else None
+    payload_map = _json_object(payload)
+    key = _client_key(payload_map.get('client') if payload_map is not None else None)
     return key if key in LINUX_CLIENTS_BY_KEY else None
 
 
@@ -1108,7 +1219,7 @@ def _write_executable_script(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
-def install_desktop_entries() -> dict:
+def install_desktop_entries() -> DesktopInstallResult:
     """Install the Linux desktop launcher.
 
     The installed application entry starts Fleasion as the interactive user.
@@ -1127,12 +1238,12 @@ def install_desktop_entries() -> dict:
         else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}${{PYTHONPATH:+:$PYTHONPATH}}\n'
     )
 
-    launcher = f'''#!/bin/sh
+    launcher = f"""#!/bin/sh
 set -eu
 export FLEASION_USER_HOME="{USER_HOME}"
 {pythonpath}{f'cd {working_dir_literal}' if working_dir is not None else ':'}
 exec {command_literal} "$@"
-'''
+"""
     _write_executable_script(LINUX_LAUNCHER_PATH, launcher)
 
     icon_path = installed_icon or get_icon_path()
@@ -1180,13 +1291,13 @@ exec {command_literal} "$@"
     }
 
 
-def open_folder(path: Path):
+def open_folder(path: Path) -> bool:
     """Open a folder in the user's file manager."""
     path.mkdir(parents=True, exist_ok=True)
     return _open_with_desktop_handler(str(path), 'folder')
 
 
-def show_message_box(title: str, message: str, icon: int = 0x40):
+def show_message_box(title: str, message: str, icon: int = 0x40) -> None:
     """Show a simple Linux desktop notification/dialog when available."""
     try:
         subprocess.run(['zenity', '--info', '--title', title, '--text', message], timeout=10)

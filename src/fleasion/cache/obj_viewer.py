@@ -1,14 +1,25 @@
 """Simple 3D OBJ viewer widget using PySide6 OpenGL with display list caching."""
 
-from ..localization import tr
+from __future__ import annotations
 
 import math
 import time
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast, override
 
 import numpy as np
-from OpenGL.GL import *
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QGuiApplication
+import numpy.typing as npt
+from OpenGL import GL
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QCloseEvent,
+    QFocusEvent,
+    QGuiApplication,
+    QKeyEvent,
+    QMouseEvent,
+    QScreen,
+    QShowEvent,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -19,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..localization import tr
 from ..utils.logging import log_buffer
 from .fps_controls import (
     KEY_BACKWARD,
@@ -37,37 +49,82 @@ from .fps_controls import (
 from .gl_format import legacy_gl_format, set_perspective
 from .offscreen_gl_widget import OffscreenOpenGLWidget
 
+if TYPE_CHECKING:
+    from fleasion.config.manager import ConfigManager
+
+
+type Vec3 = list[float]
+type CameraMode = Literal['orbit', 'fps']
+type FloatVector = npt.NDArray[np.float64]
+type PixelReadback = bytes | bytearray | memoryview | npt.NDArray[np.uint8]
+
+
+class ObjFace(TypedDict):
+    """Indices for one parsed OBJ face."""
+
+    v: list[int]
+    n: list[int]
+
+
+class _TypedOffscreenBase(Protocol):
+    def __init__(self, parent: QWidget | None = None) -> None: ...
+
+    def closeEvent(self, event: QCloseEvent) -> None: ...  # ruff: ignore[invalid-function-name]
+
+
+def _screen_refresh_rate(screen: QScreen | None) -> float:
+    return float(screen.refreshRate()) if screen is not None else 60.0
+
+
+def _preserve_bool(value: object) -> bool:
+    """Describe the existing boolean settings contract without coercing values."""
+    if TYPE_CHECKING:
+        assert isinstance(value, bool)
+    return value
+
+
+def _invalid_vertex_index(index: object, vertex_count: int) -> bool:
+    if not isinstance(index, int):
+        return True
+    return index < 0 or index >= vertex_count
+
+
+def _readback_values(pixel: PixelReadback) -> npt.NDArray[np.uint8]:
+    if isinstance(pixel, bytes | bytearray | memoryview):
+        return np.frombuffer(pixel, dtype=np.uint8)
+    return np.asarray(pixel, dtype=np.uint8).reshape(-1)
+
 
 class ObjViewerWidget(OffscreenOpenGLWidget):
     """Offscreen OpenGL renderer presented through a normal QWidget."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         # Render into an offscreen framebuffer and let QWidget paint the result.
         # This avoids both QOpenGLWidget top-level recreation and black native
         # QOpenGLWindow child surfaces seen on some Windows/AMD configurations.
-        super().__init__(parent)
+        cast('_TypedOffscreenBase', super()).__init__(parent)
 
         # Mesh Data
-        self.vertices = []
-        self.colors = []
-        self.faces = []
-        self.normals = []
-        self.face_normals = []
+        self.vertices: list[Vec3] = []
+        self.colors: list[Vec3] = []
+        self.faces: list[ObjFace] = []
+        self.normals: list[Vec3] = []
+        self.face_normals: list[Vec3] = []
 
         # Camera state (orbit) - Default to a nice 3/4 isometric-style view
-        self.camera_mode = 'orbit'  # 'orbit' or 'fps'
-        self.rotation_x = 20.0
-        self.rotation_y = -30.0
-        self.zoom = -5.0
+        self.camera_mode: CameraMode = 'orbit'  # 'orbit' or 'fps'
+        self.rotation_x: float = 20.0
+        self.rotation_y: float = -30.0
+        self.zoom: float = -5.0
 
         # Camera state (fps)
-        self.cam_pos = np.array([0.0, 0.0, 0.0], dtype=float)
-        self.cam_yaw = 0.0
-        self.cam_pitch = 0.0
-        self.base_speed = 0.05  # Optimized for the normalized 1.0 unit model size
+        self.cam_pos: FloatVector = np.array([0.0, 0.0, 0.0], dtype=float)
+        self.cam_yaw: float = 0.0
+        self.cam_pitch: float = 0.0
+        self.base_speed: float = 0.05  # Optimized for the normalized 1.0 unit model size
 
-        self.auto_rotate = False
-        self.last_pos = None
+        self.auto_rotate: bool = False
+        self.last_pos: QPoint | None = None
         self.keys_pressed: set[MovementKey] = set()
         self.last_tick_time = time.time()
 
@@ -94,26 +151,26 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         self.timer.timeout.connect(self._update_tick)
         try:
             screen = self.screen() or QGuiApplication.primaryScreen()
-            refresh = float(screen.refreshRate()) if screen is not None else 60.0
+            refresh = _screen_refresh_rate(screen)
             if not refresh or refresh <= 0:
                 refresh = 60.0
         except Exception:
             refresh = 60.0
-        interval_ms = max(1, int(round(1000.0 / refresh)))
+        interval_ms = max(1, round(1000.0 / refresh))
         self.timer.start(interval_ms)
 
     def get_refresh_interval_ms(self) -> int:
         """Return a safe refresh interval (ms) based on the current screen or primary screen."""
         try:
             screen = self.screen() or QGuiApplication.primaryScreen()
-            refresh = float(screen.refreshRate()) if screen is not None else 60.0
+            refresh = _screen_refresh_rate(screen)
             if not refresh or refresh <= 0:
                 refresh = 60.0
         except Exception:
             refresh = 60.0
-        return max(1, int(round(1000.0 / refresh)))
+        return max(1, round(1000.0 / refresh))
 
-    def load_obj_data(self, obj_content: str):
+    def load_obj_data(self, obj_content: str) -> None:
         """Load OBJ file content."""
         self._discard_mesh_display_list()
         self.vertices = []
@@ -141,8 +198,8 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             elif parts[0] == 'vn':
                 self.normals.append([float(parts[1]), float(parts[2]), float(parts[3])])
             elif parts[0] == 'f':
-                face_v = []
-                face_n = []
+                face_v: list[int] = []
+                face_n: list[int] = []
                 # Triangulated support
                 for part in parts[1:]:
                     indices = part.split('/')
@@ -168,12 +225,12 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         self.needs_rebuild = True
         self.update()
 
-    def _normalize_model(self):
+    def _normalize_model(self) -> None:
         """Center and normalize model to fit in view."""
         if not self.vertices:
             return
 
-        vertices = np.array(self.vertices)
+        vertices: npt.NDArray[np.float64] = np.array(self.vertices)
         center = vertices.mean(axis=0)
         vertices -= center
 
@@ -183,21 +240,19 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
         self.vertices = vertices.tolist()
 
-    def _compute_face_normals(self):
+    def _compute_face_normals(self) -> None:
         """Pre-compute face normals for performance with bounds checks."""
         self.face_normals = []
         if not self.vertices:
             return
-        vertices = np.array(self.vertices)
+        vertices: npt.NDArray[np.float64] = np.array(self.vertices)
         v_count = len(vertices)
 
         for face in self.faces:
             v_indices = face.get('v', [])
             if len(v_indices) >= 3:
                 # ensure the first three indices are valid integers within range
-                if any(
-                    (not isinstance(idx, int)) or idx < 0 or idx >= v_count for idx in v_indices[:3]
-                ):
+                if any(_invalid_vertex_index(idx, v_count) for idx in v_indices[:3]):
                     # invalid face. append a default normal and skip detailed compute.
                     self.face_normals.append([0.0, 1.0, 0.0])
                     continue
@@ -219,15 +274,15 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             else:
                 self.face_normals.append([0.0, 1.0, 0.0])
 
-    def _build_display_list(self):
+    def _build_display_list(self) -> None:
         """Build display list for fast rendering."""
         self._discard_mesh_display_list(make_current=False)
 
-        self.mesh_display_list = glGenLists(1)
-        glNewList(self.mesh_display_list, GL_COMPILE)
+        self.mesh_display_list = GL.glGenLists(1)
+        GL.glNewList(self.mesh_display_list, GL.GL_COMPILE)
 
         if self.vertices and self.faces:
-            glBegin(GL_TRIANGLES)
+            GL.glBegin(GL.GL_TRIANGLES)
 
             for i, face in enumerate(self.faces):
                 v_indices = face['v']
@@ -239,75 +294,78 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
                 # Fallback to face normals if vertex normals missing
                 if not n_indices and i < len(self.face_normals):
-                    glNormal3fv(self.face_normals[i])
+                    GL.glNormal3fv(self.face_normals[i])
 
                 for j in range(3):
                     v_idx = v_indices[j]
                     if 0 <= v_idx < len(self.vertices):
                         if self.colors:
-                            glColor3fv(self.colors[v_idx])
+                            GL.glColor3fv(self.colors[v_idx])
                         if n_indices and j < len(n_indices) and n_indices[j] < len(self.normals):
-                            glNormal3fv(self.normals[n_indices[j]])
-                        glVertex3fv(self.vertices[v_idx])
+                            GL.glNormal3fv(self.normals[n_indices[j]])
+                        GL.glVertex3fv(self.vertices[v_idx])
 
-            glEnd()
+            GL.glEnd()
 
-        glEndList()
+        GL.glEndList()
         self.needs_rebuild = False
 
-    def initializeGL(self):
+    @override
+    def initializeGL(self) -> None:
         """Initialize OpenGL with high quality lighting."""
         self._log_gl_context_once()
         self._schedule_presentation_watchdog()
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_LIGHTING)
-        glEnable(GL_LIGHT0)  # Key Light
-        glEnable(GL_LIGHT1)  # Fill Light
-        glEnable(GL_LIGHT2)  # Rim Light
-        glEnable(GL_COLOR_MATERIAL)
-        glEnable(GL_NORMALIZE)
-        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
-        glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, GL_TRUE)  # Better inside shading
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glEnable(GL.GL_LIGHTING)
+        GL.glEnable(GL.GL_LIGHT0)  # Key Light
+        GL.glEnable(GL.GL_LIGHT1)  # Fill Light
+        GL.glEnable(GL.GL_LIGHT2)  # Rim Light
+        GL.glEnable(GL.GL_COLOR_MATERIAL)
+        GL.glEnable(GL.GL_NORMALIZE)
+        GL.glColorMaterial(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE)
+        GL.glLightModeli(GL.GL_LIGHT_MODEL_TWO_SIDE, GL.GL_TRUE)  # Better inside shading
 
         # 1. Main Key Light (Warm, strong)
-        glLightfv(GL_LIGHT0, GL_POSITION, [1.0, 1.0, 1.0, 0.0])
-        glLightfv(GL_LIGHT0, GL_AMBIENT, [0.15, 0.15, 0.15, 1.0])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.85, 0.8, 0.75, 1.0])  # Slightly warm
-        glLightfv(GL_LIGHT0, GL_SPECULAR, [0.6, 0.6, 0.6, 1.0])
+        GL.glLightfv(GL.GL_LIGHT0, GL.GL_POSITION, [1.0, 1.0, 1.0, 0.0])
+        GL.glLightfv(GL.GL_LIGHT0, GL.GL_AMBIENT, [0.15, 0.15, 0.15, 1.0])
+        GL.glLightfv(GL.GL_LIGHT0, GL.GL_DIFFUSE, [0.85, 0.8, 0.75, 1.0])  # Slightly warm
+        GL.glLightfv(GL.GL_LIGHT0, GL.GL_SPECULAR, [0.6, 0.6, 0.6, 1.0])
 
         # 2. Fill Light (Cool, weaker)
-        glLightfv(GL_LIGHT1, GL_POSITION, [-1.0, 0.5, -1.0, 0.0])
-        glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.2, 0.25, 0.35, 1.0])  # Slightly cool
-        glLightfv(GL_LIGHT1, GL_SPECULAR, [0.1, 0.1, 0.1, 1.0])
+        GL.glLightfv(GL.GL_LIGHT1, GL.GL_POSITION, [-1.0, 0.5, -1.0, 0.0])
+        GL.glLightfv(GL.GL_LIGHT1, GL.GL_DIFFUSE, [0.2, 0.25, 0.35, 1.0])  # Slightly cool
+        GL.glLightfv(GL.GL_LIGHT1, GL.GL_SPECULAR, [0.1, 0.1, 0.1, 1.0])
 
         # 3. Rim / Back Light (Bright, emphasizes edges)
-        glLightfv(GL_LIGHT2, GL_POSITION, [0.0, 1.0, -2.0, 0.0])
-        glLightfv(GL_LIGHT2, GL_DIFFUSE, [0.4, 0.4, 0.5, 1.0])
-        glLightfv(GL_LIGHT2, GL_SPECULAR, [0.5, 0.5, 0.5, 1.0])
+        GL.glLightfv(GL.GL_LIGHT2, GL.GL_POSITION, [0.0, 1.0, -2.0, 0.0])
+        GL.glLightfv(GL.GL_LIGHT2, GL.GL_DIFFUSE, [0.4, 0.4, 0.5, 1.0])
+        GL.glLightfv(GL.GL_LIGHT2, GL.GL_SPECULAR, [0.5, 0.5, 0.5, 1.0])
 
         # Specular material settings - increase shininess to make it look less chalky
-        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, [0.6, 0.6, 0.6, 1.0])
-        glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 64.0)
+        GL.glMaterialfv(GL.GL_FRONT_AND_BACK, GL.GL_SPECULAR, [0.6, 0.6, 0.6, 1.0])
+        GL.glMaterialf(GL.GL_FRONT_AND_BACK, GL.GL_SHININESS, 64.0)
 
-        glClearColor(0.12, 0.12, 0.15, 1.0)
-        glShadeModel(GL_SMOOTH)
-        error = glGetError()
+        GL.glClearColor(0.12, 0.12, 0.15, 1.0)
+        GL.glShadeModel(GL.GL_SMOOTH)
+        error = GL.glGetError()
         log_buffer.log(
             'OpenGL',
             f'OBJ viewer initializeGL complete; gl_error={self._gl_error_text(error)}; '
             f'{self._surface_state()}',
         )
 
-    def _log_gl_context_once(self):
+    def _log_gl_context_once(self) -> None:
         if self._gl_context_logged:
             return
         self._gl_context_logged = True
         try:
             context = self.context()
+            if TYPE_CHECKING:
+                assert context is not None
             fmt = context.format()
-            version = glGetString(GL_VERSION)
-            renderer = glGetString(GL_RENDERER)
-            vendor = glGetString(GL_VENDOR)
+            version = GL.glGetString(GL.GL_VERSION)
+            renderer = GL.glGetString(GL.GL_RENDERER)
+            vendor = GL.glGetString(GL.GL_VENDOR)
             log_buffer.log(
                 'OpenGL',
                 (
@@ -329,7 +387,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
     @staticmethod
     def _gl_error_text(error: int) -> str:
-        return 'GL_NO_ERROR' if error == GL_NO_ERROR else f'0x{int(error):04X}'
+        return 'GL_NO_ERROR' if error == GL.GL_NO_ERROR else f'0x{int(error):04X}'
 
     def _surface_state(self) -> str:
         try:
@@ -351,11 +409,8 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             size = self.size()
             x = max(0, size.width() // 2)
             y = max(0, size.height() // 2)
-            pixel = glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE)
-            if isinstance(pixel, (bytes, bytearray, memoryview)):
-                values = np.frombuffer(pixel, dtype=np.uint8)
-            else:
-                values = np.asarray(pixel, dtype=np.uint8).reshape(-1)
+            pixel = GL.glReadPixels(x, y, 1, 1, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+            values = _readback_values(pixel)
             if values.size < 4:
                 return f'unexpected_readback_size={values.size}'
             return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
@@ -388,24 +443,26 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             'OpenGL', f'OBJ viewer first raster frame presented; {self._surface_state()}'
         )
 
-    def resizeGL(self, w: int, h: int):
+    @override
+    def resizeGL(self, width: int, height: int) -> None:
         """Handle standard clean projection resize."""
-        glViewport(0, 0, w, h)
-        glMatrixMode(GL_PROJECTION)
-        glLoadIdentity()
-        aspect = w / h if h > 0 else 1.0
+        GL.glViewport(0, 0, width, height)
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glLoadIdentity()
+        aspect = width / height if height > 0 else 1.0
         set_perspective(45.0, aspect, 0.1, 100.0)
-        glMatrixMode(GL_MODELVIEW)
+        GL.glMatrixMode(GL.GL_MODELVIEW)
         if not self._first_resize_logged:
             self._first_resize_logged = True
-            error = glGetError()
+            error = GL.glGetError()
             log_buffer.log(
                 'OpenGL',
-                f'OBJ viewer first resizeGL {w}x{h}; '
+                f'OBJ viewer first resizeGL {width}x{height}; '
                 f'gl_error={self._gl_error_text(error)}; {self._surface_state()}',
             )
 
-    def paintGL(self):
+    @override
+    def paintGL(self) -> None:
         """Render the scene using cached display list."""
         first_paint = not self._first_paint_started_logged
         if first_paint:
@@ -414,9 +471,9 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         try:
             self._paint_scene()
             if first_paint:
-                render_error = glGetError()
+                render_error = GL.glGetError()
                 center_pixel = self._sample_center_pixel()
-                readback_error = glGetError()
+                readback_error = GL.glGetError()
                 self._first_paint_completed_logged = True
                 log_buffer.log(
                     'OpenGL',
@@ -431,28 +488,28 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                 self._paint_error_logged = True
                 log_buffer.log('OpenGL', f'OBJ viewer paint failed: {type(exc).__name__}: {exc}')
             try:
-                glClearColor(0.08, 0.08, 0.10, 1.0)
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+                GL.glClearColor(0.08, 0.08, 0.10, 1.0)
+                GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
             except Exception:
                 pass
 
-    def _paint_scene(self):
+    def _paint_scene(self) -> None:
         """Render the scene using cached display list."""
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glLoadIdentity()
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        GL.glLoadIdentity()
 
         self._draw_background()
 
         # Camera Transform setup
         if self.camera_mode == 'orbit':
-            glTranslatef(0.0, 0.0, self.zoom)
-            glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
-            glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
+            GL.glTranslatef(0.0, 0.0, self.zoom)
+            GL.glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
+            GL.glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
         else:
             # FPS Look & Move transform
-            glRotatef(self.cam_pitch, 1.0, 0.0, 0.0)
-            glRotatef(self.cam_yaw, 0.0, 1.0, 0.0)
-            glTranslatef(-self.cam_pos[0], -self.cam_pos[1], -self.cam_pos[2])
+            GL.glRotatef(self.cam_pitch, 1.0, 0.0, 0.0)
+            GL.glRotatef(self.cam_yaw, 0.0, 1.0, 0.0)
+            GL.glTranslatef(-self.cam_pos[0], -self.cam_pos[1], -self.cam_pos[2])
 
         if self.vertices and self.faces:
             if self.needs_rebuild:
@@ -460,36 +517,36 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
             if self.mesh_display_list != 0:
                 if self.show_wireframe:
-                    glEnable(GL_POLYGON_OFFSET_FILL)
-                    glPolygonOffset(1.0, 1.0)
+                    GL.glEnable(GL.GL_POLYGON_OFFSET_FILL)
+                    GL.glPolygonOffset(1.0, 1.0)
 
-                glCallList(self.mesh_display_list)
+                GL.glCallList(self.mesh_display_list)
 
                 if self.show_wireframe:
-                    glDisable(GL_POLYGON_OFFSET_FILL)
-                    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-                    glDisable(GL_LIGHTING)
+                    GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
+                    GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_LINE)
+                    GL.glDisable(GL.GL_LIGHTING)
 
                     # Prevent over-exposure by using blending + thin lines
-                    glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_LINE_BIT)
-                    glEnable(GL_BLEND)
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+                    GL.glPushAttrib(GL.GL_ENABLE_BIT | GL.GL_COLOR_BUFFER_BIT | GL.GL_LINE_BIT)
+                    GL.glEnable(GL.GL_BLEND)
+                    GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
                     # Note: we use glBlendColor if we wanted, but since list overrides
                     # glColor3fv, we just lower the alpha of everything drawn.
                     # Actually standard OpenGL allows constant alpha blending:
-                    glBlendColor(1.0, 1.0, 1.0, 0.75)
-                    glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA)
+                    GL.glBlendColor(1.0, 1.0, 1.0, 0.75)
+                    GL.glBlendFunc(GL.GL_CONSTANT_ALPHA, GL.GL_ONE_MINUS_CONSTANT_ALPHA)
 
                     try:
-                        glLineWidth(0.5)
+                        GL.glLineWidth(0.5)
                     except Exception:
                         pass  # Some drivers don't support width < 1.0
 
-                    glCallList(self.mesh_display_list)
+                    GL.glCallList(self.mesh_display_list)
 
-                    glPopAttrib()
-                    glEnable(GL_LIGHTING)
-                    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+                    GL.glPopAttrib()
+                    GL.glEnable(GL.GL_LIGHTING)
+                    GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
 
         if self.show_grid:
             self._draw_grid()
@@ -497,50 +554,50 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         # Draw XYZ axis indicator
         self._draw_axis_indicator()
 
-    def _draw_background(self):
+    def _draw_background(self) -> None:
         """Draw a subtle gradient background for better depth perception."""
-        glMatrixMode(GL_PROJECTION)
-        glPushMatrix()
-        glLoadIdentity()
-        glOrtho(-1, 1, -1, 1, -1, 1)
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glPushMatrix()
+        GL.glLoadIdentity()
+        GL.glOrtho(-1, 1, -1, 1, -1, 1)
 
-        glMatrixMode(GL_MODELVIEW)
-        glPushMatrix()
-        glLoadIdentity()
+        GL.glMatrixMode(GL.GL_MODELVIEW)
+        GL.glPushMatrix()
+        GL.glLoadIdentity()
 
-        glDisable(GL_LIGHTING)
-        glDisable(GL_DEPTH_TEST)
-        glDepthMask(GL_FALSE)
+        GL.glDisable(GL.GL_LIGHTING)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glDepthMask(GL.GL_FALSE)
 
-        glBegin(GL_QUADS)
+        GL.glBegin(GL.GL_QUADS)
         # Top color (darker)
-        glColor3f(0.12, 0.12, 0.15)
-        glVertex3f(-1.0, 1.0, 0.0)
-        glVertex3f(1.0, 1.0, 0.0)
+        GL.glColor3f(0.12, 0.12, 0.15)
+        GL.glVertex3f(-1.0, 1.0, 0.0)
+        GL.glVertex3f(1.0, 1.0, 0.0)
         # Bottom color (lighter/bluish)
-        glColor3f(0.25, 0.25, 0.30)
-        glVertex3f(1.0, -1.0, 0.0)
-        glVertex3f(-1.0, -1.0, 0.0)
-        glEnd()
+        GL.glColor3f(0.25, 0.25, 0.30)
+        GL.glVertex3f(1.0, -1.0, 0.0)
+        GL.glVertex3f(-1.0, -1.0, 0.0)
+        GL.glEnd()
 
-        glDepthMask(GL_TRUE)
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_LIGHTING)
+        GL.glDepthMask(GL.GL_TRUE)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glEnable(GL.GL_LIGHTING)
 
-        glPopMatrix()
-        glMatrixMode(GL_PROJECTION)
-        glPopMatrix()
-        glMatrixMode(GL_MODELVIEW)
+        GL.glPopMatrix()
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glPopMatrix()
+        GL.glMatrixMode(GL.GL_MODELVIEW)
 
-    def _draw_grid(self):
+    def _draw_grid(self) -> None:
         """Draw a subtle floor grid to provide spatial context."""
-        glPushAttrib(GL_ALL_ATTRIB_BITS)
-        glDisable(GL_LIGHTING)
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        GL.glPushAttrib(GL.GL_ALL_ATTRIB_BITS)
+        GL.glDisable(GL.GL_LIGHTING)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
 
-        glColor4f(1.0, 1.0, 1.0, 0.08)  # Very subtle white lines
-        glLineWidth(1.0)
+        GL.glColor4f(1.0, 1.0, 1.0, 0.08)  # Very subtle white lines
+        GL.glLineWidth(1.0)
 
         grid_size = 2.0
         grid_step = 0.25
@@ -548,94 +605,94 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         # Draw on the XZ plane slightly below the model
         bottom_y = -1.0
 
-        glBegin(GL_LINES)
+        GL.glBegin(GL.GL_LINES)
         val = -grid_size
         while val <= grid_size + 0.001:
             # Lines parallel to Z
             if abs(val) < 0.01:
-                glColor4f(1.0, 0.2, 0.2, 0.15)  # X axis highlight
+                GL.glColor4f(1.0, 0.2, 0.2, 0.15)  # X axis highlight
             else:
-                glColor4f(1.0, 1.0, 1.0, 0.08)
-            glVertex3f(val, bottom_y, -grid_size)
-            glVertex3f(val, bottom_y, grid_size)
+                GL.glColor4f(1.0, 1.0, 1.0, 0.08)
+            GL.glVertex3f(val, bottom_y, -grid_size)
+            GL.glVertex3f(val, bottom_y, grid_size)
 
             # Lines parallel to X
             if abs(val) < 0.01:
-                glColor4f(0.2, 0.4, 1.0, 0.15)  # Z axis highlight
+                GL.glColor4f(0.2, 0.4, 1.0, 0.15)  # Z axis highlight
             else:
-                glColor4f(1.0, 1.0, 1.0, 0.08)
-            glVertex3f(-grid_size, bottom_y, val)
-            glVertex3f(grid_size, bottom_y, val)
+                GL.glColor4f(1.0, 1.0, 1.0, 0.08)
+            GL.glVertex3f(-grid_size, bottom_y, val)
+            GL.glVertex3f(grid_size, bottom_y, val)
 
             val += grid_step
-        glEnd()
+        GL.glEnd()
 
-        glPopAttrib()
+        GL.glPopAttrib()
 
-    def _draw_axis_indicator(self):
+    def _draw_axis_indicator(self) -> None:
         """Draw XYZ axis indicator in bottom left corner."""
-        glPushAttrib(GL_ALL_ATTRIB_BITS)
-        glPushMatrix()
+        GL.glPushAttrib(GL.GL_ALL_ATTRIB_BITS)
+        GL.glPushMatrix()
 
         # FETCH the true physical viewport so High-DPI screens don't bug out
-        current_viewport = glGetIntegerv(GL_VIEWPORT)
+        current_viewport = GL.glGetIntegerv(GL.GL_VIEWPORT)
 
         indicator_size = 80
         margin = 10
-        glViewport(margin, margin, indicator_size, indicator_size)
+        GL.glViewport(margin, margin, indicator_size, indicator_size)
 
-        glMatrixMode(GL_PROJECTION)
-        glPushMatrix()
-        glLoadIdentity()
-        glOrtho(-2, 2, -2, 2, -10, 10)
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glPushMatrix()
+        GL.glLoadIdentity()
+        GL.glOrtho(-2, 2, -2, 2, -10, 10)
 
-        glMatrixMode(GL_MODELVIEW)
-        glLoadIdentity()
+        GL.glMatrixMode(GL.GL_MODELVIEW)
+        GL.glLoadIdentity()
 
         # Apply same rotation as main model logic
         if self.camera_mode == 'orbit':
-            glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
-            glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
+            GL.glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
+            GL.glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
         else:
-            glRotatef(self.cam_pitch, 1.0, 0.0, 0.0)
-            glRotatef(self.cam_yaw, 0.0, 1.0, 0.0)
+            GL.glRotatef(self.cam_pitch, 1.0, 0.0, 0.0)
+            GL.glRotatef(self.cam_yaw, 0.0, 1.0, 0.0)
 
-        glDisable(GL_LIGHTING)
-        glDisable(GL_DEPTH_TEST)
-        glLineWidth(2.0)
+        GL.glDisable(GL.GL_LIGHTING)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glLineWidth(2.0)
 
         axis_length = 1.5
 
         # X axis (red)
-        glColor3f(1.0, 0.2, 0.2)
-        glBegin(GL_LINES)
-        glVertex3f(0, 0, 0)
-        glVertex3f(axis_length, 0, 0)
-        glEnd()
+        GL.glColor3f(1.0, 0.2, 0.2)
+        GL.glBegin(GL.GL_LINES)
+        GL.glVertex3f(0, 0, 0)
+        GL.glVertex3f(axis_length, 0, 0)
+        GL.glEnd()
 
         # Y axis (green)
-        glColor3f(0.2, 1.0, 0.2)
-        glBegin(GL_LINES)
-        glVertex3f(0, 0, 0)
-        glVertex3f(0, axis_length, 0)
-        glEnd()
+        GL.glColor3f(0.2, 1.0, 0.2)
+        GL.glBegin(GL.GL_LINES)
+        GL.glVertex3f(0, 0, 0)
+        GL.glVertex3f(0, axis_length, 0)
+        GL.glEnd()
 
         # Z axis (blue)
-        glColor3f(0.2, 0.4, 1.0)
-        glBegin(GL_LINES)
-        glVertex3f(0, 0, 0)
-        glVertex3f(0, 0, axis_length)
-        glEnd()
+        GL.glColor3f(0.2, 0.4, 1.0)
+        GL.glBegin(GL.GL_LINES)
+        GL.glVertex3f(0, 0, 0)
+        GL.glVertex3f(0, 0, axis_length)
+        GL.glEnd()
 
-        glMatrixMode(GL_PROJECTION)
-        glPopMatrix()
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glPopMatrix()
 
-        glMatrixMode(GL_MODELVIEW)
-        glPopMatrix()
-        glPopAttrib()
+        GL.glMatrixMode(GL.GL_MODELVIEW)
+        GL.glPopMatrix()
+        GL.glPopAttrib()
 
         # Safely restore the exact viewport OpenGL was using
-        glViewport(
+        GL.glViewport(
             current_viewport[0],
             current_viewport[1],
             current_viewport[2],
@@ -646,7 +703,8 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         """Check if a normalized movement key is currently held."""
         return movement_key in self.keys_pressed
 
-    def keyPressEvent(self, event):
+    @override
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         """Handle FPS movement entry using physical scan codes for layout independence."""
         movement_key = movement_key_from_event(event)
 
@@ -664,21 +722,25 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             self.keys_pressed.add(movement_key)
         super().keyPressEvent(event)
 
-    def keyReleaseEvent(self, event):
+    @override
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
         movement_key = movement_key_from_event(event)
         if movement_key is not None:
             self.keys_pressed.discard(movement_key)
         super().keyReleaseEvent(event)
 
-    def focusOutEvent(self, event):
+    @override
+    def focusOutEvent(self, event: QFocusEvent) -> None:
         self.keys_pressed.clear()
         super().focusOutEvent(event)
 
-    def mousePressEvent(self, event):
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press."""
         self.last_pos = event.pos()
 
-    def mouseMoveEvent(self, event):
+    @override
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Handle mouse drag."""
         if self.last_pos is None:
             return
@@ -697,7 +759,8 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
         self.last_pos = event.pos()
 
-    def wheelEvent(self, event):
+    @override
+    def wheelEvent(self, event: QWheelEvent) -> None:
         """Handle mouse wheel."""
         delta = event.angleDelta().y()
         if self.camera_mode == 'orbit':
@@ -720,13 +783,13 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
         self.update()
 
-    def set_auto_rotate(self, enabled: bool):
+    def set_auto_rotate(self, enabled: bool) -> None:
         """Enable/disable auto-rotation."""
         self.auto_rotate = enabled
         if enabled and self.camera_mode == 'fps':
             self.reset_view()
 
-    def _transition_to_fps(self):
+    def _transition_to_fps(self) -> None:
         """Seamlessly convert Orbit camera transformations into FPS transformations."""
         if self.camera_mode == 'fps':
             return
@@ -754,7 +817,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
         self.cam_pos = np.array([px, py, pz], dtype=float)
 
-    def _update_tick(self):
+    def _update_tick(self) -> None:
         """Update loop handles smooth movements independent of framerate UI stalls."""
         needs_update = False
 
@@ -827,7 +890,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         if needs_update:
             self.update()
 
-    def reset_view(self):
+    def reset_view(self) -> None:
         """Reset camera to default view."""
         self.camera_mode = 'orbit'
         self.rotation_x = 20.0
@@ -835,15 +898,15 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         self.zoom = -5.0
         self.update()
 
-    def toggle_wireframe(self, enabled: bool):
+    def toggle_wireframe(self, enabled: bool) -> None:
         self.show_wireframe = enabled
         self.update()
 
-    def toggle_grid(self, enabled: bool):
+    def toggle_grid(self, enabled: bool) -> None:
         self.show_grid = enabled
         self.update()
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear the mesh data and display list."""
         self.vertices = []
         self.colors = []
@@ -859,7 +922,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         self.needs_rebuild = False
         self.update()
 
-    def _discard_mesh_display_list(self, make_current: bool = True):
+    def _discard_mesh_display_list(self, make_current: bool = True) -> None:
         if self.mesh_display_list == 0:
             return
 
@@ -870,7 +933,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             if make_current and self.context() is not None:
                 self.makeCurrent()
                 made_current = True
-            glDeleteLists(display_list, 1)
+            GL.glDeleteLists(display_list, 1)
         except Exception:
             pass
         finally:
@@ -880,11 +943,12 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                 except Exception:
                     pass
 
-    def closeEvent(self, event):
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Stop updates and release the display list before context teardown."""
         self.timer.stop()
         self._discard_mesh_display_list()
-        super().closeEvent(event)
+        cast('_TypedOffscreenBase', super()).closeEvent(event)
 
 
 class ObjViewerPanel(QWidget):
@@ -892,12 +956,14 @@ class ObjViewerPanel(QWidget):
 
     clear_requested = Signal()
 
-    def __init__(self, parent=None, config_manager=None):
+    def __init__(
+        self, parent: QWidget | None = None, config_manager: ConfigManager | None = None
+    ) -> None:
         super().__init__(parent)
         self.config_manager = config_manager
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Setup UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -917,10 +983,12 @@ class ObjViewerPanel(QWidget):
             if updated:
                 self.config_manager.save()
 
-            self.viewer.show_wireframe = self.config_manager.settings.get(
-                'obj_show_wireframe', False
+            self.viewer.show_wireframe = _preserve_bool(
+                self.config_manager.settings.get('obj_show_wireframe', False)
             )
-            self.viewer.show_grid = self.config_manager.settings.get('obj_show_grid', True)
+            self.viewer.show_grid = _preserve_bool(
+                self.config_manager.settings.get('obj_show_grid', True)
+            )
         layout.addWidget(self.viewer, stretch=1)
 
         # Controls
@@ -967,26 +1035,26 @@ class ObjViewerPanel(QWidget):
         layout.addLayout(controls_layout)
         self.setLayout(layout)
 
-    def show_help(self):
+    def show_help(self) -> None:
         """Show a cleanly formatted message box with controls."""
         msg = QMessageBox(self)
         msg.setWindowTitle(tr('ui.cache.obj_viewer.camera_controls'))
         msg.setText(tr('ui.cache.obj_viewer.h3_orbit_mode_default_h3_ul_li'))
         msg.exec()
 
-    def _toggle_wireframe_and_save(self, enabled: bool):
+    def _toggle_wireframe_and_save(self, enabled: bool) -> None:
         self.viewer.toggle_wireframe(enabled)
         if self.config_manager:
             self.config_manager.settings['obj_show_wireframe'] = enabled
             self.config_manager.save()
 
-    def _toggle_grid_and_save(self, enabled: bool):
+    def _toggle_grid_and_save(self, enabled: bool) -> None:
         self.viewer.toggle_grid(enabled)
         if self.config_manager:
             self.config_manager.settings['obj_show_grid'] = enabled
             self.config_manager.save()
 
-    def load_obj(self, obj_content: str, asset_id: str = ''):
+    def load_obj(self, obj_content: str, asset_id: str = '') -> None:
         """Load OBJ file content."""
         self.viewer.load_obj_data(obj_content)
 
@@ -996,11 +1064,12 @@ class ObjViewerPanel(QWidget):
             tr('ui.cache.obj_viewer.value_verts_value_faces', value0=v_count, value1=f_count)
         )
 
-    def showEvent(self, event):
+    @override
+    def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self.viewer.update()
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear the viewer."""
         self.viewer.clear()
         self.stats_label.setText('')

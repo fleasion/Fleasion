@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from collections.abc import Callable
 
 from PySide6 import __version__ as PYSIDE_VERSION_STR
-from PySide6.QtCore import QtMsgType, qInstallMessageHandler, qVersion
+from PySide6.QtCore import QMessageLogContext, QtMsgType, qInstallMessageHandler, qVersion
 
 from .logging import log_buffer
 
@@ -16,7 +17,8 @@ _VERBOSE_ENV = 'FLEASION_QT_VERBOSE_LOGGING'
 _counts: dict[tuple[str, str, str], int] = {}
 _counts_lock = threading.Lock()
 _installed = False
-_previous_handler = None
+type QtMessageHandler = Callable[[QtMsgType, QMessageLogContext, str], None]
+_previous_handler: QtMessageHandler | None = None
 
 
 def _message_level(message_type: QtMsgType) -> str:
@@ -39,7 +41,9 @@ def _should_log(message_type: QtMsgType) -> bool:
     return os.environ.get(_VERBOSE_ENV) == '1'
 
 
-def _forward_to_previous_handler(message_type: QtMsgType, context, message: str) -> None:
+def _forward_to_previous_handler(
+    message_type: QtMsgType, context: QMessageLogContext, message: str
+) -> None:
     """Preserve existing Qt console/debugger output when diagnostics are installed."""
     if _previous_handler is not None:
         try:
@@ -59,7 +63,7 @@ def _forward_to_previous_handler(message_type: QtMsgType, context, message: str)
             pass
 
 
-def _qt_message_handler(message_type: QtMsgType, context, message: str) -> None:
+def _qt_message_handler(message_type: QtMsgType, context: QMessageLogContext, message: str) -> None:
     """Write useful Qt diagnostics while suppressing repetitive warning storms."""
     try:
         if not _should_log(message_type):

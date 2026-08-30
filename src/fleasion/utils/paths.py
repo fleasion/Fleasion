@@ -8,14 +8,16 @@ from fleasion.utils.metadata import APP_NAME
 
 # Process and proxy configuration
 if sys.platform == 'darwin':
-    ROBLOX_PROCESS = 'RobloxPlayer'
-    ROBLOX_STUDIO_PROCESS = 'RobloxStudio'
+    _roblox_process = 'RobloxPlayer'
+    _roblox_studio_process = 'RobloxStudio'
 elif sys.platform.startswith('linux'):
-    ROBLOX_PROCESS = 'sober'
-    ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
+    _roblox_process = 'sober'
+    _roblox_studio_process = 'RobloxStudioBeta.exe'
 else:
-    ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
-    ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
+    _roblox_process = 'RobloxPlayerBeta.exe'
+    _roblox_studio_process = 'RobloxStudioBeta.exe'
+ROBLOX_PROCESS = _roblox_process
+ROBLOX_STUDIO_PROCESS = _roblox_studio_process
 PROXY_TARGET_HOST = 'assetdelivery.roblox.com'
 PROXY_PORT = 443
 MACOS_PROXY_BACKEND_PORT = 58443
@@ -71,10 +73,10 @@ def _get_config_dir() -> Path:
 USER_HOME = _get_user_home()
 LOCAL_APPDATA = _get_local_appdata()
 if sys.platform == 'darwin':
-    STORAGE_DB = USER_HOME / 'Library' / 'Roblox' / 'rbx-storage.db'
-    STORAGE_DB_GDK = USER_HOME / 'Library' / 'RobloxPCGDK' / 'rbx-storage.db'
+    _storage_db = USER_HOME / 'Library' / 'Roblox' / 'rbx-storage.db'
+    _storage_db_gdk = USER_HOME / 'Library' / 'RobloxPCGDK' / 'rbx-storage.db'
 elif sys.platform.startswith('linux'):
-    STORAGE_DB = (
+    _storage_db = (
         USER_HOME
         / '.var'
         / 'app'
@@ -84,11 +86,13 @@ elif sys.platform.startswith('linux'):
         / 'appData'
         / 'rbx-storage.db'
     )
-    STORAGE_DB_GDK = STORAGE_DB
+    _storage_db_gdk = _storage_db
 else:
-    STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
+    _storage_db = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
     # Microsoft Store (GDK) version of Roblox stores its DB here
-    STORAGE_DB_GDK = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'
+    _storage_db_gdk = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'
+STORAGE_DB = _storage_db
+STORAGE_DB_GDK = _storage_db_gdk
 
 # Application directories
 CONFIG_DIR = _get_config_dir()

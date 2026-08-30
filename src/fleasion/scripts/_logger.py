@@ -12,6 +12,25 @@ from colorama import Back, Fore, Style, just_fix_windows_console
 if TYPE_CHECKING:
     from typing import ClassVar
 
+    def _format_exception_lines(
+        exception_type: type[BaseException],
+        exception: BaseException,
+        exception_traceback: TracebackType | None,
+    ) -> list[str]: ...
+else:
+
+    def _format_exception_lines(
+        exception_type: type[BaseException],
+        exception: BaseException,
+        exception_traceback: TracebackType | None,
+    ) -> list[str]:
+        return traceback.format_exception(
+            exception_type,
+            exception,
+            exception_traceback,
+            colorize=True,
+        )
+
 
 class ColorFormatter(logging.Formatter):
     """Format script log records with level-specific terminal colors."""
@@ -44,9 +63,7 @@ class ColorFormatter(logging.Formatter):
             return None
 
         return ''.join(
-            traceback.format_exception(  # pyright: ignore[reportCallIssue]
-                exception_type, exception, exception_traceback, colorize=True
-            )
+            _format_exception_lines(exception_type, exception, exception_traceback)
         ).rstrip('\n')
 
     def format(self, record: logging.LogRecord) -> str:

@@ -1,15 +1,122 @@
+from __future__ import annotations
+
 import sys
+from typing import TYPE_CHECKING, Never, TypedDict, cast
 
 import pytest
 
 from fleasion.utils import linux_proxy_helper
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
 
 pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='Linux-only proxy helper tests')
 
 
-def test_start_helper_requires_ca_cert_when_system_trust_is_required(monkeypatch, tmp_path):
-    calls = []
+class _InstallState(TypedDict, total=False):
+    ok: bool
+    kwargs: dict[str, object]
+
+
+class _CompletedInstallState(TypedDict):
+    ok: bool
+    kwargs: dict[str, object]
+
+
+class _Process:
+    @staticmethod
+    def poll() -> None:
+        return None
+
+
+def _pkexec_only(name: str) -> str | None:
+    return '/usr/bin/pkexec' if name == 'pkexec' else None
+
+
+def _pkexec_or_usr_sbin(name: str) -> str:
+    return '/usr/bin/pkexec' if name == 'pkexec' else f'/usr/sbin/{name}'
+
+
+def _pkexec_always(_name: str) -> str:
+    return '/usr/bin/pkexec'
+
+
+def _update_ca_certificates_only(name: str) -> str | None:
+    return f'/usr/sbin/{name}' if name == 'update-ca-certificates' else None
+
+
+def _which_none(_name: str) -> None:
+    return None
+
+
+def _helper_install_succeeds(**_kwargs: object) -> bool:
+    return True
+
+
+def _ca_current(_path: Path) -> bool:
+    return True
+
+
+def _ca_stale(_path: Path) -> bool:
+    return False
+
+
+def _system_ca_install_current(_path: Path) -> linux_proxy_helper.JsonObject:
+    return {'ok': True, 'stores': ['system-ca:already-current']}
+
+
+def _system_ca_install_unsupported(_path: Path) -> linux_proxy_helper.JsonObject:
+    return {'ok': False, 'error': 'no_supported_system_trust_store'}
+
+
+def _unexpected_system_ca_install(_path: Path) -> Never:
+    message = 'separate system CA prompt should not run'
+    raise AssertionError(message)
+
+
+def _ready_system_ca_ok() -> linux_proxy_helper.JsonObject:
+    return {'ok': True, 'system_ca': {'ok': True}}
+
+
+def _ready_ok() -> linux_proxy_helper.JsonObject:
+    return {'ok': True}
+
+
+def _readonly_install_failure(**_kwargs: object) -> linux_proxy_helper.JsonObject:
+    return {
+        'ok': False,
+        'error': (
+            "[Errno 30] Read-only file system: '/usr/local/libexec/fleasion-linux-proxy-helper'"
+        ),
+    }
+
+
+def _existing_nss_dbs(home: Path) -> list[Path]:
+    implementation = cast(
+        'Callable[[Path], list[Path]]',
+        vars(linux_proxy_helper)['_existing_nss_dbs'],
+    )
+    return implementation(home)
+
+
+def _install_ca_into_nss_db(
+    certutil: str, db_dir: Path, ca_cert_path: Path
+) -> linux_proxy_helper.JsonObject:
+    implementation = cast(
+        'Callable[[str, Path, Path], linux_proxy_helper.JsonObject]',
+        vars(linux_proxy_helper)['_install_ca_into_nss_db'],
+    )
+    return implementation(certutil, db_dir, ca_cert_path)
+
+
+def test_start_helper_requires_ca_cert_when_system_trust_is_required(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def fake_popen(*args: object, **_kwargs: object) -> None:
+        calls.append(args)
 
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_READY_FILE', tmp_path / 'ready.json')
@@ -19,11 +126,9 @@ def test_start_helper_requires_ca_cert_when_system_trust_is_required(monkeypatch
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+        _pkexec_only,
     )
-    monkeypatch.setattr(
-        linux_proxy_helper, '_popen_host_command', lambda *args, **kwargs: calls.append(args)
-    )
+    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', fake_popen)
 
     assert (
         linux_proxy_helper.start_helper({'apis.roblox.com'}, require_system_ca=True, timeout=0.01)
@@ -32,20 +137,18 @@ def test_start_helper_requires_ca_cert_when_system_trust_is_required(monkeypatch
     assert calls == []
 
 
-def test_start_helper_passes_required_system_ca_flag(monkeypatch, tmp_path):
-    commands = []
-    popen_kwargs = []
+def test_start_helper_passes_required_system_ca_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
+    popen_kwargs: list[dict[str, object]] = []
     ca = tmp_path / 'ca.crt'
     ca.write_text('ca', encoding='utf-8')
 
-    class Process:
-        def poll(self):
-            return None
-
-    def fake_popen(cmd, **kwargs):
+    def fake_popen(cmd: list[str], **kwargs: object) -> _Process:
         commands.append(cmd)
         popen_kwargs.append(kwargs)
-        return Process()
+        return _Process()
 
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_READY_FILE', tmp_path / 'ready.json')
@@ -55,26 +158,26 @@ def test_start_helper_passes_required_system_ca_flag(monkeypatch, tmp_path):
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+        _pkexec_only,
     )
     monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
     monkeypatch.setattr(
-        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+        linux_proxy_helper, 'ensure_privileged_helper_installed', _helper_install_succeeds
     )
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_store_supported', lambda: True)
-    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', lambda _path: True)
-    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_needs_install', lambda _path: False)
+    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', _ca_current)
+    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_needs_install', _ca_stale)
     monkeypatch.setattr(
         linux_proxy_helper,
         '_install_ca_into_linux_system_store',
-        lambda _path: {'ok': True, 'stores': ['system-ca:already-current']},
+        _system_ca_install_current,
     )
     monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', fake_popen)
     monkeypatch.setattr(
         linux_proxy_helper,
         '_read_ready',
-        lambda: {'ok': True, 'system_ca': {'ok': True}},
+        _ready_system_ca_ok,
     )
 
     assert (
@@ -99,15 +202,21 @@ def test_start_helper_passes_required_system_ca_flag(monkeypatch, tmp_path):
     assert 'start_new_session' not in popen_kwargs[0]
 
 
-def test_start_helper_does_not_reinstall_system_ca_when_current(monkeypatch, tmp_path):
-    commands = []
-    install_calls = []
+def test_start_helper_does_not_reinstall_system_ca_when_current(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
+    install_calls: list[Path] = []
     ca = tmp_path / 'ca.crt'
     ca.write_text('ca', encoding='utf-8')
 
-    class Process:
-        def poll(self):
-            return None
+    def fake_system_ca_install(path: Path) -> linux_proxy_helper.JsonObject:
+        install_calls.append(path)
+        return {'ok': True}
+
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _Process:
+        commands.append(cmd)
+        return _Process()
 
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_READY_FILE', tmp_path / 'ready.json')
@@ -117,28 +226,26 @@ def test_start_helper_does_not_reinstall_system_ca_when_current(monkeypatch, tmp
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+        _pkexec_only,
     )
     monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
     monkeypatch.setattr(
-        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+        linux_proxy_helper, 'ensure_privileged_helper_installed', _helper_install_succeeds
     )
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_store_supported', lambda: True)
-    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', lambda _path: True)
+    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', _ca_current)
     monkeypatch.setattr(
         linux_proxy_helper,
         '_install_ca_into_linux_system_store',
-        lambda _path: install_calls.append(_path) or {'ok': True},
+        fake_system_ca_install,
     )
     monkeypatch.setattr(
         linux_proxy_helper,
         '_popen_host_command',
-        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+        fake_popen,
     )
-    monkeypatch.setattr(
-        linux_proxy_helper, '_read_ready', lambda: {'ok': True, 'system_ca': {'ok': True}}
-    )
+    monkeypatch.setattr(linux_proxy_helper, '_read_ready', _ready_system_ca_ok)
 
     assert (
         linux_proxy_helper.start_helper(
@@ -154,17 +261,15 @@ def test_start_helper_does_not_reinstall_system_ca_when_current(monkeypatch, tmp
     assert commands
 
 
-def test_start_helper_combines_helper_update_with_missing_system_ca(monkeypatch, tmp_path):
-    commands = []
-    installed = {'ok': False}
+def test_start_helper_combines_helper_update_with_missing_system_ca(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
+    installed: _InstallState = {'ok': False}
     ca = tmp_path / 'ca.crt'
     ca.write_text('ca', encoding='utf-8')
 
-    class Process:
-        def poll(self):
-            return None
-
-    def fake_install(**kwargs):
+    def fake_install(**kwargs: object) -> linux_proxy_helper.JsonObject:
         installed['ok'] = True
         installed['kwargs'] = kwargs
         return {
@@ -174,6 +279,10 @@ def test_start_helper_combines_helper_update_with_missing_system_ca(monkeypatch,
             'system_ca': {'ok': True, 'stores': ['update-ca-certificates']},
         }
 
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _Process:
+        commands.append(cmd)
+        return _Process()
+
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_READY_FILE', tmp_path / 'ready.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
@@ -182,7 +291,7 @@ def test_start_helper_combines_helper_update_with_missing_system_ca(monkeypatch,
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+        _pkexec_only,
     )
     monkeypatch.setattr(linux_proxy_helper, '_is_trusted_installed_helper', lambda: installed['ok'])
     monkeypatch.setattr(linux_proxy_helper, '_installed_policy_is_current', lambda: installed['ok'])
@@ -197,24 +306,18 @@ def test_start_helper_combines_helper_update_with_missing_system_ca(monkeypatch,
     monkeypatch.setattr(
         linux_proxy_helper,
         '_install_ca_into_linux_system_store',
-        lambda _path: (_ for _ in ()).throw(
-            AssertionError('separate system CA prompt should not run')
-        ),
+        _unexpected_system_ca_install,
     )
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
     monkeypatch.setattr(
         linux_proxy_helper,
         '_popen_host_command',
-        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+        fake_popen,
     )
-    monkeypatch.setattr(
-        linux_proxy_helper, '_read_ready', lambda: {'ok': True, 'system_ca': {'ok': True}}
-    )
+    monkeypatch.setattr(linux_proxy_helper, '_read_ready', _ready_system_ca_ok)
 
-    def current_after_helper(_path):
-        if installed['ok']:
-            return True
-        return False
+    def current_after_helper(_path: Path) -> bool:
+        return installed['ok']
 
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', current_after_helper)
 
@@ -228,18 +331,23 @@ def test_start_helper_combines_helper_update_with_missing_system_ca(monkeypatch,
         is True
     )
 
-    assert installed['kwargs'] == {'enable_promptless': True, 'ca_cert_path': ca}
+    assert cast('_CompletedInstallState', installed)['kwargs'] == {
+        'enable_promptless': True,
+        'ca_cert_path': ca,
+    }
     assert commands[0][1] == str(linux_proxy_helper.INSTALLED_HELPER_PATH)
 
 
-def test_start_helper_does_not_require_system_ca_when_store_is_unsupported(monkeypatch, tmp_path):
-    commands = []
+def test_start_helper_does_not_require_system_ca_when_store_is_unsupported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
     ca = tmp_path / 'ca.crt'
     ca.write_text('ca', encoding='utf-8')
 
-    class Process:
-        def poll(self):
-            return None
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _Process:
+        commands.append(cmd)
+        return _Process()
 
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_READY_FILE', tmp_path / 'ready.json')
@@ -249,18 +357,18 @@ def test_start_helper_does_not_require_system_ca_when_store_is_unsupported(monke
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+        _pkexec_only,
     )
     monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
     monkeypatch.setattr(
-        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+        linux_proxy_helper, 'ensure_privileged_helper_installed', _helper_install_succeeds
     )
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_store_supported', lambda: False)
     monkeypatch.setattr(
         linux_proxy_helper,
         '_popen_host_command',
-        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+        fake_popen,
     )
     monkeypatch.setattr(
         linux_proxy_helper,
@@ -287,15 +395,15 @@ def test_start_helper_does_not_require_system_ca_when_store_is_unsupported(monke
 
 
 def test_start_helper_continues_when_privileged_system_ca_install_is_unsupported(
-    monkeypatch, tmp_path
-):
-    commands = []
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
     ca = tmp_path / 'ca.crt'
     ca.write_text('ca', encoding='utf-8')
 
-    class Process:
-        def poll(self):
-            return None
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _Process:
+        commands.append(cmd)
+        return _Process()
 
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_READY_FILE', tmp_path / 'ready.json')
@@ -305,24 +413,24 @@ def test_start_helper_continues_when_privileged_system_ca_install_is_unsupported
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else f'/usr/sbin/{name}',
+        _pkexec_or_usr_sbin,
     )
     monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
     monkeypatch.setattr(
-        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+        linux_proxy_helper, 'ensure_privileged_helper_installed', _helper_install_succeeds
     )
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_store_supported', lambda: True)
-    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', lambda _path: False)
+    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', _ca_stale)
     monkeypatch.setattr(
         linux_proxy_helper,
         '_install_ca_into_linux_system_store',
-        lambda _path: {'ok': False, 'error': 'no_supported_system_trust_store'},
+        _system_ca_install_unsupported,
     )
     monkeypatch.setattr(
         linux_proxy_helper,
         '_popen_host_command',
-        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+        fake_popen,
     )
     monkeypatch.setattr(
         linux_proxy_helper,
@@ -348,15 +456,13 @@ def test_start_helper_continues_when_privileged_system_ca_install_is_unsupported
     assert '--require-system-ca' not in commands[0]
 
 
-def test_start_helper_installs_persistent_helper_before_launch(monkeypatch, tmp_path):
-    commands = []
-    installed = {'ok': False}
+def test_start_helper_installs_persistent_helper_before_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
+    installed: _InstallState = {'ok': False}
 
-    class Process:
-        def poll(self):
-            return None
-
-    def fake_install(**kwargs):
+    def fake_install(**kwargs: object) -> linux_proxy_helper.JsonObject:
         installed['ok'] = True
         installed['kwargs'] = kwargs
         return {
@@ -364,6 +470,10 @@ def test_start_helper_installs_persistent_helper_before_launch(monkeypatch, tmp_
             'helper': str(linux_proxy_helper.INSTALLED_HELPER_PATH),
             'promptless_rule': None,
         }
+
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _Process:
+        commands.append(cmd)
+        return _Process()
 
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_READY_FILE', tmp_path / 'ready.json')
@@ -373,7 +483,7 @@ def test_start_helper_installs_persistent_helper_before_launch(monkeypatch, tmp_
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+        _pkexec_only,
     )
     monkeypatch.setattr(linux_proxy_helper, '_is_trusted_installed_helper', lambda: installed['ok'])
     monkeypatch.setattr(linux_proxy_helper, '_installed_policy_is_current', lambda: installed['ok'])
@@ -388,24 +498,24 @@ def test_start_helper_installs_persistent_helper_before_launch(monkeypatch, tmp_
     monkeypatch.setattr(
         linux_proxy_helper,
         '_popen_host_command',
-        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+        fake_popen,
     )
-    monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: {'ok': True})
+    monkeypatch.setattr(linux_proxy_helper, '_read_ready', _ready_ok)
 
     assert linux_proxy_helper.start_helper({'gamejoin.roblox.com'}, timeout=1.0) is True
 
-    assert installed['kwargs'] == {'enable_promptless': True}
+    assert cast('_CompletedInstallState', installed)['kwargs'] == {'enable_promptless': True}
     assert commands[0][1] == str(linux_proxy_helper.INSTALLED_HELPER_PATH)
 
 
 def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_only(
-    monkeypatch, tmp_path
-):
-    commands = []
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
 
-    class Process:
-        def poll(self):
-            return None
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _Process:
+        commands.append(cmd)
+        return _Process()
 
     monkeypatch.setattr(linux_proxy_helper, '_force_source_helper_for_session', False)
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
@@ -416,7 +526,7 @@ def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_on
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+        _pkexec_only,
     )
     monkeypatch.setattr(linux_proxy_helper, '_is_trusted_installed_helper', lambda: False)
     monkeypatch.setattr(linux_proxy_helper, '_installed_policy_is_current', lambda: False)
@@ -427,10 +537,7 @@ def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_on
     monkeypatch.setattr(
         linux_proxy_helper,
         'install_privileged_helper',
-        lambda **_kwargs: {
-            'ok': False,
-            'error': "[Errno 30] Read-only file system: '/usr/local/libexec/fleasion-linux-proxy-helper'",
-        },
+        _readonly_install_failure,
     )
     monkeypatch.setattr(
         linux_proxy_helper, '_source_helper_command', lambda: ['/current/fleasion-helper']
@@ -439,9 +546,9 @@ def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_on
     monkeypatch.setattr(
         linux_proxy_helper,
         '_popen_host_command',
-        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+        fake_popen,
     )
-    monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: {'ok': True})
+    monkeypatch.setattr(linux_proxy_helper, '_read_ready', _ready_ok)
 
     assert linux_proxy_helper.start_helper({'gamejoin.roblox.com'}, timeout=1.0) is True
 
@@ -449,14 +556,18 @@ def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_on
 
 
 def test_start_helper_skips_persistent_install_prompt_when_install_path_mount_is_read_only(
-    monkeypatch, tmp_path
-):
-    commands = []
-    install_calls = []
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
+    install_calls: list[dict[str, object]] = []
 
-    class Process:
-        def poll(self):
-            return None
+    def fake_install(**kwargs: object) -> linux_proxy_helper.JsonObject:
+        install_calls.append(kwargs)
+        return {'ok': True}
+
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _Process:
+        commands.append(cmd)
+        return _Process()
 
     monkeypatch.setattr(linux_proxy_helper, '_force_source_helper_for_session', False)
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
@@ -467,7 +578,7 @@ def test_start_helper_skips_persistent_install_prompt_when_install_path_mount_is
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+        _pkexec_only,
     )
     monkeypatch.setattr(linux_proxy_helper, '_is_trusted_installed_helper', lambda: False)
     monkeypatch.setattr(linux_proxy_helper, '_installed_policy_is_current', lambda: False)
@@ -478,7 +589,7 @@ def test_start_helper_skips_persistent_install_prompt_when_install_path_mount_is
     monkeypatch.setattr(
         linux_proxy_helper,
         'install_privileged_helper',
-        lambda **kwargs: install_calls.append(kwargs) or {'ok': True},
+        fake_install,
     )
     monkeypatch.setattr(
         linux_proxy_helper, '_source_helper_command', lambda: ['/current/fleasion-helper']
@@ -487,9 +598,9 @@ def test_start_helper_skips_persistent_install_prompt_when_install_path_mount_is
     monkeypatch.setattr(
         linux_proxy_helper,
         '_popen_host_command',
-        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+        fake_popen,
     )
-    monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: {'ok': True})
+    monkeypatch.setattr(linux_proxy_helper, '_read_ready', _ready_ok)
 
     assert linux_proxy_helper.start_helper({'gamejoin.roblox.com'}, timeout=1.0) is True
 
@@ -497,17 +608,18 @@ def test_start_helper_skips_persistent_install_prompt_when_install_path_mount_is
     assert commands[0][:2] == ['/usr/bin/pkexec', '/current/fleasion-helper']
 
 
-def test_start_helper_records_read_only_hosts_ready_failure(monkeypatch, tmp_path):
-    class Process:
-        def poll(self):
-            return None
-
-    ready = {
+def test_start_helper_records_read_only_hosts_ready_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ready: linux_proxy_helper.JsonObject = {
         'ok': False,
         'code': 'linux_hosts_read_only',
         'error': "[Errno 30] Read-only file system: '/etc/hosts'",
         'hosts': ['assetdelivery.roblox.com', 'gamejoin.roblox.com'],
     }
+
+    def fake_popen(*_args: object, **_kwargs: object) -> _Process:
+        return _Process()
 
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_READY_FILE', tmp_path / 'ready.json')
@@ -517,22 +629,22 @@ def test_start_helper_records_read_only_hosts_ready_failure(monkeypatch, tmp_pat
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+        _pkexec_only,
     )
     monkeypatch.setattr(
-        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+        linux_proxy_helper, 'ensure_privileged_helper_installed', _helper_install_succeeds
     )
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(
-        linux_proxy_helper, '_popen_host_command', lambda *_args, **_kwargs: Process()
-    )
+    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', fake_popen)
     monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: ready)
 
     assert linux_proxy_helper.start_helper({'gamejoin.roblox.com'}, timeout=1.0) is False
     assert linux_proxy_helper.last_start_error_details() == ready
 
 
-def test_update_helper_hosts_writes_atomic_hosts_request(monkeypatch, tmp_path):
+def test_update_helper_hosts_writes_atomic_hosts_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     hosts_file = tmp_path / 'hosts.json'
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', hosts_file)
@@ -547,10 +659,12 @@ def test_update_helper_hosts_writes_atomic_hosts_request(monkeypatch, tmp_path):
     )
 
 
-def test_cleanup_hosts_with_pkexec_runs_one_shot_root_child(monkeypatch):
-    commands = []
+def test_cleanup_hosts_with_pkexec_runs_one_shot_root_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
 
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda _name: '/usr/bin/pkexec')
+    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', _pkexec_always)
     monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
 
     class Result:
@@ -558,17 +672,21 @@ def test_cleanup_hosts_with_pkexec_runs_one_shot_root_child(monkeypatch):
         stdout = ''
         stderr = ''
 
+    def fake_run(command: list[str], **_kwargs: object) -> Result:
+        commands.append(command)
+        return Result()
+
     monkeypatch.setattr(
         linux_proxy_helper,
         '_run_host_command',
-        lambda command, **_kwargs: commands.append(command) or Result(),
+        fake_run,
     )
 
     assert linux_proxy_helper.cleanup_hosts_with_pkexec()
     assert commands == [['/usr/bin/pkexec', '/opt/fleasion-helper', '--cleanup-hosts']]
 
 
-def test_existing_nss_dbs_finds_shared_and_firefox_profiles(tmp_path):
+def test_existing_nss_dbs_finds_shared_and_firefox_profiles(tmp_path: Path) -> None:
     home = tmp_path / 'home'
     shared = home / '.pki' / 'nssdb'
     shared.mkdir(parents=True)
@@ -578,25 +696,27 @@ def test_existing_nss_dbs_finds_shared_and_firefox_profiles(tmp_path):
     empty_profile = home / '.mozilla' / 'firefox' / 'empty.default'
     empty_profile.mkdir(parents=True)
 
-    assert set(linux_proxy_helper._existing_nss_dbs(home)) == {shared, firefox}
+    assert set(_existing_nss_dbs(home)) == {shared, firefox}
 
 
-def test_install_ca_into_nss_db_replaces_then_adds(monkeypatch, tmp_path):
-    calls = []
+def test_install_ca_into_nss_db_replaces_then_adds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
 
-    def fake_run(args, **kwargs):
+    class Result:
+        returncode = 0
+        stdout = ''
+        stderr = ''
+
+    def fake_run(args: list[str], **kwargs: object) -> Result:
         calls.append((args, kwargs))
-
-        class Result:
-            returncode = 0
-            stdout = ''
-            stderr = ''
 
         return Result()
 
     monkeypatch.setattr(linux_proxy_helper.subprocess, 'run', fake_run)
 
-    result = linux_proxy_helper._install_ca_into_nss_db(
+    result = _install_ca_into_nss_db(
         '/usr/bin/certutil',
         tmp_path / 'nssdb',
         tmp_path / 'ca.crt',
@@ -624,27 +744,29 @@ def test_install_ca_into_nss_db_replaces_then_adds(monkeypatch, tmp_path):
     ]
 
 
-def test_install_ca_into_nss_db_skips_when_already_current(monkeypatch, tmp_path):
-    calls = []
+def test_install_ca_into_nss_db_skips_when_already_current(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
     ca = tmp_path / 'ca.crt'
     ca.write_text(
         '-----BEGIN CERTIFICATE-----\ncurrent\n-----END CERTIFICATE-----\n',
         encoding='utf-8',
     )
 
-    def fake_run(args, **kwargs):
-        calls.append((args, kwargs))
+    class Result:
+        returncode = 0
+        stdout = '-----BEGIN CERTIFICATE-----\ncurrent\n-----END CERTIFICATE-----\n'
+        stderr = ''
 
-        class Result:
-            returncode = 0
-            stdout = '-----BEGIN CERTIFICATE-----\ncurrent\n-----END CERTIFICATE-----\n'
-            stderr = ''
+    def fake_run(args: list[str], **kwargs: object) -> Result:
+        calls.append((args, kwargs))
 
         return Result()
 
     monkeypatch.setattr(linux_proxy_helper.subprocess, 'run', fake_run)
 
-    result = linux_proxy_helper._install_ca_into_nss_db(
+    result = _install_ca_into_nss_db(
         '/usr/bin/certutil',
         tmp_path / 'nssdb',
         ca,
@@ -661,7 +783,9 @@ def test_install_ca_into_nss_db_skips_when_already_current(monkeypatch, tmp_path
     ]
 
 
-def test_linux_system_ca_needs_install_false_when_current(monkeypatch, tmp_path):
+def test_linux_system_ca_needs_install_false_when_current(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     ca = tmp_path / 'ca.crt'
     ca.write_bytes(b'current')
     ca_dir = tmp_path / 'system-ca'
@@ -671,13 +795,15 @@ def test_linux_system_ca_needs_install_false_when_current(monkeypatch, tmp_path)
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: f'/usr/sbin/{name}' if name == 'update-ca-certificates' else None,
+        _update_ca_certificates_only,
     )
 
     assert linux_proxy_helper.linux_system_ca_needs_install(ca) is False
 
 
-def test_linux_system_ca_needs_install_true_when_stale(monkeypatch, tmp_path):
+def test_linux_system_ca_needs_install_true_when_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     ca = tmp_path / 'ca.crt'
     ca.write_bytes(b'current')
     ca_dir = tmp_path / 'system-ca'
@@ -687,19 +813,21 @@ def test_linux_system_ca_needs_install_true_when_stale(monkeypatch, tmp_path):
     monkeypatch.setattr(
         linux_proxy_helper.shutil,
         'which',
-        lambda name: f'/usr/sbin/{name}' if name == 'update-ca-certificates' else None,
+        _update_ca_certificates_only,
     )
 
     assert linux_proxy_helper.linux_system_ca_needs_install(ca) is True
 
 
-def test_linux_system_ca_needs_install_false_when_store_unsupported(monkeypatch, tmp_path):
+def test_linux_system_ca_needs_install_false_when_store_unsupported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     ca = tmp_path / 'ca.crt'
     ca.write_bytes(b'current')
     ca_dir = tmp_path / 'system-ca'
     ca_dir.mkdir()
     (ca_dir / linux_proxy_helper.SYSTEM_CA_NAME).write_bytes(b'old')
     monkeypatch.setattr(linux_proxy_helper, 'SYSTEM_CA_DIRS', (ca_dir,))
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda _name: None)
+    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', _which_none)
 
     assert linux_proxy_helper.linux_system_ca_needs_install(ca) is False

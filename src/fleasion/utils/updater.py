@@ -1,7 +1,6 @@
 """Qt integration for the GitHub update resolver."""
 
 from __future__ import annotations
-from ..localization import tr
 
 import threading
 import webbrowser
@@ -10,6 +9,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
+from ..localization import tr
 from .metadata import APP_REPO, APP_VERSION
 from .update_resolver import UpdateResolver
 

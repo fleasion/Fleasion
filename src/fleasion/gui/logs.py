@@ -1,11 +1,19 @@
 """Logs window."""
 
-from ..localization import tr
-
 import sys
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QFont,
+    QFontDatabase,
+    QKeySequence,
+    QShortcut,
+    QShowEvent,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -17,6 +25,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..localization import tr
 from ..utils import LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
 from ..utils.macos_proxy_helper import HELPER_LOG_DIR
 
@@ -24,7 +33,7 @@ from ..utils.macos_proxy_helper import HELPER_LOG_DIR
 class LogsWindow(QDialog):
     """Logs viewer window."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowTitle(tr('ui.gui.logs.logs'))
@@ -41,13 +50,13 @@ class LogsWindow(QDialog):
         self._set_icon()
         self._start_updates()
 
-    def _set_icon(self):
+    def _set_icon(self) -> None:
         if icon_path := get_icon_path():
             from PySide6.QtGui import QIcon
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -112,24 +121,22 @@ class LogsWindow(QDialog):
         esc = QShortcut(QKeySequence('Escape'), self._search_input)
         esc.activated.connect(self._clear_search)
 
-    def _get_monospace_font(self):
-        from PySide6.QtGui import QFontDatabase
-
+    def _get_monospace_font(self) -> QFont:
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setPointSize(10)
         return font
 
-    def _focus_search(self):
+    def _focus_search(self) -> None:
         self._search_input.setFocus()
         self._search_input.selectAll()
 
-    def _clear_search(self):
+    def _clear_search(self) -> None:
         self._search_input.clear()
         self.text_edit.setFocus()
 
-    def _on_search(self, text: str):
+    def _on_search(self, text: str) -> None:
         """Highlight all occurrences of the search text."""
-        extra_selections = []
+        extra_selections: list[QTextEdit.ExtraSelection] = []
 
         if text:
             highlight_fmt = QTextCharFormat()
@@ -154,7 +161,7 @@ class LogsWindow(QDialog):
 
         self.text_edit.setExtraSelections(extra_selections)
 
-    def _start_updates(self):
+    def _start_updates(self) -> None:
         self.timer = QTimer()
         self.timer.timeout.connect(self._update_logs)
         self.timer.start(250)
@@ -164,7 +171,7 @@ class LogsWindow(QDialog):
         self.time_timer.timeout.connect(self._refresh_time_label)
         self.time_timer.start(1000)
 
-    def showEvent(self, a0):
+    def showEvent(self, a0: QShowEvent) -> None:
         if not self.timer.isActive():
             self.timer.start(250)
         if not self.time_timer.isActive():
@@ -174,7 +181,7 @@ class LogsWindow(QDialog):
         self._refresh_time_label()
         super().showEvent(a0)
 
-    def _update_logs(self):
+    def _update_logs(self) -> None:
         logs = log_buffer.get_all()
         count = len(logs)
         if count != self._last_count:
@@ -197,16 +204,16 @@ class LogsWindow(QDialog):
             if self._search_input.text():
                 self._on_search(self._search_input.text())
 
-    def _copy_all(self):
+    def _copy_all(self) -> None:
         QApplication.clipboard().setText(self.text_edit.toPlainText())
 
-    def _refresh_time_label(self):
+    def _refresh_time_label(self) -> None:
         total = time_tracker.get_total_seconds()
         self.time_label.setText(
             tr('ui.gui.logs.time_wasted_value', value0=time_tracker.format_duration(total))
         )
 
-    def closeEvent(self, a0):
+    def closeEvent(self, a0: QCloseEvent) -> None:
         self.timer.stop()
         self.time_timer.stop()
         super().closeEvent(a0)

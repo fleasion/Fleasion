@@ -4,12 +4,27 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING
 
 from .paths import CONFIG_DIR, ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS
 
 ROBLOX_DIRS_FILE = CONFIG_DIR / 'roblox_dirs.json'
+
+
+if TYPE_CHECKING:
+
+    def _object_dict(value: object) -> dict[str, object] | None: ...
+
+    def _object_list(value: object) -> list[object] | None: ...
+else:
+
+    def _object_dict(value: object) -> dict[str, object] | None:
+        return value if isinstance(value, dict) else None
+
+    def _object_list(value: object) -> list[object] | None:
+        return value if isinstance(value, list) else None
 
 
 def _normalise_roblox_dir(value: str | Path) -> Path | None:
@@ -101,18 +116,19 @@ def load_saved_roblox_dirs() -> list[Path]:
 
     try:
         with ROBLOX_DIRS_FILE.open('r', encoding='utf-8') as f:
-            payload = json.load(f)
+            payload_value: object = json.load(f)
+            payload = _object_dict(payload_value)
     except json.JSONDecodeError, OSError:
         return []
 
-    raw_dirs = payload.get('roblox_dirs', []) if isinstance(payload, dict) else []
-    if not isinstance(raw_dirs, list):
+    raw_dirs = _object_list(payload.get('roblox_dirs', [])) if payload is not None else []
+    if raw_dirs is None:
         return []
 
     loaded: list[Path] = []
     seen: set[str] = set()
     for raw in raw_dirs:
-        path = _normalise_roblox_dir(raw)
+        path = _normalise_roblox_dir(raw) if isinstance(raw, str | Path) else None
         if path is None:
             continue
         key = str(path).lower()

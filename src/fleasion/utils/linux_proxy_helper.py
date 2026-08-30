@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, BinaryIO, Literal, TypedDict, overload
 
 from .logging import log_buffer
 from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, PROXY_PORT
@@ -34,11 +35,48 @@ POLKIT_POLICY_PATH = Path('/usr/share/polkit-1/actions') / f'{POLKIT_ACTION_NAME
 LEGACY_POLKIT_POLICY_PATH = (
     Path('/usr/local/share/polkit-1/actions') / f'{POLKIT_ACTION_NAMESPACE}.policy'
 )
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
+
+
+class HelperMetadata(TypedDict):
+    metadata_version: int
+    source_sha256: str
+    source_helper_needs_dispatch_flag: bool
+
+
+class InstallHelperKwargs(TypedDict, total=False):
+    enable_promptless: bool
+    ca_cert_path: Path
+
+
+if TYPE_CHECKING:
+
+    def _json_object(value: object) -> JsonObject | None: ...
+
+    def _string_list(value: object) -> list[str]: ...
+
+    def _json_values(value: list[JsonObject]) -> list[JsonValue]: ...
+else:
+
+    def _json_object(value: object) -> JsonObject | None:
+        return value if isinstance(value, dict) else None
+
+    def _string_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, str)]
+
+    def _json_values(value: list[JsonObject]) -> list[JsonValue]:
+        return value
+
+
 SYSTEM_CA_DIRS = (
     Path('/usr/local/share/ca-certificates'),
     Path('/etc/pki/ca-trust/source/anchors'),
 )
-_last_start_error_details: dict = {}
+_last_start_error_details: JsonObject = {}
 _force_source_helper_for_session = False
 _PEM_CERT_BLOCK_RE = re.compile(
     r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
@@ -72,12 +110,61 @@ def _host_subprocess_env() -> dict[str, str]:
     return env
 
 
-def _run_host_command(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, env=_host_subprocess_env(), **kwargs)
+@overload
+def _run_host_command(
+    cmd: list[str],
+    *,
+    capture_output: bool = False,
+    text: Literal[True],
+    encoding: str,
+    errors: str,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]: ...
 
 
-def _popen_host_command(cmd: list[str], **kwargs) -> subprocess.Popen:
-    return subprocess.Popen(cmd, env=_host_subprocess_env(), **kwargs)
+@overload
+def _run_host_command(
+    cmd: list[str],
+    *,
+    capture_output: bool = False,
+    text: Literal[False] = False,
+    encoding: None = None,
+    errors: None = None,
+    timeout: float,
+) -> subprocess.CompletedProcess[bytes]: ...
+
+
+def _run_host_command(
+    cmd: list[str],
+    *,
+    capture_output: bool = False,
+    text: bool = False,
+    encoding: str | None = None,
+    errors: str | None = None,
+    timeout: float,
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    if text:
+        return subprocess.run(
+            cmd,
+            env=_host_subprocess_env(),
+            capture_output=capture_output,
+            text=True,
+            encoding=encoding,
+            errors=errors,
+            timeout=timeout,
+        )
+    return subprocess.run(
+        cmd,
+        env=_host_subprocess_env(),
+        capture_output=capture_output,
+        timeout=timeout,
+    )
+
+
+def _popen_host_command(
+    cmd: list[str], *, stdout: BinaryIO, stderr: BinaryIO
+) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(cmd, env=_host_subprocess_env(), stdout=stdout, stderr=stderr)
 
 
 def _source_helper_path() -> Path:
@@ -147,7 +234,7 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _current_helper_metadata() -> dict | None:
+def _current_helper_metadata() -> HelperMetadata | None:
     try:
         source, needs_helper_flag = _installable_helper_source()
         return {
@@ -162,15 +249,15 @@ def _current_helper_metadata() -> dict | None:
 
 def _installed_helper_metadata(
     path: Path = INSTALLED_HELPER_METADATA_PATH,
-) -> dict | None:
+) -> JsonObject | None:
     try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
+        payload: object = json.loads(path.read_text(encoding='utf-8'))
     except OSError:
         return None
     except json.JSONDecodeError as exc:
         log_buffer.log('ProxyHelper', f'Installed Linux helper metadata is invalid: {exc}')
         return None
-    return payload if isinstance(payload, dict) else None
+    return _json_object(payload)
 
 
 def _installed_helper_metadata_is_current() -> bool:
@@ -214,18 +301,19 @@ def _source_helper_command() -> list[str]:
     return [sys.executable, str(helper_path)]
 
 
-def _read_ready() -> dict | None:
+def _read_ready() -> JsonObject | None:
     try:
-        return json.loads(HELPER_READY_FILE.read_text(encoding='utf-8'))
+        payload: object = json.loads(HELPER_READY_FILE.read_text(encoding='utf-8'))
+        return _json_object(payload)
     except Exception:
         return None
 
 
-def last_start_error_details() -> dict:
+def last_start_error_details() -> JsonObject:
     return dict(_last_start_error_details)
 
 
-def _set_last_start_error(details: dict | None = None, *, error: str | None = None) -> None:
+def _set_last_start_error(details: JsonObject | None = None, *, error: str | None = None) -> None:
     _last_start_error_details.clear()
     if details:
         _last_start_error_details.update(details)
@@ -268,7 +356,7 @@ def install_privileged_helper(
     enable_promptless: bool = False,
     timeout: float = 120.0,
     ca_cert_path: Path | None = None,
-) -> dict:
+) -> JsonObject:
     """Install the root-owned helper and Polkit policy with one admin approval."""
     pkexec = shutil.which('pkexec')
     if not pkexec:
@@ -302,8 +390,10 @@ def install_privileged_helper(
         return {'ok': False, 'error': str(exc)}
 
     output = (result.stdout or '').strip()
+    details: JsonObject
     try:
-        details = json.loads(output) if output else {}
+        details_payload: object = json.loads(output) if output else {}
+        details = _json_object(details_payload) or {}
     except json.JSONDecodeError:
         details = {'output': output}
     details.setdefault('ok', result.returncode == 0)
@@ -344,7 +434,7 @@ def ensure_privileged_helper_installed(
             'ProxyHelper',
             'Installing Fleasion Linux privileged helper for persistent proxy permissions',
         )
-    install_kwargs = {'enable_promptless': enable_promptless}
+    install_kwargs: InstallHelperKwargs = {'enable_promptless': enable_promptless}
     if ca_cert_path is not None:
         install_kwargs['ca_cert_path'] = ca_cert_path
     details = install_privileged_helper(**install_kwargs)
@@ -382,10 +472,10 @@ def ensure_privileged_helper_installed(
         )
         return False
 
-    system_ca = details.get('system_ca') if isinstance(details.get('system_ca'), dict) else None
+    system_ca = _json_object(details.get('system_ca'))
     if system_ca and system_ca.get('ok'):
-        stores = ', '.join(system_ca.get('stores') or [])
-        store_names = system_ca.get('stores') or []
+        store_names = _string_list(system_ca.get('stores'))
+        stores = ', '.join(store_names)
         if store_names and all(str(store).endswith(':already-current') for store in store_names):
             log_buffer.log(
                 'Certificate',
@@ -541,7 +631,8 @@ def start_helper(
         ready = _read_ready()
         if ready:
             if ready.get('ok'):
-                if enforce_system_ca and not (ready.get('system_ca') or {}).get('ok'):
+                ready_system_ca = _json_object(ready.get('system_ca'))
+                if enforce_system_ca and not (ready_system_ca or {}).get('ok'):
                     _set_last_start_error(ready, error='system CA trust was not confirmed')
                     log_buffer.log(
                         'ProxyHelper',
@@ -747,7 +838,7 @@ def _nss_db_fleasion_ca_status(certutil: str, db_dir: Path, ca_cert_path: Path) 
     return 'current' if stored_pem == ca_pem else 'stale'
 
 
-def _install_ca_into_nss_db(certutil: str, db_dir: Path, ca_cert_path: Path) -> dict:
+def _install_ca_into_nss_db(certutil: str, db_dir: Path, ca_cert_path: Path) -> JsonObject:
     db_arg = f'sql:{db_dir}'
     status = _nss_db_fleasion_ca_status(certutil, db_dir, ca_cert_path)
     if status == 'current':
@@ -791,7 +882,7 @@ def _install_ca_into_nss_db(certutil: str, db_dir: Path, ca_cert_path: Path) -> 
     return {'db': str(db_dir), 'ok': False, 'error': err or str(result.returncode)}
 
 
-def _install_ca_into_browser_nss(ca_cert_path: Path) -> list[dict]:
+def _install_ca_into_browser_nss(ca_cert_path: Path) -> list[JsonObject]:
     certutil = shutil.which('certutil')
     if not certutil:
         log_buffer.log('Certificate', 'Skipping Linux browser NSS trust import: certutil not found')
@@ -884,12 +975,13 @@ def linux_system_ca_needs_install(ca_cert_path: Path) -> bool:
 
 
 def _system_ca_error_is_unsupported(error: object) -> bool:
-    if isinstance(error, dict):
-        return _system_ca_error_is_unsupported(error.get('error'))
+    error_details = _json_object(error)
+    if error_details is not None:
+        return _system_ca_error_is_unsupported(error_details.get('error'))
     return 'no_supported_system_trust_store' in str(error or '')
 
 
-def _install_ca_into_linux_system_store(ca_cert_path: Path) -> dict:
+def _install_ca_into_linux_system_store(ca_cert_path: Path) -> JsonObject:
     pkexec = shutil.which('pkexec')
     if not pkexec:
         log_buffer.log('Certificate', 'Skipping Linux system trust-store install: pkexec not found')
@@ -916,15 +1008,16 @@ def _install_ca_into_linux_system_store(ca_cert_path: Path) -> dict:
         return {'ok': False, 'error': str(exc)}
 
     output = (result.stdout or '').strip()
-    details: dict
+    details: JsonObject
     try:
-        details = json.loads(output) if output else {}
+        details_payload: object = json.loads(output) if output else {}
+        details = _json_object(details_payload) or {}
     except json.JSONDecodeError:
         details = {'output': output}
     details.setdefault('ok', result.returncode == 0)
     if result.returncode == 0 and details.get('ok'):
-        stores = ', '.join(details.get('stores') or [])
-        store_names = details.get('stores') or []
+        store_names = _string_list(details.get('stores'))
+        stores = ', '.join(store_names)
         if store_names and all(str(store).endswith(':already-current') for store in store_names):
             log_buffer.log(
                 'Certificate',
@@ -947,11 +1040,12 @@ def install_ca_into_linux_trust(
     *,
     install_system: bool = True,
     install_nss: bool = True,
-) -> dict:
+) -> JsonObject:
     """Trust Fleasion's CA for Linux browsers and system TLS clients."""
     if not sys.platform.startswith('linux'):
         return {'ok': True, 'skipped': 'not_linux'}
 
+    system: JsonObject
     if (
         install_system
         and not linux_system_ca_store_supported()
@@ -977,5 +1071,5 @@ def install_ca_into_linux_trust(
     return {
         'ok': bool(system.get('ok')) or any(item.get('ok') for item in nss),
         'system': system,
-        'nss': nss,
+        'nss': _json_values(nss),
     }

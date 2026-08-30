@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 __all__ = ['CacheManager', 'CacheViewerTab']
 
 
-def __getattr__(name):
+def __getattr__(name: str) -> object:
     if name == 'CacheManager':
         from .cache_manager import CacheManager
 

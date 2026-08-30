@@ -2,43 +2,104 @@
 # Complete Roblox mesh converter supporting versions 1.x through 7.00
 # Handles all mesh formats including Draco-compressed v6/v7 meshes
 import gzip
+import importlib
 import json
 import struct
+from typing import TYPE_CHECKING, Protocol, SupportsInt, TypeGuard, cast
 
 import numpy as np
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from numpy.typing import NDArray
+
 from ..utils import log_buffer
 
-try:
-    import DracoPy
 
-    DRACO_AVAILABLE = True
+class _DracoPoints(Protocol):
+    points: object
+
+
+class _DracoNormals(_DracoPoints, Protocol):
+    normals: object | None
+
+
+class _DracoTexCoords(_DracoPoints, Protocol):
+    tex_coord: object | None
+
+
+class _DracoFaces(_DracoPoints, Protocol):
+    faces: Iterable[Iterable[SupportsInt]] | None
+
+
+class _DracoAttributes(_DracoPoints, Protocol):
+    def get_attribute_by_unique_id(self, unique_id: int) -> dict[str, object] | None: ...
+
+
+class _DracoModule(Protocol):
+    def decode(self, buffer: bytes) -> object: ...
+
+
+def _has_points(value: object) -> TypeGuard[_DracoPoints]:
+    return hasattr(value, 'points')
+
+
+def _has_normals(value: _DracoPoints) -> TypeGuard[_DracoNormals]:
+    return hasattr(value, 'normals')
+
+
+def _has_tex_coords(value: _DracoPoints) -> TypeGuard[_DracoTexCoords]:
+    return hasattr(value, 'tex_coord')
+
+
+def _has_faces(value: _DracoPoints) -> TypeGuard[_DracoFaces]:
+    return hasattr(value, 'faces')
+
+
+def _has_attributes(value: _DracoPoints) -> TypeGuard[_DracoAttributes]:
+    return hasattr(value, 'get_attribute_by_unique_id')
+
+
+try:
+    DracoPy: _DracoModule | None = cast('_DracoModule', importlib.import_module('DracoPy'))
 except ImportError:
-    DRACO_AVAILABLE = False
+    DracoPy = None
     log_buffer.log('Mesh', 'DracoPy not installed. v6/v7 mesh conversion will not work.')
+
+DRACO_AVAILABLE = DracoPy is not None
 
 
 # Shared Data Structures
 class Vertex:
     """Represents a single vertex with all attributes"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Position
-        self.px = self.py = self.pz = 0.0
+        self.px: float | np.float32 = 0.0
+        self.py: float | np.float32 = 0.0
+        self.pz: float | np.float32 = 0.0
         # Normal
-        self.nx = self.ny = self.nz = 0.0
+        self.nx: float | np.float32 = 0.0
+        self.ny: float | np.float32 = 0.0
+        self.nz: float | np.float32 = 0.0
         # UV coordinates
-        self.tu = self.tv = self.tw = 0.0
+        self.tu: float | np.float32 = 0.0
+        self.tv: float | np.float32 = 0.0
+        self.tw: float | np.float32 = 0.0
         # Tangent (signed byte)
         self.tx = self.ty = self.tz = self.ts = 0
         # Color (RGBA)
-        self.r = self.g = self.b = self.a = 255
+        self.r: int | np.uint8 = 255
+        self.g: int | np.uint8 = 255
+        self.b: int | np.uint8 = 255
+        self.a: int | np.uint8 = 255
 
 
 class Face:
     """Represents a triangular face (OBJ uses 1-based indexing)"""
 
-    def __init__(self, a=0, b=0, c=0):
+    def __init__(self, a: int = 0, b: int = 0, c: int = 0) -> None:
         self.a, self.b, self.c = a, b, c
 
 
@@ -59,7 +120,7 @@ def read_vertices(data: bytes, offset: int, count: int, vsize: int) -> tuple[lis
     Returns:
         Tuple of (vertex list, new offset)
     """
-    verts = []
+    verts: list[Vertex] = []
     pos = offset
     for _ in range(count):
         v = Vertex()
@@ -132,7 +193,7 @@ def write_obj_data(
 
 
 # Version-Specific Processors
-def process_v1(data: bytes) -> str:
+def process_v1(data: bytes) -> str | None:
     """
     Process version 1.x mesh format (JSON-based)
     Args:
@@ -164,10 +225,10 @@ def process_v1(data: bytes) -> str:
             log_buffer.log('Mesh', f'Invalid v1 mesh: {groups} vertices for {face_count} faces')
             return None
         position_scale = 0.5 if version == 'version 1.00' else 1.0
-        verts = []
-        norms = []
-        uvs = []
-        faces = []
+        verts: list[str] = []
+        norms: list[str] = []
+        uvs: list[str] = []
+        faces: list[str] = []
         for i in range(groups):
             v = content[i * 3]  # Position [x, y, z]
             n = content[i * 3 + 1]  # Normal [x, y, z]
@@ -192,7 +253,7 @@ def process_v1(data: bytes) -> str:
         return None
 
 
-def process_v2_to_v5(data: bytes, version_num: str) -> str:
+def process_v2_to_v5(data: bytes, version_num: str) -> str | None:
     """
     Process version 2.00 through 5.00 mesh formats.
 
@@ -225,7 +286,6 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
         num_faces = 0
         num_lod_offsets = 0
         num_bones = 0
-        lod_type = 0
 
         if version_num in ('2.00',):
             # V2 header: sizeof_header(2) + sizeof_vertex(1) + sizeof_face(1)
@@ -236,7 +296,6 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
             num_faces = struct.unpack_from('<I', data, offset + 8)[0]
             num_lod_offsets = 0
             num_bones = 0
-            lod_type = 0  # V2 has no LOD data
 
         elif version_num in ('3.00', '3.01'):
             # V3 header: sizeof_header(2) + sizeof_vertex(1) + sizeof_face(1)
@@ -249,13 +308,12 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
             num_verts = struct.unpack_from('<I', data, offset + 8)[0]
             num_faces = struct.unpack_from('<I', data, offset + 12)[0]
             num_bones = 0
-            lod_type = 0  # V3 doesn't have lodType in header
 
         elif version_num in ('4.00', '4.01'):
             # V4 header: sizeof_header(2) + lodType(2) + numVerts(4) + numFaces(4)
             #          + numLodOffsets(2) + numBones(2) + sizeof_boneNames(4)
             #          + numSubsets(2) + numHighQualityLODs(1) + unused(1) = 24 bytes
-            lod_type = struct.unpack_from('<H', data, offset + 2)[0]
+            struct.unpack_from('<H', data, offset + 2)[0]  # lodType
             num_verts = struct.unpack_from('<I', data, offset + 4)[0]
             num_faces = struct.unpack_from('<I', data, offset + 8)[0]
             num_lod_offsets = struct.unpack_from('<H', data, offset + 12)[0]
@@ -264,7 +322,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
 
         elif version_num in ('5.00',):
             # V5 header: same as V4 + facsDataFormat(4) + facsDataSize(4) = 32 bytes
-            lod_type = struct.unpack_from('<H', data, offset + 2)[0]
+            struct.unpack_from('<H', data, offset + 2)[0]  # lodType
             num_verts = struct.unpack_from('<I', data, offset + 4)[0]
             num_faces = struct.unpack_from('<I', data, offset + 8)[0]
             num_lod_offsets = struct.unpack_from('<H', data, offset + 12)[0]
@@ -297,7 +355,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
             offset += skinning_size
 
         # --- Read faces ---
-        faces = []
+        faces: list[Face] = []
         for _ in range(num_faces):
             a, b, c = struct.unpack_from('<III', data, offset)
             faces.append(Face(a + 1, b + 1, c + 1))  # Convert to 1-based
@@ -306,7 +364,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
         # --- Read and apply LOD offsets (V3/V4/V5 only) ---
         if num_lod_offsets >= 2:
             try:
-                lod_offsets = []
+                lod_offsets: list[int] = []
                 for _ in range(num_lod_offsets):
                     lod_val = struct.unpack_from('<I', data, offset)[0]
                     lod_offsets.append(lod_val)
@@ -346,7 +404,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
 
 def _read_chunked_mesh(data: bytes) -> list[tuple[str, int, bytes]]:
     """Read v6/v7 chunks, whose declared size includes their whole payload."""
-    chunks = []
+    chunks: list[tuple[str, int, bytes]] = []
     offset = 13  # Skip "version X.XX\n".
     while offset < len(data):
         if len(data) - offset < 16:
@@ -381,7 +439,7 @@ def _read_raw_coremesh(data: bytes) -> tuple[list[Vertex], list[Face]]:
     if face_end != len(data):
         raise ValueError('COREMESH v1 face data does not match chunk size')
 
-    faces = []
+    faces: list[Face] = []
     for _ in range(num_faces):
         a, b, c = struct.unpack_from('<III', data, offset)
         if a >= num_verts or b >= num_verts or c >= num_verts:
@@ -433,7 +491,7 @@ def _mesh_to_obj(verts: list[Vertex], faces: list[Face]) -> str:
     return write_obj_data(v_lines, n_lines, t_lines, f_lines)
 
 
-def process_v6_v7(data: bytes) -> str:
+def process_v6_v7(data: bytes) -> str | None:
     """Process chunked v6 geometry and Draco-compressed v7 geometry."""
     try:
         version = data[:12].decode('ascii', errors='replace').strip()
@@ -469,16 +527,18 @@ def process_v6_v7(data: bytes) -> str:
             if not DRACO_AVAILABLE:
                 log_buffer.log('Mesh', 'DracoPy not available - cannot process v7 meshes')
                 return None
+            if DracoPy is None:
+                raise RuntimeError('DracoPy availability state is inconsistent')
 
             try:
                 mesh = DracoPy.decode(coremesh_data[4:])
             except Exception as e:
                 log_buffer.log('Mesh', f'DracoPy decoding error: {e}')
                 return None
-            if mesh is None or not hasattr(mesh, 'points'):
+            if mesh is None or not _has_points(mesh):
                 raise ValueError('Draco decode returned invalid mesh data')
 
-            positions = np.array(mesh.points, dtype=np.float32)
+            positions: NDArray[np.float32] = np.array(mesh.points, dtype=np.float32)
             num_verts = len(positions)
             if num_verts == 0:
                 raise ValueError('Draco mesh has no vertices')
@@ -486,8 +546,8 @@ def process_v6_v7(data: bytes) -> str:
             for i in range(num_verts):
                 verts[i].px, verts[i].py, verts[i].pz = positions[i]
 
-            normals = None
-            if hasattr(mesh, 'get_attribute_by_unique_id'):
+            normals: NDArray[np.float32] | None = None
+            if _has_attributes(mesh):
                 try:
                     normal_attr = mesh.get_attribute_by_unique_id(1)
                     if normal_attr is not None and 'data' in normal_attr:
@@ -496,7 +556,7 @@ def process_v6_v7(data: bytes) -> str:
                             normals = normals.reshape(-1, 3)
                 except Exception:
                     pass
-            if normals is None and hasattr(mesh, 'normals') and mesh.normals is not None:
+            if normals is None and _has_normals(mesh) and mesh.normals is not None:
                 normals = np.array(mesh.normals, dtype=np.float32)
                 if normals.ndim == 1:
                     normals = normals.reshape(-1, 3)
@@ -510,8 +570,8 @@ def process_v6_v7(data: bytes) -> str:
                         f'Warning: Normal count mismatch ({len(normals)} vs {num_verts})',
                     )
 
-            tex_coords = None
-            if hasattr(mesh, 'get_attribute_by_unique_id'):
+            tex_coords: NDArray[np.float32] | None = None
+            if _has_attributes(mesh):
                 try:
                     uv_attr = mesh.get_attribute_by_unique_id(2)
                     if uv_attr is not None and 'data' in uv_attr:
@@ -521,8 +581,8 @@ def process_v6_v7(data: bytes) -> str:
                 except Exception:
                     pass
 
-            colors = None
-            if hasattr(mesh, 'get_attribute_by_unique_id'):
+            colors: NDArray[np.uint8] | None = None
+            if _has_attributes(mesh):
                 try:
                     color_attr = mesh.get_attribute_by_unique_id(4)
                     if color_attr is not None and 'data' in color_attr:
@@ -541,7 +601,7 @@ def process_v6_v7(data: bytes) -> str:
                         f'Warning: Color count mismatch ({len(colors)} vs {num_verts})',
                     )
 
-            if tex_coords is None and hasattr(mesh, 'tex_coord') and mesh.tex_coord is not None:
+            if tex_coords is None and _has_tex_coords(mesh) and mesh.tex_coord is not None:
                 tex_coords = np.array(mesh.tex_coord, dtype=np.float32)
                 if tex_coords.ndim == 1:
                     tex_coords = tex_coords.reshape(-1, 2)
@@ -556,8 +616,8 @@ def process_v6_v7(data: bytes) -> str:
                         f'Warning: UV count mismatch ({len(tex_coords)} vs {num_verts})',
                     )
 
-            faces = []
-            if hasattr(mesh, 'faces') and mesh.faces is not None:
+            faces: list[Face] = []
+            if _has_faces(mesh) and mesh.faces is not None:
                 for triangle in mesh.faces:
                     a, b, c = map(int, triangle)
                     if (
@@ -615,7 +675,7 @@ def is_mesh_data(data: bytes) -> bool:
 
 
 # Main Conversion Function
-def convert(data: bytes, output_path: str = None) -> str:
+def convert(data: bytes, output_path: str | None = None) -> str | None:
     """
     Convert Roblox mesh data to OBJ format
     Args:
@@ -685,7 +745,7 @@ if __name__ == '__main__':
     output_path = mesh_path.with_suffix('.obj')
     obj_content = convert(data, str(output_path))
     if obj_content:
-        log_buffer.log('Mesh', f'\n✓ Conversion successful!')
+        log_buffer.log('Mesh', '\n✓ Conversion successful!')
         log_buffer.log('Mesh', f' Input: {mesh_path}')
         log_buffer.log('Mesh', f' Output: {output_path}')
     else:

@@ -7,7 +7,7 @@ from ..utils import CLOG_URL, ORIGINALS_DIR, REPLACEMENTS_DIR, format_count, log
 from ..utils.http import http_get
 
 
-def download_prejsons():
+def download_prejsons() -> None:
     """Download pre-configured JSON files from CLOG.json on startup."""
     try:
         ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)

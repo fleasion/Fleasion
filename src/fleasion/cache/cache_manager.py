@@ -5,11 +5,56 @@ import hashlib
 import json
 import threading
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 
 from ..utils import CONFIG_DIR, log_buffer
+
+
+class AssetEntry(TypedDict):
+    id: str
+    type: int
+    type_name: str
+    url: str
+    size: int
+    compressed: bool
+    hash: str
+    cached_at: str
+    metadata: dict[str, object]
+    detected_type: NotRequired[str]
+    raw_size: NotRequired[int]
+
+
+class CacheIndex(TypedDict):
+    assets: dict[str, AssetEntry]
+    version: str
+
+
+class CacheStats(TypedDict):
+    total_assets: int
+    total_size: int
+    types_count: dict[str, int]
+
+
+class _ExportConfig(Protocol):
+    export_naming: list[str]
+
+
+def _preserve_path(value: Path | None) -> Path:
+    """Return an already-established path without changing runtime failure semantics."""
+    if TYPE_CHECKING:
+        assert value is not None
+    return value
+
+
+class _CacheScraper(Protocol):
+    def get_roblosecurity(self, *, wait: bool = False) -> str | None: ...
+
+    def fetch_asset_with_place_id_retry(
+        self, asset_id: str, *, extra_headers: dict[str, str] | None = None
+    ) -> tuple[bytes | None, int | None]: ...
+
+
 from .roblox_document import (
     export_roblox_document,
     get_default_roblox_document_export_format,
@@ -20,19 +65,22 @@ from .roblox_document import (
 try:
     import orjson
 
-    def json_dumps(obj, **kwargs):
+    def json_dumps(obj: object, *, indent: int | None = None) -> str:
         # orjson doesn't support indent parameter in the same way, but we can do it for pretty-print
-        if kwargs.get('indent'):
+        if indent:
             return orjson.dumps(obj, option=orjson.OPT_INDENT_2).decode('utf-8')
         return orjson.dumps(obj).decode('utf-8')
 
-    def json_loads(data):
+    def json_loads(data: str | bytes | bytearray) -> object:
         return orjson.loads(data)
 except ImportError:
     import json
 
-    json_dumps = json.dumps
-    json_loads = json.loads
+    def json_dumps(obj: object, *, indent: int | None = None) -> str:
+        return json.dumps(obj, indent=indent)
+
+    def json_loads(data: str | bytes | bytearray) -> object:
+        return json.loads(data)
 
 
 class CacheManager:
@@ -116,7 +164,7 @@ class CacheManager:
         80: 'CodeSnippet',
     }
 
-    def __init__(self, config_manager=None):
+    def __init__(self, config_manager: _ExportConfig | None = None) -> None:
         """Initialize cache manager."""
         self.cache_dir = CONFIG_DIR / 'FleasionNT' / 'Cache'
         self.export_dir = CONFIG_DIR / 'FleasionNT' / 'Exports'
@@ -125,17 +173,17 @@ class CacheManager:
         self._lock = threading.Lock()
 
         # Cache scraper for asset downloads (optional, set by ProxyMaster)
-        self._cache_scraper = None
+        self._cache_scraper: _CacheScraper | None = None
 
         # Debounced index writes: reduce disk I/O by batching writes
         # Instead of writing on every store_asset(), we schedule a write 500ms in the future
         # If another write comes in before 500ms, we cancel the pending one and reschedule
         self._index_dirty = False
-        self._index_commit_timer = None
+        self._index_commit_timer: threading.Timer | None = None
 
         # LRU cache for asset reads (256 assets max ~50-100MB depending on size)
         # This drastically speeds up repeated lookups during preview, search, export operations
-        self._asset_cache = {}
+        self._asset_cache: dict[str, bytes] = {}
         self._asset_cache_lock = threading.Lock()
         self._asset_cache_maxsize = 256
 
@@ -144,18 +192,18 @@ class CacheManager:
         self.export_dir.mkdir(parents=True, exist_ok=True)
 
         # Load or create index
-        self.index = self._load_index()
+        self.index: CacheIndex = self._load_index()
 
-    def set_scraper(self, scraper) -> None:
+    def set_scraper(self, scraper: _CacheScraper) -> None:
         """Set the cache scraper for private asset downloads."""
         self._cache_scraper = scraper
 
-    def _load_index(self) -> dict:
+    def _load_index(self) -> CacheIndex:
         """Load cache index from disk."""
         if self.index_file.exists():
             try:
                 with self.index_file.open('r', encoding='utf-8') as f:
-                    return json_loads(f.read())
+                    return cast(CacheIndex, json_loads(f.read()))
             except (
                 ValueError,
                 OSError,
@@ -163,7 +211,7 @@ class CacheManager:
                 pass
         return {'assets': {}, 'version': '1.0'}
 
-    def _save_index(self):
+    def _save_index(self) -> None:
         """Save cache index to disk (called by debounced timer)."""
         try:
             with self.index_file.open('w', encoding='utf-8') as f:
@@ -171,7 +219,7 @@ class CacheManager:
         except OSError as e:
             log_buffer.log('Scraper', f'Failed to save cache index: {e}')
 
-    def _schedule_index_commit(self):
+    def _schedule_index_commit(self) -> None:
         """Schedule index write with debouncing (500ms delay).
 
         If _index_dirty is already True and a timer is pending, cancel it and reschedule.
@@ -185,7 +233,7 @@ class CacheManager:
         self._index_commit_timer.daemon = True
         self._index_commit_timer.start()
 
-    def _flush_index(self):
+    def _flush_index(self) -> None:
         """Internal method called by timer to actually write the index."""
         with self._lock:
             if self._index_dirty:
@@ -298,7 +346,7 @@ class CacheManager:
             log_buffer.log('Scraper', f'Failed to store raw asset {asset_id}: {e}')
             return False
 
-    def get_raw_asset(self, asset_id: str, asset_type: int) -> Optional[bytes]:
+    def get_raw_asset(self, asset_id: str, asset_type: int) -> bytes | None:
         """Return the raw pre-conversion sidecar bytes, or None if not present."""
         try:
             raw_path = self.get_raw_asset_path(asset_id, asset_type)
@@ -376,7 +424,7 @@ class CacheManager:
         asset_type: int,
         data: bytes,
         url: str = '',
-        metadata: Optional[dict] = None,
+        metadata: dict[str, object] | None = None,
     ) -> bool:
         """
         Store an asset in the cache.
@@ -414,7 +462,7 @@ class CacheManager:
             # Update index under lock to prevent concurrent corruption
             with self._lock:
                 asset_key = f'{asset_type}_{asset_id}'
-                asset_entry = {
+                asset_entry: AssetEntry = {
                     'id': asset_id,
                     'type': asset_type,
                     'type_name': type_name,
@@ -446,7 +494,7 @@ class CacheManager:
             log_buffer.log('Scraper', f'Failed to store asset {asset_id}: {e}')
             return False
 
-    def get_asset(self, asset_id: str, asset_type: int) -> Optional[bytes]:
+    def get_asset(self, asset_id: str, asset_type: int) -> bytes | None:
         """
         Retrieve an asset from cache with LRU in-memory caching.
 
@@ -470,9 +518,9 @@ class CacheManager:
                 return None
 
             asset_key = f'{asset_type}_{asset_id}'
-            asset_info = self.index['assets'].get(asset_key, {})
+            asset_info = self.index['assets'].get(asset_key)
 
-            if asset_info.get('compressed', False):
+            if asset_info is not None and asset_info.get('compressed', False):
                 with gzip.open(asset_path, 'rb') as f:
                     data = f.read()
             else:
@@ -499,9 +547,7 @@ class CacheManager:
             self._asset_cache.clear()
         return count
 
-    def peek_asset_bytes(
-        self, asset_id: str, asset_type: int, max_bytes: int = 16
-    ) -> Optional[bytes]:
+    def peek_asset_bytes(self, asset_id: str, asset_type: int, max_bytes: int = 16) -> bytes | None:
         """Read only the beginning of an asset without populating the LRU cache.
 
         Type correction only needs magic bytes for the formats currently
@@ -517,8 +563,8 @@ class CacheManager:
             if not asset_path.exists():
                 return None
 
-            asset_info = self.index['assets'].get(f'{asset_type}_{asset_id}', {})
-            if asset_info.get('compressed', False):
+            asset_info = self.index['assets'].get(f'{asset_type}_{asset_id}')
+            if asset_info is not None and asset_info.get('compressed', False):
                 with gzip.open(asset_path, 'rb') as f:
                     return f.read(max_bytes)
 
@@ -538,12 +584,12 @@ class CacheManager:
             return None
         return self._detect_payload_type(data, asset_type)
 
-    def get_asset_info(self, asset_id: str, asset_type: int) -> Optional[dict]:
+    def get_asset_info(self, asset_id: str, asset_type: int) -> AssetEntry | None:
         """Get metadata about a cached asset."""
         asset_key = f'{asset_type}_{asset_id}'
         return self.index['assets'].get(asset_key)
 
-    def set_detected_type(self, asset_id: str, asset_type: int, detected_type: str):
+    def set_detected_type(self, asset_id: str, asset_type: int, detected_type: str) -> None:
         """
         Store a detected asset type (e.g., 'Json' for unknown types that are actually JSON).
         This persists to the cache index and overrides the default type name.
@@ -568,10 +614,10 @@ class CacheManager:
     ) -> str:
         """Get the type name for an asset, considering detected type."""
         asset_key = f'{asset_type}_{asset_id}'
-        asset_info = self.index['assets'].get(asset_key, {})
+        asset_info = self.index['assets'].get(asset_key)
 
         # Return detected type if available, otherwise use standard type name
-        if 'detected_type' in asset_info:
+        if asset_info is not None and 'detected_type' in asset_info:
             return asset_info['detected_type']
 
         # Some Roblox batch responses report RenderMesh CDN payloads as Image.
@@ -585,7 +631,7 @@ class CacheManager:
 
         return self.get_asset_type_name(asset_type)
 
-    def list_assets(self, asset_types: Optional[set[int]] = None) -> list[dict]:
+    def list_assets(self, asset_types: set[int | str] | None = None) -> list[AssetEntry]:
         """
         List all cached assets, optionally filtered by types.
 
@@ -602,7 +648,7 @@ class CacheManager:
             int_filters = {t for t in asset_types if isinstance(t, int)}
             str_filters = {t for t in asset_types if isinstance(t, str)}
 
-            def _matches(a):
+            def _matches(a: AssetEntry) -> bool:
                 if int_filters and a['type'] in int_filters:
                     return True
                 if str_filters and a.get('detected_type') in str_filters:
@@ -682,10 +728,10 @@ class CacheManager:
         self,
         asset_id: str,
         asset_type: int,
-        output_path: Optional[Path] = None,
-        resolved_name: str = None,
+        output_path: Path | None = None,
+        resolved_name: str | None = None,
         export_format: str = 'converted',
-    ) -> Optional[Path]:
+    ) -> Path | None:
         """
         Export an asset to the exports folder.
 
@@ -721,7 +767,7 @@ class CacheManager:
                 hash_val = asset_info.get('hash', '') if asset_info else ''
 
                 # Build filename from enabled naming options
-                filename_parts = []
+                filename_parts: list[str] = []
                 if self.config_manager:
                     naming_options = self.config_manager.export_naming
                     if 'name' in naming_options and resolved_name:
@@ -817,14 +863,14 @@ class CacheManager:
 
                 elif export_format == 'converted_obj' and asset_type == 39:  # SolidModel -> obj
                     from .tools.solidmodel_converter.converter import (
-                        _export_obj_from_doc,
+                        export_obj_from_doc,
                         deserialize_rbxm,
                     )
 
                     try:
                         doc = deserialize_rbxm(data)
                         output_path = export_type_dir / f'{filename}.obj'
-                        _export_obj_from_doc(doc, output_path, decompose=False)
+                        export_obj_from_doc(doc, output_path, decompose=False)
                         return output_path
                     except Exception as e:
                         from ..utils import log_buffer
@@ -836,9 +882,9 @@ class CacheManager:
                     export_format == 'converted_rbxmx_model' and asset_type == 39
                 ):  # SolidModel -> rbxmx
                     from .tools.solidmodel_converter.converter import (
-                        _get_top_level_mesh_data,
-                        _inject_mesh_data,
-                        _try_extract_child_data,
+                        get_top_level_mesh_data,
+                        inject_mesh_data,
+                        try_extract_child_data,
                         deserialize_rbxm,
                     )
                     from .tools.solidmodel_converter.rbxm.xml_writer import write_rbxmx
@@ -852,12 +898,12 @@ class CacheManager:
 
                         doc = deserialize_rbxm(decompressed)
 
-                        top_mesh_data = _get_top_level_mesh_data(doc)
-                        child_doc = _try_extract_child_data(doc)
+                        top_mesh_data = get_top_level_mesh_data(doc)
+                        child_doc = try_extract_child_data(doc)
                         if child_doc is not None:
                             doc = child_doc
                             if top_mesh_data is not None:
-                                _inject_mesh_data(doc, top_mesh_data)
+                                inject_mesh_data(doc, top_mesh_data)
 
                         xml_bytes = write_rbxmx(doc)
                         output_path = export_type_dir / f'{filename}.rbxmx'
@@ -989,8 +1035,9 @@ class CacheManager:
                     # Default binary export
                     output_path = export_type_dir / f'{filename}.bin'
 
-            output_path.write_bytes(data)
-            return output_path
+            destination_path = _preserve_path(output_path)
+            destination_path.write_bytes(data)
+            return destination_path
 
         except Exception as e:
             from ..utils import log_buffer
@@ -1060,7 +1107,7 @@ class CacheManager:
 
     def _export_texturepack(
         self, data: bytes, asset_id: str, export_type_dir: Path, base_filename: str
-    ) -> Optional[Path]:
+    ) -> Path | None:
         """
         Export texture pack by extracting all textures to subfolders.
 
@@ -1097,11 +1144,11 @@ class CacheManager:
             # Parse XML
             xml_text = xml_data.decode('utf-8', errors='replace')
             root = ET.fromstring(xml_text)
-            log_buffer.log('Export', f'Parsed XML successfully')
+            log_buffer.log('Export', 'Parsed XML successfully')
 
             # Extract texture map IDs
             map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
-            maps = {}
+            maps: dict[str, str] = {}
             for elem in map_order:
                 node = root.find(elem)
                 if node is not None and node.text:
@@ -1136,20 +1183,18 @@ class CacheManager:
                         texture_data = None
                         # Use scraper if available (supports both public and private assets)
                         if self._cache_scraper is not None:
-                            extra = {}
-                            cookie = self._cache_scraper._get_roblosecurity()
+                            extra: dict[str, str] = {}
+                            cookie = self._cache_scraper.get_roblosecurity()
                             if cookie:
                                 extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
                             texture_data, _status = (
-                                self._cache_scraper._fetch_asset_with_place_id_retry(
+                                self._cache_scraper.fetch_asset_with_place_id_retry(
                                     str(map_id),
                                     extra_headers=extra or None,
                                 )
                             )
                         else:
                             # Fallback: direct requests with cookie extraction
-                            from urllib.parse import urlparse
-
                             api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
                             headers = {'User-Agent': 'Roblox/WinInet'}
                             # Get cookie if available for private assets (use centralized function)
@@ -1193,7 +1238,7 @@ class CacheManager:
                     continue
 
                 # Build filename: ID_Hash.png (no map_name since folder already indicates type)
-                filename_parts = [map_id]
+                filename_parts: list[str] = [map_id]
                 if texture_hash:
                     filename_parts.append(texture_hash)
                 texture_filename = '_'.join(filename_parts)
@@ -1313,7 +1358,7 @@ class CacheManager:
             log_buffer.log('Scraper', f'Batch delete failed: {e}')
             return deleted_count, failed_count
 
-    def clear_cache(self, asset_type: Optional[int] = None) -> int:
+    def clear_cache(self, asset_type: int | None = None) -> int:
         """
         Clear cached assets.
 
@@ -1324,9 +1369,9 @@ class CacheManager:
             Number of assets deleted
         """
         count = 0
-        assets_to_delete = []
+        assets_to_delete: list[tuple[str, int]] = []
 
-        for asset_key, asset_info in self.index['assets'].items():
+        for _asset_key, asset_info in self.index['assets'].items():
             if asset_type is None or asset_info['type'] == asset_type:
                 assets_to_delete.append((asset_info['id'], asset_info['type']))
 
@@ -1334,7 +1379,7 @@ class CacheManager:
             count, _failed = self.delete_assets_batch(assets_to_delete)
         return count
 
-    def get_cache_stats(self) -> dict:
+    def get_cache_stats(self) -> CacheStats:
         """Get cache statistics."""
         # Take a snapshot to avoid dictionary changed during iteration
         assets_snapshot = dict(self.index['assets'])
@@ -1342,7 +1387,7 @@ class CacheManager:
         total_assets = len(assets_snapshot)
         total_size = sum(a.get('size', 0) for a in assets_snapshot.values())
 
-        types_count = {}
+        types_count: dict[str, int] = {}
         for asset_info in assets_snapshot.values():
             type_name = asset_info.get('type_name', 'Unknown')
             types_count[type_name] = types_count.get(type_name, 0) + 1

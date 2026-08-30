@@ -6,25 +6,63 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable, Iterable  # noqa: TC003 - preserve runtime type-hint resolution
 from pathlib import Path
-from typing import Iterable
+from typing import Protocol, cast
 
 from .paths import CONFIG_DIR
-from .roblox_dirs import _normalise_roblox_dir, is_roblox_studio_resource_dir
+from .roblox_dirs import (
+    _normalise_roblox_dir,  # pyright: ignore[reportPrivateUsage]
+    is_roblox_studio_resource_dir,
+)
 
 PENDING_REPAIR_FILENAME = 'roblox_permission_repair.json'
 RESULT_REPAIR_FILENAME = 'roblox_permission_repair_result.json'
+
+type ErrorDetails = dict[str, object]
+type PathFailure = dict[str, str]
+
+
+class _Win32ApiLike(Protocol):
+    GetUserName: Callable[[], str]
+
+
+class _Win32SecurityLike(Protocol):
+    SidTypeUser: int
+    LookupAccountName: Callable[[object | None, str], tuple[object, str, int]]
+    ConvertSidToStringSid: Callable[[object], str]
+    ConvertStringSidToSid: Callable[[str], object]
+    LookupAccountSid: Callable[[object | None, object], tuple[str, str, int]]
+
+
+def _win32api_module() -> _Win32ApiLike:
+    return cast('_Win32ApiLike', __import__('win32api'))
+
+
+def _win32security_module() -> _Win32SecurityLike:
+    return cast('_Win32SecurityLike', __import__('win32security'))
 
 
 def _state_path(config_dir: Path | None, filename: str) -> Path:
     return Path(config_dir or CONFIG_DIR) / filename
 
 
-def _atomic_write_json(path: Path, payload: dict) -> None:
+def _atomic_write_json(path: Path, payload: ErrorDetails) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f'.{path.name}.tmp')
     temporary.write_text(json.dumps(payload, indent=2), encoding='utf-8')
     os.replace(temporary, path)
+
+
+def _read_json_object(path: Path) -> ErrorDetails | None:
+    try:
+        payload: object = json.loads(path.read_text(encoding='utf-8'))
+    except OSError, json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    # JSON object keys are always strings.
+    return cast('ErrorDetails', payload)
 
 
 def _serialise_paths(paths: Iterable[Path]) -> list[str]:
@@ -57,15 +95,14 @@ def write_pending_repair(paths: Iterable[Path], config_dir: Path | None = None) 
 
 
 def read_pending_repair(config_dir: Path | None = None) -> list[Path]:
-    path = _state_path(config_dir, PENDING_REPAIR_FILENAME)
-    try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
+    payload = _read_json_object(_state_path(config_dir, PENDING_REPAIR_FILENAME))
+    if payload is None:
         return []
-    raw_paths = payload.get('paths', []) if isinstance(payload, dict) else []
+    raw_paths: object = payload.get('paths', [])
     if not isinstance(raw_paths, list):
         return []
-    return [Path(value) for value in raw_paths if isinstance(value, str) and value]
+    values = cast('list[object]', raw_paths)
+    return [Path(value) for value in values if isinstance(value, str) and value]
 
 
 def clear_pending_repair(config_dir: Path | None = None) -> None:
@@ -77,18 +114,13 @@ def clear_pending_repair(config_dir: Path | None = None) -> None:
         pass
 
 
-def write_repair_result(result: dict, config_dir: Path | None = None) -> None:
+def write_repair_result(result: ErrorDetails, config_dir: Path | None = None) -> None:
     """Publish the one-shot elevated result for the normal process to read."""
     _atomic_write_json(_state_path(config_dir, RESULT_REPAIR_FILENAME), result)
 
 
-def read_repair_result(config_dir: Path | None = None) -> dict | None:
-    path = _state_path(config_dir, RESULT_REPAIR_FILENAME)
-    try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+def read_repair_result(config_dir: Path | None = None) -> ErrorDetails | None:
+    return _read_json_object(_state_path(config_dir, RESULT_REPAIR_FILENAME))
 
 
 def clear_repair_result(config_dir: Path | None = None) -> None:
@@ -100,9 +132,9 @@ def clear_repair_result(config_dir: Path | None = None) -> None:
         pass
 
 
-def _validated_install_dirs(paths: Iterable[Path]) -> tuple[list[Path], list[dict]]:
+def _validated_install_dirs(paths: Iterable[Path]) -> tuple[list[Path], list[PathFailure]]:
     valid: list[Path] = []
-    rejected: list[dict] = []
+    rejected: list[PathFailure] = []
     seen: set[str] = set()
 
     for raw in paths:
@@ -125,7 +157,9 @@ def _validated_install_dirs(paths: Iterable[Path]) -> tuple[list[Path], list[dic
         if os.path.normcase(os.path.abspath(str(normalised))) != os.path.normcase(
             os.path.abspath(str(raw_resolved))
         ):
-            rejected.append({'path': str(raw_path), 'error': 'path is not the installation directory'})
+            rejected.append(
+                {'path': str(raw_path), 'error': 'path is not the installation directory'}
+            )
             continue
         if not normalised.is_dir() or is_roblox_studio_resource_dir(normalised):
             rejected.append({'path': str(raw_path), 'error': 'installation is not Roblox Player'})
@@ -140,8 +174,8 @@ def _validated_install_dirs(paths: Iterable[Path]) -> tuple[list[Path], list[dic
 
 def current_windows_user_identity() -> tuple[str, str]:
     """Return the current process account as ``(SID, DOMAIN\\name)``."""
-    import win32api
-    import win32security
+    win32api = _win32api_module()
+    win32security = _win32security_module()
 
     username = win32api.GetUserName()
     sid, domain, _account_type = win32security.LookupAccountName(None, username)
@@ -152,7 +186,7 @@ def current_windows_user_identity() -> tuple[str, str]:
 
 def _validated_user_sid(requested_sid: str | None = None) -> str:
     """Validate an initiating user's SID or resolve the current process SID."""
-    import win32security
+    win32security = _win32security_module()
 
     if not requested_sid:
         return current_windows_user_identity()[0]
@@ -167,7 +201,7 @@ def _validated_user_sid(requested_sid: str | None = None) -> str:
 
 def windows_user_id_from_sid(requested_sid: str) -> str:
     """Return canonical ``DOMAIN\\name`` for a validated Windows user SID."""
-    import win32security
+    win32security = _win32security_module()
 
     canonical = _validated_user_sid(requested_sid)
     sid = win32security.ConvertStringSidToSid(canonical)
@@ -179,7 +213,7 @@ def grant_current_user_modify_access(
     paths: Iterable[Path],
     *,
     user_sid: str | None = None,
-) -> dict:
+) -> ErrorDetails:
     """Grant only the current user's Modify access on validated install dirs.
 
     Existing ACL entries are preserved.  ``/grant:r`` replaces only an
@@ -236,7 +270,9 @@ def grant_current_user_modify_access(
             granted.append(str(path))
             continue
         detail = (completed.stderr or completed.stdout or '').strip()
-        failed.append({'path': str(path), 'error': detail or f'icacls exit code {completed.returncode}'})
+        failed.append(
+            {'path': str(path), 'error': detail or f'icacls exit code {completed.returncode}'}
+        )
 
     return {
         'ok': bool(valid) and not failed,

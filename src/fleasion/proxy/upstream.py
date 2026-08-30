@@ -7,9 +7,9 @@ import base64
 import socket
 import ssl
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Sequence
 
 
 class UpstreamMode(str, Enum):
@@ -24,17 +24,17 @@ class UpstreamMode(str, Enum):
 class UpstreamEndpoint:
     host: str
     port: int = 443
-    ip: Optional[str] = None
-    family: Optional[int] = None
+    ip: str | None = None
+    family: int | None = None
 
 
 @dataclass
 class UpstreamConnectResult:
-    reader: Optional[asyncio.StreamReader]
-    writer: Optional[asyncio.StreamWriter]
+    reader: asyncio.StreamReader | None
+    writer: asyncio.StreamWriter | None
     method: str
     endpoint: str
-    error: Optional[str] = None
+    error: str | None = None
     prior_errors: tuple[str, ...] = ()
 
 
@@ -42,24 +42,24 @@ class UpstreamConnectResult:
 class HttpProxyConfig:
     host: str
     port: int
-    username: Optional[str] = None
-    password: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
 
 
 @dataclass(frozen=True)
 class Socks5ProxyConfig:
     host: str
     port: int
-    username: Optional[str] = None
-    password: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
 
 
 @dataclass
 class HostTransportState:
-    preferred_method: Optional[str] = None
+    preferred_method: str | None = None
     preferred_until: float = 0.0
     direct_ip_unhealthy_until: float = 0.0
-    last_success_method: Optional[str] = None
+    last_success_method: str | None = None
 
 
 class BaseUpstreamConnector:
@@ -89,6 +89,10 @@ def normalize_upstream_mode(value: object) -> UpstreamMode:
         return UpstreamMode.AUTO
 
 
+def _string_value(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 def normalize_endpoints(
     upstream_endpoints: dict[str, Sequence[UpstreamEndpoint | str]] | None,
 ) -> dict[str, list[UpstreamEndpoint]]:
@@ -98,8 +102,10 @@ def normalize_endpoints(
         for ep in endpoints or ():
             if isinstance(ep, UpstreamEndpoint):
                 items.append(ep)
-            elif isinstance(ep, str):
-                items.append(UpstreamEndpoint(host=host, ip=ep))
+            else:
+                endpoint_ip = _string_value(ep)
+                if endpoint_ip is not None:
+                    items.append(UpstreamEndpoint(host=host, ip=endpoint_ip))
         normalized[host] = items
     return normalized
 
@@ -164,8 +170,8 @@ def _blocking_http_connect_socket(
     target_host: str,
     target_port: int,
     timeout: float,
-    username: Optional[str] = None,
-    password: Optional[str] = None,
+    username: str | None = None,
+    password: str | None = None,
 ) -> socket.socket:
     sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
     try:
@@ -194,7 +200,9 @@ def _blocking_http_connect_socket(
 
 
 class HttpConnectConnector(BaseUpstreamConnector):
-    def __init__(self, proxy: HttpProxyConfig, method: str = UpstreamMode.HTTP_CONNECT.value):
+    def __init__(
+        self, proxy: HttpProxyConfig, method: str = UpstreamMode.HTTP_CONNECT.value
+    ) -> None:
         self.proxy = proxy
         self.method = method
 
@@ -208,7 +216,7 @@ class HttpConnectConnector(BaseUpstreamConnector):
         loop = asyncio.get_running_loop()
         target_port = _target_port(endpoints)
         endpoint = f'{self.proxy.host}:{self.proxy.port}->{host}:{target_port}'
-        raw_sock: Optional[socket.socket] = None
+        raw_sock: socket.socket | None = None
         try:
             raw_sock = await loop.run_in_executor(
                 None,
@@ -266,8 +274,8 @@ def _blocking_socks5_connect_socket(
     target_host: str,
     target_port: int,
     timeout: float,
-    username: Optional[str] = None,
-    password: Optional[str] = None,
+    username: str | None = None,
+    password: str | None = None,
 ) -> socket.socket:
     sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
     try:
@@ -332,7 +340,7 @@ def _blocking_socks5_connect_socket(
 
 
 class Socks5Connector(BaseUpstreamConnector):
-    def __init__(self, proxy: Socks5ProxyConfig, method: str = UpstreamMode.SOCKS5.value):
+    def __init__(self, proxy: Socks5ProxyConfig, method: str = UpstreamMode.SOCKS5.value) -> None:
         self.proxy = proxy
         self.method = method
 
@@ -346,7 +354,7 @@ class Socks5Connector(BaseUpstreamConnector):
         loop = asyncio.get_running_loop()
         target_port = _target_port(endpoints)
         endpoint = f'{self.proxy.host}:{self.proxy.port}->{host}:{target_port}'
-        raw_sock: Optional[socket.socket] = None
+        raw_sock: socket.socket | None = None
         try:
             raw_sock = await loop.run_in_executor(
                 None,
@@ -388,7 +396,7 @@ class Socks5Connector(BaseUpstreamConnector):
 
 
 class UnavailableConnector(BaseUpstreamConnector):
-    def __init__(self, method: str, reason: str):
+    def __init__(self, method: str, reason: str) -> None:
         self.method = method
         self.reason = reason
 
@@ -411,10 +419,10 @@ class UnavailableConnector(BaseUpstreamConnector):
 class AutoConnector(BaseUpstreamConnector):
     def __init__(
         self,
-        direct: Optional[BaseUpstreamConnector] = None,
-        system_http_proxy: Optional[BaseUpstreamConnector] = None,
-        manual_http_proxy: Optional[BaseUpstreamConnector] = None,
-        manual_socks5: Optional[BaseUpstreamConnector] = None,
+        direct: BaseUpstreamConnector | None = None,
+        system_http_proxy: BaseUpstreamConnector | None = None,
+        manual_http_proxy: BaseUpstreamConnector | None = None,
+        manual_socks5: BaseUpstreamConnector | None = None,
         cooldown_seconds: float = 120.0,
     ) -> None:
         self.direct = direct or DirectIpConnector()

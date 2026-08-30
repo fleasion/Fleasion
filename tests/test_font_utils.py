@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from fleasion.modifications.font_utils import (
     CUSTOM_FONT_PATH,
@@ -26,7 +27,7 @@ def _family_bytes(asset_id: str, *, faces: int = 1) -> bytes:
     ).encode('utf-8')
 
 
-def test_packaged_family_manifests_are_materialized_and_removed_on_restore(tmp_path):
+def test_packaged_family_manifests_are_materialized_and_removed_on_restore(tmp_path: Path) -> None:
     resource_root = tmp_path / 'asset_overlay'
     stash_dir = tmp_path / 'stash'
     packaged = {
@@ -61,7 +62,7 @@ def test_packaged_family_manifests_are_materialized_and_removed_on_restore(tmp_p
     assert not any((resource_root / FAMILIES_REL).glob('*.json'))
 
 
-def test_preexisting_overlay_family_manifest_is_restored(tmp_path):
+def test_preexisting_overlay_family_manifest_is_restored(tmp_path: Path) -> None:
     resource_root = tmp_path / 'asset_overlay'
     stash_dir = tmp_path / 'stash'
     family_path = resource_root / FAMILIES_REL / 'BuilderSans.json'

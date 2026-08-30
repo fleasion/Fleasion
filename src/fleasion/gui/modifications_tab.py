@@ -1,7 +1,6 @@
 """Modifications tab — combined Fishstrap Mods + FastFlags panel."""
 
 from __future__ import annotations
-from ..localization import tr, tr_count, translation_values
 
 import json
 import os
@@ -11,16 +10,23 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, TypedDict, TypeGuard, cast, override
 
 from PySide6.QtCore import (
+    QAbstractItemModel,
     QEasingCurve,
     QEvent,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
     QPropertyAnimation,
+    QSize,
     Qt,
     QTimer,
     Signal,
+    SignalInstance,
 )
-from PySide6.QtGui import QPainter
+from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QAbstractItemDelegate,
     QAbstractItemView,
@@ -33,15 +39,15 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
-    QGroupBox,
-    QHeaderView,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
-    QMessageBox,
+    QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -49,6 +55,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -57,12 +64,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..cache.tools.ktx_to_png import convert as ktx_to_png, strip_prefixed_ktx
+from ..localization import tr, tr_count, translation_values
+from ..modifications.fflag_profiles import FastFlagProfileManager
 from ..modifications.manager import (
-    ModificationManager,
     normalise_target_path,
     target_path_for_roblox_dir,
 )
-from ..modifications.fflag_profiles import FastFlagProfileManager
 from ..modifications.platform_targets import (
     read_current_platform_original_asset,
     target_path_for_current_platform,
@@ -73,6 +80,139 @@ from ..utils.http import http_get
 from ..utils.threading import run_in_thread
 from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import ClassVar
+
+    from PySide6.QtWidgets import QStyle
+
+    from fleasion.app import RobloxExitMonitor
+    from fleasion.config.manager import ConfigManager
+    from fleasion.gui.linux_hotkeys import LinuxCustomFFlagHotkeyController, LinuxHotkeyService
+    from fleasion.gui.windows_hotkeys import (
+        WindowsCustomFFlagHotkeyController,
+        WindowsHotkeyService,
+    )
+    from fleasion.proxy.master import ProxyMaster
+
+
+class _NewModificationEntry(TypedDict, total=False):
+    display_name: str
+    target_path: str
+    source_type: str | None
+    source_value: str | None
+    status: str
+    error_message: str | None
+    converted_cache_path: str | None
+    _is_font: bool
+
+
+class _ModificationEntry(_NewModificationEntry):
+    id: str
+
+
+class _FastFlagSettings(TypedDict, total=False):
+    rendering_mode: str
+    msaa: str
+    disable_dpi_scale: bool
+    alt_enter_fullscreen: bool
+    texture_quality: str
+    mesh_lod_enabled: bool
+    mesh_lod: int
+    frm_quality_enabled: bool
+    frm_quality: int
+    grey_sky: bool
+    pause_voxelizer: bool
+    grass_max: int | None
+    grass_min: int | None
+    grass_motion: int | None
+
+
+type _JsonScalar = str | int | float | bool | None
+type _JsonValue = _JsonScalar | list[_JsonValue] | dict[str, _JsonValue]
+
+
+class _FastFlagProfileManagerLike(Protocol):
+    def list_profiles(self) -> list[str]: ...
+    def save(self, name: str, flags: dict[str, object]) -> str: ...
+    def load(self, name: str) -> dict[str, str]: ...
+    def delete(self, name: str) -> None: ...
+    def rename(self, old_name: str, new_name: str) -> str: ...
+
+
+class _PendingModificationsQueueLike(Protocol):
+    def enqueue_fast_flags(self, settings: _FastFlagSettings) -> None: ...
+    def enqueue_framerate_cap(self, value: int) -> None: ...
+
+
+class _ModificationManagerLike(Protocol):
+    entry_status_changed: SignalInstance
+    apply_finished: SignalInstance
+    restore_finished: SignalInstance
+    entries: list[_ModificationEntry]
+    fast_flags: _FastFlagSettings
+    fast_flags_enabled: bool
+    framerate_cap: int
+    pending_modifications_queue: _PendingModificationsQueueLike
+
+    @property
+    def roblox_dirs(self) -> list[Path]: ...
+
+    def add_entry(self, entry: _NewModificationEntry) -> str: ...
+    def update_entry(self, entry_id: str, **kwargs: str | None) -> bool: ...
+    def remove_entry(self, entry_id: str) -> bool: ...
+    def clear_entry(self, entry_id: str) -> bool: ...
+    def restore_orphaned_stash(self, target_path: str) -> bool: ...
+    def sync_saved_global_settings(self) -> None: ...
+    def reset_framerate_cap(self) -> None: ...
+    def write_fast_flags(self, settings: _FastFlagSettings) -> None: ...
+    def apply_pending_modifications(self) -> None: ...
+
+
+type _HotkeyBinding = dict[str, int | bool | str]
+type _HotkeyBindings = dict[str, _HotkeyBinding]
+type _HotkeyController = WindowsCustomFFlagHotkeyController | LinuxCustomFFlagHotkeyController
+type _HotkeyService = WindowsHotkeyService | LinuxHotkeyService
+
+
+def _style_or_none(widget: QWidget) -> QStyle | None:
+    return widget.style()
+
+
+def _current_list_item(widget: QListWidget) -> QListWidgetItem | None:
+    return widget.currentItem()
+
+
+def _standard_button_or_none(
+    button_box: QDialogButtonBox, button: QDialogButtonBox.StandardButton
+) -> QPushButton | None:
+    return button_box.button(button)
+
+
+def _is_object_dict(value: object) -> TypeGuard[dict[object, object]]:
+    return isinstance(value, dict)
+
+
+def _is_hotkey_bindings(value: object) -> TypeGuard[_HotkeyBindings]:
+    return isinstance(value, dict)
+
+
+def _linux_hotkey_service(service: _HotkeyService) -> LinuxHotkeyService:
+    if TYPE_CHECKING:
+        assert isinstance(service, LinuxHotkeyService)
+    return service
+
+
+def _required_config(config: ConfigManager | None) -> ConfigManager:
+    if TYPE_CHECKING:
+        assert config is not None
+    return config
+
+
+def _object_flags(flags: dict[str, str]) -> dict[str, object]:
+    return cast('dict[str, object]', flags)
+
 
 # ---------------------------------------------------------------------------
 # Built-in entry definitions
@@ -220,7 +360,7 @@ SOUNDS = [
 ]
 
 if sys.platform.startswith('linux'):
-    SOUNDS = [
+    SOUNDS[:] = [
         sound
         for sound in SOUNDS
         if sound[1].replace('\\', '/').strip('/') != 'content/sounds/ouch.ogg'
@@ -407,8 +547,8 @@ class _RichTextButton(QPushButton):
         y_offset: int = 0,
         suffix_x_offset: int = 0,
         suffix_pixel_size: int | None = None,
-        parent=None,
-    ):
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._label = label
         self._suffix = suffix
@@ -420,7 +560,8 @@ class _RichTextButton(QPushButton):
         # the style's actual button padding/minimum width, not a dummy glyph.
         super().setText(self._label + (f' {self._suffix}' if self._suffix else ''))
 
-    def sizeHint(self):
+    @override
+    def sizeHint(self) -> QSize:
         from PySide6.QtGui import QFont, QFontMetrics
 
         hint = super().sizeHint()
@@ -445,7 +586,8 @@ class _RichTextButton(QPushButton):
         hint.setWidth(hint.width() + extra_width)
         return hint
 
-    def paintEvent(self, a0):
+    @override
+    def paintEvent(self, a0: QPaintEvent) -> None:
         from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPalette
         from PySide6.QtWidgets import QStyle, QStyleOptionButton
 
@@ -453,7 +595,7 @@ class _RichTextButton(QPushButton):
         self.initStyleOption(opt)
         opt.text = ''
         painter = QPainter(self)
-        st = self.style()
+        st = _style_or_none(self)
         if st is None:
             painter.end()
             return
@@ -529,16 +671,17 @@ class CollapsibleSection(QWidget):
     _COLLAPSED_ARROW = '\u25b6'
     _DEFAULT_ARROW_STYLE = 'border: none;'
     _WINDOWS_COLLAPSED_ARROW_SIZE = 19
+    WINDOWS_COLLAPSED_ARROW_SIZE = _WINDOWS_COLLAPSED_ARROW_SIZE
     _WINDOWS_EXPANDED_ARROW_STYLE = 'font-size: 11px; border: none;'
     _WINDOWS_COLLAPSED_ARROW_STYLE = f'font-size: {_WINDOWS_COLLAPSED_ARROW_SIZE}px; border: none;'
 
     def __init__(
         self,
         title: str,
-        parent=None,
+        parent: QWidget | None = None,
         expanded: bool = True,
         header_widgets: list[QWidget] | None = None,
-    ):
+    ) -> None:
         super().__init__(parent)
 
         self._expanded = expanded
@@ -605,7 +748,8 @@ class CollapsibleSection(QWidget):
         main.addStretch()
         self.setLayout(main)
 
-    def paintEvent(self, a0):  # noqa: N802
+    @override
+    def paintEvent(self, a0: QPaintEvent) -> None:
         """Draw a rounded-rect card that adapts to dark and light themes."""
         from PySide6.QtCore import QRectF
         from PySide6.QtGui import QPainter, QPainterPath
@@ -625,7 +769,7 @@ class CollapsibleSection(QWidget):
     def content_layout(self) -> QVBoxLayout:
         return self._content_layout
 
-    def add_widget(self, widget: QWidget):
+    def add_widget(self, widget: QWidget) -> None:
         self._content_layout.addWidget(widget)
 
     def _arrow_style(self, expanded: bool) -> str:
@@ -638,11 +782,11 @@ class CollapsibleSection(QWidget):
             )
         return self._DEFAULT_ARROW_STYLE
 
-    def _set_arrow_state(self, expanded: bool):
+    def _set_arrow_state(self, expanded: bool) -> None:
         self._arrow.setText(self._EXPANDED_ARROW if expanded else self._COLLAPSED_ARROW)
         self._arrow.setStyleSheet(self._arrow_style(expanded))
 
-    def toggle(self):
+    def toggle(self) -> None:
         self._expanded = not self._expanded
         self._set_arrow_state(self._expanded)
 
@@ -674,7 +818,7 @@ class CollapsibleSection(QWidget):
 
         self._animation.start()
 
-    def _finish_collapse(self):
+    def _finish_collapse(self) -> None:
         self._content_layout.setEnabled(True)
         self._content_layout.activate()
 
@@ -687,14 +831,16 @@ class CollapsibleSection(QWidget):
 class NoWheelSpinBox(QSpinBox):
     """QSpinBox that ignores wheel events to prevent accidental value changes."""
 
-    def wheelEvent(self, e):
+    @override
+    def wheelEvent(self, e: QWheelEvent) -> None:
         e.ignore()
 
 
 class NoWheelSlider(QSlider):
     """QSlider that ignores wheel events to prevent accidental value changes."""
 
-    def wheelEvent(self, e):
+    @override
+    def wheelEvent(self, e: QWheelEvent) -> None:
         e.ignore()
 
 
@@ -706,14 +852,16 @@ class NoWheelSlider(QSlider):
 class DropdownComboBox(QComboBox):
     """QComboBox that paints ▼ as the dropdown indicator and ignores wheel events."""
 
-    def wheelEvent(self, e):
+    @override
+    def wheelEvent(self, e: QWheelEvent) -> None:
         """Ignore wheel events to prevent accidental value changes."""
         e.ignore()
 
-    def paintEvent(self, e):
+    @override
+    def paintEvent(self, e: QPaintEvent) -> None:
         from PySide6.QtWidgets import QStyle, QStyleOptionComboBox, QStylePainter
 
-        style = self.style()
+        style = _style_or_none(self)
         if style is None:
             super().paintEvent(e)
             return
@@ -753,10 +901,12 @@ class DropdownComboBox(QComboBox):
 class CompactBooleanComboBox(QComboBox):
     """A borderless True/False selector that blends into a table cell."""
 
-    def wheelEvent(self, e):
+    @override
+    def wheelEvent(self, e: QWheelEvent) -> None:
         e.ignore()
 
-    def paintEvent(self, e):
+    @override
+    def paintEvent(self, e: QPaintEvent) -> None:
         painter = QPainter(self)
         if self.hasFocus() or self.underMouse():
             painter.fillRect(self.rect(), self.palette().alternateBase())
@@ -777,7 +927,13 @@ class FastFlagValueDelegate(QStyledItemDelegate):
 
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
 
-    def createEditor(self, parent, option, index):
+    @override
+    def createEditor(
+        self,
+        parent: QWidget,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> QWidget:
         name = str(index.sibling(index.row(), 0).data() or '')
         if name.startswith(self._BOOLEAN_FLAG_PREFIXES):
             editor = CompactBooleanComboBox(parent)
@@ -787,12 +943,13 @@ class FastFlagValueDelegate(QStyledItemDelegate):
             return editor
         return super().createEditor(parent, option, index)
 
-    def _commit_and_close_boolean_editor(self, editor: QComboBox, _selected_index: int):
+    def _commit_and_close_boolean_editor(self, editor: QComboBox, _selected_index: int) -> None:
         """Finish the table edit as soon as a boolean is picked from its popup."""
         self.commitData.emit(editor)
         self.closeEditor.emit(editor, QAbstractItemDelegate.EndEditHint.NoHint)
 
-    def setEditorData(self, editor, index):
+    @override
+    def setEditorData(self, editor: QWidget, index: QModelIndex | QPersistentModelIndex) -> None:
         if isinstance(editor, QComboBox):
             stored = index.data(Qt.ItemDataRole.UserRole)
             if stored is None:
@@ -807,7 +964,10 @@ class FastFlagValueDelegate(QStyledItemDelegate):
             return
         super().setEditorData(editor, index)
 
-    def setModelData(self, editor, model, index):
+    @override
+    def setModelData(
+        self, editor: QWidget, model: QAbstractItemModel, index: QModelIndex | QPersistentModelIndex
+    ) -> None:
         if isinstance(editor, QComboBox):
             value = str(editor.currentData())
             display = (
@@ -833,15 +993,15 @@ class ModRowWidget(QWidget):
 
     def __init__(
         self,
-        manager: ModificationManager,
+        manager: _ModificationManagerLike,
         display_name: str,
         target_path: str,
         file_filter: str = 'modifications.filter.all_files',
         deletable: bool = False,
         mute_bundled: str | None = None,
         is_font: bool = False,
-        parent=None,
-    ):
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._manager = manager
         self._display_name = display_name
@@ -860,7 +1020,7 @@ class ModRowWidget(QWidget):
         # Try to find an existing entry for this target
         self._sync_from_manager()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QHBoxLayout()
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
@@ -894,7 +1054,7 @@ class ModRowWidget(QWidget):
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(1000)
         self._debounce.timeout.connect(self._apply_from_text)
-        self._source_edit.textChanged.connect(lambda _: self._debounce.start())
+        self._source_edit.textChanged.connect(self._restart_debounce)
         self._source_edit.editingFinished.connect(self._on_editing_finished)
 
         # Pending-visibility timer: show 'Applying...' only if apply takes > 500 ms
@@ -919,7 +1079,7 @@ class ModRowWidget(QWidget):
 
         # Preview button
         preview_arrow_size = (
-            CollapsibleSection._WINDOWS_COLLAPSED_ARROW_SIZE if os.name == 'nt' else None
+            CollapsibleSection.WINDOWS_COLLAPSED_ARROW_SIZE if os.name == 'nt' else None
         )
         self._preview_btn = _RichTextButton(
             tr('modifications.preview'),
@@ -945,7 +1105,7 @@ class ModRowWidget(QWidget):
     # Sync with manager
     # ------------------------------------------------------------------
 
-    def _sync_from_manager(self):
+    def _sync_from_manager(self) -> None:
         """Find our entry in the manager (by target_path) and update UI."""
         for entry in self._manager.entries:
             if entry.get('target_path') == self._target_path:
@@ -962,7 +1122,7 @@ class ModRowWidget(QWidget):
         # No entry in JSON at all — still check for an orphaned stash.
         self._check_for_orphaned_stash()
 
-    def _check_for_orphaned_stash(self):
+    def _check_for_orphaned_stash(self) -> None:
         """Show a warning if a stash file exists but Fleasion has no active record."""
         from ..modifications.manager import MOD_ORIGINALS_DIR
 
@@ -980,11 +1140,11 @@ class ModRowWidget(QWidget):
                 tr('ui.gui.modifications_tab.a_stash_of_the_original_file_was')
             )
 
-    def _on_status_changed(self, entry_id: str, status: str, error_msg: str):
+    def _on_status_changed(self, entry_id: str, status: str, error_msg: str) -> None:
         if entry_id == self._entry_id:
             self._update_status(status, error_msg)
 
-    def _update_status(self, status: str, error_msg: str = ''):
+    def _update_status(self, status: str, error_msg: str | None = '') -> None:
         # Final status: stop the pending-visibility timer
         if status != 'pending':
             self._pending_timer.stop()
@@ -1016,8 +1176,8 @@ class ModRowWidget(QWidget):
     # Actions
     # ------------------------------------------------------------------
 
-    def _apply_source(self, source_type: str, source_value: str):
-        entry_data = {
+    def _apply_source(self, source_type: str, source_value: str) -> None:
+        entry_data: _NewModificationEntry = {
             'display_name': self._display_name,
             'target_path': self._target_path,
             'source_type': source_type,
@@ -1036,11 +1196,11 @@ class ModRowWidget(QWidget):
         # Show 'Applying...' only if the apply takes longer than 500 ms
         self._pending_timer.start()
 
-    def _on_edit(self):
+    def _on_edit(self) -> None:
         # Kept as a no-op stub — inline textbox replaced the Edit dialog.
         pass
 
-    def _on_reset(self):
+    def _on_reset(self) -> None:
         self._debounce.stop()
         if self._entry_id:
             if not self._manager.clear_entry(self._entry_id):
@@ -1055,13 +1215,13 @@ class ModRowWidget(QWidget):
         self._set_source_text_silent('')
         self._update_status('not_set')
 
-    def _on_delete(self):
+    def _on_delete(self) -> None:
         if self._entry_id:
             if not self._manager.remove_entry(self._entry_id):
                 return
         self.delete_requested.emit(self._entry_id or '')
 
-    def _on_preview(self):
+    def _on_preview(self) -> None:
         dlg = ModPreviewDialog(
             self._manager,
             self._target_path,
@@ -1074,7 +1234,15 @@ class ModRowWidget(QWidget):
     # External helpers
     # ------------------------------------------------------------------
 
-    def apply_source_external(self, source_type: str, source_value: str):
+    @property
+    def target_path(self) -> str:
+        return self._target_path
+
+    def apply_raw_source(self, raw_source: str) -> None:
+        self._set_source_text_silent(raw_source)
+        self._apply_from_text()
+
+    def apply_source_external(self, source_type: str, source_value: str) -> None:
         """Called externally (e.g. by ‘Apply to All Sky Faces’)."""
         self._apply_source(source_type, source_value)
         display = source_value if source_type in ('local_file', 'asset_id', 'bundled') else ''
@@ -1119,7 +1287,7 @@ class ModRowWidget(QWidget):
         self._source_edit.setToolTip('')
 
     # Map target-file extensions to their bundled empty counterpart.
-    _BUNDLED_EMPTY_BY_EXT: dict[str, str] = {
+    _BUNDLED_EMPTY_BY_EXT: ClassVar[dict[str, str]] = {
         '.mp3': 'bundled:empty.mp3',
         '.ogg': 'bundled:empty.ogg',
         '.wav': 'bundled:empty.mp3',
@@ -1181,6 +1349,9 @@ class ModRowWidget(QWidget):
 
         self._apply_source(src_type, src_value)
 
+    def _restart_debounce(self, _text: str) -> None:
+        self._debounce.start()
+
     def _on_editing_finished(self) -> None:
         """Apply immediately on Return / focus-loss.
 
@@ -1226,11 +1397,11 @@ class ModPreviewDialog(QDialog):
 
     def __init__(
         self,
-        manager: ModificationManager,
+        manager: _ModificationManagerLike,
         target_path: str,
         display_name: str,
-        parent=None,
-    ):
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._manager = manager
         self._target_path = target_path
@@ -1467,7 +1638,7 @@ class ModPreviewDialog(QDialog):
             return dst.read_bytes()
         return read_current_platform_original_asset(self._target_path, roblox_dir)
 
-    def _on_export(self):
+    def _on_export(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
             tr('ui.gui.modifications_tab.export_original_file'),
@@ -1484,7 +1655,7 @@ class ModPreviewDialog(QDialog):
                     [export_path],
                 )
 
-    def _on_export_converted(self):
+    def _on_export_converted(self) -> None:
         if not self._mod_converted_bytes:
             return
         stem = Path(self._target_path).stem
@@ -1503,7 +1674,9 @@ class ModPreviewDialog(QDialog):
                 [export_path],
             )
 
-    def _show_export_complete_message(self, title: str, message: str, exported_paths):
+    def _show_export_complete_message(
+        self, title: str, message: str, exported_paths: list[Path]
+    ) -> None:
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Information)
         msg.setWindowTitle(title)
@@ -1544,7 +1717,7 @@ class CustomFFlagWarningDialog(QDialog):
 
     CONFIRM_DELAY_SECONDS = 15
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.modifications_tab.are_you_sure'))
         self.setModal(True)
@@ -1573,7 +1746,7 @@ class CustomFFlagWarningDialog(QDialog):
         self._update_confirm_text()
         self._timer.start()
 
-    def _update_confirm_text(self):
+    def _update_confirm_text(self) -> None:
         if self._seconds_remaining > 0:
             self._confirm_button.setText(
                 tr(
@@ -1586,7 +1759,7 @@ class CustomFFlagWarningDialog(QDialog):
                 tr('ui.gui.modifications_tab.i_accept_the_risk_enable_custom_fastflags')
             )
 
-    def _tick(self):
+    def _tick(self) -> None:
         self._seconds_remaining = max(0, self._seconds_remaining - 1)
         self._update_confirm_text()
         if self._seconds_remaining == 0:
@@ -1597,17 +1770,17 @@ class CustomFFlagWarningDialog(QDialog):
 class FastFlagProfilesDialog(QDialog):
     """Manage named, on-disk FastFlag profiles without hiding the current editor."""
 
-    def __init__(self, flags: dict[str, str], parent=None):
+    def __init__(self, flags: dict[str, str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.modifications_tab.custom_fastflag_profiles'))
         self.setMinimumWidth(560)
         self._flags = dict(flags)
-        self._profiles = FastFlagProfileManager()
+        self._profiles: _FastFlagProfileManagerLike = FastFlagProfileManager()
         self.loaded_flags: dict[str, str] | None = None
         self._setup_ui()
         self._refresh_profiles()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
         description = QLabel(tr('ui.gui.modifications_tab.save_the_current_custom_fastflags_as_a'))
@@ -1625,7 +1798,7 @@ class FastFlagProfilesDialog(QDialog):
 
         self._profile_list = QListWidget()
         self._profile_list.itemSelectionChanged.connect(self._on_selection_changed)
-        self._profile_list.itemDoubleClicked.connect(lambda _item: self._load_profile())
+        self._profile_list.itemDoubleClicked.connect(self._on_profile_double_clicked)
         layout.addWidget(self._profile_list)
 
         self._replace_flags = QCheckBox(
@@ -1660,11 +1833,14 @@ class FastFlagProfilesDialog(QDialog):
         layout.addWidget(close)
         self._set_actions_enabled(False)
 
+    def _on_profile_double_clicked(self, _item: QListWidgetItem) -> None:
+        self._load_profile()
+
     def _selected_name(self) -> str | None:
-        item = self._profile_list.currentItem()
+        item = _current_list_item(self._profile_list)
         return item.text() if item is not None else None
 
-    def _set_actions_enabled(self, enabled: bool):
+    def _set_actions_enabled(self, enabled: bool) -> None:
         for button in (
             self._load_button,
             self._update_button,
@@ -1674,13 +1850,13 @@ class FastFlagProfilesDialog(QDialog):
         ):
             button.setEnabled(enabled)
 
-    def _on_selection_changed(self):
+    def _on_selection_changed(self) -> None:
         name = self._selected_name()
         self._set_actions_enabled(name is not None)
         if name:
             self._name.setText(name)
 
-    def _refresh_profiles(self, selected: str | None = None):
+    def _refresh_profiles(self, selected: str | None = None) -> None:
         selected = selected or self._selected_name()
         self._profile_list.clear()
         for name in self._profiles.list_profiles():
@@ -1691,22 +1867,22 @@ class FastFlagProfilesDialog(QDialog):
                 self._profile_list.setCurrentItem(matches[0])
         self._set_actions_enabled(self._selected_name() is not None)
 
-    def _show_error(self, action: str, exc: Exception):
+    def _show_error(self, action: str, exc: Exception) -> None:
         QMessageBox.warning(
             self,
             tr('ui.gui.modifications_tab.could_not_value_profile', value0=action),
             str(exc),
         )
 
-    def _save_profile(self):
+    def _save_profile(self) -> None:
         try:
-            name = self._profiles.save(self._name.text(), self._flags)
+            name = self._profiles.save(self._name.text(), _object_flags(self._flags))
         except (OSError, ValueError) as exc:
             self._show_error(tr('ui.gui.modifications_tab.profile_action_save'), exc)
             return
         self._refresh_profiles(name)
 
-    def _load_profile(self):
+    def _load_profile(self) -> None:
         name = self._selected_name()
         if not name:
             return
@@ -1718,16 +1894,16 @@ class FastFlagProfilesDialog(QDialog):
         self.loaded_flags = flags if self._replace_flags.isChecked() else {**self._flags, **flags}
         self.accept()
 
-    def _update_profile(self):
+    def _update_profile(self) -> None:
         name = self._selected_name()
         if not name:
             return
         try:
-            self._profiles.save(name, self._flags)
+            self._profiles.save(name, _object_flags(self._flags))
         except (OSError, ValueError) as exc:
             self._show_error(tr('ui.gui.modifications_tab.profile_action_update'), exc)
 
-    def _copy_profile(self):
+    def _copy_profile(self) -> None:
         name = self._selected_name()
         if not name:
             return
@@ -1736,7 +1912,7 @@ class FastFlagProfilesDialog(QDialog):
         except (OSError, ValueError) as exc:
             self._show_error(tr('ui.gui.modifications_tab.profile_action_copy'), exc)
 
-    def _rename_profile(self):
+    def _rename_profile(self) -> None:
         old_name = self._selected_name()
         if not old_name:
             return
@@ -1755,7 +1931,7 @@ class FastFlagProfilesDialog(QDialog):
             return
         self._refresh_profiles(name)
 
-    def _delete_profile(self):
+    def _delete_profile(self) -> None:
         name = self._selected_name()
         if not name:
             return
@@ -1803,7 +1979,9 @@ class FFlagBrowserDialog(QDialog):
         'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/'
         '03a46e5f35e7aa5d85310189b477caee20b20761/FVariables.txt'
     )
-    _BYPASS_CUSTOM_FFLAGS_HEADER = {'X-Fleasion-Bypass-Custom-FFlags': '1'}
+    _BYPASS_CUSTOM_FFLAGS_HEADER: ClassVar[dict[str, str]] = {
+        'X-Fleasion-Bypass-Custom-FFlags': '1'
+    }
     _CACHE_PATH = APP_CACHE_DIR / 'fflag_browser.json'
     _CACHE_TTL_SECONDS = 60 * 60
     _CACHE_VERSION = 1
@@ -1823,7 +2001,7 @@ class FFlagBrowserDialog(QDialog):
     flags_loaded = Signal(object)
     load_failed = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.modifications_tab.browse_roblox_fastflags'))
         self.setMinimumSize(820, 580)
@@ -1837,7 +2015,7 @@ class FFlagBrowserDialog(QDialog):
         self.load_failed.connect(self._show_load_error)
         self._refresh()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
@@ -1909,7 +2087,7 @@ class FFlagBrowserDialog(QDialog):
         return value if value is not None else tr('modifications.fastflags.no_value')
 
     @staticmethod
-    def _extract_flags(payload: object) -> dict[str, str]:
+    def _extract_flags(payload: _JsonValue) -> dict[str, str]:
         """Validate the public ClientSettings response without accepting arbitrary JSON."""
         if not isinstance(payload, dict):
             raise ValueError('Roblox returned an invalid FastFlag response.')
@@ -1967,10 +2145,13 @@ class FFlagBrowserDialog(QDialog):
     def _read_cache(cls, *, now: float | None = None) -> dict[str, str | None] | None:
         """Return the recent merged result, ignoring malformed or expired cache files."""
         try:
-            cached = json.loads(cls._CACHE_PATH.read_text(encoding='utf-8'))
-            if cached.get('version') != cls._CACHE_VERSION:
+            cached: _JsonValue = json.loads(cls._CACHE_PATH.read_text(encoding='utf-8'))
+            if not isinstance(cached, dict) or cached.get('version') != cls._CACHE_VERSION:
                 return None
-            fetched_at = float(cached['fetched_at'])
+            raw_fetched_at = cached['fetched_at']
+            if not isinstance(raw_fetched_at, str | int | float):
+                return None
+            fetched_at = float(raw_fetched_at)
             age = (time.time() if now is None else now) - fetched_at
             raw_flags = cached['flags']
             if not 0 <= age < cls._CACHE_TTL_SECONDS or not isinstance(raw_flags, dict):
@@ -1980,13 +2161,13 @@ class FFlagBrowserDialog(QDialog):
 
         flags: dict[str, str | None] = {}
         for raw_name, value in raw_flags.items():
-            name = raw_name.strip() if isinstance(raw_name, str) else ''
+            name = raw_name.strip()
             if name.startswith(cls._FAMILIES) and (value is None or isinstance(value, str)):
                 flags[name] = value
         return flags or None
 
     @classmethod
-    def _write_cache(cls, flags: dict[str, str | None], *, now: float | None = None):
+    def _write_cache(cls, flags: dict[str, str | None], *, now: float | None = None) -> None:
         """Atomically persist a successfully resolved union for the next hour."""
         temporary_path = cls._CACHE_PATH.with_name(f'.{cls._CACHE_PATH.name}.tmp')
         try:
@@ -2012,7 +2193,7 @@ class FFlagBrowserDialog(QDialog):
             except OSError:
                 pass
 
-    def _refresh(self, force: bool = False):
+    def _refresh(self, force: bool = False) -> None:
         if self._refresh_button.isEnabled() is False:
             return
         if not force:
@@ -2028,7 +2209,7 @@ class FFlagBrowserDialog(QDialog):
         self._count.setStyleSheet('color: #999;')
         threading.Thread(target=self._fetch_flags, daemon=True).start()
 
-    def _fetch_flags(self):
+    def _fetch_flags(self) -> None:
         try:
             # Tell Fleasion's ClientSettings interceptor to pass this browser
             # request through. Active custom flags must not look like values
@@ -2080,7 +2261,7 @@ class FFlagBrowserDialog(QDialog):
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             self.load_failed.emit(tr('modifications.fastflags.load_failed', error=exc))
 
-    def _apply_flags(self, flags: dict[str, str | None]):
+    def _apply_flags(self, flags: dict[str, str | None]) -> None:
         self._flags = dict(sorted(flags.items(), key=lambda item: item[0].casefold()))
         current_family = self._family_filter.currentData()
         family_counts: dict[str, int] = {}
@@ -2107,12 +2288,12 @@ class FFlagBrowserDialog(QDialog):
         self._populate_table()
         self._filter_rows()
 
-    def _show_load_error(self, message: str):
+    def _show_load_error(self, message: str) -> None:
         self._refresh_button.setEnabled(True)
         self._count.setText(message)
         self._count.setStyleSheet('color: #ef8f8f;')
 
-    def _filter_rows(self, *_args):
+    def _filter_rows(self, *_args: object) -> None:
         query = self._search.text().strip().casefold()
         family = self._family_filter.currentData() or ''
         visible_count = 0
@@ -2151,7 +2332,7 @@ class FFlagBrowserDialog(QDialog):
             self._count.setStyleSheet('color: #999;')
         self._update_selection_button()
 
-    def _populate_table(self):
+    def _populate_table(self) -> None:
         """Populate once per download; search and filters only hide existing rows."""
         self._table.setUpdatesEnabled(False)
         self._table.blockSignals(True)
@@ -2170,13 +2351,14 @@ class FFlagBrowserDialog(QDialog):
             self._table.setUpdatesEnabled(True)
 
     def _selected_names(self) -> list[str]:
-        return [
-            self._table.item(row, 0).text()
-            for row in sorted({index.row() for index in self._table.selectedIndexes()})
-            if self._table.item(row, 0) is not None
-        ]
+        names: list[str] = []
+        for row in sorted({index.row() for index in self._table.selectedIndexes()}):
+            item = self._table.item(row, 0)
+            if item is not None:
+                names.append(item.text())
+        return names
 
-    def _update_selection_button(self):
+    def _update_selection_button(self) -> None:
         selected_count = len(self._selected_names())
         self._add_button.setText(
             tr('modifications.add_selected_count', count=selected_count)
@@ -2185,7 +2367,7 @@ class FFlagBrowserDialog(QDialog):
         )
         self._add_button.setEnabled(selected_count > 0)
 
-    def _add_selected(self):
+    def _add_selected(self) -> None:
         self.selected_flags = {
             name: value if value is not None else ''
             for name in self._selected_names()
@@ -2199,7 +2381,7 @@ class FFlagBrowserDialog(QDialog):
 class WindowsHotkeyCaptureDialog(QDialog):
     """Capture one physical Windows key, including a bare modifier key."""
 
-    _MODIFIER_KEYS = {
+    _MODIFIER_KEYS: ClassVar[set[int]] = {
         int(Qt.Key.Key_Control),
         int(Qt.Key.Key_Shift),
         int(Qt.Key.Key_Alt),
@@ -2207,11 +2389,11 @@ class WindowsHotkeyCaptureDialog(QDialog):
         int(Qt.Key.Key_AltGr),
     }
 
-    def __init__(self, flag_name: str, parent=None):
+    def __init__(self, flag_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.binding: dict[str, int | bool] | None = None
+        self.binding: _HotkeyBinding | None = None
         self.clear_requested = False
-        self._pending_modifier: dict[str, int | bool] | None = None
+        self._pending_modifier: _HotkeyBinding | None = None
         self._pending_modifier_key: int | None = None
         self._suppress_mouse_capture = False
         self.setWindowTitle(tr('ui.gui.modifications_tab.set_fastflag_keybind'))
@@ -2234,18 +2416,18 @@ class WindowsHotkeyCaptureDialog(QDialog):
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
         clear_button.installEventFilter(self)
-        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_button = _standard_button_or_none(buttons, QDialogButtonBox.StandardButton.Cancel)
         if cancel_button is not None:
             cancel_button.installEventFilter(self)
         layout.addWidget(buttons)
 
     @staticmethod
-    def _enum_value(value) -> int:
+    def _enum_value(value: Qt.KeyboardModifier) -> int:
         """PySide6 flag enums expose `.value`; they are not reliably int-convertible."""
-        return int(getattr(value, 'value', value))
+        return value.value
 
     @classmethod
-    def _modifier_mask(cls, modifiers) -> int:
+    def _modifier_mask(cls, modifiers: Qt.KeyboardModifier) -> int:
         from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN
 
         qt_modifiers = cls._enum_value(modifiers)
@@ -2261,7 +2443,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
         return result
 
     @staticmethod
-    def _event_binding(event, modifiers: int) -> dict[str, int | bool] | None:
+    def _event_binding(event: QKeyEvent, modifiers: int) -> _HotkeyBinding | None:
         from .windows_hotkeys import modifier_mask_for_virtual_key
 
         scan_code = int(event.nativeScanCode())
@@ -2290,7 +2472,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
             'modifiers': modifiers & ~modifier_mask_for_virtual_key(virtual_key),
         }
 
-    def _clear(self):
+    def _clear(self) -> None:
         self.clear_requested = True
         self.accept()
 
@@ -2314,7 +2496,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
             else tr('modifications.hotkey.waiting_for_combination')
         )
 
-    def keyPressEvent(self, event):
+    @override
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         key = int(event.key())
         if event.isAutoRepeat():
             return
@@ -2337,7 +2520,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self.binding = binding
         self.accept()
 
-    def keyReleaseEvent(self, event):
+    @override
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
         if (
             event.isAutoRepeat()
             or self._pending_modifier is None
@@ -2347,7 +2531,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self.binding = self._pending_modifier
         self.accept()
 
-    def mousePressEvent(self, event):
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._suppress_mouse_capture:
             return super().mousePressEvent(event)
         button_map = {
@@ -2369,7 +2554,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
             return
         super().mousePressEvent(event)
 
-    def wheelEvent(self, event):
+    @override
+    def wheelEvent(self, event: QWheelEvent) -> None:
         delta = event.angleDelta().y()
         if delta:
             self.binding = {
@@ -2382,7 +2568,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
             return
         super().wheelEvent(event)
 
-    def eventFilter(self, watched, event):
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.MouseButtonPress:
             self._suppress_mouse_capture = True
         return super().eventFilter(watched, event)
@@ -2391,9 +2578,14 @@ class WindowsHotkeyCaptureDialog(QDialog):
 class LinuxHotkeyCaptureDialog(QDialog):
     """Capture a physical evdev key from Fleasion's passive Linux reader."""
 
-    def __init__(self, flag_name: str, hotkey_service, parent=None):
+    def __init__(
+        self,
+        flag_name: str,
+        hotkey_service: LinuxHotkeyService,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.binding: dict[str, int | str] | None = None
+        self.binding: _HotkeyBinding | None = None
         self.clear_requested = False
         self._service = hotkey_service
         self._pending_modifier: int | None = None
@@ -2417,7 +2609,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
         clear_button.installEventFilter(self)
-        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_button = _standard_button_or_none(buttons, QDialogButtonBox.StandardButton.Cancel)
         if cancel_button is not None:
             cancel_button.installEventFilter(self)
         layout.addWidget(buttons)
@@ -2425,11 +2617,11 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self._service.key_released.connect(self._key_released)
         self._service.wheel_scrolled.connect(self._wheel_scrolled)
 
-    def _clear(self):
+    def _clear(self) -> None:
         self.clear_requested = True
         self.accept()
 
-    def _key_pressed(self, code: int, modifiers: int):
+    def _key_pressed(self, code: int, modifiers: int) -> None:
         from .linux_hotkeys import modifier_mask_for_evdev_code
 
         # Raw evdev sees the dialog controls too. Only Clear and Cancel arm
@@ -2437,10 +2629,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         # button capture a moment so Qt has time to deliver a Clear/Cancel
         # click first; if it closes this dialog, the queued capture is ignored.
         if code >= 0x100:
-            QTimer.singleShot(
-                25,
-                lambda code=code, modifiers=modifiers: self._capture_mouse_button(code, modifiers),
-            )
+            QTimer.singleShot(25, partial(self._capture_mouse_button, code, modifiers))
             return
         own_modifier = modifier_mask_for_evdev_code(code)
         binding = {
@@ -2457,7 +2646,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self.binding = binding
         self.accept()
 
-    def _capture_mouse_button(self, code: int, modifiers: int):
+    def _capture_mouse_button(self, code: int, modifiers: int) -> None:
         if self._suppress_mouse_capture or not self.isVisible():
             return
         self.binding = {
@@ -2468,7 +2657,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         }
         self.accept()
 
-    def _wheel_scrolled(self, code: int, modifiers: int):
+    def _wheel_scrolled(self, code: int, modifiers: int) -> None:
         self.binding = {
             'platform': 'linux_evdev',
             'kind': 'mouse_wheel',
@@ -2477,13 +2666,14 @@ class LinuxHotkeyCaptureDialog(QDialog):
         }
         self.accept()
 
-    def _key_released(self, code: int):
+    def _key_released(self, code: int) -> None:
         if code != self._pending_modifier:
             return
         self.binding = {'platform': 'linux_evdev', 'scan_code': code, 'modifiers': 0}
         self.accept()
 
-    def done(self, result: int):
+    @override
+    def done(self, result: int) -> None:
         try:
             self._service.key_pressed.disconnect(self._key_pressed)
             self._service.key_released.disconnect(self._key_released)
@@ -2492,7 +2682,8 @@ class LinuxHotkeyCaptureDialog(QDialog):
             pass
         super().done(result)
 
-    def eventFilter(self, watched, event):
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.MouseButtonPress:
             self._suppress_mouse_capture = True
         return super().eventFilter(watched, event)
@@ -2503,15 +2694,22 @@ class CustomFFlagEditor(QWidget):
 
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
 
-    def __init__(self, config_manager=None, proxy_master=None, parent=None, hotkey_controller=None):
+    def __init__(
+        self,
+        config_manager: ConfigManager | None = None,
+        proxy_master: ProxyMaster | None = None,
+        parent: QWidget | None = None,
+        hotkey_controller: _HotkeyController | None = None,
+    ) -> None:
         super().__init__(parent)
         self._config = config_manager
         self._proxy_master = proxy_master
         self._windows_keybinds = sys.platform == 'win32'
         self._linux_keybinds = sys.platform.startswith('linux')
         self._hotkeys_supported = self._windows_keybinds or self._linux_keybinds
-        self._hotkey_service = None
-        self._hotkey_controller = None
+        self._hotkey_service: _HotkeyService | None = None
+        self._linux_hotkey_service: LinuxHotkeyService | None = None
+        self._hotkey_controller: _HotkeyController | None = None
         self._owns_hotkey_controller = False
         if self._windows_keybinds:
             from .windows_hotkeys import WindowsCustomFFlagHotkeyController
@@ -2534,6 +2732,7 @@ class CustomFFlagEditor(QWidget):
                 )
                 self._owns_hotkey_controller = True
             self._hotkey_service = self._hotkey_controller.service
+            self._linux_hotkey_service = _linux_hotkey_service(self._hotkey_controller.service)
             self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         self._loading = False
         self._sort_column: int | None = 0
@@ -2541,7 +2740,7 @@ class CustomFFlagEditor(QWidget):
         self._setup_ui()
         self._load_flags()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(7)
@@ -2678,7 +2877,7 @@ class CustomFFlagEditor(QWidget):
         else:
             self._update_status()
 
-    def _load_flags(self, sync_hotkeys: bool = True):
+    def _load_flags(self, sync_hotkeys: bool = True) -> None:
         flags = dict(getattr(self._config, 'custom_fflags', {}) or {}) if self._config else {}
         self._replace_table_rows(sorted(flags.items(), key=lambda item: item[0].lower()))
         self._filter_rows(self._search.text())
@@ -2686,7 +2885,7 @@ class CustomFFlagEditor(QWidget):
         if sync_hotkeys:
             self._sync_hotkeys()
 
-    def _replace_table_rows(self, rows: list[tuple[str, str]]):
+    def _replace_table_rows(self, rows: list[tuple[str, str]]) -> None:
         """Bulk-load rows without constructing a widget for every boolean value."""
         self._loading = True
         self._table.setUpdatesEnabled(False)
@@ -2741,7 +2940,7 @@ class CustomFFlagEditor(QWidget):
         stored = value_item.data(Qt.ItemDataRole.UserRole)
         return str(stored) if stored is not None else value_item.text()
 
-    def _set_value_editor(self, row: int, name: str, value: str):
+    def _set_value_editor(self, row: int, name: str, value: str) -> None:
         """Store a lightweight value item; the boolean selector is created only when editing."""
         was_loading = self._loading
         self._loading = True
@@ -2773,12 +2972,16 @@ class CustomFFlagEditor(QWidget):
     def _disabled_flag_names(self) -> set[str]:
         return set(getattr(self._config, 'custom_fflag_disabled', []) or [])
 
-    def _keybinds(self) -> dict[str, dict[str, int | bool | str]]:
-        bindings = getattr(self._config, 'custom_fflag_keybinds', {}) or {}
-        return bindings if isinstance(bindings, dict) else {}
+    def _keybinds(self) -> _HotkeyBindings:
+        empty_bindings: _HotkeyBindings = {}
+        bindings: object = (
+            getattr(self._config, 'custom_fflag_keybinds', empty_bindings) or empty_bindings
+        )
+        return bindings if _is_hotkey_bindings(bindings) else empty_bindings
 
     @staticmethod
-    def _keybind_text(binding) -> str:
+    def _keybind_text(binding: _HotkeyBinding | None) -> str:
+        binding_text: Callable[[_HotkeyBinding | None], str]
         if sys.platform.startswith('linux'):
             from .linux_hotkeys import binding_text
         else:
@@ -2790,15 +2993,15 @@ class CustomFFlagEditor(QWidget):
         item = self._table.item(row, 2)
         return item is not None and item.checkState() == Qt.CheckState.Checked
 
-    def _save_hotkey_settings(self):
+    def _save_hotkey_settings(self) -> None:
         if not self._hotkeys_supported or self._config is None or self._loading:
             return
         names = set(self._flags_from_table())
-        disabled = {
-            self._table.item(row, 0).text()
-            for row in range(self._table.rowCount())
-            if self._table.item(row, 0) is not None and not self._flag_is_enabled(row)
-        }
+        disabled: set[str] = set()
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 0)
+            if item is not None and not self._flag_is_enabled(row):
+                disabled.add(item.text())
         bindings = {name: spec for name, spec in self._keybinds().items() if name in names}
         self._config.custom_fflag_disabled = sorted(disabled)
         self._config.custom_fflag_keybinds = bindings
@@ -2806,7 +3009,7 @@ class CustomFFlagEditor(QWidget):
         self._refresh_proxy_hosts()
         self._update_status()
 
-    def _prune_hotkey_settings(self, names: set[str]):
+    def _prune_hotkey_settings(self, names: set[str]) -> None:
         if not self._hotkeys_supported or self._config is None:
             return
         disabled = self._disabled_flag_names() & names
@@ -2815,7 +3018,7 @@ class CustomFFlagEditor(QWidget):
         self._config.custom_fflag_keybinds = bindings
         self._sync_hotkeys()
 
-    def _sync_hotkeys(self):
+    def _sync_hotkeys(self) -> None:
         if self._hotkey_controller is not None:
             self._hotkey_controller.sync()
         elif self._hotkey_service is not None:
@@ -2824,10 +3027,11 @@ class CustomFFlagEditor(QWidget):
             )
             self._hotkey_service.set_bindings(self._keybinds() if feature_enabled else {})
 
-    def _begin_linux_hotkey_capture(self) -> bool:
+    def _begin_linux_hotkey_capture(self) -> LinuxHotkeyService | None:
         """Open evdev only when a user first tries to set a Linux keybind."""
-        if self._hotkey_service is not None and self._hotkey_service.begin_capture():
-            return True
+        service = self._linux_hotkey_service
+        if service is not None and service.begin_capture():
+            return service
 
         first_attempt = bool(
             self._config is not None
@@ -2847,7 +3051,7 @@ class CustomFFlagEditor(QWidget):
             )
             self._status.setStyleSheet('color: #ffcc66;')
             log_buffer.log('CustomFFlags', f'Linux keybind capture unavailable: {detail}')
-            return False
+            return None
 
         prompt = QMessageBox(self)
         prompt.setWindowTitle(tr('ui.gui.modifications_tab.enable_linux_fastflag_keybinds'))
@@ -2862,13 +3066,11 @@ class CustomFFlagEditor(QWidget):
         setup_button = prompt.addButton(
             tr('ui.gui.modifications_tab.set_up_permissions'), QMessageBox.ButtonRole.AcceptRole
         )
-        not_now_button = prompt.addButton(
-            tr('ui.gui.modifications_tab.not_now'), QMessageBox.ButtonRole.RejectRole
-        )
+        prompt.addButton(tr('ui.gui.modifications_tab.not_now'), QMessageBox.ButtonRole.RejectRole)
         prompt.setDefaultButton(setup_button)
         prompt.exec()
         if prompt.clickedButton() != setup_button:
-            return False
+            return None
         try:
             from .linux_hotkeys import launch_permission_setup
 
@@ -2882,15 +3084,15 @@ class CustomFFlagEditor(QWidget):
                     value0=exc,
                 ),
             )
-            return False
+            return None
         QMessageBox.information(
             self,
             tr('ui.gui.modifications_tab.linux_keybind_setup_started'),
             tr('ui.gui.modifications_tab.complete_the_administrator_prompt_then_log_out'),
         )
-        return False
+        return None
 
-    def _edit_keybind(self, row: int, column: int):
+    def _edit_keybind(self, row: int, column: int) -> None:
         if column != 3:
             return
         name_item = self._table.item(row, 0)
@@ -2898,39 +3100,42 @@ class CustomFFlagEditor(QWidget):
         if not name:
             return
         if self._linux_keybinds:
-            if not self._begin_linux_hotkey_capture():
+            service = self._begin_linux_hotkey_capture()
+            if service is None:
                 return
-            dialog = LinuxHotkeyCaptureDialog(name, self._hotkey_service, self)
+            dialog = LinuxHotkeyCaptureDialog(name, service, self)
         else:
             dialog = WindowsHotkeyCaptureDialog(name, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         bindings = self._keybinds()
+        config = _required_config(self._config)
         if dialog.clear_requested:
             bindings.pop(name, None)
-            self._config.custom_fflag_keybinds = bindings
+            config.custom_fflag_keybinds = bindings
             self._load_flags()
             return
         if dialog.binding is None:
             return
         bindings[name] = dialog.binding
-        self._config.custom_fflag_keybinds = bindings
+        config.custom_fflag_keybinds = bindings
         self._load_flags()
 
-    def _toggle_flag_from_hotkey(self, name: str):
+    def _toggle_flag_from_hotkey(self, name: str) -> None:
         if self._hotkey_controller is not None:
             self._hotkey_controller.toggle_flag(name)
 
-    def _on_hotkey_toggled(self, _name: str):
+    def _on_hotkey_toggled(self, _name: str) -> None:
         if hasattr(self, '_table'):
             self._load_flags(sync_hotkeys=False)
 
-    def closeEvent(self, event):
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._owns_hotkey_controller and self._hotkey_controller is not None:
             self._hotkey_controller.stop()
         super().closeEvent(event)
 
-    def _on_cell_changed(self, row: int, column: int):
+    def _on_cell_changed(self, row: int, column: int) -> None:
         if self._loading:
             return
         if self._hotkeys_supported and column == 2:
@@ -2947,7 +3152,7 @@ class CustomFFlagEditor(QWidget):
             )
         self._save_table()
 
-    def _save_table(self, *_args):
+    def _save_table(self, *_args: object) -> None:
         if self._loading or self._config is None:
             return
         self._config.custom_fflags = self._flags_from_table()
@@ -2956,7 +3161,7 @@ class CustomFFlagEditor(QWidget):
         self._update_status()
         self._filter_rows(self._search.text())
 
-    def _update_status(self):
+    def _update_status(self) -> None:
         if not hasattr(self, '_status'):
             return
         count = len(self._flags_from_table()) if hasattr(self, '_table') else 0
@@ -2984,7 +3189,7 @@ class CustomFFlagEditor(QWidget):
             )
             self._status.setStyleSheet('color: #999;')
 
-    def _refresh_proxy_hosts(self):
+    def _refresh_proxy_hosts(self) -> None:
         if self._proxy_master is None:
             return
         try:
@@ -2992,7 +3197,7 @@ class CustomFFlagEditor(QWidget):
         except Exception as exc:
             log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
 
-    def _on_enabled_toggled(self, checked: bool):
+    def _on_enabled_toggled(self, checked: bool) -> None:
         if self._config is None or self._proxy_master is None:
             return
 
@@ -3011,7 +3216,7 @@ class CustomFFlagEditor(QWidget):
         self._refresh_proxy_hosts()
         self._update_status()
 
-    def _add_flag(self):
+    def _add_flag(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.gui.modifications_tab.add_custom_fastflag'))
         dialog.setMinimumWidth(620)
@@ -3029,7 +3234,7 @@ class CustomFFlagEditor(QWidget):
         form.addRow(tr('modifications.fastflag.name'), name_edit)
         form.addRow(tr('modifications.fastflag.value'), value_stack)
 
-        def update_add_value_editor(name: str):
+        def update_add_value_editor(name: str) -> None:
             value_stack.setCurrentWidget(
                 value_combo if self._is_boolean_flag(name.strip()) else value_edit
             )
@@ -3058,7 +3263,7 @@ class CustomFFlagEditor(QWidget):
         )
         self._set_flags(flags)
 
-    def _browse_fflags(self):
+    def _browse_fflags(self) -> None:
         dialog = FFlagBrowserDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.selected_flags:
             return
@@ -3066,7 +3271,7 @@ class CustomFFlagEditor(QWidget):
         flags.update(dialog.selected_flags)
         self._set_flags(flags)
 
-    def _set_flags(self, flags: dict):
+    def _set_flags(self, flags: dict[str, str]) -> None:
         if self._config is None:
             return
         self._config.custom_fflags = flags
@@ -3074,10 +3279,10 @@ class CustomFFlagEditor(QWidget):
         self._refresh_proxy_hosts()
         self._load_flags()
 
-    def _import_mapping(self, payload):
+    def _import_mapping(self, payload: object) -> None:
         from ..proxy.addons.custom_fflags import normalize_custom_fflags
 
-        if not isinstance(payload, dict):
+        if not _is_object_dict(payload):
             raise ValueError(tr('modifications.fastflag.import_root_must_be_object'))
         normalized = normalize_custom_fflags(payload)
         if len(normalized) != len(payload):
@@ -3086,7 +3291,7 @@ class CustomFFlagEditor(QWidget):
         merged.update(normalized)
         self._set_flags(merged)
 
-    def _import_json(self):
+    def _import_json(self) -> None:
         text, ok = QInputDialog.getMultiLineText(
             self,
             tr('modifications.fastflag.import_title'),
@@ -3102,7 +3307,7 @@ class CustomFFlagEditor(QWidget):
                 self, tr('ui.gui.modifications_tab.invalid_fastflag_json'), str(exc)
             )
 
-    def _import_file(self):
+    def _import_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
             tr('ui.gui.modifications_tab.import_custom_fastflags'),
@@ -3118,7 +3323,7 @@ class CustomFFlagEditor(QWidget):
                 self, tr('ui.gui.modifications_tab.could_not_import_fastflags'), str(exc)
             )
 
-    def _export_json(self):
+    def _export_json(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
             tr('ui.gui.modifications_tab.export_custom_fastflags'),
@@ -3137,28 +3342,25 @@ class CustomFFlagEditor(QWidget):
     def _json_text(self) -> str:
         return json.dumps(self._flags_from_table(), indent=2, ensure_ascii=False)
 
-    def _copy_json(self):
+    def _copy_json(self) -> None:
         QApplication.clipboard().setText(self._json_text())
 
-    def _show_profiles(self):
+    def _show_profiles(self) -> None:
         dialog = FastFlagProfilesDialog(self._flags_from_table(), self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.loaded_flags is not None:
             self._set_flags(dialog.loaded_flags)
 
-    def _sort_rows(self, column: int):
+    def _sort_rows(self, column: int) -> None:
         if self._sort_column == column:
             self._sort_ascending = not self._sort_ascending
         else:
             self._sort_column = column
             self._sort_ascending = True
 
-        rows = [
-            (
-                self._table.item(row, 0).text() if self._table.item(row, 0) else '',
-                self._value_from_row(row),
-            )
-            for row in range(self._table.rowCount())
-        ]
+        rows: list[tuple[str, str]] = []
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 0)
+            rows.append((item.text() if item is not None else '', self._value_from_row(row)))
 
         def sort_value(entry: tuple[str, str]) -> str:
             if column == 0:
@@ -3186,30 +3388,30 @@ class CustomFFlagEditor(QWidget):
         )
         self._filter_rows(self._search.text())
 
-    def _delete_selected(self):
+    def _delete_selected(self) -> None:
         rows = sorted({index.row() for index in self._table.selectedIndexes()}, reverse=True)
         if not rows:
             return
-        self._replace_table_rows(
-            [
-                (self._table.item(row, 0).text(), self._value_from_row(row))
-                for row in range(self._table.rowCount())
-                if row not in rows
-            ]
-        )
+        remaining_rows: list[tuple[str, str]] = []
+        for row in range(self._table.rowCount()):
+            if row in rows:
+                continue
+            name_item = self._table.item(row, 0)
+            if name_item is not None:
+                remaining_rows.append((name_item.text(), self._value_from_row(row)))
+        self._replace_table_rows(remaining_rows)
         self._save_table()
 
-    def _filter_rows(self, text: str):
+    def _filter_rows(self, text: str) -> None:
         query = str(text or '').strip().lower()
         visible_count = 0
         for row in range(self._table.rowCount()):
             name = self._table.item(row, 0)
             name_text = name.text() if name else ''
             value_text = self._value_from_row(row)
+            keybind_item = self._table.item(row, 3)
             keybind_text = (
-                self._table.item(row, 3).text()
-                if self._hotkeys_supported and self._table.item(row, 3)
-                else ''
+                keybind_item.text() if self._hotkeys_supported and keybind_item is not None else ''
             )
             matches = (
                 not query
@@ -3221,7 +3423,7 @@ class CustomFFlagEditor(QWidget):
             visible_count += matches
         self._resize_table_to_contents(visible_count)
 
-    def _resize_table_to_contents(self, visible_count: int):
+    def _resize_table_to_contents(self, visible_count: int) -> None:
         """Let the outer modifications-page scroll area handle page overflow."""
         header_height = self._table.horizontalHeader().height()
         row_height = self._table.verticalHeader().defaultSectionSize() * visible_count
@@ -3234,13 +3436,13 @@ class FFlagSection(QWidget):
 
     def __init__(
         self,
-        manager: ModificationManager,
-        roblox_monitor=None,
-        config_manager=None,
-        proxy_master=None,
-        hotkey_controller=None,
-        parent=None,
-    ):
+        manager: _ModificationManagerLike,
+        roblox_monitor: RobloxExitMonitor | None = None,
+        config_manager: ConfigManager | None = None,
+        proxy_master: ProxyMaster | None = None,
+        hotkey_controller: _HotkeyController | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._manager = manager
         self._roblox_monitor = roblox_monitor
@@ -3261,7 +3463,7 @@ class FFlagSection(QWidget):
         self._setup_ui()
         self._load_from_manager()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
@@ -3351,13 +3553,7 @@ class FFlagSection(QWidget):
         self._mesh_lod_slider.setTickInterval(1)
         self._mesh_lod_slider.valueChanged.connect(self._schedule_write)
         self._mesh_lod_value = QLabel(tr('ui.gui.modifications_tab.level_3'))
-        self._mesh_lod_slider.valueChanged.connect(
-            lambda v: self._mesh_lod_value.setText(
-                tr('ui.gui.modifications_tab.default')
-                if v == 0
-                else tr('modifications.level', level=v - 1)
-            )
-        )
+        self._mesh_lod_slider.valueChanged.connect(self._update_mesh_lod_label)
         lod_row.addWidget(self._mesh_lod_slider)
         lod_row.addWidget(self._mesh_lod_value)
         lod_container = QWidget()
@@ -3380,13 +3576,7 @@ class FFlagSection(QWidget):
         self._frm_slider.valueChanged.connect(self._schedule_write)
         frm_row.addWidget(self._frm_slider)
         self._frm_value = QLabel(tr('ui.gui.modifications_tab.quality_21'))
-        self._frm_slider.valueChanged.connect(
-            lambda v: self._frm_value.setText(
-                tr('ui.gui.modifications_tab.default')
-                if v == 0
-                else tr('modifications.quality', quality=v)
-            )
-        )
+        self._frm_slider.valueChanged.connect(self._update_frm_label)
         frm_row.addWidget(self._frm_value)
         frm_container = QWidget()
         frm_container.setLayout(frm_row)
@@ -3406,6 +3596,9 @@ class FFlagSection(QWidget):
         row += 1
 
         # Grass spinners
+        self._grass_max: NoWheelSpinBox
+        self._grass_min: NoWheelSpinBox
+        self._grass_motion: NoWheelSpinBox
         for label_text, attr_name in [
             (tr('modifications.grass_distance_max'), '_grass_max'),
             (tr('modifications.grass_distance_min'), '_grass_min'),
@@ -3458,24 +3651,42 @@ class FFlagSection(QWidget):
 
         self.setLayout(layout)
 
-    def set_presets_enabled(self, enabled: bool):
+    def set_presets_enabled(self, enabled: bool) -> None:
         """Enable the allowlisted/local controls without disabling the proxy editor."""
         self._preset_container.setEnabled(enabled)
         self._reset_btn.setEnabled(enabled)
 
-    def _on_mesh_lod_toggle(self, checked):
+    def _update_mesh_lod_label(self, value: int) -> None:
+        self._mesh_lod_value.setText(
+            tr('ui.gui.modifications_tab.default')
+            if value == 0
+            else tr('modifications.level', level=value - 1)
+        )
+
+    def _update_frm_label(self, value: int) -> None:
+        self._frm_value.setText(
+            tr('ui.gui.modifications_tab.default')
+            if value == 0
+            else tr('modifications.quality', quality=value)
+        )
+
+    def _on_mesh_lod_toggle(self, checked: bool) -> None:
         self._mesh_lod_slider.setEnabled(checked)
         self._schedule_write()
 
-    def _on_frm_toggle(self, checked):
+    def _on_frm_toggle(self, checked: bool) -> None:
         self._frm_slider.setEnabled(checked)
         self._schedule_write()
 
-    def _on_framerate_changed(self, *_args):
+    def _on_framerate_changed(self, *_args: object) -> None:
         """Schedule a write of the framerate cap setting."""
         self._framerate_debounce_timer.start()
 
-    def _write_framerate_cap(self):
+    def apply_current_settings(self) -> None:
+        self._schedule_write()
+        self._write_framerate_cap()
+
+    def _write_framerate_cap(self) -> None:
         """Write the framerate cap to GlobalBasicSettings_13.xml only if FFlagsare enabled."""
         value = self._framerate_cap.value()
         self._manager.framerate_cap = value
@@ -3498,10 +3709,10 @@ class FFlagSection(QWidget):
             else:
                 run_in_thread(self._manager.reset_framerate_cap)()
 
-    def _schedule_write(self, *_args):
+    def _schedule_write(self, *_args: object) -> None:
         self._debounce_timer.start()
 
-    def _gather_settings(self) -> dict:
+    def _gather_settings(self) -> _FastFlagSettings:
         return {
             'rendering_mode': str(self._rendering_mode.currentData() or 'Default'),
             'msaa': str(self._msaa.currentData() or 'Default'),
@@ -3519,7 +3730,7 @@ class FFlagSection(QWidget):
             'grass_motion': self._grass_motion.value() or None,
         }
 
-    def _write_flags(self):
+    def _write_flags(self) -> None:
         settings = self._gather_settings()
 
         # Check if Roblox Player is running
@@ -3534,7 +3745,7 @@ class FFlagSection(QWidget):
             # Write immediately
             run_in_thread(self._manager.write_fast_flags)(settings)
 
-    def _load_from_manager(self):
+    def _load_from_manager(self) -> None:
         """Populate controls from the persisted fast-flag settings."""
         s = self._manager.fast_flags
 
@@ -3607,7 +3818,7 @@ class FFlagSection(QWidget):
         # raise OverflowError before QSpinBox gets a chance to clamp it.
         try:
             framerate_cap = int(self._manager.framerate_cap)
-        except (TypeError, ValueError, OverflowError):
+        except TypeError, ValueError, OverflowError:
             framerate_cap = 0
         framerate_cap = max(
             self._framerate_cap.minimum(),
@@ -3618,7 +3829,7 @@ class FFlagSection(QWidget):
         for w in widgets:
             w.blockSignals(False)
 
-    def _on_reset_all(self):
+    def _on_reset_all(self) -> None:
         """Reset all fast-flag controls to default and restore files."""
         self._rendering_mode.setCurrentIndex(0)
         self._msaa.setCurrentIndex(0)
@@ -3653,13 +3864,13 @@ class ModificationsTab(QWidget):
 
     def __init__(
         self,
-        mod_manager: ModificationManager,
-        roblox_monitor=None,
-        config_manager=None,
-        proxy_master=None,
-        hotkey_controller=None,
-        parent=None,
-    ):
+        mod_manager: _ModificationManagerLike,
+        roblox_monitor: RobloxExitMonitor | None = None,
+        config_manager: ConfigManager | None = None,
+        proxy_master: ProxyMaster | None = None,
+        hotkey_controller: _HotkeyController | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._manager = mod_manager
         self._roblox_monitor = roblox_monitor
@@ -3673,7 +3884,7 @@ class ModificationsTab(QWidget):
         self._update_status_bar()
 
         # Connect for live status bar updates
-        mod_manager.apply_finished.connect(lambda _: self._update_status_bar())
+        mod_manager.apply_finished.connect(self._on_apply_finished)
         mod_manager.restore_finished.connect(self._update_status_bar)
 
         # Connect for Roblox player status changes
@@ -3682,7 +3893,7 @@ class ModificationsTab(QWidget):
                 self._on_roblox_player_status_changed
             )
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -3765,9 +3976,7 @@ class ModificationsTab(QWidget):
         # ── Textures ─────────────────────────────────────────────
         tex_section = CollapsibleSection(tr('modifications.section.textures'), expanded=True)
         for name, path, filt in TEXTURES:
-            row = ModRowWidget(
-                self._manager, _builtin_label(name), path, file_filter=filt
-            )
+            row = ModRowWidget(self._manager, _builtin_label(name), path, file_filter=filt)
             tex_section.add_widget(row)
             self._row_widgets[path] = row
         self._container_layout.addWidget(tex_section)
@@ -3909,14 +4118,15 @@ class ModificationsTab(QWidget):
         self.setLayout(outer)
         self._update_container_bg()
 
-    def changeEvent(self, a0: QEvent | None):
+    @override
+    def changeEvent(self, a0: QEvent) -> None:
         from PySide6.QtCore import QEvent
 
         super().changeEvent(a0)
-        if a0 is not None and a0.type() == QEvent.Type.PaletteChange:
+        if a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
 
-    def _update_container_bg(self):
+    def _update_container_bg(self) -> None:
         """Keep the modifications container background consistent across themes.
 
         On the explicit Dark theme AlternateBase (64,64,64) is lighter than
@@ -3936,7 +4146,7 @@ class ModificationsTab(QWidget):
             bg = 'background-color: palette(alternate-base);'
         self._mod_container.setStyleSheet(f'QWidget#_FleasionModContainer {{ {bg} }}')
 
-    def _clear_roblox_cache(self):
+    def _clear_roblox_cache(self) -> None:
         from .delete_cache import DeleteCacheWindow
 
         window = DeleteCacheWindow()
@@ -3946,7 +4156,10 @@ class ModificationsTab(QWidget):
     # Status bar
     # ------------------------------------------------------------------
 
-    def _update_status_bar(self):
+    def _on_apply_finished(self, _result: object) -> None:
+        self._update_status_bar()
+
+    def _update_status_bar(self) -> None:
         applied = sum(1 for e in self._manager.entries if e.get('status') == 'applied')
         roblox_count = len(self._manager.roblox_dirs)
         noun = tr_count(
@@ -3977,9 +4190,9 @@ class ModificationsTab(QWidget):
     # Section: Avatar Meshes — Add Head Variant
     # ------------------------------------------------------------------
 
-    def _on_add_head_variant(self):
+    def _on_add_head_variant(self) -> None:
         # Filter out already-added variants
-        existing = {r._target_path for r in self._row_widgets.values()}
+        existing = {r.target_path for r in self._row_widgets.values()}
         available = [
             v
             for v in HEAD_VARIANTS
@@ -4023,7 +4236,7 @@ class ModificationsTab(QWidget):
     # Section: Skybox — Apply to All
     # ------------------------------------------------------------------
 
-    def _on_apply_all_sky(self):
+    def _on_apply_all_sky(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
             tr('ui.gui.modifications_tab.select_file_for_all_sky_faces'),
@@ -4051,7 +4264,7 @@ class ModificationsTab(QWidget):
     # Section: Custom Modifications
     # ------------------------------------------------------------------
 
-    def _on_add_custom(self):
+    def _on_add_custom(self) -> None:
         dlg = _CustomModDialog(self._manager, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             name = dlg.display_name
@@ -4062,8 +4275,7 @@ class ModificationsTab(QWidget):
             if raw_source:
                 # Route through the row's own detection pipeline so that
                 # 'remove', CDN URLs, asset IDs etc. all work correctly.
-                row._set_source_text_silent(raw_source)
-                row._apply_from_text()
+                row.apply_raw_source(raw_source)
 
     def _add_custom_row(self, name: str, target_path: str) -> ModRowWidget:
         row = ModRowWidget(self._manager, name, target_path, deletable=True)
@@ -4077,8 +4289,8 @@ class ModificationsTab(QWidget):
         self._custom_rows.append(row)
         return row
 
-    def _on_row_deleted(self, row: ModRowWidget, _entry_id: str):
-        target = row._target_path
+    def _on_row_deleted(self, row: ModRowWidget, _entry_id: str) -> None:
+        target = row.target_path
         if target in self._row_widgets:
             del self._row_widgets[target]
         if row in self._custom_rows:
@@ -4091,15 +4303,14 @@ class ModificationsTab(QWidget):
     # Fast Flags toggle
     # ------------------------------------------------------------------
 
-    def _on_fflag_toggle(self, checked: bool):
+    def _on_fflag_toggle(self, checked: bool) -> None:
         self._manager.fast_flags_enabled = checked
         self._fflag_widget.set_presets_enabled(checked)
         if checked:
             # Immediately write current settings
-            self._fflag_widget._schedule_write()
-            self._fflag_widget._write_framerate_cap()
+            self._fflag_widget.apply_current_settings()
 
-    def _on_roblox_player_status_changed(self, is_running: bool):
+    def _on_roblox_player_status_changed(self, is_running: bool) -> None:
         """Apply all queued modifications when Roblox Player exits."""
         if not is_running:
             # Roblox has exited, apply any pending modifications
@@ -4135,7 +4346,7 @@ def _relative_target_path_for_resource_file(
 class _CustomModDialog(QDialog):
     """Dialog for adding a custom modification entry."""
 
-    def __init__(self, manager: ModificationManager, parent=None):
+    def __init__(self, manager: _ModificationManagerLike, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._manager = manager
         self.display_name = ''
@@ -4199,14 +4410,14 @@ class _CustomModDialog(QDialog):
 
         self.setLayout(layout)
 
-    def _warn_target_outside_roblox_dirs(self):
+    def _warn_target_outside_roblox_dirs(self) -> None:
         QMessageBox.warning(
             self,
             tr('ui.gui.modifications_tab.invalid_target'),
             tr('ui.gui.modifications_tab.target_files_must_be_inside_a_detected'),
         )
 
-    def _on_target_file_dropped(self, path: str):
+    def _on_target_file_dropped(self, path: str) -> None:
         rel = _relative_target_path_for_resource_file(path, self._manager.roblox_dirs)
         if rel is None:
             self._target_edit.clear()
@@ -4214,7 +4425,7 @@ class _CustomModDialog(QDialog):
             return
         self._target_edit.setText(rel)
 
-    def _browse_roblox(self):
+    def _browse_roblox(self) -> None:
         """Open file dialog starting at the first Roblox directory."""
         start = ''
         if self._manager.roblox_dirs:
@@ -4231,7 +4442,7 @@ class _CustomModDialog(QDialog):
                 return
             self._target_edit.setText(rel)
 
-    def _browse_source(self):
+    def _browse_source(self) -> None:
         # Try to open the dialog in the directory/path the user may have pasted
         current_val = self._source_edit.text().strip(' \t"\'')
         initial_dir = ''
@@ -4254,7 +4465,7 @@ class _CustomModDialog(QDialog):
         if path:
             self._source_edit.setText(path)
 
-    def _on_accept(self):
+    def _on_accept(self) -> None:
         name = self._name_edit.text().strip()
         target = self._target_edit.text().strip()
         if not name:

@@ -1,22 +1,25 @@
 """System tray implementation."""
 
-from .localization import tr, tr_count
+from __future__ import annotations
 
 import ctypes
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
-try:
-    import winreg
-except ImportError:
-    winreg = None
+from .localization import tr
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPalette
+if not TYPE_CHECKING:
+    try:
+        import winreg
+    except ImportError:
+        winreg = None
+
+from PySide6.QtCore import QRect, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QDesktopServices, QIcon, QPalette, QScreen
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -44,6 +47,135 @@ from .utils import (
     run_in_thread,
 )
 
+if TYPE_CHECKING:
+    from .app import RobloxExitMonitor
+    from .config.manager import ConfigManager
+    from .modifications.manager import ModificationManager
+    from .proxy.addons.cache_scraper import CacheScraper
+    from .proxy.env_lifecycle import EnvProxyLifecycleController
+    from .proxy.master import ProxyMaster
+
+
+class _HotkeyController(Protocol):
+    def sync(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+
+class _SettingsTabLike(Protocol):
+    def refresh_from_config(self) -> None: ...
+
+    def set_cache_scraper_enabled(self, enabled: bool) -> None: ...
+
+
+class _CacheViewerTabLike(Protocol):
+    def set_cache_scraper_enabled(self, enabled: bool) -> None: ...
+
+    def _on_show_names_toggled(self, enabled: bool) -> None: ...
+
+    def _on_show_creator_id_toggled(self, enabled: bool) -> None: ...
+
+
+if TYPE_CHECKING:
+
+    def _settings_tab(window: ReplacerConfigWindow) -> _SettingsTabLike | None: ...
+
+    def _cache_viewer_tab(window: ReplacerConfigWindow) -> _CacheViewerTabLike | None: ...
+
+    def _env_lifecycle(monitor: RobloxExitMonitor | None) -> EnvProxyLifecycleController | None: ...
+
+    def _cache_scraper_from_proxy(proxy_master: ProxyMaster) -> CacheScraper | None: ...
+
+    def _win_is_admin() -> bool: ...
+
+    def _win_set_app_id(app_id: str) -> None: ...
+
+    def _set_context_menu_none(tray: QSystemTrayIcon) -> None: ...
+
+    def _optional_screen(screen: QScreen) -> QScreen | None: ...
+
+    def _cache_viewer_show_names(tab: _CacheViewerTabLike, enabled: bool) -> None: ...
+
+    def _cache_viewer_show_creator_id(tab: _CacheViewerTabLike, enabled: bool) -> None: ...
+
+    def _register_notification_app_id(app_id: str, icon_path: Path | None) -> bool: ...
+
+    def _make_dashboard(
+        config_manager: ConfigManager,
+        proxy_master: ProxyMaster,
+        mod_manager: ModificationManager | None,
+        roblox_monitor: RobloxExitMonitor | None,
+        system_tray: SystemTray,
+        hotkey_controller: _HotkeyController | None,
+    ) -> ReplacerConfigWindow: ...
+else:
+
+    def _settings_tab(window: ReplacerConfigWindow) -> _SettingsTabLike | None:
+        return getattr(window, '_settings_tab', None)
+
+    def _cache_viewer_tab(window: ReplacerConfigWindow) -> _CacheViewerTabLike | None:
+        return getattr(window, '_cache_viewer_tab', None)
+
+    def _env_lifecycle(monitor: RobloxExitMonitor | None) -> EnvProxyLifecycleController | None:
+        return getattr(monitor, 'env_lifecycle', None)
+
+    def _cache_scraper_from_proxy(proxy_master: ProxyMaster) -> CacheScraper | None:
+        return getattr(proxy_master, 'cache_scraper', None)
+
+    def _win_is_admin() -> bool:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
+
+    def _win_set_app_id(app_id: str) -> None:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+
+    def _set_context_menu_none(tray: QSystemTrayIcon) -> None:
+        tray.setContextMenu(None)
+
+    def _optional_screen(screen: QScreen) -> QScreen | None:
+        return screen
+
+    def _cache_viewer_show_names(tab: _CacheViewerTabLike, enabled: bool) -> None:
+        tab._on_show_names_toggled(enabled)
+
+    def _cache_viewer_show_creator_id(tab: _CacheViewerTabLike, enabled: bool) -> None:
+        tab._on_show_creator_id_toggled(enabled)
+
+    def _register_notification_app_id(app_id: str, icon_path: Path | None) -> bool:
+        if winreg is None:
+            return False
+        key = winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER, rf'SOFTWARE\Classes\AppUserModelId\{app_id}'
+        )
+        winreg.SetValueEx(key, 'DisplayName', 0, winreg.REG_EXPAND_SZ, APP_NAME)
+        winreg.SetValueEx(key, 'IconBackgroundColor', 0, winreg.REG_SZ, '00000000')
+        if icon_path is not None:
+            winreg.SetValueEx(key, 'IconUri', 0, winreg.REG_SZ, str(icon_path))
+        winreg.SetValueEx(key, 'ShowInSettings', 0, winreg.REG_DWORD, 1)
+        try:
+            key.Close()
+        except Exception:
+            pass
+        _win_set_app_id(app_id)
+        return True
+
+    def _make_dashboard(
+        config_manager: ConfigManager,
+        proxy_master: ProxyMaster,
+        mod_manager: ModificationManager | None,
+        roblox_monitor: RobloxExitMonitor | None,
+        system_tray: SystemTray,
+        hotkey_controller: _HotkeyController | None,
+    ) -> ReplacerConfigWindow:
+        return ReplacerConfigWindow(
+            config_manager,
+            proxy_master,
+            mod_manager,
+            roblox_monitor,
+            system_tray=system_tray,
+            hotkey_controller=hotkey_controller,
+        )
+
+
 APP_KOFI = 'ko-fi.com/fleasion'
 _NOTIFICATION_APP_ID = f'{APP_NAME}.Notifications'
 _TOAST_TEMPLATE = '<toast><visual><binding template="ToastGeneric"></binding></visual></toast>'
@@ -64,7 +196,7 @@ class _XfceTrayNotification(QWidget):
 
     closed = Signal(object)
 
-    def __init__(self, title: str, message: str, icon: QIcon, dark: bool, timeout: int):
+    def __init__(self, title: str, message: str, icon: QIcon, dark: bool, timeout: int) -> None:
         super().__init__(
             None,
             Qt.WindowType.Tool
@@ -169,14 +301,14 @@ class _XfceTrayNotification(QWidget):
         self._timer.timeout.connect(self.close)
         self._timer.start(timeout)
 
-    def show_near_tray(self, tray_geometry) -> None:
+    def show_near_tray(self, tray_geometry: QRect) -> None:
         """Show the notification beside the tray icon without taking focus."""
         self.adjustSize()
         screen = None
         if not tray_geometry.isNull():
             screen = QApplication.screenAt(tray_geometry.center())
         if screen is None:
-            screen = QApplication.primaryScreen()
+            screen = _optional_screen(QApplication.primaryScreen())
 
         if screen is not None:
             available = screen.availableGeometry()
@@ -196,7 +328,7 @@ class _XfceTrayNotification(QWidget):
 
         self.show()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.closed.emit(self)
         super().closeEvent(event)
 
@@ -205,7 +337,7 @@ def _is_admin() -> bool:
     if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
+        return _win_is_admin()
     except Exception:
         return False
 
@@ -216,34 +348,41 @@ class SystemTray:
     def __init__(
         self,
         app: QApplication,
-        config_manager,
-        proxy_master,
-        mod_manager=None,
-        roblox_monitor=None,
-    ):
+        config_manager: ConfigManager,
+        proxy_master: ProxyMaster,
+        mod_manager: ModificationManager | None = None,
+        roblox_monitor: RobloxExitMonitor | None = None,
+    ) -> None:
         self.app = app
         self.config_manager = config_manager
         self.proxy_master = proxy_master
         self.mod_manager = mod_manager
         self.roblox_monitor = roblox_monitor
 
-        self.custom_fflag_hotkeys = None
+        self.custom_fflag_hotkeys: _HotkeyController | None = None
+        hotkey_controller: _HotkeyController | None = None
         if sys.platform == 'win32':
-            from .gui.windows_hotkeys import WindowsCustomFFlagHotkeyController as HotkeyController
-        elif sys.platform.startswith('linux'):
-            from .gui.linux_hotkeys import LinuxCustomFFlagHotkeyController as HotkeyController
+            from .gui.windows_hotkeys import WindowsCustomFFlagHotkeyController
 
-        if sys.platform == 'win32' or sys.platform.startswith('linux'):
-            self.custom_fflag_hotkeys = HotkeyController(config_manager, proxy_master, app)
-            self.custom_fflag_hotkeys.sync()
+            hotkey_controller = WindowsCustomFFlagHotkeyController(
+                config_manager, proxy_master, app
+            )
+        elif sys.platform.startswith('linux'):
+            from .gui.linux_hotkeys import LinuxCustomFFlagHotkeyController
+
+            hotkey_controller = LinuxCustomFFlagHotkeyController(config_manager, proxy_master, app)
+
+        self.custom_fflag_hotkeys = hotkey_controller
+        if hotkey_controller is not None:
+            hotkey_controller.sync()
 
         # Keep references to open windows to prevent garbage collection
-        self.open_windows = []
-        self.dashboard_window = None
+        self.open_windows: list[QWidget] = []
+        self.dashboard_window: ReplacerConfigWindow | None = None
         self._exiting = False
         self._dashboard_close_notice_shown = False
-        self._notification_app_id = None
-        self._xfce_notification = None
+        self._notification_app_id: str | None = None
+        self._xfce_notification: _XfceTrayNotification | None = None
         self._tray_cleaned_up = False
 
         # Create tray icon
@@ -275,7 +414,7 @@ class SystemTray:
                 'System tray/menu-bar host is available and icon visibility was requested',
             )
 
-    def _set_icon(self):
+    def _set_icon(self) -> None:
         """Set the tray icon."""
         if icon_path := get_icon_path():
             self.tray.setIcon(QIcon(str(icon_path)))
@@ -285,14 +424,14 @@ class SystemTray:
                 self.app.style().standardIcon(self.app.style().StandardPixmap.SP_ComputerIcon)
             )
 
-    def _update_tooltip(self):
+    def _update_tooltip(self) -> None:
         """Update the tooltip text based on proxy status."""
         status = (
             tr('tray.status.running') if self.proxy_master.is_running else tr('tray.status.stopped')
         )
         self.tray.setToolTip(tr('ui.tray.value_value', value0=APP_NAME, value1=status))
 
-    def _create_menu(self):
+    def _create_menu(self) -> None:
         """Create the tray menu."""
         # Title (disabled)
         title_action = QAction(
@@ -357,27 +496,31 @@ class SystemTray:
         self.exit_action.triggered.connect(self._exit_app)
         self.menu.addAction(self.exit_action)
 
-    def _ensure_exit_action_enabled(self):
+    def _ensure_exit_action_enabled(self) -> None:
         """Keep quit available even when other tray actions are temporarily disabled."""
         exit_action = getattr(self, 'exit_action', None)
         if exit_action is not None:
             exit_action.setEnabled(True)
 
-    def _populate_configs_menu(self):
+    def _populate_configs_menu(self) -> None:
         """Populate the Configs submenu with current configs."""
         self.configs_menu.clear()
         for name in self.config_manager.config_names:
             action = QAction(name, self.configs_menu)
             action.setCheckable(True)
             action.setChecked(self.config_manager.is_config_enabled(name))
-            action.triggered.connect(lambda checked, n=name: self._toggle_config(n))
+
+            def toggle_config(_checked: bool = False, config_name: str = name) -> None:
+                self._toggle_config(config_name)
+
+            action.triggered.connect(toggle_config)
             self.configs_menu.addAction(action)
 
-    def _toggle_config(self, name: str):
+    def _toggle_config(self, name: str) -> None:
         """Toggle a config's enabled state."""
         self.config_manager.toggle_config_enabled(name)
 
-    def _create_settings_menu(self):
+    def _create_settings_menu(self) -> None:
         """Create the Settings submenu."""
         settings_menu = QMenu(tr('ui.tray.settings'), self.menu)
 
@@ -392,7 +535,7 @@ class SystemTray:
         theme_menu = QMenu(tr('ui.tray.theme'), settings_menu)
 
         # Theme actions (radio buttons)
-        self.theme_actions = {}
+        self.theme_actions: dict[str, QAction] = {}
         for theme_name, label in [
             ('System', tr('tray.theme.system')),
             ('Light', tr('tray.theme.light')),
@@ -400,7 +543,11 @@ class SystemTray:
         ]:
             action = QAction(label, theme_menu)
             action.setCheckable(True)
-            action.triggered.connect(lambda checked, t=theme_name: self._set_theme(t))
+
+            def set_theme(_checked: bool = False, theme: str = theme_name) -> None:
+                self._set_theme(theme)
+
+            action.triggered.connect(set_theme)
             theme_menu.addAction(action)
             self.theme_actions[theme_name] = action
 
@@ -415,7 +562,7 @@ class SystemTray:
         export_menu = QMenu(tr('ui.tray.export_naming'), settings_menu)
 
         # Export naming actions (checkboxes)
-        self.export_naming_actions = {}
+        self.export_naming_actions: dict[str, QAction] = {}
         for option, label in [
             ('name', tr('tray.export_naming.name')),
             ('id', tr('tray.export_naming.id')),
@@ -424,7 +571,11 @@ class SystemTray:
             action = QAction(label, export_menu)
             action.setCheckable(True)
             action.setChecked(self.config_manager.is_export_naming_enabled(option))
-            action.triggered.connect(lambda checked, opt=option: self._toggle_export_naming(opt))
+
+            def toggle_export(_checked: bool = False, export_option: str = option) -> None:
+                self._toggle_export_naming(export_option)
+
+            action.triggered.connect(toggle_export)
             export_menu.addAction(action)
             self.export_naming_actions[option] = action
 
@@ -554,19 +705,21 @@ class SystemTray:
 
         self.menu.addMenu(settings_menu)
 
-    def _refresh_settings_tab(self):
+    def _refresh_settings_tab(self) -> None:
         """Push current config state to the Settings tab if the dashboard is open."""
-        if self.dashboard_window and hasattr(self.dashboard_window, '_settings_tab'):
-            self.dashboard_window._settings_tab.refresh_from_config()
+        if self.dashboard_window:
+            settings_tab = _settings_tab(self.dashboard_window)
+            if settings_tab is not None:
+                settings_tab.refresh_from_config()
 
-    def _cache_scraper(self):
-        return getattr(self.proxy_master, 'cache_scraper', None)
+    def _cache_scraper(self) -> CacheScraper | None:
+        return _cache_scraper_from_proxy(self.proxy_master)
 
     def _is_cache_scraper_enabled(self) -> bool:
         scraper = self._cache_scraper()
         return bool(getattr(scraper, 'enabled', False))
 
-    def _set_cache_scraper_enabled(self, enabled: bool):
+    def _set_cache_scraper_enabled(self, enabled: bool) -> None:
         scraper = self._cache_scraper()
         if scraper is not None:
             scraper.set_enabled(enabled)
@@ -577,18 +730,18 @@ class SystemTray:
             self.cache_scraper_action.blockSignals(False)
 
         if self.dashboard_window:
-            tab = getattr(self.dashboard_window, '_cache_viewer_tab', None)
+            tab = _cache_viewer_tab(self.dashboard_window)
             if tab is not None and hasattr(tab, 'set_cache_scraper_enabled'):
                 tab.set_cache_scraper_enabled(enabled)
 
-            settings_tab = getattr(self.dashboard_window, '_settings_tab', None)
+            settings_tab = _settings_tab(self.dashboard_window)
             if settings_tab is not None and hasattr(settings_tab, 'set_cache_scraper_enabled'):
                 settings_tab.set_cache_scraper_enabled(enabled)
 
-    def _toggle_cache_scraper(self, checked: bool):
+    def _toggle_cache_scraper(self, checked: bool) -> None:
         self._set_cache_scraper_enabled(checked)
 
-    def set_proxy_features_enabled(self, enabled: bool):
+    def set_proxy_features_enabled(self, enabled: bool) -> None:
         """Persist and apply the top-level proxy feature toggle."""
         self.config_manager.proxy_features_enabled = enabled
 
@@ -597,8 +750,12 @@ class SystemTray:
                 # Env Proxy binds only a loopback high port. Any protected
                 # macOS cacert.pem fallback is requested only if direct patching fails.
                 self.proxy_master.start()
-                lifecycle = getattr(self.roblox_monitor, 'env_lifecycle', None)
-                if lifecycle is not None and self.roblox_monitor.is_player_running():
+                lifecycle = _env_lifecycle(self.roblox_monitor)
+                if (
+                    lifecycle is not None
+                    and self.roblox_monitor is not None
+                    and self.roblox_monitor.is_player_running()
+                ):
                     if sys.platform.startswith('linux'):
                         from .utils.platform_linux import selected_linux_client_app_id
 
@@ -629,10 +786,14 @@ class SystemTray:
             elif _is_admin():
                 self.proxy_master.start()
             else:
-                from .app import _relaunch_as_admin
+                if TYPE_CHECKING:
+
+                    def relaunch_as_admin() -> bool: ...
+                else:
+                    from .app import _relaunch_as_admin as relaunch_as_admin
 
                 log_buffer.log('Proxy', 'Proxy features enabled: requesting administrator relaunch')
-                if _relaunch_as_admin():
+                if relaunch_as_admin():
                     self._exiting = True
                     self.app.quit()
                     return
@@ -659,7 +820,7 @@ class SystemTray:
         if self.dashboard_window and hasattr(self.dashboard_window, 'refresh_env_proxy_gate'):
             self.dashboard_window.refresh_env_proxy_gate()
 
-    def _set_theme(self, theme: str):
+    def _set_theme(self, theme: str) -> None:
         """Set the application theme."""
         # Update checkmarks
         for name, action in self.theme_actions.items():
@@ -672,13 +833,13 @@ class SystemTray:
         self.config_manager.theme = theme
         self._refresh_settings_tab()
 
-    def _toggle_export_naming(self, option: str):
+    def _toggle_export_naming(self, option: str) -> None:
         """Toggle an export naming option."""
         new_state = self.config_manager.toggle_export_naming(option)
         self.export_naming_actions[option].setChecked(new_state)
         self._refresh_settings_tab()
 
-    def _toggle_always_on_top(self):
+    def _toggle_always_on_top(self) -> None:
         """Toggle always on top setting."""
         new_state = not self.config_manager.always_on_top
         self.config_manager.always_on_top = new_state
@@ -698,21 +859,21 @@ class SystemTray:
                 window.show()
         self._refresh_settings_tab()
 
-    def _toggle_open_dashboard_on_launch(self):
+    def _toggle_open_dashboard_on_launch(self) -> None:
         """Toggle open dashboard on launch setting."""
         new_state = not self.config_manager.open_dashboard_on_launch
         self.config_manager.open_dashboard_on_launch = new_state
         self.open_dashboard_action.setChecked(new_state)
         self._refresh_settings_tab()
 
-    def _toggle_auto_delete_cache(self):
+    def _toggle_auto_delete_cache(self) -> None:
         """Toggle auto delete cache on Roblox exit setting."""
         new_state = not self.config_manager.auto_delete_cache_on_exit
         self.config_manager.auto_delete_cache_on_exit = new_state
         self.auto_delete_cache_action.setChecked(new_state)
         self._refresh_settings_tab()
 
-    def _toggle_run_on_boot(self):
+    def _toggle_run_on_boot(self) -> None:
         """Toggle run-on-boot for the current platform."""
         from .utils import CONFIG_DIR
         from .utils.autostart import sync_autostart, windows_autostart_privilege_hint
@@ -729,9 +890,18 @@ class SystemTray:
         else:
             if sys.platform == 'win32':
                 # Imported on demand to avoid an app <-> tray import cycle during startup.
-                from .app import _show_run_on_boot_failure
+                if TYPE_CHECKING:
 
-                if _show_run_on_boot_failure(None, self.config_manager.proxy_mode, enabled=checked):
+                    def show_run_on_boot_failure(
+                        parent: QWidget | None,
+                        proxy_mode: str | None = None,
+                        *,
+                        enabled: bool = True,
+                    ) -> bool: ...
+                else:
+                    from .app import _show_run_on_boot_failure as show_run_on_boot_failure
+
+                if show_run_on_boot_failure(None, self.config_manager.proxy_mode, enabled=checked):
                     self.config_manager.run_on_boot = checked
                     self._refresh_settings_tab()
                     return
@@ -757,7 +927,7 @@ class SystemTray:
                 _warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
             _warn.exec()
 
-    def _toggle_desktop_integration(self):
+    def _toggle_desktop_integration(self) -> None:
         """Toggle desktop/start-menu integration for the current platform."""
         from .utils.desktop_integration import sync_desktop_integration
 
@@ -802,71 +972,71 @@ class SystemTray:
                 _warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
             _warn.exec()
 
-    def _toggle_clear_cache_on_launch(self):
+    def _toggle_clear_cache_on_launch(self) -> None:
         """Toggle clear cache on launch setting."""
         new_state = not self.config_manager.clear_cache_on_launch
         self.config_manager.clear_cache_on_launch = new_state
         self.clear_cache_action.setChecked(new_state)
         self._refresh_settings_tab()
 
-    def _toggle_close_scraped_games(self):
+    def _toggle_close_scraped_games(self) -> None:
         """Toggle close Roblox on open setting."""
         new_state = not self.config_manager.close_scraped_games_on_open
         self.config_manager.close_scraped_games_on_open = new_state
         self.close_scraped_games_action.setChecked(new_state)
         self._refresh_settings_tab()
 
-    def _toggle_close_viewer_on_replace(self):
+    def _toggle_close_viewer_on_replace(self) -> None:
         """Toggle close viewer on replace setting."""
         new_state = not self.config_manager.close_viewer_on_replace
         self.config_manager.close_viewer_on_replace = new_state
         self.close_viewer_on_replace_action.setChecked(new_state)
         self._refresh_settings_tab()
 
-    def _toggle_close_scraped_games_menu_on_open(self):
+    def _toggle_close_scraped_games_menu_on_open(self) -> None:
         """Toggle close Scraped Games menu on JSON open setting."""
         new_state = not self.config_manager.close_scraped_games_menu_on_open
         self.config_manager.close_scraped_games_menu_on_open = new_state
         self.close_scraped_games_menu_on_open_action.setChecked(new_state)
         self._refresh_settings_tab()
 
-    def _toggle_show_replacer_notifications(self):
+    def _toggle_show_replacer_notifications(self) -> None:
         """Toggle replacer notification popups."""
         new_state = not self.config_manager.show_replacer_notifications
         self.config_manager.show_replacer_notifications = new_state
         self.show_replacer_notifications_action.setChecked(new_state)
         self._refresh_settings_tab()
 
-    def _toggle_close_to_tray(self):
+    def _toggle_close_to_tray(self) -> None:
         """Toggle close to tray setting."""
         new_state = not self.config_manager.close_to_tray
         self.config_manager.close_to_tray = new_state
         self.close_to_tray_action.setChecked(new_state)
         self._refresh_settings_tab()
 
-    def _toggle_show_names(self):
+    def _toggle_show_names(self) -> None:
         """Toggle Show Names setting."""
         new_state = not self.config_manager.show_names
         self.config_manager.show_names = new_state
         self.show_names_action.setChecked(new_state)
         if self.dashboard_window:
-            tab = getattr(self.dashboard_window, '_cache_viewer_tab', None)
+            tab = _cache_viewer_tab(self.dashboard_window)
             if tab is not None:
-                tab._on_show_names_toggled(new_state)
+                _cache_viewer_show_names(tab, new_state)
         self._refresh_settings_tab()
 
-    def _toggle_show_creator_id(self):
+    def _toggle_show_creator_id(self) -> None:
         """Toggle Show User ID setting."""
         new_state = not self.config_manager.show_creator_id
         self.config_manager.show_creator_id = new_state
         self.show_creator_id_action.setChecked(new_state)
         if self.dashboard_window:
-            tab = getattr(self.dashboard_window, '_cache_viewer_tab', None)
+            tab = _cache_viewer_tab(self.dashboard_window)
             if tab is not None:
-                tab._on_show_creator_id_toggled(new_state)
+                _cache_viewer_show_creator_id(tab, new_state)
         self._refresh_settings_tab()
 
-    def _apply_always_on_top_to_window(self, window):
+    def _apply_always_on_top_to_window(self, window: QWidget) -> None:
         """Apply always on top setting to a window."""
         if self.config_manager.always_on_top:
             from PySide6.QtCore import Qt
@@ -875,15 +1045,19 @@ class SystemTray:
             flags |= Qt.WindowType.WindowStaysOnTopHint
             window.setWindowFlags(flags)
 
-    def _show_about(self):
+    def _show_about(self) -> None:
         """Show About window."""
         window = AboutWindow()
-        window.destroyed.connect(lambda: self._remove_window(window))
+
+        def remove_about(_obj: object | None = None) -> None:
+            self._remove_window(window)
+
+        window.destroyed.connect(remove_about)
         self.open_windows.append(window)
         self._apply_always_on_top_to_window(window)
         window.show()
 
-    def _show_logs(self):
+    def _show_logs(self) -> None:
         """Show Logs window — only one instance allowed."""
         for w in self.open_windows:
             if isinstance(w, LogsWindow):
@@ -893,16 +1067,18 @@ class SystemTray:
                 w.activateWindow()
                 return
         window = LogsWindow()
-        window.destroyed.connect(
-            lambda _obj=None, _self=self, _window=window: _self._remove_window(_window)
-        )
+
+        def remove_logs(_obj: object | None = None) -> None:
+            self._remove_window(window)
+
+        window.destroyed.connect(remove_logs)
         self.open_windows.append(window)
         self._apply_always_on_top_to_window(window)
         window.show()
         window.raise_()
         window.activateWindow()
 
-    def _show_replacer_config(self):
+    def _show_replacer_config(self) -> None:
         """Show Replacer Config window (Dashboard)."""
         self._set_dashboard_foreground_mode(True)
         if self.dashboard_window:
@@ -913,13 +1089,13 @@ class SystemTray:
 
         from PySide6.QtCore import Qt
 
-        window = ReplacerConfigWindow(
+        window = _make_dashboard(
             self.config_manager,
             self.proxy_master,
             self.mod_manager,
             self.roblox_monitor,
-            system_tray=self,
-            hotkey_controller=self.custom_fflag_hotkeys,
+            self,
+            self.custom_fflag_hotkeys,
         )
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(self._on_dashboard_destroyed)
@@ -928,7 +1104,7 @@ class SystemTray:
         # Note: ReplacerConfigWindow applies always_on_top in its __init__
         window.show()
 
-    def _on_dashboard_destroyed(self):
+    def _on_dashboard_destroyed(self) -> None:
         """Handle dashboard destruction."""
         self._set_dashboard_foreground_mode(False)
         if self.dashboard_window in self.open_windows:
@@ -937,7 +1113,7 @@ class SystemTray:
         if not self._exiting and not self.config_manager.close_to_tray:
             self._exit_app()
 
-    def _toggle_dashboard(self):
+    def _toggle_dashboard(self) -> None:
         """Toggle dashboard visibility."""
         if self.dashboard_window and self.dashboard_window.isVisible():
             self.dashboard_window.hide()
@@ -945,7 +1121,7 @@ class SystemTray:
         else:
             self._show_replacer_config()
 
-    def _set_dashboard_foreground_mode(self, enabled: bool):
+    def _set_dashboard_foreground_mode(self, enabled: bool) -> None:
         """Keep the macOS dashboard visible when Fleasion loses focus."""
         if sys.platform != 'darwin':
             return
@@ -959,7 +1135,7 @@ class SystemTray:
         elif enabled and (icon_path := get_icon_path()):
             set_application_icon(icon_path)
 
-    def notify_dashboard_closed(self):
+    def notify_dashboard_closed(self) -> None:
         """Show the tray notice that the app is still running."""
         if self._dashboard_close_notice_shown:
             return
@@ -988,7 +1164,7 @@ class SystemTray:
         else:
             self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.NoIcon, 10000)
 
-    def _show_xfce_notification(self, title: str, message: str, icon_path) -> bool:
+    def _show_xfce_notification(self, title: str, message: str, icon_path: Path | None) -> bool:
         """Show an app-owned notification so XFCE cannot apply unreadable colors."""
         try:
             if self._xfce_notification is not None:
@@ -1006,18 +1182,22 @@ class SystemTray:
             log_buffer.log('Tray', f'Failed to show XFCE notification: {exc}')
             return False
 
-    def _on_xfce_notification_closed(self, notification) -> None:
+    def _on_xfce_notification_closed(self, notification: object) -> None:
         if self._xfce_notification is notification:
             self._xfce_notification = None
 
-    def _show_windows_notification(self, title: str, message: str, icon_path) -> bool:
+    def _show_windows_notification(self, title: str, message: str, icon_path: Path | None) -> bool:
         """Show a silent Windows toast with the app icon and app identity."""
         try:
             app_id = self._ensure_notification_app_id()
             if not app_id:
                 return False
 
-            from win11toast import notify
+            if TYPE_CHECKING:
+
+                def notify(**kwargs: object) -> object: ...
+            else:
+                from win11toast import notify
 
             notify(
                 title=title,
@@ -1039,33 +1219,19 @@ class SystemTray:
 
         if os.name != 'nt':
             return None
-        if winreg is None:
-            return None
-
         app_id = _NOTIFICATION_APP_ID
         icon_path = get_icon_path()
 
         try:
-            key = winreg.CreateKey(
-                winreg.HKEY_CURRENT_USER, rf'SOFTWARE\Classes\AppUserModelId\{app_id}'
-            )
-            winreg.SetValueEx(key, 'DisplayName', 0, winreg.REG_EXPAND_SZ, APP_NAME)
-            winreg.SetValueEx(key, 'IconBackgroundColor', 0, winreg.REG_SZ, '00000000')
-            if icon_path is not None:
-                winreg.SetValueEx(key, 'IconUri', 0, winreg.REG_SZ, str(icon_path))
-            winreg.SetValueEx(key, 'ShowInSettings', 0, winreg.REG_DWORD, 1)
-            try:
-                key.Close()
-            except Exception:
-                pass
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+            if not _register_notification_app_id(app_id, icon_path):
+                return None
         except Exception:
             return None
 
         self._notification_app_id = app_id
         return app_id
 
-    def _on_tray_activated(self, reason):
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Handle tray icon activation (e.g., click)."""
         if reason == QSystemTrayIcon.ActivationReason.Trigger:  # Trigger is usually left-click
             # On macOS, clicking the menu-bar icon is how the user opens its
@@ -1075,20 +1241,24 @@ class SystemTray:
                 return
             self._toggle_dashboard()
 
-    def _show_delete_cache(self):
+    def _show_delete_cache(self) -> None:
         """Show Delete Cache window."""
         window = DeleteCacheWindow()
-        window.destroyed.connect(lambda: self._remove_window(window))
+
+        def remove_delete_cache(_obj: object | None = None) -> None:
+            self._remove_window(window)
+
+        window.destroyed.connect(remove_delete_cache)
         self.open_windows.append(window)
         self._apply_always_on_top_to_window(window)
         window.show()
 
-    def _remove_window(self, window):
+    def _remove_window(self, window: QWidget) -> None:
         """Remove window from tracking list."""
         if window in self.open_windows:
             self.open_windows.remove(window)
 
-    def _open_discord_server(self):
+    def _open_discord_server(self) -> None:
         """Open the Discord server invite in the default browser."""
         discord_url = (
             APP_DISCORD
@@ -1097,7 +1267,7 @@ class SystemTray:
         )
         QDesktopServices.openUrl(QUrl(discord_url))
 
-    def _copy_discord(self):
+    def _copy_discord(self) -> None:
         """Copy Discord invite to clipboard."""
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QApplication, QMessageBox
@@ -1123,7 +1293,7 @@ class SystemTray:
             msg_box.setWindowIcon(QIcon(str(icon_path)))
         msg_box.exec()
 
-    def _open_kofi(self):
+    def _open_kofi(self) -> None:
         """Open Ko-fi page in browser."""
         import webbrowser
 
@@ -1136,17 +1306,26 @@ class SystemTray:
         single-instance state and has established the configured proxy. This
         keeps import, elevation, and Hosts-mode startup failures transactional.
         """
-        from .app import RestartHandoffUncertain, _is_admin, restart_fleasion_normally
+        from .app import RestartHandoffUncertain, restart_fleasion_normally
 
-        lifecycle = getattr(self.roblox_monitor, 'env_lifecycle', None)
+        if TYPE_CHECKING:
+
+            def app_is_admin() -> bool: ...
+        else:
+            from .app import _is_admin as app_is_admin
+
+        lifecycle = _env_lifecycle(self.roblox_monitor)
         preserve_player = bool(
             self.config_manager.proxy_mode == 'env'
             and lifecycle is not None
             and lifecycle.owns_player
+            and self.roblox_monitor is not None
             and self.roblox_monitor.is_player_running()
         )
         requires_admin = bool(
-            sys.platform == 'win32' and self.config_manager.proxy_mode != 'env' and not _is_admin()
+            sys.platform == 'win32'
+            and self.config_manager.proxy_mode != 'env'
+            and not app_is_admin()
         )
         try:
             restarted = restart_fleasion_normally(
@@ -1171,14 +1350,14 @@ class SystemTray:
         *,
         preserve_roblox: bool = False,
         force_close_roblox: bool = False,
-    ):
+    ) -> None:
         """Exit the application."""
         if getattr(self, '_exiting', False):
             return
         self._exiting = True
         self.cleanup_tray_icon()
 
-        lifecycle = getattr(getattr(self, 'roblox_monitor', None), 'env_lifecycle', None)
+        lifecycle = _env_lifecycle(getattr(self, 'roblox_monitor', None))
         try:
             if self.custom_fflag_hotkeys is not None:
                 self.custom_fflag_hotkeys.stop()
@@ -1206,7 +1385,7 @@ class SystemTray:
         # Quit Qt app
         self.app.quit()
 
-    def cleanup_tray_icon(self):
+    def cleanup_tray_icon(self) -> None:
         """Remove the tray icon before the Qt event loop exits."""
         if self._tray_cleaned_up:
             return
@@ -1217,12 +1396,12 @@ class SystemTray:
             self._xfce_notification = None
         try:
             self.tray.hide()
-            self.tray.setContextMenu(None)
+            _set_context_menu_none(self.tray)
             self.tray.deleteLater()
             QApplication.processEvents()
         except Exception:
             pass
 
-    def update_status(self):
+    def update_status(self) -> None:
         """Update the status (called periodically or on proxy state change)."""
         self._update_tooltip()

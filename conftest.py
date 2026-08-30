@@ -2,17 +2,31 @@
 
 import socket
 import threading
+from collections.abc import Callable
+from typing import Protocol
 
 import pytest
-
 
 _THREADED_ASYNCIO_MARKER = 'threaded_asyncio'
 
 
+class _ThreadFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        target: Callable[[], None],
+        name: str,
+        daemon: bool,
+    ) -> threading.Thread: ...
+
+
+type _SocketPairFactory = Callable[[], tuple[socket.socket, socket.socket]]
+
+
 def _cross_thread_socket_wakeup_failure(
     *,
-    socketpair=socket.socketpair,
-    thread_factory=threading.Thread,
+    socketpair: _SocketPairFactory = socket.socketpair,
+    thread_factory: _ThreadFactory = threading.Thread,
 ) -> str | None:
     """Return why a socket wakeup failed, or ``None`` when it works."""
     receiver, sender = socketpair()
@@ -48,9 +62,7 @@ def _cross_thread_socket_wakeup_failure(
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Fail fast when selected async/thread tests would deadlock in a sandbox."""
-    guarded_items = [
-        item for item in items if item.get_closest_marker(_THREADED_ASYNCIO_MARKER)
-    ]
+    guarded_items = [item for item in items if item.get_closest_marker(_THREADED_ASYNCIO_MARKER)]
     if not guarded_items:
         return
 

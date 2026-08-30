@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..version import macos_bundle_version
 from .metadata import APP_NAME, APP_VERSION
@@ -85,30 +86,41 @@ def _remove_windows_shortcut() -> bool:
         return False
 
 
+if TYPE_CHECKING:
+
+    def _create_windows_shortcut_runtime(
+        command: list[str], working_dir: Path | None, icon_path: Path | None
+    ) -> bool: ...
+else:
+
+    def _create_windows_shortcut_runtime(
+        command: list[str], working_dir: Path | None, icon_path: Path | None
+    ) -> bool:
+        try:
+            import pythoncom
+            import win32com.client
+
+            pythoncom.CoInitialize()
+            shell = win32com.client.Dispatch('WScript.Shell')
+            WINDOWS_START_MENU_SHORTCUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            shortcut = shell.CreateShortCut(str(WINDOWS_START_MENU_SHORTCUT_PATH))
+            shortcut.Targetpath = command[0]
+            shortcut.Arguments = subprocess.list2cmdline(command[1:])
+            shortcut.WorkingDirectory = str(working_dir or Path(command[0]).parent)
+            shortcut.Description = _DESCRIPTION
+            if icon_path is not None:
+                shortcut.IconLocation = f'{icon_path},0'
+            shortcut.Save()
+            _log(f'Windows start-menu shortcut updated: {WINDOWS_START_MENU_SHORTCUT_PATH}')
+            return True
+        except Exception as exc:
+            _log(f'Failed to create Windows start-menu shortcut: {exc}')
+            return False
+
+
 def _create_windows_shortcut() -> bool:
     command, working_dir, _env = _launch_command()
-    icon_path = get_icon_path()
-
-    try:
-        import pythoncom
-        import win32com.client
-
-        pythoncom.CoInitialize()
-        shell = win32com.client.Dispatch('WScript.Shell')
-        WINDOWS_START_MENU_SHORTCUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        shortcut = shell.CreateShortCut(str(WINDOWS_START_MENU_SHORTCUT_PATH))
-        shortcut.Targetpath = command[0]
-        shortcut.Arguments = subprocess.list2cmdline(command[1:])
-        shortcut.WorkingDirectory = str(working_dir or Path(command[0]).parent)
-        shortcut.Description = _DESCRIPTION
-        if icon_path is not None:
-            shortcut.IconLocation = f'{icon_path},0'
-        shortcut.Save()
-        _log(f'Windows start-menu shortcut updated: {WINDOWS_START_MENU_SHORTCUT_PATH}')
-        return True
-    except Exception as exc:
-        _log(f'Failed to create Windows start-menu shortcut: {exc}')
-        return False
+    return _create_windows_shortcut_runtime(command, working_dir, get_icon_path())
 
 
 def _macos_launcher_script(
@@ -218,19 +230,29 @@ def _create_macos_app() -> bool:
         return False
 
 
+if TYPE_CHECKING:
+
+    def _restore_linux_uri_handler_runtime() -> None: ...
+else:
+
+    def _restore_linux_uri_handler_runtime() -> None:
+        from . import platform_linux
+
+        platform_linux.__dict__['_restore_linux_roblox_uri_handler']()
+
+
 def _remove_linux_desktop_entries() -> bool:
     try:
         from .platform_linux import (
             LINUX_APPLICATIONS_DIR,
             LINUX_DESKTOP_ENTRY_PATH,
             LINUX_LAUNCHER_PATH,
-            _restore_linux_roblox_uri_handler,
         )
 
         for path in (LINUX_DESKTOP_ENTRY_PATH, LINUX_LAUNCHER_PATH):
             path.unlink(missing_ok=True)
         if LINUX_DESKTOP_ENTRY_PATH.parent == LINUX_APPLICATIONS_DIR:
-            _restore_linux_roblox_uri_handler()
+            _restore_linux_uri_handler_runtime()
         return True
     except Exception as exc:
         _log(f'Failed to remove Linux desktop integration: {exc}')

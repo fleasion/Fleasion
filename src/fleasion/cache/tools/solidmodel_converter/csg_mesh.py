@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import logging
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
+from typing import TYPE_CHECKING, TypedDict
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +24,25 @@ CSGVERTEX_SIZE = 84  # sizeof(CSGVertex) — see CSGMesh.h
 SALT_SIZE = 16
 HASH_SIZE = 16
 XOR_KEY_SIZE = 31
+
+
+class CFrame(TypedDict):
+    X: float
+    Y: float
+    Z: float
+    R00: float
+    R01: float
+    R02: float
+    R10: float
+    R11: float
+    R12: float
+    R20: float
+    R21: float
+    R22: float
+
+
+def _byte_at(data: bytes, offset: int) -> int:
+    return data[offset]
 
 
 def _decode_quantized_f32_component(raw: int) -> float:
@@ -458,7 +475,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
 
     # Range markers: uint8 count + count × uint32
     rmc_offset = vd_end
-    range_marker_count = body[rmc_offset]
+    range_marker_count = _byte_at(body, rmc_offset)
     rm_start = rmc_offset + 1
     rm_end = rm_start + range_marker_count * 4
     if rm_end > len(body):
@@ -511,7 +528,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     indices: list[int] = []
     n_degenerate = 0
 
-    def _attr(seq, idx: int, default):
+    def _attr[T](seq: Sequence[T], idx: int, default: T) -> T:
         return seq[idx] if idx < len(seq) else default
 
     for tri_start in range(0, len(visual_indices) - 2, 3):
@@ -1079,6 +1096,10 @@ def _detect_csgmdl_version(data: bytes) -> int | None:
     return version if MIN_VERSION <= version <= MAX_VERSION else None
 
 
+if TYPE_CHECKING:
+    _ = _detect_csgmdl_version
+
+
 # ---------------------------------------------------------------------------
 # OBJ exporter
 # ---------------------------------------------------------------------------
@@ -1121,7 +1142,7 @@ def export_obj(
         log.info('Filtered %d degenerate triangles', degenerate_count)
 
     with output_path.open('w', encoding='utf-8') as f:
-        f.write(f'# Exported from Roblox SolidModel CSG data\n')
+        f.write('# Exported from Roblox SolidModel CSG data\n')
         f.write(f'# Vertices: {len(vertices)}, Triangles: {len(valid_faces)}\n')
         if degenerate_count > 0:
             f.write(f'# Filtered {degenerate_count} degenerate triangles\n')
@@ -1149,10 +1170,8 @@ def export_obj(
             face_idx = 0
             for sm_idx in range(len(submesh_boundaries) - 1):
                 f.write(f'g {object_name}_submesh{sm_idx}\n')
-                sm_start = submesh_boundaries[sm_idx] // 3
                 sm_end = submesh_boundaries[sm_idx + 1] // 3
                 while face_idx < len(valid_faces):
-                    orig_face_num = face_idx + (degenerate_count if face_idx > 0 else 0)
                     # Simple approach: just write all faces in order with group markers
                     i0, i1, i2 = valid_faces[face_idx]
                     f.write(
@@ -1185,10 +1204,10 @@ class ObjMeshPart:
     vertices: list[CSGVertex]
     indices: list[int]
     # CFrame: rotation matrix (3x3 row-major) + translation
-    cframe: dict | None = None  # keys: X,Y,Z, R00..R22
+    cframe: CFrame | None = None  # keys: X,Y,Z, R00..R22
 
 
-def _transform_vertex(v: CSGVertex, cframe: dict) -> CSGVertex:
+def _transform_vertex(v: CSGVertex, cframe: CFrame) -> CSGVertex:
     """Apply a CFrame transform to a vertex (local -> world space).
 
     CFrame rotation is a 3x3 matrix (R00..R22), translation is (X, Y, Z).

@@ -1,11 +1,23 @@
 """Proxy package."""
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .master import (
+        ProxyMaster as ProxyMaster,
+        check_and_patch_running_roblox_ca as check_and_patch_running_roblox_ca,
+    )
+
 __all__ = ['ProxyMaster', 'check_and_patch_running_roblox_ca']
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     if name in __all__:
-        from .master import ProxyMaster, check_and_patch_running_roblox_ca
+        # ruff: ignore[import-outside-top-level] - Preserve the package's lazy proxy import
+        from .master import (
+            ProxyMaster,
+            check_and_patch_running_roblox_ca,
+        )
 
         values = {
             'ProxyMaster': ProxyMaster,

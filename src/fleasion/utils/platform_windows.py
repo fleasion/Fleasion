@@ -6,16 +6,18 @@ import hashlib
 import locale
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
 import threading
 import time
-import winreg
-import xml.etree.ElementTree as ET
 import uuid
+import winreg  # pyright: ignore[reportMissingModuleSource]
+import xml.etree.ElementTree as ET
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import Protocol, TypedDict, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .logging import log_buffer
@@ -37,6 +39,71 @@ _PROCESS_COMMAND_LINE_INFORMATION = 60
 _STATUS_INFO_LENGTH_MISMATCH = 0xC0000004
 _STATUS_BUFFER_TOO_SMALL = 0xC0000023
 _MAX_PROCESS_COMMAND_LINE_BYTES = 1024 * 1024
+
+
+class _CFunction(Protocol):
+    argtypes: object
+    restype: object
+
+    def __call__(self, *args: object) -> int: ...
+
+
+class _DynamicLibrary(Protocol):
+    def __getattr__(self, name: str) -> _CFunction: ...
+
+
+class _DynamicLoader(Protocol):
+    def __getattr__(self, name: str) -> _DynamicLibrary: ...
+
+
+class _CFunctionType(Protocol):
+    def __call__(self, target: object) -> _CFunction: ...
+
+
+class _CFunctionTypeFactory(Protocol):
+    def __call__(self, restype: object, *argtypes: object) -> _CFunctionType: ...
+
+
+class _ProcessInfo(TypedDict, total=False):
+    ProcessId: int | str | None
+    ExecutablePath: str | Path | None
+    CommandLine: str | None
+
+
+type _ProcessQuery = Callable[[], list[_ProcessInfo]]
+type _LaunchArgExtractor = Callable[[str], str]
+type _FallbackExePath = Callable[[], Path | None]
+
+_CTYPES_WINDLL = 'windll'
+_CTYPES_WINFUNCTYPE = 'WINFUNCTYPE'
+
+
+def _missing_ctypes_attribute(name: str) -> AttributeError:
+    message = f"module 'ctypes' has no attribute {name!r}"
+    return AttributeError(message)
+
+
+def _windll() -> _DynamicLoader:
+    loader = ctypes.__dict__.get(_CTYPES_WINDLL)
+    if loader is None:
+        raise _missing_ctypes_attribute(_CTYPES_WINDLL)
+    return cast('_DynamicLoader', loader)
+
+
+def _winfunctype(restype: object, *argtypes: object) -> _CFunctionType:
+    factory = ctypes.__dict__.get(_CTYPES_WINFUNCTYPE)
+    if factory is None:
+        raise _missing_ctypes_attribute(_CTYPES_WINFUNCTYPE)
+    return cast('_CFunctionTypeFactory', factory)(restype, *argtypes)
+
+
+def _create_no_window() -> int:
+    return cast('int', subprocess.__dict__.get('CREATE_NO_WINDOW', 0))
+
+
+def _startfile(target: str | Path) -> None:
+    startfile = cast('Callable[[str | Path], None]', os.__dict__['startfile'])
+    startfile(target)
 
 
 class _GUID(ctypes.Structure):
@@ -75,11 +142,10 @@ _IID_APPLICATION_ACTIVATION_MANAGER = _guid('2E941141-7F97-4756-BA1D-9DECDE894A3
 def _windows_oem_encoding() -> str:
     """Return the code page used by localized Windows console programs."""
     try:
-        windll = getattr(ctypes, 'windll')
-        code_page = int(windll.kernel32.GetOEMCP())
+        code_page = int(_windll().kernel32.GetOEMCP())
         if code_page > 0:
             return f'cp{code_page}'
-    except (AttributeError, OSError, TypeError, ValueError):
+    except AttributeError, OSError, TypeError, ValueError:
         pass
     return locale.getpreferredencoding(False) or 'utf-8'
 
@@ -92,7 +158,7 @@ def run_cmd(args: list[str], timeout: float = 10.0) -> tuple[int, str]:
         text=True,
         encoding=_windows_oem_encoding(),
         errors='replace',
-        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        creationflags=_create_no_window(),
         timeout=timeout,
     )
     output = '\n'.join(
@@ -113,17 +179,15 @@ def run_gdk_debugger_command_line(arguments: list[str] | None = None) -> int:
     args = list(arguments if arguments is not None else sys.argv[1:])
     try:
         thread_id_index = next(
-            index
-            for index, value in enumerate(args)
-            if value.casefold() in {'-tid', '--tid'}
+            index for index, value in enumerate(args) if value.casefold() in {'-tid', '--tid'}
         )
         thread_id = int(args[thread_id_index + 1])
-    except (StopIteration, IndexError, TypeError, ValueError):
+    except StopIteration, IndexError, TypeError, ValueError:
         return 2
     if thread_id <= 0:
         return 2
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _windll().kernel32
     kernel32.OpenThread.argtypes = [
         ctypes.wintypes.DWORD,
         ctypes.wintypes.BOOL,
@@ -169,17 +233,19 @@ def _format_hresult(value: int) -> str:
     return f'0x{int(value) & 0xFFFFFFFF:08X}'
 
 
-def _com_method(interface: ctypes.c_void_p, index: int, restype, *argtypes):
+def _com_method(
+    interface: ctypes.c_void_p, index: int, restype: object, *argtypes: object
+) -> _CFunction:
     vtable = ctypes.cast(
         interface,
         ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)),
     ).contents
-    function_type = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)
+    function_type = _winfunctype(restype, ctypes.c_void_p, *argtypes)
     return function_type(vtable[index])
 
 
 def _create_com_instance(clsid: _GUID, iid: _GUID) -> ctypes.c_void_p | None:
-    ole32 = ctypes.windll.ole32
+    ole32 = _windll().ole32
     ole32.CoCreateInstance.argtypes = [
         ctypes.POINTER(_GUID),
         ctypes.c_void_p,
@@ -206,9 +272,15 @@ def _release_com_instance(interface: ctypes.c_void_p | None) -> None:
         _com_method(interface, 2, ctypes.c_ulong)(interface)
 
 
-def _package_environment_block(environment: dict[str, str]) -> ctypes.Array:
+def _package_environment_block(
+    environment: dict[str, str],
+) -> ctypes.Array[ctypes.c_wchar]:
     """Build the double-NUL-terminated UTF-16 block required by PZZWSTR."""
-    entries = [f'{key}={value}' for key, value in sorted(environment.items()) if '\x00' not in key and '\x00' not in value]
+    entries = [
+        f'{key}={value}'
+        for key, value in sorted(environment.items())
+        if '\x00' not in key and '\x00' not in value
+    ]
     return ctypes.create_unicode_buffer('\x00'.join(entries) + '\x00')
 
 
@@ -235,12 +307,12 @@ class _PROCESSENTRY32(ctypes.Structure):
     ]
 
 
-def _iter_processes():
+def _iter_processes() -> Iterator[tuple[int, str]]:
     """Yield (pid, exe_name_lower) for every running process.
 
     Uses CreateToolhelp32Snapshot — no subprocess, no WMI.
     """
-    k32 = ctypes.windll.kernel32
+    k32 = _windll().kernel32
     snap = k32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
     if snap == _INVALID_HANDLE_VALUE:
         return
@@ -259,7 +331,7 @@ def _iter_processes():
         k32.CloseHandle(snap)
 
 
-def _find_pid(exe_name: str) -> Optional[int]:
+def _find_pid(exe_name: str) -> int | None:
     """Return the PID of the first process matching exe_name (case-insensitive)."""
     pids = _find_pids(exe_name)
     return pids[0] if pids else None
@@ -275,7 +347,7 @@ def _describe_pids(pids: list[int]) -> str:
     """Return concise PID/path details for process diagnostics."""
     if not pids:
         return 'none'
-    descriptions = []
+    descriptions: list[str] = []
     for pid in pids:
         path = _query_exe_path(pid)
         descriptions.append(f'{pid} ({path or "path unavailable"})')
@@ -294,7 +366,7 @@ def _summarize_command_output(output: str, limit: int = 500) -> str:
 
 def _terminate_process_direct(pid: int) -> tuple[bool, str]:
     """Force-terminate *pid* using only the PROCESS_TERMINATE access right."""
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _windll().kernel32
     kernel32.OpenProcess.argtypes = [
         ctypes.wintypes.DWORD,
         ctypes.wintypes.BOOL,
@@ -319,9 +391,9 @@ def _terminate_process_direct(pid: int) -> tuple[bool, str]:
         kernel32.CloseHandle(handle)
 
 
-def _query_exe_path(pid: int) -> Optional[Path]:
+def _query_exe_path(pid: int) -> Path | None:
     """Return the full executable path for a given PID via QueryFullProcessImageNameW."""
-    k32 = ctypes.windll.kernel32
+    k32 = _windll().kernel32
     handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return None
@@ -337,12 +409,12 @@ def _query_exe_path(pid: int) -> Optional[Path]:
 
 def _query_process_command_line(pid: int) -> str:
     """Return a process command line through the native Unicode NT API."""
-    k32 = ctypes.windll.kernel32
+    k32 = _windll().kernel32
     handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return ''
     try:
-        query = ctypes.windll.ntdll.NtQueryInformationProcess
+        query = _windll().ntdll.NtQueryInformationProcess
         query.argtypes = [
             ctypes.wintypes.HANDLE,
             ctypes.c_int,
@@ -383,13 +455,13 @@ def _query_process_command_line(pid: int) -> str:
         if not command_line.Buffer or command_line.Length == 0:
             return ''
         return ctypes.string_at(command_line.Buffer, command_line.Length).decode('utf-16-le')
-    except (AttributeError, OSError, TypeError, UnicodeError, ValueError):
+    except AttributeError, OSError, TypeError, UnicodeError, ValueError:
         return ''
     finally:
         k32.CloseHandle(handle)
 
 
-_WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+_WNDENUMPROC = _winfunctype(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
 
 
 _WM_CLOSE = 0x0010
@@ -397,7 +469,7 @@ _WM_CLOSE = 0x0010
 
 def _request_process_window_close(pid: int) -> bool:
     """Ask every top-level window owned by *pid* to close normally."""
-    user32 = ctypes.windll.user32
+    user32 = _windll().user32
     user32.EnumWindows.argtypes = [_WNDENUMPROC, ctypes.wintypes.LPARAM]
     user32.EnumWindows.restype = ctypes.wintypes.BOOL
     user32.GetWindowThreadProcessId.argtypes = [
@@ -414,7 +486,7 @@ def _request_process_window_close(pid: int) -> bool:
     user32.PostMessageW.restype = ctypes.wintypes.BOOL
     requested = False
 
-    def _cb(hwnd, _):
+    def _cb(hwnd: int, _lparam: int) -> bool:
         nonlocal requested
         window_pid = ctypes.wintypes.DWORD(0)
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
@@ -534,16 +606,22 @@ def wait_for_roblox_window(
     cancel_event: threading.Event | None = None,
 ) -> bool:
     """Wait until RobloxPlayerBeta has a visible top-level window."""
-    user32 = ctypes.windll.user32
+    user32 = _windll().user32
     deadline = time.time() + timeout
     while time.time() < deadline:
         if cancel_event is not None and cancel_event.is_set():
             return False
         target_pid = pid if pid is not None else _find_pid(ROBLOX_PROCESS)
         if target_pid is not None:
-            found = []
+            found: list[int] = []
 
-            def _cb(hwnd, _):
+            def _cb(
+                hwnd: int,
+                _lparam: int,
+                *,
+                target_pid: int = target_pid,
+                found: list[int] = found,
+            ) -> bool:
                 if user32.IsWindowVisible(hwnd):
                     lp = ctypes.wintypes.DWORD(0)
                     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(lp))
@@ -577,9 +655,8 @@ def is_roblox_gdk_exe_path(exe_path: Path | str | None) -> bool:
     if not exe_path:
         return False
     normalized = str(exe_path).replace('/', '\\').casefold()
-    return (
-        ('\\windowsapps\\' in normalized and 'robloxgdk' in normalized)
-        or normalized.endswith('\\xboxgames\\roblox\\content\\robloxplayerbeta.exe')
+    return ('\\windowsapps\\' in normalized and 'robloxgdk' in normalized) or normalized.endswith(
+        '\\xboxgames\\roblox\\content\\robloxplayerbeta.exe'
     )
 
 
@@ -605,11 +682,13 @@ def _get_roblox_gdk_package_identity(exe_path: Path) -> tuple[str, str] | None:
                 continue
             candidate = application.attrib.get('Id')
             executable = application.attrib.get('Executable', '')
-            if candidate and (candidate == 'Game' or executable.casefold() == 'gamelaunchhelper.exe'):
+            if candidate and (
+                candidate == 'Game' or executable.casefold() == 'gamelaunchhelper.exe'
+            ):
                 application_id = candidate
                 break
         return package_full_name, f'{package_name}_{publisher_id}!{application_id}'
-    except (ET.ParseError, OSError, UnicodeError, ValueError):
+    except ET.ParseError, OSError, UnicodeError, ValueError:
         return None
 
 
@@ -627,13 +706,13 @@ def _find_installed_roblox_gdk_package_identity(
                 'Bypass',
                 '-Command',
                 "(Get-AppxPackage -Name 'ROBLOXCorporation.RobloxGDK' | "
-                "Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation)",
+                'Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation)',
             ],
             capture_output=True,
             text=True,
             encoding='utf-8',
             errors='replace',
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            creationflags=_create_no_window(),
             timeout=20,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -669,12 +748,12 @@ def _find_installed_roblox_gdk_package_identity(
 
 def _enable_gdk_package_debugging(
     package_full_name: str,
-    environment_block: ctypes.Array,
+    environment_block: ctypes.Array[ctypes.c_wchar],
     debugger_command_line: str,
     label: str,
 ) -> bool:
     """Arm package-aware activation and immediately release temporary COM state."""
-    ole32 = ctypes.windll.ole32
+    ole32 = _windll().ole32
     ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.wintypes.DWORD]
     ole32.CoInitializeEx.restype = ctypes.c_long
     ole32.CoUninitialize.argtypes = []
@@ -735,7 +814,7 @@ def _enable_gdk_package_debugging(
 
 def _disable_gdk_package_debugging(package_full_name: str, label: str) -> bool:
     """Remove package debugging after Env Proxy is no longer active."""
-    ole32 = ctypes.windll.ole32
+    ole32 = _windll().ole32
     ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.wintypes.DWORD]
     ole32.CoInitializeEx.restype = ctypes.c_long
     ole32.CoUninitialize.argtypes = []
@@ -845,7 +924,7 @@ def _activate_roblox_gdk_with_proxy_env(
     pid: int,
     exe_path: Path,
     launch_arg: str,
-    query_processes,
+    query_processes: _ProcessQuery,
     prepare_launch: Callable[[Path], bool] | None,
     cancel_event: threading.Event | None,
 ) -> tuple[int, str] | None:
@@ -990,7 +1069,7 @@ def _activate_roblox_gdk_with_proxy_env(
             for process in query_processes():
                 try:
                     candidate_pid = int(process.get('ProcessId') or 0)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
                 candidate_path = Path(str(process.get('ExecutablePath') or ''))
                 if (
@@ -1038,13 +1117,13 @@ def is_studio_running() -> bool:
     return _find_pid(ROBLOX_STUDIO_PROCESS) is not None
 
 
-def get_roblox_player_exe_path() -> Optional[Path]:
+def get_roblox_player_exe_path() -> Path | None:
     """Return the full executable path of the running RobloxPlayerBeta.exe, or None."""
     pid = _find_pid(ROBLOX_PROCESS)
     return _query_exe_path(pid) if pid is not None else None
 
 
-def _query_roblox_processes(exe_name: str) -> list[dict[str, Any]]:
+def _query_roblox_processes(exe_name: str) -> list[_ProcessInfo]:
     """Return matching processes without spawning PowerShell or decoding paths."""
     return [
         {
@@ -1056,7 +1135,7 @@ def _query_roblox_processes(exe_name: str) -> list[dict[str, Any]]:
     ]
 
 
-def _query_roblox_player_processes() -> list[dict[str, Any]]:
+def _query_roblox_player_processes() -> list[_ProcessInfo]:
     return _query_roblox_processes('RobloxPlayerBeta.exe')
 
 
@@ -1077,10 +1156,10 @@ def _relaunch_roblox_exe_with_proxy_env(
     proxy_url: str,
     *,
     label: str,
-    query_processes,
-    extract_launch_arg,
+    query_processes: _ProcessQuery,
+    extract_launch_arg: _LaunchArgExtractor,
     wait_pid_exe_name: str,
-    fallback_exe_path,
+    fallback_exe_path: _FallbackExePath,
     force: bool = False,
     cancel_event: threading.Event | None = None,
     prepare_launch: Callable[[Path], bool] | None = None,
@@ -1100,7 +1179,7 @@ def _relaunch_roblox_exe_with_proxy_env(
         proc = pending_processes.pop(0)
         try:
             pid = int(proc.get('ProcessId') or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pid = 0
         command_line = str(proc.get('CommandLine') or '')
         launch_arg = extract_launch_arg(command_line)
@@ -1130,10 +1209,7 @@ def _relaunch_roblox_exe_with_proxy_env(
 
         if is_roblox_gdk_exe_path(exe_path):
             if not force:
-                if (
-                    is_roblox_gdk_env_proxy_armed()
-                    or is_gdk_env_proxy_activation_in_progress()
-                ):
+                if is_roblox_gdk_env_proxy_armed() or is_gdk_env_proxy_activation_in_progress():
                     _env_proxy_owned_process = (pid, str(exe_path))
                     _env_proxy_relaunches[relaunch_key] = time.monotonic()
                     log_buffer.log(
@@ -1193,16 +1269,13 @@ def _relaunch_roblox_exe_with_proxy_env(
             # stale command after the PID is gone.  Instead, take one fresh
             # snapshot and only retry against the successor's own command
             # line.  This is immediate discovery, not a launch-settling delay.
-            if (
-                not retried_after_pid_replacement
-                and not _pid_is_running(pid, wait_pid_exe_name)
-            ):
+            if not retried_after_pid_replacement and not _pid_is_running(pid, wait_pid_exe_name):
                 successor_processes = list(query_processes())
-                successor_pids = []
+                successor_pids: list[int] = []
                 for successor in successor_processes:
                     try:
                         successor_pid = int(successor.get('ProcessId') or 0)
-                    except (AttributeError, TypeError, ValueError):
+                    except AttributeError, TypeError, ValueError:
                         continue
                     if successor_pid > 0 and successor_pid not in attempted_pids:
                         successor_pids.append(successor_pid)
@@ -1256,7 +1329,7 @@ def _relaunch_roblox_exe_with_proxy_env(
                 # ``subprocess``.  Keeping the fallback at zero also lets
                 # cross-platform lifecycle tests exercise the Windows launch
                 # path without importing a host-specific constant.
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                creationflags=_create_no_window(),
             )
         except OSError as exc:
             log_buffer.log('Launcher', f'{label} Env Proxy relaunch failed: {exc}')
@@ -1290,7 +1363,7 @@ def relaunch_roblox_with_proxy_env(
     )
 
 
-def get_roblox_studio_exe_path() -> Optional[Path]:
+def get_roblox_studio_exe_path() -> Path | None:
     """Return the full executable path of the running RobloxStudioBeta.exe, or None."""
     pid = _find_pid(ROBLOX_STUDIO_PROCESS)
     return _query_exe_path(pid) if pid is not None else None
@@ -1387,8 +1460,7 @@ def terminate_roblox() -> bool:
     if remaining_pids:
         log_buffer.log(
             'Launcher',
-            f'Cache termination left Roblox running: '
-            f'{_describe_pids(remaining_pids)}',
+            f'Cache termination left Roblox running: {_describe_pids(remaining_pids)}',
         )
         return False
     return True
@@ -1459,14 +1531,14 @@ def _clear_read_only(path: Path) -> None:
     path.chmod(current_mode | stat.S_IWRITE)
 
 
-def _rmtree_clear_readonly_retry(func, path: str, _exc_info) -> None:
+def _rmtree_clear_readonly_retry(func: Callable[..., object], path: str, _exc_info: object) -> None:
     """Allow shutil.rmtree() to retry after clearing a read-only attribute."""
     target = Path(path)
     _clear_read_only(target)
     func(path)
 
 
-def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage database') -> None:
+def _delete_db_file(db_path: Path, messages: list[str], label: str = 'Storage database') -> None:
     """Delete a single rbx-storage.db file, attempting win32 unlock on PermissionError."""
     if not db_path.exists():
         messages.append(f'{label} not found')
@@ -1478,9 +1550,9 @@ def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage databas
     except PermissionError:
         messages.append(f'{label}: Permission denied - attempting to unlock...')
         try:
-            import pywintypes
-            import win32con
-            import win32file
+            import pywintypes  # pyright: ignore[reportMissingModuleSource]
+            import win32con  # pyright: ignore[reportMissingModuleSource]
+            import win32file  # pyright: ignore[reportMissingModuleSource]
 
             try:
                 handle = win32file.CreateFile(
@@ -1492,7 +1564,7 @@ def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage databas
                     0,
                     None,
                 )
-                win32file.CloseHandle(cast(int, handle))
+                win32file.CloseHandle(cast('int', handle))
             except pywintypes.error:
                 pass
 
@@ -1507,7 +1579,7 @@ def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage databas
         messages.append(f'{label}: Failed: {e}')
 
 
-def _delete_cache_file(path: Path, messages: list, label: str) -> None:
+def _delete_cache_file(path: Path, messages: list[str], label: str) -> None:
     if not path.exists():
         return
     try:
@@ -1518,7 +1590,7 @@ def _delete_cache_file(path: Path, messages: list, label: str) -> None:
         messages.append(f'{label}: Failed: {exc}')
 
 
-def _delete_storage_family(db_path: Path, messages: list, suffix: str = '') -> None:
+def _delete_storage_family(db_path: Path, messages: list[str], suffix: str = '') -> None:
     """Delete one complete Roblox RbxStorage database and file-cache family."""
     import shutil
 
@@ -1550,7 +1622,7 @@ def _delete_storage_family(db_path: Path, messages: list, suffix: str = '') -> N
                 messages.append(f'{folder_label}{label_suffix} not found')
             continue
         try:
-            shutil.rmtree(folder, onerror=_rmtree_clear_readonly_retry)
+            cast('Callable[..., None]', shutil.rmtree)(folder, onerror=_rmtree_clear_readonly_retry)
             messages.append(f'{folder_label}{label_suffix} deleted successfully')
         except OSError as exc:
             messages.append(f'Failed to delete {folder_label.lower()}{label_suffix}: {exc}')
@@ -1608,16 +1680,16 @@ def _summarize_cache_messages(messages: list[str]) -> list[str]:
             if len(labels) == 1:
                 summary.append(message)
             else:
-                summary.append(f"Roblox cache storage deleted successfully ({', '.join(labels)})")
+                summary.append(f'Roblox cache storage deleted successfully ({", ".join(labels)})')
             continue
 
         if message == 'Storage database (GDK) not found':
             missing_gdk_storage = [message]
             index += 1
-            while (
-                index < len(messages)
-                and messages[index] in {'Storage database (GDK) not found', 'Storage folder (GDK) not found'}
-            ):
+            while index < len(messages) and messages[index] in {
+                'Storage database (GDK) not found',
+                'Storage folder (GDK) not found',
+            }:
                 missing_gdk_storage.append(messages[index])
                 index += 1
             if len(missing_gdk_storage) == 1:
@@ -1633,7 +1705,7 @@ def _summarize_cache_messages(messages: list[str]) -> list[str]:
 
 def delete_cache() -> list[str]:
     """Delete Roblox cache with cleanup. Returns list of status messages."""
-    messages = []
+    messages: list[str] = []
 
     if is_roblox_running():
         messages.append('Roblox is running, terminating...')
@@ -1679,7 +1751,9 @@ def delete_cache() -> list[str]:
                 if child in _preserve_set:
                     continue
                 if child.is_dir():
-                    shutil.rmtree(child, onerror=_rmtree_clear_readonly_retry)
+                    cast('Callable[..., None]', shutil.rmtree)(
+                        child, onerror=_rmtree_clear_readonly_retry
+                    )
                 else:
                     _clear_read_only(child)
                     child.unlink()
@@ -1697,7 +1771,7 @@ def _is_process_elevated() -> bool:
     if not hasattr(ctypes, 'windll'):
         return False
     try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        return bool(_windll().shell32.IsUserAnAdmin())
     except Exception:
         return False
 
@@ -1746,11 +1820,11 @@ class _PROCESS_INFORMATION(ctypes.Structure):
     ]
 
 
-def _close_handle(handle) -> None:
+def _close_handle(handle: object) -> None:
     """Close a Win32 handle if it is valid."""
     raw = getattr(handle, 'value', handle)
     if raw:
-        ctypes.windll.kernel32.CloseHandle(raw)
+        _windll().kernel32.CloseHandle(raw)
 
 
 def _is_roblox_launch_uri(target_str: str) -> bool:
@@ -1759,7 +1833,7 @@ def _is_roblox_launch_uri(target_str: str) -> bool:
     return lowered.startswith(('roblox://', 'roblox-player:', 'roblox:'))
 
 
-def _extract_exe_from_command(command: str) -> Optional[Path]:
+def _extract_exe_from_command(command: str) -> Path | None:
     """Extract executable path from a shell/open command string."""
     command = (command or '').replace('\x00', '').strip()
     if not command:
@@ -1826,7 +1900,7 @@ def _safe_mtime(path: Path) -> float:
         return 0.0
 
 
-def _resolve_roblox_player_exe_for_launch() -> Optional[Path]:
+def _resolve_roblox_player_exe_for_launch() -> Path | None:
     """Resolve best Roblox executable path for URI launches with fallbacks."""
     candidates_by_path: dict[str, tuple[int, float, Path, str]] = {}
     diagnostics: list[str] = []
@@ -1873,7 +1947,7 @@ def _resolve_roblox_player_exe_for_launch() -> Optional[Path]:
             r'Software\Classes\roblox-player\shell\open\command',
         ) as key:
             command, _ = winreg.QueryValueEx(key, '')
-            exe_path = _extract_exe_from_command(command)
+            exe_path = _extract_exe_from_command(cast('str', command))
             if exe_path is None:
                 diagnostics.append('roblox-player protocol: command did not contain an executable')
             else:
@@ -1942,7 +2016,7 @@ def _resolve_roblox_player_exe_for_launch() -> Optional[Path]:
     return selected[2]
 
 
-def resolve_roblox_player_exe_for_launch() -> Optional[Path]:
+def resolve_roblox_player_exe_for_launch() -> Path | None:
     """Public wrapper for Roblox executable resolution used by launch callers."""
     return _resolve_roblox_player_exe_for_launch()
 
@@ -2021,7 +2095,7 @@ def _launch_roblox_uri_direct(target_str: str) -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_create_no_window(),
         )
         metadata = _extract_launch_metadata(target_str)
         log_buffer.log(
@@ -2036,7 +2110,7 @@ def _launch_roblox_uri_direct(target_str: str) -> bool:
 
 def _build_launch_command(
     target_str: str, prefer_direct_roblox_uri: bool = False
-) -> tuple[str, Optional[str]]:
+) -> tuple[str, str | None]:
     """Build command line + cwd for token-based process creation."""
     is_uri = '://' in target_str or target_str.startswith(('roblox-player:', 'roblox:'))
     if is_uri:
@@ -2070,9 +2144,9 @@ def _build_launch_command(
 
 def _launch_with_shell_token(target_str: str, prefer_direct_roblox_uri: bool = False) -> bool:
     """Launch target with the desktop shell's primary token (non-elevated)."""
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    advapi32 = ctypes.windll.advapi32
+    user32 = _windll().user32
+    kernel32 = _windll().kernel32
+    advapi32 = _windll().advapi32
 
     advapi32.OpenProcessToken.argtypes = [
         ctypes.wintypes.HANDLE,
@@ -2245,7 +2319,7 @@ def launch_as_standard_user(target: str | Path) -> bool:
             return False
 
         try:
-            os.startfile(target_str)
+            _startfile(target_str)
             protocol_started = True
             log_buffer.log('Launcher', 'Protocol launch dispatched via os.startfile')
         except OSError as exc:
@@ -2279,7 +2353,7 @@ def launch_as_standard_user(target: str | Path) -> bool:
         )
 
     try:
-        os.startfile(target_str)
+        _startfile(target_str)
         log_buffer.log('Launcher', 'Launch succeeded via os.startfile')
         return True
     except OSError as exc:
@@ -2287,14 +2361,14 @@ def launch_as_standard_user(target: str | Path) -> bool:
         return False
 
 
-def open_folder(path: Path):
+def open_folder(path: Path) -> None:
     """Open a folder in Windows Explorer."""
     path.mkdir(parents=True, exist_ok=True)
     if _is_process_elevated() and launch_as_standard_user(path):
         return
-    os.startfile(path)
+    _startfile(path)
 
 
-def show_message_box(title: str, message: str, icon: int = 0x40):
+def show_message_box(title: str, message: str, icon: int = 0x40) -> None:
     """Show a Windows message box."""
-    ctypes.windll.user32.MessageBoxW(0, message, title, icon)
+    _windll().user32.MessageBoxW(0, message, title, icon)

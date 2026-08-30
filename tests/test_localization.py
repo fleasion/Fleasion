@@ -3,7 +3,11 @@ import json
 import re
 import string
 import unicodedata
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
+
+import pytest
 
 from fleasion import localization
 from fleasion.config import manager as manager_module
@@ -16,6 +20,19 @@ from fleasion.translations.pt import PORTUGUESE
 from fleasion.translations.ru import RUSSIAN
 from fleasion.translations.tr import TURKISH
 from fleasion.translations.zh import CHINESE
+
+
+def _translations() -> dict[str, dict[str, str]]:
+    return cast('dict[str, dict[str, str]]', localization.__dict__['_TRANSLATIONS'])
+
+
+def _settings_language_change(settings_module: object, tab: object) -> None:
+    settings_tab_class = getattr(settings_module, 'SettingsTab')
+    callback = cast(
+        'Callable[[object], None]',
+        settings_tab_class.__dict__['_on_language_changed'],
+    )
+    callback(tab)
 
 
 _TRANSLATED_CATALOGS = {
@@ -31,7 +48,7 @@ _TRANSLATED_CATALOGS = {
 }
 
 
-def test_english_is_default_and_supported_languages_are_available():
+def test_english_is_default_and_supported_languages_are_available() -> None:
     assert localization.available_languages() == (
         ('en', 'English'),
         ('es', 'Español'),
@@ -63,7 +80,7 @@ def test_english_is_default_and_supported_languages_are_available():
     assert localization.normalize_language('not-a-language') == 'en'
 
 
-def test_translation_lookup_formats_and_falls_back_to_english():
+def test_translation_lookup_formats_and_falls_back_to_english() -> None:
     localization.set_language('not-a-language')
     assert localization.get_language() == 'en'
     assert localization.tr('language.picker.title') == 'Choose Language'
@@ -73,7 +90,7 @@ def test_translation_lookup_formats_and_falls_back_to_english():
     assert localization.tr_count(3, 'count.asset.one', 'count.asset.other') == '3 assets'
 
 
-def test_spanish_translation_lookup_formats_and_counts():
+def test_spanish_translation_lookup_formats_and_counts() -> None:
     localization.set_language('es-MX')
     try:
         assert localization.get_language() == 'es'
@@ -85,7 +102,7 @@ def test_spanish_translation_lookup_formats_and_counts():
         localization.set_language('en')
 
 
-def test_portuguese_translation_lookup_formats_and_counts():
+def test_portuguese_translation_lookup_formats_and_counts() -> None:
     localization.set_language('pt-BR')
     try:
         assert localization.get_language() == 'pt'
@@ -103,7 +120,7 @@ def test_portuguese_translation_lookup_formats_and_counts():
         localization.set_language('en')
 
 
-def test_new_translation_lookup_formats_and_counts():
+def test_new_translation_lookup_formats_and_counts() -> None:
     catalogs = {
         'ru': RUSSIAN,
         'kk': KAZAKH,
@@ -131,7 +148,7 @@ def test_new_translation_lookup_formats_and_counts():
             localization.set_language('en')
 
 
-def test_profile_error_actions_are_localized():
+def test_profile_error_actions_are_localized() -> None:
     localization.set_language('es')
     try:
         action = localization.tr('ui.gui.modifications_tab.profile_action_save')
@@ -143,7 +160,7 @@ def test_profile_error_actions_are_localized():
         localization.set_language('en')
 
 
-def test_translation_catalogs_match_english_keys_markup_and_placeholders():
+def test_translation_catalogs_match_english_keys_markup_and_placeholders() -> None:
     placeholder_re = re.compile(r'\{[^{}]+\}')
     tag_re = re.compile(r'<[^>]+>')
 
@@ -172,7 +189,7 @@ def test_translation_catalogs_match_english_keys_markup_and_placeholders():
             assert 'ZXQ' not in translated, identifier
 
 
-def test_translated_onboarding_uses_the_actual_ui_labels():
+def test_translated_onboarding_uses_the_actual_ui_labels() -> None:
     label_keys = (
         'ui.gui.replacer_config.replacer',
         'ui.gui.replacer_config.scraped_games',
@@ -192,7 +209,7 @@ def test_translated_onboarding_uses_the_actual_ui_labels():
             assert label in welcome, (code, identifier, label)
 
 
-def test_translated_open_directory_help_matches_the_button_label():
+def test_translated_open_directory_help_matches_the_button_label() -> None:
     for code, catalog in _TRANSLATED_CATALOGS.items():
         label = catalog['app.click_here_to_open_directory']
         assert catalog['ui.app.click_here_to_open_directory'] == label, code
@@ -203,7 +220,7 @@ def test_translated_open_directory_help_matches_the_button_label():
             assert label in catalog[identifier], (code, identifier, label)
 
 
-def test_new_language_font_samples_cover_their_writing_systems():
+def test_new_language_font_samples_cover_their_writing_systems() -> None:
     alphabets = {
         'ru': set('абвгдеёжзийклмнопрстуфхцчшщъыьэюя'),
         'kk': set('аәбвгғдеёжзийкқлмнңоөпрстуұүфхһцчшщъыіьэюя'),
@@ -234,7 +251,7 @@ def test_new_language_font_samples_cover_their_writing_systems():
         assert any('\u4e00' <= character <= '\u9fff' for character in sample), identifier
 
 
-def test_turkish_terminology_and_font_samples_are_consistent():
+def test_turkish_terminology_and_font_samples_are_consistent() -> None:
     shared_terms = {
         'Scraped Games': 'Mevcut Oyunlar',
         'Preview': 'Önizleme',
@@ -279,7 +296,7 @@ def test_turkish_terminology_and_font_samples_are_consistent():
         assert alphabet <= set(TURKISH[identifier].casefold()), identifier
 
 
-def test_spanish_terminology_is_consistent():
+def test_spanish_terminology_is_consistent() -> None:
     shared_terms = {
         'Scraped Games': 'Juegos recopilados',
         'Preview': 'Vista previa',
@@ -343,7 +360,7 @@ def test_spanish_terminology_is_consistent():
         assert stale_term not in catalog_text
 
 
-def test_spanish_font_samples_are_full_alphabet_pangrams():
+def test_spanish_font_samples_are_full_alphabet_pangrams() -> None:
     alphabet = set(string.ascii_lowercase)
     for identifier in (
         'font_viewer.sample.pack_my_box',
@@ -358,7 +375,7 @@ def test_spanish_font_samples_are_full_alphabet_pangrams():
         assert alphabet <= set(normalized), identifier
 
 
-def test_portuguese_brazilian_terminology_is_consistent():
+def test_portuguese_brazilian_terminology_is_consistent() -> None:
     shared_terms = {
         'Scraped Games': 'Jogos extraídos',
         'Preview': 'Prévia',
@@ -393,7 +410,7 @@ def test_portuguese_brazilian_terminology_is_consistent():
     assert 'scraper de cache' not in catalog_text
 
 
-def test_portuguese_font_samples_are_full_alphabet_pangrams():
+def test_portuguese_font_samples_are_full_alphabet_pangrams() -> None:
     alphabet = set(string.ascii_lowercase)
     for identifier in (
         'font_viewer.sample.pack_my_box',
@@ -408,10 +425,12 @@ def test_portuguese_font_samples_are_full_alphabet_pangrams():
         assert alphabet <= set(normalized), identifier
 
 
-def test_translation_values_include_future_registered_languages(monkeypatch):
+def test_translation_values_include_future_registered_languages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pseudo = dict(localization.ENGLISH)
     pseudo['replacer.action.remove'] = 'Supprimer'
-    monkeypatch.setitem(localization._TRANSLATIONS, 'fr-test', pseudo)
+    monkeypatch.setitem(_translations(), 'fr-test', pseudo)
 
     values = localization.translation_values('replacer.action.remove')
 
@@ -421,11 +440,13 @@ def test_translation_values_include_future_registered_languages(monkeypatch):
     assert 'Supprimer' in values
 
 
-def test_count_translation_uses_selected_language_without_english_noun_leak(monkeypatch):
+def test_count_translation_uses_selected_language_without_english_noun_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pseudo = dict(localization.ENGLISH)
     pseudo['count.asset.one'] = '⟦asset-one⟧ {count}'
     pseudo['count.asset.other'] = '⟦asset-many⟧ {count}'
-    monkeypatch.setitem(localization._TRANSLATIONS, 'zz', pseudo)
+    monkeypatch.setitem(_translations(), 'zz', pseudo)
     try:
         localization.set_language('zz')
         assert localization.tr_count(2, 'count.asset.one', 'count.asset.other') == '⟦asset-many⟧ 2'
@@ -444,7 +465,7 @@ def _translation_keys_from_expression(node: ast.expr) -> list[str] | None:
     return None
 
 
-def test_all_translation_identifiers_exist_in_english_table():
+def test_all_translation_identifiers_exist_in_english_table() -> None:
     source_root = Path(__file__).resolve().parents[1] / 'src' / 'fleasion'
     unknown: list[str] = []
     unsupported_dynamic: list[str] = []
@@ -487,7 +508,7 @@ def test_all_translation_identifiers_exist_in_english_table():
     assert not unknown, 'Unknown translation identifiers:\n' + '\n'.join(unknown)
 
 
-def test_common_ui_surfaces_do_not_use_literal_visible_text():
+def test_common_ui_surfaces_do_not_use_literal_visible_text() -> None:
     source_root = Path(__file__).resolve().parents[1] / 'src' / 'fleasion'
     text_constructors = {
         'QLabel',
@@ -587,7 +608,7 @@ def test_common_ui_surfaces_do_not_use_literal_visible_text():
     )
 
 
-def test_indirect_ui_text_flows_do_not_use_literal_visible_text():
+def test_indirect_ui_text_flows_do_not_use_literal_visible_text() -> None:
     source_root = Path(__file__).resolve().parents[1] / 'src' / 'fleasion'
     ui_forwarding_helpers = {
         '_show_text_preview': {0},
@@ -687,7 +708,7 @@ def test_indirect_ui_text_flows_do_not_use_literal_visible_text():
     )
 
 
-def test_ui_label_constants_and_helper_returns_are_localized():
+def test_ui_label_constants_and_helper_returns_are_localized() -> None:
     source_root = Path(__file__).resolve().parents[1] / 'src' / 'fleasion'
     ui_constant_suffixes = (
         '_HEADERS',
@@ -758,7 +779,7 @@ def test_ui_label_constants_and_helper_returns_are_localized():
     )
 
 
-def test_ui_collection_labels_are_localized_before_display():
+def test_ui_collection_labels_are_localized_before_display() -> None:
     source_root = Path(__file__).resolve().parents[1] / 'src' / 'fleasion'
     text_calls = {
         'QLabel',
@@ -910,7 +931,7 @@ def test_ui_collection_labels_are_localized_before_display():
     )
 
 
-def test_local_variables_forwarded_to_ui_do_not_hide_literal_text():
+def test_local_variables_forwarded_to_ui_do_not_hide_literal_text() -> None:
     source_root = Path(__file__).resolve().parents[1] / 'src' / 'fleasion'
     text_calls = {
         'QLabel',
@@ -1013,7 +1034,7 @@ def test_local_variables_forwarded_to_ui_do_not_hide_literal_text():
     )
 
 
-def test_nested_ui_defaults_and_overloads_do_not_hide_literal_text():
+def test_nested_ui_defaults_and_overloads_do_not_hide_literal_text() -> None:
     source_root = Path(__file__).resolve().parents[1] / 'src' / 'fleasion'
     untranslated: list[str] = []
 
@@ -1094,7 +1115,7 @@ def test_nested_ui_defaults_and_overloads_do_not_hide_literal_text():
     )
 
 
-def test_translation_placeholders_do_not_inject_literal_human_text():
+def test_translation_placeholders_do_not_inject_literal_human_text() -> None:
     source_root = Path(__file__).resolve().parents[1] / 'src' / 'fleasion'
     untranslated: list[str] = []
 
@@ -1185,33 +1206,37 @@ def test_translation_placeholders_do_not_inject_literal_human_text():
     )
 
 
-def test_settings_language_change_is_saved_but_active_language_waits_for_restart(monkeypatch):
+def test_settings_language_change_is_saved_but_active_language_waits_for_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from fleasion.gui import settings_tab as settings_module
 
     class FakeCombo:
         @staticmethod
-        def currentData():
+        def currentData() -> str:
             return 'future-language'
 
     class FakeConfig:
         language = 'en'
 
-    fake_tab = type(
-        'FakeSettingsTab',
-        (),
-        {'_language_combo': FakeCombo(), '_config': FakeConfig()},
-    )()
+    config = FakeConfig()
+
+    class FakeSettingsTab:
+        _language_combo = FakeCombo()
+        _config = config
+
+    fake_tab = FakeSettingsTab()
     notices: list[tuple[str, str]] = []
     localization.set_language('en')
-    monkeypatch.setattr(
-        settings_module.QMessageBox,
-        'information',
-        lambda _parent, title, body: notices.append((title, body)),
-    )
 
-    settings_module.SettingsTab._on_language_changed(fake_tab)
+    def information(_parent: object, title: str, body: str) -> None:
+        notices.append((title, body))
 
-    assert fake_tab._config.language == 'future-language'
+    monkeypatch.setattr(settings_module.QMessageBox, 'information', information)
+
+    _settings_language_change(settings_module, fake_tab)
+
+    assert config.language == 'future-language'
     assert localization.get_language() == 'en'
     assert notices == [
         (
@@ -1221,7 +1246,9 @@ def test_settings_language_change_is_saved_but_active_language_waits_for_restart
     ]
 
 
-def test_config_language_invalid_saved_value_falls_back_to_english(tmp_path, monkeypatch):
+def test_config_language_invalid_saved_value_falls_back_to_english(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config_dir = tmp_path / 'Fleasion'
     config_dir.mkdir()
     config_file = config_dir / 'settings.json'

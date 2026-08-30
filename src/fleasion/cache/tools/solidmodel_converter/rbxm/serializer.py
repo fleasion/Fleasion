@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import struct
 from collections import defaultdict
-from typing import Any
-
-import lz4.block  # type: ignore[import-untyped]
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .binary_writer import (
     encode_ids,
@@ -32,6 +30,16 @@ from .binary_writer import (
     write_u32,
 )
 from .types import PropertyFormat, RbxDocument, RbxInstance, RbxRawPropertyChunk
+
+
+class _Lz4Block(Protocol):
+    def compress(self, data: bytes, *, store_size: bool) -> bytes: ...
+
+
+if TYPE_CHECKING:
+    lz4_block: _Lz4Block
+else:
+    import lz4.block as lz4_block
 
 MAGIC_HEADER = b'<roblox!\x89\xff\x0d\x0a\x1a\x0a'
 FILE_VERSION = 0  # same version the deserializer reads
@@ -160,7 +168,7 @@ class RbxmSerializer:
         if uncompressed_size == 0:
             return name_b + struct.pack('<III', 0, 0, 0)
 
-        compressed = lz4.block.compress(data, store_size=False)
+        compressed = lz4_block.compress(data, store_size=False)
         if len(compressed) < uncompressed_size:
             return name_b + struct.pack('<III', len(compressed), uncompressed_size, 0) + compressed
         else:
@@ -185,8 +193,7 @@ class RbxmSerializer:
     # ------------------------------------------------------------------
 
     def _build_sstr(self) -> bytes:
-        import base64
-        import hashlib  # noqa: E401 — local import to keep module light
+        import hashlib
 
         buf = bytearray()
         buf.extend(write_u32(0))  # version
@@ -482,7 +489,9 @@ class RbxmSerializer:
         matrix, then the positions as three interleaved float arrays.
         """
         buf = bytearray()
-        xs, ys, zs = [], [], []
+        xs: list[float] = []
+        ys: list[float] = []
+        zs: list[float] = []
         for cf in values:
             buf.extend(write_u8(0))  # orient_id = 0 → custom matrix follows
             buf.extend(write_f32(float(cf['R00'])))
@@ -554,7 +563,7 @@ class RbxmSerializer:
 
     def _enc_shared_strings(self, values: list[Any]) -> bytes:
         """Encode SHARED_STRING values as indices into the SSTR table."""
-        indices = []
+        indices: list[int] = []
         for v in values:
             if isinstance(v, bytes) and v in self._shared_string_index:
                 indices.append(self._shared_string_index[v])

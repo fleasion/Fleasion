@@ -18,10 +18,37 @@ import stat
 import sys
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 from PySide6.QtCore import QObject, Signal
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+
+class _RegistryKey(Protocol):
+    def __enter__(self) -> _RegistryKey: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> bool | None: ...
+
+
+class _WinregLike(Protocol):
+    HKEY_CURRENT_USER: object
+    REG_SZ: int
+    OpenKey: Callable[[object, str], _RegistryKey]
+    EnumKey: Callable[[_RegistryKey, int], str]
+    QueryValueEx: Callable[[_RegistryKey, str], tuple[object, int]]
+
+
+def _winreg_module() -> _WinregLike:
+    return cast('_WinregLike', __import__('winreg'))
+
 
 from ..cache.tools.ktx_to_png import strip_prefixed_ktx
 from ..utils import (
@@ -64,6 +91,71 @@ MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
 MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
 MOD_CACHE_DIR = CONFIG_DIR / 'ModCache'
 READ_ONLY_STATE_FILE = CONFIG_DIR / 'read_only_modes.json'
+
+
+class _NewModificationEntry(TypedDict, total=False):
+    display_name: str
+    target_path: str
+    source_type: str | None
+    source_value: str | None
+    status: str
+    error_message: str | None
+    converted_cache_path: str | None
+    _is_font: bool
+    _apply_gen: int
+
+
+class _ModificationEntry(_NewModificationEntry):
+    id: str
+
+
+class _FastFlagSettings(TypedDict, total=False):
+    rendering_mode: str
+    msaa: str
+    disable_dpi_scale: bool
+    alt_enter_fullscreen: bool
+    texture_quality: str
+    mesh_lod_enabled: bool
+    mesh_lod: int
+    frm_quality_enabled: bool
+    frm_quality: int
+    grey_sky: bool
+    pause_voxelizer: bool
+    grass_max: int | None
+    grass_min: int | None
+    grass_motion: int | None
+    framerate_cap: int | str | None
+
+
+class _GlobalSettings(TypedDict, total=False):
+    framerate_cap: int | str | None
+
+
+class _ModificationData(TypedDict):
+    entries: list[_ModificationEntry]
+    fast_flags_enabled: bool
+    fast_flags: _FastFlagSettings
+    global_settings: _GlobalSettings
+
+
+class _GetRoblosecurity(Protocol):
+    def __call__(self, *, wait: bool = False) -> str | None: ...
+
+
+class _FetchAssetWithPlaceIdRetry(Protocol):
+    def __call__(
+        self,
+        asset_id: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[bytes | None, int | None]: ...
+
+
+class _FastFlagManagerLike(Protocol):
+    def write(self, settings: _FastFlagSettings) -> set[Path]: ...
+
+    def restore(self) -> None: ...
+
+    def reassert_macos_bootstrapper_flags(self, settings: _FastFlagSettings) -> int: ...
 
 
 def normalise_target_path(target_path: str | Path) -> Path:
@@ -135,7 +227,7 @@ def _set_read_only(path: Path) -> None:
         pass
 
 
-def _instance_attr(obj, name: str, default=None):
+def _instance_attr(obj: object, name: str, default: object = None) -> object:
     """Read attributes safely on partially initialized QObject test doubles."""
     try:
         return object.__getattribute__(obj, name)
@@ -161,7 +253,7 @@ def _find_roblox_dirs() -> list[Path]:
         found: list[Path] = []
         seen: set[str] = set()
 
-        def _add(path: Path) -> None:
+        def _add_non_windows(path: Path) -> None:
             if '\x00' in str(path) or is_roblox_studio_resource_dir(path):
                 return
             try:
@@ -174,9 +266,9 @@ def _find_roblox_dirs() -> list[Path]:
             found.append(path)
 
         for roblox_dir in find_roblox_resource_dirs(include_studio=False):
-            _add(roblox_dir)
+            _add_non_windows(roblox_dir)
         for cached_dir in load_saved_roblox_dirs():
-            _add(cached_dir)
+            _add_non_windows(cached_dir)
         save_saved_roblox_dirs(found)
         if sys.platform == 'darwin':
             from ..utils.platform_macos import find_bootstrapper_restore_resource_dirs
@@ -184,10 +276,10 @@ def _find_roblox_dirs() -> list[Path]:
             # Bootstrapper snapshots are transient mirrors, not installations:
             # manage them while present, but never persist them as Roblox dirs.
             for backup_dir in find_bootstrapper_restore_resource_dirs():
-                _add(backup_dir)
+                _add_non_windows(backup_dir)
         return found
 
-    import winreg
+    winreg = _winreg_module()
 
     found: list[Path] = []
     seen: set[str] = set()
@@ -269,7 +361,7 @@ def _find_roblox_dirs() -> list[Path]:
                         try:
                             val, rtype = winreg.QueryValueEx(sub, 'PlayerPath')
                             if rtype == winreg.REG_SZ and val:
-                                val = val.replace('\x00', '').strip()
+                                val = cast('str', val).replace('\x00', '').strip()
                                 p = Path(val)
                                 if p.name.lower() == ROBLOX_PROCESS.lower():
                                     p = p.parent
@@ -294,7 +386,7 @@ def _find_roblox_dirs() -> list[Path]:
                                 with winreg.OpenKey(sub, sub_name) as sub2:
                                     val2, rtype2 = winreg.QueryValueEx(sub2, 'PlayerPath')
                                     if rtype2 == winreg.REG_SZ and val2:
-                                        val2 = val2.replace('\x00', '').strip()
+                                        val2 = cast('str', val2).replace('\x00', '').strip()
                                         p2 = Path(val2)
                                         if p2.name.lower() == ROBLOX_PROCESS.lower():
                                             p2 = p2.parent
@@ -322,7 +414,7 @@ def _find_roblox_dirs() -> list[Path]:
             r'Software\Classes\roblox-player\shell\open\command',
         ) as key:
             val, _ = winreg.QueryValueEx(key, '')
-            exe_path = _extract_exe_from_command(val)
+            exe_path = _extract_exe_from_command(cast('str', val))
             if exe_path is not None:
                 for d in _scan_for_exe(exe_path.parent, 2):
                     _add(d)
@@ -382,12 +474,12 @@ class PendingModificationsQueue:
     When Roblox exits, all queued changes are applied at once.
     """
 
-    def __init__(self):
-        self._pending_fast_flags: dict | None = None
+    def __init__(self) -> None:
+        self._pending_fast_flags: _FastFlagSettings | None = None
         self._pending_framerate_cap: int | None = None
         self._lock = threading.Lock()
 
-    def enqueue_fast_flags(self, settings: dict) -> None:
+    def enqueue_fast_flags(self, settings: _FastFlagSettings) -> None:
         """Queue a fast-flags update to be applied later."""
         with self._lock:
             self._pending_fast_flags = settings
@@ -402,7 +494,7 @@ class PendingModificationsQueue:
         with self._lock:
             return self._pending_fast_flags is not None or self._pending_framerate_cap is not None
 
-    def get_pending(self) -> tuple[dict | None, int | None]:
+    def get_pending(self) -> tuple[_FastFlagSettings | None, int | None]:
         """Get and clear all pending modifications."""
         with self._lock:
             flags = self._pending_fast_flags
@@ -431,7 +523,12 @@ class ModificationManager(QObject):
     apply_finished = Signal(str)  # entry_id
     restore_finished = Signal()
 
-    def __init__(self, cache_scraper=None, *, read_only_lock_enabled: bool = False):
+    def __init__(
+        self,
+        cache_scraper: object | None = None,
+        *,
+        read_only_lock_enabled: bool = False,
+    ) -> None:
         super().__init__()
         self._cache_scraper = cache_scraper
         self._roblox_dirs: list[Path] = _find_roblox_dirs()
@@ -459,12 +556,14 @@ class ModificationManager(QObject):
         self._permission_denied_dirs: set[Path] = set()
 
         # Load persisted data
-        self._data = self._load_json()
+        self._data: _ModificationData = self._load_json()
         if self._migrate_target_paths_for_current_platform():
             self._save_json()
 
         # FastFlagManager
-        self.fflag_manager = FastFlagManager(self._roblox_dirs, self._stash_dir)
+        self.fflag_manager = cast(
+            '_FastFlagManagerLike', FastFlagManager(self._roblox_dirs, self._stash_dir)
+        )
 
         # GlobalSettingsManager (for Roblox GlobalBasicSettings_13.xml)
         self.global_settings_manager = GlobalSettingsManager(self._stash_dir)
@@ -508,7 +607,7 @@ class ModificationManager(QObject):
             path = roblox_dir.resolve()
         except OSError:
             path = roblox_dir
-        lock = _instance_attr(self, '_permission_denied_lock')
+        lock = cast('threading.Lock | None', _instance_attr(self, '_permission_denied_lock'))
         if lock is None:
             self._permission_denied_lock = threading.Lock()
             lock = self._permission_denied_lock
@@ -517,10 +616,10 @@ class ModificationManager(QObject):
 
     def take_permission_denied_dirs(self) -> list[Path]:
         """Return and clear protected installs recorded since the last poll."""
-        lock = _instance_attr(self, '_permission_denied_lock')
+        lock = cast('threading.Lock | None', _instance_attr(self, '_permission_denied_lock'))
         if lock is None:
             return []
-        denied_dirs = _instance_attr(self, '_permission_denied_dirs')
+        denied_dirs = cast('set[Path] | None', _instance_attr(self, '_permission_denied_dirs'))
         if denied_dirs is None:
             return []
         with lock:
@@ -548,8 +647,12 @@ class ModificationManager(QObject):
             seen.add(key)
             files.append(path)
 
-        data = _instance_attr(self, '_data', {})
-        entries = data.get('entries', []) if isinstance(data, dict) else []
+        data_obj = _instance_attr(self, '_data', {})
+        entries = (
+            cast('_ModificationData', data_obj).get('entries', [])
+            if isinstance(data_obj, dict)
+            else []
+        )
 
         for roblox_dir in self._roblox_dirs:
             for entry in entries:
@@ -576,7 +679,9 @@ class ModificationManager(QObject):
                         f'Skipping read-only guard for invalid target path {target!r}: {exc}',
                     )
 
-            if isinstance(data, dict) and data.get('fast_flags_enabled'):
+            if isinstance(data_obj, dict) and cast('_ModificationData', data_obj).get(
+                'fast_flags_enabled'
+            ):
                 for settings_path in client_settings_paths_for_resource_dir(roblox_dir):
                     _add(settings_path)
 
@@ -586,17 +691,18 @@ class ModificationManager(QObject):
         return [path for path in files if path.is_file()] if existing_only else files
 
     def _load_read_only_original_modes(self) -> dict[Path, int]:
-        state_file = _instance_attr(self, '_read_only_state_file')
+        state_file = cast('Path | None', _instance_attr(self, '_read_only_state_file'))
         if state_file is None:
             return {}
         try:
-            payload = json.loads(Path(state_file).read_text(encoding='utf-8'))
+            payload: object = json.loads(Path(state_file).read_text(encoding='utf-8'))
         except OSError, ValueError, TypeError, json.JSONDecodeError:
             return {}
         if not isinstance(payload, dict):
             return {}
+        typed_payload = cast('dict[str, int | str]', payload)
         modes: dict[Path, int] = {}
-        for raw_path, raw_mode in payload.items():
+        for raw_path, raw_mode in typed_payload.items():
             try:
                 modes[Path(raw_path)] = int(raw_mode)
             except TypeError, ValueError:
@@ -604,10 +710,12 @@ class ModificationManager(QObject):
         return modes
 
     def _save_read_only_original_modes_locked(self) -> None:
-        state_file = _instance_attr(self, '_read_only_state_file')
+        state_file = cast('Path | None', _instance_attr(self, '_read_only_state_file'))
         if state_file is None:
             return
-        protected = _instance_attr(self, '_read_only_original_modes') or {}
+        protected = (
+            cast('dict[Path, int] | None', _instance_attr(self, '_read_only_original_modes')) or {}
+        )
         path = Path(state_file)
         if not protected:
             try:
@@ -637,7 +745,7 @@ class ModificationManager(QObject):
         """Mark Fleasion-managed Roblox files read-only until Fleasion needs to write."""
         if not bool(_instance_attr(self, '_read_only_lock_enabled', False)):
             return
-        lock = _instance_attr(self, '_fs_lock')
+        lock = cast('threading.Lock | None', _instance_attr(self, '_fs_lock'))
         if lock is None:
             self._protect_managed_files_locked(extra_paths)
             return
@@ -647,13 +755,17 @@ class ModificationManager(QObject):
     def _protect_managed_files_locked(self, extra_paths: Iterable[Path] = ()) -> None:
         if not bool(_instance_attr(self, '_read_only_lock_enabled', False)):
             return
-        protected = _instance_attr(self, '_read_only_original_modes')
+        protected = cast(
+            'dict[Path, int] | None', _instance_attr(self, '_read_only_original_modes')
+        )
         if protected is None:
             protected = {}
             self._read_only_original_modes = protected
-        registered_extra_paths = _instance_attr(self, '_read_only_extra_paths')
+        registered_extra_paths = cast(
+            'set[Path] | None', _instance_attr(self, '_read_only_extra_paths')
+        )
         if registered_extra_paths is None:
-            registered_extra_paths = set()
+            registered_extra_paths = set[Path]()
             self._read_only_extra_paths = registered_extra_paths
         registered_extra_paths.update(Path(path) for path in extra_paths)
 
@@ -677,7 +789,9 @@ class ModificationManager(QObject):
 
     def _unlock_managed_files_locked(self) -> None:
         """Temporarily make guarded files writable without forgetting modes."""
-        protected = _instance_attr(self, '_read_only_original_modes') or {}
+        protected = (
+            cast('dict[Path, int] | None', _instance_attr(self, '_read_only_original_modes')) or {}
+        )
         for path in protected:
             try:
                 if path.exists():
@@ -695,7 +809,7 @@ class ModificationManager(QObject):
         clear_untracked: bool = False,
     ) -> None:
         """Clear Fleasion's read-only guard from managed Roblox files."""
-        lock = _instance_attr(self, '_fs_lock')
+        lock = cast('threading.Lock | None', _instance_attr(self, '_fs_lock'))
         if lock is None:
             self._clear_managed_file_read_only_locked(extra_paths, clear_untracked=clear_untracked)
             return
@@ -705,7 +819,7 @@ class ModificationManager(QObject):
     def set_read_only_lock_enabled(self, enabled: bool) -> None:
         """Apply or remove the optional persistent modification-file guard."""
         enabled = bool(enabled)
-        lock = _instance_attr(self, '_fs_lock')
+        lock = cast('threading.Lock | None', _instance_attr(self, '_fs_lock'))
         if lock is None:
             self._read_only_lock_enabled = enabled
             if enabled:
@@ -726,13 +840,17 @@ class ModificationManager(QObject):
         *,
         clear_untracked: bool = False,
     ) -> None:
-        protected = _instance_attr(self, '_read_only_original_modes')
+        protected = cast(
+            'dict[Path, int] | None', _instance_attr(self, '_read_only_original_modes')
+        )
         if protected is None:
             protected = {}
             self._read_only_original_modes = protected
-        registered_extra_paths = _instance_attr(self, '_read_only_extra_paths')
+        registered_extra_paths = cast(
+            'set[Path] | None', _instance_attr(self, '_read_only_extra_paths')
+        )
         if registered_extra_paths is None:
-            registered_extra_paths = set()
+            registered_extra_paths = set[Path]()
             self._read_only_extra_paths = registered_extra_paths
 
         paths: list[Path] = []
@@ -786,16 +904,16 @@ class ModificationManager(QObject):
     # Persistence
     # ------------------------------------------------------------------
 
-    def _load_json(self) -> dict:
+    def _load_json(self) -> _ModificationData:
         if MODIFICATIONS_JSON.exists():
             try:
                 with MODIFICATIONS_JSON.open('r', encoding='utf-8') as fp:
-                    data = json.load(fp)
+                    data = cast('_ModificationData', json.load(fp))
                 # Deduplicate entries by target_path, keeping the last (most
                 # recent) entry per path.  Duplicate entries could accumulate
                 # from previous sessions with race-condition bugs.
                 entries = data.get('entries', [])
-                seen: dict[str, dict] = {}
+                seen: dict[str, _ModificationEntry] = {}
                 for e in entries:
                     tp = e.get('target_path', '')
                     if tp:
@@ -805,7 +923,7 @@ class ModificationManager(QObject):
                         seen[e.get('id', str(id(e)))] = e
                 data['entries'] = list(seen.values())
                 if 'global_settings' not in data:
-                    data['global_settings'] = {}
+                    data['global_settings'] = _GlobalSettings()
                 legacy_framerate = data.get('fast_flags', {}).pop('framerate_cap', None)
                 if (
                     legacy_framerate is not None
@@ -845,16 +963,16 @@ class ModificationManager(QObject):
     # ------------------------------------------------------------------
 
     @property
-    def entries(self) -> list[dict]:
+    def entries(self) -> list[_ModificationEntry]:
         return self._data.setdefault('entries', [])
 
-    def _find_entry(self, entry_id: str) -> dict | None:
+    def _find_entry(self, entry_id: str) -> _ModificationEntry | None:
         for e in self.entries:
             if e.get('id') == entry_id:
                 return e
         return None
 
-    def add_entry(self, entry: dict) -> str:
+    def add_entry(self, entry: _NewModificationEntry) -> str:
         """Add a new modification entry and eagerly apply it.
 
         If an entry with the same target_path already exists it is reused
@@ -872,7 +990,7 @@ class ModificationManager(QObject):
                     source_value=entry.get('source_value'),
                     display_name=entry.get('display_name', existing.get('display_name', '')),
                     **{
-                        k: v
+                        k: cast('str | int | bool | None', v)
                         for k, v in entry.items()
                         if k
                         not in (
@@ -890,14 +1008,15 @@ class ModificationManager(QObject):
                 return existing_id
 
         entry_id = str(uuid.uuid4())
-        entry['id'] = entry_id
+        cast('dict[str, object]', entry)['id'] = entry_id
         entry.setdefault('status', 'pending')
         entry.setdefault('error_message', None)
         entry.setdefault('converted_cache_path', None)
-        self.entries.append(entry)
+        stored_entry = cast('_ModificationEntry', entry)
+        self.entries.append(stored_entry)
         self._save_json()
 
-        run_in_thread(self._process_and_apply_entry)(entry)
+        run_in_thread(self._process_and_apply_entry)(stored_entry)
         return entry_id
 
     def remove_entry(self, entry_id: str) -> bool:
@@ -916,7 +1035,7 @@ class ModificationManager(QObject):
         self.restore_finished.emit()
         return True
 
-    def update_entry(self, entry_id: str, **kwargs) -> bool:
+    def update_entry(self, entry_id: str, **kwargs: str | int | bool | None) -> bool:
         """Update an entry's source, restore old files, and re-apply."""
         entry = self._find_entry(entry_id)
         if entry is None:
@@ -935,7 +1054,7 @@ class ModificationManager(QObject):
             except Exception as exc:
                 self._mark_restore_failed(entry, exc)
                 return False
-        entry.update(kwargs)
+        cast('dict[str, str | int | bool | None]', entry).update(kwargs)
         entry['status'] = 'pending'
         entry['error_message'] = None
         self._save_json()
@@ -970,7 +1089,7 @@ class ModificationManager(QObject):
         self.restore_finished.emit()
         return True
 
-    def _mark_restore_failed(self, entry: dict, exc: Exception) -> None:
+    def _mark_restore_failed(self, entry: _ModificationEntry, exc: Exception) -> None:
         """Keep the entry visible when restoring its original file fails."""
         entry_id = entry.get('id', '')
         error = f'Failed to restore original file: {exc}'
@@ -988,7 +1107,7 @@ class ModificationManager(QObject):
     # Processing & applying
     # ------------------------------------------------------------------
 
-    def _process_and_apply_entry(self, entry: dict) -> None:
+    def _process_and_apply_entry(self, entry: _ModificationEntry) -> None:
         """Resolve source, convert if needed, stash & write."""
         entry_id = entry['id']
         # Snapshot the generation counter before doing any work.  If
@@ -1071,10 +1190,10 @@ class ModificationManager(QObject):
 
         self.apply_finished.emit(entry_id)
 
-    def _resolve_source(self, entry: dict) -> bytes | None:
+    def _resolve_source(self, entry: _ModificationEntry) -> bytes | None:
         """Resolve the entry's source to raw bytes."""
         src_type = entry.get('source_type')
-        src_value = entry.get('source_value', '')
+        src_value = cast('str', entry.get('source_value', ''))
 
         if src_type == 'local_file':
             p = Path(src_value)
@@ -1141,13 +1260,18 @@ class ModificationManager(QObject):
                 'No cache scraper available. Asset ID download requires the proxy to be running.'
             )
 
-        extra_hdrs = {}
-        cookie = self._cache_scraper._get_roblosecurity(wait=True)
+        extra_hdrs: dict[str, str] = {}
+        get_roblosecurity = cast(
+            '_GetRoblosecurity', getattr(self._cache_scraper, '_get_roblosecurity')
+        )
+        cookie = get_roblosecurity(wait=True)
         if cookie:
             extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
-        data, status = self._cache_scraper._fetch_asset_with_place_id_retry(
-            str(asset_id), extra_headers=extra_hdrs or None
+        fetch_asset = cast(
+            '_FetchAssetWithPlaceIdRetry',
+            getattr(self._cache_scraper, '_fetch_asset_with_place_id_retry'),
         )
+        data, status = fetch_asset(str(asset_id), extra_headers=extra_hdrs or None)
         if data is None:
             if status == 403:
                 raise PermissionError('Asset not found or private. Add .ROBLOSECURITY cookie.')
@@ -1188,7 +1312,7 @@ class ModificationManager(QObject):
 
         originals = [
             read_current_platform_original_asset(target_path, roblox_dir)
-            for roblox_dir in _instance_attr(self, '_roblox_dirs', [])
+            for roblox_dir in cast('list[Path]', _instance_attr(self, '_roblox_dirs', []))
         ]
         if not originals:
             originals.append(read_current_platform_original_asset(target_path))
@@ -1281,7 +1405,7 @@ class ModificationManager(QObject):
             finally:
                 self._protect_managed_files_locked()
 
-    def _restore_entry(self, entry: dict) -> None:
+    def _restore_entry(self, entry: _ModificationEntry) -> None:
         """Undo a single entry: restore the stash or delete the mod file."""
         target = entry.get('target_path', '')
 
@@ -1445,20 +1569,23 @@ class ModificationManager(QObject):
         self._save_json()
 
     @property
-    def fast_flags(self) -> dict:
+    def fast_flags(self) -> _FastFlagSettings:
         return self._data.get('fast_flags', {})
 
     @fast_flags.setter
-    def fast_flags(self, settings: dict) -> None:
-        self._data['fast_flags'] = {k: v for k, v in settings.items() if k != 'framerate_cap'}
+    def fast_flags(self, settings: _FastFlagSettings) -> None:
+        self._data['fast_flags'] = cast(
+            '_FastFlagSettings',
+            {k: v for k, v in settings.items() if k != 'framerate_cap'},
+        )
         self._save_json()
 
     @property
-    def global_settings(self) -> dict:
+    def global_settings(self) -> _GlobalSettings:
         return self._data.setdefault('global_settings', {})
 
     @global_settings.setter
-    def global_settings(self, settings: dict) -> None:
+    def global_settings(self, settings: _GlobalSettings) -> None:
         self._data['global_settings'] = settings
         self._save_json()
 
@@ -1479,7 +1606,7 @@ class ModificationManager(QObject):
 
     @framerate_cap.setter
     def framerate_cap(self, value: int | None) -> None:
-        settings = dict(self.global_settings)
+        settings = cast('_GlobalSettings', dict(self.global_settings))
         settings['framerate_cap'] = None if value in (None, 0) else int(value)
         self.global_settings = settings
 
@@ -1495,9 +1622,12 @@ class ModificationManager(QObject):
         """Handle an explicit UI request to return Roblox to its default cap."""
         self.global_settings_manager.reset_framerate_cap()
 
-    def write_fast_flags(self, settings: dict) -> None:
+    def write_fast_flags(self, settings: _FastFlagSettings) -> None:
         """Update and write fast-flags to disk."""
-        self._data['fast_flags'] = {k: v for k, v in settings.items() if k != 'framerate_cap'}
+        self._data['fast_flags'] = cast(
+            '_FastFlagSettings',
+            {k: v for k, v in settings.items() if k != 'framerate_cap'},
+        )
         self._data['fast_flags_enabled'] = True
         self._save_json()
         with self._fs_lock:
@@ -1524,7 +1654,7 @@ class ModificationManager(QObject):
         """Re-discover Roblox directories (e.g. after an update)."""
         previous = {str(path.resolve()).lower() for path in self._roblox_dirs}
         self._roblox_dirs = _find_roblox_dirs()
-        self.fflag_manager._roblox_dirs = self._roblox_dirs
+        setattr(self.fflag_manager, '_roblox_dirs', self._roblox_dirs)
         self.global_settings_manager.refresh_roblox_dirs()
         current = {str(path.resolve()).lower() for path in self._roblox_dirs}
         log_buffer.log(

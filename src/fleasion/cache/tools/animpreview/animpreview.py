@@ -1,15 +1,187 @@
+from __future__ import annotations
+
 import math
 import os
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Protocol, cast, override
 
-import pyvista as pv
-import vtk
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
-from pyvistaqt import QtInteractor
+type _Vec3 = tuple[float, float, float]
+type _Mat3 = list[list[float]]
+type _Quaternion = tuple[float, float, float, float]
+type _Bounds = tuple[float, float, float, float, float, float]
+
+
+class _Matrix4x4(Protocol):
+    def Identity(self) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+
+    def SetElement(  # ruff: ignore[invalid-function-name] - VTK API spelling
+        self, row: int, column: int, value: float
+    ) -> None: ...
+
+    def GetElement(self, row: int, column: int) -> float: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+
+
+class _Matrix4x4Factory(Protocol):
+    def __call__(self) -> _Matrix4x4: ...
+
+    def Multiply4x4(  # ruff: ignore[invalid-function-name] - VTK API spelling
+        self, a: _Matrix4x4, b: _Matrix4x4, out: _Matrix4x4
+    ) -> None: ...
+
+    def Invert(  # ruff: ignore[invalid-function-name] - VTK API spelling
+        self, matrix: _Matrix4x4, out: _Matrix4x4
+    ) -> None: ...
+
+
+class _Light(Protocol):
+    def SetLightTypeToHeadlight(self) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+
+    def SetLightTypeToSceneLight(self) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+
+    def SetIntensity(self, intensity: float) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+
+    def SetPosition(  # ruff: ignore[invalid-function-name] - VTK API spelling
+        self, x: float, y: float, z: float
+    ) -> None: ...
+
+    def SetFocalPoint(  # ruff: ignore[invalid-function-name] - VTK API spelling
+        self, x: float, y: float, z: float
+    ) -> None: ...
+
+
+class _LightFactory(Protocol):
+    def __call__(self) -> _Light: ...
+
+
+class _VtkModule(Protocol):
+    vtkMatrix4x4: _Matrix4x4Factory  # ruff: ignore[mixed-case-variable-in-class-scope] - VTK API spelling
+    vtkLight: _LightFactory  # ruff: ignore[mixed-case-variable-in-class-scope] - VTK API spelling
+
+
+class _Mesh(Protocol):
+    def triangulate(self) -> _Mesh: ...
+
+    def clean(self) -> _Mesh: ...
+
+    def compute_normals(
+        self,
+        *,
+        cell_normals: bool,
+        point_normals: bool,
+        split_vertices: bool,
+        auto_orient_normals: bool,
+        consistent_normals: bool,
+    ) -> _Mesh: ...
+
+
+class _PyVistaModule(Protocol):
+    def read(self, path: str) -> _Mesh: ...
+
+    def Cube(  # ruff: ignore[invalid-function-name] - PyVista API spelling
+        self,
+        *,
+        center: _Vec3,
+        x_length: float,
+        y_length: float,
+        z_length: float,
+    ) -> _Mesh: ...
+
+
+class _Actor(Protocol):
+    def SetUserMatrix(  # ruff: ignore[invalid-function-name] - VTK API spelling
+        self, matrix: _Matrix4x4
+    ) -> None: ...
+
+
+class _Renderer(Protocol):
+    def RemoveAllLights(self) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+
+    def AddLight(self, light: _Light) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+
+
+class _Camera(Protocol):
+    focal_point: _Vec3
+    position: _Vec3
+    up: _Vec3
+    view_angle: float
+
+    def SetClippingRange(  # ruff: ignore[invalid-function-name] - VTK API spelling
+        self, near: float, far: float
+    ) -> None: ...
+
+    def Azimuth(self, angle: float) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+
+
+class _Plotter(Protocol):
+    interactor: QWidget
+    renderer: _Renderer
+    bounds: _Bounds
+    camera: _Camera
+
+    def enable_anti_aliasing(self, mode: str) -> None: ...
+
+    def set_background(self, color: _Vec3) -> None: ...
+
+    def add_axes(self) -> object: ...
+
+    def add_mesh(  # ruff: ignore[too-many-arguments] - Mirrors the PyVista call surface used below
+        self,
+        mesh: _Mesh,
+        *,
+        opacity: float,
+        smooth_shading: bool,
+        color: _Vec3,
+        ambient: float,
+        diffuse: float,
+        specular: float,
+        specular_power: float,
+    ) -> _Actor: ...
+
+    def render(self) -> None: ...
+
+    def update(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class _QtInteractorFactory(Protocol):
+    def __call__(self, parent: QWidget) -> _Plotter: ...
+
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QCloseEvent
+
+    def _pyvista_type_adapter() -> _PyVistaModule:
+        raise AssertionError
+
+    def _vtk_type_adapter() -> _VtkModule:
+        raise AssertionError
+
+    pv = _pyvista_type_adapter()
+    vtk = _vtk_type_adapter()
+else:
+    import pyvista as pv
+    import vtk
+
+from PySide6.QtCore import (  # ruff: ignore[module-import-not-at-top-of-file] - Preserve legacy import order
+    QTimer,
+)
+from PySide6.QtWidgets import (  # ruff: ignore[module-import-not-at-top-of-file] - Preserve legacy import order
+    QApplication,
+    QVBoxLayout,
+    QWidget,
+)
+
+if TYPE_CHECKING:
+
+    def _qt_interactor_type_adapter() -> _QtInteractorFactory:
+        raise AssertionError
+
+    QtInteractor = _qt_interactor_type_adapter()
+else:
+    from pyvistaqt import QtInteractor
 
 try:
     from ....utils import log_buffer
@@ -20,11 +192,11 @@ except ImportError:
 # XML helpers
 
 
-def _text(elem: Optional[ET.Element], default='') -> str:
+def _text(elem: ET.Element | None, default: str = '') -> str:
     return elem.text if elem is not None and elem.text is not None else default
 
 
-def find_prop(props: ET.Element, tag: str, names: List[str]) -> Optional[ET.Element]:
+def find_prop(props: ET.Element, tag: str, names: list[str]) -> ET.Element | None:
     for n in names:
         e = props.find(f"{tag}[@name='{n}']")
         if e is not None:
@@ -39,7 +211,7 @@ def find_prop(props: ET.Element, tag: str, names: List[str]) -> Optional[ET.Elem
     return None
 
 
-def parse_vector3(elem: ET.Element) -> Tuple[float, float, float]:
+def parse_vector3(elem: ET.Element) -> _Vec3:
     return (
         float(_text(elem.find('X'), '0')),
         float(_text(elem.find('Y'), '0')),
@@ -47,11 +219,11 @@ def parse_vector3(elem: ET.Element) -> Tuple[float, float, float]:
     )
 
 
-def parse_cframe(elem: ET.Element) -> Tuple[Tuple[float, float, float], List[float]]:
+def parse_cframe(elem: ET.Element) -> tuple[_Vec3, list[float]]:
     x = float(_text(elem.find('X'), '0'))
     y = float(_text(elem.find('Y'), '0'))
     z = float(_text(elem.find('Z'), '0'))
-    r = []
+    r: list[float] = []
     for k in ('R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22'):
         if k in ('R00', 'R11', 'R22'):
             r.append(float(_text(elem.find(k), '1')))
@@ -60,7 +232,7 @@ def parse_cframe(elem: ET.Element) -> Tuple[Tuple[float, float, float], List[flo
     return (x, y, z), r
 
 
-def vtk_matrix_from_cframe(pos: Tuple[float, float, float], r: List[float]) -> vtk.vtkMatrix4x4:
+def vtk_matrix_from_cframe(pos: _Vec3, r: list[float]) -> _Matrix4x4:
     m = vtk.vtkMatrix4x4()
     m.Identity()
     m.SetElement(0, 0, r[0])
@@ -78,13 +250,13 @@ def vtk_matrix_from_cframe(pos: Tuple[float, float, float], r: List[float]) -> v
     return m
 
 
-def mat_mul(a: vtk.vtkMatrix4x4, b: vtk.vtkMatrix4x4) -> vtk.vtkMatrix4x4:
+def mat_mul(a: _Matrix4x4, b: _Matrix4x4) -> _Matrix4x4:
     out = vtk.vtkMatrix4x4()
     vtk.vtkMatrix4x4.Multiply4x4(a, b, out)
     return out
 
 
-def mat_inv(a: vtk.vtkMatrix4x4) -> vtk.vtkMatrix4x4:
+def mat_inv(a: _Matrix4x4) -> _Matrix4x4:
     out = vtk.vtkMatrix4x4()
     vtk.vtkMatrix4x4.Invert(a, out)
     return out
@@ -97,17 +269,17 @@ def lerp(a: float, b: float, t: float) -> float:
 # Some thing
 
 
-def mat_get_translation(m: vtk.vtkMatrix4x4):
+def mat_get_translation(m: _Matrix4x4) -> _Vec3:
     return (m.GetElement(0, 3), m.GetElement(1, 3), m.GetElement(2, 3))
 
 
-def mat_set_translation(m: vtk.vtkMatrix4x4, t):
+def mat_set_translation(m: _Matrix4x4, t: _Vec3) -> None:
     m.SetElement(0, 3, t[0])
     m.SetElement(1, 3, t[1])
     m.SetElement(2, 3, t[2])
 
 
-def mat_get_rot3(m: vtk.vtkMatrix4x4):
+def mat_get_rot3(m: _Matrix4x4) -> _Mat3:
     return [
         [m.GetElement(0, 0), m.GetElement(0, 1), m.GetElement(0, 2)],
         [m.GetElement(1, 0), m.GetElement(1, 1), m.GetElement(1, 2)],
@@ -115,7 +287,7 @@ def mat_get_rot3(m: vtk.vtkMatrix4x4):
     ]
 
 
-def mat_set_rot3(m: vtk.vtkMatrix4x4, r):
+def mat_set_rot3(m: _Matrix4x4, r: _Mat3) -> None:
     m.SetElement(0, 0, r[0][0])
     m.SetElement(0, 1, r[0][1])
     m.SetElement(0, 2, r[0][2])
@@ -127,7 +299,7 @@ def mat_set_rot3(m: vtk.vtkMatrix4x4, r):
     m.SetElement(2, 2, r[2][2])
 
 
-def quat_from_rot3(r):
+def quat_from_rot3(r: _Mat3) -> _Quaternion:
     trace = r[0][0] + r[1][1] + r[2][2]
     if trace > 0.0:
         s = math.sqrt(trace + 1.0) * 2.0
@@ -157,7 +329,7 @@ def quat_from_rot3(r):
     return (w / n, x / n, y / n, z / n)
 
 
-def rot3_from_quat(q):
+def rot3_from_quat(q: _Quaternion) -> _Mat3:
     w, x, y, z = q
     xx, yy, zz = x * x, y * y, z * z
     xy, xz, yz = x * y, x * z, y * z
@@ -169,7 +341,7 @@ def rot3_from_quat(q):
     ]
 
 
-def quat_slerp(q0, q1, t):
+def quat_slerp(q0: _Quaternion, q1: _Quaternion, t: float) -> _Quaternion:
     w0, x0, y0, z0 = q0
     w1, x1, y1, z1 = q1
     dot = w0 * w1 + x0 * x1 + y0 * y1 + z0 * z1
@@ -191,7 +363,7 @@ def quat_slerp(q0, q1, t):
     return (w0 * s0 + w1 * s1, x0 * s0 + x1 * s1, y0 * s0 + y1 * s1, z0 * s0 + z1 * s1)
 
 
-def matrix_trs_lerp(m0: vtk.vtkMatrix4x4, m1: vtk.vtkMatrix4x4, t: float) -> vtk.vtkMatrix4x4:
+def matrix_trs_lerp(m0: _Matrix4x4, m1: _Matrix4x4, t: float) -> _Matrix4x4:
     t0 = mat_get_translation(m0)
     t1 = mat_get_translation(m1)
     tt = (lerp(t0[0], t1[0], t), lerp(t0[1], t1[1], t), lerp(t0[2], t1[2], t))
@@ -213,8 +385,8 @@ def matrix_trs_lerp(m0: vtk.vtkMatrix4x4, m1: vtk.vtkMatrix4x4, t: float) -> vtk
 class Part:
     referent: str
     name: str
-    size: Tuple[float, float, float]
-    cframe: vtk.vtkMatrix4x4
+    size: tuple[float, float, float]
+    cframe: _Matrix4x4
 
 
 @dataclass
@@ -222,25 +394,25 @@ class Motor6D:
     name: str
     part0_ref: str
     part1_ref: str
-    c0: vtk.vtkMatrix4x4
-    c1: vtk.vtkMatrix4x4
+    c0: _Matrix4x4
+    c1: _Matrix4x4
 
 
 @dataclass
 class Keyframe:
     time: float
-    pose_by_part_name: Dict[str, vtk.vtkMatrix4x4]
+    pose_by_part_name: dict[str, _Matrix4x4]
 
 
 # Parse rig
 
 
-def load_rig(rig_path: str) -> Tuple[Dict[str, Part], List[Motor6D]]:
+def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
     tree = ET.parse(rig_path)
     root = tree.getroot()
 
-    parts: Dict[str, Part] = {}
-    motors: List[Motor6D] = []
+    parts: dict[str, Part] = {}
+    motors: list[Motor6D] = []
 
     for item in root.iter('Item'):
         cls = item.attrib.get('class', '')
@@ -289,11 +461,11 @@ def load_rig(rig_path: str) -> Tuple[Dict[str, Part], List[Motor6D]]:
 # Parse anim
 
 
-def load_animation(anim_path: str) -> List[Keyframe]:
+def load_animation(anim_path: str) -> list[Keyframe]:
     tree = ET.parse(anim_path)
     root = tree.getroot()
 
-    keys: List[Keyframe] = []
+    keys: list[Keyframe] = []
     for item in root.iter('Item'):
         if item.attrib.get('class') != 'Keyframe':
             continue
@@ -306,7 +478,7 @@ def load_animation(anim_path: str) -> List[Keyframe]:
             continue
         t = float(_text(t_elem, '0'))
 
-        poses: Dict[str, vtk.vtkMatrix4x4] = {}
+        poses: dict[str, _Matrix4x4] = {}
         for pose_item in item.iter('Item'):
             if pose_item.attrib.get('class') != 'Pose':
                 continue
@@ -330,7 +502,7 @@ def load_animation(anim_path: str) -> List[Keyframe]:
     return keys
 
 
-def sample_keys(keys: List[Keyframe], t: float) -> Tuple[Keyframe, Keyframe, float]:
+def sample_keys(keys: list[Keyframe], t: float) -> tuple[Keyframe, Keyframe, float]:
     if t <= keys[0].time:
         return keys[0], keys[0], 0.0
     if t >= keys[-1].time:
@@ -346,7 +518,7 @@ def sample_keys(keys: List[Keyframe], t: float) -> Tuple[Keyframe, Keyframe, flo
 # Root picking
 
 
-def pick_root_ref(parts: Dict[str, Part]) -> str:
+def pick_root_ref(parts: dict[str, Part]) -> str:
     preferred = ('HumanoidRootPart', 'LowerTorso', 'Torso', 'UpperTorso', 'Head')
     for want in preferred:
         for ref, p in parts.items():
@@ -358,7 +530,7 @@ def pick_root_ref(parts: Dict[str, Part]) -> str:
 # OBJ loading
 
 
-def detect_rig_prefix(parts: Dict[str, Part]) -> str:
+def detect_rig_prefix(parts: dict[str, Part]) -> str:
     # R6 has these part names; R15 has UpperTorso/LowerTorso etc.
     names = {p.name for p in parts.values()}
     if 'Torso' in names and 'UpperTorso' not in names:
@@ -374,8 +546,8 @@ def load_obj_mesh(
     mesh_dir: str,
     prefix: str,
     part_name: str,
-    fallback_size: Tuple[float, float, float],
-) -> pv.PolyData:
+    fallback_size: _Vec3,
+) -> _Mesh:
 
     candidates = [obj_path_for_part(mesh_dir, prefix, part_name)]
 
@@ -416,11 +588,11 @@ class AnimPreviewWidget(QWidget):
         rig_path: str,
         anim_path: str,
         mesh_dir: str = 'R15AndR6Parts',
-        parent=None,
-    ):
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
 
-        self.plotter = QtInteractor(self)
+        self.plotter: _Plotter = QtInteractor(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -471,7 +643,7 @@ class AnimPreviewWidget(QWidget):
             )
 
         # Actors
-        self.actors_by_part_ref = {}
+        self.actors_by_part_ref: dict[str, _Actor] = {}
         for ref, p in self.parts.items():
             mesh = load_obj_mesh(mesh_dir, self.prefix, p.name, p.size)
             is_hrp = p.name.lower() == 'humanoidrootpart'
@@ -516,14 +688,14 @@ class AnimPreviewWidget(QWidget):
         self.timer.timeout.connect(self.tick)
         self.timer.start(16)
 
-    def tick(self):
+    def tick(self) -> None:
         self.time += 0.016
         if self.time > self.duration:
             self.time = 0.0
 
         k0, k1, alpha = sample_keys(self.keys, self.time)
 
-        pose = {}
+        pose: dict[str, _Matrix4x4] = {}
         names = set(k0.pose_by_part_name.keys()) | set(k1.pose_by_part_name.keys())
         ident = vtk.vtkMatrix4x4()
         ident.Identity()
@@ -532,14 +704,14 @@ class AnimPreviewWidget(QWidget):
             a = k0.pose_by_part_name.get(n)
             b = k1.pose_by_part_name.get(n)
             if a is None:
-                pose[n] = b
+                pose[n] = cast('_Matrix4x4', b)
             elif b is None:
                 pose[n] = a
             else:
                 pose[n] = matrix_trs_lerp(a, b, alpha)
 
         root_pose = pose.get(self.root_name, ident)
-        world = {self.root_ref: mat_mul(self.base_root_world, root_pose)}
+        world: dict[str, _Matrix4x4] = {self.root_ref: mat_mul(self.base_root_world, root_pose)}
 
         for _ in range(25):
             changed = False
@@ -550,8 +722,10 @@ class AnimPreviewWidget(QWidget):
                 if child is None:
                     continue
 
-                T = pose.get(child.name, ident)
-                part1 = mat_mul(mat_mul(mat_mul(world[m.part0_ref], m.c0), T), mat_inv(m.c1))
+                part_pose = pose.get(child.name, ident)
+                part1 = mat_mul(
+                    mat_mul(mat_mul(world[m.part0_ref], m.c0), part_pose), mat_inv(m.c1)
+                )
 
                 world[m.part1_ref] = part1
                 changed = True
@@ -565,7 +739,8 @@ class AnimPreviewWidget(QWidget):
 
         self.plotter.update()
 
-    def closeEvent(self, event):
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         try:
             self.timer.stop()
         except Exception:

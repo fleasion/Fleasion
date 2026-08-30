@@ -4,10 +4,35 @@ import os
 import subprocess
 import sys
 from types import SimpleNamespace
+from typing import Callable, cast
 
-from PySide6.QtCore import QtMsgType
+import pytest
+from PySide6.QtCore import QMessageLogContext, QtMsgType
 
 from fleasion.utils import qt_diagnostics
+
+
+def _qt_message_handler(message_type: QtMsgType, context: QMessageLogContext, message: str) -> None:
+    callback = cast(
+        'Callable[[QtMsgType, QMessageLogContext, str], None]',
+        qt_diagnostics.__dict__['_qt_message_handler'],
+    )
+    callback(message_type, context, message)
+
+
+def _noop_previous(_message_type: QtMsgType, _context: QMessageLogContext, _message: str) -> None:
+    return None
+
+
+def _record_log(entries: list[tuple[str, str]]) -> Callable[[str, str], None]:
+    def record(category: str, message: str) -> None:
+        entries.append((category, message))
+
+    return record
+
+
+def _context(category: str) -> QMessageLogContext:
+    return cast(QMessageLogContext, SimpleNamespace(category=category))
 
 
 def test_cache_viewer_import_does_not_load_opengl_viewers() -> None:
@@ -30,7 +55,7 @@ assert 'OpenGL.GL' not in sys.modules
     subprocess.run([sys.executable, '-c', code], check=True, env=os.environ.copy())
 
 
-def test_windows_legacy_gl_format_requests_4x_msaa(monkeypatch) -> None:
+def test_windows_legacy_gl_format_requests_4x_msaa(monkeypatch: pytest.MonkeyPatch) -> None:
     from fleasion.cache import gl_format
 
     monkeypatch.setattr(gl_format.sys, 'platform', 'win32')
@@ -65,20 +90,20 @@ def test_lazy_3d_previews_use_raster_widgets_with_offscreen_gl() -> None:
     assert issubclass(OffscreenOpenGLWidget, QWidget)
 
 
-def test_qt_warning_logging_suppresses_repeated_messages(monkeypatch) -> None:
+def test_qt_warning_logging_suppresses_repeated_messages(monkeypatch: pytest.MonkeyPatch) -> None:
     entries: list[tuple[str, str]] = []
     monkeypatch.setattr(qt_diagnostics, '_counts', {})
-    monkeypatch.setattr(qt_diagnostics, '_previous_handler', lambda *_args: None)
+    monkeypatch.setattr(qt_diagnostics, '_previous_handler', _noop_previous)
     monkeypatch.delenv('FLEASION_QT_VERBOSE_LOGGING', raising=False)
     monkeypatch.setattr(
         qt_diagnostics.log_buffer,
         'log',
-        lambda category, message: entries.append((category, message)),
+        _record_log(entries),
     )
-    context = SimpleNamespace(category='qt.qpa.gl')
+    context = _context('qt.qpa.gl')
 
     for _ in range(6):
-        qt_diagnostics._qt_message_handler(
+        _qt_message_handler(
             QtMsgType.QtWarningMsg,
             context,
             'Failed to create OpenGL context',
@@ -89,37 +114,37 @@ def test_qt_warning_logging_suppresses_repeated_messages(monkeypatch) -> None:
     assert 'repeated message suppressed after 3 occurrences' in entries[-1][1]
 
 
-def test_qt_debug_logging_is_opt_in(monkeypatch) -> None:
+def test_qt_debug_logging_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
     entries: list[tuple[str, str]] = []
     monkeypatch.setattr(qt_diagnostics, '_counts', {})
-    monkeypatch.setattr(qt_diagnostics, '_previous_handler', lambda *_args: None)
+    monkeypatch.setattr(qt_diagnostics, '_previous_handler', _noop_previous)
     monkeypatch.delenv('FLEASION_QT_VERBOSE_LOGGING', raising=False)
     monkeypatch.setattr(
         qt_diagnostics.log_buffer,
         'log',
-        lambda category, message: entries.append((category, message)),
+        _record_log(entries),
     )
-    context = SimpleNamespace(category='qt.qpa.gl')
+    context = _context('qt.qpa.gl')
 
-    qt_diagnostics._qt_message_handler(QtMsgType.QtDebugMsg, context, 'debug detail')
+    _qt_message_handler(QtMsgType.QtDebugMsg, context, 'debug detail')
     assert entries == []
 
     monkeypatch.setenv('FLEASION_QT_VERBOSE_LOGGING', '1')
-    qt_diagnostics._qt_message_handler(QtMsgType.QtDebugMsg, context, 'debug detail')
+    _qt_message_handler(QtMsgType.QtDebugMsg, context, 'debug detail')
     assert entries == [('Qt', 'Debug [qt.qpa.gl] debug detail')]
 
 
-def test_qt_message_handler_preserves_previous_handler(monkeypatch) -> None:
+def test_qt_message_handler_preserves_previous_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     forwarded: list[tuple[QtMsgType, str]] = []
     monkeypatch.setattr(qt_diagnostics, '_counts', {})
     monkeypatch.delenv('FLEASION_QT_VERBOSE_LOGGING', raising=False)
-    monkeypatch.setattr(
-        qt_diagnostics,
-        '_previous_handler',
-        lambda message_type, _context, message: forwarded.append((message_type, message)),
-    )
-    context = SimpleNamespace(category='qt.qpa.gl')
 
-    qt_diagnostics._qt_message_handler(QtMsgType.QtDebugMsg, context, 'native debug detail')
+    def forward(message_type: QtMsgType, _context: QMessageLogContext, message: str) -> None:
+        forwarded.append((message_type, message))
+
+    monkeypatch.setattr(qt_diagnostics, '_previous_handler', forward)
+    context = _context('qt.qpa.gl')
+
+    _qt_message_handler(QtMsgType.QtDebugMsg, context, 'native debug detail')
 
     assert forwarded == [(QtMsgType.QtDebugMsg, 'native debug detail')]

@@ -1,7 +1,11 @@
 """Settings tab – mirrors all settings available in the system tray menu."""
 
+from __future__ import annotations
+
 import sys
+from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast
 
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -34,6 +38,56 @@ from ..utils.roblox_auth import (
 )
 from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpinBox
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from PySide6.QtGui import QAction
+
+    from fleasion.app import RobloxExitMonitor
+    from fleasion.config.manager import ConfigManager
+    from fleasion.modifications.manager import ModificationManager
+    from fleasion.proxy.master import ProxyMaster
+
+
+class _CacheViewerTabLike(Protocol):
+    _on_show_names_toggled: Callable[[bool], None]
+    _on_show_creator_id_toggled: Callable[[bool], None]
+
+
+class _DashboardWindowLike(Protocol):
+    _cache_viewer_tab: _CacheViewerTabLike | None
+
+
+class _SystemTrayLike(Protocol):
+    proxy_master: ProxyMaster
+    mod_manager: ModificationManager | None
+    roblox_monitor: RobloxExitMonitor | None
+    dashboard_window: _DashboardWindowLike | None
+    open_windows: list[QWidget]
+    theme_actions: dict[str, QAction]
+    export_naming_actions: dict[str, QAction]
+    open_dashboard_action: QAction
+    run_on_boot_action: QAction
+    desktop_integration_action: QAction
+    always_on_top_action: QAction
+    close_to_tray_action: QAction
+    auto_delete_cache_action: QAction
+    clear_cache_action: QAction
+    close_scraped_games_action: QAction
+    close_viewer_on_replace_action: QAction
+    close_scraped_games_menu_on_open_action: QAction
+    show_replacer_notifications_action: QAction
+    show_names_action: QAction
+    show_creator_id_action: QAction
+
+    set_proxy_features_enabled: Callable[[bool], None]
+    _is_cache_scraper_enabled: Callable[[], bool]
+    _set_cache_scraper_enabled: Callable[[bool], None]
+
+    def restart_fleasion(self) -> bool | None: ...
+
+    def notify_proxy_mode_changed(self) -> None: ...
+
 
 def _macos_auth_sources() -> tuple[tuple[str, str], ...]:
     return (
@@ -53,7 +107,7 @@ def _macos_auth_sources() -> tuple[tuple[str, str], ...]:
 class EnvProxyWarningDialog(QMessageBox):
     """Explain the Player-only relaunch behavior when Env Proxy is selected."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.settings_tab.roblox_env_proxy'))
         self.setIcon(QMessageBox.Icon.Information)
@@ -64,10 +118,15 @@ class EnvProxyWarningDialog(QMessageBox):
 class SettingsTab(QWidget):
     """Settings tab exposing all options found in the system tray Settings menu."""
 
-    def __init__(self, config_manager, system_tray=None, parent=None):
+    def __init__(
+        self,
+        config_manager: object,
+        system_tray: object | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
-        self._config = config_manager
-        self._tray = system_tray
+        self._config = cast('ConfigManager', config_manager)
+        self._tray = cast('_SystemTrayLike | None', system_tray)
         self._manual_proxy_credentials_timer = QTimer(self)
         self._manual_proxy_credentials_timer.setSingleShot(True)
         self._manual_proxy_credentials_timer.setInterval(10_000)
@@ -79,7 +138,7 @@ class SettingsTab(QWidget):
 
     # UI construction
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -129,9 +188,9 @@ class SettingsTab(QWidget):
         self.setLayout(outer)
         self._update_container_bg()
 
-    def changeEvent(self, a0: QEvent | None):
+    def changeEvent(self, a0: QEvent) -> None:
         super().changeEvent(a0)
-        if a0 is not None and a0.type() == QEvent.Type.PaletteChange:
+        if a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
 
     # Language
@@ -177,7 +236,7 @@ class SettingsTab(QWidget):
         ):
             chk = QCheckBox(label)
             chk.setChecked(name == current_theme)
-            chk.toggled.connect(lambda checked, t=name: self._on_theme_toggled(checked, t))
+            chk.toggled.connect(partial(self._on_theme_toggled, theme=name))
             btn_group.addButton(chk)
             theme_row.addWidget(chk)
             self._theme_buttons[name] = chk
@@ -332,7 +391,9 @@ class SettingsTab(QWidget):
         self._wire_preserving_chk.toggled.connect(self._on_wire_preserving_toggled)
         section.add_widget(self._wire_preserving_chk)
 
-        def _proxy_row(label: str, host_value: str, port_value: int):
+        def _proxy_row(
+            label: str, host_value: str, port_value: int
+        ) -> tuple[QLineEdit, QSpinBox]:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.addWidget(QLabel(label))
@@ -525,7 +586,7 @@ class SettingsTab(QWidget):
             chk = QCheckBox(label)
             chk.setChecked(self._config.is_export_naming_enabled(option))
             chk.toggled.connect(
-                lambda checked, opt=option: self._on_export_naming_toggled(checked, opt)
+                partial(self._on_export_naming_toggled, option=option)
             )
             row.addWidget(chk)
             self._export_chks[option] = chk
@@ -568,7 +629,7 @@ class SettingsTab(QWidget):
 
         return section
 
-    def _update_container_bg(self):
+    def _update_container_bg(self) -> None:
         """Keep the Settings tab background aligned with the tab theme."""
         colors = ThemeManager.panel_colors(self.palette())
         self._settings_container.setStyleSheet(
@@ -577,7 +638,7 @@ class SettingsTab(QWidget):
 
     # Public
 
-    def refresh_from_config(self):
+    def refresh_from_config(self) -> None:
         """Re-read all settings from config and update widgets (no signals emitted)."""
         for name, rb in self._theme_buttons.items():
             rb.blockSignals(True)
@@ -674,13 +735,13 @@ class SettingsTab(QWidget):
 
     # Handlers
 
-    def _clear_roblox_cache(self):
+    def _clear_roblox_cache(self) -> None:
         from .delete_cache import DeleteCacheWindow
 
         window = DeleteCacheWindow()
         window.show()
 
-    def _on_language_changed(self, *_args):
+    def _on_language_changed(self, *_args: object) -> None:
         language = str(self._language_combo.currentData() or 'en')
         self._config.language = language
         if self._config.language != get_language():
@@ -690,7 +751,7 @@ class SettingsTab(QWidget):
                 tr('settings.language.restart_required_body'),
             )
 
-    def _on_theme_toggled(self, checked: bool, theme: str):
+    def _on_theme_toggled(self, checked: bool, theme: str) -> None:
         if not checked:
             return
         ThemeManager.apply_theme(theme)
@@ -699,12 +760,12 @@ class SettingsTab(QWidget):
             for name, action in self._tray.theme_actions.items():
                 action.setChecked(name == theme)
 
-    def _on_open_dashboard_toggled(self, checked: bool):
+    def _on_open_dashboard_toggled(self, checked: bool) -> None:
         self._config.open_dashboard_on_launch = checked
         if self._tray and hasattr(self._tray, 'open_dashboard_action'):
             self._tray.open_dashboard_action.setChecked(checked)
 
-    def _on_proxy_features_toggled(self, checked: bool):
+    def _on_proxy_features_toggled(self, checked: bool) -> None:
         if not checked:
             result = QMessageBox.warning(
                 self,
@@ -724,11 +785,11 @@ class SettingsTab(QWidget):
         else:
             self._config.proxy_features_enabled = checked
 
-    def _on_upstream_mode_changed(self, *_args):
-        self._config.upstream_transport_mode = self._upstream_mode_combo.currentData()
+    def _on_upstream_mode_changed(self, *_args: object) -> None:
+        self._config.upstream_transport_mode = cast('str', self._upstream_mode_combo.currentData())
         self._sync_manual_proxy_credentials_timer()
 
-    def _on_linux_client_changed(self, *_args):
+    def _on_linux_client_changed(self, *_args: object) -> None:
         if not sys.platform.startswith('linux'):
             return
         new_client = str(self._linux_client_combo.currentData() or 'auto')
@@ -739,7 +800,7 @@ class SettingsTab(QWidget):
         proxy_master = getattr(self._tray, 'proxy_master', None) if self._tray else None
         proxy_was_running = bool(proxy_master is not None and proxy_master.is_running)
         # Stop first so the old client's app-scoped Flatpak override is disarmed.
-        if proxy_was_running:
+        if proxy_master is not None and proxy_was_running:
             proxy_master.stop()
 
         mod_manager = getattr(self._tray, 'mod_manager', None) if self._tray else None
@@ -754,13 +815,13 @@ class SettingsTab(QWidget):
 
         if mod_manager is not None:
             mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
-        if proxy_was_running:
+        if proxy_master is not None and proxy_was_running:
             proxy_master.start()
         self._refresh_linux_client_status()
 
-    def _on_proxy_mode_changed(self, *_args):
+    def _on_proxy_mode_changed(self, *_args: object) -> None:
         previous_mode = self._config.proxy_mode
-        new_mode = self._proxy_mode_combo.currentData()
+        new_mode = cast('str', self._proxy_mode_combo.currentData())
         self._config.proxy_mode = new_mode
         if self._config.run_on_boot:
             try:
@@ -805,6 +866,7 @@ class SettingsTab(QWidget):
             lifecycle = getattr(monitor, 'env_lifecycle', None)
             if (
                 lifecycle is not None
+                and monitor is not None
                 and self._config.proxy_features_enabled
                 and monitor.is_player_running()
             ):
@@ -829,7 +891,11 @@ class SettingsTab(QWidget):
                 # is sufficient; enabling proxy features later owns any helper
                 # install/elevation that mode requires.
                 pass
-            elif can_live_switch and hasattr(proxy_master, 'restart_for_mode_switch'):
+            elif (
+                proxy_master is not None
+                and can_live_switch
+                and hasattr(proxy_master, 'restart_for_mode_switch')
+            ):
                 # Prefer an in-process transition when this process already has
                 # a safe privileged path. stop() disarms Env Proxy state before
                 # start() applies hosts routing, so no stale route is left behind.
@@ -893,23 +959,23 @@ class SettingsTab(QWidget):
         if self._tray and hasattr(self._tray, 'notify_proxy_mode_changed'):
             self._tray.notify_proxy_mode_changed()
 
-    def _on_wire_preserving_toggled(self, checked: bool):
+    def _on_wire_preserving_toggled(self, checked: bool) -> None:
         self._config.wire_preserving_passthrough = checked
 
-    def _on_http_proxy_changed(self, *_args):
+    def _on_http_proxy_changed(self, *_args: object) -> None:
         self._config.upstream_http_connect_host = self._http_proxy_host.text()
         self._config.upstream_http_connect_port = self._http_proxy_port.value()
 
-    def _on_http_proxy_auth_changed(self):
+    def _on_http_proxy_auth_changed(self) -> None:
         self._config.upstream_http_connect_username = self._http_proxy_user.text()
         self._config.upstream_http_connect_password = self._http_proxy_pass.text()
         self._sync_manual_proxy_credentials_timer()
 
-    def _on_socks5_proxy_changed(self, *_args):
+    def _on_socks5_proxy_changed(self, *_args: object) -> None:
         self._config.upstream_socks5_host = self._socks5_host.text()
         self._config.upstream_socks5_port = self._socks5_port.value()
 
-    def _on_socks5_proxy_auth_changed(self):
+    def _on_socks5_proxy_auth_changed(self) -> None:
         self._config.upstream_socks5_username = self._socks5_user.text()
         self._config.upstream_socks5_password = self._socks5_pass.text()
         self._sync_manual_proxy_credentials_timer()
@@ -939,17 +1005,17 @@ class SettingsTab(QWidget):
         proxy_master = getattr(self._tray, 'proxy_master', None)
         if proxy_master is not None and proxy_master.is_running:
 
-            def _restart_proxy():
+            def _restart_proxy() -> None:
                 proxy_master.stop()
                 proxy_master.start()
 
             run_in_thread(_restart_proxy)()
 
-    def _on_connection_limits_changed(self, *_args):
+    def _on_connection_limits_changed(self, *_args: object) -> None:
         self._config.vpn_compat_max_assetdelivery_connections = self._asset_limit_spin.value()
         self._config.vpn_compat_max_cdn_connections = self._cdn_limit_spin.value()
 
-    def _on_run_on_boot_toggled(self, checked: bool):
+    def _on_run_on_boot_toggled(self, checked: bool) -> None:
         ok = sync_autostart(
             checked,
             CONFIG_DIR,
@@ -978,16 +1044,16 @@ class SettingsTab(QWidget):
                 tr('ui.gui.settings_tab.failed_to_register_the_autostart_task_check'),
             )
 
-    def _on_lock_roblox_files_toggled(self, checked: bool):
+    def _on_lock_roblox_files_toggled(self, checked: bool) -> None:
         self._config.lock_roblox_files_read_only = checked
         mod_manager = getattr(self._tray, 'mod_manager', None)
         if mod_manager is not None and hasattr(mod_manager, 'set_read_only_lock_enabled'):
             mod_manager.set_read_only_lock_enabled(checked)
 
-    def _on_close_env_roblox_toggled(self, checked: bool):
+    def _on_close_env_roblox_toggled(self, checked: bool) -> None:
         self._config.close_env_proxy_roblox_on_exit = checked
 
-    def _on_desktop_integration_toggled(self, checked: bool):
+    def _on_desktop_integration_toggled(self, checked: bool) -> None:
         ok = sync_desktop_integration(checked)
         if ok:
             self._config.desktop_integration = checked
@@ -1014,7 +1080,7 @@ class SettingsTab(QWidget):
                 tr('ui.gui.settings_tab.failed_to_create_desktop_start_menu_integration'),
             )
 
-    def _on_always_on_top_toggled(self, checked: bool):
+    def _on_always_on_top_toggled(self, checked: bool) -> None:
         self._config.always_on_top = checked
         if self._tray and hasattr(self._tray, 'always_on_top_action'):
             self._tray.always_on_top_action.setChecked(checked)
@@ -1029,28 +1095,28 @@ class SettingsTab(QWidget):
                     window.setWindowFlags(flags)
                     window.show()
 
-    def _on_close_to_tray_toggled(self, checked: bool):
+    def _on_close_to_tray_toggled(self, checked: bool) -> None:
         self._config.close_to_tray = checked
         if self._tray and hasattr(self._tray, 'close_to_tray_action'):
             self._tray.close_to_tray_action.setChecked(checked)
 
-    def _on_auto_clear_cache_toggled(self, checked: bool):
+    def _on_auto_clear_cache_toggled(self, checked: bool) -> None:
         self._config.auto_delete_cache_on_exit = checked
         if self._tray and hasattr(self._tray, 'auto_delete_cache_action'):
             self._tray.auto_delete_cache_action.setChecked(checked)
 
-    def _on_clear_cache_launch_toggled(self, checked: bool):
+    def _on_clear_cache_launch_toggled(self, checked: bool) -> None:
         self._config.clear_cache_on_launch = checked
         if self._tray and hasattr(self._tray, 'clear_cache_action'):
             self._tray.clear_cache_action.setChecked(checked)
 
-    def _on_macos_auth_source_changed(self, *_args):
+    def _on_macos_auth_source_changed(self, *_args: object) -> None:
         if sys.platform != 'darwin':
             return
-        self._config.macos_auth_source = self._macos_auth_source_combo.currentData()
+        self._config.macos_auth_source = cast('str', self._macos_auth_source_combo.currentData())
         notify_auth_source_changed()
 
-    def _on_import_manual_token(self):
+    def _on_import_manual_token(self) -> None:
         if sys.platform != 'darwin':
             return
         from .rando_stuff_tab import AddAccountDialog
@@ -1092,39 +1158,39 @@ class SettingsTab(QWidget):
             tr('ui.gui.settings_tab.value_was_stored_encrypted', value0=username),
         )
 
-    def _on_close_scraped_games_toggled(self, checked: bool):
+    def _on_close_scraped_games_toggled(self, checked: bool) -> None:
         self._config.close_scraped_games_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_action'):
             self._tray.close_scraped_games_action.setChecked(checked)
 
-    def _on_close_viewer_on_replace_toggled(self, checked: bool):
+    def _on_close_viewer_on_replace_toggled(self, checked: bool) -> None:
         self._config.close_viewer_on_replace = checked
         if self._tray and hasattr(self._tray, 'close_viewer_on_replace_action'):
             self._tray.close_viewer_on_replace_action.setChecked(checked)
 
-    def _on_close_scraped_games_menu_on_open_toggled(self, checked: bool):
+    def _on_close_scraped_games_menu_on_open_toggled(self, checked: bool) -> None:
         self._config.close_scraped_games_menu_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_menu_on_open_action'):
             self._tray.close_scraped_games_menu_on_open_action.setChecked(checked)
 
-    def _on_show_replacer_notifications_toggled(self, checked: bool):
+    def _on_show_replacer_notifications_toggled(self, checked: bool) -> None:
         self._config.show_replacer_notifications = checked
         if self._tray and hasattr(self._tray, 'show_replacer_notifications_action'):
             self._tray.show_replacer_notifications_action.setChecked(checked)
 
-    def _on_show_names_toggled(self, checked: bool):
+    def _on_show_names_toggled(self, checked: bool) -> None:
         self._config.show_names = checked
         if self._tray and hasattr(self._tray, 'show_names_action'):
             self._tray.show_names_action.setChecked(checked)
         self._apply_to_cache_viewer('show_names', checked)
 
-    def _on_show_creator_id_toggled(self, checked: bool):
+    def _on_show_creator_id_toggled(self, checked: bool) -> None:
         self._config.show_creator_id = checked
         if self._tray and hasattr(self._tray, 'show_creator_id_action'):
             self._tray.show_creator_id_action.setChecked(checked)
         self._apply_to_cache_viewer('show_creator_id', checked)
 
-    def _apply_to_cache_viewer(self, setting: str, value: bool):
+    def _apply_to_cache_viewer(self, setting: str, value: bool) -> None:
         if self._tray and self._tray.dashboard_window:
             tab = getattr(self._tray.dashboard_window, '_cache_viewer_tab', None)
             if tab is not None:
@@ -1135,19 +1201,25 @@ class SettingsTab(QWidget):
 
     def _is_cache_scraper_enabled(self) -> bool:
         if self._tray and hasattr(self._tray, '_is_cache_scraper_enabled'):
-            return self._tray._is_cache_scraper_enabled()
+            is_enabled = cast(
+                'Callable[[], bool]', getattr(self._tray, '_is_cache_scraper_enabled')
+            )
+            return is_enabled()
         return False
 
-    def set_cache_scraper_enabled(self, enabled: bool):
+    def set_cache_scraper_enabled(self, enabled: bool) -> None:
         self._cache_scraper_chk.blockSignals(True)
         self._cache_scraper_chk.setChecked(enabled)
         self._cache_scraper_chk.blockSignals(False)
 
-    def _on_cache_scraper_toggled(self, checked: bool):
+    def _on_cache_scraper_toggled(self, checked: bool) -> None:
         if self._tray and hasattr(self._tray, '_set_cache_scraper_enabled'):
-            self._tray._set_cache_scraper_enabled(checked)
+            set_enabled = cast(
+                'Callable[[bool], None]', getattr(self._tray, '_set_cache_scraper_enabled')
+            )
+            set_enabled(checked)
 
-    def _on_export_naming_toggled(self, checked: bool, option: str):
+    def _on_export_naming_toggled(self, checked: bool, option: str) -> None:
         current = self._config.is_export_naming_enabled(option)
         if current != checked:
             new_state = self._config.toggle_export_naming(option)

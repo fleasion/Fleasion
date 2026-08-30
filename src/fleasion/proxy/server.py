@@ -21,6 +21,8 @@ Key design principle - minimal modification:
   Roblox's libcurl handles both compressed and uncompressed request bodies.
 """
 
+from __future__ import annotations
+
 import asyncio
 import gzip
 import hashlib
@@ -34,10 +36,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
+
     from .addons.cache_scraper import CacheScraper
+    from .addons.custom_fflags import CustomFFlagModifier
     from .addons.texture_stripper import TextureStripper
 
 from .roblox_metadata import strip_roblox_metadata
@@ -63,14 +68,14 @@ ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
 GAMEJOIN_HOST = 'gamejoin.roblox.com'
 PROFILE_API_HOST = 'apis.roblox.com'
 PROFILE_API_PATH_FRAGMENT = '/v1/user/profiles/get-profiles'
-CLIENT_SETTINGS_HOSTS: frozenset = frozenset(
+CLIENT_SETTINGS_HOSTS: frozenset[str] = frozenset(
     {'clientsettingscdn.roblox.com', 'clientsettings.roblox.com'}
 )
-CDN_HOSTS: frozenset = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
-BASE_INTERCEPT_HOSTS: frozenset = frozenset({ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS})
-USERNAME_SPOOFER_INTERCEPT_HOSTS: frozenset = frozenset({PROFILE_API_HOST})
-CUSTOM_FFLAGS_INTERCEPT_HOSTS: frozenset = CLIENT_SETTINGS_HOSTS
-INTERCEPT_HOSTS: frozenset = (
+CDN_HOSTS: frozenset[str] = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
+BASE_INTERCEPT_HOSTS: frozenset[str] = frozenset({ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS})
+USERNAME_SPOOFER_INTERCEPT_HOSTS: frozenset[str] = frozenset({PROFILE_API_HOST})
+CUSTOM_FFLAGS_INTERCEPT_HOSTS: frozenset[str] = CLIENT_SETTINGS_HOSTS
+INTERCEPT_HOSTS: frozenset[str] = (
     BASE_INTERCEPT_HOSTS | USERNAME_SPOOFER_INTERCEPT_HOSTS | CUSTOM_FFLAGS_INTERCEPT_HOSTS
 )
 ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS = 20.0
@@ -87,10 +92,113 @@ _GZIP_MAGIC = b'\x1f\x8b'
 _DCZ_DICTIONARY_PATH_RE = re.compile(r'/([0-9a-f]{64})\.dcz(?:$|[?])', re.IGNORECASE)
 
 
+type _JsonScalar = str | int | float | bool | None
+type _JsonValue = _JsonScalar | list[_JsonValue] | dict[str, _JsonValue]
+type _JsonPathTarget = tuple[list[_JsonValue], int] | tuple[dict[str, _JsonValue], str]
+type _AnimRequiredRig = str | frozenset[str]
+type _AnimPendingValue = tuple[str, _AnimRequiredRig]
+type _ReplacementKey = int | str
+type _ReplacementMaps = tuple[
+    dict[_ReplacementKey, int],
+    set[_ReplacementKey],
+    dict[_ReplacementKey, str],
+    dict[_ReplacementKey, str],
+]
+
+_CREATE_PENDING_ATTR = '_create_pending'
+_RESOLVE_PENDING_ATTR = '_resolve_pending'
+_DETECT_REPL_RIG_ATTR = '_detect_repl_rig'
+_GET_CONVERTED_CURVE_ATTR = '_get_or_create_converted_curve'
+_GET_CONVERTED_ATTR = '_get_or_create_converted'
+_GET_MODIFIED_FIRST_LINE_ATTR = '_get_modified_first_line'
+
+
+class _AutoReplaceRule(TypedDict, total=False):
+    enabled: bool
+    direction: str
+    host_filter: str
+    path_filter: str
+    type: str
+    match: str
+    replacement: str
+
+
+class _RequestLogEntry(TypedDict):
+    id: int
+    time: float
+    host: str
+    port: int
+    method: str
+    path: str
+    intercepted: bool
+    status: int | None
+    size: int
+    ms: int | None
+    request_raw: bytes | bytearray | None
+    response_raw: bytes | bytearray | None
+    pending_stage: str | None
+    was_intercepted: bool
+    dropped_request: NotRequired[bool]
+    dropped_response: NotRequired[bool]
+
+
+class _ModuleInterceptor(Protocol):
+    def request(self, flow: ProxyFlow) -> None: ...
+
+    def response(self, flow: ProxyFlow) -> None: ...
+
+
+class _TextureBatchProcessor(Protocol):
+    def process_batch_request(
+        self,
+        body: bytes,
+        req_headers: dict[bytes, bytes],
+        replacements_tuple: _ReplacementMaps,
+        batch_id: str = '',
+    ) -> tuple[bytes, bytes]: ...
+
+    def process_batch_response(
+        self,
+        req_body: bytes,
+        resp_body: bytes,
+        req_headers: dict[bytes, bytes],
+        batch_id: str = '',
+    ) -> None: ...
+
+
+def _texture_detect_repl_rig(texture_stripper: TextureStripper, repl_path: str) -> str:
+    detector = cast('Callable[[str], str]', getattr(texture_stripper, _DETECT_REPL_RIG_ATTR))
+    return detector(repl_path)
+
+
+def _texture_get_converted_curve(
+    texture_stripper: TextureStripper, repl_path: str, target_rig: str
+) -> str | None:
+    converter = cast(
+        'Callable[[str, str], str | None]',
+        getattr(texture_stripper, _GET_CONVERTED_CURVE_ATTR),
+    )
+    return converter(repl_path, target_rig)
+
+
+def _texture_get_converted(
+    texture_stripper: TextureStripper, repl_path: str, target_rig: str
+) -> str | None:
+    converter = cast(
+        'Callable[[str, str], str | None]', getattr(texture_stripper, _GET_CONVERTED_ATTR)
+    )
+    return converter(repl_path, target_rig)
+
+
+def _flow_request_modified_first_line(request: _FlowRequest, original: bytes) -> bytes:
+    getter = cast('Callable[[bytes], bytes]', getattr(request, _GET_MODIFIED_FIRST_LINE_ATTR))
+    return getter(original)
+
+
 @dataclass
 class RawHeaders:
     first_line: bytes
-    headers: Dict[bytes, bytes]
+    headers: dict[bytes, bytes]
     raw_header_block: bytes
 
 
@@ -101,7 +209,7 @@ class RawBody:
     was_chunked: bool
 
 
-def _decompress_body(body: bytes, headers: Dict[bytes, bytes]) -> bytes:
+def _decompress_body(body: bytes, headers: dict[bytes, bytes]) -> bytes:
     """Decompress gzip or zstd body. Used only when we need to READ content."""
     ce = headers.get(b'content-encoding', b'').lower()
     if not body:
@@ -210,7 +318,7 @@ def rebuild_edited_message(text: str) -> bytes:
     return b'\r\n'.join(out_lines) + b'\r\n\r\n' + body
 
 
-async def _reparse_request_bytes(raw: bytes):
+async def _reparse_request_bytes(raw: bytes) -> tuple[RawHeaders, RawBody] | None:
     """Turn edited-and-rebuilt request wire bytes back into (RawHeaders, RawBody)
     so every downstream branch in ``_http_session`` - including the
     wire-preserving passthrough ones that read ``req_raw``/``req_body``
@@ -235,12 +343,12 @@ class PendingIntercept:
 
     __slots__ = ('entry_id', 'stage', 'data', 'event', 'action')
 
-    def __init__(self, entry_id: int, stage: str, data: bytes):
+    def __init__(self, entry_id: int, stage: str, data: bytes) -> None:
         self.entry_id = entry_id
         self.stage = stage
         self.data = bytearray(data)
         self.event = threading.Event()
-        self.action: Optional[str] = None
+        self.action: str | None = None
 
 
 def _dcz_dictionary_sha256(path: str) -> str | None:
@@ -291,7 +399,7 @@ def _compress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
 
 def _build_modified_response(
     status_line: bytes,
-    headers: Dict[bytes, bytes],
+    headers: dict[bytes, bytes],
     body: bytes,
     content_encoding: bytes | None = None,
 ) -> bytes:
@@ -322,7 +430,7 @@ def _build_modified_response(
     return b'\r\n'.join(lines) + b'\r\n\r\n' + body
 
 
-def _build_modified_request(req_line: bytes, headers: Dict[bytes, bytes], body: bytes) -> bytes:
+def _build_modified_request(req_line: bytes, headers: dict[bytes, bytes], body: bytes) -> bytes:
     """Build an HTTP request with a MODIFIED body (always uncompressed JSON for batch)."""
     lines = [req_line]
     skip = {
@@ -356,7 +464,9 @@ def _auto_replace_filter_matches(value: str, filter_text: str) -> bool:
     return (not contains) if negate else contains
 
 
-def _auto_replace_rule_applies(rule: dict, direction: str, host: str, path: str) -> bool:
+def _auto_replace_rule_applies(
+    rule: _AutoReplaceRule, direction: str, host: str, path: str
+) -> bool:
     if not rule.get('enabled', True):
         return False
     rule_direction = rule.get('direction') or 'both'
@@ -369,7 +479,7 @@ def _auto_replace_rule_applies(rule: dict, direction: str, host: str, path: str)
     return bool(rule.get('match'))
 
 
-def _resolve_json_path(data, path_expr: str):
+def _resolve_json_path(data: _JsonValue, path_expr: str) -> _JsonPathTarget | None:
     """Navigate a dot/bracket path expression (e.g. ``assets[0].id``) through
     nested dict/list JSON data. Returns (container, key) for the final
     segment so the caller can overwrite it, or None if the path doesn't
@@ -400,7 +510,7 @@ def _resolve_json_path(data, path_expr: str):
     return container, last
 
 
-def _coerce_replacement_value(replacement: str):
+def _coerce_replacement_value(replacement: str) -> _JsonValue:
     """A JSON path replacement is typed as plain text in the GUI - coerce it
     back to a JSON-native type so the rewritten body stays valid JSON with
     the field's original *kind* preserved (e.g. a numeric id stays a number,
@@ -419,8 +529,8 @@ def _coerce_replacement_value(replacement: str):
 
 
 def apply_auto_replace_rules(
-    rules: Iterable[dict], direction: str, host: str, path: str, body: bytes
-) -> Tuple[bytes, bool]:
+    rules: Iterable[_AutoReplaceRule], direction: str, host: str, path: str, body: bytes
+) -> tuple[bytes, bool]:
     """Run the body-affecting Auto Replace rules (plain text / regex / JSON
     path) against a decompressed request/response body. Rules are applied in
     order; each matching rule (enabled, direction, host/path filters)
@@ -451,12 +561,15 @@ def apply_auto_replace_rules(
                     match, replacement, result.decode('utf-8', errors='replace')
                 ).encode('utf-8')
             elif rule_type == 'json_path':
-                data = json.loads(result)
+                data = cast('_JsonValue', json.loads(result))
                 resolved = _resolve_json_path(data, match)
                 if resolved is None:
                     continue
                 container, key = resolved
-                container[key] = _coerce_replacement_value(replacement)
+                if isinstance(container, list):
+                    container[cast('int', key)] = _coerce_replacement_value(replacement)
+                else:
+                    container[cast('str', key)] = _coerce_replacement_value(replacement)
                 new_result = json.dumps(data).encode('utf-8')
             else:
                 new_result = result.replace(
@@ -473,8 +586,12 @@ def apply_auto_replace_rules(
 
 
 def apply_auto_replace_header_rules(
-    rules: Iterable[dict], direction: str, host: str, path: str, headers: Dict[bytes, bytes]
-) -> Tuple[Dict[bytes, bytes], bool]:
+    rules: Iterable[_AutoReplaceRule],
+    direction: str,
+    host: str,
+    path: str,
+    headers: dict[bytes, bytes],
+) -> tuple[dict[bytes, bytes], bool]:
     """Run 'Header' type Auto Replace rules: sets a header's value (matched
     by name, case-insensitive) - adds it if it wasn't already there.
     """
@@ -497,7 +614,9 @@ def apply_auto_replace_header_rules(
     return result, changed
 
 
-def apply_auto_replace_query_rules(rules: Iterable[dict], host: str, path: str) -> Tuple[str, bool]:
+def apply_auto_replace_query_rules(
+    rules: Iterable[_AutoReplaceRule], host: str, path: str
+) -> tuple[str, bool]:
     """Run 'Query param' type Auto Replace rules: sets a query string
     parameter's value (matched by name) in a request's path - adds it
     (appended) if it wasn't already there. Only meaningful for requests -
@@ -521,7 +640,7 @@ def apply_auto_replace_query_rules(rules: Iterable[dict], host: str, path: str) 
         split = urlsplit(result_path)
         pairs = parse_qsl(split.query, keep_blank_values=True)
         found = False
-        new_pairs = []
+        new_pairs: list[tuple[str, str]] = []
         for k, v in pairs:
             if k == param_name:
                 new_pairs.append((k, replacement_value))
@@ -543,10 +662,10 @@ def _format_exc(exc: Exception) -> str:
 
 @dataclass
 class _ExplicitTunnelConnectResult:
-    reader: Optional[asyncio.StreamReader]
-    writer: Optional[asyncio.StreamWriter]
-    endpoint: Optional[str] = None
-    error: Optional[str] = None
+    reader: asyncio.StreamReader | None
+    writer: asyncio.StreamWriter | None
+    endpoint: str | None = None
+    error: str | None = None
 
 
 _EXPLICIT_TUNNEL_CONNECT_TIMEOUT = 10.0
@@ -588,7 +707,7 @@ async def _open_explicit_proxy_tunnel(
     for family, socktype, _protocol, _canonname, sockaddr in addr_info:
         if family not in (socket.AF_INET, socket.AF_INET6) or socktype != socket.SOCK_STREAM:
             continue
-        address = sockaddr[0]
+        address = cast('str', sockaddr[0])
         key = (family, address)
         if key not in seen:
             seen.add(key)
@@ -670,18 +789,18 @@ class _ResponseTrackingWriter:
     ``_http_session`` (there are many, and they all end up calling ``write``).
     """
 
-    def __init__(self, writer, proxy: 'FleasionProxy'):
+    def __init__(self, writer: asyncio.StreamWriter, proxy: FleasionProxy) -> None:
         self._writer = writer
         self._proxy = proxy
-        self._entry: Optional[dict] = None
+        self._entry: _RequestLogEntry | None = None
         self._start = 0.0
         self._status_captured = False
         self._hold = False
-        self._held_buffer: Optional[bytearray] = None
-        self._delivery_ack: Optional[Callable[[], None]] = None
-        self._delivery_ack_expected: Optional[bytes] = None
+        self._held_buffer: bytearray | None = None
+        self._delivery_ack: Callable[[], None] | None = None
+        self._delivery_ack_expected: bytes | None = None
 
-    def begin(self, entry: Optional[dict], hold: bool = False) -> None:
+    def begin(self, entry: _RequestLogEntry | None, hold: bool = False) -> None:
         self._entry = entry
         self._start = time.time()
         self._status_captured = False
@@ -722,11 +841,12 @@ class _ResponseTrackingWriter:
         if buf is None:
             buf = bytearray()
             entry['response_raw'] = buf
-        if len(buf) < _PREVIEW_CAPTURE_CAP:
-            buf.extend(data[: _PREVIEW_CAPTURE_CAP - len(buf)])
+        response_buffer = cast('bytearray', buf)
+        if len(response_buffer) < _PREVIEW_CAPTURE_CAP:
+            response_buffer.extend(data[: _PREVIEW_CAPTURE_CAP - len(response_buffer)])
 
         if self._hold:
-            self._held_buffer.extend(data)
+            cast('bytearray', self._held_buffer).extend(data)
         else:
             self._writer.write(data)
 
@@ -762,10 +882,18 @@ class _ResponseTrackingWriter:
             await self._writer.drain()
             _ack_if_unchanged(held)
             return
-        pending = self._proxy._create_pending(entry, 'response', held)
+        create_pending = cast(
+            'Callable[[_RequestLogEntry, str, bytes], PendingIntercept]',
+            getattr(self._proxy, _CREATE_PENDING_ATTR),
+        )
+        resolve_pending = cast(
+            'Callable[[_RequestLogEntry, str], None]',
+            getattr(self._proxy, _RESOLVE_PENDING_ATTR),
+        )
+        pending = create_pending(entry, 'response', held)
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, pending.event.wait)
-        self._proxy._resolve_pending(entry, 'response')
+        resolve_pending(entry, 'response')
         if pending.action == 'drop':
             entry['response_raw'] = bytearray(pending.data)
             entry['dropped_response'] = True
@@ -784,11 +912,20 @@ class _ResponseTrackingWriter:
         await self._writer.drain()
         _ack_if_unchanged(final_bytes)
 
-    def __getattr__(self, name):
+    async def drain(self) -> None:
+        await self._writer.drain()
+
+    def close(self) -> None:
+        self._writer.close()
+
+    def is_closing(self) -> bool:
+        return self._writer.is_closing()
+
+    def __getattr__(self, name: str) -> object:
         return getattr(self._writer, name)
 
 
-def _without_conditional_client_settings_headers(headers: Dict[bytes, bytes]) -> Dict[bytes, bytes]:
+def _without_conditional_client_settings_headers(headers: dict[bytes, bytes]) -> dict[bytes, bytes]:
     """Make one ClientSettings request fetch a current body instead of HTTP 304."""
     conditional_headers = {b'if-none-match', b'if-modified-since'}
     return {key: value for key, value in headers.items() if key not in conditional_headers}
@@ -797,7 +934,7 @@ def _without_conditional_client_settings_headers(headers: Dict[bytes, bytes]) ->
 _BROWSER_BYPASS_CUSTOM_FFLAGS_HEADER = b'x-fleasion-bypass-custom-fflags'
 
 
-def _without_internal_client_settings_headers(headers: Dict[bytes, bytes]) -> Dict[bytes, bytes]:
+def _without_internal_client_settings_headers(headers: dict[bytes, bytes]) -> dict[bytes, bytes]:
     """Remove Fleasion-only ClientSettings headers before contacting Roblox."""
     return {
         key: value for key, value in headers.items() if key != _BROWSER_BYPASS_CUSTOM_FFLAGS_HEADER
@@ -838,7 +975,7 @@ def _make_proxy_error_response(status_code: int, message: str) -> bytes:
     ).encode('ascii') + body
 
 
-async def _read_headers_raw(reader: asyncio.StreamReader) -> Optional[RawHeaders]:
+async def _read_headers_raw(reader: asyncio.StreamReader) -> RawHeaders | None:
     """Read one HTTP header block, preserving the exact wire header bytes."""
     raw = bytearray()
 
@@ -861,7 +998,7 @@ async def _read_headers_raw(reader: asyncio.StreamReader) -> Optional[RawHeaders
         return None
 
     first_line = lines[0].rstrip(b'\r\n')
-    headers: Dict[bytes, bytes] = {}
+    headers: dict[bytes, bytes] = {}
     for line in lines[1:]:
         stripped = line.rstrip(b'\r\n')
         if not stripped or b':' not in stripped:
@@ -876,9 +1013,9 @@ async def _read_headers_raw(reader: asyncio.StreamReader) -> Optional[RawHeaders
     )
 
 
-async def _read_headers(
+async def _read_headers(  # pyright: ignore[reportUnusedFunction]
     reader: asyncio.StreamReader,
-) -> Optional[Tuple[bytes, Dict[bytes, bytes]]]:
+) -> tuple[bytes, dict[bytes, bytes]] | None:
     """Compatibility wrapper returning (first_line, lowercase_headers)."""
     raw = await _read_headers_raw(reader)
     if raw is None:
@@ -886,7 +1023,7 @@ async def _read_headers(
     return raw.first_line, raw.headers
 
 
-async def _read_body_wire(reader: asyncio.StreamReader, headers: Dict[bytes, bytes]) -> RawBody:
+async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, bytes]) -> RawBody:
     """Read an HTTP body, preserving wire bytes and exposing dechunked payload."""
     te = headers.get(b'transfer-encoding', b'').lower()
     cl_raw = headers.get(b'content-length', b'')
@@ -946,13 +1083,15 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: Dict[bytes, byt
     return RawBody(wire=b'', payload=b'', was_chunked=False)
 
 
-async def _read_body_raw(reader: asyncio.StreamReader, headers: Dict[bytes, bytes]) -> bytes:
+async def _read_body_raw(  # pyright: ignore[reportUnusedFunction]
+    reader: asyncio.StreamReader, headers: dict[bytes, bytes]
+) -> bytes:
     """Compatibility wrapper returning the dechunked, still-compressed payload."""
     return (await _read_body_wire(reader, headers)).payload
 
 
 def _reassemble_raw_response(
-    status_line: bytes, headers: Dict[bytes, bytes], body_raw: bytes
+    status_line: bytes, headers: dict[bytes, bytes], body_raw: bytes
 ) -> bytes:
     """Reconstruct an HTTP response forwarding the ORIGINAL body bytes.
     Strips only hop-by-hop headers but preserves content-encoding and content-length.
@@ -973,7 +1112,7 @@ def _reassemble_raw_response(
     return b'\r\n'.join(lines) + b'\r\n\r\n' + body_raw
 
 
-def _reassemble_raw_request(req_line: bytes, headers: Dict[bytes, bytes], body_raw: bytes) -> bytes:
+def _reassemble_raw_request(req_line: bytes, headers: dict[bytes, bytes], body_raw: bytes) -> bytes:
     """Reconstruct an HTTP request after reading/dechunking its body.
 
     For bodyless requests, do not inject Content-Length: 0 unless the client
@@ -1004,7 +1143,7 @@ def _reassemble_raw_request(req_line: bytes, headers: Dict[bytes, bytes], body_r
     return b'\r\n'.join(lines) + b'\r\n\r\n' + body_raw
 
 
-def _keep_alive(first_line: bytes, headers: Dict[bytes, bytes]) -> bool:
+def _keep_alive(first_line: bytes, headers: dict[bytes, bytes]) -> bool:
     conn = headers.get(b'connection', b'').lower()
     if b'close' in conn:
         return False
@@ -1099,8 +1238,8 @@ def _make_local_response(status_code: int = 204, body: bytes = b'') -> bytes:
 class _FlowHeaders:
     """Minimal case-insensitive header accessor for module interceptors."""
 
-    def __init__(self, headers: Dict[bytes, bytes]) -> None:
-        self._h: Dict[bytes, bytes] = {k.lower(): v for k, v in headers.items()}
+    def __init__(self, headers: dict[bytes, bytes]) -> None:
+        self._h: dict[bytes, bytes] = {k.lower(): v for k, v in headers.items()}
 
     def get(self, key: str, default: str = '') -> str:
         v = self._h.get(key.lower().encode('ascii', errors='replace'))
@@ -1108,7 +1247,7 @@ class _FlowHeaders:
             return default
         return v.decode('ascii', errors='replace')
 
-    def __setitem__(self, key: str, value: str) -> None:
+    def __setitem__(self, key: str, value: str | bytes) -> None:
         self._h[key.lower().encode('ascii', errors='replace')] = (
             value.encode('ascii', errors='replace') if isinstance(value, str) else value
         )
@@ -1117,13 +1256,13 @@ class _FlowHeaders:
         v = self._h[key.lower().encode('ascii', errors='replace')]
         return v.decode('ascii', errors='replace')
 
-    def to_bytes_dict(self) -> Dict[bytes, bytes]:
+    def to_bytes_dict(self) -> dict[bytes, bytes]:
         return dict(self._h)
 
 
 class _FlowRequest:
     def __init__(
-        self, first_line: bytes, headers: Dict[bytes, bytes], body: bytes, host: str
+        self, first_line: bytes, headers: dict[bytes, bytes], body: bytes, host: str
     ) -> None:
         parts = first_line.split(b' ', 2)
         self._method: bytes = parts[0] if parts else b'POST'
@@ -1179,23 +1318,27 @@ class _FlowResponse:
             self.status_code = 200
         self.content: bytes = body
 
-    def json(self):
+    def json(self) -> _JsonValue:
         import json as _json
 
-        return _json.loads(self.content)
+        return cast('_JsonValue', _json.loads(self.content))
 
 
 class ProxyFlow:
     """Minimal flow object passed to module interceptors (request + response hooks)."""
 
     def __init__(
-        self, req_first: bytes, req_headers: Dict[bytes, bytes], body: bytes, host: str
+        self, req_first: bytes, req_headers: dict[bytes, bytes], body: bytes, host: str
     ) -> None:
         self.request: _FlowRequest = _FlowRequest(req_first, req_headers, body, host)
-        self.response: Optional[_FlowResponse] = None
+        self.response: _FlowResponse | None = None
         self.drop_request: bool = False
         self.drop_status_code: int = 204
         self.drop_body: bytes = b''
+
+
+def _flow_response_after_callbacks(flow: ProxyFlow) -> _FlowResponse | None:
+    return flow.response
 
 
 class FleasionProxy:
@@ -1203,55 +1346,56 @@ class FleasionProxy:
 
     def __init__(
         self,
-        texture_stripper: 'TextureStripper',
-        cache_scraper: 'CacheScraper',
-        host_certs: Dict[str, Tuple[Path, Path]],
-        upstream_endpoints: Optional[Dict[str, Sequence[UpstreamEndpoint | str]]] = None,
-        default_cert: Optional[Tuple[Path, Path]] = None,
+        texture_stripper: TextureStripper,
+        cache_scraper: CacheScraper,
+        host_certs: dict[str, tuple[Path, Path]],
+        upstream_endpoints: dict[str, Sequence[UpstreamEndpoint | str]] | None = None,
+        default_cert: tuple[Path, Path] | None = None,
         port: int = 443,
         max_workers: int = 8,
-        upstream_ips: Optional[Dict[str, List[str]]] = None,
+        upstream_ips: dict[str, list[str]] | None = None,
         upstream_mode: str | UpstreamMode = UpstreamMode.AUTO,
-        system_http_proxy: Optional[HttpProxyConfig] = None,
-        manual_http_proxy: Optional[HttpProxyConfig] = None,
-        manual_socks5_proxy: Optional[Socks5ProxyConfig] = None,
+        system_http_proxy: HttpProxyConfig | None = None,
+        manual_http_proxy: HttpProxyConfig | None = None,
+        manual_socks5_proxy: Socks5ProxyConfig | None = None,
         wire_preserving_passthrough: bool = False,
         explicit_proxy: bool = False,
-        intercept_hosts: Optional[Iterable[str]] = None,
+        intercept_hosts: Iterable[str] | None = None,
         vpn_compat_max_assetdelivery_connections: int = 16,
         vpn_compat_max_cdn_connections: int = 32,
-        custom_fflag_modifier=None,
-        on_upstream_connect_failure: Optional[Callable[[str, str], None]] = None,
-        upstream_endpoint_refresher: Optional[
-            Callable[[str], Sequence[UpstreamEndpoint | str]]
-        ] = None,
-        ca_cert_path: Optional[Path] = None,
-        ca_key_path: Optional[Path] = None,
-        cert_cache_dir: Optional[Path] = None,
+        custom_fflag_modifier: CustomFFlagModifier | None = None,
+        on_upstream_connect_failure: Callable[[str, str], None] | None = None,
+        upstream_endpoint_refresher: Callable[[str], Sequence[UpstreamEndpoint | str]]
+        | None = None,
+        ca_cert_path: Path | None = None,
+        ca_key_path: Path | None = None,
+        cert_cache_dir: Path | None = None,
         intercept_all_hosts: bool = False,
-        intercept_excluded_hosts: Optional[Iterable[str]] = None,
-        auto_replace_rules: Optional[Iterable[dict]] = None,
+        intercept_excluded_hosts: Iterable[str] | None = None,
+        auto_replace_rules: Iterable[_AutoReplaceRule] | None = None,
     ) -> None:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
         self.custom_fflag_modifier = custom_fflag_modifier
         self.port = port
-        self._module_interceptors: List = []
+        self._module_interceptors: list[_ModuleInterceptor] = []
         if upstream_endpoints is None:
-            upstream_endpoints = upstream_ips or {}
+            upstream_endpoints = cast(
+                'dict[str, Sequence[UpstreamEndpoint | str]]', upstream_ips or {}
+            )
         self._upstream_endpoints = normalize_endpoints(upstream_endpoints)
-        self._server: Optional[asyncio.Server] = None
-        self._servers: List[asyncio.Server] = []
+        self._server: asyncio.Server | None = None
+        self._servers: list[asyncio.Server] = []
         self._listening_loopbacks: set[str] = set()
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix='fleasion-cpu'
         )
         self._sni_diagnostics_seen: set[str] = set()
         self._fallback_diagnostics_seen: set[tuple[str, str]] = set()
-        self._client_settings_dictionary_cache: Dict[str, bytes] = {}
+        self._client_settings_dictionary_cache: dict[str, bytes] = {}
         self._wire_preserving_passthrough = bool(wire_preserving_passthrough)
         self._explicit_proxy = bool(explicit_proxy)
-        self._intercept_hosts: frozenset = (
+        self._intercept_hosts: frozenset[str] = (
             frozenset(intercept_hosts) if intercept_hosts is not None else INTERCEPT_HOSTS
         )
         self._intercept_all_hosts = bool(intercept_all_hosts)
@@ -1260,26 +1404,26 @@ class FleasionProxy:
             for host in (intercept_excluded_hosts or ())
             if str(host).strip()
         )
-        self._auto_replace_rules: List[dict] = (
+        self._auto_replace_rules: list[_AutoReplaceRule] = (
             list(auto_replace_rules) if auto_replace_rules else []
         )
         self._ca_cert_path = ca_cert_path
         self._ca_key_path = ca_key_path
         self._cert_cache_dir = cert_cache_dir
         self._request_log_lock = threading.Lock()
-        self._request_log: List[dict] = []
+        self._request_log: list[_RequestLogEntry] = []
         self._request_log_max = 4000
         self._next_entry_id = 0
         self._intercept_match_text = ''
         self._pending_lock = threading.Lock()
-        self._pending: Dict[Tuple[int, str], PendingIntercept] = {}
+        self._pending: dict[tuple[int, str], PendingIntercept] = {}
         self._last_gamejoin_time: float = 0.0
         self._last_asset_traffic_time: float = 0.0
         self._asset_diag_generation: int = 0
         self._on_upstream_connect_failure = on_upstream_connect_failure
         self._upstream_connect_failure_notified = False
         self._upstream_endpoint_refresher = upstream_endpoint_refresher
-        self._last_upstream_endpoint_refresh: Dict[str, float] = {}
+        self._last_upstream_endpoint_refresh: dict[str, float] = {}
 
         asset_limit = max(1, int(vpn_compat_max_assetdelivery_connections or 16))
         cdn_limit = max(1, int(vpn_compat_max_cdn_connections or 32))
@@ -1293,22 +1437,22 @@ class FleasionProxy:
         }
 
         self._direct_connector = DirectIpConnector()
-        self._system_http_connector: Optional[BaseUpstreamConnector] = (
+        self._system_http_connector: BaseUpstreamConnector | None = (
             HttpConnectConnector(system_http_proxy, method='system_http_connect')
             if system_http_proxy is not None
             else None
         )
-        self._manual_http_connector: Optional[BaseUpstreamConnector] = (
+        self._manual_http_connector: BaseUpstreamConnector | None = (
             HttpConnectConnector(manual_http_proxy) if manual_http_proxy is not None else None
         )
-        self._manual_socks5_connector: Optional[BaseUpstreamConnector] = (
+        self._manual_socks5_connector: BaseUpstreamConnector | None = (
             Socks5Connector(manual_socks5_proxy) if manual_socks5_proxy is not None else None
         )
         self._upstream_mode = normalize_upstream_mode(upstream_mode)
         self._connector = self._build_connector()
 
         self._local_tls_max_version = PROXY_TLS_MAX_VERSION
-        self._host_ssl_ctxs: Dict[str, ssl.SSLContext] = {}
+        self._host_ssl_ctxs: dict[str, ssl.SSLContext] = {}
         for host, (cert_path, key_path) in host_certs.items():
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(str(cert_path), str(key_path))
@@ -1373,7 +1517,10 @@ class FleasionProxy:
                 logger.debug('Failed to report upstream connection failure: %s', exc)
 
     def _sni_callback(
-        self, ssl_obj, server_name: Optional[str], initial_ctx: ssl.SSLContext
+        self,
+        ssl_obj: ssl.SSLSocket | ssl.SSLObject,
+        server_name: str | None,
+        _initial_ctx: ssl.SSLSocket,
     ) -> None:
         name = (server_name or '').lower()
         if name in self._intercept_excluded_hosts:
@@ -1406,8 +1553,9 @@ class FleasionProxy:
                 'missing',
                 'Client connected without SNI; using default multi-host certificate',
             )
+        return
 
-    def _get_or_generate_host_ctx(self, host: str) -> Optional[ssl.SSLContext]:
+    def _get_or_generate_host_ctx(self, host: str) -> ssl.SSLContext | None:
         """Generate (and cache) a leaf cert signed by our own CA for a host we
         weren't pre-provisioned for, so intercept-all mode can TLS-terminate
         literally anything Roblox connects to, not just the fixed feature set.
@@ -1482,12 +1630,12 @@ class FleasionProxy:
             return
         await asyncio.gather(*(server.serve_forever() for server in self._servers))
 
-    def set_module_interceptors(self, interceptors: List) -> None:
+    def set_module_interceptors(self, interceptors: Iterable[_ModuleInterceptor]) -> None:
         """Set the list of module interceptors for gamejoin traffic hooks."""
         self._module_interceptors = list(interceptors)
 
     def set_upstream_endpoints(
-        self, endpoints: Dict[str, Sequence[UpstreamEndpoint | str]]
+        self, endpoints: dict[str, Sequence[UpstreamEndpoint | str]]
     ) -> None:
         self._upstream_endpoints = normalize_endpoints(endpoints)
 
@@ -1497,7 +1645,7 @@ class FleasionProxy:
 
     def _record_request(
         self, host: str, port: int, method: str, path: str, intercepted: bool
-    ) -> dict:
+    ) -> _RequestLogEntry:
         """Append one row per request/tunnel seen through the explicit proxy.
 
         Intercepted (TLS-terminated) hosts get one entry per actual HTTP request.
@@ -1509,7 +1657,7 @@ class FleasionProxy:
         with self._request_log_lock:
             entry_id = self._next_entry_id
             self._next_entry_id += 1
-            entry = {
+            entry: _RequestLogEntry = {
                 'id': entry_id,
                 'time': time.time(),
                 'host': host,
@@ -1531,30 +1679,32 @@ class FleasionProxy:
                 del self._request_log[:overflow]
         return entry
 
-    def get_request_log(self) -> List[dict]:
+    def get_request_log(self) -> list[_RequestLogEntry]:
         """Return a snapshot of every request/tunnel the explicit proxy has logged."""
         with self._request_log_lock:
-            return [dict(entry) for entry in self._request_log]
+            return [entry.copy() for entry in self._request_log]
 
     def clear_request_log(self) -> None:
         with self._request_log_lock:
             self._request_log.clear()
 
-    def format_request_preview(self, entry: dict) -> str:
+    def format_request_preview(self, entry: _RequestLogEntry) -> str:
         """Human-readable request text for a request-log entry, for the Proxy tab."""
         raw = entry.get('request_raw')
         if not raw:
             return ''
         return asyncio.run(_format_raw_http_message(bytes(raw)))
 
-    def format_response_preview(self, entry: dict) -> str:
+    def format_response_preview(self, entry: _RequestLogEntry) -> str:
         """Human-readable response text for a request-log entry, for the Proxy tab."""
         raw = entry.get('response_raw')
         if not raw:
             return ''
         return asyncio.run(_format_raw_http_message(bytes(raw)))
 
-    async def replay_request(self, entry_id: int, raw_request: bytes, host: str) -> Optional[dict]:
+    async def replay_request(
+        self, entry_id: int, raw_request: bytes, host: str
+    ) -> _RequestLogEntry | None:
         """Resend a captured (or edited) request to *host* fresh, overwriting
         the SAME log entry's request/response fields in place - no new row.
         Must be scheduled onto this proxy's own event loop (e.g. via
@@ -1594,7 +1744,8 @@ class FleasionProxy:
                     f'<replay failed: {connect_result.error or "no upstream reachable"}>'.encode()
                 )
                 return entry
-            up_reader, up_writer = connect_result.reader, connect_result.writer
+            up_reader = cast('asyncio.StreamReader', connect_result.reader)
+            up_writer = connect_result.writer
             try:
                 up_writer.write(req_raw.raw_header_block + req_body.wire)
                 await up_writer.drain()
@@ -1647,7 +1798,7 @@ class FleasionProxy:
             and (self._intercept_all_hosts or normalized_host in self._intercept_hosts)
         )
 
-    def set_auto_replace_rules(self, rules: Iterable[dict]) -> None:
+    def set_auto_replace_rules(self, rules: Iterable[_AutoReplaceRule]) -> None:
         """Replace the live set of Auto Replace rules (see apply_auto_replace_rules)."""
         self._auto_replace_rules = list(rules) if rules else []
 
@@ -1657,33 +1808,33 @@ class FleasionProxy:
         text = self._intercept_match_text
         return text in host.lower() or text in path.lower()
 
-    def _create_pending(self, entry: dict, stage: str, data: bytes) -> PendingIntercept:
+    def _create_pending(self, entry: _RequestLogEntry, stage: str, data: bytes) -> PendingIntercept:
         pending = PendingIntercept(entry['id'], stage, data)
         with self._pending_lock:
-            self._pending[(entry['id'], stage)] = pending
+            self._pending[entry['id'], stage] = pending
         entry['pending_stage'] = stage
         entry['was_intercepted'] = True
         return pending
 
-    def _resolve_pending(self, entry: dict, stage: str) -> None:
+    def _resolve_pending(self, entry: _RequestLogEntry, stage: str) -> None:
         with self._pending_lock:
             self._pending.pop((entry['id'], stage), None)
         if entry.get('pending_stage') == stage:
             entry['pending_stage'] = None
 
-    def get_pending_data(self, entry_id: int, stage: str) -> Optional[bytes]:
+    def get_pending_data(self, entry_id: int, stage: str) -> bytes | None:
         """Current (possibly not-yet-submitted) editable bytes for a held request/response."""
         with self._pending_lock:
             pending = self._pending.get((entry_id, stage))
         return bytes(pending.data) if pending is not None else None
 
-    def get_pending_intercepts(self) -> List[Tuple[int, str]]:
+    def get_pending_intercepts(self) -> list[tuple[int, str]]:
         """(entry_id, stage) pairs currently held open awaiting a forward/drop decision."""
         with self._pending_lock:
             return list(self._pending.keys())
 
     def submit_pending(
-        self, entry_id: int, stage: str, action: str, edited_text: Optional[str] = None
+        self, entry_id: int, stage: str, action: str, edited_text: str | None = None
     ) -> bool:
         """Resolve a held request/response. edited_text, if given, is the (possibly
         hand-edited) preview text - rebuilt into wire bytes here so the caller
@@ -1715,7 +1866,7 @@ class FleasionProxy:
     def upstream_endpoints_for_hosts(
         self,
         hosts: Sequence[str],
-    ) -> Dict[str, List[UpstreamEndpoint]]:
+    ) -> dict[str, list[UpstreamEndpoint]]:
         """Return a copy of the already-resolved routes for *hosts*.
 
         Hosts intercepted through the local proxy cannot safely be resolved via
@@ -1781,7 +1932,7 @@ class FleasionProxy:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def loopback_ips_for_hosts(self) -> tuple[str, ...]:
-        ordered = []
+        ordered: list[str] = []
         for ip in ('127.0.0.1', '::1'):
             if ip in self._listening_loopbacks:
                 ordered.append(ip)
@@ -1820,7 +1971,7 @@ class FleasionProxy:
     def _endpoints_for_host(
         self,
         host: str,
-        max_targets: Optional[int] = None,
+        max_targets: int | None = None,
     ) -> list[UpstreamEndpoint]:
         endpoints = self._upstream_endpoints.get(host, []) or [UpstreamEndpoint(host=host)]
         if max_targets is not None:
@@ -1896,7 +2047,7 @@ class FleasionProxy:
         host: str,
         *,
         timeout: float = 10.0,
-        max_targets: Optional[int] = None,
+        max_targets: int | None = None,
     ) -> UpstreamConnectResult:
         endpoints = self._endpoints_for_host(host, max_targets=max_targets)
         sem = self._upstream_host_limits.get(host)
@@ -1948,12 +2099,12 @@ class FleasionProxy:
         host: str,
         *,
         timeout: float = 10.0,
-        max_targets: Optional[int] = None,
-    ) -> Tuple[
-        Optional[asyncio.StreamReader],
-        Optional[asyncio.StreamWriter],
-        Optional[str],
-        List[str],
+        max_targets: int | None = None,
+    ) -> tuple[
+        asyncio.StreamReader | None,
+        asyncio.StreamWriter | None,
+        str | None,
+        list[str],
     ]:
         result = await self._connect_upstream(host, timeout=timeout, max_targets=max_targets)
         if result.writer is not None:
@@ -1965,7 +2116,7 @@ class FleasionProxy:
             )
         return None, None, None, [result.error or 'upstream connect failed']
 
-    async def log_upstream_self_test(self, hosts: Optional[set] = None) -> None:
+    async def log_upstream_self_test(self, hosts: set[str] | None = None) -> None:
         from ..utils import log_buffer
 
         hosts_to_test = sorted(hosts or set(self._upstream_endpoints.keys()))
@@ -1980,7 +2131,7 @@ class FleasionProxy:
 
         async def probe(host: str) -> None:
             endpoints = self._endpoints_for_host(host, max_targets=3)
-            first_ok_method: Optional[str] = None
+            first_ok_method: str | None = None
             direct_failed = False
 
             for connector in matrix:
@@ -1998,7 +2149,7 @@ class FleasionProxy:
                         result.writer.close()
                         wait_closed = getattr(result.writer, 'wait_closed', None)
                         if callable(wait_closed):
-                            await wait_closed()
+                            await cast('Callable[[], Awaitable[None]]', wait_closed)()
                     except Exception:
                         pass
                 else:
@@ -2048,7 +2199,7 @@ class FleasionProxy:
         if result is None:
             writer.close()
             return
-        req_first, req_headers = result.first_line, result.headers
+        req_headers = result.headers
 
         host_hdr = req_headers.get(b'host', b'').decode('ascii', errors='replace').lower()
         host = host_hdr.split(':')[0].strip()
@@ -2166,7 +2317,7 @@ class FleasionProxy:
         client_writer: asyncio.StreamWriter,
         host: str,
         port: int,
-        log_entry: Optional[dict] = None,
+        log_entry: _RequestLogEntry | None = None,
     ) -> None:
         from ..utils import log_buffer
 
@@ -2245,12 +2396,15 @@ class FleasionProxy:
     ) -> None:
         from ..utils import log_buffer
 
-        writer = _ResponseTrackingWriter(writer, self)
+        response_writer = _ResponseTrackingWriter(writer, self)
+        custom_fflag_modifier_present = self.custom_fflag_modifier is not None
+        custom_fflag_modifier = cast('CustomFFlagModifier', self.custom_fflag_modifier)
+        texture_batch_processor = cast('_TextureBatchProcessor', self.texture_stripper)
 
         replacements_tuple = self.texture_stripper.config_manager.get_all_replacements()
-        pending_req: Optional[RawHeaders] = first_req
-        up_reader: Optional[asyncio.StreamReader] = None
-        up_writer: Optional[asyncio.StreamWriter] = None
+        pending_req: RawHeaders | None = first_req
+        up_reader: asyncio.StreamReader | None = None
+        up_writer: asyncio.StreamWriter | None = None
         upstream_failure_hint_logged = False
 
         async def ensure_upstream(path_for_log: str) -> bool:
@@ -2294,14 +2448,14 @@ class FleasionProxy:
                 )
                 self._notify_upstream_connect_failure_once(host, failure_text)
 
-            writer.write(
+            response_writer.write(
                 _make_proxy_error_response(
                     502,
                     f'Fleasion could not connect upstream to {host}. See Fleasion logs for details.',
                 )
             )
             try:
-                await writer.drain()
+                await response_writer.drain()
             except Exception:
                 pass
             return False
@@ -2381,7 +2535,7 @@ class FleasionProxy:
                 # Release the previous iteration's held response (if any) before
                 # moving on - this is the one choke point every response branch
                 # below eventually passes through, on its way back here.
-                await writer.flush_pending_response()
+                await response_writer.flush_pending_response()
 
                 # ── Read request ─────────────────────────────────────────────
                 if pending_req is not None:
@@ -2433,7 +2587,7 @@ class FleasionProxy:
                             _log_entry['dropped_request'] = True
                             _log_entry['status'] = None
                             try:
-                                writer.close()
+                                response_writer.close()
                             except Exception:
                                 pass
                             break
@@ -2506,16 +2660,19 @@ class FleasionProxy:
                                 _log_entry['method'] = method
                                 _log_entry['path'] = path
 
-                writer.begin(
+                response_writer.begin(
                     _log_entry,
                     hold=self._intercept_all_hosts and self._intercept_matches(host, path),
                 )
                 is_batch = host == ASSET_DELIVERY_HOST and b'/v1/assets/batch' in req_first
+                batch_id = ''
+                req_body_modified = req_body_raw
+                scraper_body = req_body_raw
                 bypass_custom_fflags = (
                     req_headers.get(_BROWSER_BYPASS_CUSTOM_FFLAGS_HEADER, b'').strip() == b'1'
                 )
-                _gamejoin_flow: Optional[ProxyFlow] = None
-                _profile_flow: Optional[ProxyFlow] = None
+                _gamejoin_flow: ProxyFlow | None = None
+                _profile_flow: ProxyFlow | None = None
                 upstream_req_first = req_first
                 upstream_req_headers = (
                     _without_internal_client_settings_headers(req_headers)
@@ -2525,22 +2682,17 @@ class FleasionProxy:
 
                 custom_fflag_request = (
                     host in CLIENT_SETTINGS_HOSTS
-                    and self.custom_fflag_modifier is not None
-                    and self.custom_fflag_modifier.handles_path(path)
+                    and custom_fflag_modifier_present
+                    and custom_fflag_modifier.handles_path(path)
                     and not bypass_custom_fflags
                 )
                 custom_fflag_request_generation = (
-                    self.custom_fflag_modifier.delivery_generation()
-                    if custom_fflag_request
-                    else None
+                    custom_fflag_modifier.delivery_generation() if custom_fflag_request else None
                 )
                 custom_fflag_request_enabled = (
-                    custom_fflag_request and self.custom_fflag_modifier.is_enabled()
+                    custom_fflag_request and custom_fflag_modifier.is_enabled()
                 )
-                if (
-                    custom_fflag_request_enabled
-                    and self.custom_fflag_modifier.requires_fresh_response()
-                ):
+                if custom_fflag_request_enabled and custom_fflag_modifier.requires_fresh_response():
                     upstream_req_headers = _without_conditional_client_settings_headers(req_headers)
 
                 if host == ASSET_DELIVERY_HOST or host in CDN_HOSTS:
@@ -2572,7 +2724,8 @@ class FleasionProxy:
                     if short_circuit is not None:
                         action, value = short_circuit
                         if action == 'local':
-                            _serve_path = Path(str(value))
+                            local_value = cast('str', value)
+                            _serve_path = Path(local_value)
                             _serve_exists = _serve_path.exists()
                             _serve_size = _serve_path.stat().st_size if _serve_exists else 0
                             _serve_category = (
@@ -2586,7 +2739,7 @@ class FleasionProxy:
                                 f'file={_serve_path.name} exists={_serve_exists} bytes={_serve_size}',
                             )
                             response = await asyncio.get_event_loop().run_in_executor(
-                                self._executor, _serve_local_file, value
+                                self._executor, _serve_local_file, local_value
                             )
                             _status_line = (
                                 response.split(b'\r\n', 1)[0].decode('ascii', errors='replace')
@@ -2598,13 +2751,13 @@ class FleasionProxy:
                                 f'CDN local serve complete: host={host} path={path[:160]} '
                                 f'file={_serve_path.name} status={_status_line} response_bytes={len(response)}',
                             )
-                            writer.write(response)
-                            await writer.drain()
+                            response_writer.write(response)
+                            await response_writer.drain()
                             # Cache our own served file so it appears in the scraper viewer
                             if self.cache_scraper.enabled:
                                 try:
                                     _file_bytes = await asyncio.get_event_loop().run_in_executor(
-                                        self._executor, _read_local_bytes, value
+                                        self._executor, _read_local_bytes, local_value
                                     )
                                     if _file_bytes:
                                         full_url = f'https://{host}{path}'
@@ -2621,8 +2774,8 @@ class FleasionProxy:
                                 break
                             continue
                         elif action == 'cdn':
-                            writer.write(_make_redirect(value))
-                            await writer.drain()
+                            response_writer.write(_make_redirect(cast('str', value)))
+                            await response_writer.drain()
                             if not _keep_alive(req_first, req_headers):
                                 break
                             continue
@@ -2645,7 +2798,7 @@ class FleasionProxy:
                     # _pending, skipped the wait, and forwarded unreplaced assets. Running
                     # synchronously ensures _pending is populated before any CDN coroutine
                     # can check has_pending().
-                    req_body_modified, scraper_body = self.texture_stripper.process_batch_request(
+                    req_body_modified, scraper_body = texture_batch_processor.process_batch_request(
                         req_body_plain,
                         req_headers,
                         replacements_tuple,
@@ -2654,14 +2807,14 @@ class FleasionProxy:
                     if _is_empty_json_array(req_body_modified) and not _is_empty_json_array(
                         req_body_plain
                     ):
-                        writer.write(_make_local_response(200, b'[]'))
-                        await writer.drain()
+                        response_writer.write(_make_local_response(200, b'[]'))
+                        await response_writer.drain()
                         if not _keep_alive(req_first, req_headers):
                             break
                         continue
                     if not await ensure_upstream(path):
                         break
-                    up_writer.write(
+                    cast('asyncio.StreamWriter', up_writer).write(
                         _build_modified_request(req_first, req_headers, req_body_modified)
                     )
                 elif host == GAMEJOIN_HOST:
@@ -2678,19 +2831,21 @@ class FleasionProxy:
                             _drop_body = _gamejoin_flow.drop_body
                             if isinstance(_drop_body, str):
                                 _drop_body = _drop_body.encode('utf-8', errors='replace')
-                            writer.write(
+                            response_writer.write(
                                 _make_local_response(_gamejoin_flow.drop_status_code, _drop_body)
                             )
-                            await writer.drain()
+                            await response_writer.drain()
                             if not _keep_alive(req_first, req_headers):
                                 break
                             continue
-                        _new_first = _gamejoin_flow.request._get_modified_first_line(req_first)
+                        _new_first = _flow_request_modified_first_line(
+                            _gamejoin_flow.request, req_first
+                        )
                         _new_body = _gamejoin_flow.request.raw_content
                         if not await ensure_upstream(path):
                             break
                         if _new_first != req_first or _new_body != _req_body_plain:
-                            up_writer.write(
+                            cast('asyncio.StreamWriter', up_writer).write(
                                 _build_modified_request(
                                     _new_first,
                                     _gamejoin_flow.request.headers.to_bytes_dict(),
@@ -2699,18 +2854,22 @@ class FleasionProxy:
                             )
                         else:
                             if self._wire_preserving_passthrough:
-                                up_writer.write(req_raw.raw_header_block + req_body.wire)
+                                cast('asyncio.StreamWriter', up_writer).write(
+                                    req_raw.raw_header_block + req_body.wire
+                                )
                             else:
-                                up_writer.write(
+                                cast('asyncio.StreamWriter', up_writer).write(
                                     _reassemble_raw_request(req_first, req_headers, req_body_raw)
                                 )
                     else:
                         if not await ensure_upstream(path):
                             break
                         if self._wire_preserving_passthrough:
-                            up_writer.write(req_raw.raw_header_block + req_body.wire)
+                            cast('asyncio.StreamWriter', up_writer).write(
+                                req_raw.raw_header_block + req_body.wire
+                            )
                         else:
-                            up_writer.write(
+                            cast('asyncio.StreamWriter', up_writer).write(
                                 _reassemble_raw_request(req_first, req_headers, req_body_raw)
                             )
                 elif (
@@ -2723,9 +2882,11 @@ class FleasionProxy:
                         break
                     _profile_flow = ProxyFlow(req_first, req_headers, _req_body_plain, host)
                     if self._preserve_unmodified_wire_for_host(host):
-                        up_writer.write(req_raw.raw_header_block + req_body.wire)
+                        cast('asyncio.StreamWriter', up_writer).write(
+                            req_raw.raw_header_block + req_body.wire
+                        )
                     else:
-                        up_writer.write(
+                        cast('asyncio.StreamWriter', up_writer).write(
                             _reassemble_raw_request(req_first, req_headers, req_body_raw)
                         )
                 else:
@@ -2737,43 +2898,45 @@ class FleasionProxy:
                         and upstream_req_first == req_first
                         and upstream_req_headers is req_headers
                     ):
-                        up_writer.write(req_raw.raw_header_block + req_body.wire)
+                        cast('asyncio.StreamWriter', up_writer).write(
+                            req_raw.raw_header_block + req_body.wire
+                        )
                     else:
-                        up_writer.write(
+                        cast('asyncio.StreamWriter', up_writer).write(
                             _reassemble_raw_request(
                                 upstream_req_first, upstream_req_headers, req_body_raw
                             )
                         )
 
                 try:
-                    await up_writer.drain()
+                    await cast('asyncio.StreamWriter', up_writer).drain()
                 except ConnectionResetError, BrokenPipeError, OSError:
                     break
 
                 # ── Read upstream response ────────────────────────────────────
-                resp_result = await _read_headers_raw(up_reader)
+                resp_result = await _read_headers_raw(cast('asyncio.StreamReader', up_reader))
                 if resp_result is None:
                     break
                 resp_raw = resp_result
                 resp_first, resp_headers = resp_raw.first_line, resp_raw.headers
-                resp_body = await _read_body_wire(up_reader, resp_headers)
+                resp_body = await _read_body_wire(
+                    cast('asyncio.StreamReader', up_reader), resp_headers
+                )
                 resp_body_raw = resp_body.payload
 
                 status_code = _parse_status_code(resp_first)
                 custom_fflag_response_enabled = (
-                    custom_fflag_request and self.custom_fflag_modifier.is_enabled()
+                    custom_fflag_request and custom_fflag_modifier.is_enabled()
                 )
                 if custom_fflag_response_enabled and status_code >= 400:
-                    self.custom_fflag_modifier.log_response_failure(
+                    custom_fflag_modifier.log_response_failure(
                         'upstream-http',
                         f'ClientSettings upstream returned HTTP {status_code}; response left unchanged',
                     )
                 elif (
-                    custom_fflag_response_enabled
-                    and 200 <= status_code < 300
-                    and not resp_body_raw
+                    custom_fflag_response_enabled and 200 <= status_code < 300 and not resp_body_raw
                 ):
-                    self.custom_fflag_modifier.log_response_failure(
+                    custom_fflag_modifier.log_response_failure(
                         'empty-success',
                         f'ClientSettings upstream returned HTTP {status_code} with an empty body; '
                         'response left unchanged',
@@ -2826,7 +2989,7 @@ class FleasionProxy:
                     # (strip_textures, removal rules), using req_body_raw causes every index
                     # after a removed item to map to the wrong response item, producing wrong
                     # assetTypeId values (the root cause of SolidModel/Mesh being typed as Image).
-                    self.texture_stripper.process_batch_response(
+                    texture_batch_processor.process_batch_response(
                         req_body_modified,
                         resp_body_plain,
                         req_headers,
@@ -2869,12 +3032,12 @@ class FleasionProxy:
                         # SolidModel injection - we MUST modify the body
                         resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
                         _cdn_base_url = full_url.split('?')[0]
-                        _prefer_v3 = short_circuit[0] == 'solid_v3'
+                        _prefer_v3 = cast('str', short_circuit[0]) == 'solid_v3'
                         resp_body_raw = await asyncio.get_event_loop().run_in_executor(
                             self._executor,
                             self.texture_stripper.process_solidmodel_response,
                             resp_body_plain,
-                            short_circuit[1],
+                            cast('str', short_circuit[1]),
                             _cdn_base_url,
                             _prefer_v3,
                         )
@@ -2883,11 +3046,13 @@ class FleasionProxy:
                     elif short_circuit is not None and short_circuit[0] == 'anim_rig':
                         # Auto-convert rig: read the original CDN bytes to detect the rig,
                         # then serve the rig-matched local replacement (or a converted copy).
-                        _anim_repl_path, _required_rig = short_circuit[1]
+                        _anim_repl_path, _required_rig = cast('_AnimPendingValue', short_circuit[1])
                         _orig_bytes = _decompress_body(resp_body_raw, resp_headers)
 
                         def _pick_rig_matched_file(
-                            orig_bytes: bytes, repl_path: str, required_rig: str = 'any'
+                            orig_bytes: bytes,
+                            repl_path: str,
+                            required_rig: _AnimRequiredRig = 'any',
                         ) -> bytes:
                             from ..utils import log_buffer as _lb
                             from ..utils.anim_converter import (
@@ -2909,7 +3074,9 @@ class FleasionProxy:
                                 # For non-player animations (unknown rig) use the replacement's own
                                 # rig so no unwanted rig conversion is applied.
                                 if orig_rig == 'unknown':
-                                    target_rig = self.texture_stripper._detect_repl_rig(repl_path)
+                                    target_rig = _texture_detect_repl_rig(
+                                        self.texture_stripper, repl_path
+                                    )
                                     if target_rig == 'unknown':
                                         target_rig = 'R15'  # last resort default
                                 else:
@@ -2921,8 +3088,8 @@ class FleasionProxy:
                                         f'Replacement file not found: {repl_p.name}',
                                     )
                                     return orig_bytes
-                                conv_path = self.texture_stripper._get_or_create_converted_curve(
-                                    repl_path, target_rig
+                                conv_path = _texture_get_converted_curve(
+                                    self.texture_stripper, repl_path, target_rig
                                 )
                                 if conv_path:
                                     _lb.log(
@@ -2947,15 +3114,17 @@ class FleasionProxy:
                                 else (detect_player_rig(orig_bytes))
                             )
                             if conv_rig != 'unknown':
-                                repl_rig = self.texture_stripper._detect_repl_rig(repl_path)
+                                repl_rig = _texture_detect_repl_rig(
+                                    self.texture_stripper, repl_path
+                                )
                                 if repl_rig == 'unknown':
                                     _lb.log(
                                         'AnimConv',
                                         f'Rig detection unknown for replacement: {Path(repl_path).name}',
                                     )
                                 elif repl_rig != conv_rig:
-                                    conv = self.texture_stripper._get_or_create_converted(
-                                        repl_path, conv_rig
+                                    conv = _texture_get_converted(
+                                        self.texture_stripper, repl_path, conv_rig
                                     )
                                     if conv:
                                         final_path = conv
@@ -2989,11 +3158,7 @@ class FleasionProxy:
                             full_url, path, resp_body_for_cache, ct
                         )
 
-                elif (
-                    custom_fflag_response_enabled
-                    and 200 <= status_code < 300
-                    and resp_body_raw
-                ):
+                elif custom_fflag_response_enabled and 200 <= status_code < 300 and resp_body_raw:
                     content_encoding = resp_headers.get(b'content-encoding', b'').lower()
                     if content_encoding == b'dcz':
                         dictionary_sha256 = _dcz_dictionary_sha256(path)
@@ -3008,7 +3173,7 @@ class FleasionProxy:
                             else None
                         )
                         if resp_body_plain is None:
-                            self.custom_fflag_modifier.log_response_failure(
+                            custom_fflag_modifier.log_response_failure(
                                 'dcz-decode',
                                 'Could not decode dictionary-compressed ClientSettings; preserving original response',
                             )
@@ -3016,14 +3181,16 @@ class FleasionProxy:
                             (
                                 modified_settings,
                                 delivered_signature,
-                            ) = self.custom_fflag_modifier.modify_response_with_delivery(
+                            ) = custom_fflag_modifier.modify_response_with_delivery(
                                 path, resp_body_plain
                             )
                             if delivered_signature is not None:
                                 if modified_settings != resp_body_plain:
-                                    recompressed = _compress_dcz(modified_settings, dictionary)
+                                    recompressed = _compress_dcz(
+                                        modified_settings, cast('bytes', dictionary)
+                                    )
                                     if recompressed is None:
-                                        self.custom_fflag_modifier.log_response_failure(
+                                        custom_fflag_modifier.log_response_failure(
                                             'dcz-encode',
                                             'Could not re-encode dictionary-compressed ClientSettings; preserving original response',
                                         )
@@ -3039,7 +3206,7 @@ class FleasionProxy:
                         (
                             modified_settings,
                             delivered_signature,
-                        ) = self.custom_fflag_modifier.modify_response_with_delivery(
+                        ) = custom_fflag_modifier.modify_response_with_delivery(
                             path, resp_body_plain
                         )
                         if delivered_signature is not None:
@@ -3060,11 +3227,12 @@ class FleasionProxy:
                             _interceptor.response(_gamejoin_flow)
                         except Exception as _exc:
                             logger.debug('Module interceptor response error: %s', _exc)
+                    gamejoin_response = _flow_response_after_callbacks(_gamejoin_flow)
                     if (
-                        _gamejoin_flow.response is not None
-                        and _gamejoin_flow.response.content != _resp_body_plain
+                        gamejoin_response is not None
+                        and gamejoin_response.content != _resp_body_plain
                     ):
-                        resp_body_raw = _gamejoin_flow.response.content
+                        resp_body_raw = gamejoin_response.content
                         response_modified = True
                 elif (
                     host == PROFILE_API_HOST
@@ -3078,11 +3246,12 @@ class FleasionProxy:
                             _interceptor.response(_profile_flow)
                         except Exception as _exc:
                             logger.debug('Module interceptor response error: %s', _exc)
+                    profile_response = _flow_response_after_callbacks(_profile_flow)
                     if (
-                        _profile_flow.response is not None
-                        and _profile_flow.response.content != _resp_body_plain
+                        profile_response is not None
+                        and profile_response.content != _resp_body_plain
                     ):
-                        resp_body_raw = _profile_flow.response.content
+                        resp_body_raw = profile_response.content
                         response_modified = True
 
                 # Auto Replace runs last, on whatever body is about to be
@@ -3112,7 +3281,7 @@ class FleasionProxy:
                         modified_content_encoding = None
                         if (
                             custom_fflag_delivered_signature is not None
-                            and not self.custom_fflag_modifier.body_carries_signature(
+                            and not custom_fflag_modifier.body_carries_signature(
                                 resp_body_raw, custom_fflag_delivered_signature
                             )
                         ):
@@ -3132,7 +3301,7 @@ class FleasionProxy:
                     outgoing_response = _reassemble_raw_response(
                         resp_first, resp_headers, resp_body_raw
                     )
-                writer.write(outgoing_response)
+                response_writer.write(outgoing_response)
 
                 delivery_ack_deferred = False
                 if custom_fflag_delivered_signature is not None:
@@ -3140,28 +3309,25 @@ class FleasionProxy:
                     delivery_generation = custom_fflag_request_generation
 
                     def _ack_custom_fflag_delivery(
-                        signature=delivered_signature,
-                        generation=delivery_generation,
+                        signature: tuple[tuple[str, str], ...] = delivered_signature,
+                        generation: int | None = delivery_generation,
                     ) -> None:
-                        self.custom_fflag_modifier.note_response_success(
+                        custom_fflag_modifier.note_response_success(
                             signature,
                             generation=generation,
                         )
 
-                    delivery_ack_deferred = writer.defer_delivery_acknowledgement(
+                    delivery_ack_deferred = response_writer.defer_delivery_acknowledgement(
                         _ack_custom_fflag_delivery
                     )
 
                 try:
-                    await writer.drain()
+                    await response_writer.drain()
                 except ConnectionResetError, BrokenPipeError, OSError:
                     break
 
-                if (
-                    custom_fflag_delivered_signature is not None
-                    and not delivery_ack_deferred
-                ):
-                    self.custom_fflag_modifier.note_response_success(
+                if custom_fflag_delivered_signature is not None and not delivery_ack_deferred:
+                    custom_fflag_modifier.note_response_success(
                         custom_fflag_delivered_signature,
                         generation=custom_fflag_request_generation,
                     )
@@ -3172,7 +3338,7 @@ class FleasionProxy:
                     break
         finally:
             try:
-                await writer.flush_pending_response()
+                await response_writer.flush_pending_response()
             except Exception:
                 pass
             if up_writer is not None:

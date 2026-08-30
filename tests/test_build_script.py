@@ -1,12 +1,41 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pytest import MonkeyPatch
 
 from fleasion.scripts import build, macos_build
+
+
+def _version_tuple(value: str) -> tuple[int, int, int]:
+    callback = cast(
+        'Callable[[str], tuple[int, int, int]]',
+        getattr(macos_build.MacOSBuilder, '_version_tuple'),
+    )
+    return callback(value)
+
+
+def _verify_app_architectures(builder: macos_build.MacOSBuilder, app_path: Path) -> None:
+    callback = cast('Callable[[Path], None]', getattr(builder, '_verify_app_architectures'))
+    callback(app_path)
+
+
+def _build_arm64(builder: macos_build.MacOSBuilder) -> None:
+    callback = cast('Callable[[], None]', getattr(builder, '_build_arm64'))
+    callback()
+
+
+def _build_x86_64(builder: macos_build.MacOSBuilder) -> None:
+    callback = cast('Callable[[], None]', getattr(builder, '_build_x86_64'))
+    callback()
+
+
+def _slice_build_env() -> str:
+    return cast(str, macos_build.__dict__['_SLICE_BUILD_ENV'])
 
 
 def test_windows_packaging_uses_no_custom_python_runtime_hook() -> None:
@@ -97,8 +126,8 @@ def test_macos_slice_build_runs_pyinstaller_without_redispatch(monkeypatch: Monk
 
 
 def test_macos_versions_are_normalized_for_comparison() -> None:
-    assert macos_build.MacOSBuilder._version_tuple('11.0') == (11, 0, 0)
-    assert macos_build.MacOSBuilder._version_tuple('11.0.0') == (11, 0, 0)
+    assert _version_tuple('11.0') == (11, 0, 0)
+    assert _version_tuple('11.0.0') == (11, 0, 0)
 
 
 def test_macos_prerelease_paths_use_local_artifact_version(monkeypatch: MonkeyPatch) -> None:
@@ -166,9 +195,13 @@ def test_universal_verification_ignores_helper_symlink_targets(
     monkeypatch.setattr(builder, '_require_architectures', require_architectures)
     monkeypatch.setattr(builder, '_require_payload', require_payload)
     monkeypatch.setattr(builder, '_require_only_architectures', require_only_architectures)
-    monkeypatch.setattr(builder, '_regular_files', lambda _app_path: framework_helpers)
 
-    builder._verify_app_architectures(tmp_path)
+    def regular_files(_app_path: Path) -> list[Path]:
+        return framework_helpers
+
+    monkeypatch.setattr(builder, '_regular_files', regular_files)
+
+    _verify_app_architectures(builder, tmp_path)
 
 
 def test_arm_build_resolves_for_the_deployment_platform(monkeypatch: MonkeyPatch) -> None:
@@ -189,7 +222,7 @@ def test_arm_build_resolves_for_the_deployment_platform(monkeypatch: MonkeyPatch
     monkeypatch.setattr(builder, '_verify_slice', verify_slice)
     monkeypatch.setattr(macos_build, 'subprocess_run', subprocess_run)
 
-    builder._build_arm64()
+    _build_arm64(builder)
 
     assert commands[0] == (
         [
@@ -212,7 +245,7 @@ def test_arm_build_resolves_for_the_deployment_platform(monkeypatch: MonkeyPatch
     assert commands[1][1] == {
         'MACOSX_DEPLOYMENT_TARGET': '11.0',
         'MACOS_TARGET_ARCH': 'arm64',
-        macos_build._SLICE_BUILD_ENV: '1',
+        _slice_build_env(): '1',
     }
     assert verified_slices == [('arm64', 'Build')]
 
@@ -246,7 +279,7 @@ def test_x86_build_uses_the_project_python_pin(monkeypatch: MonkeyPatch, tmp_pat
     monkeypatch.setattr(builder, '_verify_slice', verify_slice)
     monkeypatch.setattr(macos_build, 'subprocess_run', subprocess_run)
 
-    builder._build_x86_64()
+    _build_x86_64(builder)
 
     assert uv_calls == [
         (

@@ -1,13 +1,28 @@
 import json
+from collections.abc import Callable
+from pathlib import Path
+from typing import cast
+
+import pytest
 
 from fleasion.utils import roblox_dirs
 
 
-def test_normalise_roblox_dir_rejects_embedded_null():
-    assert roblox_dirs._normalise_roblox_dir('/tmp/Roblox\x00bad') is None
+def _normalise_roblox_dir(value: str | Path) -> Path | None:
+    callback = cast(
+        'Callable[[str | Path], Path | None]',
+        roblox_dirs.__dict__['_normalise_roblox_dir'],
+    )
+    return callback(value)
 
 
-def test_load_saved_roblox_dirs_skips_malformed_entries_and_keeps_scanning(tmp_path, monkeypatch):
+def test_normalise_roblox_dir_rejects_embedded_null() -> None:
+    assert _normalise_roblox_dir('/tmp/Roblox\x00bad') is None
+
+
+def test_load_saved_roblox_dirs_skips_malformed_entries_and_keeps_scanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     valid = tmp_path / 'valid-roblox-resource-dir'
     (valid / 'content').mkdir(parents=True)
     cache_file = tmp_path / 'roblox_dirs.json'

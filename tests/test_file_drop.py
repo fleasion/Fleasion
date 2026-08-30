@@ -1,10 +1,22 @@
+from collections.abc import Callable
+from pathlib import Path
+from typing import cast
+
 from PySide6.QtCore import QDir, QMimeData, QUrl
 
 from fleasion.gui.file_drop import local_file_path_from_mime_data
-from fleasion.gui.modifications_tab import _relative_target_path_for_resource_file
+from fleasion.gui import modifications_tab as modifications_tab_module
 
 
-def test_local_file_path_from_mime_data_uses_native_path(tmp_path):
+def _relative_target_path_for_resource_file(path: Path, roblox_dirs: list[Path]) -> str | None:
+    callback = cast(
+        'Callable[[Path, list[Path]], str | None]',
+        modifications_tab_module.__dict__['_relative_target_path_for_resource_file'],
+    )
+    return callback(path, roblox_dirs)
+
+
+def test_local_file_path_from_mime_data_uses_native_path(tmp_path: Path) -> None:
     dropped_file = tmp_path / 'dropped file.txt'
     dropped_file.write_text('content', encoding='utf-8')
 
@@ -14,14 +26,14 @@ def test_local_file_path_from_mime_data_uses_native_path(tmp_path):
     assert local_file_path_from_mime_data(mime_data) == QDir.toNativeSeparators(str(dropped_file))
 
 
-def test_local_file_path_from_mime_data_ignores_non_local_urls():
+def test_local_file_path_from_mime_data_ignores_non_local_urls() -> None:
     mime_data = QMimeData()
     mime_data.setUrls([QUrl('https://example.com/file.txt')])
 
     assert local_file_path_from_mime_data(mime_data) is None
 
 
-def test_relative_target_path_for_resource_file_requires_known_roblox_root(tmp_path):
+def test_relative_target_path_for_resource_file_requires_known_roblox_root(tmp_path: Path) -> None:
     resources = tmp_path / 'Roblox.app' / 'Contents' / 'Resources'
     target = resources / 'content' / 'sounds' / 'oof.ogg'
     target.parent.mkdir(parents=True)

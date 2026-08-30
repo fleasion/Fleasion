@@ -3,12 +3,43 @@
 Based on the specification at http://dom.rojo.space/binary.html
 """
 
-import struct
-import zlib
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from __future__ import annotations
 
-import lz4.block
+import struct
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol, TypedDict
+
+
+class _Lz4Block(Protocol):
+    def decompress(self, data: bytes, *, uncompressed_size: int = 0) -> bytes: ...
+
+
+if TYPE_CHECKING:
+    lz4_block: _Lz4Block
+else:
+    import lz4.block as lz4_block
+
+
+class CFrameValue(TypedDict):
+    position: tuple[float, float, float]
+    rotation: list[int | float]
+
+
+type PropertyValue = str | bool | int | float | CFrameValue | None
+
+
+if TYPE_CHECKING:
+
+    def _property_values(
+        value: list[int] | list[float] | list[CFrameValue],
+    ) -> list[PropertyValue]: ...
+else:
+
+    def _property_values(
+        value: list[int] | list[float] | list[CFrameValue],
+    ) -> list[PropertyValue]:
+        return value
+
 
 # Magic header for RBXM files
 RBXM_MAGIC = b'<roblox!'
@@ -21,17 +52,21 @@ class RbxmInstance:
 
     class_name: str
     referent: int
-    properties: Dict[str, Any] = field(default_factory=dict)
-    children: List['RbxmInstance'] = field(default_factory=list)
-    parent: Optional['RbxmInstance'] = None
+    properties: dict[str, PropertyValue] = field(default_factory=dict[str, PropertyValue])
+    children: list[RbxmInstance] = field(default_factory=lambda: [])
+    parent: RbxmInstance | None = None
 
 
-def decode_interleaved_i32(data: bytes, count: int) -> List[int]:
+type ClassInfo = dict[int, tuple[str, list[int]]]
+type InstanceMap = dict[int, RbxmInstance]
+
+
+def decode_interleaved_i32(data: bytes, count: int) -> list[int]:
     """Decode interleaved 32-bit integers."""
     if len(data) < count * 4:
         return []
 
-    result = []
+    result: list[int] = []
     for i in range(count):
         # De-interleave: bytes are stored column-wise
         b0 = data[i]
@@ -53,12 +88,12 @@ def decode_interleaved_i32(data: bytes, count: int) -> List[int]:
     return result
 
 
-def decode_interleaved_f32(data: bytes, count: int) -> List[float]:
+def decode_interleaved_f32(data: bytes, count: int) -> list[float]:
     """Decode interleaved 32-bit floats with Roblox's custom encoding."""
     if len(data) < count * 4:
         return []
 
-    result = []
+    result: list[float] = []
     for i in range(count):
         # De-interleave
         b0 = data[i]
@@ -79,7 +114,7 @@ def decode_interleaved_f32(data: bytes, count: int) -> List[float]:
     return result
 
 
-def read_string(data: bytes, offset: int) -> Tuple[str, int]:
+def read_string(data: bytes, offset: int) -> tuple[str, int]:
     """Read a length-prefixed string."""
     length = struct.unpack_from('<I', data, offset)[0]
     offset += 4
@@ -93,18 +128,19 @@ def decompress_chunk(data: bytes, compressed_size: int, uncompressed_size: int) 
         return data[:uncompressed_size]
 
     try:
-        return lz4.block.decompress(data[:compressed_size], uncompressed_size=uncompressed_size)
+        return lz4_block.decompress(data[:compressed_size], uncompressed_size=uncompressed_size)
     except Exception:
         # Try without size hint
         try:
-            return lz4.block.decompress(data[:compressed_size])
+            return lz4_block.decompress(data[:compressed_size])
         except Exception:
             # Return raw data if decompression fails
             return data[:compressed_size]
 
 
 # Predefined CFrame rotation matrices (IDs 0x02-0x17)
-CFRAME_ROTATIONS = {
+_IDENTITY_ROTATION: list[int | float] = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+CFRAME_ROTATIONS: dict[int, list[int | float]] = {
     0x02: [1, 0, 0, 0, 1, 0, 0, 0, 1],
     0x03: [1, 0, 0, 0, 0, -1, 0, 1, 0],
     0x04: [1, 0, 0, 0, -1, 0, 0, 0, -1],
@@ -132,7 +168,7 @@ CFRAME_ROTATIONS = {
 }
 
 
-def parse_rbxm(data: bytes) -> Dict[int, RbxmInstance]:
+def parse_rbxm(data: bytes) -> dict[int, RbxmInstance]:
     """
     Parse RBXM binary data.
 
@@ -147,25 +183,25 @@ def parse_rbxm(data: bytes) -> Dict[int, RbxmInstance]:
 
     # Parse header
     offset = 8
-    signature = data[offset : offset + 6]
+    _signature = data[offset : offset + 6]
     offset += 6
 
-    version = struct.unpack_from('<H', data, offset)[0]
+    _version = struct.unpack_from('<H', data, offset)[0]
     offset += 2
 
-    class_count = struct.unpack_from('<i', data, offset)[0]
+    _class_count = struct.unpack_from('<i', data, offset)[0]
     offset += 4
 
-    instance_count = struct.unpack_from('<i', data, offset)[0]
+    _instance_count = struct.unpack_from('<i', data, offset)[0]
     offset += 4
 
     # Skip reserved bytes
     offset += 8
 
     # Storage for parsing
-    class_info: Dict[int, Tuple[str, List[int]]] = {}  # class_id -> (class_name, referents)
-    instances: Dict[int, RbxmInstance] = {}  # referent -> instance
-    parent_refs: Dict[int, int] = {}  # child_ref -> parent_ref
+    class_info: ClassInfo = {}  # class_id -> (class_name, referents)
+    instances: InstanceMap = {}  # referent -> instance
+    parent_refs: dict[int, int] = {}  # child_ref -> parent_ref
 
     # Parse chunks
     while offset < len(data):
@@ -182,7 +218,7 @@ def parse_rbxm(data: bytes) -> Dict[int, RbxmInstance]:
         uncompressed_size = struct.unpack_from('<I', data, offset)[0]
         offset += 4
 
-        reserved = struct.unpack_from('<I', data, offset)[0]
+        _reserved = struct.unpack_from('<I', data, offset)[0]
         offset += 4
 
         # Get chunk data
@@ -215,7 +251,7 @@ def parse_rbxm(data: bytes) -> Dict[int, RbxmInstance]:
     return instances
 
 
-def _parse_inst_chunk(data: bytes, class_info: Dict, instances: Dict):
+def _parse_inst_chunk(data: bytes, class_info: ClassInfo, instances: InstanceMap) -> None:
     """Parse an INST chunk."""
     offset = 0
 
@@ -224,7 +260,7 @@ def _parse_inst_chunk(data: bytes, class_info: Dict, instances: Dict):
 
     class_name, offset = read_string(data, offset)
 
-    object_format = data[offset]
+    _object_format = data[offset]
     offset += 1
 
     instance_count = struct.unpack_from('<I', data, offset)[0]
@@ -235,7 +271,7 @@ def _parse_inst_chunk(data: bytes, class_info: Dict, instances: Dict):
     referent_deltas = decode_interleaved_i32(referents_data, instance_count)
 
     # Convert deltas to absolute referents
-    referents = []
+    referents: list[int] = []
     current = 0
     for delta in referent_deltas:
         current += delta
@@ -248,7 +284,7 @@ def _parse_inst_chunk(data: bytes, class_info: Dict, instances: Dict):
         instances[ref] = RbxmInstance(class_name=class_name, referent=ref)
 
 
-def _parse_prop_chunk(data: bytes, class_info: Dict, instances: Dict):
+def _parse_prop_chunk(data: bytes, class_info: ClassInfo, instances: InstanceMap) -> None:
     """Parse a PROP chunk."""
     offset = 0
 
@@ -263,7 +299,7 @@ def _parse_prop_chunk(data: bytes, class_info: Dict, instances: Dict):
     if class_id not in class_info:
         return
 
-    class_name, referents = class_info[class_id]
+    _class_name, referents = class_info[class_id]
     count = len(referents)
 
     if count == 0:
@@ -278,9 +314,9 @@ def _parse_prop_chunk(data: bytes, class_info: Dict, instances: Dict):
             instances[ref].properties[prop_name] = values[i]
 
 
-def _parse_prop_values(data: bytes, type_id: int, count: int) -> List[Any]:
+def _parse_prop_values(data: bytes, type_id: int, count: int) -> list[PropertyValue]:
     """Parse property values based on type ID."""
-    values = []
+    values: list[PropertyValue] = []
 
     if type_id == 0x01:  # String
         offset = 0
@@ -299,10 +335,10 @@ def _parse_prop_values(data: bytes, type_id: int, count: int) -> List[Any]:
                 values.append(False)
 
     elif type_id == 0x03:  # Int32
-        values = decode_interleaved_i32(data, count)
+        values = _property_values(decode_interleaved_i32(data, count))
 
     elif type_id == 0x04:  # Float32
-        values = decode_interleaved_f32(data, count)
+        values = _property_values(decode_interleaved_f32(data, count))
 
     elif type_id == 0x05:  # Float64
         for i in range(count):
@@ -313,7 +349,7 @@ def _parse_prop_values(data: bytes, type_id: int, count: int) -> List[Any]:
                 values.append(0.0)
 
     elif type_id == 0x10:  # CFrame
-        values = _parse_cframes(data, count)
+        values = _property_values(_parse_cframes(data, count))
 
     else:
         # Unknown type, return empty values
@@ -322,11 +358,11 @@ def _parse_prop_values(data: bytes, type_id: int, count: int) -> List[Any]:
     return values
 
 
-def _parse_cframes(data: bytes, count: int) -> List[Dict]:
+def _parse_cframes(data: bytes, count: int) -> list[CFrameValue]:
     """Parse CFrame values."""
     offset = 0
-    cframes = []
-    rotation_data = []
+    cframes: list[CFrameValue] = []
+    rotation_data: list[tuple[int, list[int | float]]] = []
 
     # First, read rotation IDs and custom rotations
     for _ in range(count):
@@ -343,11 +379,11 @@ def _parse_cframes(data: bytes, count: int) -> List[Dict]:
                 rot = list(struct.unpack_from('<9f', data, offset))
                 offset += 36
             else:
-                rot = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+                rot = list(_IDENTITY_ROTATION)
             rotation_data.append((rot_id, rot))
         else:
             # Predefined rotation
-            rot = CFRAME_ROTATIONS.get(rot_id, [1, 0, 0, 0, 1, 0, 0, 0, 1])
+            rot = CFRAME_ROTATIONS.get(rot_id, _IDENTITY_ROTATION)
             rotation_data.append((rot_id, rot))
 
     # Now read positions (interleaved Vector3s = 3 * count floats)
@@ -369,7 +405,7 @@ def _parse_cframes(data: bytes, count: int) -> List[Dict]:
     return cframes
 
 
-def _parse_prnt_chunk(data: bytes, instances: Dict, parent_refs: Dict):
+def _parse_prnt_chunk(data: bytes, instances: InstanceMap, parent_refs: dict[int, int]) -> None:
     """Parse a PRNT chunk."""
     offset = 0
 
@@ -387,8 +423,8 @@ def _parse_prnt_chunk(data: bytes, instances: Dict, parent_refs: Dict):
     parents = decode_interleaved_i32(data[offset:], count)
 
     # Convert deltas to absolute values
-    child_refs = []
-    parent_ref_list = []
+    child_refs: list[int] = []
+    parent_ref_list: list[int] = []
 
     child_current = 0
     parent_current = 0
@@ -404,11 +440,11 @@ def _parse_prnt_chunk(data: bytes, instances: Dict, parent_refs: Dict):
         parent_refs[child_refs[i]] = parent_ref_list[i]
 
 
-def get_root_instances(instances: Dict[int, RbxmInstance]) -> List[RbxmInstance]:
+def get_root_instances(instances: dict[int, RbxmInstance]) -> list[RbxmInstance]:
     """Get all root instances (those without parents)."""
     return [inst for inst in instances.values() if inst.parent is None]
 
 
-def find_by_class(instances: Dict[int, RbxmInstance], class_name: str) -> List[RbxmInstance]:
+def find_by_class(instances: dict[int, RbxmInstance], class_name: str) -> list[RbxmInstance]:
     """Find all instances of a given class."""
     return [inst for inst in instances.values() if inst.class_name == class_name]

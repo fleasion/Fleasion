@@ -1,7 +1,6 @@
 """RBXM/RBXMX structure preview widget."""
 
 from __future__ import annotations
-from ..localization import tr, verbatim
 
 import base64
 import gzip
@@ -9,10 +8,11 @@ import html
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
+from PySide6.QtGui import QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -37,8 +37,71 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .roblox_class_names import ROBLOX_CLASS_NAME_SET, ROBLOX_CLASS_NAMES
+from ..localization import tr, verbatim
 from .roblox_document import classify_roblox_document
+
+if TYPE_CHECKING:
+    from .tools.solidmodel_converter.rbxm.types import (
+        PropertyFormat,
+        RbxDocument,
+        RbxInstance,
+        RbxRawChunk,
+        RbxRawPropertyChunk,
+    )
+
+
+type NumberCaster = type[int] | type[float]
+
+
+if TYPE_CHECKING:
+
+    def _class_names() -> tuple[str, ...]: ...
+
+    def _class_name_set() -> frozenset[str]: ...
+
+    def _mouse_event(event: QEvent) -> QMouseEvent: ...
+
+    def _tree_item(value: QTreeWidgetItem | None) -> QTreeWidgetItem: ...
+
+    def _clear_current_item(tree: QTreeWidget) -> None: ...
+
+    def _table_item(value: QTableWidgetItem | None) -> QTableWidgetItem: ...
+
+    def _as_object_dict(value: object) -> dict[str, object] | None: ...
+
+    def _as_object_list(value: object) -> list[object] | None: ...
+
+    def _float_value(value: object) -> float: ...
+else:
+    from .roblox_class_names import ROBLOX_CLASS_NAME_SET, ROBLOX_CLASS_NAMES
+
+    def _class_names() -> tuple[str, ...]:
+        return ROBLOX_CLASS_NAMES
+
+    def _class_name_set() -> frozenset[str]:
+        return ROBLOX_CLASS_NAME_SET
+
+    def _mouse_event(event: QEvent) -> QMouseEvent:
+        return event
+
+    def _tree_item(value: QTreeWidgetItem | None) -> QTreeWidgetItem:
+        return value
+
+    def _clear_current_item(tree: QTreeWidget) -> None:
+        tree.setCurrentItem(None)
+
+    def _table_item(value: QTableWidgetItem | None) -> QTableWidgetItem:
+        return value
+
+    def _as_object_dict(value: object) -> dict[str, object] | None:
+        return value if isinstance(value, dict) else None
+
+    def _as_object_list(value: object) -> list[object] | None:
+        return value if isinstance(value, list) else None
+
+    def _float_value(value: object) -> float:
+        return float(value)
+
 
 _COPY_VALUE_ROLE = Qt.ItemDataRole.UserRole
 _ROW_KIND_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -49,7 +112,7 @@ _PROP_OBJECT_ROLE = Qt.ItemDataRole.UserRole + 2
 class PreviewProperty:
     name: str
     type_name: str
-    value: Any
+    value: object
 
 
 @dataclass
@@ -57,8 +120,8 @@ class PreviewInstance:
     class_name: str
     referent: str
     name: str = ''
-    properties: list[PreviewProperty] = field(default_factory=list)
-    children: list['PreviewInstance'] = field(default_factory=list)
+    properties: list[PreviewProperty] = field(default_factory=list[PreviewProperty])
+    children: list[PreviewInstance] = field(default_factory=lambda: [])
 
     def label(self) -> str:
         if self.name:
@@ -70,20 +133,20 @@ class PreviewInstance:
 class PreviewDocument:
     roots: list[PreviewInstance]
     instances: dict[str, PreviewInstance]
-    metadata: dict[str, str] = field(default_factory=dict)
-    shared_strings: list[bytes] = field(default_factory=list)
-    raw_property_chunks: list[Any] = field(default_factory=list)
-    raw_chunks: list[Any] = field(default_factory=list)
+    metadata: dict[str, str] = field(default_factory=dict[str, str])
+    shared_strings: list[bytes] = field(default_factory=list[bytes])
+    raw_property_chunks: list[RbxRawPropertyChunk] = field(default_factory=lambda: [])
+    raw_chunks: list[RbxRawChunk] = field(default_factory=lambda: [])
 
 
 class ClassNameDialog(QDialog):
     """Searchable picker for Roblox engine class names."""
 
-    def __init__(self, current: str = 'Folder', parent=None):
+    def __init__(self, current: str = 'Folder', parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.cache.rbxm_preview.choose_classname'))
         self.resize(360, 460)
-        self._selected = current if current in ROBLOX_CLASS_NAME_SET else 'Folder'
+        self._selected = current if current in _class_name_set() else 'Folder'
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -115,7 +178,7 @@ class ClassNameDialog(QDialog):
         query = query.strip().lower()
         current = self.selected_class_name()
         self.list_widget.clear()
-        for class_name in ROBLOX_CLASS_NAMES:
+        for class_name in _class_names():
             if query and query not in class_name.lower():
                 continue
             self.list_widget.addItem(QListWidgetItem(class_name))
@@ -148,7 +211,7 @@ def _tag_name(elem: ET.Element) -> str:
 class RbxmPreviewWidget(QWidget):
     """Preview Roblox model structure and properties."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.document: PreviewDocument | None = None
         self._item_to_instance: dict[int, PreviewInstance] = {}
@@ -162,7 +225,7 @@ class RbxmPreviewWidget(QWidget):
         self._asset_label = ''
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -341,20 +404,20 @@ class RbxmPreviewWidget(QWidget):
         self._dirty = False
         self._asset_label = ''
 
-    def tree_expand_all(self):
+    def tree_expand_all(self) -> None:
         self.tree.expandAll()
 
-    def tree_collapse_all(self):
+    def tree_collapse_all(self) -> None:
         self.tree.collapseAll()
 
-    def eventFilter(self, source, event):
+    def eventFilter(self, source: QObject, event: QEvent) -> bool:
         if (
             source is self.tree.viewport()
             and event.type() == QEvent.Type.MouseButtonPress
-            and self.tree.itemAt(event.position().toPoint()) is None
+            and self.tree.itemAt(_mouse_event(event).position().toPoint()) is None
         ):
             self.tree.clearSelection()
-            self.tree.setCurrentItem(None)
+            _clear_current_item(self.tree)
             self.properties_table.setRowCount(0)
         return super().eventFilter(source, event)
 
@@ -364,7 +427,7 @@ class RbxmPreviewWidget(QWidget):
         raw_doc = RbxmDeserializer().deserialize(data)
         instances: dict[str, PreviewInstance] = {}
 
-        def convert(inst) -> PreviewInstance:
+        def convert(inst: RbxInstance) -> PreviewInstance:
             ref = str(inst.referent)
             existing = instances.get(ref)
             if existing is not None:
@@ -372,10 +435,11 @@ class RbxmPreviewWidget(QWidget):
             props: list[PreviewProperty] = []
             name = ''
             for prop_name, prop in inst.properties.items():
-                type_name = getattr(prop.fmt, 'name', str(prop.fmt))
-                props.append(PreviewProperty(prop_name, type_name, prop.value))
-                if prop_name == 'Name' and isinstance(prop.value, str):
-                    name = prop.value
+                type_name = prop.fmt.name
+                prop_value: object = prop.value
+                props.append(PreviewProperty(prop_name, type_name, prop_value))
+                if prop_name == 'Name' and isinstance(prop_value, str):
+                    name = prop_value
             preview = PreviewInstance(inst.class_name, ref, name, props)
             instances[ref] = preview
             preview.children = [convert(child) for child in inst.children]
@@ -416,7 +480,7 @@ class RbxmPreviewWidget(QWidget):
             prop_name = elem.get('name') or ''
             type_name = _tag_name(elem)
             text = elem.text or ''
-            value: Any
+            value: object
             if type_name == 'SharedString':
                 value = shared_by_md5.get(text.strip(), b'')
             elif type_name in ('BinaryString', 'ProtectedString'):
@@ -491,7 +555,7 @@ class RbxmPreviewWidget(QWidget):
         )
 
         if self.tree.topLevelItemCount():
-            first = self.tree.topLevelItem(0)
+            first = _tree_item(self.tree.topLevelItem(0))
             self.tree.setCurrentItem(first)
             first.setExpanded(True)
         self._on_search_changed(self.search_input.text())
@@ -518,7 +582,7 @@ class RbxmPreviewWidget(QWidget):
 
     def _on_tree_selection_changed(
         self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None
-    ):
+    ) -> None:
         self.properties_table.setRowCount(0)
         if current is None:
             return
@@ -588,13 +652,12 @@ class RbxmPreviewWidget(QWidget):
         if inst is None:
             return
 
-        row = item.row()
         col = item.column()
         kind = item.data(_ROW_KIND_ROLE)
 
         if kind == 'class_name' and col == 1:
             class_name = item.text().strip() or verbatim('Folder')
-            if class_name not in ROBLOX_CLASS_NAME_SET:
+            if class_name not in _class_name_set():
                 QMessageBox.warning(
                     self,
                     tr('ui.cache.rbxm_preview.invalid_classname'),
@@ -660,7 +723,7 @@ class RbxmPreviewWidget(QWidget):
         self._set_dirty(True)
         self._refresh_selected_properties()
 
-    def _show_tree_context_menu(self, position) -> None:
+    def _show_tree_context_menu(self, position: QPoint) -> None:
         menu = QMenu(self)
         current = self.tree.itemAt(position)
         if current is not None:
@@ -683,7 +746,7 @@ class RbxmPreviewWidget(QWidget):
         elif action == delete_action and current is not None:
             self._delete_instance(current)
 
-    def _show_property_context_menu(self, position) -> None:
+    def _show_property_context_menu(self, position: QPoint) -> None:
         menu = QMenu(self)
         add_action = menu.addAction(tr('ui.cache.rbxm_preview.add_property'))
         copy_action = menu.addAction(tr('ui.cache.rbxm_preview.copy_value'))
@@ -692,10 +755,9 @@ class RbxmPreviewWidget(QWidget):
         row = self.properties_table.rowAt(position.y())
         if row >= 0:
             self.properties_table.selectRow(row)
+        property_item = self.properties_table.item(row, 0) if row >= 0 else None
         kind = (
-            self.properties_table.item(row, 0).data(_ROW_KIND_ROLE)
-            if row >= 0 and self.properties_table.item(row, 0)
-            else None
+            _table_item(property_item).data(_ROW_KIND_ROLE) if property_item is not None else None
         )
         delete_action.setEnabled(kind == 'property')
 
@@ -926,13 +988,12 @@ class RbxmPreviewWidget(QWidget):
 
         return write_rbxmx(self._to_rbx_document(document))
 
-    def _to_rbx_document(self, document: PreviewDocument | None = None):
+    def _to_rbx_document(self, document: PreviewDocument | None = None) -> RbxDocument:
         source_doc = document or self.document
         if source_doc is None:
             raise ValueError('No RBXM/RBXMX document is loaded')
 
         from .tools.solidmodel_converter.rbxm.types import (
-            PropertyFormat,
             RbxDocument,
             RbxInstance,
             RbxMetadata,
@@ -988,7 +1049,7 @@ class RbxmPreviewWidget(QWidget):
         )
 
     @staticmethod
-    def _property_format_from_type_name(type_name: str):
+    def _property_format_from_type_name(type_name: str) -> PropertyFormat | None:
         from .tools.solidmodel_converter.rbxm.types import (
             PROPERTY_FORMAT_TO_XML_TAG,
             PropertyFormat,
@@ -1018,7 +1079,12 @@ class RbxmPreviewWidget(QWidget):
             return aliases[key]
         return tag_to_format.get(key, PropertyFormat.STRING)
 
-    def _value_for_format(self, value: Any, fmt, ref_mapper=None) -> Any:
+    def _value_for_format(
+        self,
+        value: object,
+        fmt: PropertyFormat,
+        ref_mapper: Callable[[str], int] | None = None,
+    ) -> object:
         from .tools.solidmodel_converter.rbxm.types import PropertyFormat
 
         if fmt in {
@@ -1037,8 +1103,9 @@ class RbxmPreviewWidget(QWidget):
         if fmt == PropertyFormat.REF:
             if value is None:
                 return None
-            if isinstance(value, dict):
-                value = value.get('Ref') or value.get('referent') or value.get('id')
+            value_map = _as_object_dict(value)
+            if value_map is not None:
+                value = value_map.get('Ref') or value_map.get('referent') or value_map.get('id')
             text = str(value or '').strip()
             if text in {'', 'None', '-1', 'null'}:
                 return None
@@ -1048,7 +1115,10 @@ class RbxmPreviewWidget(QWidget):
                 return ref_mapper(text)
             return self._safe_int(text)
         if fmt == PropertyFormat.UNIQUE_ID:
-            if isinstance(value, dict) or isinstance(value, bytes):
+            value_map = _as_object_dict(value)
+            if value_map is not None:
+                return value_map
+            if isinstance(value, bytes):
                 return value
             text = str(value).strip().replace('-', '')
             if len(text) == 32:
@@ -1064,11 +1134,12 @@ class RbxmPreviewWidget(QWidget):
                     pass
             return {'Index': 0, 'Time': 0, 'Random': 0}
         if fmt == PropertyFormat.CONTENT:
-            if isinstance(value, dict):
-                uri = value.get('Uri') or value.get('uri') or value.get('url')
+            value_map = _as_object_dict(value)
+            if value_map is not None:
+                uri = value_map.get('Uri') or value_map.get('uri') or value_map.get('url')
                 if uri:
                     return {'SourceType': 'Uri', 'Uri': str(uri)}
-                ref = value.get('Ref')
+                ref = value_map.get('Ref')
                 if ref is not None:
                     return {
                         'SourceType': 'Object',
@@ -1076,9 +1147,9 @@ class RbxmPreviewWidget(QWidget):
                         if ref_mapper is not None
                         else self._safe_int(ref),
                     }
-                if 'null' in value:
+                if 'null' in value_map:
                     return None
-                return value
+                return value_map
             if value is None:
                 return value
             text = str(value)
@@ -1117,7 +1188,7 @@ class RbxmPreviewWidget(QWidget):
             return self._parse_font_value(value)
         return value
 
-    def _value_is_editable(self, value: Any, type_name: str) -> bool:
+    def _value_is_editable(self, value: object, type_name: str) -> bool:
         from .tools.solidmodel_converter.rbxm.types import PropertyFormat
 
         fmt = self._property_format_from_type_name(type_name)
@@ -1134,7 +1205,7 @@ class RbxmPreviewWidget(QWidget):
             return False
         return True
 
-    def _parse_edited_value(self, text: str, type_name: str, old_value: Any) -> Any:
+    def _parse_edited_value(self, text: str, type_name: str, old_value: object) -> object:
         if not self._value_is_editable(old_value, type_name):
             return old_value
         fmt = self._property_format_from_type_name(type_name)
@@ -1151,7 +1222,7 @@ class RbxmPreviewWidget(QWidget):
         return self._value_for_format(text, fmt)
 
     @staticmethod
-    def _default_preview_value(type_name: str) -> Any:
+    def _default_preview_value(type_name: str) -> object:
         key = type_name.strip().upper()
         compact_key = key.replace('_', '')
         if key in {'BOOL'}:
@@ -1213,12 +1284,12 @@ class RbxmPreviewWidget(QWidget):
             return {'Family': '', 'Weight': 400, 'Style': 0, 'CachedFaceId': ''}
         return ''
 
-    def _parse_udim_value(self, value: Any) -> dict[str, float | int]:
-        if isinstance(value, dict):
-            pairs = {str(k): v for k, v in value.items()}
+    def _parse_udim_value(self, value: object) -> dict[str, float | int]:
+        value_map = _as_object_dict(value)
+        if value_map is not None:
             return {
-                'S': self._safe_float(pairs.get('S', 0.0)),
-                'O': self._safe_int(pairs.get('O', 0)),
+                'S': self._safe_float(value_map.get('S', 0.0)),
+                'O': self._safe_int(value_map.get('O', 0)),
             }
         pairs = self._parse_key_values(str(value))
         if pairs:
@@ -1232,9 +1303,11 @@ class RbxmPreviewWidget(QWidget):
             'O': int(numbers[1]) if len(numbers) > 1 else 0,
         }
 
-    def _parse_udim2_value(self, value: Any) -> dict[str, float | int]:
-        if isinstance(value, dict):
-            pairs = {str(k): v for k, v in value.items()}
+    def _parse_udim2_value(self, value: object) -> dict[str, float | int]:
+        value_map = _as_object_dict(value)
+        pairs: dict[str, object] | dict[str, str]
+        if value_map is not None:
+            pairs = value_map
         else:
             pairs = self._parse_key_values(str(value))
         if pairs:
@@ -1252,9 +1325,13 @@ class RbxmPreviewWidget(QWidget):
             'YO': int(numbers[3]) if len(numbers) > 3 else 0,
         }
 
-    def _parse_vector_value(self, value: Any, keys: tuple[str, ...], caster) -> dict[str, Any]:
-        if isinstance(value, dict):
-            pairs = {str(k): v for k, v in value.items()}
+    def _parse_vector_value(
+        self, value: object, keys: tuple[str, ...], caster: NumberCaster
+    ) -> dict[str, int | float]:
+        value_map = _as_object_dict(value)
+        pairs: dict[str, object] | dict[str, str]
+        if value_map is not None:
+            pairs = value_map
         else:
             pairs = self._parse_key_values(str(value))
         if pairs:
@@ -1265,10 +1342,13 @@ class RbxmPreviewWidget(QWidget):
             for index, key in enumerate(keys)
         }
 
-    def _parse_ray_value(self, value: Any) -> dict[str, dict[str, float]]:
-        if isinstance(value, dict):
-            origin = self._parse_vector_value(value.get('origin', {}), ('X', 'Y', 'Z'), float)
-            direction = self._parse_vector_value(value.get('direction', {}), ('X', 'Y', 'Z'), float)
+    def _parse_ray_value(self, value: object) -> dict[str, dict[str, float]]:
+        value_map = _as_object_dict(value)
+        if value_map is not None:
+            origin = self._parse_vector_value(value_map.get('origin', {}), ('X', 'Y', 'Z'), float)
+            direction = self._parse_vector_value(
+                value_map.get('direction', {}), ('X', 'Y', 'Z'), float
+            )
             return {'origin': origin, 'direction': direction}
         numbers = self._parse_numbers(str(value))
         padded = numbers + [0.0] * max(0, 6 - len(numbers))
@@ -1277,7 +1357,9 @@ class RbxmPreviewWidget(QWidget):
             'direction': {'X': padded[3], 'Y': padded[4], 'Z': padded[5]},
         }
 
-    def _parse_cframe_value(self, value: Any, old_value: Any = None) -> dict[str, float] | None:
+    def _parse_cframe_value(
+        self, value: object, old_value: object = None
+    ) -> dict[str, float] | None:
         text = str(value).strip()
         if value is None or text.lower() in {'', 'none', 'null'}:
             return None
@@ -1296,12 +1378,14 @@ class RbxmPreviewWidget(QWidget):
             'R21': 0.0,
             'R22': 1.0,
         }
-        if isinstance(old_value, dict):
+        old_map = _as_object_dict(old_value)
+        if old_map is not None:
+            result.update({key: self._safe_float(old_map.get(key, result[key])) for key in result})
+        value_map = _as_object_dict(value)
+        if value_map is not None:
             result.update(
-                {key: self._safe_float(old_value.get(key, result[key])) for key in result}
+                {key: self._safe_float(value_map.get(key, result[key])) for key in result}
             )
-        if isinstance(value, dict):
-            result.update({key: self._safe_float(value.get(key, result[key])) for key in result})
             return result
 
         pairs = self._parse_key_values(text)
@@ -1319,11 +1403,12 @@ class RbxmPreviewWidget(QWidget):
             result['X'], result['Y'], result['Z'] = numbers[:3]
         return result
 
-    def _parse_number_range_value(self, value: Any) -> dict[str, float]:
-        if isinstance(value, dict):
+    def _parse_number_range_value(self, value: object) -> dict[str, float]:
+        value_map = _as_object_dict(value)
+        if value_map is not None:
             return {
-                'Min': self._safe_float(value.get('Min', 0.0)),
-                'Max': self._safe_float(value.get('Max', 0.0)),
+                'Min': self._safe_float(value_map.get('Min', 0.0)),
+                'Max': self._safe_float(value_map.get('Max', 0.0)),
             }
         pairs = self._parse_key_values(str(value))
         if pairs:
@@ -1337,11 +1422,12 @@ class RbxmPreviewWidget(QWidget):
             'Max': numbers[1] if len(numbers) > 1 else 0.0,
         }
 
-    def _parse_rect2d_value(self, value: Any) -> dict[str, dict[str, float]]:
-        if isinstance(value, dict):
+    def _parse_rect2d_value(self, value: object) -> dict[str, dict[str, float]]:
+        value_map = _as_object_dict(value)
+        if value_map is not None:
             return {
-                'min': self._parse_vector_value(value.get('min', {}), ('X', 'Y'), float),
-                'max': self._parse_vector_value(value.get('max', {}), ('X', 'Y'), float),
+                'min': self._parse_vector_value(value_map.get('min', {}), ('X', 'Y'), float),
+                'max': self._parse_vector_value(value_map.get('max', {}), ('X', 'Y'), float),
             }
         numbers = self._parse_numbers(str(value))
         padded = numbers + [0.0] * max(0, 4 - len(numbers))
@@ -1350,19 +1436,20 @@ class RbxmPreviewWidget(QWidget):
             'max': {'X': padded[2], 'Y': padded[3]},
         }
 
-    def _parse_physical_properties_value(self, value: Any) -> dict[str, Any] | None:
+    def _parse_physical_properties_value(self, value: object) -> dict[str, bool | float] | None:
         text = str(value).strip()
         if value is None or text.lower() in {'', 'none', 'null', 'default'}:
             return None
-        if isinstance(value, dict):
+        value_map = _as_object_dict(value)
+        if value_map is not None:
             return {
-                'CustomPhysics': self._safe_bool(value.get('CustomPhysics', True)),
-                'Density': self._safe_float(value.get('Density', 0.0)),
-                'Friction': self._safe_float(value.get('Friction', 0.0)),
-                'Elasticity': self._safe_float(value.get('Elasticity', 0.0)),
-                'FrictionWeight': self._safe_float(value.get('FrictionWeight', 0.0)),
-                'ElasticityWeight': self._safe_float(value.get('ElasticityWeight', 0.0)),
-                'AcousticAbsorption': self._safe_float(value.get('AcousticAbsorption', 1.0)),
+                'CustomPhysics': self._safe_bool(value_map.get('CustomPhysics', True)),
+                'Density': self._safe_float(value_map.get('Density', 0.0)),
+                'Friction': self._safe_float(value_map.get('Friction', 0.0)),
+                'Elasticity': self._safe_float(value_map.get('Elasticity', 0.0)),
+                'FrictionWeight': self._safe_float(value_map.get('FrictionWeight', 0.0)),
+                'ElasticityWeight': self._safe_float(value_map.get('ElasticityWeight', 0.0)),
+                'AcousticAbsorption': self._safe_float(value_map.get('AcousticAbsorption', 1.0)),
             }
         pairs = self._parse_key_values(text)
         if pairs:
@@ -1370,7 +1457,7 @@ class RbxmPreviewWidget(QWidget):
         numbers = self._parse_numbers(text)
         if len(numbers) < 5:
             return None
-        value_dict: dict[str, Any] = {
+        value_dict: dict[str, bool | float] = {
             'CustomPhysics': True,
             'Density': numbers[0],
             'Friction': numbers[1],
@@ -1382,13 +1469,14 @@ class RbxmPreviewWidget(QWidget):
             value_dict['AcousticAbsorption'] = numbers[5]
         return value_dict
 
-    def _parse_font_value(self, value: Any) -> dict[str, Any]:
-        if isinstance(value, dict):
+    def _parse_font_value(self, value: object) -> dict[str, str | int]:
+        value_map = _as_object_dict(value)
+        if value_map is not None:
             return {
-                'Family': str(value.get('Family', '')),
-                'Weight': self._safe_int(value.get('Weight', 400)),
-                'Style': self._safe_int(value.get('Style', 0)),
-                'CachedFaceId': str(value.get('CachedFaceId', '')),
+                'Family': str(value_map.get('Family', '')),
+                'Weight': self._safe_int(value_map.get('Weight', 400)),
+                'Style': self._safe_int(value_map.get('Style', 0)),
+                'CachedFaceId': str(value_map.get('CachedFaceId', '')),
             }
         pairs = self._parse_key_values(str(value))
         if pairs:
@@ -1425,32 +1513,33 @@ class RbxmPreviewWidget(QWidget):
         ]
 
     @staticmethod
-    def _cast_number(value: Any, caster):
+    def _cast_number(value: object, caster: NumberCaster) -> int | float:
+        number = _float_value(value)
         if caster is int:
-            return int(round(float(value)))
-        return caster(value)
+            return int(round(number))
+        return number
 
     @staticmethod
-    def _safe_int(value: Any) -> int:
+    def _safe_int(value: object) -> int:
         try:
             return int(str(value).strip(), 0)
         except TypeError, ValueError:
             return 0
 
     @staticmethod
-    def _safe_float(value: Any) -> float:
+    def _safe_float(value: object) -> float:
         try:
-            return float(value)
+            return _float_value(value)
         except TypeError, ValueError:
             return 0.0
 
     @staticmethod
-    def _safe_bool(value: Any) -> bool:
+    def _safe_bool(value: object) -> bool:
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
-    def _format_value(self, value: Any, type_name: str) -> tuple[str, str]:
+    def _format_value(self, value: object, type_name: str) -> tuple[str, str]:
         if isinstance(value, bytes):
             size = len(value)
             if size == 0:
@@ -1466,24 +1555,26 @@ class RbxmPreviewWidget(QWidget):
             hex_prefix = value[:32].hex(' ')
             return f'<{size} bytes>{utf_preview} | base64: {b64}', f'hex: {hex_prefix}'
 
-        if isinstance(value, dict):
+        value_map = _as_object_dict(value)
+        if value_map is not None:
             if type_name == 'Ref':
-                target = self._resolve_ref(value)
+                target = self._resolve_ref(value_map)
                 if target:
                     return target, target
-            compact_vector = _format_vector_like(value)
+            compact_vector = _format_vector_like(value_map)
             if compact_vector:
                 return compact_vector, compact_vector
-            parts = [f'{k}={_compact(str(v), 60)}' for k, v in value.items()]
+            parts = [f'{k}={_compact(str(v), 60)}' for k, v in value_map.items()]
             text = ', '.join(parts)
             return text, text
 
-        if isinstance(value, list):
-            text = '[' + ', '.join(_format_scalar(v) for v in value[:8])
-            if len(value) > 8:
-                text += f', ... +{len(value) - 8}'
+        value_list = _as_object_list(value)
+        if value_list is not None:
+            text = '[' + ', '.join(_format_scalar(v) for v in value_list[:8])
+            if len(value_list) > 8:
+                text += f', ... +{len(value_list) - 8}'
             text += ']'
-            return text, str(value)
+            return text, str(value_list)
 
         if isinstance(value, (bool, int, float)) or type_name.lower() in {
             'bool',
@@ -1504,7 +1595,7 @@ class RbxmPreviewWidget(QWidget):
         tooltip = text if len(text) > len(compact) else ''
         return compact, tooltip
 
-    def _copy_text_for_value(self, value: Any, type_name: str) -> str:
+    def _copy_text_for_value(self, value: object, type_name: str) -> str:
         if isinstance(value, bytes):
             if not value:
                 return ''
@@ -1516,18 +1607,22 @@ class RbxmPreviewWidget(QWidget):
                 return html.unescape(decoded)
             return base64.b64encode(value).decode('ascii')
 
-        if isinstance(value, dict):
+        value_map = _as_object_dict(value)
+        if value_map is not None:
             if type_name == 'Ref':
-                target = self._resolve_ref(value)
+                target = self._resolve_ref(value_map)
                 if target:
                     return target
-            compact_vector = _format_vector_like(value)
+            compact_vector = _format_vector_like(value_map)
             if compact_vector:
                 return compact_vector
-            return ', '.join(f'{k}={self._copy_text_for_value(v, "")}' for k, v in value.items())
+            return ', '.join(
+                f'{k}={self._copy_text_for_value(v, "")}' for k, v in value_map.items()
+            )
 
-        if isinstance(value, list):
-            return '[' + ', '.join(self._copy_text_for_value(v, '') for v in value) + ']'
+        value_list = _as_object_list(value)
+        if value_list is not None:
+            return '[' + ', '.join(self._copy_text_for_value(v, '') for v in value_list) + ']'
 
         if isinstance(value, (bool, int, float)) or type_name.lower() in {
             'bool',
@@ -1545,19 +1640,22 @@ class RbxmPreviewWidget(QWidget):
                 return target
         return html.unescape(text)
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._update_type_column_visibility()
 
-    def _update_type_column_visibility(self):
+    def _update_type_column_visibility(self) -> None:
         self.properties_table.horizontalHeader().setSectionHidden(2, False)
 
-    def _resolve_ref(self, value: Any) -> str:
+    def _resolve_ref(self, value: object) -> str:
         if self.document is None:
             return ''
         ref = ''
-        if isinstance(value, dict):
-            ref = str(value.get('Ref') or value.get('referent') or value.get('id') or '')
+        value_map = _as_object_dict(value)
+        if value_map is not None:
+            ref = str(
+                value_map.get('Ref') or value_map.get('referent') or value_map.get('id') or ''
+            )
         else:
             ref = str(value or '')
         if not ref or ref in ('None', '-1', 'null'):
@@ -1567,12 +1665,12 @@ class RbxmPreviewWidget(QWidget):
             return ref
         return f'{ref} -> {target.label()}'
 
-    def _on_search_changed(self, text: str):
+    def _on_search_changed(self, text: str) -> None:
         query = text.strip().lower()
         self._matches = []
         self._match_index = -1
 
-        def walk(item: QTreeWidgetItem):
+        def walk(item: QTreeWidgetItem) -> None:
             inst = self._item_to_instance.get(id(item))
             haystack = item.text(0)
             if inst is not None:
@@ -1586,17 +1684,17 @@ class RbxmPreviewWidget(QWidget):
             if matched:
                 self._matches.append(item)
             for i in range(item.childCount()):
-                walk(item.child(i))
+                walk(_tree_item(item.child(i)))
 
         for i in range(self.tree.topLevelItemCount()):
-            walk(self.tree.topLevelItem(i))
+            walk(_tree_item(self.tree.topLevelItem(i)))
 
         if query and self._matches:
             self._match_index = 0
             self._select_match()
         self._update_match_label()
 
-    def _select_match(self):
+    def _select_match(self) -> None:
         if not self._matches or self._match_index < 0:
             return
         item = self._matches[self._match_index]
@@ -1607,21 +1705,21 @@ class RbxmPreviewWidget(QWidget):
         self.tree.setCurrentItem(item)
         self.tree.scrollToItem(item)
 
-    def _next_match(self):
+    def _next_match(self) -> None:
         if not self._matches:
             return
         self._match_index = (self._match_index + 1) % len(self._matches)
         self._select_match()
         self._update_match_label()
 
-    def _prev_match(self):
+    def _prev_match(self) -> None:
         if not self._matches:
             return
         self._match_index = (self._match_index - 1) % len(self._matches)
         self._select_match()
         self._update_match_label()
 
-    def _update_match_label(self):
+    def _update_match_label(self) -> None:
         if self.search_input.text().strip():
             if self._matches:
                 self.summary_label.setText(
@@ -1643,7 +1741,7 @@ class RbxmPreviewWidget(QWidget):
                 )
             )
 
-    def _copy_selected_value(self):
+    def _copy_selected_value(self) -> None:
         row = self.properties_table.currentRow()
         if row < 0:
             return
@@ -1663,7 +1761,7 @@ def _compact(text: str, limit: int) -> str:
     return text[: max(0, limit - 3)] + '...'
 
 
-def _format_scalar(value: Any) -> str:
+def _format_scalar(value: object) -> str:
     if isinstance(value, bool):
         return 'True' if value else 'False'
     if isinstance(value, str) and value.lower() in {'true', 'false'}:
@@ -1671,7 +1769,7 @@ def _format_scalar(value: Any) -> str:
     if isinstance(value, int):
         return str(value)
     try:
-        number = float(value)
+        number = _float_value(value)
     except TypeError, ValueError:
         return _compact(str(value), 80)
     if abs(number) < 1e-8:
@@ -1681,7 +1779,7 @@ def _format_scalar(value: Any) -> str:
     return f'{number:.6g}'
 
 
-def _format_vector_like(value: dict) -> str:
+def _format_vector_like(value: dict[str, object]) -> str:
     key_sets = (
         ('X', 'Y', 'Z'),
         ('x', 'y', 'z'),

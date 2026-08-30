@@ -14,7 +14,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .logging import log_buffer
 from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, MACOS_PROXY_HELPER_CONTROL_PORT
@@ -42,6 +44,28 @@ HELPER_READY_TIMEOUT_SECONDS = 45.0
 HELPER_READY_POLL_SECONDS = 0.25
 
 
+type HelperObject = dict[str, object]
+
+
+if TYPE_CHECKING:
+
+    def _object_dict(value: object) -> HelperObject: ...
+
+    def _iter_values(value: object) -> Iterable[object]: ...
+
+    def _int_value(value: object) -> int: ...
+else:
+
+    def _object_dict(value: object) -> HelperObject:
+        return value
+
+    def _iter_values(value: object) -> Iterable[object]:
+        return value or []
+
+    def _int_value(value: object) -> int:
+        return int(value)
+
+
 def _ensure_token() -> str:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if HELPER_TOKEN_FILE.exists():
@@ -65,10 +89,10 @@ def _request(
     timeout: float = 3.0,
     *,
     raise_on_error: bool = True,
-    **payload,
-) -> dict:
+    **payload: object,
+) -> HelperObject:
     token = _ensure_token()
-    request = {'token': token, 'action': action}
+    request: HelperObject = {'token': token, 'action': action}
     if hosts is not None:
         request['hosts'] = sorted(hosts)
     request.update(payload)
@@ -79,27 +103,28 @@ def _request(
         sock.sendall((json.dumps(request, separators=(',', ':')) + '\n').encode('utf-8'))
         sock_file = sock.makefile('rb')
         raw = sock_file.readline(1024 * 1024)
-    response = json.loads(raw.decode('utf-8'))
+    response_value: object = json.loads(raw.decode('utf-8'))
+    response = _object_dict(response_value)
     if raise_on_error and not response.get('ok'):
         raise RuntimeError(str(response.get('error') or 'macOS proxy helper request failed'))
     return response
 
 
-def helper_status(timeout: float = 1.0) -> dict | None:
+def helper_status(timeout: float = 1.0) -> HelperObject | None:
     try:
         return _request('status', timeout=timeout)
     except Exception:
         return None
 
 
-def helper_has_expected_identity(status: dict | None) -> bool:
+def helper_has_expected_identity(status: Mapping[str, object] | None) -> bool:
     if not status:
         return False
     try:
-        version_ok = int(status.get('version', 0)) == EXPECTED_HELPER_VERSION
+        version_ok = _int_value(status.get('version', 0)) == EXPECTED_HELPER_VERSION
     except TypeError, ValueError:
         version_ok = False
-    capabilities = {str(value) for value in status.get('capabilities') or []}
+    capabilities = {str(value) for value in _iter_values(status.get('capabilities'))}
     return version_ok and REQUIRED_HELPER_CAPABILITIES.issubset(capabilities)
 
 
@@ -108,7 +133,7 @@ def helper_is_ready() -> bool:
     if not status:
         return False
     try:
-        backend_ok = int(status.get('backend_port', 0)) == MACOS_PROXY_BACKEND_PORT
+        backend_ok = _int_value(status.get('backend_port', 0)) == MACOS_PROXY_BACKEND_PORT
     except TypeError, ValueError:
         backend_ok = False
     if not backend_ok:
@@ -131,7 +156,7 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
         return False, f'Could not contact the helper control service: {type(exc).__name__}: {exc}'
 
     try:
-        backend_ok = int(status.get('backend_port', 0)) == MACOS_PROXY_BACKEND_PORT
+        backend_ok = _int_value(status.get('backend_port', 0)) == MACOS_PROXY_BACKEND_PORT
     except TypeError, ValueError:
         backend_ok = False
     if not backend_ok:
@@ -176,7 +201,7 @@ def helper_heartbeat() -> bool:
         return False
 
 
-def helper_probe_backend() -> dict:
+def helper_probe_backend() -> HelperObject:
     try:
         return _request('probe_backend', timeout=3.0)
     except Exception as exc:
@@ -190,7 +215,7 @@ def helper_probe_backend() -> dict:
         }
 
 
-def helper_patch_ca(ca_pem: str, installs: list[dict]) -> dict | None:
+def helper_patch_ca(ca_pem: str, installs: list[HelperObject]) -> HelperObject | None:
     try:
         response = _request(
             'patch_ca',

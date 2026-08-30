@@ -5,11 +5,78 @@ from __future__ import annotations
 import gzip
 import json
 import struct
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Protocol, SupportsInt, TypeVar, cast, runtime_checkable
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 
 from . import mesh_processing
+
+type _BoneRecord = tuple[
+    int,
+    int,
+    int,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+]
+type _SkinningData = tuple[list[_Envelope], list[Bone], list[_Subset]]
+type _JsonValue = str | int | float | bool | Sequence[_JsonValue] | Mapping[str, _JsonValue] | None
+type _NumericArray = NDArray[np.float32] | NDArray[np.uint8]
+_Scalar = TypeVar('_Scalar', np.float32, np.uint8)
+
+
+class _FaceLike(Protocol):
+    a: int
+    b: int
+    c: int
+
+
+class _DracoDecoder(Protocol):
+    def decode(self, data: bytes) -> object: ...
+
+
+@runtime_checkable
+class _HasPoints(Protocol):
+    points: ArrayLike
+
+
+@runtime_checkable
+class _HasNormals(Protocol):
+    normals: ArrayLike | None
+
+
+@runtime_checkable
+class _HasTexCoord(Protocol):
+    tex_coord: ArrayLike | None
+
+
+@runtime_checkable
+class _HasFaces(Protocol):
+    faces: list[list[SupportsInt]]
+
+
+@runtime_checkable
+class _HasAttributeLookup(Protocol):
+    def get_attribute_by_unique_id(self, unique_id: int) -> object: ...
+
+
+@runtime_checkable
+class _AttributeData(Protocol):
+    def __contains__(self, key: object) -> bool: ...
+    def __getitem__(self, key: str) -> object: ...
 
 
 class MeshRigError(ValueError):
@@ -73,7 +140,7 @@ def _require(data: bytes, offset: int, size: int, label: str) -> None:
 
 def _read_envelopes(data: bytes, offset: int, count: int) -> tuple[list[_Envelope], int]:
     _require(data, offset, count * 8, 'skinning data')
-    envelopes = []
+    envelopes: list[_Envelope] = []
     for _ in range(count):
         values = struct.unpack_from('<8B', data, offset)
         envelopes.append(_Envelope(values[:4], values[4:]))
@@ -81,11 +148,11 @@ def _read_envelopes(data: bytes, offset: int, count: int) -> tuple[list[_Envelop
     return envelopes, offset
 
 
-def _read_bones(data: bytes, offset: int, count: int) -> tuple[list[tuple], int]:
+def _read_bones(data: bytes, offset: int, count: int) -> tuple[list[_BoneRecord], int]:
     _require(data, offset, count * 60, 'bone table')
-    records = []
+    records: list[_BoneRecord] = []
     for _ in range(count):
-        records.append(struct.unpack_from('<IHHf12f', data, offset))
+        records.append(cast('_BoneRecord', struct.unpack_from('<IHHf12f', data, offset)))
         offset += 60
     return records, offset
 
@@ -102,8 +169,8 @@ def _bone_name(name_table: bytes, offset: int) -> str:
         raise MeshRigError('bone name is not valid UTF-8') from exc
 
 
-def _finish_bones(records: list[tuple], name_table: bytes) -> list[Bone]:
-    bones = []
+def _finish_bones(records: list[_BoneRecord], name_table: bytes) -> list[Bone]:
+    bones: list[Bone] = []
     for record in records:
         name_offset, parent_raw, lod_parent_raw, culling_distance, *transform = record
         parent = None if parent_raw == 0xFFFF else parent_raw
@@ -167,7 +234,7 @@ def _read_subsets(
     data: bytes, offset: int, count: int, bone_count: int
 ) -> tuple[list[_Subset], int]:
     _require(data, offset, count * 72, 'subset table')
-    subsets = []
+    subsets: list[_Subset] = []
     for _ in range(count):
         _faces_begin, _faces_length, vertices_begin, vertices_length, mapped_count = (
             struct.unpack_from('<5I', data, offset)
@@ -182,9 +249,11 @@ def _read_subsets(
     return subsets, offset
 
 
-def _read_faces(data: bytes, offset: int, count: int, vertex_count: int):
+def _read_faces(
+    data: bytes, offset: int, count: int, vertex_count: int
+) -> tuple[list[mesh_processing.Face], int]:
     _require(data, offset, count * 12, 'face table')
-    faces = []
+    faces: list[mesh_processing.Face] = []
     for _ in range(count):
         face = struct.unpack_from('<III', data, offset)
         if any(index >= vertex_count for index in face):
@@ -212,11 +281,11 @@ def _map_weights(
                 raise MeshRigError('subset vertex ranges overlap')
             vertex_subsets[vertex_index] = subset
 
-    mapped = []
+    mapped: list[tuple[tuple[int, int, int, int], tuple[float, float, float, float]]] = []
     for vertex_index, envelope in enumerate(envelopes):
         combined: dict[int, int] = {}
         subset = vertex_subsets[vertex_index]
-        for local_index, raw_weight in zip(envelope.subset_indices, envelope.weights):
+        for local_index, raw_weight in zip(envelope.subset_indices, envelope.weights, strict=False):
             if raw_weight == 0:
                 continue
             if subset is None or local_index >= len(subset.bone_indices):
@@ -234,14 +303,19 @@ def _map_weights(
         weights = [combined[index] / total for index in joints]
         joints.extend([0] * (4 - len(joints)))
         weights.extend([0.0] * (4 - len(weights)))
-        mapped.append((tuple(joints), tuple(weights)))
+        mapped.append(
+            (
+                (joints[0], joints[1], joints[2], joints[3]),
+                (weights[0], weights[1], weights[2], weights[3]),
+            )
+        )
     return mapped
 
 
 def _assemble(
     version: str,
-    vertices,
-    faces,
+    vertices: list[mesh_processing.Vertex],
+    faces: list[mesh_processing.Face],
     envelopes: list[_Envelope],
     bones: list[Bone],
     subsets: list[_Subset],
@@ -250,8 +324,8 @@ def _assemble(
     if not bones:
         raise MeshRigError('skinning section does not contain bones')
     mapped = _map_weights(len(vertices), envelopes, subsets)
-    rig_vertices = []
-    for vertex, (joints, weights) in zip(vertices, mapped):
+    rig_vertices: list[RigVertex] = []
+    for vertex, (joints, weights) in zip(vertices, mapped, strict=False):
         rig_vertices.append(
             RigVertex(
                 position=(float(vertex.px), float(vertex.py), float(vertex.pz)),
@@ -262,7 +336,11 @@ def _assemble(
                 weights=weights,
             )
         )
-    rig_faces = tuple((face.a - 1, face.b - 1, face.c - 1) for face in faces)
+    rig_faces = tuple(
+        (typed_face.a - 1, typed_face.b - 1, typed_face.c - 1)
+        for face in faces
+        for typed_face in (cast('_FaceLike', face),)
+    )
     return RiggedMesh(version, tuple(rig_vertices), rig_faces, tuple(bones), has_facs)
 
 
@@ -317,7 +395,7 @@ def _parse_v4_v5(data: bytes, version: str) -> RiggedMesh | None:
     return _assemble(version, vertices, faces, envelopes, bones, subsets, has_facs)
 
 
-def _parse_skinning_chunk(data: bytes):
+def _parse_skinning_chunk(data: bytes) -> _SkinningData | None:
     _require(data, 0, 4, 'SKINNING header')
     envelope_count = struct.unpack_from('<I', data, 0)[0]
     envelopes, offset = _read_envelopes(data, 4, envelope_count)
@@ -345,7 +423,9 @@ def _parse_skinning_chunk(data: bytes):
     return envelopes, bones, subsets
 
 
-def _decode_draco_vertices(data: bytes):
+def _decode_draco_vertices(
+    data: bytes,
+) -> tuple[list[mesh_processing.Vertex], list[mesh_processing.Face]]:
     if len(data) < 4:
         raise MeshRigError('COREMESH v2 payload is too small')
     stream_size = struct.unpack_from('<I', data, 0)[0]
@@ -354,41 +434,50 @@ def _decode_draco_vertices(data: bytes):
     if not mesh_processing.DRACO_AVAILABLE:
         raise MeshRigError('DracoPy is required to export a v7 rig')
 
+    decoder = cast('_DracoDecoder', mesh_processing.DracoPy)
     try:
-        mesh = mesh_processing.DracoPy.decode(data[4:])
+        mesh = decoder.decode(data[4:])
     except Exception as exc:
         raise MeshRigError(f'Draco decoding failed: {exc}') from exc
-    if mesh is None or not hasattr(mesh, 'points'):
+    if mesh is None or not isinstance(mesh, _HasPoints):
         raise MeshRigError('Draco decoding returned invalid mesh data')
 
-    positions = np.asarray(mesh.points, dtype=np.float32)
+    positions: NDArray[np.float32] = np.asarray(mesh.points, dtype=np.float32)
     if positions.ndim != 2 or positions.shape[1] != 3 or len(positions) == 0:
         raise MeshRigError('Draco positions have an invalid shape')
     vertices = [mesh_processing.Vertex() for _ in positions]
-    for vertex, position in zip(vertices, positions):
+    for vertex, position in zip(vertices, positions, strict=False):
         vertex.px, vertex.py, vertex.pz = position
 
-    def attribute(unique_id: int, width: int, dtype):
-        if not hasattr(mesh, 'get_attribute_by_unique_id'):
+    def attribute(unique_id: int, width: int, dtype: type[_Scalar]) -> NDArray[_Scalar] | None:
+        if not isinstance(mesh, _HasAttributeLookup):
             return None
         try:
             result = mesh.get_attribute_by_unique_id(unique_id)
-            if result is None or 'data' not in result:
+            if result is None or not isinstance(result, _AttributeData) or 'data' not in result:
                 return None
-            values = np.asarray(result['data'], dtype=dtype)
+            values: NDArray[_Scalar] = np.asarray(
+                cast('ArrayLike', result['data']),
+                dtype=dtype,
+            )
             return values.reshape(-1, width) if values.ndim == 1 else values
         except Exception:
             return None
 
-    normals = attribute(1, 3, np.float32)
-    if normals is None and getattr(mesh, 'normals', None) is not None:
+    normals: NDArray[np.float32] | None = attribute(1, 3, np.float32)
+    if normals is None and isinstance(mesh, _HasNormals) and mesh.normals is not None:
         normals = np.asarray(mesh.normals, dtype=np.float32).reshape(-1, 3)
-    texcoords = attribute(2, 2, np.float32)
-    if texcoords is None and getattr(mesh, 'tex_coord', None) is not None:
+    texcoords: NDArray[np.float32] | None = attribute(2, 2, np.float32)
+    if texcoords is None and isinstance(mesh, _HasTexCoord) and mesh.tex_coord is not None:
         texcoords = np.asarray(mesh.tex_coord, dtype=np.float32).reshape(-1, 2)
-    colors = attribute(4, 4, np.uint8)
+    colors: NDArray[np.uint8] | None = attribute(4, 4, np.uint8)
 
-    for values, label in ((normals, 'normal'), (texcoords, 'UV'), (colors, 'color')):
+    values_and_labels: tuple[tuple[_NumericArray | None, str], ...] = (
+        (normals, 'normal'),
+        (texcoords, 'UV'),
+        (colors, 'color'),
+    )
+    for values, label in values_and_labels:
         if values is not None and len(values) != len(vertices):
             raise MeshRigError(f'Draco {label} count does not match vertex count')
     for index, vertex in enumerate(vertices):
@@ -400,8 +489,9 @@ def _decode_draco_vertices(data: bytes):
         if colors is not None:
             vertex.r, vertex.g, vertex.b, vertex.a = colors[index]
 
-    faces = []
-    for triangle in getattr(mesh, 'faces', ()):
+    faces: list[mesh_processing.Face] = []
+    face_rows = mesh.faces if isinstance(mesh, _HasFaces) else []
+    for triangle in face_rows:
         a, b, c = map(int, triangle)
         if min(a, b, c) < 0 or max(a, b, c) >= len(vertices):
             raise MeshRigError('Draco face references an invalid vertex')
@@ -409,8 +499,78 @@ def _decode_draco_vertices(data: bytes):
     return vertices, faces
 
 
+def _read_chunked_mesh(data: bytes) -> list[tuple[str, int, bytes]]:
+    """Read v6/v7 chunks with the same framing used by mesh_processing."""
+    chunks: list[tuple[str, int, bytes]] = []
+    offset = 13
+    while offset < len(data):
+        if len(data) - offset < 16:
+            raise ValueError('truncated chunk header')
+        chunk_type = data[offset : offset + 8].decode('ascii', errors='replace').rstrip('\0')
+        chunk_version, chunk_size = struct.unpack_from('<II', data, offset + 8)
+        offset += 16
+        chunk_end = offset + chunk_size
+        if chunk_end > len(data):
+            raise ValueError(f'{chunk_type} chunk exceeds file size')
+        chunks.append((chunk_type, chunk_version, data[offset:chunk_end]))
+        offset = chunk_end
+    return chunks
+
+
+def _read_raw_coremesh(
+    data: bytes,
+) -> tuple[list[mesh_processing.Vertex], list[mesh_processing.Face]]:
+    """Read the uncompressed COREMESH v1 payload used by FileMesh v6."""
+    if len(data) < 8:
+        raise ValueError('COREMESH v1 payload is too small')
+    num_verts = struct.unpack_from('<I', data, 0)[0]
+    vertex_end = 4 + num_verts * 40
+    if vertex_end + 4 > len(data):
+        raise ValueError('COREMESH v1 vertex data exceeds chunk size')
+    verts, offset = mesh_processing.read_vertices(data, 4, num_verts, 40)
+    num_faces = struct.unpack_from('<I', data, offset)[0]
+    offset += 4
+    face_end = offset + num_faces * 12
+    if face_end != len(data):
+        raise ValueError('COREMESH v1 face data does not match chunk size')
+    faces: list[mesh_processing.Face] = []
+    for _ in range(num_faces):
+        a, b, c = struct.unpack_from('<III', data, offset)
+        if a >= num_verts or b >= num_verts or c >= num_verts:
+            raise ValueError('COREMESH v1 face references an invalid vertex')
+        faces.append(mesh_processing.Face(a + 1, b + 1, c + 1))
+        offset += 12
+    return verts, faces
+
+
+def _apply_chunked_lod(
+    faces: list[mesh_processing.Face], lod_data: bytes | None
+) -> list[mesh_processing.Face]:
+    """Select the highest-quality face range from a v6/v7 LODS v1 payload."""
+    if not lod_data:
+        return faces
+    if len(lod_data) < 7:
+        raise ValueError('LODS payload is too small')
+    num_offsets = struct.unpack_from('<I', lod_data, 3)[0]
+    offsets_end = 7 + num_offsets * 4
+    if offsets_end > len(lod_data):
+        raise ValueError('LODS offsets exceed chunk size')
+    if num_offsets < 2:
+        return faces
+    first, second = struct.unpack_from('<II', lod_data, 7)
+    if first > second or second > len(faces):
+        raise ValueError('LODS face range is invalid')
+    if first == 0 and 0 < second < len(faces):
+        mesh_processing.log_buffer.log(
+            'Mesh',
+            f'Applying high-quality LOD: {len(faces):,} → {second:,} faces',
+        )
+        return faces[:second]
+    return faces[first:second] if second > first else faces
+
+
 def _parse_v6_v7(data: bytes, version: str) -> RiggedMesh | None:
-    chunks = mesh_processing._read_chunked_mesh(data)
+    chunks = _read_chunked_mesh(data)
     coremesh = None
     lod_data = None
     skinning = None
@@ -438,12 +598,12 @@ def _parse_v6_v7(data: bytes, version: str) -> RiggedMesh | None:
 
     coremesh_version, coremesh_data = coremesh
     if version == 'version 6.00' and coremesh_version == 1:
-        vertices, faces = mesh_processing._read_raw_coremesh(coremesh_data)
+        vertices, faces = _read_raw_coremesh(coremesh_data)
     elif version == 'version 7.00' and coremesh_version == 2:
         vertices, faces = _decode_draco_vertices(coremesh_data)
     else:
         raise MeshRigError(f'unsupported COREMESH v{coremesh_version} for {version}')
-    faces = mesh_processing._apply_chunked_lod(faces, lod_data)
+    faces = _apply_chunked_lod(faces, lod_data)
 
     envelopes, bones, subsets = skinning
     return _assemble(version, vertices, faces, envelopes, bones, subsets, has_facs)
@@ -456,9 +616,9 @@ def parse_rigged_mesh(data: bytes) -> RiggedMesh | None:
         return None
     version = data[:12].decode('ascii', errors='ignore')
     try:
-        if version in ('version 4.00', 'version 4.01', 'version 5.00'):
+        if version in {'version 4.00', 'version 4.01', 'version 5.00'}:
             return _parse_v4_v5(data, version)
-        if version in ('version 6.00', 'version 7.00'):
+        if version in {'version 6.00', 'version 7.00'}:
             return _parse_v6_v7(data, version)
         return None
     except (IndexError, struct.error, ValueError) as exc:
@@ -474,16 +634,16 @@ def has_embedded_rig(data: bytes) -> bool:
         if len(data) < 29:
             return False
         version = data[:12].decode('ascii', errors='ignore')
-        if version in ('version 4.00', 'version 4.01', 'version 5.00'):
+        if version in {'version 4.00', 'version 4.01', 'version 5.00'}:
             return struct.unpack_from('<H', data, 27)[0] > 0
-        if version not in ('version 6.00', 'version 7.00'):
+        if version not in {'version 6.00', 'version 7.00'}:
             return False
         if version == 'version 7.00' and not mesh_processing.DRACO_AVAILABLE:
             return False
         expected_coremesh_version = 1 if version == 'version 6.00' else 2
         has_coremesh = False
         valid_skinning = False
-        for chunk_type, chunk_version, chunk_data in mesh_processing._read_chunked_mesh(data):
+        for chunk_type, chunk_version, chunk_data in _read_chunked_mesh(data):
             if chunk_type == 'COREMESH':
                 has_coremesh = chunk_version == expected_coremesh_version
             elif chunk_type == 'SKINNING':
@@ -521,11 +681,11 @@ def export_glb(data: bytes) -> bytes:
     index_dtype = '<u2' if len(rig.vertices) <= 0xFFFF else '<u4'
     indices = np.asarray(rig.faces, dtype=index_dtype).reshape(-1)
 
-    world_matrices = [
+    world_matrices: list[NDArray[np.float64]] = [
         np.asarray(bone.world_matrix, dtype=np.float64).reshape(4, 4) for bone in rig.bones
     ]
-    local_matrices = []
-    inverse_bind_matrices = []
+    local_matrices: list[NDArray[np.float64]] = []
+    inverse_bind_matrices: list[NDArray[np.float64]] = []
     for index, bone in enumerate(rig.bones):
         world = world_matrices[index]
         try:
@@ -538,29 +698,33 @@ def export_glb(data: bytes) -> bytes:
         local_matrices.append(local)
 
     binary = bytearray()
-    buffer_views = []
-    accessors = []
+    buffer_views: list[dict[str, _JsonValue]] = []
+    accessors: list[dict[str, _JsonValue]] = []
 
     def add_accessor(
-        array,
+        array: NDArray[np.generic],
         component_type: int,
         accessor_type: str,
         *,
-        target=None,
-        normalized=False,
-        bounds=False,
-    ):
+        target: int | None = None,
+        normalized: bool = False,
+        bounds: bool = False,
+    ) -> int:
         _pad4(binary)
         array = np.ascontiguousarray(array)
         byte_offset = len(binary)
         payload = array.tobytes()
         binary.extend(payload)
-        view = {'buffer': 0, 'byteOffset': byte_offset, 'byteLength': len(payload)}
+        view: dict[str, _JsonValue] = {
+            'buffer': 0,
+            'byteOffset': byte_offset,
+            'byteLength': len(payload),
+        }
         if target is not None:
             view['target'] = target
         view_index = len(buffer_views)
         buffer_views.append(view)
-        accessor = {
+        accessor: dict[str, _JsonValue] = {
             'bufferView': view_index,
             'componentType': component_type,
             'count': int(array.shape[0]),
@@ -569,8 +733,12 @@ def export_glb(data: bytes) -> bytes:
         if normalized:
             accessor['normalized'] = True
         if bounds:
-            accessor['min'] = [float(value) for value in array.min(axis=0)]
-            accessor['max'] = [float(value) for value in array.max(axis=0)]
+            # Only the POSITION float32 accessor requests bounds.
+            bounded_array = cast('NDArray[np.float32]', array)
+            minimums: NDArray[np.float32] = bounded_array.min(axis=0)
+            maximums: NDArray[np.float32] = bounded_array.max(axis=0)
+            accessor['min'] = [float(value) for value in minimums]
+            accessor['max'] = [float(value) for value in maximums]
         accessors.append(accessor)
         return len(accessors) - 1
 
@@ -586,9 +754,9 @@ def export_glb(data: bytes) -> bytes:
     inverse_bind_accessor = add_accessor(inverse_bind_array, 5126, 'MAT4')
     _pad4(binary)
 
-    nodes = []
+    nodes: list[dict[str, _JsonValue]] = []
     for index, bone in enumerate(rig.bones):
-        node = {
+        node: dict[str, _JsonValue] = {
             'name': bone.name,
             'matrix': [float(value) for value in local_matrices[index].flatten(order='F')],
         }
@@ -600,12 +768,12 @@ def export_glb(data: bytes) -> bytes:
         nodes.append(node)
     roots = [index for index, bone in enumerate(rig.bones) if bone.parent is None]
     mesh_node = len(nodes)
-    mesh_node_data = {'name': 'RiggedMesh', 'mesh': 0, 'skin': 0}
+    mesh_node_data: dict[str, _JsonValue] = {'name': 'RiggedMesh', 'mesh': 0, 'skin': 0}
     if roots:
         mesh_node_data['children'] = roots
     nodes.append(mesh_node_data)
 
-    document = {
+    document: dict[str, _JsonValue] = {
         'asset': {'version': '2.0', 'generator': 'Fleasion'},
         'scene': 0,
         'scenes': [{'nodes': [mesh_node]}],

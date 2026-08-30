@@ -1,8 +1,13 @@
 """Clipboard helpers."""
 
+from __future__ import annotations
+
+import importlib
 import struct
 import sys
 import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData
 from PySide6.QtGui import QImage, QPixmap
@@ -11,6 +16,40 @@ from PySide6.QtWidgets import QApplication
 _BI_BITFIELDS = 3
 _LCS_sRGB = 0x73524742
 _LCS_GM_IMAGES = 4
+
+
+class _Win32Clipboard(Protocol):
+    RegisterClipboardFormat: Callable[[str], int]
+    OpenClipboard: Callable[[], object]
+    EmptyClipboard: Callable[[], object]
+    SetClipboardData: Callable[[int, bytes], object]
+    CloseClipboard: Callable[[], object]
+
+
+class _Win32Con(Protocol):
+    CF_DIBV5: int
+
+
+if TYPE_CHECKING:
+
+    def _qbytearray_bytes(value: QByteArray) -> bytes: ...
+
+    def _set_image_bits_size(value: object, size: int) -> None: ...
+
+    def _windows_clipboard_modules() -> tuple[_Win32Clipboard, _Win32Con]: ...
+else:
+
+    def _qbytearray_bytes(value: QByteArray) -> bytes:
+        return bytes(value)
+
+    def _set_image_bits_size(value: object, size: int) -> None:
+        value.setsize(size)
+
+    def _windows_clipboard_modules() -> tuple[_Win32Clipboard, _Win32Con]:
+        return (
+            importlib.import_module('win32clipboard'),
+            importlib.import_module('win32con'),
+        )
 
 
 def _pixmap_to_rgba_image(pixmap: QPixmap) -> QImage:
@@ -23,12 +62,12 @@ def _encode_png(image: QImage) -> bytes:
     if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
         raise RuntimeError('Failed to prepare clipboard image data')
     try:
-        if not image.save(buffer, 'PNG'):
+        if not image.save(buffer, b'PNG'):
             raise RuntimeError('Failed to encode clipboard image as PNG')
     finally:
         buffer.close()
 
-    return bytes(png_data)
+    return _qbytearray_bytes(png_data)
 
 
 def _image_to_dibv5(image: QImage) -> bytes:
@@ -68,7 +107,7 @@ def _image_to_dibv5(image: QImage) -> bytes:
     )
 
     ptr = bgra_image.bits()
-    ptr.setsize(bgra_image.sizeInBytes())
+    _set_image_bits_size(ptr, bgra_image.sizeInBytes())
     raw = bytes(ptr)
     bytes_per_line = bgra_image.bytesPerLine()
     pixels = bytearray(size_image)
@@ -81,8 +120,7 @@ def _image_to_dibv5(image: QImage) -> bytes:
 
 
 def _copy_windows_image_to_clipboard(image: QImage, png_data: bytes) -> None:
-    import win32clipboard
-    import win32con
+    win32clipboard, win32con = _windows_clipboard_modules()
 
     png_format = win32clipboard.RegisterClipboardFormat('PNG')
     dibv5_data = _image_to_dibv5(image)
@@ -101,7 +139,7 @@ def _copy_windows_image_to_clipboard(image: QImage, png_data: bytes) -> None:
     try:
         win32clipboard.EmptyClipboard()
         win32clipboard.SetClipboardData(png_format, png_data)
-        win32clipboard.SetClipboardData(getattr(win32con, 'CF_DIBV5', 17), dibv5_data)
+        win32clipboard.SetClipboardData(win32con.CF_DIBV5, dibv5_data)
     finally:
         win32clipboard.CloseClipboard()
 

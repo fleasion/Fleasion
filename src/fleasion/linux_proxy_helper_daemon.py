@@ -19,8 +19,82 @@ import shutil
 import signal
 import subprocess
 import sys
-import time
+from collections.abc import Callable
 from pathlib import Path
+from types import FrameType
+from typing import TYPE_CHECKING, Literal, Protocol, overload
+
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
+
+
+class _PasswdEntry(Protocol):
+    pw_gid: int
+    pw_dir: str
+
+
+class _RuntimeArgs(Protocol):
+    owner_uid: int
+    owner_gid: int
+    backend_host: str
+    backend_port: int
+    listen_host: str
+    listen_port: int
+    config_dir: str
+    ready_file: str
+    stop_file: str
+    hosts_file: str | None
+    ca_cert: str | None
+    hosts: str
+    require_system_ca: bool
+    parent_pid: int
+    parent_start_time: str | None
+    shutdown_requested: Callable[[], bool]
+
+
+if TYPE_CHECKING:
+
+    def _json_object(value: object) -> JsonObject | None: ...
+
+    def _json_values(value: list[JsonObject]) -> list[JsonValue]: ...
+
+    def _json_strings(value: list[str]) -> list[JsonValue]: ...
+
+    def _object_list(value: object) -> list[object] | None: ...
+
+    def _string_list(value: object) -> list[str]: ...
+
+    def _pwd_entry(uid: int) -> _PasswdEntry: ...
+
+    def _runtime_args(args: argparse.Namespace) -> _RuntimeArgs: ...
+else:
+
+    def _json_object(value: object) -> JsonObject | None:
+        return value if isinstance(value, dict) else None
+
+    def _json_values(value: list[JsonObject]) -> list[JsonValue]:
+        return value
+
+    def _json_strings(value: list[str]) -> list[JsonValue]:
+        return value
+
+    def _object_list(value: object) -> list[object] | None:
+        return value if isinstance(value, list) else None
+
+    def _string_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, str)]
+
+    def _pwd_entry(uid: int) -> _PasswdEntry:
+        if pwd is None:
+            raise KeyError(uid)
+        return pwd.getpwuid(uid)
+
+    def _runtime_args(args: argparse.Namespace) -> _RuntimeArgs:
+        return args
+
 
 HOSTS_FILE = Path('/etc/hosts')
 HOSTS_MARKER = '# Fleasion proxy entry'
@@ -93,8 +167,55 @@ def _host_subprocess_env() -> dict[str, str]:
     return env
 
 
-def _run_host_command(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, env=_host_subprocess_env(), **kwargs)
+@overload
+def _run_host_command(
+    cmd: list[str],
+    *,
+    capture_output: bool = False,
+    text: Literal[True],
+    encoding: str,
+    errors: str,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]: ...
+
+
+@overload
+def _run_host_command(
+    cmd: list[str],
+    *,
+    capture_output: bool = False,
+    text: Literal[False] = False,
+    encoding: None = None,
+    errors: None = None,
+    timeout: float,
+) -> subprocess.CompletedProcess[bytes]: ...
+
+
+def _run_host_command(
+    cmd: list[str],
+    *,
+    capture_output: bool = False,
+    text: bool = False,
+    encoding: str | None = None,
+    errors: str | None = None,
+    timeout: float,
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    if text:
+        return subprocess.run(
+            cmd,
+            env=_host_subprocess_env(),
+            capture_output=capture_output,
+            text=True,
+            encoding=encoding,
+            errors=errors,
+            timeout=timeout,
+        )
+    return subprocess.run(
+        cmd,
+        env=_host_subprocess_env(),
+        capture_output=capture_output,
+        timeout=timeout,
+    )
 
 
 def _log(message: str) -> None:
@@ -103,7 +224,7 @@ def _log(message: str) -> None:
 
 def _polkit_policy_xml() -> str:
     helper = str(INSTALLED_HELPER_PATH)
-    return f'''<?xml version="1.0" encoding="UTF-8"?>
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD polkit Policy Configuration 1.0//EN"
 "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
 <policyconfig>
@@ -134,18 +255,22 @@ def _polkit_policy_xml() -> str:
     <annotate key="org.freedesktop.policykit.exec.argv1">--install-system-ca</annotate>
   </action>
 </policyconfig>
-'''
+"""
 
 
 def _polkit_promptless_rule() -> str:
-    return f'''polkit.addRule(function(action, subject) {{
+    return f"""polkit.addRule(function(action, subject) {{
     if (action.id == "{POLKIT_RUN_ACTION_ID}" &&
         subject.local && subject.active &&
         (subject.isInGroup("sudo") || subject.isInGroup("wheel"))) {{
         return polkit.Result.YES;
     }}
 }});
-'''
+"""
+
+
+if TYPE_CHECKING:
+    _ = _polkit_promptless_rule
 
 
 def _write_root_file(path: Path, content: str, mode: int) -> None:
@@ -170,7 +295,9 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _helper_install_metadata(source: Path, *, source_helper_needs_dispatch_flag: bool) -> dict:
+def _helper_install_metadata(
+    source: Path, *, source_helper_needs_dispatch_flag: bool
+) -> JsonObject:
     return {
         'metadata_version': HELPER_METADATA_VERSION,
         'source_sha256': _file_sha256(source),
@@ -184,7 +311,7 @@ def _install_privileged_helper(
     enable_promptless: bool = False,
     source_helper_needs_dispatch_flag: bool = False,
     ca_cert: str | None = None,
-) -> dict:
+) -> JsonObject:
     source = Path(source_helper or '').resolve(strict=False)
     if not source.is_file() or source.is_symlink():
         return {'ok': False, 'error': f'helper source is not a real file: {source}'}
@@ -220,7 +347,7 @@ def _install_privileged_helper(
             0o644,
         )
 
-        details = {
+        details: JsonObject = {
             'ok': True,
             'helper': str(INSTALLED_HELPER_PATH),
             'helper_metadata': metadata,
@@ -229,6 +356,7 @@ def _install_privileged_helper(
             'promptless_rule': None,
         }
         if ca_cert:
+            system_ca: JsonObject
             try:
                 ca_path = _validate_install_system_ca_args(ca_cert)
                 system_ca = _install_system_ca(ca_path)
@@ -303,14 +431,14 @@ def _pkexec_uid() -> int | None:
         raise RuntimeError(f'invalid PKEXEC_UID: {raw_uid}') from exc
 
 
-def _validate_user_context(args: argparse.Namespace) -> tuple[int, int, Path]:
+def _validate_user_context(args: _RuntimeArgs) -> tuple[int, int, Path]:
     expected_uid = _pkexec_uid()
     owner_uid = int(args.owner_uid)
     if expected_uid is not None and owner_uid != expected_uid:
         raise RuntimeError('owner uid does not match invoking user')
 
     try:
-        pw_entry = pwd.getpwuid(owner_uid)
+        pw_entry = _pwd_entry(owner_uid)
     except KeyError as exc:
         raise RuntimeError(f'unknown owner uid: {owner_uid}') from exc
 
@@ -324,7 +452,7 @@ def _validate_user_context(args: argparse.Namespace) -> tuple[int, int, Path]:
     return owner_uid, owner_gid, user_home
 
 
-def _validate_config_paths(args: argparse.Namespace, user_home: Path) -> Path:
+def _validate_config_paths(args: _RuntimeArgs, user_home: Path) -> Path:
     config_dir = Path(args.config_dir).resolve(strict=False)
     if config_dir.name != CONFIG_DIR_NAME or not _path_is_within(config_dir, user_home):
         raise RuntimeError(
@@ -341,9 +469,9 @@ def _validate_config_paths(args: argparse.Namespace, user_home: Path) -> Path:
     provided_paths = {
         'ready file': Path(args.ready_file).resolve(strict=False),
         'stop file': Path(args.stop_file).resolve(strict=False),
-        'hosts update file': Path(args.hosts_file).resolve(strict=False)
-        if getattr(args, 'hosts_file', None)
-        else None,
+        'hosts update file': (
+            Path(args.hosts_file).resolve(strict=False) if args.hosts_file else None
+        ),
     }
     for label, expected in expected_paths.items():
         provided = provided_paths[label]
@@ -376,7 +504,7 @@ def _safe_write_user_file(path: Path, content: str, uid: int, gid: int, mode: in
         os.close(fd)
 
 
-def _validate_runtime_args(args: argparse.Namespace) -> tuple[int, int]:
+def _validate_runtime_args(args: _RuntimeArgs) -> tuple[int, int]:
     if args.backend_host != '127.0.0.1':
         raise RuntimeError('backend host must be 127.0.0.1')
     if args.backend_port != BACKEND_PORT:
@@ -400,7 +528,7 @@ def _validate_install_system_ca_args(ca_cert: str | None) -> Path:
         return ca_path
 
     try:
-        user_home = Path(pwd.getpwuid(invoking_uid).pw_dir).resolve()
+        user_home = Path(_pwd_entry(invoking_uid).pw_dir).resolve()
     except KeyError as exc:
         raise RuntimeError(f'unknown invoking uid: {invoking_uid}') from exc
     if (
@@ -466,11 +594,13 @@ def _validate_hosts(hosts: set[str]) -> set[str]:
 
 def _read_hosts_update(path: Path) -> set[str]:
     _reject_symlink(path, 'hosts update file')
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    raw_hosts = payload.get('hosts') if isinstance(payload, dict) else payload
-    if not isinstance(raw_hosts, list):
+    payload: object = json.loads(path.read_text(encoding='utf-8'))
+    payload_map = _json_object(payload)
+    raw_hosts: object = payload_map.get('hosts') if payload_map is not None else payload
+    hosts = _object_list(raw_hosts)
+    if hosts is None:
         raise RuntimeError('hosts update must contain a hosts list')
-    return _validate_hosts({str(host) for host in raw_hosts})
+    return _validate_hosts({str(host) for host in hosts})
 
 
 def _clean_hosts_content(content: str) -> str:
@@ -547,24 +677,19 @@ def _system_hosts_path_is_read_only() -> bool:
     )
 
 
-def _host_failure_payload(args: argparse.Namespace, exc: BaseException) -> dict:
-    payload = {
+def _host_failure_payload(args: _RuntimeArgs, exc: BaseException) -> JsonObject:
+    payload: JsonObject = {
         'ok': False,
         'error': str(exc),
         'hosts_path': str(HOSTS_FILE),
     }
     if _is_read_only_filesystem_error(exc):
-        payload.update(
-            {
-                'code': 'linux_hosts_read_only',
-                'system_read_only': _system_hosts_path_is_read_only(),
-                'hosts': sorted(
-                    host.strip().lower()
-                    for host in str(getattr(args, 'hosts', '') or '').split(',')
-                    if host.strip()
-                ),
-            }
+        payload['code'] = 'linux_hosts_read_only'
+        payload['system_read_only'] = _system_hosts_path_is_read_only()
+        hosts = sorted(
+            host.strip().lower() for host in str(args.hosts or '').split(',') if host.strip()
         )
+        payload['hosts'] = _json_strings(hosts)
     return payload
 
 
@@ -720,7 +845,7 @@ def _apply_hosts_delta(previous_hosts: set[str], updated_hosts: set[str]) -> Non
     for line in existing.splitlines(keepends=True):
         active = line.split('#', 1)[0].strip()
         parts = active.split()
-        line_hosts = {part.lower() for part in parts[1:]} if len(parts) >= 2 else set()
+        line_hosts: set[str] = {part.lower() for part in parts[1:]} if len(parts) >= 2 else set()
         if HOSTS_MARKER in line and line_hosts & removed_hosts:
             continue
         retained_lines.append(line)
@@ -826,13 +951,13 @@ def _target_has_ca(source: Path, target: Path) -> bool:
         return False
 
 
-def _install_system_ca(ca_cert: Path) -> dict:
+def _install_system_ca(ca_cert: Path) -> JsonObject:
     """Install Fleasion's CA into common Linux system trust stores."""
     if not ca_cert.is_file():
         return {'ok': False, 'error': f'CA certificate not found: {ca_cert}'}
 
     stores: list[str] = []
-    failures: list[dict] = []
+    failures: list[JsonObject] = []
     update_ca_certificates = shutil.which('update-ca-certificates')
     update_ca_trust = shutil.which('update-ca-trust')
 
@@ -871,9 +996,17 @@ def _install_system_ca(ca_cert: Path) -> dict:
             failures.append({'store': 'update-ca-trust', 'error': str(exc)})
 
     if stores:
-        return {'ok': True, 'stores': stores, 'failures': failures}
+        return {
+            'ok': True,
+            'stores': _json_strings(stores),
+            'failures': _json_values(failures),
+        }
     if failures:
-        return {'ok': False, 'failures': failures, 'error': failures[0].get('error')}
+        return {
+            'ok': False,
+            'failures': _json_values(failures),
+            'error': failures[0].get('error'),
+        }
     return {'ok': False, 'error': 'no_supported_system_trust_store'}
 
 
@@ -888,7 +1021,7 @@ def _system_ca_is_current(ca_cert: Path) -> bool:
 
 def _ensure_system_ca_for_hosts(
     hosts: set[str], ca_cert: str | None, *, install: bool = False
-) -> dict | None:
+) -> JsonObject | None:
     """Install/verify system trust when WebKit-visible API hosts are requested."""
     if PROFILE_API_HOST not in hosts:
         return None
@@ -898,7 +1031,7 @@ def _ensure_system_ca_for_hosts(
     if install:
         return _install_system_ca(ca_path)
     if _system_ca_is_current(ca_path):
-        return {'ok': True, 'stores': ['system-ca:already-current']}
+        return {'ok': True, 'stores': _json_strings(['system-ca:already-current'])}
     return {'ok': False, 'error': 'system_ca_not_installed'}
 
 
@@ -907,7 +1040,7 @@ def _repair_config_ownership(config_dir: Path, uid: int, gid: int) -> None:
     if uid <= 0 or gid < 0:
         return
     try:
-        user_home = Path(pwd.getpwuid(uid).pw_dir).resolve()
+        user_home = Path(_pwd_entry(uid).pw_dir).resolve()
         config_resolved = config_dir.resolve()
     except Exception as exc:
         _log(f'Skipped config ownership repair: {exc}')
@@ -946,13 +1079,13 @@ def _repair_sober_cert_ownership(uid: int, gid: int) -> None:
     if uid <= 0 or gid < 0:
         return
     try:
-        user_home = Path(pwd.getpwuid(uid).pw_dir).resolve()
+        user_home = Path(_pwd_entry(uid).pw_dir).resolve()
     except Exception as exc:
         _log(f'Skipped Sober cert ownership repair: {exc}')
         return
 
     sober_data = user_home / '.var' / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober'
-    candidates = []
+    candidates: list[Path] = []
     for resource_dir in (sober_data / 'asset_overlay', sober_data / 'exe'):
         candidates.extend((resource_dir, resource_dir / 'ssl', resource_dir / 'ssl' / 'cacert.pem'))
 
@@ -1009,7 +1142,7 @@ async def _relay_client(
     )
 
 
-async def _serve(args: argparse.Namespace) -> int:
+async def _serve(args: _RuntimeArgs) -> int:
     owner_uid, owner_gid = _validate_runtime_args(args)
     hosts = _validate_hosts(
         {host.strip().lower() for host in args.hosts.split(',') if host.strip()}
@@ -1026,7 +1159,7 @@ async def _serve(args: argparse.Namespace) -> int:
     if system_ca_details is not None:
         details = system_ca_details
         if details.get('ok'):
-            stores = ', '.join(details.get('stores') or [])
+            stores = ', '.join(_string_list(details.get('stores')))
             _log(f'Linux system trust store ready{f" ({stores})" if stores else ""}')
         else:
             error = details.get('error') or details
@@ -1046,7 +1179,7 @@ async def _serve(args: argparse.Namespace) -> int:
 
     read_only_hosts_mode = _apply_hosts_or_use_existing_read_only(hosts)
     _flush_dns()
-    ready_payload = {
+    ready_payload: JsonObject = {
         'ok': True,
         'pid': os.getpid(),
         'read_only_hosts_mode': read_only_hosts_mode,
@@ -1056,7 +1189,7 @@ async def _serve(args: argparse.Namespace) -> int:
     _safe_write_user_file(ready_file, json.dumps(ready_payload), owner_uid, owner_gid)
     _log(f'Applied {len(hosts)} hosts entries')
 
-    current_hosts = set(hosts)
+    current_hosts: set[str] = set(hosts)
     hosts_file = Path(args.hosts_file) if args.hosts_file else None
     hosts_file_mtime_ns: int | None = None
 
@@ -1144,6 +1277,7 @@ def main() -> None:
     parser.add_argument('--parent-pid', type=int, default=0)
     parser.add_argument('--parent-start-time')
     args = parser.parse_args()
+    runtime_args = _runtime_args(args)
 
     if hasattr(os, 'geteuid') and os.geteuid() != 0:
         raise SystemExit('Fleasion Linux proxy helper must run as root')
@@ -1192,29 +1326,29 @@ def main() -> None:
         raise SystemExit('missing required proxy helper arguments')
 
     try:
-        owner_uid, owner_gid = _validate_runtime_args(args)
+        owner_uid, owner_gid = _validate_runtime_args(runtime_args)
     except Exception as exc:
         raise SystemExit(str(exc))
 
     shutting_down = False
 
-    def _handle_signal(_signum, _frame) -> None:
+    def _handle_signal(_signum: int, _frame: FrameType | None) -> None:
         nonlocal shutting_down
         shutting_down = True
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
-    args.shutdown_requested = lambda: shutting_down
+    runtime_args.shutdown_requested = lambda: shutting_down
 
     try:
-        raise SystemExit(asyncio.run(_serve(args)))
+        raise SystemExit(asyncio.run(_serve(runtime_args)))
     except Exception as exc:
         if args.ready_file:
             ready_file = Path(args.ready_file)
             with contextlib.suppress(OSError):
                 _safe_write_user_file(
                     ready_file,
-                    json.dumps(_host_failure_payload(args, exc)),
+                    json.dumps(_host_failure_payload(runtime_args, exc)),
                     owner_uid,
                     owner_gid,
                 )

@@ -10,6 +10,7 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from packaging.version import InvalidVersion, Version
 
@@ -18,11 +19,21 @@ _UNKNOWN_VERSION = '0.0.0'
 _GITHUB_SHA_PATTERN = re.compile(r'[0-9a-fA-F]{7,64}')
 
 
+if TYPE_CHECKING:
+
+    def _object_dict(value: object) -> dict[str, object] | None: ...
+else:
+
+    def _object_dict(value: object) -> dict[str, object] | None:
+        return value if isinstance(value, dict) else None
+
+
 def read_project_version(pyproject_path: Path = Path('pyproject.toml')) -> str:
     """Read and validate the canonical version from a project file."""
-    pyproject = tomllib.loads(pyproject_path.read_text(encoding='utf-8'))
-    project = pyproject.get('project')
-    if not isinstance(project, dict) or project.get('name') != _DISTRIBUTION_NAME:
+    pyproject_value: object = tomllib.loads(pyproject_path.read_text(encoding='utf-8'))
+    pyproject = _object_dict(pyproject_value)
+    project = _object_dict(pyproject.get('project')) if pyproject is not None else None
+    if project is None or project.get('name') != _DISTRIBUTION_NAME:
         raise ValueError(f'{pyproject_path} does not describe the {_DISTRIBUTION_NAME} project.')
 
     project_version = project.get('version')

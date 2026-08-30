@@ -1,7 +1,5 @@
 """Watch the Fleasion config folder for externally copied configuration files."""
 
-from ..localization import tr
-
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -9,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
+from ..localization import tr
 from ..utils import log_buffer
 from .manager import MAX_CONFIG_ASSET_FOLDER_DEPTH, ConfigManager
 
@@ -37,7 +36,7 @@ class ConfigFolderWatcher(QObject):
         *,
         folder: Path | None = None,
         parent_provider: Callable[[], QWidget | None] | None = None,
-    ):
+    ) -> None:
         super().__init__(parent)
         self.config_manager = config_manager
         self.folder = Path(config_manager.configs_folder if folder is None else folder)
@@ -320,5 +319,4 @@ class ConfigFolderWatcher(QObject):
                     return parent
             except Exception:
                 pass
-        app = QApplication.instance()
-        return app.activeWindow() if app is not None else None
+        return QApplication.activeWindow()

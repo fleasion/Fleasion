@@ -1,7 +1,20 @@
+from typing import TypedDict
+
 # Rig data extracted from plugin.rbxmx (Drone's R15↔R6 animation converter plugin).
 # Parts: {name: [X,Y,Z, R00..R22]}  Joints: {part1_name: {name, c0, c1, part0_name, part1_name}}
 
-R6_PARTS = {
+type CFrame = list[float]
+
+
+class Joint(TypedDict):
+    name: str
+    c0: CFrame
+    c1: CFrame
+    part0_name: str
+    part1_name: str
+
+
+R6_PARTS: dict[str, CFrame] = {
     'HumanoidRootPart': [
         -30.5359077,
         17.4934483,
@@ -102,7 +115,7 @@ R6_PARTS = {
     ],
 }
 
-R6_JOINTS = {
+R6_JOINTS: dict[str, Joint] = {
     'Torso': {
         'name': 'Root Hip',
         'c0': [0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, -0.0],
@@ -251,7 +264,7 @@ R6_JOINTS = {
     },
 }
 
-R15_PARTS = {
+R15_PARTS: dict[str, CFrame] = {
     'HumanoidRootPart': [
         -32.125,
         3.00001788,
@@ -478,7 +491,7 @@ R15_PARTS = {
     ],
 }
 
-R15_JOINTS = {
+R15_JOINTS: dict[str, Joint] = {
     'LowerTorso': {
         'name': 'Root',
         'c0': [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],

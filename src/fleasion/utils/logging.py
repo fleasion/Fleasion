@@ -12,7 +12,7 @@ MAX_LOG_FILE_BYTES = 1 * 1024 * 1024
 class LogBuffer:
     """Thread-safe log buffer with batched callback notifications."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._buffer: list[str] = []
         self._callbacks: list[Any] = []
         self._lock = threading.Lock()
@@ -21,14 +21,14 @@ class LogBuffer:
         self._batch_timer = None
         self._prepare_log_file()
 
-    def _prepare_log_file(self):
+    def _prepare_log_file(self) -> None:
         try:
             LOGS_DIR.mkdir(parents=True, exist_ok=True)
             self._rotate_log_file_if_needed()
         except OSError:
             pass
 
-    def _rotate_log_file_if_needed(self, incoming_bytes: int = 0):
+    def _rotate_log_file_if_needed(self, incoming_bytes: int = 0) -> None:
         if not LOG_FILE.exists():
             return
         if LOG_FILE.stat().st_size + incoming_bytes <= MAX_LOG_FILE_BYTES:
@@ -37,7 +37,7 @@ class LogBuffer:
         rotated.unlink(missing_ok=True)
         LOG_FILE.replace(rotated)
 
-    def log(self, category: str, message: str):
+    def log(self, category: str, message: str) -> None:
         """Add a log entry (callbacks are batched to reduce overhead)."""
         now = datetime.now()
         timestamp = now.strftime('%H:%M:%S')
@@ -64,7 +64,7 @@ class LogBuffer:
                 self._batch_timer.daemon = True
                 self._batch_timer.start()
 
-    def _notify_callbacks(self):
+    def _notify_callbacks(self) -> None:
         """Notify all callbacks (called after batch window)."""
         with self._lock:
             self._pending_notifications = False
@@ -85,11 +85,11 @@ class LogBuffer:
         """Get all logs as a single text string."""
         return '\n'.join(self._buffer) if self._buffer else 'No logs yet.'
 
-    def add_callback(self, callback: Any):
+    def add_callback(self, callback: Any) -> None:
         """Add a callback to be notified when new logs are added."""
         self._callbacks.append(callback)
 
-    def remove_callback(self, callback: Any):
+    def remove_callback(self, callback: Any) -> None:
         """Remove a callback."""
         if callback in self._callbacks:
             self._callbacks.remove(callback)

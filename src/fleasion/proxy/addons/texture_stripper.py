@@ -4,6 +4,8 @@ All cross-connection state is held at the class level (singleton dicts) behind a
 threading.Lock so it is safely shared across all MITM thread-pool workers.
 """
 
+from __future__ import annotations
+
 import gzip
 import hashlib
 import io
@@ -12,28 +14,192 @@ import logging
 import time
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Literal, Protocol, TypeIs
 from urllib.parse import urlparse
 
 from ...utils import APP_CACHE_DIR, format_count, log_buffer
 from ...utils.http import http_download_to
 from ..roblox_metadata import strip_roblox_metadata
 
+if TYPE_CHECKING:
+    from ...config.manager import ConfigManager, ReplacementMaps
+
+type _JsonScalar = str | int | float | bool | None
+type _JsonValue = _JsonScalar | list[_JsonValue] | dict[str, _JsonValue]
+type _JsonObject = dict[str, _JsonValue]
+type _JsonList = list[_JsonValue]
+type _BuildType = int | str | None
+type _ReplacementKey = int | str
+type _AnimRequiredRig = str | frozenset[str]
+type _PendingValue = tuple[str, str]
+type _AnimPendingValue = tuple[str, _AnimRequiredRig]
+type _CdnMatch = tuple[str, str | _AnimPendingValue]
+type _MipmapMode = Literal['color', 'normal', 'linear']
+
+_MIPMAP_MODES: dict[int | None, _MipmapMode] = {
+    None: 'color',
+    0: 'color',
+    1: 'normal',
+    2: 'linear',
+}
+
+
+class _CacheManagerLike(Protocol):
+    def get_texturepack_slot_path(self, asset_id: str | int, slot: int) -> Path: ...
+
+
+class _CacheScraperLike(Protocol):
+    cache_manager: _CacheManagerLike
+    _texpack_subasset_lookup: dict[int, tuple[int, int]]
+
+    def prefetch_texpack_layout(self, parent_id: int) -> None: ...
+
+
+if TYPE_CHECKING:
+
+    def _scraper_get_roblosecurity(
+        scraper: _CacheScraperLike, *, wait: bool = False
+    ) -> str | None: ...
+
+    def _scraper_https_get(
+        scraper: _CacheScraperLike,
+        hostname: str,
+        path: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> bytes | None: ...
+
+    def _scraper_https_get_status(
+        scraper: _CacheScraperLike,
+        hostname: str,
+        path: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[bytes | None, int | None]: ...
+
+    def _scraper_fetch_asset_with_place_id_retry(
+        scraper: _CacheScraperLike,
+        asset_id: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[bytes | None, int | None]: ...
+else:
+
+    def _scraper_get_roblosecurity(scraper: _CacheScraperLike, *, wait: bool = False) -> str | None:
+        if wait:
+            return scraper._get_roblosecurity(wait=True)
+        return scraper._get_roblosecurity()
+
+    def _scraper_https_get(
+        scraper: _CacheScraperLike,
+        hostname: str,
+        path: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> bytes | None:
+        return scraper._https_get(hostname, path, extra_headers=extra_headers)
+
+    def _scraper_https_get_status(
+        scraper: _CacheScraperLike,
+        hostname: str,
+        path: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[bytes | None, int | None]:
+        return scraper._https_get(
+            hostname,
+            path,
+            extra_headers=extra_headers,
+            return_status=True,
+        )
+
+    def _scraper_fetch_asset_with_place_id_retry(
+        scraper: _CacheScraperLike,
+        asset_id: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[bytes | None, int | None]:
+        return scraper._fetch_asset_with_place_id_retry(
+            asset_id,
+            extra_headers=extra_headers,
+        )
+
+
+def _is_object_list(value: object) -> TypeIs[list[object]]:
+    return isinstance(value, list)
+
+
+def _is_object_dict(value: object) -> TypeIs[dict[object, object]]:
+    return isinstance(value, dict)
+
+
+def _is_json_value(value: object) -> TypeIs[_JsonValue]:
+    if value is None or isinstance(value, str | int | float | bool):
+        return True
+    if _is_object_list(value):
+        return all(_is_json_value(item) for item in value)
+    if _is_object_dict(value):
+        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+    return False
+
+
+def _preserve_json(value: object) -> _JsonValue:
+    if TYPE_CHECKING:
+        assert _is_json_value(value)
+    return value
+
+
+def _preserve_replacement_key(value: object) -> _ReplacementKey:
+    if TYPE_CHECKING:
+        assert isinstance(value, str | int)
+    return value
+
+
+def _preserve_asset_id(value: object) -> _ReplacementKey | None:
+    if TYPE_CHECKING:
+        assert value is None or isinstance(value, str | int)
+    return value
+
+
+def _preserve_location(value: object) -> str | None:
+    if TYPE_CHECKING:
+        assert value is None or isinstance(value, str)
+    return value
+
+
+def _is_json_object(value: object) -> TypeIs[_JsonObject]:
+    if not _is_object_dict(value):
+        return False
+    return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+
+
+def _preserve_json_object(value: object) -> _JsonObject:
+    if TYPE_CHECKING:
+        assert _is_json_object(value)
+    return value
+
+
+def _preserve_optional_str(value: object) -> str | None:
+    if TYPE_CHECKING:
+        assert value is None or isinstance(value, str)
+    return value
+
+
+def _mipmap_mode(map_index: int | None) -> _MipmapMode:
+    return _MIPMAP_MODES.get(map_index, 'color')
+
+
 # Use orjson when available (2-3x faster JSON parse)
 try:
     import orjson
 
-    def _loads(data: bytes):
-        return orjson.loads(data)
+    def _loads(data: bytes) -> _JsonValue:
+        return _preserve_json(orjson.loads(data))
 
-    def _dumps(obj) -> bytes:
+    def _dumps(obj: _JsonValue) -> bytes:
         return orjson.dumps(obj)
 except ImportError:
 
-    def _loads(data: bytes):
-        return json.loads(data)
+    def _loads(data: bytes) -> _JsonValue:
+        return _preserve_json(json.loads(data))
 
-    def _dumps(obj) -> bytes:
+    def _dumps(obj: _JsonValue) -> bytes:
         return json.dumps(obj, separators=(',', ':')).encode()
 
 
@@ -56,7 +222,7 @@ def _texpack_slot_label(slot: int | None) -> str:
     return f'{slot}:{name}'
 
 
-def _short_value(value, limit: int = 120) -> str:
+def _short_value(value: object, limit: int = 120) -> str:
     if value is None:
         return 'remove/default'
     text = str(value)
@@ -65,7 +231,7 @@ def _short_value(value, limit: int = 120) -> str:
     return text[: limit - 3] + '...'
 
 
-def _file_value(value) -> str:
+def _file_value(value: object) -> str:
     if value is None:
         return 'remove/default'
     text = str(value)
@@ -77,7 +243,7 @@ def _file_value(value) -> str:
         return _short_value(text)
 
 
-def _b64decode_padded(value: str) -> bytes:
+def _b64decode_padded(value: object) -> bytes:
     import base64 as _b64
 
     raw = str(value).encode('ascii', errors='ignore')
@@ -85,7 +251,7 @@ def _b64decode_padded(value: str) -> bytes:
     return _b64.urlsafe_b64decode(raw)
 
 
-def _normalized_build_type(value):
+def _normalized_build_type(value: object) -> _BuildType:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -101,7 +267,7 @@ def _normalized_build_type(value):
     return ''.join(ch for ch in text.lower() if ch.isalnum())
 
 
-def _texpack_slot_from_build_type(value) -> int | None:
+def _texpack_slot_from_build_type(value: object) -> int | None:
     normalized = _normalized_build_type(value)
     if isinstance(normalized, int):
         return normalized if 0 <= normalized <= 2 else None
@@ -123,7 +289,7 @@ def _texpack_slot_from_build_type(value) -> int | None:
     return None
 
 
-def _texpack_slot_from_request(e: dict) -> int | None:
+def _texpack_slot_from_request(e: _JsonObject) -> int | None:
     for key in (
         'requestedBuildType',
         'buildType',
@@ -138,7 +304,7 @@ def _texpack_slot_from_request(e: dict) -> int | None:
     return None
 
 
-def _texpack_build_key(e: dict):
+def _texpack_build_key(e: _JsonObject) -> _BuildType:
     for key in (
         'requestedBuildType',
         'buildType',
@@ -153,7 +319,7 @@ def _texpack_build_key(e: dict):
     return None
 
 
-def _representation_matches_requested(representation: dict, requested) -> bool:
+def _representation_matches_requested(representation: _JsonObject, requested: _BuildType) -> bool:
     for key in (
         'requestedBuildType',
         'buildType',
@@ -168,7 +334,7 @@ def _representation_matches_requested(representation: dict, requested) -> bool:
     return False
 
 
-def _select_content_representation(e: dict) -> Optional[dict]:
+def _select_content_representation(e: _JsonObject) -> _JsonObject | None:
     crpl = e.get('contentRepresentationPriorityList')
     if not crpl:
         return None
@@ -195,7 +361,7 @@ def _select_content_representation(e: dict) -> Optional[dict]:
     return None
 
 
-def _decode_fidelity_slot_quality(fidelity_b64: str | None) -> tuple[int, int] | None:
+def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int] | None:
     if not fidelity_b64:
         return None
     try:
@@ -211,7 +377,7 @@ def _decode_fidelity_slot_quality(fidelity_b64: str | None) -> tuple[int, int] |
     return slot, quality
 
 
-def _decode_texpack_slot_quality(e: dict) -> tuple[int, int] | None:
+def _decode_texpack_slot_quality(e: _JsonObject) -> tuple[int, int] | None:
     request_slot = _texpack_slot_from_request(e)
     if request_slot is not None:
         return request_slot, 0
@@ -221,11 +387,15 @@ def _decode_texpack_slot_quality(e: dict) -> tuple[int, int] | None:
     return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
-def _decode_selected_representation_slot_quality(e: dict) -> tuple[int, int] | None:
+def _decode_selected_representation_slot_quality(e: _JsonObject) -> tuple[int, int] | None:
     representation = e.get('contentRepresentationSpecifier')
     if not isinstance(representation, dict):
         return None
     return _decode_fidelity_slot_quality(representation.get('fidelity'))
+
+
+if TYPE_CHECKING:
+    _ = _decode_selected_representation_slot_quality
 
 
 def _decompress_cdn_response(data: bytes) -> bytes:
@@ -242,7 +412,12 @@ def _decompress_cdn_response(data: bytes) -> bytes:
 
 def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool = False) -> bytes:
     from ...cache.tools.solidmodel_converter.converter import deserialize_rbxm
-    from ...cache.tools.solidmodel_converter.csg_mesh import _detect_csgmdl_version
+
+    if TYPE_CHECKING:
+
+        def _detect_csgmdl_version(data: bytes) -> int | None: ...
+    else:
+        from ...cache.tools.solidmodel_converter.csg_mesh import _detect_csgmdl_version
     from ...cache.tools.solidmodel_converter.obj_to_csg import export_csg_mesh
     from ...cache.tools.solidmodel_converter.rbxm.serializer import write_rbxm
     from ...cache.tools.solidmodel_converter.rbxm.types import (
@@ -297,7 +472,7 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool
     return write_rbxm(doc)
 
 
-def _try_mesh_to_obj(path: Path, ctx: str) -> Optional[Path]:
+def _try_mesh_to_obj(path: Path, ctx: str) -> Path | None:
     try:
         from ...cache.tools.solidmodel_converter.mesh_intermediary import (
             mesh_file_to_cached_obj,
@@ -347,9 +522,13 @@ def _is_csgmdl_bin(path: Path) -> bool:
                 prop = inst.properties.get('MeshData')
                 if prop is not None and prop.value:
                     # Check if MeshData looks like CSGMDL
-                    from ...cache.tools.solidmodel_converter.csg_mesh import (
-                        _detect_csgmdl_version,
-                    )
+                    if TYPE_CHECKING:
+
+                        def _detect_csgmdl_version(data: bytes) -> int | None: ...
+                    else:
+                        from ...cache.tools.solidmodel_converter.csg_mesh import (
+                            _detect_csgmdl_version,
+                        )
 
                     mesh_bytes = (
                         prop.value
@@ -363,7 +542,7 @@ def _is_csgmdl_bin(path: Path) -> bool:
         return False
 
 
-def _try_bin_to_obj(path: Path, ctx: str) -> Optional[Path]:
+def _try_bin_to_obj(path: Path, ctx: str) -> Path | None:
     try:
         from ...cache.tools.solidmodel_converter.mesh_intermediary import (
             bin_file_to_cached_obj,
@@ -375,7 +554,7 @@ def _try_bin_to_obj(path: Path, ctx: str) -> Optional[Path]:
         return None
 
 
-def _try_rbxmx_to_obj(path: Path, ctx: str) -> Optional[Path]:
+def _try_rbxmx_to_obj(path: Path, ctx: str) -> Path | None:
     try:
         from ...cache.tools.solidmodel_converter.mesh_intermediary import (
             rbxmx_file_to_cached_obj,
@@ -417,16 +596,16 @@ class TextureStripper:
 
     # ── Shared singleton state (class-level) ──────────────────────────────
     _lock: Lock = Lock()
-    _pending: Dict[str, Tuple[str, str]] = {}  # requestId -> (kind, value)
-    _cdn_redirects: Dict[str, str] = {}  # base_cdn_url -> redirect_url
-    _local_redirects: Dict[str, str] = {}  # base_cdn_url -> local_path
-    _solidmodel_injections: Dict[str, str] = {}  # base_cdn_url -> obj_path
-    _solidmodel_force_v3: set = set()  # base_cdn_url values that should force v3 CSG export
-    _batch_generations: Dict[str, int] = {}  # batch_id -> route generation
+    _pending: dict[str, tuple[str, str]] = {}  # requestId -> (kind, value)
+    _cdn_redirects: dict[str, str] = {}  # base_cdn_url -> redirect_url
+    _local_redirects: dict[str, str] = {}  # base_cdn_url -> local_path
+    _solidmodel_injections: dict[str, str] = {}  # base_cdn_url -> obj_path
+    _solidmodel_force_v3: set[str] = set()  # base_cdn_url values that should force v3 CSG export
+    _batch_generations: dict[str, int] = {}  # batch_id -> route generation
     _routes_generation: int = 0
     # ─────────────────────────────────────────────────────────────────────
 
-    ASSET_TYPES: Dict[int, str] = {
+    ASSET_TYPES: dict[int, str] = {
         1: 'Image',
         2: 'TShirt',
         3: 'Audio',
@@ -502,13 +681,15 @@ class TextureStripper:
         79: 'DynamicHead',
         80: 'CodeSnippet',
     }
-    _REVERSE: Dict[str, int] = {name.lower(): tid for tid, name in ASSET_TYPES.items()}
+    _REVERSE: dict[str, int] = {name.lower(): tid for tid, name in ASSET_TYPES.items()}
 
-    def __init__(self, config_manager) -> None:
+    def __init__(self, config_manager: ConfigManager) -> None:
         self.config_manager = config_manager
-        self._cache_scraper = None  # Set by ProxyMaster after construction
+        self._cache_scraper: _CacheScraperLike | None = (
+            None  # Set by ProxyMaster after construction
+        )
         self._precheck_state_lock = Lock()
-        self._precheck_retry_after: Dict[int, float] = {}
+        self._precheck_retry_after: dict[int, float] = {}
         self._precheck_network_failure_count = 0
         self._seen_replacements_generation = getattr(
             config_manager, 'replacements_generation', None
@@ -557,7 +738,7 @@ class TextureStripper:
             self._batch_generations[batch_id] = generation
             return generation
 
-    def _queue_pending(self, req_id: str, value: Tuple[str, str]) -> bool:
+    def _queue_pending(self, req_id: str, value: _PendingValue) -> bool:
         batch_id = req_id.split('_', 1)[0]
         with self._lock:
             generation = self._batch_generations.get(batch_id)
@@ -566,7 +747,7 @@ class TextureStripper:
             self._pending[req_id] = value
             return True
 
-    def _queue_anim_pending(self, req_id: str, value: Tuple[str, str]) -> bool:
+    def _queue_anim_pending(self, req_id: str, value: _AnimPendingValue) -> bool:
         batch_id = req_id.split('_', 1)[0]
         with self._lock:
             generation = self._batch_generations.get(batch_id)
@@ -576,17 +757,17 @@ class TextureStripper:
                 self._anim_local_pending[req_id] = value
             return True
 
-    def set_cache_scraper(self, scraper) -> None:
+    def set_cache_scraper(self, scraper: _CacheScraperLike) -> None:
         """Wire in the CacheScraper for place-ID lookups on replacement assets."""
         self._cache_scraper = scraper
 
     # Pre-downloaded private replacement assets: replacement_id -> local file path.
     # Populated eagerly at proxy startup by precheck_replacements().
-    _predownloaded: Dict[int, str] = {}
+    _predownloaded: dict[int, str] = {}
     # IDs confirmed publicly accessible (no pre-download needed).
-    _checked_public: set = set()
+    _checked_public: set[int] = set()
     # IDs currently being checked in a precheck thread (to avoid duplicate spawns).
-    _precheck_pending: set = set()
+    _precheck_pending: set[int] = set()
 
     _PREDOWNLOAD_DIR: Path = APP_CACHE_DIR / 'predownloaded'
     _PRECHECK_NETWORK_RETRY_BASE_SECONDS = 120.0
@@ -594,27 +775,27 @@ class TextureStripper:
     _PRECHECK_HTTP_RETRY_SECONDS = 15 * 60.0
 
     # Animation type IDs (main + all subtypes)
-    _ANIM_TYPE_IDS: frozenset = frozenset({24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78})
+    _ANIM_TYPE_IDS: frozenset[int] = frozenset({24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78})
     _CONV_CACHE_DIR: Path = APP_CACHE_DIR / 'rig_converted'
 
     # Virtual rig-filter type keys -> required original rig ('R6', 'R15', 'unknown')
-    _VIRTUAL_ANIM_RIG: Dict[str, str] = {
+    _VIRTUAL_ANIM_RIG: dict[str, str] = {
         'R6Animation': 'R6',
         'R15Animation': 'R15',
         'NonPlayerAnimation': 'unknown',
     }
 
     # rig of replacement local file, keyed by normalised path string
-    _anim_repl_rig: Dict[str, str] = {}
+    _anim_repl_rig: dict[str, str] = {}
     # converted file path, keyed by f'{content_hash16}_{target_rig}'
-    _anim_conv_paths: Dict[str, str] = {}
+    _anim_conv_paths: dict[str, str] = {}
     # CDN URLs for animation replacements that need upstream rig detection before serving.
     # Populated by process_batch_response; checked by check_cdn_request.
     # These do NOT short-circuit - upstream response is read to detect original rig.
     # Value: (local_path, required_rig) where required_rig is 'R6'|'R15'|'unknown'|'any'
-    _anim_rig_local: Dict[str, Tuple[str, str]] = {}  # base_cdn_url -> (local_path, required_rig)
+    _anim_rig_local: dict[str, _AnimPendingValue] = {}  # base_cdn_url -> (local_path, required_rig)
     # pending_key -> (local_path, required_rig)
-    _anim_local_pending: Dict[str, Tuple[str, str]] = {}
+    _anim_local_pending: dict[str, _AnimPendingValue] = {}
     # separate lock for rig-conversion state (avoids holding _lock during file I/O)
     _anim_lock: Lock = Lock()
 
@@ -664,8 +845,8 @@ class TextureStripper:
 
         self._PREDOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-        cookie = scraper._get_roblosecurity(wait=True)
-        extra: dict = {}
+        cookie = _scraper_get_roblosecurity(scraper, wait=True)
+        extra: dict[str, str] = {}
         if cookie:
             extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
 
@@ -689,11 +870,11 @@ class TextureStripper:
             # Quick accessibility check — needs auth cookie just to use the API.
             # A 200 here means the asset is publicly downloadable (no place-ID
             # needed); the cookie is required for API auth, not ownership.
-            _data, status = scraper._https_get(
+            _data, status = _scraper_https_get_status(
+                scraper,
                 'assetdelivery.roblox.com',
                 f'/v1/asset/?id={target_id}',
                 extra_headers=dict(extra) if extra else None,
-                return_status=True,
             )
             if _data:
                 # 200 — publicly accessible.
@@ -759,7 +940,8 @@ class TextureStripper:
                 'Replacer',
                 f'Replacement asset {target_id} is private, pre-downloading...',
             )
-            data, dl_status = scraper._fetch_asset_with_place_id_retry(
+            data, dl_status = _scraper_fetch_asset_with_place_id_retry(
+                scraper,
                 str(target_id),
                 extra_headers=dict(extra) if extra else None,
             )
@@ -822,7 +1004,7 @@ class TextureStripper:
             f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed',
         )
 
-    def _precheck_texpack_layouts(self, replacements_tuple: tuple) -> None:
+    def _precheck_texpack_layouts(self, replacements_tuple: ReplacementMaps) -> None:
         """Pre-fetch layouts for pack-specific ORM slot keys in any replacement mode."""
         scraper = self._cache_scraper
         if scraper is None or not hasattr(scraper, 'prefetch_texpack_layout'):
@@ -864,9 +1046,10 @@ class TextureStripper:
         if scraper is None:
             return False
         try:
-            cookie = scraper._get_roblosecurity()
+            cookie = _scraper_get_roblosecurity(scraper)
             extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else {}
-            data = scraper._https_get(
+            data = _scraper_https_get(
+                scraper,
                 'economy.roblox.com',
                 f'/v2/assets/{asset_id}/details',
                 extra_headers=extra or None,
@@ -880,7 +1063,7 @@ class TextureStripper:
             pass
         return False
 
-    def _is_anim_replacement_key(self, key) -> bool:
+    def _is_anim_replacement_key(self, key: object) -> bool:
         """Return True if this local-replacement key targets an animation asset."""
         # All animation-related string keys: virtual rig-filter types + every
         # named animation asset type from ASSET_TYPES
@@ -894,7 +1077,7 @@ class TextureStripper:
             return False
         # Numeric asset ID — look up via economy API
         try:
-            aid = int(key)
+            aid = int(_preserve_replacement_key(key))
         except TypeError, ValueError:
             return False
         return self._is_anim_asset_id(aid)
@@ -989,7 +1172,7 @@ class TextureStripper:
 
     def _get_or_create_converted(
         self, local_path: str, target_rig: str, data: bytes | None = None
-    ) -> Optional[str]:
+    ) -> str | None:
         """Return path to a rig-converted copy of local_path, creating it if needed."""
         import xml.etree.ElementTree as ET
 
@@ -1037,11 +1220,31 @@ class TextureStripper:
                 xml_data = curve_anim_to_keyframe_xml(xml_data)
 
             # Use the same conversion logic as the misc tab
-            from ...utils.r15_to_r6 import (
-                convert_keyframe_r6_to_r15,
-                convert_keyframe_r15_to_r6,
-                sanitize_xml,
-            )
+            if TYPE_CHECKING:
+
+                def convert_keyframe_r6_to_r15(
+                    keyframe: object,
+                    r6_parts: object,
+                    r6_joints: object,
+                    r15_parts: object,
+                    r15_joints: object,
+                ) -> None: ...
+
+                def convert_keyframe_r15_to_r6(
+                    keyframe: object,
+                    r6_parts: object,
+                    r6_joints: object,
+                    r15_parts: object,
+                    r15_joints: object,
+                ) -> None: ...
+
+                from ...utils.r15_to_r6 import sanitize_xml
+            else:
+                from ...utils.r15_to_r6 import (
+                    convert_keyframe_r6_to_r15,
+                    convert_keyframe_r15_to_r6,
+                    sanitize_xml,
+                )
             from ...utils.rig_data import R6_JOINTS, R6_PARTS, R15_JOINTS, R15_PARTS
 
             root = ET.fromstring(sanitize_xml(xml_data))
@@ -1072,7 +1275,7 @@ class TextureStripper:
 
     def _get_or_create_converted_curve(
         self, local_path: str, target_rig: str, data: bytes | None = None
-    ) -> Optional[str]:
+    ) -> str | None:
         """Return path to a rig-converted CurveAnimation copy of local_path, creating it if needed.
 
         Pipeline: source -> XML (if binary) -> KeyframeSequence (if CurveAnimation)
@@ -1120,11 +1323,31 @@ class TextureStripper:
             # Step 3: Rig-convert if source rig differs from target rig
             import xml.etree.ElementTree as ET
 
-            from ...utils.r15_to_r6 import (
-                convert_keyframe_r6_to_r15,
-                convert_keyframe_r15_to_r6,
-                sanitize_xml,
-            )
+            if TYPE_CHECKING:
+
+                def convert_keyframe_r6_to_r15(
+                    keyframe: object,
+                    r6_parts: object,
+                    r6_joints: object,
+                    r15_parts: object,
+                    r15_joints: object,
+                ) -> None: ...
+
+                def convert_keyframe_r15_to_r6(
+                    keyframe: object,
+                    r6_parts: object,
+                    r6_joints: object,
+                    r15_parts: object,
+                    r15_joints: object,
+                ) -> None: ...
+
+                from ...utils.r15_to_r6 import sanitize_xml
+            else:
+                from ...utils.r15_to_r6 import (
+                    convert_keyframe_r6_to_r15,
+                    convert_keyframe_r15_to_r6,
+                    sanitize_xml,
+                )
             from ...utils.rig_data import R6_JOINTS, R6_PARTS, R15_JOINTS, R15_PARTS
 
             src_rig = detect_rig(xml_data)
@@ -1182,7 +1405,7 @@ class TextureStripper:
             self._anim_repl_rig[local_path] = rig
         return rig
 
-    def _is_anim_entry(self, e: dict) -> bool:
+    def _is_anim_entry(self, e: _JsonObject) -> bool:
         """Return True if batch entry is an animation asset type."""
         tid = e.get('assetTypeId')
         if tid in self._ANIM_TYPE_IDS:
@@ -1198,10 +1421,10 @@ class TextureStripper:
     def process_batch_request(
         self,
         body: bytes,
-        req_headers: dict,
-        replacements_tuple: tuple,
+        req_headers: dict[str, str],
+        replacements_tuple: ReplacementMaps,
         batch_id: str = '',
-    ) -> tuple[bytes, bytes]:
+    ) -> tuple[bytes, bytes] | bytes:
         """Modify batch JSON: removals, ID replacements, CDN/local routing.
 
         Returns ``(modified_body, scraper_body)`` where *scraper_body* has
@@ -1306,7 +1529,7 @@ class TextureStripper:
         modified = False
         # Track original IDs for items that undergo ID replacement so the
         # scraper body can be built with original IDs after the loop.
-        id_swapped: dict[int, int] = {}  # index → original_aid
+        id_swapped: dict[int, _JsonValue] = {}  # index → original_aid
 
         # Convert TexturePack slot removals to blank-placeholder local routes.
         # Dropping a slot from the batch breaks the entire TexturePack in Roblox;
@@ -1355,7 +1578,7 @@ class TextureStripper:
         _texpack_request_slots = self._build_texpack_request_slot_map(data, _slot_target_ids)
 
         orig_len = len(data)
-        filtered_data = []
+        filtered_data: _JsonList = []
         filtered_slots: dict[int, int] = {}
         for old_idx, e in enumerate(data):
             if not isinstance(e, dict):
@@ -1419,7 +1642,7 @@ class TextureStripper:
             _normal_overrides[int(_npk) if _npk.isdigit() else _npk] = _nv
         # Scan both cdn_replacements and local_replacements. Local replacements
         # are processed last so they win on key collisions.
-        _vs2_sources: dict = {**cdn_replacements, **local_replacements}
+        _vs2_sources: dict[_ReplacementKey, str] = {**cdn_replacements, **local_replacements}
         for _ck, _cv in _vs2_sources.items():
             if not isinstance(_ck, str) or ':' not in _ck:
                 continue
@@ -1438,8 +1661,11 @@ class TextureStripper:
                 continue
             # KTX2/KTX paths (e.g. blank placeholder) are not valid scalar PNG
             # sources; treat them as None = zero out the requested ORM channel.
+            cv_value = _preserve_optional_str(_cv)
             _cv_resolved: str | None = (
-                None if (_cv is not None and _cv.lower().endswith(('.ktx2', '.ktx'))) else _cv
+                None
+                if (cv_value is not None and cv_value.lower().endswith(('.ktx2', '.ktx')))
+                else cv_value
             )
             _orm_overrides.setdefault(_pk_key, {})[_ch] = _cv_resolved
         for idx, e in enumerate(data):
@@ -1466,13 +1692,13 @@ class TextureStripper:
             # rule from rewriting the request to a shared asset, otherwise the
             # exact override becomes attached to CDN URLs used by every asset
             # rewritten by that type rule.
-            replacement_key_groups = (
+            replacement_key_groups: tuple[list[_ReplacementKey], ...] = (
                 ([slot_key] if slot_key else []),
                 ([aid] if aid is not None else []),
                 ([wildcard_key] if wildcard_key else []),
                 type_keys,
             )
-            winning_keys = next(
+            winning_keys: list[_ReplacementKey] = next(
                 (
                     keys
                     for keys in replacement_key_groups
@@ -1486,7 +1712,7 @@ class TextureStripper:
                         )
                     )
                 ),
-                [],
+                list[_ReplacementKey](),
             )
             winning_local_key = next(
                 (key for key in winning_keys if key in local_replacements), None
@@ -1520,11 +1746,12 @@ class TextureStripper:
                                     'Replacer',
                                     f'Downloading asset {replacement_id} for KTX2 conversion...',
                                 )
-                                extra_hdrs = {}
-                                cookie = scraper._get_roblosecurity()
+                                extra_hdrs: dict[str, str] = {}
+                                cookie = _scraper_get_roblosecurity(scraper)
                                 if cookie:
                                     extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                                scraped_data, dl_status = scraper._fetch_asset_with_place_id_retry(
+                                scraped_data, _dl_status = _scraper_fetch_asset_with_place_id_retry(
+                                    scraper,
                                     str(replacement_id),
                                     extra_headers=extra_hdrs or None,
                                 )
@@ -1634,7 +1861,7 @@ class TextureStripper:
                     )
                     # Tag animation replacements for upstream rig detection.
                     # Determine required_rig from virtual type keys, or 'any' for normal types.
-                    if aid is not None and self._is_anim_entry(e):
+                    if self._is_anim_entry(e):
                         if str(local_key) in self._VIRTUAL_ANIM_RIG:
                             # Collect all virtual keys in local_replacements pointing to the
                             # same file — user may have "R6Animation, R15Animation" in one rule.
@@ -1673,7 +1900,8 @@ class TextureStripper:
             # so the cache scraper stores content under the original asset IDs.
             if id_swapped:
                 for i, orig_aid in id_swapped.items():
-                    data[i]['assetId'] = orig_aid
+                    item = _preserve_json_object(data[i])
+                    item['assetId'] = orig_aid
                 scraper_body = _dumps(data)
             else:
                 scraper_body = result
@@ -1685,7 +1913,11 @@ class TextureStripper:
     # ------------------------------------------------------------------
 
     def process_batch_response(
-        self, req_body: bytes, resp_body: bytes, req_headers: dict, batch_id: str = ''
+        self,
+        req_body: bytes,
+        resp_body: bytes,
+        req_headers: dict[str, str],
+        batch_id: str = '',
     ) -> None:
         """Commit CDN URL -> redirect/local/solid mappings from batch response."""
         if not resp_body:
@@ -1701,15 +1933,16 @@ class TextureStripper:
         # been filtered/rewritten. Keep an index-aligned copy of outbound
         # requestIds so we can map each response entry back to the right
         # pending route even when response requestIds drift.
-        req_data: list = []
+        req_data: _JsonList = []
         req_ids_by_index: list[str] = []
         if req_body:
             try:
-                req_data = _loads(req_body)
-                if isinstance(req_data, list):
-                    for req_item in req_data:
-                        if isinstance(req_item, dict):
-                            req_ids_by_index.append(str(req_item.get('requestId', '')))
+                loaded_req_data = _loads(req_body)
+                if isinstance(loaded_req_data, list):
+                    req_data = loaded_req_data
+                    for request_entry in req_data:
+                        if isinstance(request_entry, dict):
+                            req_ids_by_index.append(str(request_entry.get('requestId', '')))
                         else:
                             req_ids_by_index.append('')
             except Exception:
@@ -1749,8 +1982,11 @@ class TextureStripper:
             _ch = _GLOBAL_INDEX_CHANNEL.get(_gi)
             if not _ch:
                 continue
+            cv_value = _preserve_optional_str(_cv)
             _cv_resolved: str | None = (
-                None if (_cv is not None and str(_cv).lower().endswith(('.ktx2', '.ktx'))) else _cv
+                None
+                if (cv_value is not None and str(cv_value).lower().endswith(('.ktx2', '.ktx')))
+                else cv_value
             )
             _orm_overrides.setdefault(_pk_key, {})[_ch] = _cv_resolved
 
@@ -1771,7 +2007,7 @@ class TextureStripper:
                 if not isinstance(item, dict):
                     continue
                 req_id_raw = str(item.get('requestId', ''))
-                location = item.get('location')
+                location = _preserve_location(item.get('location'))
                 base_loc = location.split('?')[0] if location else ''
 
                 pending_key = ''
@@ -1788,8 +2024,10 @@ class TextureStripper:
                     if by_request_index in self._pending:
                         pending_key = by_request_index
 
-                req_item = (
-                    req_data[idx] if idx < len(req_data) and isinstance(req_data[idx], dict) else {}
+                req_item: _JsonObject = (
+                    _preserve_json_object(req_data[idx])
+                    if idx < len(req_data) and isinstance(req_data[idx], dict)
+                    else {}
                 )
                 aid = self._normalize_asset_id(req_item.get('assetId'))
                 map_index = _texpack_request_slots.get(idx)
@@ -1879,7 +2117,7 @@ class TextureStripper:
     # CDN request check (called from server MITM thread for Roblox CDN hosts)
     # ------------------------------------------------------------------
 
-    def check_cdn_request(self, host: str, path: str) -> Optional[Tuple[str, str]]:
+    def check_cdn_request(self, host: str, path: str) -> _CdnMatch | None:
         """Returns ('local'|'cdn'|'solid'|'solid_v3'|'anim_rig', value) or None.
 
         'anim_rig' means: let the upstream CDN request proceed normally so server.py
@@ -1889,7 +2127,7 @@ class TextureStripper:
         self._sync_replacements_generation()
         base_url = f'https://{host}{path}'.split('?')[0]
 
-        def _log_cdn_match(action: str, value) -> None:
+        def _log_cdn_match(action: str, value: str | _AnimPendingValue) -> None:
             try:
                 target = value[0] if action == 'anim_rig' and isinstance(value, tuple) else value
                 p = Path(str(target))
@@ -1984,7 +2222,7 @@ class TextureStripper:
     def _convert_texpack_local(local_path: str, map_index: int | None = None) -> str:
         path = Path(local_path)
         ext = path.suffix.lower()
-        mipmap_mode = {0: 'color', 1: 'normal', 2: 'linear'}.get(map_index, 'color')
+        mipmap_mode = _mipmap_mode(map_index)
         if ext == '.ktx2':
             normalized = TextureStripper._normalize_rgba8_ktx2(
                 path,
@@ -2033,7 +2271,9 @@ class TextureStripper:
         return local_path
 
     @staticmethod
-    def _normalize_rgba8_ktx2(path: Path, *, mipmap_mode='color') -> Path:
+    def _normalize_rgba8_ktx2(
+        path: Path, *, mipmap_mode: Literal['color', 'normal', 'linear'] = 'color'
+    ) -> Path:
         """Normalize RGBA8 KTX2 while preserving authored mip chains."""
         try:
             from ...cache.tools.rgba_ktx2 import (
@@ -2076,7 +2316,7 @@ class TextureStripper:
     def _route_cdn(
         self,
         req_id: str,
-        aid,
+        aid: object,
         cdn_url: str,
         is_solidmodel: bool,
         is_texpack: bool = False,
@@ -2163,17 +2403,17 @@ class TextureStripper:
     def _route_local(
         self,
         req_id: str,
-        aid,
+        aid: object,
         local_path: str,
         is_solidmodel: bool,
         is_texpack: bool = False,
-        source_key=None,
+        source_key: object | None = None,
         map_index: int | None = None,
     ) -> None:
         path = Path(local_path)
         ext = path.suffix.lower()
         original_path = path
-        mipmap_mode = {0: 'color', 1: 'normal', 2: 'linear'}.get(map_index, 'color')
+        mipmap_mode = _mipmap_mode(map_index)
         if is_texpack:
             log_buffer.log(
                 'TexPackTrace',
@@ -2227,7 +2467,7 @@ class TextureStripper:
                 )
 
         def _log_local_queued(label: str = 'Queued local') -> None:
-            details = []
+            details: list[str] = []
             if source_key is not None:
                 details.append(f'key={source_key}')
             if map_index is not None:
@@ -2281,11 +2521,11 @@ class TextureStripper:
 
     def _build_orm_composite(
         self,
-        parent_id,
+        parent_id: int | str,
         channel_pngs: dict[str, str | None],
         *,
         normal_source: str | int | None = None,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Build (or retrieve from cache) a composite ORM KTX2 from per-channel PNGs.
 
         *parent_id* is the TexturePack asset ID.  *channel_pngs* maps channel
@@ -2321,8 +2561,7 @@ class TextureStripper:
                     resolved[_ch] = _val
             resolved_normal = normal_source
             if resolved_normal is not None and (
-                isinstance(resolved_normal, int)
-                or (isinstance(resolved_normal, str) and resolved_normal.isdigit())
+                isinstance(resolved_normal, int) or resolved_normal.isdigit()
             ):
                 normal_id = int(resolved_normal)
                 resolved_normal = self._predownloaded.get(normal_id)
@@ -2332,11 +2571,12 @@ class TextureStripper:
                     if not normal_download.exists():
                         scraper = self._cache_scraper
                         if scraper is not None:
-                            extra_headers = {}
-                            cookie = scraper._get_roblosecurity()
+                            extra_headers: dict[str, str] = {}
+                            cookie = _scraper_get_roblosecurity(scraper)
                             if cookie:
                                 extra_headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                            normal_data, _status = scraper._fetch_asset_with_place_id_retry(
+                            normal_data, _status = _scraper_fetch_asset_with_place_id_retry(
+                                scraper,
                                 str(normal_id),
                                 extra_headers=extra_headers or None,
                             )
@@ -2400,7 +2640,7 @@ class TextureStripper:
 
     def _build_texpack_request_slot_map(
         self,
-        data: list,
+        data: _JsonList,
         slot_target_ids: set[int] | None = None,
         infer_repeated_assets: bool = False,
     ) -> dict[int, int]:
@@ -2474,7 +2714,9 @@ class TextureStripper:
 
         return result
 
-    def _should_remove(self, e: dict, removals: set, map_index: int | None = None) -> bool:
+    def _should_remove(
+        self, e: _JsonObject, removals: set[_ReplacementKey], map_index: int | None = None
+    ) -> bool:
         aid = self._normalize_asset_id(e.get('assetId'))
         if map_index is None:
             map_index = self._get_texpack_map_index(e)
@@ -2541,21 +2783,21 @@ class TextureStripper:
             log_buffer.log('TexPack', f'Failed to convert blank placeholder to KTX2: {exc}')
         return None
 
-    def _get_type_keys(self, e: dict) -> list:
-        keys = []
+    def _get_type_keys(self, e: _JsonObject) -> list[_ReplacementKey]:
+        keys: list[_ReplacementKey] = []
         at_id = e.get('assetTypeId')
         if at_id is not None:
-            keys.append(at_id)
+            keys.append(_preserve_replacement_key(at_id))
         at_name = e.get('assetType')
         if at_name:
-            keys.append(at_name)
+            keys.append(_preserve_replacement_key(at_name))
             mapped = self._REVERSE.get(str(at_name).lower())
             if mapped is not None:
                 keys.append(mapped)
         return keys
 
     @staticmethod
-    def _normalize_asset_id(asset_id):
+    def _normalize_asset_id(asset_id: object) -> _ReplacementKey | None:
         """Normalize JSON numeric-string asset IDs to ints for config matching."""
         if isinstance(asset_id, bool):
             return asset_id
@@ -2566,10 +2808,10 @@ class TextureStripper:
                 return int(asset_id)
             except ValueError:
                 return asset_id
-        return asset_id
+        return _preserve_asset_id(asset_id)
 
     @staticmethod
-    def _get_texpack_map_index(e: dict) -> int | None:
+    def _get_texpack_map_index(e: _JsonObject) -> int | None:
         """Return texture map fidelity slot index from the batch item.
 
         Roblox sends a priority list plus a requested build type.  The selected

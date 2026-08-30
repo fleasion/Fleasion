@@ -11,7 +11,16 @@ QOpenGLWidget top-level-window recreation behavior.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImage, QOffscreenSurface, QOpenGLContext, QPainter, QSurfaceFormat
+from PySide6.QtGui import (
+    QCloseEvent,
+    QImage,
+    QOffscreenSurface,
+    QOpenGLContext,
+    QPainter,
+    QPaintEvent,
+    QResizeEvent,
+    QSurfaceFormat,
+)
 from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
 from PySide6.QtWidgets import QWidget
 
@@ -23,7 +32,7 @@ class OffscreenOpenGLWidget(QWidget):
 
     framePresented = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(120, 120)
@@ -133,7 +142,7 @@ class OffscreenOpenGLWidget(QWidget):
         finally:
             self._gl_context.doneCurrent()
 
-    def paintEvent(self, event) -> None:
+    def paintEvent(self, event: QPaintEvent) -> None:
         if self._rendering:
             return
         self._rendering = True
@@ -168,11 +177,11 @@ class OffscreenOpenGLWidget(QWidget):
         finally:
             self._rendering = False
 
-    def resizeEvent(self, event) -> None:
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self.update()
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
         context = self._gl_context
         surface = self._gl_surface
         if context is not None and surface is not None:

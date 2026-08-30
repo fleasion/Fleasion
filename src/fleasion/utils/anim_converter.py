@@ -13,6 +13,25 @@ import math
 import struct
 import uuid
 import xml.etree.ElementTree as ET
+from typing import Literal, TypedDict, cast
+
+type CFrameProperties = dict[str, float | int]
+type PropertyValue = str | bool | int | float | bytes | None | CFrameProperties
+
+
+class FloatCurveKey(TypedDict):
+    Time: float
+    Value: float
+
+
+class PoseEntry(TypedDict):
+    Position: dict[str, float]
+    Rotation: dict[str, float]
+
+
+type PoseMap = dict[str, dict[float, PoseEntry]]
+type FaceControlMap = dict[str, dict[float, float]]
+
 
 # Signature sets used for rig auto-detection
 _R6_SIGNS = {'Left Arm', 'Right Arm', 'Left Leg', 'Right Leg', 'Torso'}
@@ -142,19 +161,19 @@ def rbxm_to_rbxmx(data: bytes) -> bytes:
 class _Instance:
     __slots__ = ('class_name', 'name', 'properties', 'children', 'parent')
 
-    def __init__(self, class_name: str):
+    def __init__(self, class_name: str) -> None:
         self.class_name: str = class_name
         self.name: str = ''
-        self.properties: dict = {}
-        self.children: list = []
-        self.parent = None
+        self.properties: dict[str, PropertyValue] = {}
+        self.children: list[_Instance] = []
+        self.parent: _Instance | None = None
 
-    def add_child(self, child: '_Instance'):
+    def add_child(self, child: _Instance) -> None:
         child.parent = self
         self.children.append(child)
 
-    def get_descendants(self) -> list:
-        result = []
+    def get_descendants(self) -> list[_Instance]:
+        result: list[_Instance] = []
         stack = list(self.children)
         while stack:
             inst = stack.pop()
@@ -162,7 +181,7 @@ class _Instance:
             stack.extend(inst.children)
         return result
 
-    def find_first_child(self, name: str):
+    def find_first_child(self, name: str) -> _Instance | None:
         for c in self.children:
             if c.name == name:
                 return c
@@ -172,7 +191,7 @@ class _Instance:
 # Binary key parsing
 
 
-def _parse_float_curve_binary(data: bytes) -> list:
+def _parse_float_curve_binary(data: bytes) -> list[FloatCurveKey]:
     """Decode binary FloatCurve ValuesAndTimes -> list of {'Time': float, 'Value': float}."""
     HDR = 8
     KEY_STRIDE = 14
@@ -189,7 +208,7 @@ def _parse_float_curve_binary(data: bytes) -> list:
     if times_base + key_count * 4 > len(data):
         return []
 
-    keys = []
+    keys: list[FloatCurveKey] = []
     for i in range(key_count):
         k_off = HDR + i * KEY_STRIDE
         t_off = times_base + i * 4
@@ -202,7 +221,9 @@ def _parse_float_curve_binary(data: bytes) -> list:
 # .rbxmx parser (in-memory)
 
 
-def _load_rbxmx_instances(source) -> tuple:
+def _load_rbxmx_instances(
+    source: bytes | bytearray | str,
+) -> tuple[list[_Instance], dict[str, bytes]]:
     """Parse .rbxmx XML bytes or filepath into (list[_Instance], shared_strings dict)."""
     if isinstance(source, (bytes, bytearray)):
         tree = ET.parse(io.BytesIO(source))
@@ -210,7 +231,7 @@ def _load_rbxmx_instances(source) -> tuple:
         tree = ET.parse(source)
     root = tree.getroot()
 
-    shared_strings: dict = {}
+    shared_strings: dict[str, bytes] = {}
     ss_root = root.find('SharedStrings')
     if ss_root is not None:
         for ss in ss_root.findall('SharedString'):
@@ -222,7 +243,7 @@ def _load_rbxmx_instances(source) -> tuple:
                 except Exception:
                     pass
 
-    def parse_props(props_elem, inst: _Instance):
+    def parse_props(props_elem: ET.Element, inst: _Instance) -> None:
         for prop in props_elem:
             pname = prop.get('name', '')
             tag = prop.tag
@@ -252,7 +273,7 @@ def _load_rbxmx_instances(source) -> tuple:
             elif tag == 'SharedString':
                 inst.properties[pname] = shared_strings.get(text, b'')
             elif tag == 'CoordinateFrame':
-                cf = {}
+                cf: CFrameProperties = {}
                 for child in prop:
                     try:
                         cf[child.tag] = float(child.text or '0')
@@ -262,7 +283,7 @@ def _load_rbxmx_instances(source) -> tuple:
             else:
                 inst.properties[pname] = prop.text
 
-    def parse_item(xml_item) -> _Instance:
+    def parse_item(xml_item: ET.Element) -> _Instance:
         inst = _Instance(xml_item.get('class', 'Instance'))
         props = xml_item.find('Properties')
         if props is not None:
@@ -277,14 +298,14 @@ def _load_rbxmx_instances(source) -> tuple:
 # Key helpers
 
 
-def _get_float_curve_keys(inst: _Instance) -> list:
+def _get_float_curve_keys(inst: _Instance) -> list[FloatCurveKey]:
     data = inst.properties.get('ValuesAndTimes', b'')
     if isinstance(data, bytes) and data:
         return _parse_float_curve_binary(data)
     return []
 
 
-def _get_axis_keys(curve_inst: _Instance, axis: str) -> list:
+def _get_axis_keys(curve_inst: _Instance, axis: str) -> list[FloatCurveKey]:
     child = curve_inst.find_first_child(axis)
     if child is not None and child.class_name == 'FloatCurve':
         return _get_float_curve_keys(child)
@@ -294,10 +315,12 @@ def _get_axis_keys(curve_inst: _Instance, axis: str) -> list:
 # Pose mapping
 
 
-def _map_poses(curve_anim: _Instance):
-    pose_map: dict = {}
-    face_control_map: dict = {}
-    times: set = set()
+def _map_poses(
+    curve_anim: _Instance,
+) -> tuple[PoseMap, list[float], FaceControlMap]:
+    pose_map: PoseMap = {}
+    face_control_map: FaceControlMap = {}
+    times: set[float] = set()
 
     for curve in curve_anim.get_descendants():
         cls = curve.class_name
@@ -335,13 +358,13 @@ def _map_poses(curve_anim: _Instance):
 
 
 def _interpolate_values(
-    final_values: dict,
+    final_values: dict[str, float | None],
     pose_name: str,
     pose_time: float,
-    pose_map: dict,
-    key_times: list,
-):
-    def doit(value_type: str, axis: str):
+    pose_map: PoseMap,
+    key_times: list[float],
+) -> None:
+    def doit(value_type: Literal['Position', 'Rotation'], axis: str) -> None:
         prefix = 'P' if value_type == 'Position' else 'R'
         k = prefix + axis
         if final_values.get(k) is not None:
@@ -374,7 +397,7 @@ def _interpolate_values(
             final_values[k] = pv + (nv - pv) * p
         elif prev_t is not None:
             final_values[k] = pose_map[pose_name][prev_t][value_type][axis]
-        else:
+        elif next_t is not None:
             final_values[k] = pose_map[pose_name][next_t][value_type][axis]
 
     for vt in ('Position', 'Rotation'):
@@ -385,7 +408,7 @@ def _interpolate_values(
 # CFrame math
 
 
-def _euler_xyz_to_rotation_matrix(rx: float, ry: float, rz: float) -> list:
+def _euler_xyz_to_rotation_matrix(rx: float, ry: float, rz: float) -> list[float]:
     cx, sx = math.cos(rx), math.sin(rx)
     cy, sy = math.cos(ry), math.sin(ry)
     cz, sz = math.cos(rz), math.sin(rz)
@@ -405,8 +428,8 @@ def _euler_xyz_to_rotation_matrix(rx: float, ry: float, rz: float) -> list:
 # Marker parsing
 
 
-def _parse_markers(data: bytes, curve_name: str) -> list:
-    markers = []
+def _parse_markers(data: bytes, curve_name: str) -> list[tuple[float, str, str]]:
+    markers: list[tuple[float, str, str]] = []
     offset = 0
     try:
         count = struct.unpack_from('<I', data, offset)[0]
@@ -430,7 +453,9 @@ def _parse_markers(data: bytes, curve_name: str) -> list:
     return markers
 
 
-def _handle_markers(kf_seq: _Instance, curve_anim: _Instance, kf_by_time: dict):
+def _handle_markers(
+    kf_seq: _Instance, curve_anim: _Instance, kf_by_time: dict[float, _Instance]
+) -> None:
     for mc in curve_anim.get_descendants():
         if mc.class_name != 'MarkerCurve':
             continue
@@ -471,8 +496,8 @@ def _convert_curve_anim(curve_anim: _Instance) -> _Instance:
 
     pose_map, key_times, face_control_map = _map_poses(curve_anim)
 
-    kf_by_time: dict = {}
-    name_pose_pairs: dict = {}
+    kf_by_time: dict[float, _Instance] = {}
+    name_pose_pairs: dict[str, dict[float, _Instance]] = {}
 
     for t in key_times:
         kf = _make_keyframe(t)
@@ -486,7 +511,7 @@ def _convert_curve_anim(curve_anim: _Instance) -> _Instance:
             and folder.class_name == 'FloatCurve'
         )
 
-    def build_hierarchy(t: float, folder: _Instance, parent: _Instance):
+    def build_hierarchy(t: float, folder: _Instance, parent: _Instance) -> None:
         if not (folder.class_name == 'Folder' or _is_face_ctrl_curve(folder)):
             return
 
@@ -549,7 +574,7 @@ def _convert_curve_anim(curve_anim: _Instance) -> _Instance:
             pos = entry.get('Position', {})
             rot = entry.get('Rotation', {})
 
-            fv = {
+            fv: dict[str, float | None] = {
                 'PX': pos.get('X'),
                 'PY': pos.get('Y'),
                 'PZ': pos.get('Z'),
@@ -562,13 +587,17 @@ def _convert_curve_anim(curve_anim: _Instance) -> _Instance:
             for k in fv:
                 if fv[k] is None:
                     fv[k] = 0.0
+            # Every entry was populated above; this cast expresses that loop invariant.
+            resolved_fv = cast(dict[str, float], fv)
 
-            rm = _euler_xyz_to_rotation_matrix(fv['RX'], fv['RY'], fv['RZ'])
+            rm = _euler_xyz_to_rotation_matrix(
+                resolved_fv['RX'], resolved_fv['RY'], resolved_fv['RZ']
+            )
             pose.properties['Weight'] = 1.0
             pose.properties['CFrame'] = {
-                'X': fv['PX'],
-                'Y': fv['PY'],
-                'Z': fv['PZ'],
+                'X': resolved_fv['PX'],
+                'Y': resolved_fv['PY'],
+                'Z': resolved_fv['PZ'],
                 'R00': rm[0],
                 'R01': rm[1],
                 'R02': rm[2],
@@ -591,7 +620,7 @@ def _new_ref() -> str:
     return 'RBX' + uuid.uuid4().hex.upper()
 
 
-def _instance_to_xml(inst: _Instance, parent_elem: ET.Element):
+def _instance_to_xml(inst: _Instance, parent_elem: ET.Element) -> None:
     item = ET.SubElement(parent_elem, 'Item')
     item.set('class', inst.class_name)
     item.set('referent', _new_ref())
@@ -635,7 +664,7 @@ def _instance_to_xml(inst: _Instance, parent_elem: ET.Element):
         _instance_to_xml(child, item)
 
 
-def _instances_to_rbxmx_bytes(instances: list) -> bytes:
+def _instances_to_rbxmx_bytes(instances: list[_Instance]) -> bytes:
     root = ET.Element('roblox')
     root.set('xmlns:xmime', 'http://www.w3.org/2005/05/xmlmime')
     root.set('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
@@ -671,7 +700,7 @@ def curve_anim_to_keyframe(data: bytes) -> bytes:
 
     instances, _ = _load_rbxmx_instances(data)
 
-    output = []
+    output: list[_Instance] = []
     found = 0
     for inst in instances:
         if inst.class_name == 'CurveAnimation':

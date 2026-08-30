@@ -1,18 +1,14 @@
 """Font viewer widget for previewing TrueType and OpenType fonts."""
 
-from ..localization import tr
-
-import io
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QFont, QFontDatabase, QPalette
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QScrollArea,
     QSlider,
     QTextEdit,
@@ -20,13 +16,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..localization import tr
 from ..utils import log_buffer
 
 
 class FontViewerWidget(QWidget):
     """Widget for previewing font files (TTF, OTF, TTC)."""
 
-    def __init__(self, font_data: bytes, parent=None):
+    def __init__(self, font_data: bytes, parent: QWidget | None = None) -> None:
         """
         Initialize font viewer.
 
@@ -42,7 +39,7 @@ class FontViewerWidget(QWidget):
         self._load_font()
         self._setup_ui()
 
-    def _load_font(self):
+    def _load_font(self) -> None:
         """Load font from bytes and register with Qt."""
         try:
             log_buffer.log('FontViewer', f'Loading font ({len(self.font_data)} bytes)')
@@ -79,7 +76,7 @@ class FontViewerWidget(QWidget):
         except Exception as e:
             log_buffer.log('FontViewer', f'Font load error: {e}')
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
@@ -185,7 +182,7 @@ class FontViewerWidget(QWidget):
 
         self.setLayout(layout)
 
-    def _update_preview(self):
+    def _update_preview(self) -> None:
         """Update preview text size based on slider."""
         size = self.size_slider.value()
         self.size_label.setText(tr('ui.cache.font_viewer.value_pt', value0=size))
@@ -195,7 +192,7 @@ class FontViewerWidget(QWidget):
             preview_font.setPointSize(size)
             self.preview_text.setFont(preview_font)
 
-    def _on_preview_text_changed(self):
+    def _on_preview_text_changed(self) -> None:
         """Handle preview text changes."""
         # Text can be changed by user, just update the font if needed
         if self.font_id >= 0:

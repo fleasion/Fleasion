@@ -2,7 +2,7 @@
 
 import sys
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
@@ -16,6 +16,26 @@ class PanelThemeColors:
     section_background: QColor
     section_border: QColor
     container_background_css: str
+
+
+if TYPE_CHECKING:
+
+    def _windows_apps_use_light_theme() -> bool | None: ...
+else:
+
+    def _windows_apps_use_light_theme() -> bool | None:
+        try:
+            winreg = __import__('winreg')
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize',
+                0,
+                winreg.KEY_QUERY_VALUE,
+            ) as key:
+                use_light, _value_type = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+            return bool(int(use_light))
+        except ImportError, OSError, TypeError, ValueError:
+            return None
 
 
 class ThemeManager:
@@ -104,19 +124,9 @@ class ThemeManager:
         trust for System mode on Windows.  Qt/palette checks are only fallbacks
         for unusual environments where the registry value is unavailable.
         """
-        try:
-            import winreg
-
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize',
-                0,
-                winreg.KEY_QUERY_VALUE,
-            ) as key:
-                use_light, _value_type = winreg.QueryValueEx(key, 'AppsUseLightTheme')
-            return 'Light' if int(use_light) else 'Dark'
-        except (ImportError, OSError, TypeError, ValueError):
-            pass
+        use_light = _windows_apps_use_light_theme()
+        if use_light is not None:
+            return 'Light' if use_light else 'Dark'
 
         style_hints = app.styleHints()
         color_scheme_getter = getattr(style_hints, 'colorScheme', None)

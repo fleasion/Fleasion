@@ -1,23 +1,23 @@
 """Rando Stuff tab - miscellaneous Roblox utilities (multi-instance, asset download, rejoin)."""
 
-from ..localization import tr, tr_count
+from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wintypes
 import json
-import os
 import random
 import re
 import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import requests as _requests
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..localization import tr, tr_count
 from ..utils.logging import log_buffer
 from ..utils.paths import CONFIG_DIR
 from ..utils.plural import format_count
@@ -53,6 +54,50 @@ from ..utils.secure_tokens import decrypt_token, encrypt_token
 from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
 from .modifications_tab import CollapsibleSection
 from .proxy_gate import ProxyGate
+
+if TYPE_CHECKING:
+    from ..config.manager import ConfigManager
+    from ..proxy.master import ProxyMaster
+    from ..proxy.server import ProxyFlow
+
+
+class Account(TypedDict):
+    username: str
+    cookie: str
+
+
+type UsernameSpooferState = dict[str, object]
+
+
+def _preserve_str(value: object) -> str:
+    if TYPE_CHECKING:
+        assert isinstance(value, str)
+    return value
+
+
+class _WinFunction(Protocol):
+    restype: object
+
+    def __call__(self, *args: object) -> int | None: ...
+
+
+class _Kernel32(Protocol):
+    CreateToolhelp32Snapshot: _WinFunction
+    Process32FirstW: _WinFunction
+    Process32NextW: _WinFunction
+    CloseHandle: _WinFunction
+    OpenEventW: _WinFunction
+    OpenProcess: _WinFunction
+    DuplicateHandle: _WinFunction
+
+
+class _KernelBase(Protocol):
+    CompareObjectHandles: _WinFunction
+
+
+class _Ntdll(Protocol):
+    NtQueryInformationProcess: _WinFunction
+
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
 ACCOUNTS_KEY_FILE = CONFIG_DIR / 'accounts.key'
@@ -74,17 +119,17 @@ def _decrypt_cookie(enc_b64: str) -> str | None:
     return decrypt_token(enc_b64, ACCOUNTS_KEY_FILE)
 
 
-def _load_accounts() -> list[dict]:
+def _load_accounts() -> list[Account]:
     """Load accounts list from disk."""
     try:
         if ACCOUNTS_FILE.exists():
-            return json.loads(ACCOUNTS_FILE.read_text(encoding='utf-8'))
+            return cast(list[Account], json.loads(ACCOUNTS_FILE.read_text(encoding='utf-8')))
     except Exception:
         pass
     return []
 
 
-def _save_accounts(accounts: list[dict]):
+def _save_accounts(accounts: list[Account]) -> None:
     """Persist accounts list to disk."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     ACCOUNTS_FILE.write_text(json.dumps(accounts, indent=2), encoding='utf-8')
@@ -316,12 +361,12 @@ def _resolve_share_link(link: str, cookie: str = '') -> tuple[str, str]:
         if resp.status_code != 200:
             return '', ''
 
-        data = resp.json()
+        data = cast(dict[str, object], resp.json())
 
-        def _extract(d: dict) -> tuple[str, str]:
+        def _extract(d: dict[str, object]) -> tuple[str, str]:
             pid = str(d.get('placeId') or d.get('rootPlaceId') or '')
             lc = d.get('privateServerLinkCode') or d.get('linkCode') or d.get('accessCode') or ''
-            return pid, lc
+            return pid, _preserve_str(lc)
 
         place_id, link_code = _extract(data)
         for key in (
@@ -332,7 +377,7 @@ def _resolve_share_link(link: str, cookie: str = '') -> tuple[str, str]:
         ):
             nested = data.get(key)
             if isinstance(nested, dict):
-                p, l = _extract(nested)
+                p, l = _extract(cast(dict[str, object], nested))
                 place_id = place_id or p
                 link_code = link_code or l
 
@@ -480,7 +525,7 @@ class AddAccountDialog(QDialog):
     _validated = Signal(str, str)  # username, cookie
     _failed = Signal(str)  # error message
 
-    def __init__(self, parent=None, title: str | None = None):
+    def __init__(self, parent: QWidget | None = None, title: str | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title or tr('rando.account.add_title'))
         self.setMinimumWidth(500)
@@ -490,7 +535,7 @@ class AddAccountDialog(QDialog):
         self._failed.connect(self._on_failed)
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(tr('ui.gui.rando_stuff_tab.paste_your_roblosecurity_cookie')))
 
@@ -514,10 +559,10 @@ class AddAccountDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
 
-    def set_ok_label(self, text: str):
+    def set_ok_label(self, text: str) -> None:
         self._ok_btn.setText(text)
 
-    def _on_ok(self):
+    def _on_ok(self) -> None:
         cookie = self._input.toPlainText().strip()
         if not cookie:
             self._status.setText(tr('ui.gui.rando_stuff_tab.please_paste_a_cookie'))
@@ -526,7 +571,7 @@ class AddAccountDialog(QDialog):
         self._status.setText(tr('ui.gui.rando_stuff_tab.validating'))
         threading.Thread(target=self._validate, args=(cookie,), daemon=True).start()
 
-    def _validate(self, cookie: str):
+    def _validate(self, cookie: str) -> None:
         try:
             sess = _requests.Session()
             sess.trust_env = False
@@ -549,12 +594,12 @@ class AddAccountDialog(QDialog):
         except Exception as exc:
             self._failed.emit(tr('rando.account.error', error=exc))
 
-    def _on_validated(self, username: str, cookie: str):
+    def _on_validated(self, username: str, cookie: str) -> None:
         self.result_username = username
         self.result_cookie = cookie
         self.accept()
 
-    def _on_failed(self, msg: str):
+    def _on_failed(self, msg: str) -> None:
         self._status.setText(msg)
         self._ok_btn.setEnabled(True)
 
@@ -565,11 +610,11 @@ class AddAccountDialog(QDialog):
 class _Invoker(QObject):
     call = Signal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.call.connect(self._run, Qt.ConnectionType.QueuedConnection)
 
-    def _run(self, fn):
+    def _run(self, fn: Callable[[], object]) -> None:
         try:
             fn()
         except Exception as exc:
@@ -592,7 +637,12 @@ class RandoStuffTab(QWidget):
     _PRIVATE_GAME_ENDPOINT = '/v1/join-private-game'
     _RESERVED_GAME_ENDPOINT = '/v1/join-reserved-game'
 
-    def __init__(self, parent=None, config_manager=None, proxy_master=None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        config_manager: ConfigManager | None = None,
+        proxy_master: ProxyMaster | None = None,
+    ) -> None:
         super().__init__(parent)
         self._config = config_manager
         self._proxy_master = proxy_master
@@ -600,12 +650,12 @@ class RandoStuffTab(QWidget):
         self.destroyed.connect(self._on_qt_destroyed)
         self._invoker = _Invoker(self)
 
-        self._last_place_id = None
-        self._last_access_code = None
-        self._last_session_id = None
+        self._last_place_id: str | None = None
+        self._last_access_code: str | None = None
+        self._last_session_id: str | None = None
         self._doing_rejoin = False
         self._awaiting_rejoin_response = False
-        self._active_rejoin_attempt_id = None  # gameJoinAttemptId being redirected
+        self._active_rejoin_attempt_id: object | None = None  # gameJoinAttemptId being redirected
         loaded_subplace_blacklist = []
         loaded_subplace_mode = 'block'
         if self._config is not None:
@@ -620,12 +670,12 @@ class RandoStuffTab(QWidget):
         self._lock = threading.Lock()
 
         self._multi_stop = threading.Event()
-        self._multi_thread = None
+        self._multi_thread: threading.Thread | None = None
         self._account_switched = False
-        self._last_switched_account: dict | None = None
+        self._last_switched_account: Account | None = None
 
-        self._accounts: list[dict] = _load_accounts()
-        self._game_jobs: dict = {}  # placeId -> jobId, session-only memory
+        self._accounts: list[Account] = _load_accounts()
+        self._game_jobs: dict[str, str] = {}  # placeId -> jobId, session-only memory
         self._account_manager_job_id: str = ''
         self._account_manager_capture_place_id: str | None = None
         self._account_manager_teleport_place_id: str | None = None
@@ -652,10 +702,10 @@ class RandoStuffTab(QWidget):
                 f'Loaded subplace blacklist: {format_count(count, "ID")} active',
             )
 
-    def _on_qt_destroyed(self, *_):
+    def _on_qt_destroyed(self, *_: object) -> None:
         self._qt_destroyed = True
 
-    def _on_main(self, fn) -> bool:
+    def _on_main(self, fn: Callable[[], object]) -> bool:
         if self._qt_destroyed:
             return False
         invoker = getattr(self, '_invoker', None)
@@ -671,7 +721,7 @@ class RandoStuffTab(QWidget):
             return False
 
     @staticmethod
-    def _normalize_numeric_id(value) -> str | None:
+    def _normalize_numeric_id(value: object) -> str | None:
         try:
             return str(int(str(value).strip()))
         except TypeError, ValueError:
@@ -680,18 +730,18 @@ class RandoStuffTab(QWidget):
     @classmethod
     def _parse_numeric_id_list(cls, raw_value: str) -> list[str]:
         content = raw_value.replace('\n', ',').replace(';', ',').replace(' ', ',')
-        ids = []
+        ids: list[str] = []
         for part in content.split(','):
             normalized = cls._normalize_numeric_id(part)
             if normalized is not None:
                 ids.append(normalized)
         return ids
 
-    def _is_subplace_blacklisted(self, place_id) -> bool:
+    def _is_subplace_blacklisted(self, place_id: object) -> bool:
         normalized = self._normalize_numeric_id(place_id)
         return normalized is not None and normalized in self._subplace_blacklisted_ids
 
-    def _apply_account_manager_subplace_teleport(self, body: dict) -> bool:
+    def _apply_account_manager_subplace_teleport(self, body: dict[str, object]) -> bool:
         body_place_id = self._normalize_numeric_id(body.get('placeId'))
         with self._lock:
             teleport_place_id = self._account_manager_teleport_place_id
@@ -702,7 +752,9 @@ class RandoStuffTab(QWidget):
             return True
         return False
 
-    def _clear_account_manager_subplace_teleport_if_complete(self, flow, req_path: str):
+    def _clear_account_manager_subplace_teleport_if_complete(
+        self, flow: ProxyFlow, req_path: str
+    ) -> None:
         with self._lock:
             teleport_place_id = self._account_manager_teleport_place_id
         if not teleport_place_id or req_path not in (
@@ -712,15 +764,15 @@ class RandoStuffTab(QWidget):
         ):
             return
         try:
-            body = json.loads(flow.request.content)
+            body = cast(dict[str, object], json.loads(flow.request.content))
         except Exception:
             return
         if self._normalize_numeric_id(body.get('placeId')) != teleport_place_id:
             return
-        resp_json = {}
+        resp_json: dict[str, object] = {}
         try:
             if flow.response is not None:
-                resp_json = json.loads(flow.response.content)
+                resp_json = cast(dict[str, object], json.loads(flow.response.content))
         except Exception:
             resp_json = {}
         status = resp_json.get('status')
@@ -730,7 +782,9 @@ class RandoStuffTab(QWidget):
             if self._account_manager_teleport_place_id == teleport_place_id:
                 self._account_manager_teleport_place_id = None
 
-    def _drop_subplace_join(self, flow, place_id: str, attempt_id: str | None = None):
+    def _drop_subplace_join(
+        self, flow: ProxyFlow, place_id: str, attempt_id: str | None = None
+    ) -> None:
         with self._lock:
             mode = self._subplace_block_mode
 
@@ -778,7 +832,7 @@ class RandoStuffTab(QWidget):
                 f'Blocked join request to blacklisted subplace ID: {place_id}',
             )
 
-    def _set_subplace_block_mode(self, mode: str, checked: bool):
+    def _set_subplace_block_mode(self, mode: str, checked: bool) -> None:
         if not checked:
             return
         with self._lock:
@@ -794,13 +848,13 @@ class RandoStuffTab(QWidget):
         with self._lock:
             return time.time() < self._subplace_unblock_until
 
-    def _on_subplace_unblock_for_5s(self):
+    def _on_subplace_unblock_for_5s(self) -> None:
         with self._lock:
             self._subplace_unblock_until = time.time() + 5.0
         log_buffer.log('subplace', 'Subplace blacklist bypass enabled for 5 seconds')
 
     @staticmethod
-    def _default_username_spoofer_state() -> dict:
+    def _default_username_spoofer_state() -> UsernameSpooferState:
         return {
             'save_settings': False,
             'others_name': '',
@@ -812,18 +866,18 @@ class RandoStuffTab(QWidget):
             'self_game_creator': False,
         }
 
-    def _load_username_spoofer_settings(self) -> dict:
+    def _load_username_spoofer_settings(self) -> UsernameSpooferState:
         state = self._default_username_spoofer_state()
         if self._config is None:
             return state
         saved = getattr(self._config, 'username_spoofer', {})
         if isinstance(saved, dict):
-            state.update(saved)
+            state.update(cast(dict[str, object], saved))
         if not state.get('save_settings', False):
             return self._default_username_spoofer_state()
         return state
 
-    def _username_spoofer_state_from_widgets(self) -> dict:
+    def _username_spoofer_state_from_widgets(self) -> UsernameSpooferState:
         return {
             'save_settings': self._username_save_chk.isChecked(),
             'others_name': self._username_others_input.text(),
@@ -835,7 +889,7 @@ class RandoStuffTab(QWidget):
             'self_game_creator': self._username_self_game_creator_chk.isChecked(),
         }
 
-    def _set_username_spoofer_state(self, state: dict):
+    def _set_username_spoofer_state(self, state: UsernameSpooferState) -> None:
         with self._lock:
             self._username_spoofer_state = {
                 'save_settings': bool(state.get('save_settings', False)),
@@ -848,11 +902,11 @@ class RandoStuffTab(QWidget):
                 'self_game_creator': bool(state.get('self_game_creator', False)),
             }
 
-    def _persist_username_spoofer_state(self, state: dict):
+    def _persist_username_spoofer_state(self, state: UsernameSpooferState) -> None:
         if self._config is not None:
             self._config.username_spoofer = state
 
-    def _push_username_spoofer_runtime_state(self):
+    def _push_username_spoofer_runtime_state(self) -> None:
         spoofer = getattr(self._proxy_master, 'username_spoofer', None)
         if spoofer is not None and hasattr(spoofer, 'set_runtime_state'):
             spoofer.set_runtime_state(dict(self._username_spoofer_state))
@@ -861,7 +915,7 @@ class RandoStuffTab(QWidget):
         ):
             self._proxy_master.refresh_username_spoofer_interception()
 
-    def _push_username_spoofer_current_user(self):
+    def _push_username_spoofer_current_user(self) -> None:
         spoofer = getattr(self._proxy_master, 'username_spoofer', None)
         if spoofer is not None and hasattr(spoofer, 'set_current_user'):
             spoofer.set_current_user(
@@ -869,14 +923,14 @@ class RandoStuffTab(QWidget):
                 self._username_spoofer_current_username,
             )
 
-    def _on_username_spoofer_changed(self):
+    def _on_username_spoofer_changed(self) -> None:
         state = self._username_spoofer_state_from_widgets()
         self._set_username_spoofer_state(state)
         self._push_username_spoofer_runtime_state()
         if state['save_settings']:
             self._persist_username_spoofer_state(state)
 
-    def _on_username_spoofer_save_toggled(self, checked: bool):
+    def _on_username_spoofer_save_toggled(self, checked: bool) -> None:
         state = self._username_spoofer_state_from_widgets()
         self._set_username_spoofer_state(state)
         self._push_username_spoofer_runtime_state()
@@ -887,7 +941,7 @@ class RandoStuffTab(QWidget):
 
     # UI
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -1197,10 +1251,10 @@ class RandoStuffTab(QWidget):
         else:
             self._subplace_block_radio.setChecked(True)
         self._subplace_block_radio.toggled.connect(
-            lambda checked: self._set_subplace_block_mode('block', checked)
+            lambda checked=False: self._set_subplace_block_mode('block', checked)
         )
         self._subplace_stall_radio.toggled.connect(
-            lambda checked: self._set_subplace_block_mode('stall', checked)
+            lambda checked=False: self._set_subplace_block_mode('stall', checked)
         )
         subplace_blacklist_layout.addWidget(self._subplace_block_radio)
         subplace_blacklist_layout.addWidget(self._subplace_stall_radio)
@@ -1237,33 +1291,33 @@ class RandoStuffTab(QWidget):
         self._multi_chk.toggled.connect(self._on_multi_instance_toggled)
         self._username_save_chk.toggled.connect(self._on_username_spoofer_save_toggled)
         self._username_others_input.textChanged.connect(
-            lambda _text: self._on_username_spoofer_changed()
+            lambda _text='': self._on_username_spoofer_changed()
         )
         self._username_others_apply_chk.toggled.connect(
-            lambda _checked: self._on_username_spoofer_changed()
+            lambda _checked=False: self._on_username_spoofer_changed()
         )
         self._username_others_verified_chk.toggled.connect(
-            lambda _checked: self._on_username_spoofer_changed()
+            lambda _checked=False: self._on_username_spoofer_changed()
         )
         self._username_self_input.textChanged.connect(
-            lambda _text: self._on_username_spoofer_changed()
+            lambda _text='': self._on_username_spoofer_changed()
         )
         self._username_self_apply_chk.toggled.connect(
-            lambda _checked: self._on_username_spoofer_changed()
+            lambda _checked=False: self._on_username_spoofer_changed()
         )
         self._username_self_verified_chk.toggled.connect(
-            lambda _checked: self._on_username_spoofer_changed()
+            lambda _checked=False: self._on_username_spoofer_changed()
         )
         self._username_self_game_creator_chk.toggled.connect(
-            lambda _checked: self._on_username_spoofer_changed()
+            lambda _checked=False: self._on_username_spoofer_changed()
         )
 
-    def changeEvent(self, a0: QEvent | None):
+    def changeEvent(self, a0: QEvent) -> None:
         super().changeEvent(a0)
-        if a0 is not None and a0.type() == QEvent.Type.PaletteChange:
+        if a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
 
-    def _update_container_bg(self):
+    def _update_container_bg(self) -> None:
         """Keep the Miscellaneous tab background aligned with the tab theme."""
         pal = self.palette()
         win_light = pal.window().color().lightness()
@@ -1274,7 +1328,7 @@ class RandoStuffTab(QWidget):
             bg = 'background-color: palette(alternate-base);'
         self._misc_container.setStyleSheet(f'QWidget#_FleasionMiscContainer {{ {bg} }}')
 
-    def set_proxy_features_enabled(self, enabled: bool):
+    def set_proxy_features_enabled(self, enabled: bool) -> None:
         for gate_name in (
             '_rejoin_proxy_gate',
             '_subplace_blacklist_proxy_gate',
@@ -1284,7 +1338,7 @@ class RandoStuffTab(QWidget):
             if gate is not None:
                 gate.set_proxy_enabled(enabled)
 
-    def _clear_roblox_cache(self):
+    def _clear_roblox_cache(self) -> None:
         from .delete_cache import DeleteCacheWindow
 
         window = DeleteCacheWindow()
@@ -1292,14 +1346,14 @@ class RandoStuffTab(QWidget):
 
     # Rejoin
 
-    def _on_reserved_fields_changed(self, *_):
+    def _on_reserved_fields_changed(self, *_: object) -> None:
         place_id = self._place_id_input.text().strip()
         access_code = self._access_code_input.text().strip()
         with self._lock:
             self._last_place_id = place_id or None
             self._last_access_code = access_code or None
 
-    def _on_rejoin_clicked(self):
+    def _on_rejoin_clicked(self) -> None:
         place_id = self._place_id_input.text().strip()
         access_code = self._access_code_input.text().strip()
         with self._lock:
@@ -1316,8 +1370,8 @@ class RandoStuffTab(QWidget):
         if not launch_as_standard_user(f'roblox://placeId={place_id}'):
             log_buffer.log('randostuff', 'Failed to launch Roblox without elevation')
 
-    def _update_labels(self, place_id, access_code):
-        def _do():
+    def _update_labels(self, place_id: object, access_code: object) -> None:
+        def _do() -> None:
             self._place_id_input.setText(str(place_id))
             self._access_code_input.setText(str(access_code))
             self._rejoin_timer_secs = 300
@@ -1326,7 +1380,7 @@ class RandoStuffTab(QWidget):
 
         self._on_main(_do)
 
-    def _tick_rejoin_timer(self):
+    def _tick_rejoin_timer(self) -> None:
         self._rejoin_timer_secs -= 1
         if self._rejoin_timer_secs <= 0:
             self._rejoin_timer.stop()
@@ -1337,14 +1391,14 @@ class RandoStuffTab(QWidget):
                 tr('ui.gui.rando_stuff_tab.timer_value_value', value0=m, value1=s)
             )
 
-    def _show_reserved_server_help(self):
+    def _show_reserved_server_help(self) -> None:
         msg = QMessageBox(self)
         msg.setWindowTitle(tr('ui.gui.rando_stuff_tab.reserved_server_info'))
         msg.setText(tr('ui.gui.rando_stuff_tab.b_what_the_hell_is_a_reserved'))
         msg.setIcon(QMessageBox.Icon.NoIcon)
         msg.exec()
 
-    def _show_subplace_blacklist_dialog(self):
+    def _show_subplace_blacklist_dialog(self) -> None:
         from ..utils import get_icon_path
 
         dialog = QDialog(self)
@@ -1393,13 +1447,11 @@ class RandoStuffTab(QWidget):
 
         _last_search_query = ['']
 
-        def _search_id():
+        def _search_id() -> None:
             query = search_edit.text().strip()
             if not query:
                 return
             doc = text_edit.document()
-            if doc is None:
-                return
             if query != _last_search_query[0]:
                 _last_search_query[0] = query
                 text_edit.moveCursor(text_edit.textCursor().MoveOperation.Start)
@@ -1417,7 +1469,7 @@ class RandoStuffTab(QWidget):
         search_edit.returnPressed.connect(_search_id)
         search_edit.textChanged.connect(lambda: status_label.setText(''))
 
-        def _apply():
+        def _apply() -> None:
             ids = self._parse_numeric_id_list(text_edit.toPlainText().strip())
             self._subplace_blacklisted_ids = set(ids)
             if self._config is not None:
@@ -1450,7 +1502,7 @@ class RandoStuffTab(QWidget):
 
     # Multi-instance
 
-    def _on_multi_instance_toggled(self, checked, persist=True):
+    def _on_multi_instance_toggled(self, checked: bool, persist: bool = True) -> None:
         if checked and not IS_WINDOWS:
             self._multi_chk.blockSignals(True)
             self._multi_chk.setChecked(False)
@@ -1470,8 +1522,8 @@ class RandoStuffTab(QWidget):
             self._multi_stop.set()
             log_buffer.log('multiinstance', 'Disabled')
 
-    def _multi_instance_loop(self):
-        stripped_pids: set = set()
+    def _multi_instance_loop(self) -> None:
+        stripped_pids: set[int] = set()
         while not self._multi_stop.wait(0.2):
             try:
                 current_pids = self._get_roblox_pids()
@@ -1496,8 +1548,11 @@ class RandoStuffTab(QWidget):
             except Exception as exc:
                 log_buffer.log('multiinstance', f'Error: {exc}')
 
-    def _get_roblox_pids(self) -> set:
-        kernel32 = ctypes.windll.kernel32
+    def _get_roblox_pids(self) -> set[int]:
+        if TYPE_CHECKING:
+            kernel32 = cast(_Kernel32, object())
+        else:
+            kernel32 = ctypes.windll.kernel32
         kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
         kernel32.Process32FirstW.restype = wintypes.BOOL
         kernel32.Process32NextW.restype = wintypes.BOOL
@@ -1519,7 +1574,7 @@ class RandoStuffTab(QWidget):
         snap = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
         if not snap:
             return set()
-        pids = set()
+        pids: set[int] = set()
         try:
             pe = PROCESSENTRY32W()
             pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
@@ -1533,7 +1588,7 @@ class RandoStuffTab(QWidget):
             kernel32.CloseHandle(snap)
         return pids
 
-    def _close_singleton_for_pid(self, pid: int):
+    def _close_singleton_for_pid(self, pid: int) -> None:
         """Retry closing ROBLOX_singletonEvent in `pid` until found or process exits/stop set."""
         while not self._multi_stop.is_set():
             try:
@@ -1546,9 +1601,14 @@ class RandoStuffTab(QWidget):
 
     def _scan_and_close_singleton(self, pid: int) -> bool:
         """Scan `pid` for a ROBLOX_singletonEvent handle and close it. Returns True if closed."""
-        ntdll = ctypes.windll.ntdll
-        kernel32 = ctypes.windll.kernel32
-        kernelbase = ctypes.windll.kernelbase
+        if TYPE_CHECKING:
+            ntdll = cast(_Ntdll, object())
+            kernel32 = cast(_Kernel32, object())
+            kernelbase = cast(_KernelBase, object())
+        else:
+            ntdll = ctypes.windll.ntdll
+            kernel32 = ctypes.windll.kernel32
+            kernelbase = ctypes.windll.kernelbase
 
         kernel32.OpenEventW.restype = wintypes.HANDLE
         kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -1653,7 +1713,7 @@ class RandoStuffTab(QWidget):
 
         return found
 
-    def _close_singleton_event(self):
+    def _close_singleton_event(self) -> None:
         """One-shot: close ROBLOX_singletonEvent in all current Roblox processes."""
         for pid in self._get_roblox_pids():
             try:
@@ -1663,7 +1723,7 @@ class RandoStuffTab(QWidget):
 
     # Account Manager
 
-    def _on_game_link_changed(self, text: str):
+    def _on_game_link_changed(self, text: str) -> None:
         if _parse_optional_place_id(self._subplace_id_input.text()):
             if self._auto_filled_for_place is not None:
                 self._job_id_input.clear()
@@ -1688,7 +1748,7 @@ class RandoStuffTab(QWidget):
                 self._job_id_input.clear()
                 self._auto_filled_for_place = None
 
-    def _on_subplace_id_changed(self, text: str):
+    def _on_subplace_id_changed(self, text: str) -> None:
         if _parse_optional_place_id(text):
             if self._auto_filled_for_place is not None:
                 self._job_id_input.clear()
@@ -1696,7 +1756,7 @@ class RandoStuffTab(QWidget):
             return
         self._on_game_link_changed(self._private_server_input.text())
 
-    def _set_selected_account(self, username: str):
+    def _set_selected_account(self, username: str) -> None:
         username = (username or '').strip()
         if not username:
             self._selected_label.setText(tr('ui.gui.rando_stuff_tab.selected_none'))
@@ -1704,7 +1764,7 @@ class RandoStuffTab(QWidget):
         self._selected_label.setText(tr('ui.gui.rando_stuff_tab.selected_value', value0=username))
         self.selected_account_changed.emit(username)
 
-    def _resolve_current_user(self):
+    def _resolve_current_user(self) -> None:
         """Background thread: read the active Roblox cookie and update the selected label."""
         from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 
@@ -1732,14 +1792,14 @@ class RandoStuffTab(QWidget):
                 self._push_username_spoofer_current_user()
                 if username:
 
-                    def _update(u=username):
+                    def _update(u: str = str(username)) -> None:
                         self._set_selected_account(u)
 
                     self._on_main(_update)
         except Exception:
             pass
 
-    def _check_cookies_on_boot(self):
+    def _check_cookies_on_boot(self) -> None:
         """Background thread: validate every stored cookie and flag expired ones in the list."""
         for idx, acc in enumerate(self._accounts):
             cookie = _decrypt_cookie(acc.get('cookie', ''))
@@ -1762,20 +1822,20 @@ class RandoStuffTab(QWidget):
                     pass  # Network error — don't mark as expired
             if expired:
 
-                def _mark(i=idx):
+                def _mark(i: int = idx) -> None:
                     item = self._account_list.item(i)
                     if item:
                         item.setText(tr('ui.gui.rando_stuff_tab.expired_right_click_to_update'))
 
                 self._on_main(_mark)
 
-    def _populate_account_list(self):
+    def _populate_account_list(self) -> None:
         self._account_list.clear()
         for acc in self._accounts:
             item = QListWidgetItem(acc.get('username') or tr('rando.account.unknown_parenthesized'))
             self._account_list.addItem(item)
 
-    def _on_add_account(self):
+    def _on_add_account(self) -> None:
         dlg = AddAccountDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1789,11 +1849,11 @@ class RandoStuffTab(QWidget):
         # Select the newly added entry
         self._account_list.setCurrentRow(len(self._accounts) - 1)
 
-    def _on_import_browser_account(self):
+    def _on_import_browser_account(self) -> None:
         self._import_browser_btn.setEnabled(False)
         self._import_browser_btn.setText(tr('ui.gui.rando_stuff_tab.importing'))
 
-        def _import():
+        def _import() -> None:
             cookie, source = discover_browser_roblosecurity(
                 include_keychain=True, explicit_import=True
             )
@@ -1816,7 +1876,9 @@ class RandoStuffTab(QWidget):
 
         threading.Thread(target=_import, daemon=True, name='fleasion-browser-cookie-import').start()
 
-    def _finish_browser_import(self, username: str | None, cookie: str | None, source: str | None):
+    def _finish_browser_import(
+        self, username: str | None, cookie: str | None, source: str | None
+    ) -> None:
         self._import_browser_btn.setEnabled(True)
         self._import_browser_btn.setText(tr('ui.gui.rando_stuff_tab.import_browser_login'))
         if not username or not cookie:
@@ -1835,7 +1897,7 @@ class RandoStuffTab(QWidget):
             ),
             None,
         )
-        account = {'username': username, 'cookie': _encrypt_cookie(cookie)}
+        account: Account = {'username': username, 'cookie': _encrypt_cookie(cookie)}
         if existing_index is None:
             self._accounts.append(account)
             selected_index = len(self._accounts) - 1
@@ -1852,7 +1914,7 @@ class RandoStuffTab(QWidget):
             tr('ui.gui.rando_stuff_tab.imported_value_from_value', value0=username, value1=source),
         )
 
-    def _on_account_ctx_menu(self, pos):
+    def _on_account_ctx_menu(self, pos: QPoint) -> None:
         item = self._account_list.itemAt(pos)
         if item is None:
             return
@@ -1866,7 +1928,7 @@ class RandoStuffTab(QWidget):
         elif action == remove_action:
             self._remove_account(idx)
 
-    def _change_cookie(self, idx: int):
+    def _change_cookie(self, idx: int) -> None:
         dlg = AddAccountDialog(self, title=tr('rando.account.change_cookie_title'))
         dlg.set_ok_label(tr('rando.account.update'))
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -1880,7 +1942,7 @@ class RandoStuffTab(QWidget):
         self._populate_account_list()
         self._account_list.setCurrentRow(idx)
 
-    def _remove_account(self, idx: int):
+    def _remove_account(self, idx: int) -> None:
         username = self._accounts[idx].get('username') or tr('rando.account.unknown_parenthesized')
         reply = QMessageBox.question(
             self,
@@ -1895,7 +1957,7 @@ class RandoStuffTab(QWidget):
         _save_accounts(self._accounts)
         self._populate_account_list()
 
-    def _on_launch_account(self):
+    def _on_launch_account(self) -> None:
         log_buffer.log('accounts', 'Launch button clicked')
         acc = self._last_switched_account
         if acc is None:
@@ -1938,10 +2000,10 @@ class RandoStuffTab(QWidget):
             self._launch_acct_btn.setEnabled(False)
             self._launch_acct_btn.setText(tr('ui.gui.rando_stuff_tab.resolving'))
 
-            def _resolve_thread():
+            def _resolve_thread() -> None:
                 place_id, link_code = _resolve_share_link(link, cookie)
 
-                def _done():
+                def _done() -> None:
                     self._launch_acct_btn.setEnabled(True)
                     self._launch_acct_btn.setText(tr('ui.gui.rando_stuff_tab.launch'))
                     if place_id and link_code:
@@ -1979,7 +2041,7 @@ class RandoStuffTab(QWidget):
             daemon=True,
         ).start()
 
-    def _on_switch_account(self):
+    def _on_switch_account(self) -> None:
         idx = self._account_list.currentRow()
         if idx < 0:
             QMessageBox.information(
@@ -2032,8 +2094,8 @@ class RandoStuffTab(QWidget):
                 tr('ui.gui.rando_stuff_tab.failed_to_write_cookie_value', value0=exc),
             )
 
-    def _show_selected_account_launch_failed(self, username: str, reason: str):
-        def _warn():
+    def _show_selected_account_launch_failed(self, username: str, reason: str) -> None:
+        def _warn() -> None:
             QMessageBox.warning(
                 self,
                 tr('ui.gui.rando_stuff_tab.selected_account_launch_failed'),
@@ -2062,7 +2124,7 @@ class RandoStuffTab(QWidget):
         private_server_link: str = '',
         job_id: str = '',
         subplace_id: str = '',
-    ):
+    ) -> None:
         if IS_WINDOWS:
             try:
                 self._write_cookie_to_dat(cookie)
@@ -2110,7 +2172,7 @@ class RandoStuffTab(QWidget):
             self._account_manager_teleport_place_id = (
                 normalized_launch_place_id if is_distinct_subplace_launch else None
             )
-        if is_distinct_subplace_launch:
+        if is_distinct_subplace_launch and root_place_id is not None:
             ok = _preseed_root_place_for_subplace(root_place_id, cookie)
             if not ok:
                 log_buffer.log(
@@ -2253,7 +2315,7 @@ class RandoStuffTab(QWidget):
         else:
             log_buffer.log('accounts', f'Launch failed for account: {username}')
 
-    def _write_cookie_to_dat(self, cookie: str):
+    def _write_cookie_to_dat(self, cookie: str) -> None:
         """Replace .ROBLOSECURITY in the platform client's local account store."""
         if IS_MACOS or not (IS_WINDOWS or IS_LINUX):
             raise RuntimeError('Local cookie switching is not supported on this platform')
@@ -2279,7 +2341,7 @@ class RandoStuffTab(QWidget):
         """Return True if the multi-instance checkbox is checked."""
         return IS_WINDOWS and self._multi_chk.isChecked()
 
-    def close_singleton_event(self):
+    def close_singleton_event(self) -> None:
         """Close the Roblox singleton event to allow a new instance, then clear the switched flag."""
         if not IS_WINDOWS:
             self._account_switched = False
@@ -2296,7 +2358,7 @@ class RandoStuffTab(QWidget):
 
     # R6 <-> R15 Animation Converter
 
-    def _ac_import(self):
+    def _ac_import(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
             tr('ui.gui.rando_stuff_tab.open_animation_file'),
@@ -2343,7 +2405,7 @@ class RandoStuffTab(QWidget):
         self._ac_to_r6_btn.setEnabled(rig == 'R15')
         self._ac_to_r15_btn.setEnabled(rig == 'R6')
 
-    def _ac_convert(self, target: str):
+    def _ac_convert(self, target: str) -> None:
         if not hasattr(self, '_ac_xml_bytes'):
             self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.no_file_loaded_2'))
             return
@@ -2407,7 +2469,7 @@ class RandoStuffTab(QWidget):
 
     # Proxy interceptor hooks
 
-    def request(self, flow):
+    def request(self, flow: ProxyFlow) -> None:
         url = flow.request.pretty_url
         if 'gamejoin.roblox.com' not in url:
             return
@@ -2485,11 +2547,11 @@ class RandoStuffTab(QWidget):
         except Exception:
             pass
 
-        account_body = None
+        account_body: dict[str, object] | None = None
         account_body_modified = False
         if parsed.path in self._WANTED_ENDPOINTS:
             try:
-                account_body = json.loads(flow.request.content)
+                account_body = cast(dict[str, object], json.loads(flow.request.content))
                 account_body_modified = self._apply_account_manager_subplace_teleport(account_body)
             except Exception:
                 account_body = None
@@ -2503,7 +2565,7 @@ class RandoStuffTab(QWidget):
                     body = (
                         account_body
                         if isinstance(account_body, dict)
-                        else json.loads(flow.request.content)
+                        else cast(dict[str, object], json.loads(flow.request.content))
                     )
                     body['gameId'] = pending_job
                     flow.request.url = 'https://gamejoin.roblox.com/v1/join-game-instance'
@@ -2527,7 +2589,9 @@ class RandoStuffTab(QWidget):
 
         try:
             req_body = (
-                account_body if isinstance(account_body, dict) else json.loads(flow.request.content)
+                account_body
+                if isinstance(account_body, dict)
+                else cast(dict[str, object], json.loads(flow.request.content))
             )
             attempt_id = req_body.get('gameJoinAttemptId')
         except Exception:
@@ -2594,7 +2658,10 @@ class RandoStuffTab(QWidget):
         with self._lock:
             self._awaiting_rejoin_response = True
 
-    def response(self, flow):
+    def response(self, flow: ProxyFlow) -> None:
+        response = flow.response
+        if TYPE_CHECKING:
+            assert response is not None
         if 'gamejoin.roblox.com' not in flow.request.pretty_url:
             return
 
@@ -2608,15 +2675,15 @@ class RandoStuffTab(QWidget):
         if capture_place_id:
             if req_path in ('/v1/join-game', '/v1/join-game-instance'):
                 try:
-                    resp_json = json.loads(flow.response.content)
+                    resp_json = cast(dict[str, object], json.loads(response.content))
                     job_id = _extract_job_id(
-                        resp_json.get('jobId') or resp_json.get('gameId') or ''
+                        _preserve_str(resp_json.get('jobId') or resp_json.get('gameId') or '')
                     )
                     if job_id:
                         self._game_jobs[capture_place_id] = job_id
                         place_id_snap = capture_place_id
 
-                        def _update_ui(jid=job_id, pid=place_id_snap):
+                        def _update_ui(jid: str = job_id, pid: str = place_id_snap) -> None:
                             if not self._job_id_input.text().strip():
                                 self._job_id_input.setText(jid)
                                 self._auto_filled_for_place = pid

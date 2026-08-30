@@ -19,7 +19,6 @@ import hashlib
 import io
 import struct
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from PIL import Image
@@ -58,13 +57,13 @@ _ORM_COMPOSITOR_CACHE_VERSION = b'orm-mips-v2-normal-variance'
 
 
 def composite_orm(
-    baseline: Optional[Path],
-    channels: dict[str, Optional[Path]],
+    baseline: Path | None,
+    channels: dict[str, Path | None],
     cache_dir: Path = APP_CACHE_DIR,
     *,
-    normal_source: Optional[Path] = None,
-    normal_baseline: Optional[Path] = None,
-) -> Optional[str]:
+    normal_source: Path | None = None,
+    normal_baseline: Path | None = None,
+) -> str | None:
     """Composite a new ORM KTX2 from a baseline slot file plus per-channel PNG overrides.
 
     Parameters

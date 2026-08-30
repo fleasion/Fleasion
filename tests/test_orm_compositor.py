@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 from PIL import Image
 
@@ -9,7 +11,7 @@ def _rgba_level(data: bytes, width: int, height: int) -> np.ndarray:
     return np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4)
 
 
-def test_orm_mips_filter_linear_channels_and_roughness_in_squared_space():
+def test_orm_mips_filter_linear_channels_and_roughness_in_squared_space() -> None:
     orm = np.array(
         [
             [[0, 0, 0, 0], [1, 255, 255, 0]],
@@ -29,7 +31,7 @@ def test_orm_mips_filter_linear_channels_and_roughness_in_squared_space():
     assert tuple(child) == (2, 180, 128, 128)
 
 
-def test_orm_roughness_mips_increase_with_normal_variance():
+def test_orm_roughness_mips_increase_with_normal_variance() -> None:
     orm = np.zeros((2, 2, 4), dtype=np.uint8)
     divergent_normal = np.array(
         [
@@ -46,7 +48,7 @@ def test_orm_roughness_mips_increase_with_normal_variance():
     assert with_normals[1] == 255
 
 
-def test_composite_orm_uses_normal_source_for_roughness_mips(tmp_path):
+def test_composite_orm_uses_normal_source_for_roughness_mips(tmp_path: Path) -> None:
     baseline = tmp_path / 'orm.ktx2'
     base_orm = np.zeros((2, 2, 4), dtype=np.uint8)
     base_orm[:, :, 1] = 64
@@ -83,7 +85,7 @@ def test_composite_orm_uses_normal_source_for_roughness_mips(tmp_path):
     assert child[1] == 255
 
 
-def test_orm_roughness_variance_understands_roblox_dxt5nm_normals():
+def test_orm_roughness_variance_understands_roblox_dxt5nm_normals() -> None:
     orm = np.zeros((2, 2, 4), dtype=np.uint8)
     dxt5nm = np.zeros((2, 2, 4), dtype=np.uint8)
     dxt5nm[:, :, 0] = 255

@@ -1,34 +1,122 @@
 """Proxy tab - live view of traffic seen by the Roblox Env Proxy explicit proxy."""
 
-from ..localization import tr
+from __future__ import annotations
 
 import base64
 import json
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
-from PySide6.QtCore import QEvent, QObject, Qt, QItemSelectionModel, QTimer
-from PySide6.QtGui import QBrush, QColor, QKeySequence, QPainter, QShortcut
+from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, Qt, QTimer
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QKeySequence,
+    QPaintEvent,
+    QPainter,
+    QShortcut,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
     QFileDialog,
-    QLabel,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QTableWidget,
     QTableWidgetItem,
     QTextEdit,
     QWidget,
 )
 
+from ..localization import tr
 from ..utils.paths import PROXY_TRAFFIC_FILE
 from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
 from .rules_dialog_ui import Ui_Dialog as Ui_RulesDialog
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+type _ShortcutHandler = Callable[[], object]
+type _PendingIntercept = tuple[int, str]
+type _PendingResponseKey = tuple[int, str]
+type _CompletedResponseKey = tuple[int, bytes | bytearray | None]
+
+
+class _TrafficEntry(TypedDict):
+    id: int
+    time: float | None
+    host: str
+    port: int
+    method: str
+    path: str
+    intercepted: bool
+    status: int | None
+    size: int
+    ms: int | None
+    request_raw: bytes | bytearray | None
+    response_raw: bytes | bytearray | None
+    pending_stage: str | None
+    was_intercepted: bool
+    dropped_request: bool
+    dropped_response: bool
+
+
+class _AutoReplaceRule(TypedDict, total=False):
+    enabled: bool
+    direction: str
+    type: str
+    match: str
+    replacement: str
+    host_filter: str
+    path_filter: str
+
+
+class _ConfigManager(Protocol):
+    settings: dict[str, object]
+
+    def save(self) -> None: ...
+
+
+class _DialogUiSetup(Protocol):
+    def setupUi(self, form: QDialog) -> None: ...
+
+
+class _WidgetUiSetup(Protocol):
+    def setupUi(self, form: QWidget) -> None: ...
+
+
+class _ProxyMaster(Protocol):
+    def get_auto_replace_rules(self) -> list[_AutoReplaceRule]: ...
+
+    def set_auto_replace_rules(self, rules: list[_AutoReplaceRule]) -> None: ...
+
+    def get_env_proxy_traffic(self) -> list[_TrafficEntry]: ...
+
+    def clear_env_proxy_traffic(self) -> None: ...
+
+    def format_env_proxy_request_preview(self, entry: _TrafficEntry) -> str: ...
+
+    def format_env_proxy_response_preview(self, entry: _TrafficEntry) -> str: ...
+
+    def set_env_proxy_intercept_match(self, text: str) -> None: ...
+
+    def set_env_proxy_intercept_all(self, enabled: bool) -> None: ...
+
+    def get_env_proxy_pending_intercepts(self) -> list[_PendingIntercept]: ...
+
+    def submit_env_proxy_pending(
+        self, entry_id: int, stage: str, action: str, edited_text: str | None = None
+    ) -> bool: ...
+
+    def replay_env_proxy_request(self, entry_id: int, edited_text: str | None = None) -> bool: ...
 
 # Stable persistence keys for saved column widths. These intentionally keep the
 # pre-localization values; only the displayed headers are translated.
@@ -95,25 +183,29 @@ _PRESERVE_FIELDS = (
 )
 
 
-def _entry_to_preserved_dict(entry: dict) -> dict:
-    data = {key: entry.get(key) for key in _PRESERVE_FIELDS}
+def _entry_to_preserved_dict(entry: _TrafficEntry) -> dict[str, object]:
+    data: dict[str, object] = {
+        key: cast('object', entry.get(key)) for key in _PRESERVE_FIELDS
+    }
     for raw_key in ('request_raw', 'response_raw'):
         raw = entry.get(raw_key)
         data[raw_key] = base64.b64encode(bytes(raw)).decode('ascii') if raw else None
     return data
 
 
-def _preserved_dict_to_entry(data: dict, synthetic_id: int) -> dict:
+def _preserved_dict_to_entry(data: dict[str, object], synthetic_id: int) -> _TrafficEntry:
     entry = {key: data.get(key) for key in _PRESERVE_FIELDS}
     entry['id'] = synthetic_id
     entry['pending_stage'] = None
     for raw_key in ('request_raw', 'response_raw'):
         encoded = data.get(raw_key)
-        entry[raw_key] = base64.b64decode(encoded) if encoded else None
-    return entry
+        entry[raw_key] = (
+            base64.b64decode(cast('str | bytes', encoded)) if encoded else None
+        )
+    return cast('_TrafficEntry', entry)
 
 
-def _load_preserved_traffic() -> list:
+def _load_preserved_traffic() -> list[_TrafficEntry]:
     """Load previously-preserved rows from disk, if any. Assigned negative,
     synthetic ids (in chronological order) so they can never collide with a
     live proxy log entry's id, which always starts back at 0 on every launch.
@@ -123,21 +215,27 @@ def _load_preserved_traffic() -> list:
     except OSError:
         return []
     try:
-        saved = json.loads(raw)
+        saved = cast('object', json.loads(raw))
     except ValueError:
         return []
-    entries = saved.get('entries') if isinstance(saved, dict) else None
+    saved_dict = cast('dict[str, object]', saved) if isinstance(saved, dict) else None
+    entries = saved_dict.get('entries') if saved_dict is not None else None
     if not isinstance(entries, list):
         return []
-    result = []
-    for offset, data in enumerate(entries):
+    entries_list = cast('list[object]', entries)
+    result: list[_TrafficEntry] = []
+    for offset, data in enumerate(entries_list):
         if not isinstance(data, dict):
             continue
-        result.append(_preserved_dict_to_entry(data, synthetic_id=-(len(entries) - offset)))
+        result.append(
+            _preserved_dict_to_entry(
+                cast('dict[str, object]', data), synthetic_id=-(len(entries_list) - offset)
+            )
+        )
     return result
 
 
-def _save_preserved_traffic(entries: list) -> None:
+def _save_preserved_traffic(entries: list[_TrafficEntry]) -> None:
     try:
         PROXY_TRAFFIC_FILE.parent.mkdir(parents=True, exist_ok=True)
         with PROXY_TRAFFIC_FILE.open('w', encoding='utf-8') as handle:
@@ -153,7 +251,7 @@ def _clear_preserved_traffic_file() -> None:
         pass
 
 
-def _format_timestamp(value) -> str:
+def _format_timestamp(value: int | float | None) -> str:
     if not value:
         return ''
     try:
@@ -162,7 +260,7 @@ def _format_timestamp(value) -> str:
         return ''
 
 
-def _format_status(entry: dict) -> str:
+def _format_status(entry: _TrafficEntry) -> str:
     status = entry.get('status')
     if status is not None:
         return str(status)
@@ -174,7 +272,7 @@ def _format_status(entry: dict) -> str:
     return '-'
 
 
-def _format_size(value) -> str:
+def _format_size(value: int | float | None) -> str:
     if value is None:
         return ''
     if value == 0:
@@ -187,24 +285,24 @@ def _format_size(value) -> str:
     return f'{size:.1f} GB'
 
 
-def _format_ms(value) -> str:
+def _format_ms(value: int | float | None) -> str:
     return '' if value is None else f'{value} ms'
 
 
 class _NumericSortItem(QTableWidgetItem):
     """Table item that sorts on a numeric value instead of its display text."""
 
-    def __init__(self, numeric_val, text: str):
+    def __init__(self, numeric_val: int | float, text: str) -> None:
         super().__init__(text)
         self.numeric_val = numeric_val
 
-    def __lt__(self, other):
+    def __lt__(self, other: QTableWidgetItem) -> bool:
         if isinstance(other, _NumericSortItem):
             return self.numeric_val < other.numeric_val
         return super().__lt__(other)
 
 
-def _status_sort_value(entry: dict) -> int:
+def _status_sort_value(entry: _TrafficEntry) -> int:
     status = entry.get('status')
     return status if status is not None else -1
 
@@ -215,13 +313,13 @@ _DROPPED_BRUSH = QBrush(QColor(244, 67, 54, 70))
 _NO_HIGHLIGHT_BRUSH = QBrush()
 
 
-def _host_path_matches(entry: dict, text: str) -> bool:
+def _host_path_matches(entry: _TrafficEntry, text: str) -> bool:
     if not text:
         return False
     return text in entry.get('host', '').lower() or text in entry.get('path', '').lower()
 
 
-def _row_brush(entry: dict, highlight_text: str) -> QBrush:
+def _row_brush(entry: _TrafficEntry, highlight_text: str) -> QBrush:
     if entry.get('dropped_request') or entry.get('dropped_response'):
         return _DROPPED_BRUSH
     if entry.get('was_intercepted'):
@@ -231,7 +329,7 @@ def _row_brush(entry: dict, highlight_text: str) -> QBrush:
     return _NO_HIGHLIGHT_BRUSH
 
 
-def _set_text_preserving_scroll(text_edit, text: str) -> None:
+def _set_text_preserving_scroll(text_edit: QTextEdit, text: str) -> None:
     """setPlainText() always snaps scroll to the top - skip the no-op case and
     restore the scroll position on real updates so a growing/streaming
     response doesn't yank the view back to the top while you're reading it.
@@ -256,7 +354,13 @@ class _TableColumnResizer(QObject):
     clamps any drag that would squeeze the last column below a sane minimum.
     """
 
-    def __init__(self, table, headers: tuple, config_manager, settings_key: str):
+    def __init__(
+        self,
+        table: QTableWidget,
+        headers: tuple[str, ...],
+        config_manager: _ConfigManager | None,
+        settings_key: str,
+    ) -> None:
         super().__init__(table)
         self._table = table
         self._headers = headers
@@ -283,13 +387,15 @@ class _TableColumnResizer(QObject):
         header.sectionResized.connect(self._on_resized)
         table.installEventFilter(self)
 
-    def _load_widths(self) -> dict:
+    def _load_widths(self) -> dict[str, int]:
         if self._config is None:
             return {}
-        saved = self._config.settings.get(self._settings_key, {})
+        saved = cast(
+            'dict[str, object]', self._config.settings.get(self._settings_key, {})
+        )
         return {k: int(v) for k, v in saved.items() if isinstance(v, (int, float)) and v > 0}
 
-    def _save_widths(self, widths: dict) -> None:
+    def _save_widths(self, widths: dict[str, int]) -> None:
         if self._config is None:
             return
         self._config.settings[self._settings_key] = dict(widths)
@@ -332,7 +438,7 @@ class _TableColumnResizer(QObject):
         widths[self._headers[logical_index]] = new_size
         self._save_widths(widths)
 
-    def eventFilter(self, obj, event) -> bool:
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if obj is self._table and event.type() == QEvent.Type.Resize:
             # The table's own resize event fires before its viewport's size
             # has actually caught up - defer to the next event-loop tick.
@@ -346,10 +452,10 @@ class _CompactComboBox(QComboBox):
     the app for compact in-cell dropdowns (e.g. FastFlag True/False editing).
     """
 
-    def wheelEvent(self, e):
+    def wheelEvent(self, e: QWheelEvent) -> None:
         e.ignore()
 
-    def paintEvent(self, e):
+    def paintEvent(self, e: QPaintEvent) -> None:
         painter = QPainter(self)
         if self.hasFocus() or self.underMouse():
             painter.fillRect(self.rect(), self.palette().alternateBase())
@@ -372,12 +478,17 @@ class AutoReplaceRulesDialog(QDialog):
     apply_auto_replace_rules/_header_rules/_query_rules in proxy/server.py).
     """
 
-    def __init__(self, proxy_master=None, config_manager=None, parent=None):
+    def __init__(
+        self,
+        proxy_master: _ProxyMaster | None = None,
+        config_manager: _ConfigManager | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._proxy_master = proxy_master
         self._config = config_manager
         self.ui = Ui_RulesDialog()
-        self.ui.setupUi(self)
+        cast('_DialogUiSetup', self.ui).setupUi(self)
         self.setWindowTitle(tr('ui.gui.proxy_tab.auto_replace_rules'))
         self.resize(950, 500)
 
@@ -395,7 +506,7 @@ class AutoReplaceRulesDialog(QDialog):
             'auto_replace_rules_column_widths',
         )
 
-        self._rules: list = (
+        self._rules: list[_AutoReplaceRule] = (
             list(proxy_master.get_auto_replace_rules())
             if proxy_master is not None and hasattr(proxy_master, 'get_auto_replace_rules')
             else []
@@ -411,7 +522,7 @@ class AutoReplaceRulesDialog(QDialog):
         self.ui.exportButton.clicked.connect(self._export_rules)
 
     @staticmethod
-    def _default_rule() -> dict:
+    def _default_rule() -> _AutoReplaceRule:
         return {
             'enabled': True,
             'direction': 'both',
@@ -443,9 +554,10 @@ class AutoReplaceRulesDialog(QDialog):
                 direction_box.addItem(label, value)
             direction_index = direction_box.findData(rule.get('direction', 'both'))
             direction_box.setCurrentIndex(max(0, direction_index))
-            direction_box.currentIndexChanged.connect(
-                lambda _i, r=row: self._on_direction_changed(r)
-            )
+            def _direction_changed(_index: int, r: int = row) -> None:
+                self._on_direction_changed(r)
+
+            direction_box.currentIndexChanged.connect(_direction_changed)
             table.setCellWidget(row, 1, direction_box)
 
             type_box = _CompactComboBox()
@@ -453,7 +565,10 @@ class AutoReplaceRulesDialog(QDialog):
                 type_box.addItem(label, value)
             type_index = type_box.findData(rule.get('type', 'plain'))
             type_box.setCurrentIndex(max(0, type_index))
-            type_box.currentIndexChanged.connect(lambda _i, r=row: self._on_type_changed(r))
+            def _type_changed(_index: int, r: int = row) -> None:
+                self._on_type_changed(r)
+
+            type_box.currentIndexChanged.connect(_type_changed)
             table.setCellWidget(row, 2, type_box)
 
             for col, key in (
@@ -472,15 +587,15 @@ class AutoReplaceRulesDialog(QDialog):
     def _on_direction_changed(self, row: int) -> None:
         if self._loading or row >= len(self._rules):
             return
-        widget = self.ui.rulesTable.cellWidget(row, 1)
-        self._rules[row]['direction'] = str(widget.currentData() or 'both')
+        widget = cast('_CompactComboBox', self.ui.rulesTable.cellWidget(row, 1))
+        self._rules[row]['direction'] = str(cast('object', widget.currentData()) or 'both')
         self._save()
 
     def _on_type_changed(self, row: int) -> None:
         if self._loading or row >= len(self._rules):
             return
-        widget = self.ui.rulesTable.cellWidget(row, 2)
-        self._rules[row]['type'] = str(widget.currentData() or 'plain')
+        widget = cast('_CompactComboBox', self.ui.rulesTable.cellWidget(row, 2))
+        self._rules[row]['type'] = str(cast('object', widget.currentData()) or 'plain')
         self._save()
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -499,7 +614,7 @@ class AutoReplaceRulesDialog(QDialog):
         self._rules[row][key] = item.text()
         self._save()
 
-    def _selected_rows(self) -> list:
+    def _selected_rows(self) -> list[int]:
         return sorted({idx.row() for idx in self.ui.rulesTable.selectionModel().selectedRows()})
 
     def _add_rule(self) -> None:
@@ -512,7 +627,7 @@ class AutoReplaceRulesDialog(QDialog):
         if not rows:
             return
         for row in rows:
-            self._rules.append(dict(self._rules[row]))
+            self._rules.append(cast('_AutoReplaceRule', dict(self._rules[row])))
         self._render_rules()
         self._save()
 
@@ -536,11 +651,20 @@ class AutoReplaceRulesDialog(QDialog):
             return
         try:
             with open(file_path, encoding='utf-8') as handle:
-                data = json.load(handle)
-            imported = data.get('rules') if isinstance(data, dict) else data
+                data = cast('object', json.load(handle))
+            data_dict = cast('dict[str, object]', data) if isinstance(data, dict) else None
+            imported: object = data_dict.get('rules') if data_dict is not None else cast('object', data)
             if not isinstance(imported, list):
                 raise ValueError('expected a list of rules')
-            self._rules = [self._default_rule() | r for r in imported if isinstance(r, dict)]
+            imported_rules = cast('list[object]', imported)
+            self._rules = [
+                cast(
+                    '_AutoReplaceRule',
+                    self._default_rule() | cast('dict[str, object]', r),
+                )
+                for r in imported_rules
+                if isinstance(r, dict)
+            ]
         except (OSError, ValueError, TypeError) as exc:
             QMessageBox.warning(
                 self,
@@ -584,14 +708,19 @@ class ProxyTrafficTab(QWidget):
     all - Fleasion's own features work either way.
     """
 
-    def __init__(self, config_manager, proxy_master=None, parent=None):
+    def __init__(
+        self,
+        config_manager: _ConfigManager | None,
+        proxy_master: _ProxyMaster | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._config = config_manager
         self._proxy_master = proxy_master
         self._rules_dialog: AutoReplaceRulesDialog | None = None
 
         self.ui = Ui_ProxyTab()
-        self.ui.setupUi(self)
+        cast('_WidgetUiSetup', self.ui).setupUi(self)
         # The .ui-generated root layout never had its margins zeroed, unlike
         # every other tab (e.g. RandoStuffTab's root layout explicitly sets
         # (0, 0, 0, 0)) - left at Qt's default (9, 9, 9, 9), the whole tab's
@@ -673,21 +802,21 @@ class ProxyTrafficTab(QWidget):
         self._make_shortcut('D', lambda: self._resolve_action('drop', False))
         self._make_shortcut('R', lambda: self._replay_selected())
 
-        self._traffic: list[dict] = []
-        self._entries_by_id: dict[int, dict] = {}
-        self._displayed_entry_id: Optional[int] = None
+        self._traffic: list[_TrafficEntry] = []
+        self._entries_by_id: dict[int, _TrafficEntry] = {}
+        self._displayed_entry_id: int | None = None
         # The request box is editable for whichever entry is displayed, held
         # or not - this is the id of the entry currently loaded into it, so a
         # poll refresh only re-fetches the preview when you've switched to a
         # different entry, never while you're mid-edit on this one (R replays
         # whatever's in the box, so edits on an already-completed request
         # need to survive polling too).
-        self._loaded_request_entry_id: Optional[int] = None
+        self._loaded_request_entry_id: int | None = None
         # (entry_id, stage) of a held response whose raw editable bytes are
         # currently loaded into the response box - same reload-avoidance idea
         # as above, but only for the response side while it's actually held.
-        self._loaded_pending_response_key: Optional[tuple] = None
-        self._loaded_completed_response_key: Optional[tuple] = None
+        self._loaded_pending_response_key: _PendingResponseKey | None = None
+        self._loaded_completed_response_key: _CompletedResponseKey | None = None
 
         # Unlike enableCheckBox, "Preserve" DOES persist across launches -
         # it decides whether traffic (rows, requests, responses, and their
@@ -710,7 +839,7 @@ class ProxyTrafficTab(QWidget):
         # live rows continue right on from N - with no preserved rows (the
         # common case), it's just entry_id unchanged, exactly as before.
         self._traffic_id_display_offset = len(self._preserved_traffic)
-        self._last_saved_preserve_fingerprint: Optional[tuple] = None
+        self._last_saved_preserve_fingerprint: tuple[tuple[object, ...], ...] | None = None
         self.ui.preserveCheckBox.setChecked(preserve_enabled)
         self.ui.preserveCheckBox.toggled.connect(self._on_preserve_toggled)
 
@@ -758,7 +887,7 @@ class ProxyTrafficTab(QWidget):
         self._traffic = self._preserved_traffic + live
         self._render_table()
 
-    def _row_entry_id(self, row: int) -> Optional[int]:
+    def _row_entry_id(self, row: int) -> int | None:
         item = self.ui.trafficTable.item(row, 0)
         return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
 
@@ -775,7 +904,7 @@ class ProxyTrafficTab(QWidget):
         # state - so the FULL multi-row selection has to be captured by
         # entry id here and explicitly restored after rebuilding, not just
         # the single "current" row.
-        selected_ids = set()
+        selected_ids: set[int] = set()
         for idx in table.selectionModel().selectedRows():
             entry_id = self._row_entry_id(idx.row())
             if entry_id is not None:
@@ -844,7 +973,7 @@ class ProxyTrafficTab(QWidget):
         table.blockSignals(False)
 
         if current_row >= 0:
-            self._show_entry(self._entries_by_id[current_id])
+            self._show_entry(self._entries_by_id[cast('int', current_id)])
         elif current_id is not None:
             # The previously current request scrolled out of the log's cap.
             self._displayed_entry_id = None
@@ -881,7 +1010,7 @@ class ProxyTrafficTab(QWidget):
             self.ui.requestGroup.setTitle(tr('ui.gui.proxy_tab.request'))
             self.ui.responseGroup.setTitle(tr('ui.gui.proxy_tab.response'))
 
-    def _show_entry(self, entry: dict) -> None:
+    def _show_entry(self, entry: _TrafficEntry) -> None:
         # Never inject any note/annotation into the box text itself - it's
         # editable, and whatever's in there gets submitted verbatim as the
         # actual request/response body (held) or as what R replays (not
@@ -939,10 +1068,13 @@ class ProxyTrafficTab(QWidget):
             else tr('ui.gui.proxy_tab.response')
         )
 
-    def _format_preview(self, method_name: str, entry: dict) -> str:
+    def _format_preview(self, method_name: str, entry: _TrafficEntry) -> str:
         if self._proxy_master is None:
             return ''
-        fmt = getattr(self._proxy_master, method_name, None)
+        fmt = cast(
+            'Callable[[_TrafficEntry], str] | None',
+            getattr(self._proxy_master, method_name, None),
+        )
         text = fmt(entry) if callable(fmt) else ''
         if not text and entry.get('method') == 'CONNECT':
             return tr('proxy.tunnel_note')
@@ -955,7 +1087,7 @@ class ProxyTrafficTab(QWidget):
             for entry_id, stage in self._proxy_master.get_env_proxy_pending_intercepts():
                 self._proxy_master.submit_env_proxy_pending(entry_id, stage, action, None)
         else:
-            entry = self._entries_by_id.get(self._displayed_entry_id)
+            entry = self._entries_by_id.get(cast('int', self._displayed_entry_id))
             stage = entry.get('pending_stage') if entry is not None else None
             if entry is None or not stage:
                 return
@@ -965,13 +1097,13 @@ class ProxyTrafficTab(QWidget):
             )
         self._refresh_traffic()
 
-    def _make_shortcut(self, key: str, handler) -> QShortcut:
+    def _make_shortcut(self, key: str, handler: _ShortcutHandler) -> QShortcut:
         shortcut = QShortcut(QKeySequence(key), self)
         shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         shortcut.activated.connect(lambda: self._run_if_not_typing(handler))
         return shortcut
 
-    def _run_if_not_typing(self, handler) -> None:
+    def _run_if_not_typing(self, handler: _ShortcutHandler) -> None:
         focused = QApplication.focusWidget()
         if isinstance(focused, (QLineEdit, QTextEdit)):
             return
@@ -987,17 +1119,17 @@ class ProxyTrafficTab(QWidget):
             self._proxy_master, 'replay_env_proxy_request'
         ):
             return
-        entry = self._entries_by_id.get(self._displayed_entry_id)
+        entry = self._entries_by_id.get(cast('int', self._displayed_entry_id))
         if entry is None:
             return
         self._proxy_master.replay_env_proxy_request(entry['id'], self.ui.requestText.toPlainText())
 
-    def _show_table_context_menu(self, pos) -> None:
+    def _show_table_context_menu(self, pos: QPoint) -> None:
         # When multiple rows are selected, correlate to whichever one is
         # already driving the request/response boxes (same row the A/D/R
         # shortcuts act on) - no separate "which row did you right-click"
         # logic needed.
-        entry = self._entries_by_id.get(self._displayed_entry_id)
+        entry = self._entries_by_id.get(cast('int', self._displayed_entry_id))
         if entry is None:
             return
         menu = QMenu(self)

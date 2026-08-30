@@ -8,9 +8,16 @@ from __future__ import annotations
 
 import logging
 import shutil
-from pathlib import Path
+from contextlib import suppress
+from typing import TYPE_CHECKING, cast
 
-from .csg_mesh import export_obj, parse_csg_mesh
+from .csg_mesh import (
+    CFrame,
+    ObjMeshPart,
+    export_obj,
+    export_obj_multi,
+    parse_csg_mesh_full,
+)
 from .rbxm.deserializer import RbxmDeserializer
 from .rbxm.types import (
     PropertyFormat,
@@ -20,7 +27,18 @@ from .rbxm.types import (
 )
 from .rbxm.xml_writer import write_rbxmx
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 log = logging.getLogger(__name__)
+
+
+def _log_solidmodel_message(message: str) -> None:
+    """Best-effort UI log mirroring the converter's existing logging behavior."""
+    with suppress(Exception):
+        from ....utils import log_buffer
+
+        log_buffer.log('SolidModel', message)
 
 
 def convert_file(
@@ -120,12 +138,6 @@ def _export_obj_from_doc(
     MeshData, visual-only sub-mesh).  With decompose=True, exports
     per-operation meshes from ChildData with CFrame transforms and materials.
     """
-    from .csg_mesh import (
-        ObjMeshPart,
-        export_obj_multi,
-        parse_csg_mesh_full,
-    )
-
     if decompose:
         # Decomposed mode: per-operation meshes from ChildData
         child_doc = _try_extract_child_data(doc)
@@ -142,22 +154,17 @@ def _export_obj_from_doc(
                     vertices = result.vertices
                     indices = result.indices
 
-                    try:
-                        from ....utils import log_buffer
-
-                        log_buffer.log(
-                            'SolidModel',
-                            f'Detected SolidModel version: version {result.version}.00',
-                        )
-                    except Exception:
-                        pass
+                    _log_solidmodel_message(
+                        f'Detected SolidModel version: version {result.version}.00'
+                    )
 
                     if result.submesh_boundaries and len(result.submesh_boundaries) > 1:
                         visual_end = result.submesh_boundaries[1]
                         total = len(indices)
                         indices = indices[:visual_end]
                         log.info(
-                            '  %s (%s): %d vertices, %d/%d visual indices (%d visual, skipped %d auxiliary)',
+                            '  %s (%s): %d vertices, %d/%d visual indices '
+                            '(%d visual, skipped %d auxiliary)',
                             name,
                             class_name,
                             len(vertices),
@@ -166,13 +173,10 @@ def _export_obj_from_doc(
                             len(indices) // 3,
                             (total - len(indices)) // 3,
                         )
-                        try:
-                            log_buffer.log(
-                                'SolidModel',
-                                f'SolidModel part decoded: {len(vertices):,} vertices, {len(indices) // 3:,} faces (visual)',
-                            )
-                        except Exception:
-                            pass
+                        _log_solidmodel_message(
+                            f'SolidModel part decoded: {len(vertices):,} vertices, '
+                            f'{len(indices) // 3:,} faces (visual)'
+                        )
                     else:
                         log.info(
                             '  %s (%s): %d vertices, %d indices (%d triangles)',
@@ -182,13 +186,10 @@ def _export_obj_from_doc(
                             len(indices),
                             len(indices) // 3,
                         )
-                        try:
-                            log_buffer.log(
-                                'SolidModel',
-                                f'SolidModel part decoded: {len(vertices):,} vertices, {len(indices) // 3:,} faces',
-                            )
-                        except Exception:
-                            pass
+                        _log_solidmodel_message(
+                            f'SolidModel part decoded: {len(vertices):,} vertices, '
+                            f'{len(indices) // 3:,} faces'
+                        )
 
                     obj_parts.append(
                         ObjMeshPart(
@@ -212,33 +213,26 @@ def _export_obj_from_doc(
     vertices = result.vertices
     indices = result.indices
 
-    try:
-        from ....utils import log_buffer
-
-        log_buffer.log('SolidModel', f'Detected SolidModel version: version {result.version}.00')
-    except Exception:
-        pass
+    _log_solidmodel_message(f'Detected SolidModel version: version {result.version}.00')
 
     # Use only the visual sub-mesh for v3/v4
     if result.submesh_boundaries and len(result.submesh_boundaries) > 1:
         visual_end = result.submesh_boundaries[1]
         total = len(indices)
         indices = indices[:visual_end]
+        visual_face_count = len(indices) // 3
         log.info(
-            'Exporting pre-computed result: %d vertices, %d/%d visual indices (%d visual, skipped %d auxiliary)',
+            'Exporting pre-computed result: %d vertices, %d/%d visual indices '
+            '(%d visual, skipped %d auxiliary)',
             len(vertices),
             len(indices),
             total,
-            len(indices) // 3,
+            visual_face_count,
             (total - len(indices)) // 3,
         )
-        try:
-            log_buffer.log(
-                'SolidModel',
-                f'SolidModel decoded: {len(vertices):,} vertices, {len(indices) // 3:,} faces (visual)',
-            )
-        except Exception:
-            pass
+        _log_solidmodel_message(
+            f'SolidModel decoded: {len(vertices):,} vertices, {visual_face_count:,} faces (visual)'
+        )
     else:
         log.info(
             'Exporting pre-computed result: %d vertices, %d indices (%d triangles)',
@@ -246,13 +240,9 @@ def _export_obj_from_doc(
             len(indices),
             len(indices) // 3,
         )
-        try:
-            log_buffer.log(
-                'SolidModel',
-                f'SolidModel decoded: {len(vertices):,} vertices, {len(indices) // 3:,} faces',
-            )
-        except Exception:
-            pass
+        _log_solidmodel_message(
+            f'SolidModel decoded: {len(vertices):,} vertices, {len(indices) // 3:,} faces'
+        )
 
     obj_name = 'CSGMesh'
     for inst in doc.roots:
@@ -271,13 +261,13 @@ def _export_obj_from_doc(
 
 def _collect_mesh_parts(
     doc: RbxDocument,
-) -> list[tuple[str, str, bytes, dict | None]]:
+) -> list[tuple[str, str, bytes, CFrame | None]]:
     """Collect (name, class_name, mesh_data, cframe) from all root PartOperations."""
-    _PART_OP_CLASSES = {'UnionOperation', 'NegateOperation', 'PartOperation'}
-    parts: list[tuple[str, str, bytes, dict | None]] = []
+    part_op_classes = {'UnionOperation', 'NegateOperation', 'PartOperation'}
+    parts: list[tuple[str, str, bytes, CFrame | None]] = []
 
     for inst in doc.roots:
-        if inst.class_name not in _PART_OP_CLASSES:
+        if inst.class_name not in part_op_classes:
             continue
         mesh_prop = inst.properties.get('MeshData')
         if mesh_prop is None or not isinstance(mesh_prop.value, bytes) or len(mesh_prop.value) == 0:
@@ -288,13 +278,15 @@ def _collect_mesh_parts(
             name_prop.value if name_prop and isinstance(name_prop.value, str) else inst.class_name
         )
 
-        # Extract CFrame for transform
+        # RBXM CFrame properties are deserialized as the exact CFrame mapping
+        # defined by csg_mesh; keep the existing dict runtime gate and expose
+        # that proven file-format invariant to the type checker.
         cframe_prop = inst.properties.get('CFrame')
-        cframe = (
-            cframe_prop.value
-            if cframe_prop is not None and isinstance(cframe_prop.value, dict)
-            else None
-        )
+        cframe: CFrame | None = None
+        if cframe_prop is not None:
+            cframe_value: object = cframe_prop.value
+            if isinstance(cframe_value, dict):
+                cframe = cast('CFrame', cframe_value)
 
         parts.append((name, inst.class_name, mesh_prop.value, cframe))
 
@@ -344,13 +336,13 @@ def _inject_mesh_data(doc: RbxDocument, mesh_data: bytes) -> None:
     If ALL root instances already have non-empty MeshData, we skip injection
     entirely — they already have their own valid data from the CDN/dictionary.
     """
-    _PART_OP_CLASSES = {'UnionOperation', 'NegateOperation', 'PartOperation'}
+    part_op_classes = {'UnionOperation', 'NegateOperation', 'PartOperation'}
 
     # First pass: check if any root operations need MeshData
-    needs_injection = []
-    already_has_mesh = []
+    needs_injection: list[RbxInstance] = []
+    already_has_mesh: list[RbxInstance] = []
     for inst in doc.roots:
-        if inst.class_name in _PART_OP_CLASSES:
+        if inst.class_name in part_op_classes:
             existing = inst.properties.get('MeshData')
             has_mesh = (
                 existing is not None
@@ -419,7 +411,40 @@ def _get_child_data_bytes(raw_file: bytes) -> bytes | None:
     doc = RbxmDeserializer().deserialize(raw_file)
     for inst in doc.instances.values():
         child_prop = inst.properties.get('ChildData')
-        if child_prop is not None and isinstance(child_prop.value, bytes):
-            if child_prop.value[:8] == b'<roblox!':
-                return child_prop.value
+        if (
+            child_prop is not None
+            and isinstance(child_prop.value, bytes)
+            and child_prop.value[:8] == b'<roblox!'
+        ):
+            return child_prop.value
     return None
+
+
+def export_obj_from_doc(doc: RbxDocument, output_path: Path, *, decompose: bool = False) -> None:
+    """Public boundary for exporting an already-deserialized solid-model document."""
+    _export_obj_from_doc(doc, output_path, decompose=decompose)
+
+
+def get_top_level_mesh_data(doc: RbxDocument) -> bytes | None:
+    """Public boundary for reading the top-level MeshData payload."""
+    return _get_top_level_mesh_data(doc)
+
+
+def get_top_level_mesh_data_from_raw(raw: bytes) -> bytes | None:
+    """Public boundary for reading top-level MeshData from raw RBXM bytes."""
+    return _get_top_level_mesh_data_from_raw(raw)
+
+
+def inject_mesh_data(doc: RbxDocument, mesh_data: bytes) -> None:
+    """Public boundary for injecting top-level MeshData into child operations."""
+    _inject_mesh_data(doc, mesh_data)
+
+
+def try_extract_child_data(doc: RbxDocument) -> RbxDocument | None:
+    """Public boundary for parsing embedded ChildData when present."""
+    return _try_extract_child_data(doc)
+
+
+def get_child_data_bytes(raw_file: bytes) -> bytes | None:
+    """Public boundary for reading embedded ChildData bytes from raw RBXM."""
+    return _get_child_data_bytes(raw_file)

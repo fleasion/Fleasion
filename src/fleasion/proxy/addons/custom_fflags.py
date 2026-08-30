@@ -8,11 +8,50 @@ import stat
 import sys
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from ...utils import log_buffer
 from ...utils.paths import CONFIG_FILE, LOCAL_APPDATA
+
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
+
+
+if TYPE_CHECKING:
+
+    def _json_object(value: object) -> JsonObject | None: ...
+
+    def _json_list(value: object) -> list[JsonValue] | None: ...
+
+    def _config_enabled(config: object) -> bool: ...
+
+    def _config_flags(config: object) -> object: ...
+
+    def _config_disabled(config: object) -> object: ...
+
+    def _disabled_values(value: object) -> Iterable[object]: ...
+else:
+
+    def _json_object(value: object) -> JsonObject | None:
+        return value if isinstance(value, dict) else None
+
+    def _json_list(value: object) -> list[JsonValue] | None:
+        return value if isinstance(value, list) else None
+
+    def _config_enabled(config: object) -> bool:
+        return bool(getattr(config, 'custom_fflags_enabled', False))
+
+    def _config_flags(config: object) -> object:
+        return getattr(config, 'custom_fflags', {})
+
+    def _config_disabled(config: object) -> object:
+        return getattr(config, 'custom_fflag_disabled', [])
+
+    def _disabled_values(value: object) -> Iterable[object]:
+        return value if isinstance(value, list | tuple | set) else ()
 
 
 CLIENT_SETTINGS_APPLICATION_PATH = '/settings/application/'
@@ -26,7 +65,7 @@ CLIENT_SETTINGS_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 CLIENT_SETTINGS_STALE_SUCCESS_SECONDS = 15.0
 
 
-def normalize_flag_value(value: Any) -> str:
+def normalize_flag_value(value: object) -> str:
     """Return the string representation Roblox uses for FastFlag values."""
     if isinstance(value, bool):
         return 'True' if value else 'False'
@@ -37,13 +76,14 @@ def normalize_flag_value(value: Any) -> str:
     raise ValueError('FastFlag values must be strings, numbers, or booleans')
 
 
-def normalize_custom_fflags(value: Any) -> dict[str, str]:
+def normalize_custom_fflags(value: object) -> dict[str, str]:
     """Validate and normalize a custom FastFlag mapping."""
-    if not isinstance(value, dict):
+    value_map = _json_object(value)
+    if value_map is None:
         return {}
 
     normalized: dict[str, str] = {}
-    for raw_name, raw_value in value.items():
+    for raw_name, raw_value in value_map.items():
         name = str(raw_name).strip()
         if not name:
             continue
@@ -59,13 +99,13 @@ class CustomFFlagModifier:
 
     def __init__(
         self,
-        config_manager,
+        config_manager: object,
         flag_cache_path: Path | None = None,
         settings_path: Path | None = None,
         reload_settings_from_disk: bool = False,
         macos_resource_dirs: list[Path] | None = None,
-    ):
-        self.config_manager = config_manager
+    ) -> None:
+        self.config_manager: object = config_manager
         self._flag_cache_path = flag_cache_path
         self._macos_resource_dirs = (
             list(macos_resource_dirs) if macos_resource_dirs is not None else None
@@ -78,8 +118,8 @@ class CustomFFlagModifier:
         self._settings_path = settings_path or (CONFIG_FILE if reload_settings_from_disk else None)
         self._settings_signature: tuple[int, int] | None = None
         self._disk_enabled: bool | None = None
-        self._disk_flags: dict | None = None
-        self._disk_disabled: list | None = None
+        self._disk_flags: JsonObject | None = None
+        self._disk_disabled: list[JsonValue] | None = None
         self._last_response_success_at: float | None = None
         self._first_response_failure_at: float | None = None
         self._last_failure_log_at: dict[str, float] = {}
@@ -160,23 +200,24 @@ class CustomFFlagModifier:
             signature = (stat_result.st_mtime_ns, stat_result.st_size)
             if signature == self._settings_signature:
                 return
-            data = json.loads(self._settings_path.read_text(encoding='utf-8'))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            data_value: object = json.loads(self._settings_path.read_text(encoding='utf-8'))
+        except OSError, UnicodeDecodeError, json.JSONDecodeError:
             return
 
         self._settings_signature = signature
-        if isinstance(data, dict):
+        data = _json_object(data_value)
+        if data is not None:
             self._disk_enabled = bool(data.get('custom_fflags_enabled', False))
-            saved_flags = data.get('custom_fflags', {})
-            self._disk_flags = saved_flags if isinstance(saved_flags, dict) else {}
-            disabled = data.get('custom_fflag_disabled', [])
-            self._disk_disabled = disabled if isinstance(disabled, list) else []
+            saved_flags = _json_object(data.get('custom_fflags', {}))
+            self._disk_flags = saved_flags or {}
+            disabled = _json_list(data.get('custom_fflag_disabled', []))
+            self._disk_disabled = disabled or []
 
     def is_enabled(self) -> bool:
         self._refresh_settings_from_disk()
         if self._disk_enabled is not None:
             return self._disk_enabled
-        return bool(getattr(self.config_manager, 'custom_fflags_enabled', False))
+        return _config_enabled(self.config_manager)
 
     @staticmethod
     def handles_path(path: str) -> bool:
@@ -193,26 +234,21 @@ class CustomFFlagModifier:
             CLIENT_SETTINGS_APPLICATION_PATH in path_only
             or CLIENT_SETTINGS_COMPRESSED_PATH in path_only
         )
-        return (
-            is_application_settings
-            and BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM not in path_only
-        )
+        return is_application_settings and BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM not in path_only
 
     def runtime_flags(self) -> dict[str, str]:
         """Return saved flags plus Fleasion's non-persisted refresh companion."""
         self._refresh_settings_from_disk()
         saved_flags = (
-            self._disk_flags
-            if self._disk_flags is not None
-            else getattr(self.config_manager, 'custom_fflags', {})
+            self._disk_flags if self._disk_flags is not None else _config_flags(self.config_manager)
         )
         flags = normalize_custom_fflags(saved_flags)
         disabled = (
             self._disk_disabled
             if self._disk_disabled is not None
-            else getattr(self.config_manager, 'custom_fflag_disabled', [])
+            else _config_disabled(self.config_manager)
         )
-        disabled_names = {str(name).strip() for name in disabled}
+        disabled_names = {str(name).strip() for name in _disabled_values(disabled)}
         flags = {name: value for name, value in flags.items() if name not in disabled_names}
         # Roblox/Sober reads the reloader interval before applying the response
         # it has just fetched. Therefore, when this companion flag first
@@ -277,9 +313,12 @@ class CustomFFlagModifier:
             if payload_offset >= len(raw) or raw[compression_offset] != 0:
                 return False
 
-            payload = json.loads(raw[payload_offset:])
-            application_settings = payload.get('applicationSettings')
-            if not isinstance(application_settings, dict):
+            payload_value: object = json.loads(raw[payload_offset:])
+            payload = _json_object(payload_value)
+            if payload is None:
+                return False
+            application_settings = _json_object(payload.get('applicationSettings'))
+            if application_settings is None:
                 return False
 
             enabled = self.is_enabled()
@@ -288,7 +327,7 @@ class CustomFFlagModifier:
             saved_flags = (
                 self._disk_flags
                 if self._disk_flags is not None
-                else getattr(self.config_manager, 'custom_fflags', {})
+                else _config_flags(self.config_manager)
             )
             saved_names = set(normalize_custom_fflags(saved_flags))
             stale_names = (
@@ -312,7 +351,7 @@ class CustomFFlagModifier:
                 temporary_path.replace(cache_path)
             finally:
                 temporary_path.unlink(missing_ok=True)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        except OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError:
             return False
 
         if flags:
@@ -376,7 +415,7 @@ class CustomFFlagModifier:
         enabled = self.is_enabled()
         flags = self.runtime_flags() if enabled else {}
         desired_names = set(flags)
-        saved_names = set()
+        saved_names: set[str] = set()
         if not enabled:
             self._refresh_settings_from_disk()
             saved_flags = (
@@ -391,17 +430,18 @@ class CustomFFlagModifier:
 
         for target in paths:
             try:
-                existing: dict[str, Any]
+                existing: JsonObject
                 if target.exists():
                     try:
-                        loaded = json.loads(target.read_text(encoding='utf-8'))
+                        loaded_value: object = json.loads(target.read_text(encoding='utf-8'))
                     except json.JSONDecodeError:
                         log_buffer.log(
                             'CustomFFlags',
                             f'Could not decode macOS ClientSettings file; left unchanged: {target}',
                         )
                         continue
-                    if not isinstance(loaded, dict):
+                    loaded = _json_object(loaded_value)
+                    if loaded is None:
                         log_buffer.log(
                             'CustomFFlags',
                             f'macOS ClientSettings root was not an object; left unchanged: {target}',
@@ -423,9 +463,7 @@ class CustomFFlagModifier:
                     original_mode = stat.S_IMODE(target.stat().st_mode)
                     self._clear_read_only(target)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                temporary = target.with_name(
-                    f'.{target.name}.fleasion-{os.getpid()}.tmp'
-                )
+                temporary = target.with_name(f'.{target.name}.fleasion-{os.getpid()}.tmp')
                 try:
                     temporary.write_text(json.dumps(merged, indent=2), encoding='utf-8')
                     if original_mode is not None:
@@ -464,18 +502,16 @@ class CustomFFlagModifier:
     ) -> bool:
         """Return whether a final plain ClientSettings body still carries a signature."""
         try:
-            payload = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload_value: object = json.loads(body)
+        except json.JSONDecodeError, UnicodeDecodeError:
             return False
-        if not isinstance(payload, dict):
+        payload = _json_object(payload_value)
+        if payload is None:
             return False
-        application_settings = payload.get('applicationSettings')
-        if not isinstance(application_settings, dict):
+        application_settings = _json_object(payload.get('applicationSettings'))
+        if application_settings is None:
             return False
-        return all(
-            application_settings.get(name) == value
-            for name, value in delivered_signature
-        )
+        return all(application_settings.get(name) == value for name, value in delivered_signature)
 
     def modify_response_with_delivery(
         self,
@@ -497,7 +533,7 @@ class CustomFFlagModifier:
         delivered_signature = self._flag_signature(flags)
 
         try:
-            payload = json.loads(body)
+            payload_value = json.loads(body)
         except json.JSONDecodeError, UnicodeDecodeError:
             self.log_response_failure(
                 'decode',
@@ -505,15 +541,16 @@ class CustomFFlagModifier:
             )
             return body, None
 
-        if not isinstance(payload, dict):
+        payload = _json_object(payload_value)
+        if payload is None:
             self.log_response_failure(
                 'invalid-root',
                 f'ClientSettings response for {path[:160]} was not a JSON object; response left unchanged',
             )
             return body, None
 
-        application_settings = payload.get('applicationSettings')
-        if not isinstance(application_settings, dict):
+        application_settings = _json_object(payload.get('applicationSettings'))
+        if application_settings is None:
             self.log_response_failure(
                 'missing-application-settings',
                 f'ClientSettings response for {path[:160]} had no applicationSettings object; response left unchanged',

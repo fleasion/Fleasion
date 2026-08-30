@@ -1,19 +1,22 @@
 import os
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PySide6.QtCore import QEvent, QPointF, Qt
+from typing import cast
+
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-from fleasion.cache.cache_viewer import ColumnVisibilityMenu, SCRAPER_COLUMNS
+from fleasion.cache.cache_viewer import SCRAPER_COLUMNS, ColumnVisibilityMenu
 
 
-def _qapp():
-    return QApplication.instance() or QApplication([])
+def _qapp() -> QApplication:
+    app = QApplication.instance()
+    return cast(QApplication, app) if app is not None else QApplication([])
 
 
-def _release(menu: ColumnVisibilityMenu, button: Qt.MouseButton, pos):
+def _release(menu: ColumnVisibilityMenu, button: Qt.MouseButton, pos: QPoint) -> None:
     event = QMouseEvent(
         QEvent.Type.MouseButtonRelease,
         QPointF(pos),
@@ -25,7 +28,7 @@ def _release(menu: ColumnVisibilityMenu, button: Qt.MouseButton, pos):
     menu.mouseReleaseEvent(event)
 
 
-def test_column_visibility_menu_ignores_right_button_release():
+def test_column_visibility_menu_ignores_right_button_release() -> None:
     app = _qapp()
     visibility = {key: default for key, _label, default, _width in SCRAPER_COLUMNS}
     menu = ColumnVisibilityMenu(visibility)
@@ -39,7 +42,7 @@ def test_column_visibility_menu_ignores_right_button_release():
     assert app is not None
 
 
-def test_column_visibility_menu_toggles_on_left_button_release():
+def test_column_visibility_menu_toggles_on_left_button_release() -> None:
     app = _qapp()
     visibility = {key: default for key, _label, default, _width in SCRAPER_COLUMNS}
     menu = ColumnVisibilityMenu(visibility)

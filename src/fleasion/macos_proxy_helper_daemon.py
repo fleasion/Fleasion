@@ -21,8 +21,13 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Iterable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from types import FrameType
 
 HELPER_VERSION = 7
 HELPER_CAPABILITIES = ('hosts', 'relay', 'patch_ca', 'probe_backend')
@@ -47,9 +52,10 @@ _ALLOWED_ROBLOX_APPS = {
     'RobloxStudio.app': 'RobloxStudio',
 }
 _USERS_ROOT = Path('/Users')
+_PATH_ERRORS = (OSError, ValueError)
 
 _state_lock = threading.Lock()
-_active_hosts = set()
+_active_hosts: set[str] = set()
 _last_heartbeat = 0.0
 _stop_event = threading.Event()
 _token_file = ''
@@ -57,8 +63,74 @@ _backend_port = 58443
 
 logger = logging.getLogger('fleasion-proxy-helper')
 
+type JsonValue = str | int | float | bool | list[JsonValue] | dict[str, JsonValue] | None
+type JsonObject = dict[str, JsonValue]
+type HostsEntry = tuple[str, int, str]
+type CertificateName = tuple[tuple[tuple[str, str], ...], ...]
 
-def _default_hosts_content():
+
+def _json_value(value: object) -> JsonValue:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_json_value(item) for item in cast('list[object]', value)]
+    if isinstance(value, dict):
+        result: JsonObject = {}
+        for key, item in cast('dict[object, object]', value).items():
+            if not isinstance(key, str):
+                raise TypeError('JSON object keys must be strings')
+            result[key] = _json_value(item)
+        return result
+    raise TypeError(f'unsupported JSON value type: {type(value).__name__}')
+
+
+def _json_list(values: Iterable[JsonValue]) -> list[JsonValue]:
+    return list(values)
+
+
+def _request_object(request: JsonValue) -> JsonObject:
+    if isinstance(request, dict):
+        return request
+    raise AttributeError(f"'{type(request).__name__}' object has no attribute 'get'")
+
+
+def _as_iterable(value: object) -> Iterable[object]:
+    if isinstance(value, Iterable):
+        return cast('Iterable[object]', value)
+    raise TypeError(f"'{type(value).__name__}' object is not iterable")
+
+
+def _certificate_name(value: object) -> CertificateName:
+    if not isinstance(value, tuple):
+        return ()
+    name: list[tuple[tuple[str, str], ...]] = []
+    for raw_rdn in cast('tuple[object, ...]', value):
+        if not isinstance(raw_rdn, tuple):
+            return ()
+        rdn: list[tuple[str, str]] = []
+        for raw_attr in cast('tuple[object, ...]', raw_rdn):
+            if not isinstance(raw_attr, tuple):
+                return ()
+            attr = cast('tuple[object, ...]', raw_attr)
+            if len(attr) != 2:
+                return ()
+            attr_key, attr_value = attr
+            if not isinstance(attr_key, str) or not isinstance(attr_value, str):
+                return ()
+            rdn.append((attr_key, attr_value))
+        name.append(tuple(rdn))
+    return tuple(name)
+
+
+def _name_value(entries: CertificateName, key: str) -> str:
+    for rdn in entries:
+        for attr_key, attr_value in rdn:
+            if attr_key == key:
+                return attr_value
+    return ''
+
+
+def _default_hosts_content() -> str:
     return (
         '##\n'
         '# Host Database\n'
@@ -72,14 +144,14 @@ def _default_hosts_content():
     )
 
 
-def _configure_logging(log_path):
+def _configure_logging(log_path: str | os.PathLike[str]) -> None:
     logger.setLevel(logging.INFO)
     handler = RotatingFileHandler(log_path, maxBytes=2 * 1024 * 1024, backupCount=2)
     handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
     logger.addHandler(handler)
 
 
-def _read_token():
+def _read_token() -> str:
     with open(_token_file, 'r', encoding='utf-8') as handle:
         token = handle.read().strip()
     if len(token) < 32:
@@ -87,7 +159,7 @@ def _read_token():
     return token
 
 
-def _line_targets_allowed_host(raw_line):
+def _line_targets_allowed_host(raw_line: str) -> bool:
     active = raw_line.split('#', 1)[0].strip()
     parts = active.split()
     if len(parts) < 2 or parts[0] != '127.0.0.1':
@@ -95,8 +167,8 @@ def _line_targets_allowed_host(raw_line):
     return any(host.lower() in ALLOWED_HOSTS for host in parts[1:])
 
 
-def _parse_entries(content):
-    entries = {}
+def _parse_entries(content: str) -> dict[str, list[HostsEntry]]:
+    entries: dict[str, list[HostsEntry]] = {}
     for line_no, raw_line in enumerate(content.splitlines(), start=1):
         active = raw_line.split('#', 1)[0].strip()
         parts = active.split()
@@ -107,7 +179,7 @@ def _parse_entries(content):
     return entries
 
 
-def _flush_dns():
+def _flush_dns() -> None:
     for cmd in (
         ['/usr/bin/dscacheutil', '-flushcache'],
         ['/usr/bin/killall', '-HUP', 'mDNSResponder'],
@@ -118,7 +190,7 @@ def _flush_dns():
             pass
 
 
-def _set_hosts(hosts):
+def _set_hosts(hosts: Iterable[object]) -> None:
     global _active_hosts, _last_heartbeat
 
     Path(HOSTS_FILE).parent.mkdir(exist_ok=True)
@@ -165,36 +237,35 @@ def _set_hosts(hosts):
     logger.info('active hosts updated: %s', ', '.join(sorted(requested)) or 'none')
 
 
-def _normalize_newlines(text):
+def _normalize_newlines(text: object) -> str:
     return str(text or '').replace('\r\n', '\n').replace('\r', '\n')
 
 
-def _normalize_pem_block(pem):
+def _normalize_pem_block(pem: object) -> str:
     return _normalize_newlines(pem).strip() + '\n'
 
 
-def _is_fleasion_ca_cert_block(pem_block):
+def _is_fleasion_ca_cert_block(pem_block: object) -> bool:
     try:
         with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
             handle.write(_normalize_pem_block(pem_block))
             temp_path = handle.name
         try:
-            cert = ssl._ssl._test_decode_cert(temp_path)
+            ssl_impl: object = getattr(ssl, '_ssl')
+            decode_cert = getattr(ssl_impl, '_test_decode_cert')
+            if not callable(decode_cert):
+                return False
+            decoded: object = decode_cert(temp_path)
         finally:
             try:
                 os.unlink(temp_path)
             except OSError:
                 pass
-        subject = cert.get('subject') or ()
-        issuer = cert.get('issuer') or ()
-
-        def _name_value(entries, key):
-            for rdn in entries:
-                for attr_key, attr_value in rdn:
-                    if attr_key == key:
-                        return attr_value
-            return ''
-
+        if not isinstance(decoded, dict):
+            return False
+        cert = cast('dict[object, object]', decoded)
+        subject = _certificate_name(cert.get('subject'))
+        issuer = _certificate_name(cert.get('issuer'))
         return (
             subject == issuer
             and _name_value(subject, 'commonName') == 'Fleasion Proxy CA'
@@ -204,16 +275,16 @@ def _is_fleasion_ca_cert_block(pem_block):
         return False
 
 
-def _is_relative_to(child, parent):
+def _is_relative_to(child: Path, parent: Path) -> bool:
     try:
         return os.path.commonpath([str(child), str(parent)]) == str(parent)
     # The source helper is also used by `uv run`, where launchd invokes the
     # system Python rather than Fleasion's Python 3.14 runtime.
-    except (OSError, ValueError):
+    except _PATH_ERRORS:
         return False
 
 
-def _validate_resource_root(raw_resource_dir):
+def _validate_resource_root(raw_resource_dir: object) -> Path:
     resource_dir = Path(str(raw_resource_dir or '')).expanduser()
     if not resource_dir.is_absolute():
         raise ValueError('resource_dir must be absolute')
@@ -233,7 +304,7 @@ def _validate_resource_root(raw_resource_dir):
     return resource_root
 
 
-def _is_froststrap_player_bundle(app_root):
+def _is_froststrap_player_bundle(app_root: Path) -> bool:
     """Only admit Froststrap's version-managed RobloxPlayer.app layout."""
     try:
         relative = app_root.relative_to(_USERS_ROOT)
@@ -243,7 +314,8 @@ def _is_froststrap_player_bundle(app_root):
     return (
         len(parts) == 7
         and bool(parts[0])
-        and parts[1:5] == (
+        and parts[1:5]
+        == (
             'Library',
             'Application Support',
             'Froststrap',
@@ -255,7 +327,7 @@ def _is_froststrap_player_bundle(app_root):
     )
 
 
-def _safe_cacert_path(resource_root):
+def _safe_cacert_path(resource_root: Path) -> Path:
     ssl_dir = resource_root / 'ssl'
     if ssl_dir.is_symlink():
         raise ValueError('Roblox ssl directory is a symlink')
@@ -279,7 +351,12 @@ def _safe_cacert_path(resource_root):
     return ca_file
 
 
-def _strip_requested_pem_blocks(cacert_text, remove_pems, *, strip_all_fleasion_ca=False):
+def _strip_requested_pem_blocks(
+    cacert_text: object,
+    remove_pems: Iterable[object],
+    *,
+    strip_all_fleasion_ca: bool = False,
+) -> str:
     normalized = _normalize_newlines(cacert_text)
     remove_set = {
         _normalize_pem_block(pem) for pem in remove_pems if isinstance(pem, str) and pem.strip()
@@ -287,7 +364,7 @@ def _strip_requested_pem_blocks(cacert_text, remove_pems, *, strip_all_fleasion_
     if not remove_set and not strip_all_fleasion_ca:
         return normalized
 
-    pieces = []
+    pieces: list[str] = []
     last_end = 0
     for match in _PEM_CERT_BLOCK_RE.finditer(normalized):
         pieces.append(normalized[last_end : match.start()])
@@ -301,7 +378,7 @@ def _strip_requested_pem_blocks(cacert_text, remove_pems, *, strip_all_fleasion_
     return ''.join(pieces)
 
 
-def _atomic_write_text(path, content):
+def _atomic_write_text(path: Path, content: str) -> None:
     fd, tmp_path = tempfile.mkstemp(prefix='.fleasion_cacert_', dir=str(path.parent))
     try:
         with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as handle:
@@ -325,7 +402,7 @@ def _atomic_write_text(path, content):
         raise
 
 
-def _clear_write_barriers(path):
+def _clear_write_barriers(path: Path) -> None:
     try:
         current_mode = path.stat().st_mode
     except OSError:
@@ -340,7 +417,8 @@ def _clear_write_barriers(path):
     except OSError:
         pass
 
-    if not hasattr(os, 'chflags'):
+    chflags = getattr(os, 'chflags', None)
+    if not callable(chflags):
         return
 
     immutable_mask = 0
@@ -355,39 +433,40 @@ def _clear_write_barriers(path):
         return
 
     try:
-        os.chflags(path, current_flags & ~immutable_mask)
+        chflags(path, current_flags & ~immutable_mask)
     except OSError:
         pass
 
 
-def _prepare_cacert_target(resource_root, ca_file):
+def _prepare_cacert_target(resource_root: Path, ca_file: Path) -> None:
     _clear_write_barriers(resource_root)
     _clear_write_barriers(ca_file.parent)
     if ca_file.exists():
         _clear_write_barriers(ca_file)
 
 
-def _normalize_cacert_permissions(ca_file):
+def _normalize_cacert_permissions(ca_file: Path) -> None:
     try:
         ca_file.chmod(0o644)
     except OSError:
         pass
 
 
-def _patch_ca(ca_pem, installs):
+def _patch_ca(ca_pem: object, installs: object) -> JsonObject:
     current_ca = _normalize_pem_block(ca_pem)
     if not _PEM_CERT_BLOCK_RE.fullmatch(current_ca):
         raise ValueError('ca_pem is not a PEM certificate block')
     if not isinstance(installs, list):
         raise ValueError('installs must be a list')
 
-    patched = []
-    skipped = []
-    failed = []
+    patched: list[JsonObject] = []
+    skipped: list[JsonObject] = []
+    failed: list[JsonObject] = []
 
-    for item in installs:
-        raw_resource_dir = item.get('resource_dir') if isinstance(item, dict) else ''
-        result = {'resource_dir': str(raw_resource_dir or '')}
+    for item in cast('list[object]', installs):
+        item_dict = cast('dict[object, object]', item) if isinstance(item, dict) else None
+        raw_resource_dir = item_dict.get('resource_dir') if item_dict is not None else ''
+        result: JsonObject = {'resource_dir': str(raw_resource_dir or '')}
         try:
             resource_root = _validate_resource_root(raw_resource_dir)
             ca_file = _safe_cacert_path(resource_root)
@@ -408,10 +487,14 @@ def _patch_ca(ca_pem, installs):
                     if ca_file.exists()
                     else ''
                 )
-            remove_pems = list(item.get('remove_pems') or []) if isinstance(item, dict) else []
+            remove_pems = (
+                list(_as_iterable(item_dict.get('remove_pems') or []))
+                if item_dict is not None
+                else []
+            )
             remove_pems.append(current_ca)
             strip_all_fleasion_ca = (
-                bool(item.get('strip_all_fleasion_ca')) if isinstance(item, dict) else False
+                bool(item_dict.get('strip_all_fleasion_ca')) if item_dict is not None else False
             )
             cleaned = _strip_requested_pem_blocks(
                 existing,
@@ -445,15 +528,15 @@ def _patch_ca(ca_pem, installs):
     return {
         'ok': ok,
         'version': HELPER_VERSION,
-        'capabilities': list(HELPER_CAPABILITIES),
-        'patched': patched,
-        'skipped': skipped,
-        'failed': failed,
+        'capabilities': _json_list(HELPER_CAPABILITIES),
+        'patched': _json_list(patched),
+        'skipped': _json_list(skipped),
+        'failed': _json_list(failed),
         'error': '' if ok else 'one or more Roblox CA patches failed',
     }
 
 
-def _status():
+def _status() -> JsonObject:
     with _state_lock:
         active_hosts = sorted(_active_hosts)
         lease_remaining = (
@@ -462,14 +545,14 @@ def _status():
     return {
         'ok': True,
         'version': HELPER_VERSION,
-        'capabilities': list(HELPER_CAPABILITIES),
-        'active_hosts': active_hosts,
+        'capabilities': _json_list(HELPER_CAPABILITIES),
+        'active_hosts': _json_list(active_hosts),
         'backend_port': _backend_port,
         'lease_remaining': lease_remaining,
     }
 
 
-def _probe_backend():
+def _probe_backend() -> JsonObject:
     started_at = time.monotonic()
     try:
         backend = socket.create_connection(('127.0.0.1', _backend_port), timeout=2.0)
@@ -498,16 +581,17 @@ def _probe_backend():
         backend.close()
 
 
-def _handle_request(request):
-    supplied = str(request.get('token') or '')
+def _handle_request(request: JsonValue) -> JsonObject:
+    request_object = _request_object(request)
+    supplied = str(request_object.get('token') or '')
     if not hmac.compare_digest(supplied, _read_token()):
         return {'ok': False, 'error': 'unauthorized'}
 
-    action = str(request.get('action') or '')
+    action = str(request_object.get('action') or '')
     if action == 'status':
         return _status()
     if action == 'apply':
-        _set_hosts(request.get('hosts') or [])
+        _set_hosts(_as_iterable(request_object.get('hosts') or []))
         return _status()
     if action == 'clear':
         _set_hosts([])
@@ -521,16 +605,20 @@ def _handle_request(request):
     if action == 'probe_backend':
         return _probe_backend()
     if action == 'patch_ca':
-        return _patch_ca(str(request.get('ca_pem') or ''), request.get('installs') or [])
+        return _patch_ca(
+            str(request_object.get('ca_pem') or ''),
+            request_object.get('installs') or [],
+        )
     return {'ok': False, 'error': 'unsupported action'}
 
 
 class _ControlHandler(socketserver.StreamRequestHandler):
-    def handle(self):
+    def handle(self) -> None:
         try:
             raw = self.rfile.readline(1024 * 1024)
-            request = json.loads(raw.decode('utf-8'))
-            response = _handle_request(request)
+            decoded: object = json.loads(raw.decode('utf-8'))
+            request = _json_value(decoded)
+            response: JsonObject = _handle_request(request)
         except Exception as exc:
             logger.warning('control request failed: %s', exc)
             response = {'ok': False, 'error': str(exc)}
@@ -538,13 +626,12 @@ class _ControlHandler(socketserver.StreamRequestHandler):
 
 
 class _RelayHandler(socketserver.BaseRequestHandler):
-    def handle(self):
+    def handle(self) -> None:
         try:
             backend = socket.create_connection(('127.0.0.1', _backend_port), timeout=3.0)
         except OSError as exc:
             logger.warning(
-                'relay backend connection failed for client %r: '
-                '127.0.0.1:%d: %s: errno=%r: %s',
+                'relay backend connection failed for client %r: 127.0.0.1:%d: %s: errno=%r: %s',
                 self.client_address,
                 _backend_port,
                 type(exc).__name__,
@@ -557,7 +644,7 @@ class _RelayHandler(socketserver.BaseRequestHandler):
         client.settimeout(None)
         backend.settimeout(None)
 
-        def pump(source, destination):
+        def pump(source: socket.socket, destination: socket.socket) -> None:
             try:
                 while True:
                     chunk = source.recv(65536)
@@ -584,7 +671,7 @@ class _ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
-def _lease_monitor():
+def _lease_monitor() -> None:
     while not _stop_event.wait(2.0):
         with _state_lock:
             expired = bool(_active_hosts) and time.monotonic() - _last_heartbeat > LEASE_SECONDS
@@ -596,7 +683,7 @@ def _lease_monitor():
                 logger.error('failed to clear hosts after lease expiry: %s', exc)
 
 
-def main():
+def main() -> None:
     global _token_file, _backend_port
 
     parser = argparse.ArgumentParser()
@@ -633,7 +720,7 @@ def main():
         logger.info('binding helper relay 127.0.0.1:443')
         relay = _ThreadingTCPServer(('127.0.0.1', 443), _RelayHandler)
 
-        def stop_handler(_signum, _frame):
+        def stop_handler(_signum: int, _frame: 'FrameType | None') -> None:
             _stop_event.set()
             threading.Thread(target=control.shutdown, daemon=True).start()
             threading.Thread(target=relay.shutdown, daemon=True).start()

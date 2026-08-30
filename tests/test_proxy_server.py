@@ -3,31 +3,168 @@ import socket
 import ssl
 import tempfile
 import unittest
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from fleasion.proxy import server as proxy_server
 from fleasion.proxy.server import (
     ASSET_DELIVERY_HOST,
     PROFILE_API_HOST,
     FleasionProxy,
-    _build_modified_request,
-    _is_empty_json_array,
-    _open_explicit_proxy_tunnel,
-    _read_body_wire,
-    _read_headers_raw,
-    _serve_local_file,
+    RawBody,
+    RawHeaders,
 )
-from fleasion.proxy.upstream import AutoConnector, UpstreamConnectResult, UpstreamEndpoint
+from fleasion.proxy.upstream import (
+    AutoConnector,
+    BaseUpstreamConnector,
+    UpstreamConnectResult,
+    UpstreamEndpoint,
+)
 from fleasion.utils.certs import generate_ca, generate_host_cert, generate_multi_host_cert
 
+if TYPE_CHECKING:
+    from fleasion.proxy.addons.cache_scraper import CacheScraper
+    from fleasion.proxy.addons.texture_stripper import TextureStripper
 
-async def _read_message(data: bytes):
+
+def _texture_stub(**values: object) -> TextureStripper:
+    return cast('TextureStripper', SimpleNamespace(**values))
+
+
+def _cache_stub(**values: object) -> CacheScraper:
+    return cast('CacheScraper', SimpleNamespace(**values))
+
+
+def _build_modified_request(req_line: bytes, headers: dict[bytes, bytes], body: bytes) -> bytes:
+    callback = cast(
+        'Callable[[bytes, dict[bytes, bytes], bytes], bytes]',
+        proxy_server.__dict__['_build_modified_request'],
+    )
+    return callback(req_line, headers, body)
+
+
+def _is_empty_json_array(body: bytes) -> bool:
+    callback = cast('Callable[[bytes], bool]', proxy_server.__dict__['_is_empty_json_array'])
+    return callback(body)
+
+
+async def _open_explicit_proxy_tunnel(
+    host: str, port: int, *, timeout: float = 10.0
+) -> UpstreamConnectResult:
+    callback = cast(
+        'Callable[..., Awaitable[UpstreamConnectResult]]',
+        proxy_server.__dict__['_open_explicit_proxy_tunnel'],
+    )
+    return await callback(host, port, timeout=timeout)
+
+
+async def _read_headers_raw(reader: asyncio.StreamReader) -> RawHeaders | None:
+    callback = cast(
+        'Callable[[asyncio.StreamReader], Awaitable[RawHeaders | None]]',
+        proxy_server.__dict__['_read_headers_raw'],
+    )
+    return await callback(reader)
+
+
+async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, bytes]) -> RawBody:
+    callback = cast(
+        'Callable[[asyncio.StreamReader, dict[bytes, bytes]], Awaitable[RawBody]]',
+        proxy_server.__dict__['_read_body_wire'],
+    )
+    return await callback(reader, headers)
+
+
+def _serve_local_file(path: str) -> bytes:
+    callback = cast('Callable[[str], bytes]', proxy_server.__dict__['_serve_local_file'])
+    return callback(path)
+
+
+def _preserve_wire(proxy: FleasionProxy, host: str) -> bool:
+    callback = cast(
+        'Callable[[FleasionProxy, str], bool]',
+        FleasionProxy.__dict__['_preserve_unmodified_wire_for_host'],
+    )
+    return callback(proxy, host)
+
+
+def _notify_upstream_failure(proxy: FleasionProxy, host: str, error: str) -> None:
+    callback = cast(
+        'Callable[[FleasionProxy, str, str], None]',
+        FleasionProxy.__dict__['_notify_upstream_connect_failure_once'],
+    )
+    callback(proxy, host, error)
+
+
+async def _connect_upstream(
+    proxy: FleasionProxy, host: str, *, timeout: float = 10.0
+) -> UpstreamConnectResult:
+    callback = cast(
+        'Callable[..., Awaitable[UpstreamConnectResult]]',
+        FleasionProxy.__dict__['_connect_upstream'],
+    )
+    return await callback(proxy, host, timeout=timeout)
+
+
+def _host_context(proxy: FleasionProxy, host: str) -> ssl.SSLContext | None:
+    callback = cast(
+        'Callable[[FleasionProxy, str], ssl.SSLContext | None]',
+        FleasionProxy.__dict__['_get_or_generate_host_ctx'],
+    )
+    return callback(proxy, host)
+
+
+def _should_intercept(proxy: FleasionProxy, host: str, port: int) -> bool:
+    callback = cast(
+        'Callable[[FleasionProxy, str, int], bool]',
+        FleasionProxy.__dict__['_should_intercept_explicit_host'],
+    )
+    return callback(proxy, host, port)
+
+
+def _server_port(server: object) -> int:
+    sockets = cast('Sequence[socket.socket] | None', getattr(server, 'sockets'))
+    assert sockets
+    address = sockets[0].getsockname()
+    assert isinstance(address, tuple)
+    return cast(int, address[1])
+
+
+def _empty_replacements() -> tuple[
+    dict[object, object], set[object], dict[object, object], dict[object, object]
+]:
+    return {}, set(), {}, {}
+
+
+def _identity_batch_request(body: bytes, _replacements: object) -> bytes:
+    return body
+
+
+def _record_failure(values: list[tuple[str, str]]) -> Callable[[str, str], None]:
+    def record(host: str, error: str) -> None:
+        values.append((host, error))
+
+    return record
+
+
+def _record_real_ips(
+    values: list[dict[str, list[str]]],
+) -> Callable[[dict[str, list[str]]], None]:
+    def record(update: dict[str, list[str]]) -> None:
+        values.append(update)
+
+    return record
+
+
+async def _read_message(data: bytes) -> tuple[RawHeaders, RawBody]:
     reader = asyncio.StreamReader()
     reader.feed_data(data)
     reader.feed_eof()
     headers = await _read_headers_raw(reader)
+    assert headers is not None
     body = await _read_body_wire(reader, headers.headers)
     return headers, body
 
@@ -37,7 +174,7 @@ def _response_body(response: bytes) -> bytes:
 
 
 class _FakeUpstreamWriter:
-    def __init__(self):
+    def __init__(self) -> None:
         self.buffer = bytearray()
         self.closed = False
 
@@ -54,41 +191,48 @@ class _FakeUpstreamWriter:
         self.closed = True
 
 
-def test_upstream_self_test_serializes_and_fully_closes_probes():
-    events = []
+def test_upstream_self_test_serializes_and_fully_closes_probes() -> None:
+    events: list[tuple[str, str]] = []
 
     class _ProbeWriter:
-        def __init__(self, host):
+        def __init__(self, host: str) -> None:
             self.host = host
 
-        def close(self):
+        def close(self) -> None:
             events.append(('close', self.host))
 
-        async def wait_closed(self):
+        async def wait_closed(self) -> None:
             events.append(('wait_closed', self.host))
 
     class _ProbeConnector:
-        async def connect(self, host, _endpoints, _ssl_ctx, timeout):
+        async def connect(
+            self,
+            host: str,
+            _endpoints: Sequence[UpstreamEndpoint],
+            _ssl_ctx: ssl.SSLContext | None,
+            timeout: float,
+        ) -> UpstreamConnectResult:
             assert timeout == 3.0
             events.append(('connect', host))
             return UpstreamConnectResult(
-                reader=object(),
-                writer=_ProbeWriter(host),
+                reader=cast(asyncio.StreamReader, object()),
+                writer=cast(asyncio.StreamWriter, _ProbeWriter(host)),
                 method='direct_ip',
                 endpoint='192.0.2.1',
             )
 
     proxy = FleasionProxy.__new__(FleasionProxy)
-    proxy._upstream_endpoints = {
+    direct = _ProbeConnector()
+    proxy.__dict__['_upstream_endpoints'] = {
         'a.example': [UpstreamEndpoint(host='a.example', ip='192.0.2.1')],
         'b.example': [UpstreamEndpoint(host='b.example', ip='192.0.2.2')],
     }
-    proxy._direct_connector = _ProbeConnector()
-    proxy._system_http_connector = None
-    proxy._manual_http_connector = None
-    proxy._manual_socks5_connector = None
-    proxy._upstream_ssl_ctx = None
-    proxy._connector = proxy._direct_connector
+    proxy.__dict__['_direct_connector'] = direct
+    proxy.__dict__['_system_http_connector'] = None
+    proxy.__dict__['_manual_http_connector'] = None
+    proxy.__dict__['_manual_socks5_connector'] = None
+    proxy.__dict__['_upstream_ssl_ctx'] = None
+    proxy.__dict__['_connector'] = direct
 
     asyncio.run(proxy.log_upstream_self_test({'b.example', 'a.example'}))
 
@@ -103,7 +247,7 @@ def test_upstream_self_test_serializes_and_fully_closes_probes():
 
 
 class ProxyServerRawHttpTests(unittest.TestCase):
-    def test_raw_header_preservation_duplicate_headers_and_casing(self):
+    def test_raw_header_preservation_duplicate_headers_and_casing(self) -> None:
         data = (
             b'GET /asset HTTP/1.1\r\n'
             b'Host: assetdelivery.roblox.com\r\n'
@@ -122,7 +266,7 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertEqual(body.wire, b'')
         self.assertEqual(headers.raw_header_block + body.wire, data)
 
-    def test_bodyless_get_passthrough_does_not_inject_content_length(self):
+    def test_bodyless_get_passthrough_does_not_inject_content_length(self) -> None:
         data = b'GET /v1/assets/batch HTTP/1.1\r\nHost: assetdelivery.roblox.com\r\n\r\n'
 
         headers, body = asyncio.run(_read_message(data))
@@ -131,7 +275,7 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertEqual(forwarded, data)
         self.assertNotIn(b'content-length', forwarded.lower())
 
-    def test_content_length_post_exact_passthrough(self):
+    def test_content_length_post_exact_passthrough(self) -> None:
         data = (
             b'POST /v1/assets/batch HTTP/1.1\r\n'
             b'Host: assetdelivery.roblox.com\r\n'
@@ -145,7 +289,7 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertEqual(body.payload, b'hello world')
         self.assertEqual(headers.raw_header_block + body.wire, data)
 
-    def test_chunked_request_exact_wire_preservation(self):
+    def test_chunked_request_exact_wire_preservation(self) -> None:
         data = (
             b'POST /chunk HTTP/1.1\r\n'
             b'Host: assetdelivery.roblox.com\r\n'
@@ -162,7 +306,7 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertEqual(body.payload, b'hello world')
         self.assertEqual(headers.raw_header_block + body.wire, data)
 
-    def test_chunked_response_exact_wire_preservation(self):
+    def test_chunked_response_exact_wire_preservation(self) -> None:
         data = b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n'
 
         headers, body = asyncio.run(_read_message(data))
@@ -171,7 +315,7 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertEqual(body.payload, b'abc')
         self.assertEqual(headers.raw_header_block + body.wire, data)
 
-    def test_modified_request_strips_transfer_encoding_and_sets_content_length(self):
+    def test_modified_request_strips_transfer_encoding_and_sets_content_length(self) -> None:
         request = _build_modified_request(
             b'POST /v1/assets/batch HTTP/1.1',
             {
@@ -190,12 +334,12 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertIn(b'content-length: 2', head)
         self.assertTrue(request.endswith(b'\r\n\r\n{}'))
 
-    def test_empty_json_array_detection_for_filtered_batches(self):
+    def test_empty_json_array_detection_for_filtered_batches(self) -> None:
         self.assertTrue(_is_empty_json_array(b' [] \r\n'))
         self.assertFalse(_is_empty_json_array(b'[{"assetId":1}]'))
         self.assertFalse(_is_empty_json_array(b''))
 
-    def test_local_extensionless_roblox_file_strips_metadata_prefix(self):
+    def test_local_extensionless_roblox_file_strips_metadata_prefix(self) -> None:
         expected = b'<roblox version="4"></roblox>'
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'asset_hash'
@@ -206,7 +350,7 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertIn(f'Content-Length: {len(expected)}'.encode(), response)
         self.assertEqual(_response_body(response), expected)
 
-    def test_local_bin_roblox_file_strips_metadata_prefix(self):
+    def test_local_bin_roblox_file_strips_metadata_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'asset.bin'
             path.write_bytes(b'metadata\n\n<roblox><Item /></roblox>')
@@ -215,7 +359,7 @@ class ProxyServerRawHttpTests(unittest.TestCase):
 
         self.assertEqual(_response_body(response), b'<roblox><Item /></roblox>')
 
-    def test_local_non_target_extension_keeps_prefix(self):
+    def test_local_non_target_extension_keeps_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'asset.rbxmx'
             content = b'metadata\n<roblox><Item /></roblox>'
@@ -225,7 +369,7 @@ class ProxyServerRawHttpTests(unittest.TestCase):
 
         self.assertEqual(_response_body(response), content)
 
-    def test_local_target_extension_without_roblox_marker_keeps_content(self):
+    def test_local_target_extension_without_roblox_marker_keeps_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'asset.bin'
             content = b'not a roblox document'
@@ -236,21 +380,23 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertEqual(_response_body(response), content)
 
 
-def test_profile_api_has_upstream_connection_limit(monkeypatch, tmp_path):
+def test_profile_api_has_upstream_connection_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     class FakeSSLContext:
         verify_mode = None
         minimum_version = None
 
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def load_cert_chain(self, *_args, **_kwargs):
+        def load_cert_chain(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def set_alpn_protocols(self, *_args, **_kwargs):
+        def set_alpn_protocols(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def set_servername_callback(self, *_args, **_kwargs):
+        def set_servername_callback(self, *_args: object, **_kwargs: object) -> None:
             pass
 
     monkeypatch.setattr('fleasion.proxy.server.ssl.SSLContext', FakeSSLContext)
@@ -259,31 +405,34 @@ def test_profile_api_has_upstream_connection_limit(monkeypatch, tmp_path):
     )
 
     proxy = FleasionProxy(
-        texture_stripper=SimpleNamespace(),
-        cache_scraper=SimpleNamespace(),
+        texture_stripper=_texture_stub(),
+        cache_scraper=_cache_stub(),
         host_certs={},
         default_cert=(tmp_path / 'default.crt', tmp_path / 'default.key'),
         upstream_endpoints={},
     )
 
-    assert PROFILE_API_HOST in proxy._upstream_host_limits
+    limits = cast('dict[str, int]', proxy.__dict__['_upstream_host_limits'])
+    assert PROFILE_API_HOST in limits
 
 
-def test_profile_api_preserves_unmodified_browser_wire(monkeypatch, tmp_path):
+def test_profile_api_preserves_unmodified_browser_wire(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     class FakeSSLContext:
         verify_mode = None
         minimum_version = None
 
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def load_cert_chain(self, *_args, **_kwargs):
+        def load_cert_chain(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def set_alpn_protocols(self, *_args, **_kwargs):
+        def set_alpn_protocols(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def set_servername_callback(self, *_args, **_kwargs):
+        def set_servername_callback(self, *_args: object, **_kwargs: object) -> None:
             pass
 
     monkeypatch.setattr('fleasion.proxy.server.ssl.SSLContext', FakeSSLContext)
@@ -292,71 +441,75 @@ def test_profile_api_preserves_unmodified_browser_wire(monkeypatch, tmp_path):
     )
 
     proxy = FleasionProxy(
-        texture_stripper=SimpleNamespace(),
-        cache_scraper=SimpleNamespace(),
+        texture_stripper=_texture_stub(),
+        cache_scraper=_cache_stub(),
         host_certs={},
         default_cert=(tmp_path / 'default.crt', tmp_path / 'default.key'),
         upstream_endpoints={},
         wire_preserving_passthrough=False,
     )
 
-    assert proxy._preserve_unmodified_wire_for_host(PROFILE_API_HOST) is True
-    assert proxy._preserve_unmodified_wire_for_host('assetdelivery.roblox.com') is False
+    assert _preserve_wire(proxy, PROFILE_API_HOST) is True
+    assert _preserve_wire(proxy, 'assetdelivery.roblox.com') is False
 
 
-def test_upstream_failure_notification_is_emitted_only_once(monkeypatch, tmp_path):
+def test_upstream_failure_notification_is_emitted_only_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     class FakeSSLContext:
         verify_mode = None
         minimum_version = None
 
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def load_cert_chain(self, *_args, **_kwargs):
+        def load_cert_chain(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def set_alpn_protocols(self, *_args, **_kwargs):
+        def set_alpn_protocols(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def set_servername_callback(self, *_args, **_kwargs):
+        def set_servername_callback(self, *_args: object, **_kwargs: object) -> None:
             pass
 
     monkeypatch.setattr('fleasion.proxy.server.ssl.SSLContext', FakeSSLContext)
     monkeypatch.setattr(
         'fleasion.proxy.server.ssl.create_default_context', lambda: FakeSSLContext()
     )
-    notifications = []
+    notifications: list[tuple[str, str]] = []
     proxy = FleasionProxy(
-        texture_stripper=SimpleNamespace(),
-        cache_scraper=SimpleNamespace(),
+        texture_stripper=_texture_stub(),
+        cache_scraper=_cache_stub(),
         host_certs={},
         default_cert=(tmp_path / 'default.crt', tmp_path / 'default.key'),
         upstream_endpoints={},
-        on_upstream_connect_failure=lambda host, error: notifications.append((host, error)),
+        on_upstream_connect_failure=_record_failure(notifications),
     )
 
-    proxy._notify_upstream_connect_failure_once('contentdelivery.roblox.com', 'blocked')
-    proxy._notify_upstream_connect_failure_once('fts.rbxcdn.com', 'also blocked')
+    _notify_upstream_failure(proxy, 'contentdelivery.roblox.com', 'blocked')
+    _notify_upstream_failure(proxy, 'fts.rbxcdn.com', 'also blocked')
 
     assert notifications == [('contentdelivery.roblox.com', 'blocked')]
 
 
 @pytest.mark.threaded_asyncio
-def test_direct_upstream_refresh_retries_a_fresh_endpoint(monkeypatch, tmp_path):
+def test_direct_upstream_refresh_retries_a_fresh_endpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     class FakeSSLContext:
         verify_mode = None
         minimum_version = None
 
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def load_cert_chain(self, *_args, **_kwargs):
+        def load_cert_chain(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def set_alpn_protocols(self, *_args, **_kwargs):
+        def set_alpn_protocols(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def set_servername_callback(self, *_args, **_kwargs):
+        def set_servername_callback(self, *_args: object, **_kwargs: object) -> None:
             pass
 
     monkeypatch.setattr('fleasion.proxy.server.ssl.SSLContext', FakeSSLContext)
@@ -366,17 +519,23 @@ def test_direct_upstream_refresh_retries_a_fresh_endpoint(monkeypatch, tmp_path)
 
     host = 'gamejoin.roblox.com'
     refreshed_ip = '93.184.216.35'
-    bypass_updates = []
+    bypass_updates: list[dict[str, list[str]]] = []
 
     class _RefreshAwareDirectConnector:
-        async def connect(self, request_host, endpoints, _ssl_ctx, timeout):
+        async def connect(
+            self,
+            request_host: str,
+            endpoints: Sequence[UpstreamEndpoint],
+            _ssl_ctx: ssl.SSLContext | None,
+            timeout: float,
+        ) -> UpstreamConnectResult:
             assert request_host == host
             assert timeout <= 1.0
-            endpoint_ips = [endpoint.ip for endpoint in endpoints]
+            endpoint_ips = [cast(str, endpoint.ip) for endpoint in endpoints]
             if refreshed_ip in endpoint_ips:
                 return UpstreamConnectResult(
                     reader=asyncio.StreamReader(),
-                    writer=_FakeUpstreamWriter(),
+                    writer=cast(asyncio.StreamWriter, _FakeUpstreamWriter()),
                     method='direct_ip',
                     endpoint=refreshed_ip,
                 )
@@ -388,28 +547,33 @@ def test_direct_upstream_refresh_retries_a_fresh_endpoint(monkeypatch, tmp_path)
                 error='TimeoutError',
             )
 
+    def refresh_endpoints(_host: str) -> list[UpstreamEndpoint]:
+        return [UpstreamEndpoint(host=host, ip=refreshed_ip)]
+
     proxy = FleasionProxy(
-        texture_stripper=SimpleNamespace(),
-        cache_scraper=SimpleNamespace(update_real_ips=lambda values: bypass_updates.append(values)),
+        texture_stripper=_texture_stub(),
+        cache_scraper=_cache_stub(update_real_ips=_record_real_ips(bypass_updates)),
         host_certs={},
         default_cert=(tmp_path / 'default.crt', tmp_path / 'default.key'),
         upstream_endpoints={host: [UpstreamEndpoint(host=host, ip='93.184.216.34')]},
-        upstream_endpoint_refresher=lambda _host: [UpstreamEndpoint(host=host, ip=refreshed_ip)],
+        upstream_endpoint_refresher=refresh_endpoints,
     )
     direct = _RefreshAwareDirectConnector()
-    proxy._direct_connector = direct
-    proxy._connector = AutoConnector(direct=direct)
+    proxy.__dict__['_direct_connector'] = direct
+    proxy.__dict__['_connector'] = AutoConnector(direct=cast(BaseUpstreamConnector, direct))
 
-    result = asyncio.run(proxy._connect_upstream(host, timeout=1.0))
+    result = asyncio.run(_connect_upstream(proxy, host, timeout=1.0))
 
     assert result.writer is not None
     assert result.endpoint == refreshed_ip
-    assert [endpoint.ip for endpoint in proxy._upstream_endpoints[host]] == [refreshed_ip]
+    endpoint_map = cast('dict[str, list[UpstreamEndpoint]]', proxy.__dict__['_upstream_endpoints'])
+    assert [endpoint.ip for endpoint in endpoint_map[host]] == [refreshed_ip]
     assert bypass_updates == [{host: [refreshed_ip]}]
-    assert proxy._connector.state_for(host).direct_ip_unhealthy_until == 0.0
+    connector = proxy.__dict__['_connector']
+    assert connector.state_for(host).direct_ip_unhealthy_until == 0.0
 
 
-def test_local_tls_max_version_can_be_relaxed(tmp_path):
+def test_local_tls_max_version_can_be_relaxed(tmp_path: Path) -> None:
     ca_cert, ca_key = generate_ca(tmp_path)
     host_cert = generate_host_cert(ASSET_DELIVERY_HOST, ca_cert, ca_key, tmp_path)
     default_cert = generate_multi_host_cert(
@@ -420,8 +584,8 @@ def test_local_tls_max_version_can_be_relaxed(tmp_path):
         tmp_path,
     )
     proxy = FleasionProxy(
-        texture_stripper=SimpleNamespace(),
-        cache_scraper=SimpleNamespace(enabled=False),
+        texture_stripper=_texture_stub(),
+        cache_scraper=_cache_stub(enabled=False),
         host_certs={ASSET_DELIVERY_HOST: host_cert},
         default_cert=default_cert,
         upstream_endpoints={},
@@ -433,19 +597,18 @@ def test_local_tls_max_version_can_be_relaxed(tmp_path):
     )
 
     proxy.set_local_tls_max_version(ssl.TLSVersion.MAXIMUM_SUPPORTED)
-    generated_ctx = proxy._get_or_generate_host_ctx('dynamic.example')
+    generated_ctx = _host_context(proxy, 'dynamic.example')
+    server_ctx = cast(ssl.SSLContext, proxy.__dict__['_server_ssl_ctx'])
+    host_contexts = cast('dict[str, ssl.SSLContext]', proxy.__dict__['_host_ssl_ctxs'])
 
-    assert proxy._server_ssl_ctx.maximum_version is ssl.TLSVersion.MAXIMUM_SUPPORTED
-    assert (
-        proxy._host_ssl_ctxs[ASSET_DELIVERY_HOST].maximum_version
-        is ssl.TLSVersion.MAXIMUM_SUPPORTED
-    )
+    assert server_ctx.maximum_version is ssl.TLSVersion.MAXIMUM_SUPPORTED
+    assert host_contexts[ASSET_DELIVERY_HOST].maximum_version is ssl.TLSVersion.MAXIMUM_SUPPORTED
     assert generated_ctx is not None
     assert generated_ctx.maximum_version is ssl.TLSVersion.MAXIMUM_SUPPORTED
 
 
-def test_explicit_proxy_connect_upgrades_to_tls_and_serves_http(tmp_path):
-    async def run_test():
+def test_explicit_proxy_connect_upgrades_to_tls_and_serves_http(tmp_path: Path) -> None:
+    async def run_test() -> None:
         ca_cert, ca_key = generate_ca(tmp_path)
         host_cert = generate_host_cert(ASSET_DELIVERY_HOST, ca_cert, ca_key, tmp_path)
         default_cert = generate_multi_host_cert(
@@ -456,11 +619,11 @@ def test_explicit_proxy_connect_upgrades_to_tls_and_serves_http(tmp_path):
             tmp_path,
         )
         proxy = FleasionProxy(
-            texture_stripper=SimpleNamespace(
-                config_manager=SimpleNamespace(get_all_replacements=lambda: ({}, set(), {}, {})),
-                process_batch_request=lambda body, replacements: body,
+            texture_stripper=_texture_stub(
+                config_manager=SimpleNamespace(get_all_replacements=_empty_replacements),
+                process_batch_request=_identity_batch_request,
             ),
-            cache_scraper=SimpleNamespace(enabled=False),
+            cache_scraper=_cache_stub(enabled=False),
             host_certs={ASSET_DELIVERY_HOST: host_cert},
             default_cert=default_cert,
             upstream_endpoints={},
@@ -468,7 +631,13 @@ def test_explicit_proxy_connect_upgrades_to_tls_and_serves_http(tmp_path):
             port=0,
         )
 
-        async def fake_connect_upstream(_host):
+        async def fake_connect_upstream(
+            host: str,
+            *,
+            timeout: float = 10.0,
+            max_targets: int | None = None,
+        ) -> UpstreamConnectResult:
+            del host, timeout, max_targets
             reader = asyncio.StreamReader()
             reader.feed_data(
                 b'HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
@@ -476,14 +645,14 @@ def test_explicit_proxy_connect_upgrades_to_tls_and_serves_http(tmp_path):
             reader.feed_eof()
             return UpstreamConnectResult(
                 reader=reader,
-                writer=_FakeUpstreamWriter(),
+                writer=cast(asyncio.StreamWriter, _FakeUpstreamWriter()),
                 endpoint='test',
                 method='direct_ip',
             )
 
-        proxy._connect_upstream = fake_connect_upstream
+        proxy.__dict__['_connect_upstream'] = fake_connect_upstream
         await proxy.start()
-        port = proxy._server.sockets[0].getsockname()[1]
+        port = _server_port(cast(object, proxy.__dict__['_server']))
         try:
             reader, writer = await asyncio.open_connection('127.0.0.1', port)
             connect_request = (
@@ -514,16 +683,16 @@ def test_explicit_proxy_connect_upgrades_to_tls_and_serves_http(tmp_path):
     asyncio.run(run_test())
 
 
-def test_explicit_proxy_tunnels_non_intercept_hosts(tmp_path):
-    async def run_test():
-        async def handle_echo(reader, writer):
+def test_explicit_proxy_tunnels_non_intercept_hosts(tmp_path: Path) -> None:
+    async def run_test() -> None:
+        async def handle_echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             data = await reader.read(1024)
             writer.write(b'upstream:' + data)
             await writer.drain()
             writer.close()
 
         upstream = await asyncio.start_server(handle_echo, '127.0.0.1', 0)
-        upstream_port = upstream.sockets[0].getsockname()[1]
+        upstream_port = _server_port(upstream)
 
         ca_cert, ca_key = generate_ca(tmp_path)
         default_cert = generate_multi_host_cert(
@@ -534,8 +703,8 @@ def test_explicit_proxy_tunnels_non_intercept_hosts(tmp_path):
             tmp_path,
         )
         proxy = FleasionProxy(
-            texture_stripper=SimpleNamespace(),
-            cache_scraper=SimpleNamespace(enabled=False),
+            texture_stripper=_texture_stub(),
+            cache_scraper=_cache_stub(enabled=False),
             host_certs={},
             default_cert=default_cert,
             upstream_endpoints={},
@@ -544,7 +713,7 @@ def test_explicit_proxy_tunnels_non_intercept_hosts(tmp_path):
         )
 
         await proxy.start()
-        proxy_port = proxy._server.sockets[0].getsockname()[1]
+        proxy_port = _server_port(cast(object, proxy.__dict__['_server']))
         try:
             reader, writer = await asyncio.open_connection('127.0.0.1', proxy_port)
             writer.write(
@@ -570,24 +739,28 @@ def test_explicit_proxy_tunnels_non_intercept_hosts(tmp_path):
     asyncio.run(run_test())
 
 
-def test_explicit_tunnel_dialer_prefers_ipv4_and_falls_back(monkeypatch):
-    async def run_test():
+def test_explicit_tunnel_dialer_prefers_ipv4_and_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run_test() -> None:
         loop = asyncio.get_running_loop()
 
-        async def fake_getaddrinfo(*_args, **_kwargs):
+        async def fake_getaddrinfo(*_args: object, **_kwargs: object):
             return [
                 (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('2001:db8::1', 443, 0, 0)),
                 (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 443)),
                 (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.2', 443)),
             ]
 
-        calls = []
+        calls: list[tuple[str, int, int]] = []
 
-        async def fake_open_connection(host, port, *, family=0, **_kwargs):
+        async def fake_open_connection(
+            host: str, port: int, *, family: int = 0, **_kwargs: object
+        ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
             calls.append((host, port, family))
             if host == '192.0.2.1':
                 raise asyncio.TimeoutError()
-            return asyncio.StreamReader(), _FakeUpstreamWriter()
+            return asyncio.StreamReader(), cast(asyncio.StreamWriter, _FakeUpstreamWriter())
 
         monkeypatch.setattr(loop, 'getaddrinfo', fake_getaddrinfo)
         monkeypatch.setattr(asyncio, 'open_connection', fake_open_connection)
@@ -604,21 +777,26 @@ def test_explicit_tunnel_dialer_prefers_ipv4_and_falls_back(monkeypatch):
     asyncio.run(run_test())
 
 
-def test_explicit_tunnel_single_candidate_receives_full_connection_budget(monkeypatch):
-    async def run_test():
+def test_explicit_tunnel_single_candidate_receives_full_connection_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run_test() -> None:
         loop = asyncio.get_running_loop()
 
-        async def fake_getaddrinfo(*_args, **_kwargs):
+        async def fake_getaddrinfo(*_args: object, **_kwargs: object):
             return [
                 (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 443)),
             ]
 
-        async def fake_open_connection(*_args, **_kwargs):
-            return asyncio.StreamReader(), _FakeUpstreamWriter()
+        async def fake_open_connection(
+            *_args: object, **_kwargs: object
+        ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+            return asyncio.StreamReader(), cast(asyncio.StreamWriter, _FakeUpstreamWriter())
 
-        timeouts = []
+        timeouts: list[float] = []
 
-        async def recording_wait_for(awaitable, timeout):
+        async def recording_wait_for[T](awaitable: Awaitable[T], timeout: float | None) -> T:
+            assert timeout is not None
             timeouts.append(timeout)
             return await awaitable
 
@@ -639,23 +817,25 @@ def test_explicit_tunnel_single_candidate_receives_full_connection_budget(monkey
     asyncio.run(run_test())
 
 
-def test_explicit_tunnel_dialer_falls_back_to_ipv6(monkeypatch):
-    async def run_test():
+def test_explicit_tunnel_dialer_falls_back_to_ipv6(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run_test() -> None:
         loop = asyncio.get_running_loop()
 
-        async def fake_getaddrinfo(*_args, **_kwargs):
+        async def fake_getaddrinfo(*_args: object, **_kwargs: object):
             return [
                 (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('2001:db8::1', 443, 0, 0)),
                 (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 443)),
             ]
 
-        calls = []
+        calls: list[tuple[str, int, int]] = []
 
-        async def fake_open_connection(host, port, *, family=0, **_kwargs):
+        async def fake_open_connection(
+            host: str, port: int, *, family: int = 0, **_kwargs: object
+        ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
             calls.append((host, port, family))
             if family == socket.AF_INET:
                 raise OSError('network unreachable')
-            return asyncio.StreamReader(), _FakeUpstreamWriter()
+            return asyncio.StreamReader(), cast(asyncio.StreamWriter, _FakeUpstreamWriter())
 
         monkeypatch.setattr(loop, 'getaddrinfo', fake_getaddrinfo)
         monkeypatch.setattr(asyncio, 'open_connection', fake_open_connection)
@@ -673,12 +853,12 @@ def test_explicit_tunnel_dialer_falls_back_to_ipv6(monkeypatch):
 
 
 def test_explicit_tunnel_dialer_reserves_an_ipv6_attempt_after_many_ipv4_failures(
-    monkeypatch,
-):
-    async def run_test():
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run_test() -> None:
         loop = asyncio.get_running_loop()
 
-        async def fake_getaddrinfo(*_args, **_kwargs):
+        async def fake_getaddrinfo(*_args: object, **_kwargs: object):
             return [
                 (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 443)),
                 (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.2', 443)),
@@ -687,13 +867,15 @@ def test_explicit_tunnel_dialer_reserves_an_ipv6_attempt_after_many_ipv4_failure
                 (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('2001:db8::1', 443, 0, 0)),
             ]
 
-        calls = []
+        calls: list[tuple[str, int, int]] = []
 
-        async def fake_open_connection(host, port, *, family=0, **_kwargs):
+        async def fake_open_connection(
+            host: str, port: int, *, family: int = 0, **_kwargs: object
+        ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
             calls.append((host, port, family))
             if family == socket.AF_INET:
                 raise OSError('network unreachable')
-            return asyncio.StreamReader(), _FakeUpstreamWriter()
+            return asyncio.StreamReader(), cast(asyncio.StreamWriter, _FakeUpstreamWriter())
 
         monkeypatch.setattr(loop, 'getaddrinfo', fake_getaddrinfo)
         monkeypatch.setattr(asyncio, 'open_connection', fake_open_connection)
@@ -711,7 +893,7 @@ def test_explicit_tunnel_dialer_reserves_an_ipv6_attempt_after_many_ipv4_failure
     asyncio.run(run_test())
 
 
-def test_explicit_proxy_excludes_pinned_bootstrap_hosts_from_intercept_all(tmp_path):
+def test_explicit_proxy_excludes_pinned_bootstrap_hosts_from_intercept_all(tmp_path: Path) -> None:
     ca_cert, ca_key = generate_ca(tmp_path)
     default_cert = generate_multi_host_cert(
         'default',
@@ -721,8 +903,8 @@ def test_explicit_proxy_excludes_pinned_bootstrap_hosts_from_intercept_all(tmp_p
         tmp_path,
     )
     proxy = FleasionProxy(
-        texture_stripper=SimpleNamespace(),
-        cache_scraper=SimpleNamespace(enabled=False),
+        texture_stripper=_texture_stub(),
+        cache_scraper=_cache_stub(enabled=False),
         host_certs={},
         default_cert=default_cert,
         upstream_endpoints={},
@@ -731,9 +913,9 @@ def test_explicit_proxy_excludes_pinned_bootstrap_hosts_from_intercept_all(tmp_p
         intercept_excluded_hosts={'SOBER.VINEGARHQ.ORG.'},
     )
 
-    assert not proxy._should_intercept_explicit_host('sober.vinegarhq.org', 443)
-    assert proxy._should_intercept_explicit_host('api.example.test', 443)
-    assert not proxy._should_intercept_explicit_host('sober.vinegarhq.org', 80)
+    assert not _should_intercept(proxy, 'sober.vinegarhq.org', 443)
+    assert _should_intercept(proxy, 'api.example.test', 443)
+    assert not _should_intercept(proxy, 'sober.vinegarhq.org', 80)
 
 
 if __name__ == '__main__':

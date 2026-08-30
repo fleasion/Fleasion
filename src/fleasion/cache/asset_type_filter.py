@@ -1,9 +1,9 @@
 """Asset-type filter popup shared by UI surfaces that should avoid OpenGL imports."""
 
-from ..localization import tr
+from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtGui import QFontMetrics, QMouseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -17,8 +17,12 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
+from ..localization import tr
 
-_CATEGORY_TYPES = {
+type AssetType = int | str
+
+
+_CATEGORY_TYPES: dict[str, list[AssetType]] = {
     'models_3d': [4, 10, 39, 40, 32, 17, 79, 75],
     'images_textures': [1, 13, 63, 21, 22, 18],
     'audio_video': [3, 62, 33],
@@ -59,7 +63,7 @@ def _category_label(category: str) -> str:
     }[category]
 
 
-def asset_type_display_name(type_id) -> str:
+def asset_type_display_name(type_id: AssetType) -> str:
     if type_id == 'R6Animation':
         return tr('asset_filter.type.r6_animation')
     if type_id == 'R15Animation':
@@ -68,7 +72,7 @@ def asset_type_display_name(type_id) -> str:
         return tr('asset_filter.type.non_player_animation')
     if type_id == 'Json':
         return tr('asset_filter.type.json')
-    labels = {
+    labels: dict[AssetType, str] = {
         1: tr('asset_filter.type.1'),
         2: tr('asset_filter.type.2'),
         3: tr('asset_filter.type.3'),
@@ -150,7 +154,11 @@ def asset_type_display_name(type_id) -> str:
 class CategoryFilterPopup(QMenu):
     filters_changed = Signal(set)
 
-    def __init__(self, parent=None, active_filters=None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        active_filters: set[AssetType] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setStyleSheet("""
             QMenu { background-color: palette(window); border: 1px solid palette(mid); border-radius: 4px; color: palette(window-text); }
@@ -159,7 +167,7 @@ class CategoryFilterPopup(QMenu):
             QCheckBox::indicator { width: 14px; height: 14px; }
         """)
 
-        self.active_filters = set(active_filters) if active_filters else set()
+        self.active_filters: set[AssetType] = set(active_filters) if active_filters else set()
         self._updating = False
 
         self.container = QWidget()
@@ -171,10 +179,12 @@ class CategoryFilterPopup(QMenu):
         grid.setHorizontalSpacing(4)
         grid.setVerticalSpacing(4)
 
-        self.categories = {key: list(type_ids) for key, type_ids in _CATEGORY_TYPES.items()}
+        self.categories: dict[str, list[AssetType]] = {
+            key: list(type_ids) for key, type_ids in _CATEGORY_TYPES.items()
+        }
 
-        self.checkboxes = {}
-        self.category_checkboxes = {}
+        self.checkboxes: dict[AssetType, QCheckBox] = {}
+        self.category_checkboxes: dict[str, QCheckBox] = {}
 
         col = 0
         row = 0
@@ -208,7 +218,7 @@ class CategoryFilterPopup(QMenu):
             )
             vbox.addWidget(line)
 
-            cat_types = []
+            cat_types: list[AssetType] = []
             for tid in type_ids:
                 name = asset_type_display_name(tid)
                 elided = fm.elidedText(name, Qt.TextElideMode.ElideRight, 130)
@@ -220,14 +230,25 @@ class CategoryFilterPopup(QMenu):
                 vbox.addWidget(cb)
                 cat_types.append(tid)
 
-            cat_cb.clicked.connect(
-                lambda checked, t=cat_types, c=cat_name: self._on_category_clicked(t, c)
-            )
+            def toggle_category(
+                _checked: bool = False,
+                category_types: list[AssetType] = cat_types,
+                category_name: str = cat_name,
+            ) -> None:
+                self._on_category_clicked(category_types, category_name)
+
+            cat_cb.clicked.connect(toggle_category)
             for tid in cat_types:
                 cb = self.checkboxes[tid]
-                cb.clicked.connect(
-                    lambda checked, t=tid, c=cat_name: self._on_type_clicked(t, c, checked)
-                )
+
+                def toggle_type(
+                    checked: bool = False,
+                    type_id: AssetType = tid,
+                    category_name: str = cat_name,
+                ) -> None:
+                    self._on_type_clicked(type_id, category_name, checked)
+
+                cb.clicked.connect(toggle_type)
 
             self._update_category_state(cat_name)
             vbox.addStretch()
@@ -264,7 +285,7 @@ class CategoryFilterPopup(QMenu):
         action.setDefaultWidget(self.scroll_area)
         self.addAction(action)
 
-    def _set_popup_content_size(self, max_height):
+    def _set_popup_content_size(self, max_height: int) -> None:
         natural = self._natural_content_size
         height = min(natural.height(), max(220, max_height))
         width = natural.width()
@@ -272,7 +293,9 @@ class CategoryFilterPopup(QMenu):
             width += self.scroll_area.verticalScrollBar().sizeHint().width()
         self.scroll_area.setFixedSize(width, height)
 
-    def constrain_to_available_geometry(self, available_geometry, anchor_y=None):
+    def constrain_to_available_geometry(
+        self, available_geometry: QRect | None, anchor_y: int | None = None
+    ) -> None:
         """Bound the popup to the visible screen area and enable vertical scroll."""
         if available_geometry is None:
             return
@@ -287,9 +310,9 @@ class CategoryFilterPopup(QMenu):
         self._set_popup_content_size(max(220, available_height - 12))
         self.adjustSize()
 
-    def set_active_filters(self, active_filters):
+    def set_active_filters(self, active_filters: set[AssetType] | None) -> None:
         """Update the popup checks without rebuilding the widget."""
-        self.active_filters = set(active_filters) if active_filters else set()
+        self.active_filters: set[AssetType] = set(active_filters) if active_filters else set()
         self._updating = True
         for tid, cb in self.checkboxes.items():
             cb.blockSignals(True)
@@ -299,7 +322,7 @@ class CategoryFilterPopup(QMenu):
             self._update_category_state(cat_name)
         self._updating = False
 
-    def mouseReleaseEvent(self, a0):
+    def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:
         if a0 is None:
             return
         action = self.actionAt(a0.pos())
@@ -307,7 +330,7 @@ class CategoryFilterPopup(QMenu):
             return
         super().mouseReleaseEvent(a0)
 
-    def _on_category_clicked(self, type_ids, cat_name):
+    def _on_category_clicked(self, type_ids: list[AssetType], cat_name: str) -> None:
         if self._updating:
             return
         self._updating = True
@@ -333,7 +356,7 @@ class CategoryFilterPopup(QMenu):
         self._updating = False
         self.filters_changed.emit(self.active_filters)
 
-    def _on_type_clicked(self, tid, cat_name, checked):
+    def _on_type_clicked(self, tid: AssetType, cat_name: str, checked: bool) -> None:
         if self._updating:
             return
         self._updating = True
@@ -346,7 +369,7 @@ class CategoryFilterPopup(QMenu):
         self._updating = False
         self.filters_changed.emit(self.active_filters)
 
-    def _update_category_state(self, cat_name):
+    def _update_category_state(self, cat_name: str) -> None:
         cat_cb = self.category_checkboxes[cat_name]
         type_ids = self.categories[cat_name]
         checked_count = sum(
@@ -363,7 +386,7 @@ class CategoryFilterPopup(QMenu):
             cat_cb.setCheckState(Qt.CheckState.PartiallyChecked)
         cat_cb.blockSignals(False)
 
-    def _clear_all(self):
+    def _clear_all(self) -> None:
         if self._updating:
             return
         self._updating = True

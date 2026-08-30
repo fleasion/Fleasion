@@ -1,16 +1,19 @@
 """Audio player widget using sounddevice for Python 3.14 compatibility."""
 
-from ..localization import tr
+from __future__ import annotations
 
 import ctypes.util
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
-import soundfile as sf
+from numpy.typing import NDArray
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -20,7 +23,79 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..localization import tr
 from ..utils import log_buffer
+
+type AudioArray = NDArray[np.float32]
+type AudioCallback = Callable[[AudioArray, int, object, object], None]
+
+
+class _OutputStreamLike(Protocol):
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    def close(self) -> None: ...
+
+
+class _OutputStreamFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        samplerate: int,
+        channels: int,
+        dtype: str,
+        callback: AudioCallback,
+        blocksize: int,
+    ) -> _OutputStreamLike: ...
+
+
+class _SoundDeviceDefault(Protocol):
+    device: object
+
+
+class _SoundDeviceModule(Protocol):
+    OutputStream: _OutputStreamFactory
+    default: _SoundDeviceDefault
+
+    def query_devices(self) -> Sequence[object]: ...
+    def get_portaudio_version(self) -> object: ...
+
+
+class _SoundFileModule(Protocol):
+    def read(self, path: str, *, dtype: str) -> tuple[AudioArray, int]: ...
+
+
+if TYPE_CHECKING:
+    sf: _SoundFileModule
+
+    def _import_sounddevice_runtime() -> _SoundDeviceModule: ...
+
+    def _audio_data(value: AudioArray | None) -> AudioArray: ...
+
+    def _sample_rate(value: int | None) -> int: ...
+
+    def _config_audio_volume(config: object) -> int: ...
+
+    def _set_config_audio_volume(config: object, value: int) -> None: ...
+else:
+    import importlib
+
+    sf = importlib.import_module('soundfile')
+
+    def _import_sounddevice_runtime() -> _SoundDeviceModule:
+        return importlib.import_module('sounddevice')
+
+    def _audio_data(value: AudioArray | None) -> AudioArray:
+        return value
+
+    def _sample_rate(value: int | None) -> int:
+        return value
+
+    def _config_audio_volume(config: object) -> int:
+        return getattr(config, 'audio_volume')
+
+    def _set_config_audio_volume(config: object, value: int) -> None:
+        setattr(config, 'audio_volume', value)
+
 
 _LINUX_LIBRARY_SEARCH_DIRS = (
     '/lib64',
@@ -33,7 +108,9 @@ _LINUX_LIBRARY_SEARCH_DIRS = (
 )
 
 
-def _resolve_library_path(library_name: str, search_dirs=None) -> Path | None:
+def _resolve_library_path(
+    library_name: str, search_dirs: Iterable[str] | None = None
+) -> Path | None:
     """Resolve a system shared library to an absolute path when possible."""
     resolved = ctypes.util.find_library(library_name)
     if not resolved:
@@ -78,12 +155,12 @@ def _preferred_portaudio_path() -> Path | None:
     return _resolve_library_path('portaudio') or _bundled_portaudio_path()
 
 
-def _import_sounddevice_with_preferred_portaudio():
+def _import_sounddevice_with_preferred_portaudio() -> _SoundDeviceModule:
     """Import sounddevice with a deterministic PortAudio path on Linux."""
     original_find_library = ctypes.util.find_library
     preferred_portaudio = _preferred_portaudio_path()
 
-    def find_library(name):
+    def find_library(name: str) -> str | None:
         if name == 'portaudio' and preferred_portaudio is not None:
             return str(preferred_portaudio)
         return original_find_library(name)
@@ -91,7 +168,7 @@ def _import_sounddevice_with_preferred_portaudio():
     if preferred_portaudio is not None:
         ctypes.util.find_library = find_library
     try:
-        import sounddevice as sounddevice
+        sounddevice = _import_sounddevice_runtime()
     finally:
         ctypes.util.find_library = original_find_library
 
@@ -99,15 +176,15 @@ def _import_sounddevice_with_preferred_portaudio():
 
 
 sd = _import_sounddevice_with_preferred_portaudio()
-_AUDIO_BACKEND_LOGGED = False
+_audio_backend_logged = False
 
 
-def _log_audio_backend_once():
+def _log_audio_backend_once() -> None:
     """Log the PortAudio backend selected by the GUI player once per process."""
-    global _AUDIO_BACKEND_LOGGED
-    if _AUDIO_BACKEND_LOGGED:
+    global _audio_backend_logged
+    if _audio_backend_logged:
         return
-    _AUDIO_BACKEND_LOGGED = True
+    _audio_backend_logged = True
 
     try:
         preferred = _preferred_portaudio_path()
@@ -144,7 +221,12 @@ class AudioPlayerWidget(QWidget):
 
     stopped = Signal()
 
-    def __init__(self, audio_file_path: str, parent=None, config_manager=None):
+    def __init__(
+        self,
+        audio_file_path: str,
+        parent: QWidget | None = None,
+        config_manager: object | None = None,
+    ) -> None:
         """
         Initialize audio player.
 
@@ -166,13 +248,13 @@ class AudioPlayerWidget(QWidget):
         self.playback_position = 0
 
         # Audio data
-        self.audio_data = None
-        self.sample_rate = None
+        self.audio_data: AudioArray | None = None
+        self.sample_rate: int | None = None
         self.duration = 0.0
 
         # Volume
         if config_manager:
-            initial_slider = config_manager.audio_volume
+            initial_slider = _config_audio_volume(config_manager)
         else:
             initial_slider = 70
 
@@ -183,9 +265,9 @@ class AudioPlayerWidget(QWidget):
             self.volume = (pow(10, initial_slider / 100.0) - 1.0) / 9.0
 
         # Playback thread and stream
-        self.stream = None
-        self.playback_thread = None
-        self.stop_event = None
+        self.stream: _OutputStreamLike | None = None
+        self.playback_thread: threading.Thread | None = None
+        self.stop_event: threading.Event | None = None
         self.position_lock = threading.Lock()
         self.stream_lock = threading.Lock()
 
@@ -198,7 +280,7 @@ class AudioPlayerWidget(QWidget):
         self.timer.timeout.connect(self._update_ui)
         self.timer.start(50)  # 20 FPS
 
-    def _load_audio(self):
+    def _load_audio(self) -> None:
         """Load audio file and get metadata."""
         try:
             # Load audio as float32 so the callback writes the same dtype that
@@ -219,13 +301,13 @@ class AudioPlayerWidget(QWidget):
             )
 
             # Calculate duration
-            self.duration = len(self.audio_data) / self.sample_rate
+            self.duration = len(_audio_data(self.audio_data)) / _sample_rate(self.sample_rate)
 
         except Exception as e:
             log_buffer.log('Audio', f'Error loading audio: {e}')
             self.duration = 0
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
@@ -246,7 +328,7 @@ class AudioPlayerWidget(QWidget):
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         # Set initial slider value from config if available, otherwise default to 70
-        initial_val = self.config_manager.audio_volume if self.config_manager else 70
+        initial_val = _config_audio_volume(self.config_manager) if self.config_manager else 70
         self.volume_slider.setValue(initial_val)
         self.volume_slider.valueChanged.connect(self._set_volume)
         self.volume_slider.setFixedWidth(175)
@@ -298,14 +380,14 @@ class AudioPlayerWidget(QWidget):
 
         self.setLayout(layout)
 
-    def _toggle_play_pause(self):
+    def _toggle_play_pause(self) -> None:
         """Toggle play/pause state."""
         if not self.is_playing:
             self._play()
         else:
             self._pause()
 
-    def _play(self):
+    def _play(self) -> None:
         """Start playback."""
         if self.audio_data is None:
             return
@@ -329,7 +411,7 @@ class AudioPlayerWidget(QWidget):
         )
         self.playback_thread.start()
 
-    def _pause(self):
+    def _pause(self) -> None:
         """Pause playback."""
         self.is_playing = False
         self.should_stop = True
@@ -341,7 +423,7 @@ class AudioPlayerWidget(QWidget):
         # inside Pa_CloseStream on some device/backend transitions, and this
         # method runs on the Qt UI thread.
 
-    def _replay(self):
+    def _replay(self) -> None:
         """Replay from beginning."""
         # Stop current playback
         if self.is_playing:
@@ -354,17 +436,20 @@ class AudioPlayerWidget(QWidget):
         # Start playing
         self._play()
 
-    def _playback_worker(self, stop_event):
+    def _playback_worker(self, stop_event: threading.Event) -> None:
         """Worker thread for audio playback."""
         try:
 
-            def callback(outdata, frames, time_info, status):
+            def callback(
+                outdata: AudioArray, frames: int, _time_info: object, status: object
+            ) -> None:
                 if status:
                     log_buffer.log('Audio', f'Audio callback status: {status}')
 
                 with self.position_lock:
                     start_pos = self.playback_position
-                    end_pos = min(start_pos + frames, len(self.audio_data))
+                    audio_data = _audio_data(self.audio_data)
+                    end_pos = min(start_pos + frames, len(audio_data))
                     chunk_size = end_pos - start_pos
 
                     if chunk_size <= 0 or stop_event.is_set():
@@ -373,7 +458,7 @@ class AudioPlayerWidget(QWidget):
                         return
 
                     # Get audio data and apply volume
-                    chunk = self.audio_data[start_pos:end_pos] * self.volume
+                    chunk = audio_data[start_pos:end_pos] * self.volume
                     outdata[:chunk_size] = chunk
 
                     # Fill remaining with silence
@@ -384,7 +469,7 @@ class AudioPlayerWidget(QWidget):
 
             # Create and start stream
             stream = sd.OutputStream(
-                samplerate=self.sample_rate,
+                samplerate=_sample_rate(self.sample_rate),
                 channels=2,
                 dtype='float32',
                 callback=callback,
@@ -400,7 +485,7 @@ class AudioPlayerWidget(QWidget):
 
                     # Check if reached end
                     with self.position_lock:
-                        if self.playback_position >= len(self.audio_data):
+                        if self.playback_position >= len(_audio_data(self.audio_data)):
                             self.should_stop = True
                             stop_event.set()
             finally:
@@ -437,7 +522,7 @@ class AudioPlayerWidget(QWidget):
                     # If scheduling fails for any reason, ignore silently.
                     pass
 
-    def _safe_set_play_pause_text(self, text: str):
+    def _safe_set_play_pause_text(self, text: str) -> None:
         """Set play/pause button text from the main thread, safely.
 
         This method swallows exceptions that occur if the underlying
@@ -449,24 +534,24 @@ class AudioPlayerWidget(QWidget):
             # Widget may have been deleted; ignore.
             pass
 
-    def _start_scrub(self):
+    def _start_scrub(self) -> None:
         """Called when user starts dragging progress slider."""
         self.is_scrubbing = True
         if self.is_playing:
             self._pause()
 
-    def _end_scrub(self):
+    def _end_scrub(self) -> None:
         """Called when user releases progress slider."""
         # Seek to new position
         new_time = self.progress_slider.value() / 1000.0
         new_time = max(0, min(new_time, self.duration))
 
         with self.position_lock:
-            self.playback_position = int(new_time * self.sample_rate)
+            self.playback_position = int(new_time * _sample_rate(self.sample_rate))
 
         self.is_scrubbing = False
 
-    def _set_volume(self, value):
+    def _set_volume(self, value: int) -> None:
         """Set volume level."""
         # Logarithmic mapping: volume = (10^(value/100) - 1) / 9
         if value <= 0:
@@ -475,9 +560,9 @@ class AudioPlayerWidget(QWidget):
             self.volume = (pow(10, value / 100.0) - 1.0) / 9.0
 
         if self.config_manager:
-            self.config_manager.audio_volume = value
+            _set_config_audio_volume(self.config_manager, value)
 
-    def _update_ui(self):
+    def _update_ui(self) -> None:
         """Update progress slider and time label."""
         if not self.is_scrubbing and self.sample_rate:
             with self.position_lock:
@@ -504,7 +589,7 @@ class AudioPlayerWidget(QWidget):
         millis = int((seconds % 1) * 1000)
         return f'{minutes:02d}:{secs:02d}.{millis:03d}'
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop playback and cleanup."""
         self.should_stop = True
         self.is_playing = False
@@ -516,7 +601,7 @@ class AudioPlayerWidget(QWidget):
 
         self.stopped.emit()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Handle widget close."""
         self.stop()
         super().closeEvent(event)

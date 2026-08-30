@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import math
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ....utils import APP_CACHE_DIR, log_buffer
+
+if TYPE_CHECKING:
+    from .csg_mesh import CSGVertex
 
 # ── Compression detection ──────────────────────────────────────────────────
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
@@ -128,7 +131,7 @@ def mesh_file_to_cached_obj(mesh_path: Path) -> Path:
 # ── CSGVertex list → OBJ text ──────────────────────────────────────────────
 
 
-def _csg_vertices_to_obj(vertices, indices: list[int]) -> str:
+def _csg_vertices_to_obj(vertices: list[CSGVertex], indices: list[int]) -> str:
     """Serialise a ``(CSGVertex list, flat index list)`` pair as OBJ text.
 
     Vertex colors are included in ``v`` lines as normalised floats so the

@@ -1,10 +1,9 @@
 """About window."""
 
-from ..localization import tr
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
 
+from ..localization import tr
 from ..utils import (
     APP_AUTHOR,
     APP_CONCEPT,
@@ -19,7 +18,7 @@ from ..utils import (
 class AboutWindow(QDialog):
     """About dialog window."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(tr('ui.gui.about.about'))
         self.setFixedSize(360, 240)
@@ -31,13 +30,13 @@ class AboutWindow(QDialog):
         self._setup_ui()
         self._set_icon()
 
-    def _set_icon(self):
+    def _set_icon(self) -> None:
         if icon_path := get_icon_path():
             from PySide6.QtGui import QIcon
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout()
         layout.setSpacing(0)
         layout.setContentsMargins(24, 20, 24, 20)

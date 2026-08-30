@@ -6,16 +6,12 @@ everything runs in the same process.
 """
 
 import base64
-import gzip
 import hashlib
 import logging
-import os
-import re
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Callable, Iterable
 from threading import Lock
-from urllib.parse import urlparse
-
-import requests
+from typing import TYPE_CHECKING, Literal, NotRequired, TypeIs, TypedDict, cast, overload
 
 from ...cache.cache_manager import CacheManager
 from ...utils import format_count, log_buffer
@@ -23,12 +19,12 @@ from ...utils import format_count, log_buffer
 try:
     import orjson
 
-    def _loads(data):
+    def _loads(data: str | bytes | bytearray) -> object:
         return orjson.loads(data)
 except ImportError:
     import json
 
-    def _loads(data):
+    def _loads(data: str | bytes | bytearray) -> object:
         return json.loads(data)
 
 
@@ -40,6 +36,56 @@ DELIVERY_ENDPOINT = '/v1/assets/batch'
 CREATOR_GAME_PAGE_LIMITS = (50, 25, 10)
 CREATOR_GAME_MAX_SCAN = 300
 
+
+class CacheLogEntry(TypedDict):
+    location: str
+    assetTypeId: int
+    cached: NotRequired[bool]
+
+
+type AssetId = int | str
+type JsonObject = dict[str, object]
+type BuildType = int | str
+
+
+def _is_json_object(value: object) -> TypeIs[JsonObject]:
+    return isinstance(value, dict)
+
+
+def _is_object_list(value: object) -> TypeIs[list[object]]:
+    return isinstance(value, list)
+
+
+def _preserve_object_dict(value: object) -> JsonObject:
+    if TYPE_CHECKING:
+        assert isinstance(value, dict)
+    return cast(JsonObject, value)
+
+
+def _preserve_object_list(value: object) -> list[object]:
+    if TYPE_CHECKING:
+        assert isinstance(value, list)
+    return cast(list[object], value)
+
+
+def _preserve_asset_id(value: object) -> AssetId:
+    if TYPE_CHECKING:
+        assert isinstance(value, (int, str)) and not isinstance(value, bool)
+    return value
+
+
+def _preserve_str(value: object) -> str:
+    if TYPE_CHECKING:
+        assert isinstance(value, str)
+    return value
+
+
+def _preserve_int(value: object) -> int:
+    if TYPE_CHECKING:
+        assert isinstance(value, int) and not isinstance(value, bool)
+    return value
+
+
 _TEXPACK_SLOT_NAMES = {
     0: 'Color',
     1: 'Normal',
@@ -47,19 +93,22 @@ _TEXPACK_SLOT_NAMES = {
 }
 
 
-def _texpack_slot_label(slot: int | None) -> str:
-    if slot is None:
-        return 'unknown'
-    return f'{slot}:{_TEXPACK_SLOT_NAMES.get(slot, "unknown")}'
+if TYPE_CHECKING:
+
+    def _int_value(value: object) -> int: ...
+else:
+
+    def _int_value(value: object) -> int:
+        return int(value)
 
 
-def _b64decode_padded(value: str) -> bytes:
+def _b64decode_padded(value: object) -> bytes:
     raw = str(value).encode('ascii', errors='ignore')
     raw += b'=' * (-len(raw) % 4)
     return base64.urlsafe_b64decode(raw)
 
 
-def _normalized_build_type(value):
+def _normalized_build_type(value: object) -> BuildType | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -75,7 +124,7 @@ def _normalized_build_type(value):
     return ''.join(ch for ch in text.lower() if ch.isalnum())
 
 
-def _texpack_slot_from_build_type(value) -> int | None:
+def _texpack_slot_from_build_type(value: object) -> int | None:
     normalized = _normalized_build_type(value)
     if isinstance(normalized, int):
         return normalized if 0 <= normalized <= 2 else None
@@ -97,7 +146,7 @@ def _texpack_slot_from_build_type(value) -> int | None:
     return None
 
 
-def _texpack_slot_from_request(item: dict) -> int | None:
+def _texpack_slot_from_request(item: JsonObject) -> int | None:
     for key in (
         'requestedBuildType',
         'buildType',
@@ -112,7 +161,7 @@ def _texpack_slot_from_request(item: dict) -> int | None:
     return None
 
 
-def _texpack_build_key(item: dict):
+def _texpack_build_key(item: JsonObject) -> BuildType | None:
     for key in (
         'requestedBuildType',
         'buildType',
@@ -127,7 +176,7 @@ def _texpack_build_key(item: dict):
     return None
 
 
-def _normalize_asset_id(asset_id):
+def _normalize_asset_id(asset_id: object) -> object:
     if isinstance(asset_id, bool):
         return asset_id
     if isinstance(asset_id, int):
@@ -155,12 +204,13 @@ def creator_game_base_paths(creator_id: int, creator_type: int, limit: int) -> l
     return []
 
 
-def _build_texpack_request_slot_map(req_json: list) -> dict[int, int]:
+def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
     texpack_ids: set[int] = set()
     asset_counts: dict[int, int] = {}
-    for item in req_json:
-        if not isinstance(item, dict):
+    for item_value in req_json:
+        if not _is_json_object(item_value):
             continue
+        item = item_value
         aid = _normalize_asset_id(item.get('assetId'))
         if not isinstance(aid, int):
             continue
@@ -170,9 +220,10 @@ def _build_texpack_request_slot_map(req_json: list) -> dict[int, int]:
         if asset_type == 63 or asset_type_name == 'texturepack':
             texpack_ids.add(aid)
 
-    for item in req_json:
-        if not isinstance(item, dict):
+    for item_value in req_json:
+        if not _is_json_object(item_value):
             continue
+        item = item_value
         aid = _normalize_asset_id(item.get('assetId'))
         if not isinstance(aid, int) or aid in texpack_ids:
             continue
@@ -187,9 +238,10 @@ def _build_texpack_request_slot_map(req_json: list) -> dict[int, int]:
     next_slot: dict[int, int] = {}
     occurrence_slot: dict[int, int] = {}
 
-    for idx, item in enumerate(req_json):
-        if not isinstance(item, dict):
+    for idx, item_value in enumerate(req_json):
+        if not _is_json_object(item_value):
             continue
+        item = item_value
         aid = _normalize_asset_id(item.get('assetId'))
         if not isinstance(aid, int) or aid not in texpack_ids:
             continue
@@ -215,7 +267,7 @@ def _build_texpack_request_slot_map(req_json: list) -> dict[int, int]:
     return result
 
 
-def _representation_matches_requested(representation: dict, requested) -> bool:
+def _representation_matches_requested(representation: JsonObject, requested: object) -> bool:
     for key in (
         'requestedBuildType',
         'buildType',
@@ -230,7 +282,7 @@ def _representation_matches_requested(representation: dict, requested) -> bool:
     return False
 
 
-def _select_content_representation(item: dict) -> dict | None:
+def _select_content_representation(item: JsonObject) -> JsonObject | None:
     crpl = item.get('contentRepresentationPriorityList')
     if not crpl:
         return None
@@ -238,26 +290,30 @@ def _select_content_representation(item: dict) -> dict | None:
         decoded = _loads(_b64decode_padded(crpl))
     except Exception:
         return None
-    if not isinstance(decoded, list) or not decoded:
+    if not _is_object_list(decoded) or not decoded:
         return None
+    decoded_items = decoded
 
     requested = _normalized_build_type(item.get('requestedBuildType'))
     if requested is not None:
-        for representation in decoded:
-            if isinstance(representation, dict) and _representation_matches_requested(
-                representation, requested
-            ):
-                return representation
-        if isinstance(requested, int) and 0 <= requested < len(decoded):
-            representation = decoded[requested]
-            return representation if isinstance(representation, dict) else None
+        for representation_value in decoded_items:
+            if _is_json_object(representation_value):
+                representation = representation_value
+                if _representation_matches_requested(representation, requested):
+                    return representation
+        if isinstance(requested, int) and 0 <= requested < len(decoded_items):
+            representation_value = decoded_items[requested]
+            if _is_json_object(representation_value):
+                return representation_value
+            return None
 
-    if isinstance(decoded[0], dict):
-        return decoded[0]
+    first = decoded_items[0]
+    if _is_json_object(first):
+        return first
     return None
 
 
-def _decode_fidelity_slot_quality(fidelity_b64: str | None) -> tuple[int, int] | None:
+def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int] | None:
     if not fidelity_b64:
         return None
     try:
@@ -273,7 +329,7 @@ def _decode_fidelity_slot_quality(fidelity_b64: str | None) -> tuple[int, int] |
     return slot, quality
 
 
-def _decode_texpack_slot_quality(item: dict) -> tuple[int, int] | None:
+def _decode_texpack_slot_quality(item: JsonObject) -> tuple[int, int] | None:
     request_slot = _texpack_slot_from_request(item)
     if request_slot is not None:
         return request_slot, 0
@@ -283,10 +339,11 @@ def _decode_texpack_slot_quality(item: dict) -> tuple[int, int] | None:
     return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
-def _decode_selected_representation_slot_quality(item: dict) -> tuple[int, int] | None:
-    representation = item.get('contentRepresentationSpecifier')
-    if not isinstance(representation, dict):
+def _decode_selected_representation_slot_quality(item: JsonObject) -> tuple[int, int] | None:
+    representation_value = item.get('contentRepresentationSpecifier')
+    if not _is_json_object(representation_value):
         return None
+    representation = representation_value
     return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
@@ -339,9 +396,9 @@ class CacheScraper:
 
         self._lock = Lock()
         # asset_id -> {'location': str, 'assetTypeId': int, 'cached'?: True}
-        self.cache_logs: dict = {}
+        self.cache_logs: dict[AssetId, CacheLogEntry] = {}
         # base CDN URL (no query) -> list[asset_id]  (1:many – same replacement ID → same CDN URL)
-        self._url_to_asset: dict[str, list] = {}
+        self._url_to_asset: dict[str, list[AssetId]] = {}
         # TexturePack sub-asset lookup: sub_asset_id -> (parent_pack_id, map_index)
         # map_index 0=Color/Albedo, 1=Normal, 2=ORM (Roughness+Metalness combined)
         # Populated when a TexturePack XML is successfully fetched and cached.
@@ -378,7 +435,12 @@ class CacheScraper:
 
         # (session removed - API fetches use _https_get() with raw ssl for SNI control)
 
-    def _submit_background(self, func, *args, generation: int | None = None):
+    def _submit_background(
+        self,
+        func: Callable[..., object],
+        *args: object,
+        generation: int | None = None,
+    ) -> Future[object] | None:
         """Submit cache work only if it belongs to the current database generation."""
         with self._lock:
             current_generation = self._work_generation
@@ -433,29 +495,37 @@ class CacheScraper:
         except Exception:
             return
 
-        if not isinstance(req_json, list) or not isinstance(res_json, list):
+        if not _is_object_list(req_json) or not _is_object_list(res_json):
             return
+        req_items = req_json
+        res_items = res_json
 
         tracked = 0
         # Late joiners: newly tracked assets whose CDN URL already has a
         # cached sibling from a previous batch.  The Roblox client won't
         # re-fetch the CDN URL, so we must copy the content ourselves.
-        to_copy: list[tuple] = []  # (source_id, dest_id, asset_type, url)
-        texpack_request_slots = _build_texpack_request_slot_map(req_json)
+        to_copy: list[tuple[AssetId, AssetId, int, str]] = []  # source, dest, type, URL
+        texpack_request_slots = _build_texpack_request_slot_map(req_items)
 
         with self._lock:
             generation = self._work_generation
-            for idx, item in enumerate(req_json):
-                if not isinstance(item, dict) or 'assetId' not in item:
+            for idx, item_value in enumerate(req_items):
+                if not _is_json_object(item_value):
                     continue
-                asset_id = item['assetId']
-                if idx >= len(res_json):
+                item = item_value
+                if 'assetId' not in item:
                     continue
-                res_item = res_json[idx]
-                if not isinstance(res_item, dict):
+                asset_id = _preserve_asset_id(item['assetId'])
+                if idx >= len(res_items):
                     continue
-                location = res_item.get('location')
-                asset_type = res_item.get('assetTypeId')
+                res_item_value = res_items[idx]
+                if not _is_json_object(res_item_value):
+                    continue
+                res_item = res_item_value
+                location_value = res_item.get('location')
+                asset_type_value = res_item.get('assetTypeId')
+                location = None if location_value is None else _preserve_str(location_value)
+                asset_type = None if asset_type_value is None else _preserve_int(asset_type_value)
                 if location is None:
                     continue
                 # Roblox often omits assetTypeId on the 2nd and 3rd slots of a
@@ -463,7 +533,8 @@ class CacheScraper:
                 # whatever type we already recorded for this assetId in a prior
                 # iteration of this same batch.
                 if asset_type is None:
-                    asset_type = self.cache_logs.get(asset_id, {}).get('assetTypeId')
+                    previous = self.cache_logs.get(asset_id)
+                    asset_type = previous.get('assetTypeId') if previous is not None else None
                 if asset_type is None:
                     continue
                 base_url = location.split('?')[0]
@@ -568,7 +639,7 @@ class CacheScraper:
             if not asset_ids and not tp_slot_metas_early:
                 return
             # Collect all asset IDs that still need caching for this CDN URL
-            pending: list[tuple[int, int]] = []  # (asset_id, asset_type)
+            pending: list[tuple[AssetId, int]] = []  # (asset_id, asset_type)
             if asset_ids:
                 for aid in asset_ids:
                     info = self.cache_logs.get(aid)
@@ -582,7 +653,7 @@ class CacheScraper:
             return
 
         cache_hash = path.rsplit('/', 1)[-1]
-        metadata = {
+        metadata: dict[str, object] = {
             # Persist query-stripped URL to avoid storing signed/query params.
             'url': base_url,
             'content_type': content_type,
@@ -669,11 +740,11 @@ class CacheScraper:
                 continue
             if isinstance(candidates, str):
                 values = (candidates,)
+            elif isinstance(candidates, Iterable):
+                candidate_values = cast(Iterable[object], candidates)
+                values = tuple(str(value) for value in candidate_values)
             else:
-                try:
-                    values = tuple(str(value) for value in candidates)
-                except TypeError:
-                    values = (str(candidates),)
+                values = (str(candidates),)
             unique_values = tuple(dict.fromkeys(value.strip() for value in values if value.strip()))
             if unique_values:
                 normalized[host_key] = unique_values
@@ -698,15 +769,38 @@ class CacheScraper:
                 existing = self._real_ips.get(host, ())
                 self._real_ips[host] = tuple(dict.fromkeys((*candidates, *existing)))
 
+    @overload
     def _https_get(
         self,
         hostname: str,
         path: str,
-        extra_headers: dict | None = None,
+        extra_headers: dict[str, str] | None = None,
+        timeout: float = 8.0,
+        max_redirects: int = 6,
+        return_status: Literal[False] = False,
+    ) -> bytes | None: ...
+
+    @overload
+    def _https_get(
+        self,
+        hostname: str,
+        path: str,
+        extra_headers: dict[str, str] | None = None,
+        timeout: float = 8.0,
+        max_redirects: int = 6,
+        *,
+        return_status: Literal[True],
+    ) -> tuple[bytes | None, int | None]: ...
+
+    def _https_get(
+        self,
+        hostname: str,
+        path: str,
+        extra_headers: dict[str, str] | None = None,
         timeout: float = 8.0,
         max_redirects: int = 6,
         return_status: bool = False,
-    ) -> 'bytes | None | tuple[bytes | None, int | None]':
+    ) -> bytes | tuple[bytes | None, int | None] | None:
         """Make an HTTPS GET request, bypassing our hosts file by connecting to the
         real IP while passing the original hostname as SNI and Host header.
 
@@ -836,7 +930,7 @@ class CacheScraper:
     # ------------------------------------------------------------------
     # Creator place-ID cache (class-level, shared across threads)
     # ------------------------------------------------------------------
-    _creator_place_cache: dict[int, list[int]] = {}
+    _creator_place_cache: dict[int, list[int] | int] = {}
     # Fast-path: creator_id -> last place_id that successfully downloaded an asset.
     # Avoids re-iterating the full games list for the same creator.
     _creator_last_success: dict[int, int] = {}
@@ -859,25 +953,24 @@ class CacheScraper:
             )
             if not raw:
                 return None, None
-            import json as _json
-
-            data = _json.loads(raw).get('data', [])
+            response_obj = _preserve_object_dict(_loads(raw))
+            data = _preserve_object_list(response_obj.get('data', []))
             if not data:
                 return None, None
-            item = data[0]
-            creator_obj = item.get('creator') or {}
+            item = _preserve_object_dict(data[0])
+            creator_obj = _preserve_object_dict(item.get('creator') or {})
             creator_id = creator_obj.get('targetId') or item.get('creatorTargetId')
             creator_type = creator_obj.get('typeId') or item.get('creatorType')
             if creator_id is not None:
-                creator_id = int(creator_id)
+                creator_id = _int_value(creator_id)
             if creator_type is not None:
-                creator_type = int(creator_type)
+                creator_type = _int_value(creator_type)
             return creator_id, creator_type
         except Exception as exc:
             log_buffer.log('Cache', f'Creator info lookup failed for {asset_id}: {exc}')
             return None, None
 
-    def _fetch_place_ids_for_creator(self, creator_id: int, creator_type: int) -> list[int]:
+    def _fetch_place_ids_for_creator(self, creator_id: int, creator_type: int | None) -> list[int]:
         """Get place IDs owned by the given creator, trying multiple pages.
 
         Uses games.roblox.com which is public and needs no auth.
@@ -951,7 +1044,7 @@ class CacheScraper:
     def _fetch_asset_with_place_id_retry(
         self,
         asset_id: str,
-        extra_headers: dict | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> tuple[bytes | None, int | None]:
         """Download an asset, retrying with Roblox-Place-Id on 403.
 
@@ -1041,7 +1134,7 @@ class CacheScraper:
         """
         try:
             cookie = self._get_roblosecurity()
-            extra = {}
+            extra: dict[str, str] = {}
             if cookie:
                 extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
             data, _status = self._fetch_asset_with_place_id_retry(
@@ -1057,7 +1150,7 @@ class CacheScraper:
         asset_id: str,
         asset_type: int,
         url: str,
-        metadata: dict,
+        metadata: dict[str, object],
         original_content: bytes | None = None,
         inner_content: bytes | None = None,
         generation: int | None = None,
@@ -1228,7 +1321,7 @@ class CacheScraper:
                 text = (elem.text or '').strip()
                 sub_id = int(text) if text.isdigit() and int(text) != 0 else None
                 channel = _TAG_TO_CHANNEL.get(tag_lower)
-                if text.isdigit() and int(text) != 0:
+                if sub_id is not None:
                     with self._lock:
                         if generation is not None and generation != self._work_generation:
                             return
@@ -1239,7 +1332,7 @@ class CacheScraper:
                     with self._lock:
                         if generation is not None and generation != self._work_generation:
                             return
-                        self._texpack_vslot_channel[(parent_id, virtual_slot)] = channel
+                        self._texpack_vslot_channel[parent_id, virtual_slot] = channel
                 virtual_slot += 1
             if added:
                 log_buffer.log(
@@ -1410,7 +1503,7 @@ class CacheScraper:
         asset_type: int,
         data: bytes,
         url: str,
-        metadata: dict,
+        metadata: dict[str, object],
         generation: int | None = None,
     ) -> None:
         try:
@@ -1430,8 +1523,8 @@ class CacheScraper:
 
     def _copy_cached_asset(
         self,
-        source_id,
-        dest_id,
+        source_id: AssetId,
+        dest_id: AssetId,
         asset_type: int,
         url: str,
         generation: int | None = None,
@@ -1456,12 +1549,23 @@ class CacheScraper:
         except Exception as exc:
             log_buffer.log('Cache', f'Replication error {source_id}->{dest_id}: {exc}')
 
-    def _store_asset_if_current(self, generation: int | None, **kwargs) -> bool:
+    def _store_asset_if_current(
+        self,
+        generation: int | None,
+        *,
+        asset_id: str,
+        asset_type: int,
+        data: bytes,
+        url: str = '',
+        metadata: dict[str, object] | None = None,
+    ) -> bool:
         """Store an asset while holding the reset lock for this generation."""
         with self._lock:
             if generation is not None and generation != self._work_generation:
                 return False
-            return bool(self.cache_manager.store_asset(**kwargs))
+            return self.cache_manager.store_asset(
+                asset_id, asset_type, data, url=url, metadata=metadata
+            )
 
     def _store_raw_asset_if_current(
         self, generation: int | None, asset_id: str, asset_type: int, data: bytes
@@ -1554,6 +1658,16 @@ class CacheScraper:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def fetch_asset_with_place_id_retry(
+        self, asset_id: str, *, extra_headers: dict[str, str] | None = None
+    ) -> tuple[bytes | None, int | None]:
+        """Fetch an asset using the existing place-ID retry behavior."""
+        return self._fetch_asset_with_place_id_retry(asset_id, extra_headers=extra_headers)
+
+    def get_roblosecurity(self, *, wait: bool = False) -> str | None:
+        """Return the Roblox security cookie through the existing auth helper."""
+        return self._get_roblosecurity(wait=wait)
 
     def _get_roblosecurity(self, *, wait: bool = False) -> str | None:
         from ...utils.roblox_auth import get_roblosecurity, wait_for_roblosecurity

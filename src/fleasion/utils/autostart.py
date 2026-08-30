@@ -6,21 +6,90 @@ on Linux. Detects whether we're running as a compiled executable or from a
 development checkout and updates the launch method when it changes.
 """
 
+from __future__ import annotations
+
 import base64
 import json
 import logging
 import os
 import plistlib
-import shlex
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 from ..localization import tr
 from .paths import USER_HOME
 
 logger = logging.getLogger(__name__)
+
+
+class LaunchInfo(TypedDict):
+    mode: str
+    path: str
+    _fmt: int
+    project: NotRequired[str]
+    log: NotRequired[str]
+    proxy_mode: NotRequired[str]
+
+
+if TYPE_CHECKING:
+
+    def _creation_flags() -> int: ...
+
+    def _json_launch_info(value: object) -> LaunchInfo | None: ...
+
+    def _required_project(info: LaunchInfo) -> str: ...
+
+    def _query_windows_run_value() -> tuple[object, int] | None: ...
+
+    def _write_windows_run_value(command: str) -> None: ...
+
+    def _delete_windows_run_value() -> None: ...
+else:
+
+    def _creation_flags() -> int:
+        return getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+    def _json_launch_info(value: object) -> LaunchInfo | None:
+        return value if isinstance(value, dict) else None
+
+    def _required_project(info: LaunchInfo) -> str:
+        return info['project']
+
+    def _query_windows_run_value() -> tuple[object, int] | None:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            _WINDOWS_RUN_KEY,
+            0,
+            winreg.KEY_QUERY_VALUE,
+        ) as key:
+            return winreg.QueryValueEx(key, _WINDOWS_RUN_VALUE)
+
+    def _write_windows_run_value(command: str) -> None:
+        import winreg
+
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
+            _WINDOWS_RUN_KEY,
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.SetValueEx(key, _WINDOWS_RUN_VALUE, 0, winreg.REG_SZ, command)
+
+    def _delete_windows_run_value() -> None:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            _WINDOWS_RUN_KEY,
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.DeleteValue(key, _WINDOWS_RUN_VALUE)
 
 
 # Use Fleasion's log_buffer when available, fall back to Python logger
@@ -33,9 +102,11 @@ def _log(msg: str) -> None:
         logger.info(msg)
 
 
-def _command_output(result) -> str:
+def _command_output(
+    result: subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str],
+) -> str:
     """Return captured command output without hiding scheduler diagnostics."""
-    parts = []
+    parts: list[str] = []
     for output in (getattr(result, 'stdout', None), getattr(result, 'stderr', None)):
         if isinstance(output, bytes):
             output = output.decode(errors='replace')
@@ -59,46 +130,29 @@ _legacy_task_cleanup_started = False
 _TASK_FORMAT_VERSION = 9
 
 
-def _windows_run_command(launch_info: dict) -> str:
+def _windows_run_command(launch_info: LaunchInfo) -> str:
     """Return the command stored in the current user's Windows Run key."""
     return subprocess.list2cmdline([str(launch_info['path']), '--no-dashboard'])
 
 
-def _windows_run_entry_matches(launch_info: dict) -> bool:
+def _windows_run_entry_matches(launch_info: LaunchInfo) -> bool:
     """Return whether the native per-user autostart value is current."""
     try:
-        import winreg
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            _WINDOWS_RUN_KEY,
-            0,
-            winreg.KEY_QUERY_VALUE,
-        ) as key:
-            value, value_type = winreg.QueryValueEx(key, _WINDOWS_RUN_VALUE)
-        return value_type == winreg.REG_SZ and value == _windows_run_command(launch_info)
+        result = _query_windows_run_value()
+        if result is None:
+            return False
+        value, value_type = result
+        # REG_SZ == 1 on Windows; keeping the comparison numeric avoids importing
+        # winreg into non-Windows type-checking environments.
+        return value_type == 1 and value == _windows_run_command(launch_info)
     except ImportError, OSError:
         return False
 
 
-def _set_windows_run_entry(launch_info: dict) -> bool:
+def _set_windows_run_entry(launch_info: LaunchInfo) -> bool:
     """Create/update packaged Fleasion autostart without starting a subprocess."""
     try:
-        import winreg
-
-        with winreg.CreateKeyEx(
-            winreg.HKEY_CURRENT_USER,
-            _WINDOWS_RUN_KEY,
-            0,
-            winreg.KEY_SET_VALUE,
-        ) as key:
-            winreg.SetValueEx(
-                key,
-                _WINDOWS_RUN_VALUE,
-                0,
-                winreg.REG_SZ,
-                _windows_run_command(launch_info),
-            )
+        _write_windows_run_value(_windows_run_command(launch_info))
         return True
     except (ImportError, OSError) as exc:
         _log(f'Failed to update native Windows autostart: {exc}')
@@ -108,15 +162,7 @@ def _set_windows_run_entry(launch_info: dict) -> bool:
 def _delete_windows_run_entry() -> bool:
     """Remove packaged Fleasion autostart from the current user's Run key."""
     try:
-        import winreg
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            _WINDOWS_RUN_KEY,
-            0,
-            winreg.KEY_SET_VALUE,
-        ) as key:
-            winreg.DeleteValue(key, _WINDOWS_RUN_VALUE)
+        _delete_windows_run_value()
         return True
     except FileNotFoundError:
         return True
@@ -135,7 +181,7 @@ def _delete_legacy_windows_task_async(config_dir: Path) -> None:
     _legacy_task_cleanup_started = True
 
     def _cleanup() -> None:
-        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        flags = _creation_flags()
         try:
             query = subprocess.run(
                 ['schtasks', '/Query', '/TN', TASK_NAME],
@@ -238,7 +284,7 @@ def _linux_installed_launcher() -> Path | None:
     return None
 
 
-def _get_launch_info() -> dict:
+def _get_launch_info() -> LaunchInfo:
     """Return a dict describing how to launch the current instance."""
     if sys.platform.startswith('linux'):
         installed_launcher = _linux_installed_launcher()
@@ -250,7 +296,11 @@ def _get_launch_info() -> dict:
             }
 
     if getattr(sys, 'frozen', False):
-        return {'mode': 'exe', 'path': sys.executable, '_fmt': _TASK_FORMAT_VERSION}
+        return {
+            'mode': 'exe',
+            'path': str(sys.executable or ''),
+            '_fmt': _TASK_FORMAT_VERSION,
+        }
 
     if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         check = Path(__file__).resolve().parent
@@ -260,7 +310,7 @@ def _get_launch_info() -> dict:
             check = check.parent
         return {
             'mode': 'python',
-            'path': sys.executable,
+            'path': str(sys.executable or ''),
             'project': str(check),
             '_fmt': _TASK_FORMAT_VERSION,
         }
@@ -291,7 +341,7 @@ def _task_exists() -> bool:
         r = subprocess.run(
             ['schtasks', '/Query', '/TN', TASK_NAME],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_creation_flags(),
             timeout=10,
         )
         return r.returncode == 0
@@ -324,7 +374,7 @@ def _delete_task() -> bool:
         result = subprocess.run(
             ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_creation_flags(),
             timeout=10,
         )
         if result.returncode != 0:
@@ -342,7 +392,7 @@ def _delete_task() -> bool:
         return False
 
 
-def _windows_launch_action(launch_info: dict) -> tuple[str, str]:
+def _windows_launch_action(launch_info: LaunchInfo) -> tuple[str, str]:
     """Return the executable and arguments used by the Windows task."""
     if launch_info['mode'] == 'exe':
         return launch_info['path'], '--no-dashboard'
@@ -350,7 +400,7 @@ def _windows_launch_action(launch_info: dict) -> tuple[str, str]:
     # For uv, wrap in PowerShell with -WindowStyle Hidden to suppress the
     # console window that uv.exe would otherwise show at logon.
     uv_path = launch_info['path']
-    proj_path = launch_info['project']
+    proj_path = _required_project(launch_info)
     uv_args = subprocess.list2cmdline(['--project', proj_path, 'run', 'fleasion', '--no-dashboard'])
     log_path = launch_info.get('log')
     ps_script = (
@@ -376,7 +426,7 @@ def _windows_launch_action(launch_info: dict) -> tuple[str, str]:
     )
 
 
-def _create_windows_task_as_current_user(launch_info: dict) -> bool:
+def _create_windows_task_as_current_user(launch_info: LaunchInfo) -> bool:
     """Create/update the per-user task without requiring elevation.
 
     ``schtasks /Create`` rejects standard-user task creation on current Windows
@@ -431,7 +481,7 @@ def _create_windows_task_as_current_user(launch_info: dict) -> bool:
                 encoded,
             ],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_creation_flags(),
             timeout=15,
         )
         if result.returncode != 0:
@@ -484,7 +534,7 @@ def _grant_windows_task_user_control(windows_user_id: str) -> bool:
                 encoded,
             ],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_creation_flags(),
             timeout=15,
         )
         if result.returncode != 0:
@@ -500,7 +550,7 @@ def _grant_windows_task_user_control(windows_user_id: str) -> bool:
 
 
 def _create_task(
-    launch_info: dict,
+    launch_info: LaunchInfo,
     *,
     windows_user_id: str | None = None,
 ) -> bool:
@@ -512,7 +562,7 @@ def _create_task(
                 working_dir = str(Path(launch_info['path']).parent)
                 env = {}
             else:
-                project = Path(launch_info['project'])
+                project = Path(_required_project(launch_info))
                 args = [
                     launch_info['path'],
                     str(project / 'launcher.py'),
@@ -559,7 +609,7 @@ def _create_task(
                 command = _desktop_exec_join([launch_info['path'], '--no-dashboard'])
                 working_dir = str(Path(launch_info['path']).parent)
             else:
-                project = Path(launch_info['project'])
+                project = Path(_required_project(launch_info))
                 command = _desktop_exec_join(
                     [
                         launch_info['path'],
@@ -611,7 +661,7 @@ def _create_task(
         # For uv, wrap in PowerShell with -WindowStyle Hidden to suppress the
         # console window that uv.exe would otherwise show at logon.
         uv_path = launch_info['path']
-        proj_path = launch_info['project']
+        proj_path = _required_project(launch_info)
         uv_args = subprocess.list2cmdline(
             ['--project', proj_path, 'run', 'fleasion', '--no-dashboard']
         )
@@ -684,7 +734,7 @@ def _create_task(
         r = subprocess.run(
             ['schtasks', '/Create', '/TN', TASK_NAME, '/XML', tmp, '/F'],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_creation_flags(),
             timeout=15,
         )
         if r.returncode != 0:
@@ -705,15 +755,18 @@ def _create_task(
             pass
 
 
-def _get_stored_launch_info(config_dir: Path) -> dict | None:
+def _get_stored_launch_info(config_dir: Path) -> LaunchInfo | None:
     p = config_dir / 'autostart_info.json'
     try:
-        return json.loads(p.read_text()) if p.exists() else None
+        if not p.exists():
+            return None
+        payload: object = json.loads(p.read_text())
+        return _json_launch_info(payload)
     except Exception:
         return None
 
 
-def _save_launch_info(config_dir: Path, info: dict) -> None:
+def _save_launch_info(config_dir: Path, info: LaunchInfo) -> None:
     try:
         (config_dir / 'autostart_info.json').write_text(json.dumps(info))
     except Exception:

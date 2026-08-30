@@ -6,9 +6,18 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING
 
 from ..utils.logging import log_buffer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from fleasion.config.manager import ConfigManager
+    from fleasion.proxy.master import ProxyMaster
+
+
+type _PlayerIdentity = tuple[int, str] | tuple[str, int] | tuple[str, int, float]
 
 
 def _is_gdk_repair_path(path: Path) -> bool:
@@ -17,7 +26,7 @@ def _is_gdk_repair_path(path: Path) -> bool:
         from ..utils.platform_windows import is_roblox_gdk_exe_path
 
         return is_roblox_gdk_exe_path(path)
-    except (ImportError, OSError):
+    except ImportError, OSError:
         return False
 
 
@@ -27,14 +36,14 @@ class EnvProxyLifecycleController:
     def __init__(
         self,
         *,
-        config_manager,
-        proxy_master,
+        config_manager: ConfigManager,
+        proxy_master: ProxyMaster,
         resolve_player_exe: Callable[[], Path | None],
         relaunch_player: Callable[
             [str, str | None, bool, threading.Event, Path | None, bool], bool
         ],
         is_player_running: Callable[[], bool],
-        get_player_identity: Callable[[], object | None],
+        get_player_identity: Callable[[], _PlayerIdentity | None],
         terminate_player: Callable[[], bool],
         wait_for_player_exit: Callable[[float], bool],
         adopted_player: bool = False,
@@ -96,7 +105,7 @@ class EnvProxyLifecycleController:
             if window is not None:
                 self._intentional_exit_window = (window[0], time.monotonic())
 
-    def _mark_owned(self, owned: bool) -> None:
+    def _mark_owned(self, *, owned: bool) -> None:
         identity = self._get_player_identity() if owned else None
         with self._state_lock:
             self._owned_player_identity = identity
@@ -164,7 +173,8 @@ class EnvProxyLifecycleController:
             if not prepared.get('success'):
                 log_buffer.log(
                     'Certificate',
-                    f'Env Proxy launch stopped before relaunch: {prepared.get("path") or "cacert.pem"}: '
+                    'Env Proxy launch stopped before relaunch: '
+                    f'{prepared.get("path") or "cacert.pem"}: '
                     f'{prepared.get("error") or "verification failed"}',
                 )
                 return False
@@ -193,7 +203,7 @@ class EnvProxyLifecycleController:
                 'Certificate',
                 'Env Proxy Player relaunch handoff returned; assigning ownership',
             )
-            self._mark_owned(True)
+            self._mark_owned(owned=True)
             log_buffer.log(
                 'Certificate',
                 'Env Proxy Player ownership assigned; CA monitoring started',
@@ -233,12 +243,16 @@ class EnvProxyLifecycleController:
             return False
         try:
             if not self._proxy_master.wait_for_env_proxy_ready(timeout=15.0):
-                log_buffer.log('Launcher', 'Env Proxy adopted launch skipped: proxy did not become ready')
+                log_buffer.log(
+                    'Launcher', 'Env Proxy adopted launch skipped: proxy did not become ready'
+                )
                 return False
 
             current_exe = self._resolve_player_exe() or exe_path
             if current_exe is None:
-                log_buffer.log('Launcher', 'Env Proxy adopted launch skipped: Player path is unavailable')
+                log_buffer.log(
+                    'Launcher', 'Env Proxy adopted launch skipped: Player path is unavailable'
+                )
                 return False
 
             prepared = self._proxy_master.ensure_env_proxy_roblox_ca(
@@ -255,7 +269,7 @@ class EnvProxyLifecycleController:
             if not self._enabled():
                 return False
 
-            self._mark_owned(True)
+            self._mark_owned(owned=True)
             log_buffer.log(
                 'Certificate',
                 'Env Proxy adopted Player ownership assigned; CA monitoring started',
@@ -297,7 +311,7 @@ class EnvProxyLifecycleController:
             if health.get('success'):
                 # Refresh the token after startup settles. Sober in particular
                 # transitions from its launcher to a long-lived engine process.
-                self._mark_owned(True)
+                self._mark_owned(owned=True)
                 log_buffer.log(
                     'Certificate',
                     'Env Proxy Player cacert.pem remained healthy through launch',
@@ -329,10 +343,11 @@ class EnvProxyLifecycleController:
             if not self._enabled():
                 return False
             if not relaunch_on_repair:
-                self._mark_owned(True)
+                self._mark_owned(owned=True)
                 log_buffer.log(
                     'Certificate',
-                    f'Env Proxy adopted Player CA repair {repair_number + 1}/{self._max_repairs} applied',
+                    'Env Proxy adopted Player CA repair '
+                    f'{repair_number + 1}/{self._max_repairs} applied',
                 )
                 continue
 
@@ -352,7 +367,7 @@ class EnvProxyLifecycleController:
             if not relaunched:
                 log_buffer.log('Launcher', 'Env Proxy CA repair relaunch failed')
                 return False
-            self._mark_owned(True)
+            self._mark_owned(owned=True)
             log_buffer.log(
                 'Certificate',
                 f'Env Proxy CA repair relaunch {repair_number + 1}/{self._max_repairs} completed',
@@ -373,12 +388,12 @@ class EnvProxyLifecycleController:
                     'Launcher',
                     'Env Proxy Player ownership changed; leaving the current process untouched',
                 )
-            self._mark_owned(False)
+            self._mark_owned(owned=False)
             return True
         self._terminate_player()
         exited = self._wait_for_player_exit(5.0)
         if exited:
-            self._mark_owned(False)
+            self._mark_owned(owned=False)
         return bool(exited)
 
     def close_owned_player_for_exit(self, *, timeout: float = 20.0) -> bool:

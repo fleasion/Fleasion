@@ -19,6 +19,8 @@ VPN compatibility:
   Only our proxy->CDN upstream connections go through the VPN (correct).
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import csv
@@ -40,14 +42,21 @@ import tempfile
 import threading
 import time
 import warnings
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Optional, Set
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypeIs, TypedDict, cast
 
-try:
-    import winreg
-except ImportError:  # pragma: no cover - Windows-only module
-    winreg = None
+if TYPE_CHECKING:
+    winreg: _WinregLike
+
+    from ..config.manager import ConfigManager, JsonValue
+    from ..utils.linux_clients import LinuxClientDescriptor, LinuxClientInstallation
+else:
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover - Windows-only module
+        winreg = None
 
 from ..cache.cache_manager import CacheManager
 from ..utils import (
@@ -57,8 +66,6 @@ from ..utils import (
     PROXY_PORT,
     ROBLOX_PROCESS,
     ROBLOX_STUDIO_PROCESS,
-    STORAGE_DB,
-    STORAGE_DB_GDK,
     delete_cache,
     format_count,
     is_roblox_running,
@@ -95,6 +102,7 @@ from .server import (
     PROXY_TLS_MAX_VERSION,
     USERNAME_SPOOFER_INTERCEPT_HOSTS,
     FleasionProxy,
+    ProxyFlow,
 )
 from .upstream import HttpProxyConfig, Socks5ProxyConfig, UpstreamEndpoint, UpstreamMode
 from .windows_proxy import WindowsProxyInfo, detect_windows_proxy, detected_http_proxy
@@ -111,16 +119,260 @@ class _RetryProxyWithWindowsSelector(RuntimeError):
     """Signal the proxy worker to replace a broken Windows Proactor loop."""
 
 
+class _PortListener(TypedDict):
+    pid: int
+    process_name: str
+    local_address: str
+
+
+class _HostsEntry(TypedDict):
+    ip: str
+    line_no: int
+    line: str
+
+
+class _CacertState(TypedDict):
+    path: str
+    install: str
+    exists: bool
+    size: int
+    mtime_ns: int
+    sha256: str
+    total_certs: int
+    fleasion_certs: int
+    current_fleasion_certs: int
+    healthy: bool
+    health_reason: str
+    error: str
+
+
+class _ProxyRequestLogEntry(TypedDict):
+    id: int
+    time: float
+    host: str
+    port: int
+    method: str
+    path: str
+    intercepted: bool
+    status: int | None
+    size: int
+    ms: int | None
+    request_raw: bytes | bytearray | None
+    response_raw: bytes | bytearray | None
+    pending_stage: str | None
+    was_intercepted: bool
+    dropped_request: NotRequired[bool]
+    dropped_response: NotRequired[bool]
+
+
+class _AutoReplaceRule(TypedDict, total=False):
+    enabled: bool
+    direction: str
+    host_filter: str
+    path_filter: str
+    type: str
+    match: str
+    replacement: str
+
+
+class _ModuleInterceptor(Protocol):
+    def request(self, flow: ProxyFlow) -> None: ...
+
+    def response(self, flow: ProxyFlow) -> None: ...
+
+
+class _BinaryLineFile(Protocol):
+    def seek(self, offset: int, whence: int = 0, /) -> int: ...
+
+    def read(self, size: int = -1, /) -> bytes: ...
+
+
+class _RegistryKey(Protocol):
+    def __enter__(self) -> _RegistryKey: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> bool | None: ...
+
+
+class _WinregLike(Protocol):
+    HKEY_LOCAL_MACHINE: object
+    HKEY_CURRENT_USER: object
+    KEY_ALL_ACCESS: int
+    REG_MULTI_SZ: int
+    REG_SZ: int
+
+    def OpenKey(
+        self,
+        key: object,
+        sub_key: str,
+        reserved: int = 0,
+        access: int = 0,
+    ) -> _RegistryKey: ...
+
+    def QueryValueEx(self, key: _RegistryKey, value_name: str) -> tuple[object, int]: ...
+    def SetValueEx(
+        self,
+        key: _RegistryKey,
+        value_name: str,
+        reserved: int,
+        value_type: int,
+        value: object,
+    ) -> None: ...
+    def DeleteValue(self, key: _RegistryKey, value_name: str) -> None: ...
+    def EnumKey(self, key: _RegistryKey, index: int) -> str: ...
+
+
+class _WindowsSubprocess(Protocol):
+    CREATE_NO_WINDOW: int
+
+
+class _DnsApi(Protocol):
+    def DnsFlushResolverCache(self) -> int: ...
+
+
+class _Kernel32(Protocol):
+    def OpenProcess(self, desired_access: int, inherit_handle: bool, process_id: int) -> int: ...
+    def GetExitCodeProcess(self, process: int, exit_code: object) -> int: ...
+    def CloseHandle(self, handle: int) -> int: ...
+
+
+class _Shell32(Protocol):
+    def IsUserAnAdmin(self) -> int: ...
+
+
+class _Windll(Protocol):
+    kernel32: _Kernel32
+    shell32: _Shell32
+
+    def LoadLibrary(self, name: str) -> _DnsApi: ...
+
+
+class _WindowsCtypes(Protocol):
+    windll: _Windll
+
+
+_windows_subprocess = cast(_WindowsSubprocess, subprocess)
+_windows_ctypes = cast(_WindowsCtypes, ctypes)
+
+
+type _ErrorDetails = dict[str, object]
+type _PeerCertificate = Mapping[str, object]
+type _CancelCheck = Callable[[], bool]
+type _HelperPatchCa = Callable[[str, list[_ErrorDetails]], _ErrorDetails | None]
+type _CacertInspection = _CacertState | _ErrorDetails
+
+
+def _error_detail_list(value: object) -> list[_ErrorDetails]:
+    return cast('list[_ErrorDetails]', value)
+
+
+def _cacert_state_list(value: object) -> list[_CacertState]:
+    return cast('list[_CacertState]', value)
+
+
+def _is_str_object_dict(value: object) -> TypeIs[dict[str, object]]:
+    if not isinstance(value, dict):
+        return False
+    mapping = cast('dict[object, object]', value)
+    return all(isinstance(key, str) for key in mapping)
+
+
+def _preserve_str(value: object) -> str:
+    if TYPE_CHECKING:
+        assert isinstance(value, str)
+    return value
+
+
+def _is_str_list(value: object) -> TypeIs[list[str]]:
+    if not isinstance(value, list):
+        return False
+    values = cast('list[object]', value)
+    return all(isinstance(item, str) for item in values)
+
+
+def _preserve_str_list(value: object) -> list[str]:
+    if TYPE_CHECKING:
+        assert _is_str_list(value)
+    return value
+
+
+if TYPE_CHECKING:
+
+    def _error_details(value: Mapping[str, object]) -> _ErrorDetails: ...
+
+    def _failed_details(value: object) -> list[object]: ...
+
+    def _upstream_endpoint_map(
+        value: dict[str, list[UpstreamEndpoint]],
+    ) -> dict[str, Sequence[UpstreamEndpoint | str]]: ...
+
+    def _set_texture_scraper(texture: TextureStripper, scraper: CacheScraper) -> None: ...
+
+    def _loopback_ips(proxy: FleasionProxy) -> tuple[str, ...] | list[str] | set[str] | None: ...
+
+    def _maybe_proxy(value: FleasionProxy | None) -> FleasionProxy | None: ...
+
+    def _maybe_texture(value: TextureStripper | None) -> TextureStripper | None: ...
+
+    def _macos_helper_status() -> _ErrorDetails | None: ...
+
+    def _macos_helper_probe_backend() -> _ErrorDetails: ...
+else:
+
+    def _error_details(value: Mapping[str, object]) -> _ErrorDetails:
+        return value
+
+    def _failed_details(value: object) -> list[object]:
+        return value or []
+
+    def _upstream_endpoint_map(
+        value: dict[str, list[UpstreamEndpoint]],
+    ) -> dict[str, Sequence[UpstreamEndpoint | str]]:
+        return value
+
+    def _set_texture_scraper(texture: TextureStripper, scraper: CacheScraper) -> None:
+        texture.set_cache_scraper(scraper)
+
+    def _loopback_ips(proxy: FleasionProxy) -> tuple[str, ...] | list[str] | set[str] | None:
+        callback = getattr(proxy, 'loopback_ips_for_hosts', None)
+        return callback() if callable(callback) else None
+
+    def _maybe_proxy(value: FleasionProxy | None) -> FleasionProxy | None:
+        return value
+
+    def _maybe_texture(value: TextureStripper | None) -> TextureStripper | None:
+        return value
+
+    def _macos_helper_status() -> _ErrorDetails | None:
+        from ..utils.macos_proxy_helper import helper_status
+
+        return helper_status()
+
+    def _macos_helper_probe_backend() -> _ErrorDetails:
+        from ..utils.macos_proxy_helper import helper_probe_backend
+
+        return helper_probe_backend()
+
+
 _ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
 
-if IS_MACOS or IS_LINUX:
-    HOSTS_FILE = Path('/etc/hosts')
-    _PLATFORM_TEMP_DIR = Path(tempfile.gettempdir())
-else:
-    HOSTS_FILE = (
-        Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'drivers' / 'etc' / 'hosts'
-    )
-    _PLATFORM_TEMP_DIR = Path(os.environ.get('TEMP', r'C:\Windows\Temp'))
+HOSTS_FILE: Path = (
+    Path('/etc/hosts')
+    if IS_MACOS or IS_LINUX
+    else Path(os.environ.get('SystemRoot', r'C:\Windows'))
+    / 'System32'
+    / 'drivers'
+    / 'etc'
+    / 'hosts'
+)
+_PLATFORM_TEMP_DIR: Path = (
+    Path(tempfile.gettempdir())
+    if IS_MACOS or IS_LINUX
+    else Path(os.environ.get('TEMP', r'C:\Windows\Temp'))
+)
 _HOSTS_MARKER = '# Fleasion proxy entry'
 _HOSTS_FILE_REPAIR_THRESHOLD_BYTES = 512 * 1024
 SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS = 30.0
@@ -247,7 +499,7 @@ def _upsert_watchdog_task() -> None:
         result = subprocess.run(
             cmd,
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=_WATCHDOG_SCHTASKS_TIMEOUT,
         )
         if result.returncode != 0:
@@ -272,7 +524,7 @@ def _delete_watchdog_task() -> None:
         result = subprocess.run(
             [_SCHTASKS_EXE, '/delete', '/TN', _WATCHDOG_TASK_NAME, '/F'],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=_WATCHDOG_SCHTASKS_TIMEOUT,
         )
         if result.returncode == 0:
@@ -314,7 +566,7 @@ def _is_routable_public_ip(ip: str) -> bool:
 
 def _dns_query_udp(
     hostname: str, server: str, port: int = 53, timeout: float = 3.0, qtype: int = 1
-) -> list:
+) -> list[str]:
     """Send a raw DNS A/AAAA-record query over UDP to *server*, bypassing the OS
     resolver stack entirely.
 
@@ -364,7 +616,7 @@ def _dns_query_udp(
         return []
 
     # Parse response header
-    r_txid, r_flags, r_qdcount, r_ancount, _, _ = _struct.unpack('!HHHHHH', response[:12])
+    r_txid, _r_flags, r_qdcount, r_ancount, _, _ = _struct.unpack('!HHHHHH', response[:12])
     if r_txid != txid or r_ancount == 0:
         return []
 
@@ -383,7 +635,7 @@ def _dns_query_udp(
         pos += 4  # QTYPE + QCLASS
 
     # Parse answer RRs — collect all A/AAAA records
-    ips = []
+    ips: list[str] = []
     for _ in range(r_ancount):
         if pos >= len(response):
             break
@@ -455,7 +707,7 @@ def _resolve_real_endpoints(
     real_endpoints: dict[str, list[UpstreamEndpoint]] = {}
     for host in sorted(hosts):
         endpoints: list[UpstreamEndpoint] = []
-        seen: set[tuple[int, str]] = set()
+        seen: set[tuple[socket.AddressFamily, str]] = set()
 
         # --- Primary: OS resolver ---
         try:
@@ -464,8 +716,10 @@ def _resolve_real_endpoints(
                 if family not in (socket.AF_INET, socket.AF_INET6):
                     continue
                 ip = sockaddr[0]
-                key = (family, ip)
-                if isinstance(ip, str) and key not in seen and _is_routable_public_ip(ip):
+                if isinstance(ip, str):
+                    key = (family, ip)
+                    if key in seen or not _is_routable_public_ip(ip):
+                        continue
                     seen.add(key)
                     endpoints.append(UpstreamEndpoint(host=host, ip=ip, family=family))
         except Exception as exc:
@@ -556,13 +810,15 @@ def _refresh_real_upstream_endpoints(host: str) -> list[UpstreamEndpoint]:
     return endpoints
 
 
-def _log_upstream_ip_coverage(hosts: set[str], real_endpoints: dict) -> None:
+def _log_upstream_ip_coverage(
+    hosts: set[str], real_endpoints: Mapping[str, Sequence[UpstreamEndpoint | str]]
+) -> None:
     for host in sorted(hosts):
         endpoints = real_endpoints.get(host) or []
         ips = [
-            (ep.ip if isinstance(ep, UpstreamEndpoint) else str(ep))
+            ip
             for ep in endpoints
-            if (ep.ip if isinstance(ep, UpstreamEndpoint) else str(ep))
+            if (ip := ep.ip if isinstance(ep, UpstreamEndpoint) else str(ep)) is not None and ip
         ]
         if ips:
             log_buffer.log('Proxy', f'Upstream IP coverage: {host} -> {", ".join(ips)}')
@@ -586,7 +842,23 @@ def _endpoint_ip_candidates(
     }
 
 
-def _log_system_proxy_info(info: WindowsProxyInfo, system_proxy: Optional[HttpProxyConfig]) -> None:
+def _set_proxy_upstream_endpoints(
+    proxy: FleasionProxy, endpoints: dict[str, list[UpstreamEndpoint]]
+) -> None:
+    proxy.set_upstream_endpoints(cast('dict[str, Sequence[UpstreamEndpoint | str]]', endpoints))
+
+
+def _set_cache_scraper_real_ips(
+    scraper: CacheScraper, real_ips: dict[str, tuple[str, ...]]
+) -> None:
+    setter = cast(
+        'Callable[[dict[str, tuple[str, ...]]], None]',
+        scraper.set_real_ips,
+    )
+    setter(real_ips)
+
+
+def _log_system_proxy_info(info: WindowsProxyInfo, system_proxy: HttpProxyConfig | None) -> None:
     if IS_MACOS:
         http_enabled = 'yes' if info.macos_http_enabled else 'no'
         https_enabled = 'yes' if info.macos_https_enabled else 'no'
@@ -631,9 +903,9 @@ def _log_system_proxy_info(info: WindowsProxyInfo, system_proxy: Optional[HttpPr
 def _log_upstream_transport_settings(
     configured_mode: str,
     effective_mode: str,
-    system_proxy: Optional[HttpProxyConfig],
-    manual_http_proxy: Optional[HttpProxyConfig],
-    manual_socks5_proxy: Optional[Socks5ProxyConfig],
+    system_proxy: HttpProxyConfig | None,
+    manual_http_proxy: HttpProxyConfig | None,
+    manual_socks5_proxy: Socks5ProxyConfig | None,
     asset_limit: int,
     cdn_limit: int,
 ) -> None:
@@ -664,7 +936,7 @@ def _log_upstream_transport_settings(
     )
 
 
-def _manual_http_proxy_from_settings(config_manager) -> Optional[HttpProxyConfig]:
+def _manual_http_proxy_from_settings(config_manager: ConfigManager) -> HttpProxyConfig | None:
     host = str(getattr(config_manager, 'upstream_http_connect_host', '') or '').strip()
     port = int(getattr(config_manager, 'upstream_http_connect_port', 0) or 0)
     if not host or port <= 0:
@@ -674,7 +946,7 @@ def _manual_http_proxy_from_settings(config_manager) -> Optional[HttpProxyConfig
     return HttpProxyConfig(host=host, port=port, username=username, password=password)
 
 
-def _manual_socks5_proxy_from_settings(config_manager) -> Optional[Socks5ProxyConfig]:
+def _manual_socks5_proxy_from_settings(config_manager: ConfigManager) -> Socks5ProxyConfig | None:
     host = str(getattr(config_manager, 'upstream_socks5_host', '') or '').strip()
     port = int(getattr(config_manager, 'upstream_socks5_port', 0) or 0)
     if not host or port <= 0:
@@ -690,7 +962,7 @@ def _connect_tls_for_self_test(
     port: int,
     loopback_host: str = '127.0.0.1',
     tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
-) -> dict:
+) -> _PeerCertificate:
     ctx = ssl.create_default_context(cafile=str(ca_cert_path))
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.maximum_version = tls_max_version
@@ -708,7 +980,7 @@ def _connect_explicit_proxy_tls_for_self_test(
     port: int,
     loopback_host: str = '127.0.0.1',
     tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
-) -> dict:
+) -> _PeerCertificate:
     if host is None:
         return _connect_tls_for_self_test(
             host,
@@ -742,11 +1014,20 @@ def _connect_explicit_proxy_tls_for_self_test(
             return cert if isinstance(cert, dict) else {}
 
 
-def _cert_dict_san_hosts(cert: dict) -> set[str]:
+def _cert_dict_san_hosts(cert: _PeerCertificate) -> set[str]:
     names: set[str] = set()
-    for kind, value in cert.get('subjectAltName', ()):
-        if kind in ('DNS', 'IP Address'):
-            names.add(str(value).lower())
+    subject_alt_names = cert.get('subjectAltName', ())
+    if not isinstance(subject_alt_names, tuple):
+        return names
+    for entry_value in cast('tuple[object, ...]', subject_alt_names):
+        if not isinstance(entry_value, tuple):
+            continue
+        entry = cast('tuple[object, ...]', entry_value)
+        if len(entry) != 2:
+            continue
+        kind, value = entry
+        if kind in ('DNS', 'IP Address') and isinstance(value, str):
+            names.add(value.lower())
     return names
 
 
@@ -831,10 +1112,16 @@ def _run_raw_tls_loopback_probe_sync(
 
     server_result: dict[str, str] = {}
 
-    def _capture_sni(_ssl_obj, server_name, _initial_ctx) -> None:
+    def _capture_sni(
+        _ssl_obj: ssl.SSLSocket | ssl.SSLObject,
+        server_name: str | None,
+        _initial_ctx: ssl.SSLContext,
+    ) -> None:
         server_result['sni'] = server_name or '<none>'
 
-    server_ctx.set_servername_callback(_capture_sni)
+    # Python 3.14 typeshed currently models the third callback argument as an
+    # SSLSocket even though CPython passes the initial SSLContext here.
+    server_ctx.set_servername_callback(_capture_sni)  # pyright: ignore[reportArgumentType]
 
     family = socket.AF_INET6 if ':' in loopback_host else socket.AF_INET
     listener = socket.socket(family, socket.SOCK_STREAM)
@@ -864,7 +1151,9 @@ def _run_raw_tls_loopback_probe_sync(
     )
     server_thread.start()
 
-    client_error = None
+    client_error: str | None = None
+    client_protocol = 'unknown'
+    client_cipher = 'unknown'
     try:
         client_ctx = ssl.create_default_context(cafile=str(ca_cert_path))
         client_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -1044,7 +1333,7 @@ async def _run_privileged_relay_tls_self_test(
         _log_tls_self_test_passed(hosts)
         return True, []
 
-    representative_hosts = {sorted(hosts)[0]} if hosts else set()
+    representative_hosts: set[str] = {sorted(hosts)[0]} if hosts else set()
     full_failures = list(failures)
     last_failures = list(failures)
     for attempt in range(2, attempts + 1):
@@ -1095,13 +1384,15 @@ def _directory_is_writable(path: Path) -> bool:
         return False
 
 
+def _set_active_proxy_ca_dir(path: Path) -> Path:
+    globals()['_ACTIVE_PROXY_CA_DIR'] = path
+    return path
+
+
 def _select_proxy_ca_dir() -> Path:
     """Return the CA directory to use for this run, falling back if legacy ownership blocks writes."""
-    global _ACTIVE_PROXY_CA_DIR
-
     if _directory_is_writable(PROXY_CA_DIR):
-        _ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
-        return _ACTIVE_PROXY_CA_DIR
+        return _set_active_proxy_ca_dir(PROXY_CA_DIR)
 
     fallback = PROXY_CA_DIR.with_name(f'{PROXY_CA_DIR.name}_user')
     if _directory_is_writable(fallback):
@@ -1109,11 +1400,9 @@ def _select_proxy_ca_dir() -> Path:
             'Certificate',
             f'Configured CA directory is not writable ({PROXY_CA_DIR}); using {fallback}',
         )
-        _ACTIVE_PROXY_CA_DIR = fallback
-        return _ACTIVE_PROXY_CA_DIR
+        return _set_active_proxy_ca_dir(fallback)
 
-    _ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
-    return _ACTIVE_PROXY_CA_DIR
+    return _set_active_proxy_ca_dir(PROXY_CA_DIR)
 
 
 def _current_proxy_ca_dir() -> Path:
@@ -1182,7 +1471,7 @@ def _flush_dns() -> None:
 
     # Primary: in-process DLL call — fast, no subprocess, immune to AV process blocks.
     try:
-        ctypes.windll.LoadLibrary('dnsapi.dll').DnsFlushResolverCache()
+        _windows_ctypes.windll.LoadLibrary('dnsapi.dll').DnsFlushResolverCache()
         log_buffer.log('Hosts', 'DNS cache flushed')
         return
     except Exception as exc:
@@ -1193,7 +1482,7 @@ def _flush_dns() -> None:
         subprocess.run(
             ['ipconfig', '/flushdns'],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=5,
         )
         log_buffer.log('Hosts', 'DNS cache flushed (via ipconfig fallback)')
@@ -1217,15 +1506,17 @@ def _pid_is_alive(pid: int) -> bool:
 
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
-    handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    handle = _windows_ctypes.windll.kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
     if not handle:
         return False
     try:
         code = ctypes.c_ulong(0)
-        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        _windows_ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
         return code.value == STILL_ACTIVE
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
+        _windows_ctypes.windll.kernel32.CloseHandle(handle)
 
 
 def _other_proxy_owner_alive() -> bool:
@@ -1286,12 +1577,12 @@ def _schedule_hosts_cleanup_on_reboot() -> None:
         ) as key:
             try:
                 existing, _ = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
-                entries: list = list(existing)
+                entries = list(_preserve_str_list(existing))
             except FileNotFoundError:
                 entries = []
 
             # Remove any stale Fleasion entries to avoid duplicates
-            filtered: list = []
+            filtered: list[str] = []
             i = 0
             while i < len(entries):
                 if i + 1 < len(entries):
@@ -1331,11 +1622,11 @@ def _cancel_hosts_cleanup_on_reboot() -> None:
         ) as key:
             try:
                 existing, _ = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
-                entries: list = list(existing)
+                entries = list(_preserve_str_list(existing))
             except FileNotFoundError:
                 return  # nothing to remove
 
-            filtered: list = []
+            filtered: list[str] = []
             i = 0
             while i < len(entries):
                 if i + 1 < len(entries):
@@ -1376,7 +1667,7 @@ def _is_admin() -> bool:
     if IS_MACOS or IS_LINUX:
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        return bool(_windows_ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
 
@@ -1398,32 +1689,37 @@ def _ensure_linux_system_trust_for_hosts(hosts: set[str], ca_cert_path: Path) ->
 
     from ..utils.linux_proxy_helper import install_ca_into_linux_trust
 
-    details = install_ca_into_linux_trust(
-        ca_cert_path,
-        install_system=True,
-        install_nss=False,
+    details_value = cast(
+        object,
+        install_ca_into_linux_trust(
+            ca_cert_path,
+            install_system=True,
+            install_nss=False,
+        ),
     )
-    system = details.get('system') if isinstance(details, dict) else None
-    if isinstance(system, dict) and system.get('ok'):
+    details = (
+        cast('dict[object, object]', details_value) if isinstance(details_value, dict) else None
+    )
+    system_value = details.get('system') if details is not None else None
+    system = cast('dict[object, object]', system_value) if isinstance(system_value, dict) else None
+    if system is not None and system.get('ok'):
         return True
-    if isinstance(system, dict) and system.get('error') == 'no_supported_system_trust_store':
+    if system is not None and system.get('error') == 'no_supported_system_trust_store':
         log_buffer.log(
             'Certificate',
             'Linux system trust-store install is unsupported on this distro; continuing with Sober cacert.pem trust only',
         )
         return True
 
-    error = None
-    if isinstance(system, dict):
-        error = system.get('error') or system
+    error = system.get('error') or system if system is not None else None
     log_buffer.log(
         'Certificate',
-        f'Linux system trust-store install failed for WebView-visible intercepts: {error or details}',
+        f'Linux system trust-store install failed for WebView-visible intercepts: {error or details_value}',
     )
     return False
 
 
-def _extract_exe_from_command(command: str) -> Optional[Path]:
+def _extract_exe_from_command(command: str) -> Path | None:
     """Extract an executable path from a registry shell/open command string."""
     if not command:
         return None
@@ -1456,7 +1752,7 @@ def _get_process_name_from_pid(pid: int) -> str:
             text=True,
             encoding='utf-8',
             errors='replace',
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=5,
         )
     except Exception:
@@ -1477,7 +1773,7 @@ def _get_process_name_from_pid(pid: int) -> str:
     return 'Unknown'
 
 
-def _list_port_listeners_powershell(port: int) -> list[dict]:
+def _list_port_listeners_powershell(port: int) -> list[_PortListener]:
     """Return listening process info for a TCP port via Get-NetTCPConnection."""
     ps_cmd = (
         f'$rows=Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue | '
@@ -1498,7 +1794,7 @@ def _list_port_listeners_powershell(port: int) -> list[dict]:
             text=True,
             encoding='utf-8',
             errors='replace',
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=6,
         )
     except Exception:
@@ -1512,15 +1808,18 @@ def _list_port_listeners_powershell(port: int) -> list[dict]:
         return []
 
     try:
-        parsed = json.loads(payload)
+        parsed = cast(object, json.loads(payload))
     except json.JSONDecodeError:
         return []
 
-    rows = parsed if isinstance(parsed, list) else [parsed]
-    listeners: list[dict] = []
-    for row in rows:
+    rows: list[object] = cast('list[object]', parsed) if isinstance(parsed, list) else [parsed]
+    listeners: list[_PortListener] = []
+    for row_value in rows:
+        if not _is_str_object_dict(row_value):
+            continue
+        row = row_value
         try:
-            pid = int(row.get('PID', 0))
+            pid = int(cast('int | str | bytes', row.get('PID', 0)))
         except Exception:
             pid = 0
         if pid <= 0:
@@ -1538,7 +1837,7 @@ def _list_port_listeners_powershell(port: int) -> list[dict]:
     return listeners
 
 
-def _list_port_listeners_netstat(port: int) -> list[dict]:
+def _list_port_listeners_netstat(port: int) -> list[_PortListener]:
     """Fallback listener lookup using netstat + tasklist."""
     try:
         result = subprocess.run(
@@ -1547,13 +1846,13 @@ def _list_port_listeners_netstat(port: int) -> list[dict]:
             text=True,
             encoding='utf-8',
             errors='replace',
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=6,
         )
     except Exception:
         return []
 
-    listeners: list[dict] = []
+    listeners: list[_PortListener] = []
     suffix = f':{port}'
     for raw_line in result.stdout.splitlines():
         line = raw_line.strip()
@@ -1593,7 +1892,7 @@ def _list_port_listeners_netstat(port: int) -> list[dict]:
     return listeners
 
 
-def _list_port_listeners(port: int) -> list[dict]:
+def _list_port_listeners(port: int) -> list[_PortListener]:
     """Return unique listener records for a TCP port."""
     if IS_MACOS or IS_LINUX:
         try:
@@ -1608,7 +1907,7 @@ def _list_port_listeners(port: int) -> list[dict]:
         except Exception:
             result = None
 
-        listeners: list[dict] = []
+        listeners: list[_PortListener] = []
         if result is not None and result.returncode == 0:
             for raw_line in result.stdout.splitlines()[1:]:
                 parts = raw_line.split()
@@ -1633,7 +1932,7 @@ def _list_port_listeners(port: int) -> list[dict]:
         if not listeners:
             listeners = _list_port_listeners_netstat(port)
 
-    unique: list[dict] = []
+    unique: list[_PortListener] = []
     seen: set[tuple[int, str, str]] = set()
     for entry in listeners:
         pid = int(entry.get('pid', 0) or 0)
@@ -1684,24 +1983,23 @@ def _required_hosts_loopbacks() -> tuple[str, ...]:
 def _set_active_hosts_loopbacks(
     loopbacks: tuple[str, ...] | list[str] | set[str] | None,
 ) -> None:
-    global _HOSTS_ACTIVE_LOOPBACK_IPS
     if not loopbacks:
-        _HOSTS_ACTIVE_LOOPBACK_IPS = None
+        globals()['_HOSTS_ACTIVE_LOOPBACK_IPS'] = None
         return
-    ordered = []
+    ordered: list[str] = []
     for ip in (_HOSTS_IPV4_LOOPBACK, _HOSTS_IPV6_LOOPBACK):
         if ip in loopbacks:
             ordered.append(ip)
-    _HOSTS_ACTIVE_LOOPBACK_IPS = tuple(ordered) or None
+    globals()['_HOSTS_ACTIVE_LOOPBACK_IPS'] = tuple(ordered) or None
 
 
 def _is_hosts_loopback_ip(ip: str) -> bool:
     return str(ip or '').strip().lower() in _HOSTS_LOOPBACK_IPS
 
 
-def _parse_active_hosts_entries(content: str) -> dict[str, list[dict]]:
+def _parse_active_hosts_entries(content: str) -> dict[str, list[_HostsEntry]]:
     """Parse active hosts-file mappings keyed by lowercase hostname."""
-    entries: dict[str, list[dict]] = {}
+    entries: dict[str, list[_HostsEntry]] = {}
     for line_no, raw_line in enumerate(content.splitlines(), start=1):
         active = raw_line.split('#', 1)[0].strip()
         if not active:
@@ -1724,8 +2022,10 @@ def _parse_active_hosts_entries(content: str) -> dict[str, list[dict]]:
     return entries
 
 
-def _hosts_conflicts(hosts: Set[str], entries: dict[str, list[dict]]) -> list[tuple[str, dict]]:
-    conflicts: list[tuple[str, dict]] = []
+def _hosts_conflicts(
+    hosts: set[str], entries: dict[str, list[_HostsEntry]]
+) -> list[tuple[str, _HostsEntry]]:
+    conflicts: list[tuple[str, _HostsEntry]] = []
     for host in sorted(hosts):
         for entry in entries.get(host.lower(), []):
             if not _is_hosts_loopback_ip(entry.get('ip', '')):
@@ -1733,7 +2033,7 @@ def _hosts_conflicts(hosts: Set[str], entries: dict[str, list[dict]]) -> list[tu
     return conflicts
 
 
-def _record_hosts_error(error_details: Optional[dict], exc_or_text) -> None:
+def _record_hosts_error(error_details: _ErrorDetails | None, exc_or_text: object) -> None:
     if error_details is None:
         return
     err_text = str(exc_or_text)
@@ -1760,7 +2060,7 @@ def hosts_file_size() -> int | None:
         return None
 
 
-def _record_oversized_hosts_error(error_details: Optional[dict], size: int) -> None:
+def _record_oversized_hosts_error(error_details: _ErrorDetails | None, size: int) -> None:
     if error_details is None:
         return
     error_details.clear()
@@ -1780,7 +2080,7 @@ def _record_oversized_hosts_error(error_details: Optional[dict], size: int) -> N
     )
 
 
-def hosts_file_is_oversized(error_details: Optional[dict] = None) -> bool:
+def hosts_file_is_oversized(error_details: _ErrorDetails | None = None) -> bool:
     """Return whether the hosts file is too large for whole-file operations."""
     size = hosts_file_size()
     if size is None or size <= _HOSTS_FILE_REPAIR_THRESHOLD_BYTES:
@@ -1789,7 +2089,7 @@ def hosts_file_is_oversized(error_details: Optional[dict] = None) -> bool:
     return True
 
 
-def _log_hosts_conflicts(conflicts: list[tuple[str, dict]]) -> None:
+def _log_hosts_conflicts(conflicts: list[tuple[str, _HostsEntry]]) -> None:
     for host, entry in conflicts:
         log_buffer.log(
             'Hosts',
@@ -1797,7 +2097,7 @@ def _log_hosts_conflicts(conflicts: list[tuple[str, dict]]) -> None:
         )
 
 
-def _verify_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
+def _verify_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None = None) -> bool:
     """Verify exact active hosts mappings after a write and DNS flush."""
     if hosts_file_is_oversized(error_details):
         return False
@@ -1815,7 +2115,7 @@ def _verify_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
         _record_hosts_error(error_details, 'active conflicting hosts mappings detected')
         return False
 
-    missing = []
+    missing: list[str] = []
     required_ips = _required_hosts_loopbacks()
     for host in sorted(hosts):
         host_entries = entries.get(host.lower(), [])
@@ -1837,7 +2137,7 @@ def _verify_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
     return True
 
 
-def _hosts_line_has_target_loopback(raw_line: str, hosts: Set[str]) -> bool:
+def _hosts_line_has_target_loopback(raw_line: str, hosts: set[str]) -> bool:
     active = raw_line.split('#', 1)[0].strip()
     if not active:
         return False
@@ -1848,7 +2148,7 @@ def _hosts_line_has_target_loopback(raw_line: str, hosts: Set[str]) -> bool:
     return any(host.lower() in target_hosts for host in parts[1:])
 
 
-def has_stale_hosts_entries(hosts: Set[str] | None = None) -> bool:
+def has_stale_hosts_entries(hosts: set[str] | None = None) -> bool:
     """Return whether Fleasion-owned hosts entries need privileged cleanup."""
     if hosts_file_is_oversized():
         return True
@@ -1863,7 +2163,7 @@ def has_stale_hosts_entries(hosts: Set[str] | None = None) -> bool:
     )
 
 
-def _hosts_file_loopback_hosts(hosts: Set[str]) -> set[str]:
+def _hosts_file_loopback_hosts(hosts: set[str]) -> set[str]:
     """Return requested hosts that already have active loopback mappings."""
     if hosts_file_is_oversized():
         return set()
@@ -1881,7 +2181,7 @@ def _hosts_file_loopback_hosts(hosts: Set[str]) -> set[str]:
     return present
 
 
-def _is_voidstrap_gu_acc_line(raw_line: str, hosts: Set[str]) -> bool:
+def _is_voidstrap_gu_acc_line(raw_line: str, hosts: set[str]) -> bool:
     """Return whether *raw_line* is a known stale Voidstrap hosts entry.
 
     Some affected files prefix an existing line with ``#gu_acc`` while other
@@ -1895,7 +2195,9 @@ def _is_voidstrap_gu_acc_line(raw_line: str, hosts: Set[str]) -> bool:
     return any(token.lower() in target_hosts for token in raw_line.split())
 
 
-def _remove_voidstrap_gu_acc_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
+def _remove_voidstrap_gu_acc_entries(
+    hosts: set[str], error_details: _ErrorDetails | None = None
+) -> bool:
     """Remove known Voidstrap ``#gu_acc`` entries for Fleasion proxy hosts."""
     if hosts_file_is_oversized(error_details):
         return False
@@ -1929,7 +2231,7 @@ def _remove_voidstrap_gu_acc_entries(hosts: Set[str], error_details: Optional[di
     return True
 
 
-def _spilled_hosts_line_should_remove(line_file, hosts: Set[str]) -> bool:
+def _spilled_hosts_line_should_remove(line_file: _BinaryLineFile, hosts: set[str]) -> bool:
     """Classify an unterminated hosts line without loading it into memory."""
     line_file.seek(0)
     prefix = line_file.read(4096)
@@ -1981,14 +2283,16 @@ def _spilled_hosts_line_should_remove(line_file, hosts: Set[str]) -> bool:
             if not active_done:
                 active_tail = active_scan[-(max_target_len + 1) :]
 
-    return marker_found or (is_loopback and active_target_found) or (
-        voidstrap_marker_found and target_found
+    return (
+        marker_found
+        or (is_loopback and active_target_found)
+        or (voidstrap_marker_found and target_found)
     )
 
 
 def repair_hosts_file(
-    hosts: Set[str] | None = None,
-    error_details: Optional[dict] = None,
+    hosts: set[str] | None = None,
+    error_details: _ErrorDetails | None = None,
     *,
     require_safe_size: bool = True,
 ) -> bool:
@@ -2056,9 +2360,7 @@ def repair_hosts_file(
                     return data
                 last_newline = data.rfind(b'\n')
                 complete, remainder = data[: last_newline + 1], data[last_newline + 1 :]
-                complete, blank_count = re.subn(
-                    rb'(?m)^[ \t]*(?:\r\n|\n|\r)', b'', complete
-                )
+                complete, blank_count = re.subn(rb'(?m)^[ \t]*(?:\r\n|\n|\r)', b'', complete)
                 removed_blank_lines += blank_count
                 for raw_line in complete.splitlines(keepends=True):
                     _write_repair_line(raw_line)
@@ -2145,8 +2447,7 @@ def repair_hosts_file(
                 )
             return False
 
-        if original_mode is not None:
-            os.chmod(temp_path, original_mode)
+        os.chmod(temp_path, original_mode)
 
         timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         backup_path = HOSTS_FILE.with_name(f'{HOSTS_FILE.name}.fleasion-backup-{timestamp}')
@@ -2211,7 +2512,9 @@ def repair_hosts_file(
     except OSError as exc:
         _record_hosts_error(error_details, exc)
         if error_details is not None:
-            error_details.update({'error_code': 'hosts_file_repair_failed', 'repair_attempted': True})
+            error_details.update(
+                {'error_code': 'hosts_file_repair_failed', 'repair_attempted': True}
+            )
         return False
     finally:
         if temp_path is not None:
@@ -2302,7 +2605,7 @@ def _write_hosts_file(content: str) -> None:
         ) from exc
 
 
-def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
+def _add_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None = None) -> bool:
     """Append redirect entries for *hosts* to the system hosts file.
 
     Returns True on success.  Skips entries already present.
@@ -2381,7 +2684,7 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
         _record_hosts_error(error_details, 'active conflicting hosts mappings detected')
         return False
 
-    lines_to_add = []
+    lines_to_add: list[str] = []
     required_ips = _required_hosts_loopbacks()
     for host in sorted(hosts):
         host_entries = entries.get(host.lower(), [])
@@ -2430,7 +2733,7 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
         return False
 
 
-def _remove_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
+def _remove_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None = None) -> bool:
     """Remove any hosts file entries we previously added.
 
     Returns True if the hosts file is clean (entries removed or were already
@@ -2503,7 +2806,7 @@ def _remove_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
 # ---------------------------------------------------------------------------
 
 
-def _find_roblox_dirs(*, include_studio: bool = True) -> list:
+def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
     """Locate Roblox resource directories, optionally including Studio.
 
     Methods used (combined):
@@ -2535,7 +2838,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                 return False
             try:
                 key = str(path.resolve()).lower()
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 key = str(path).lower()
             if key in seen:
                 return False
@@ -2550,10 +2853,13 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
         save_saved_roblox_dirs(found)
         return found
 
-    import winreg
+    if TYPE_CHECKING:
+        registry = winreg
+    else:
+        registry = __import__('winreg')
 
-    found: list = []
-    seen: set = set()
+    found: list[Path] = []
+    seen: set[str] = set()
     discovery_sources: dict[str, set[str]] = {}
 
     def _add(path: Path, source: str = 'unknown') -> bool:
@@ -2569,21 +2875,21 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
             return True
         return False
 
-    def _scan_for_exe(root: Path, max_depth: int) -> list:
+    def _scan_for_exe(root: Path, max_depth: int) -> list[Path]:
         """Return all subdirs up to max_depth layers under root that contain RobloxPlayerBeta.exe or RobloxStudioBeta.exe."""
-        results: list = []
+        results: list[Path] = []
 
         def _has_roblox_exe(path: Path) -> bool:
             try:
                 return os.path.isfile(os.path.join(path, ROBLOX_PROCESS)) or os.path.isfile(
                     os.path.join(path, ROBLOX_STUDIO_PROCESS)
                 )
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 return False
 
         try:
             root_is_dir = root.is_dir()
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return results
         if root_is_dir and _has_roblox_exe(root):
             results.append(root)
@@ -2598,7 +2904,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                         results.append(entry_path)
                     if depth < max_depth:
                         _recurse(entry_path, depth + 1)
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 pass
 
         if root_is_dir:
@@ -2610,19 +2916,19 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
     t = time.perf_counter()
     reg_found = 0
 
-    def _check_player_path_key(key) -> None:
+    def _check_player_path_key(key: _RegistryKey) -> None:
         nonlocal reg_found
         for value_name, process_name in (
             ('PlayerPath', ROBLOX_PROCESS),
             ('StudioPath', ROBLOX_STUDIO_PROCESS),
         ):
             try:
-                val, rtype = winreg.QueryValueEx(key, value_name)
+                val, rtype = registry.QueryValueEx(key, value_name)
             except OSError:
                 continue
-            if rtype != winreg.REG_SZ or not val:
+            if rtype != registry.REG_SZ or not val:
                 continue
-            val = val.replace('\x00', '').strip()
+            val = _preserve_str(val).replace('\x00', '').strip()
             if not val:
                 continue
             p = Path(val)
@@ -2639,36 +2945,36 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                     _add(d, source)
 
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software') as hkey:
+        with registry.OpenKey(registry.HKEY_CURRENT_USER, r'Software') as hkey:
             i = 0
             while True:
                 try:
-                    name = winreg.EnumKey(hkey, i)
+                    name = registry.EnumKey(hkey, i)
                     i += 1
                 except OSError:
                     break
                 if '\x00' in name:
                     continue
                 try:
-                    with winreg.OpenKey(hkey, name) as sk:
+                    with registry.OpenKey(hkey, name) as sk:
                         _check_player_path_key(sk)
                         j = 0
                         while True:
                             try:
-                                sub = winreg.EnumKey(sk, j)
+                                sub = registry.EnumKey(sk, j)
                                 j += 1
                             except OSError:
                                 break
                             if '\x00' in sub:
                                 continue
                             try:
-                                with winreg.OpenKey(sk, sub) as ssk:
+                                with registry.OpenKey(sk, sub) as ssk:
                                     _check_player_path_key(ssk)
                             except OSError, ValueError:
                                 pass
-                except (OSError, ValueError):
+                except OSError, ValueError:
                     pass
-    except (OSError, ValueError):
+    except OSError, ValueError:
         pass
     log_buffer.log(
         'Certificate',
@@ -2693,14 +2999,14 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
     t = time.perf_counter()
     active_found = 0
     try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
+        with registry.OpenKey(
+            registry.HKEY_CURRENT_USER,
             r'SOFTWARE\Classes\roblox-player\shell\open\command',
         ) as key:
             try:
-                cmd, rtype = winreg.QueryValueEx(key, '')
-                if rtype == winreg.REG_SZ and cmd:
-                    exe_path = _extract_exe_from_command(cmd)
+                cmd, rtype = registry.QueryValueEx(key, '')
+                if rtype == registry.REG_SZ and cmd:
+                    exe_path = _extract_exe_from_command(_preserve_str(cmd))
                     if exe_path is not None:
                         exe_dir = exe_path.parent
                         for d in _scan_for_exe(exe_dir, 2):
@@ -2708,7 +3014,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                             _add(d, 'Active Roblox protocol')
             except OSError, ValueError:
                 pass
-    except (OSError, ValueError):
+    except OSError, ValueError:
         pass
     log_buffer.log(
         'Certificate',
@@ -2744,14 +3050,14 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
     t = time.perf_counter()
     studio_found = 0
     try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
+        with registry.OpenKey(
+            registry.HKEY_CURRENT_USER,
             r'SOFTWARE\Classes\roblox-studio\shell\open\command',
         ) as key:
             try:
-                cmd, rtype = winreg.QueryValueEx(key, '')
-                if rtype == winreg.REG_SZ and cmd:
-                    exe_path = _extract_exe_from_command(cmd)
+                cmd, rtype = registry.QueryValueEx(key, '')
+                if rtype == registry.REG_SZ and cmd:
+                    exe_path = _extract_exe_from_command(_preserve_str(cmd))
                     if exe_path is not None:
                         exe_dir = exe_path.parent
                         for d in _scan_for_exe(exe_dir, 2):
@@ -2759,7 +3065,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                             _add(d, 'Active Studio protocol')
             except OSError, ValueError:
                 pass
-    except (OSError, ValueError):
+    except OSError, ValueError:
         pass
     log_buffer.log(
         'Certificate',
@@ -2784,7 +3090,9 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
 
     for candidate in found:
         sources = ', '.join(sorted(discovery_sources.get(str(candidate), {'unknown'})))
-        log_buffer.log('Certificate', f'  Candidate Roblox install: {candidate} (sources={sources})')
+        log_buffer.log(
+            'Certificate', f'  Candidate Roblox install: {candidate} (sources={sources})'
+        )
 
     return found
 
@@ -2876,9 +3184,9 @@ def _fleasion_ca_blocks(pem_bundle: str) -> list[str]:
     return blocks
 
 
-def _describe_cacert_state(ca_file: Path, ca_pem: str) -> dict:
+def _describe_cacert_state(ca_file: Path, ca_pem: str) -> _CacertState:
     """Return a stable diagnostic snapshot for a Roblox cacert.pem bundle."""
-    state = {
+    state: _CacertState = {
         'path': str(ca_file),
         'install': ca_file.parent.parent.name
         if ca_file.parent.name == 'ssl'
@@ -2950,7 +3258,7 @@ def _describe_cacert_state(ca_file: Path, ca_pem: str) -> dict:
     return state
 
 
-def _format_cacert_state(state: dict) -> str:
+def _format_cacert_state(state: _CacertState) -> str:
     sha = str(state.get('sha256') or '')
     short_sha = sha[:12] if sha else 'none'
     error = state.get('error') or ''
@@ -2968,7 +3276,7 @@ def _format_cacert_state(state: dict) -> str:
 
 def _log_cacert_state(
     ca_file: Path, ca_pem: str, reason: str, *, log_healthy: bool = False
-) -> dict:
+) -> _CacertState:
     state = _describe_cacert_state(ca_file, ca_pem)
     is_problem = (
         not state.get('exists') or bool(state.get('error')) or not bool(state.get('healthy'))
@@ -2997,7 +3305,7 @@ def _log_cacert_health(ca_file: Path, ca_pem: str) -> None:
     _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {ca_file.parent.parent.name}')
 
 
-def _cacert_needs_seed(state: dict) -> bool:
+def _cacert_needs_seed(state: _CacertState) -> bool:
     """Return True when the base trust bundle is missing or clearly truncated."""
     return (
         not bool(state.get('exists'))
@@ -3006,7 +3314,7 @@ def _cacert_needs_seed(state: dict) -> bool:
     )
 
 
-def _linux_cacert_needs_seed(state: dict) -> bool:
+def _linux_cacert_needs_seed(state: _CacertState) -> bool:
     """Backward-compatible alias for Linux-specific callers/tests."""
     return _cacert_needs_seed(state)
 
@@ -3024,7 +3332,8 @@ def _clear_cacert_write_barriers(path: Path) -> None:
             immutable_mask |= getattr(stat, name, 0)
         if immutable_mask:
             try:
-                os.chflags(path, current_flags & ~immutable_mask)
+                chflags = cast('Callable[[Path, int], None]', getattr(os, 'chflags'))
+                chflags(path, current_flags & ~immutable_mask)
             except OSError:
                 pass
 
@@ -3098,7 +3407,7 @@ def _healthy_linux_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -
 
 
 def _seed_cacert_if_needed(
-    ca_file: Path, state: dict, install_name: str, ca_pem: str, dirs: list[Path]
+    ca_file: Path, state: _CacertState, install_name: str, ca_pem: str, dirs: list[Path]
 ) -> bool:
     """Replace a missing/truncated Windows/Linux Roblox bundle before CA upsert."""
     if not (IS_WINDOWS or IS_LINUX):
@@ -3149,7 +3458,7 @@ def _seed_cacert_if_needed(
 
 
 def _seed_linux_cacert_if_needed(
-    ca_file: Path, state: dict, install_name: str, ca_pem: str, dirs: list[Path]
+    ca_file: Path, state: _CacertState, install_name: str, ca_pem: str, dirs: list[Path]
 ) -> bool:
     """Backward-compatible Linux wrapper for the shared Windows/Linux seeder."""
     if not IS_LINUX:
@@ -3184,14 +3493,14 @@ def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int
             _restore_cacert_read_only(ca_file)
 
 
-def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[dict]]:
+def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[_ErrorDetails]]:
     """Normalize bootstrapper snapshots that may restore managed Roblox files."""
     if not IS_MACOS:
         return True, []
 
     from ..utils.platform_macos import find_bootstrapper_restore_resource_dirs
 
-    details: list[dict] = []
+    details: list[_ErrorDetails] = []
     ok = True
     for resource_dir in find_bootstrapper_restore_resource_dirs():
         ca_file = resource_dir / 'ssl' / 'cacert.pem'
@@ -3250,10 +3559,13 @@ def _cacert_has_only_current_fleasion_ca(cacert_text: str, current_ca_pem: str) 
     return fleasion_count == 1 and current_count == 1
 
 
-def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[bool, dict]:
-    from ..utils.macos_proxy_helper import helper_patch_ca
+def _install_ca_into_roblox_with_helper(
+    ca_pem: str, dirs: list[Path]
+) -> tuple[bool, _ErrorDetails]:
+    from ..utils.macos_proxy_helper import helper_patch_ca  # pyright: ignore[reportUnknownVariableType]
 
-    installs: list[dict] = []
+    patch_ca = cast(_HelperPatchCa, helper_patch_ca)
+    installs: list[_ErrorDetails] = []
     for roblox_dir in dirs:
         ca_file = roblox_dir / 'ssl' / 'cacert.pem'
         strip_all_fleasion_ca = False
@@ -3276,8 +3588,8 @@ def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[
             }
         )
 
-    response = helper_patch_ca(ca_pem, installs)
-    details = response or {
+    response = patch_ca(ca_pem, installs)
+    details: _ErrorDetails = response or {
         'patched': [],
         'skipped': [],
         'failed': [{'error': 'macOS proxy helper did not return a CA patch response'}],
@@ -3288,7 +3600,7 @@ def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[
         ('skipped', 'already current'),
         ('failed', 'failed'),
     ):
-        for item in details.get(key) or []:
+        for item in _error_detail_list(details.get(key) or []):
             path = item.get('ca_file') or item.get('resource_dir') or '(unknown)'
             if key == 'failed':
                 log_buffer.log(
@@ -3303,7 +3615,7 @@ def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[
                 )
 
     all_healthy = bool(response and response.get('ok'))
-    verified: list[dict] = []
+    verified: list[_CacertState] = []
     for roblox_dir in dirs:
         state = _log_cacert_state(
             roblox_dir / 'ssl' / 'cacert.pem',
@@ -3317,13 +3629,16 @@ def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[
     return all_healthy, details
 
 
-def _patch_roblox_ca_with_macos_helper(ca_pem: str, roblox_dir: Path) -> tuple[bool, bool, dict]:
+def _patch_roblox_ca_with_macos_helper(
+    ca_pem: str, roblox_dir: Path
+) -> tuple[bool, bool, _ErrorDetails]:
     """Patch one macOS Roblox cacert.pem through the privileged helper.
 
     Returns (request_ok, changed, response_details).
     """
-    from ..utils.macos_proxy_helper import helper_patch_ca
+    from ..utils.macos_proxy_helper import helper_patch_ca  # pyright: ignore[reportUnknownVariableType]
 
+    patch_ca = cast(_HelperPatchCa, helper_patch_ca)
     ca_file = roblox_dir / 'ssl' / 'cacert.pem'
     strip_all_fleasion_ca = False
     try:
@@ -3336,7 +3651,7 @@ def _patch_roblox_ca_with_macos_helper(ca_pem: str, roblox_dir: Path) -> tuple[b
         existing = ''
         strip_all_fleasion_ca = True
 
-    response = helper_patch_ca(
+    response = patch_ca(
         ca_pem,
         [
             {
@@ -3360,15 +3675,17 @@ def _patch_roblox_ca_with_macos_helper(ca_pem: str, roblox_dir: Path) -> tuple[b
             },
         )
 
-    changed = any(bool(item.get('changed')) for item in response.get('patched') or [])
-    for item in response.get('failed') or []:
+    changed = any(
+        bool(item.get('changed')) for item in _error_detail_list(response.get('patched') or [])
+    )
+    for item in _error_detail_list(response.get('failed') or []):
         path = item.get('ca_file') or item.get('resource_dir') or str(ca_file)
         log_buffer.log(
             'Certificate',
             f'macOS helper CA patch failed for {path}: {item.get("error") or item.get("status") or "unknown error"}',
         )
     for key, label in (('patched', 'patched'), ('skipped', 'already current')):
-        for item in response.get(key) or []:
+        for item in _error_detail_list(response.get(key) or []):
             path = item.get('ca_file') or item.get('resource_dir') or str(ca_file)
             item_changed = 'changed' if item.get('changed') else 'unchanged'
             log_buffer.log(
@@ -3378,7 +3695,9 @@ def _patch_roblox_ca_with_macos_helper(ca_pem: str, roblox_dir: Path) -> tuple[b
     return bool(response.get('ok')), changed, response
 
 
-def _install_ca_into_roblox(ca_pem: str, *, include_studio: bool = True) -> tuple[bool, dict]:
+def _install_ca_into_roblox(
+    ca_pem: str, *, include_studio: bool = True
+) -> tuple[bool, _ErrorDetails]:
     """Ensure each Roblox ssl/cacert.pem has exactly one current Fleasion CA cert."""
     t0 = time.perf_counter()
     dirs = _find_roblox_dirs(include_studio=include_studio)
@@ -3395,7 +3714,10 @@ def _install_ca_into_roblox(ca_pem: str, *, include_studio: bool = True) -> tupl
     )
 
     ok = True
-    details = {'patched': [], 'failed': [], 'verified': []}
+    patched: list[_ErrorDetails] = []
+    failed: list[_ErrorDetails] = []
+    verified: list[_CacertState] = []
+    details: _ErrorDetails = {'patched': patched, 'failed': failed, 'verified': verified}
     helper_fallback_dirs: list[Path] = []
     for d in dirs:
         ssl_dir = d / 'ssl'
@@ -3409,7 +3731,7 @@ def _install_ca_into_roblox(ca_pem: str, *, include_studio: bool = True) -> tupl
             post_state = _log_cacert_state(
                 ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}'
             )
-            details['verified'].append(post_state)
+            verified.append(post_state)
             post_healthy = bool(post_state.get('healthy'))
             ok = ok and post_healthy
             already_current = (
@@ -3431,11 +3753,9 @@ def _install_ca_into_roblox(ca_pem: str, *, include_studio: bool = True) -> tupl
                 log_buffer.log('Certificate', f'Normalized CA bundle formatting in {d.name}')
             else:
                 log_buffer.log('Certificate', f'CA already installed in {d.name}')
-            details['patched'].append(
-                {'resource_dir': str(d), 'ca_file': str(ca_file), 'changed': changed}
-            )
+            patched.append({'resource_dir': str(d), 'ca_file': str(ca_file), 'changed': changed})
             if not post_healthy:
-                details['failed'].append(
+                failed.append(
                     {
                         'resource_dir': str(d),
                         'ca_file': str(ca_file),
@@ -3449,15 +3769,13 @@ def _install_ca_into_roblox(ca_pem: str, *, include_studio: bool = True) -> tupl
                     helper_fallback_dirs.append(d)
         except (PermissionError, OSError, UnicodeDecodeError) as exc:
             log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
-            details['failed'].append(
-                {'resource_dir': str(d), 'ca_file': str(ca_file), 'error': str(exc)}
-            )
+            failed.append({'resource_dir': str(d), 'ca_file': str(ca_file), 'error': str(exc)})
             ok = False
             if IS_MACOS and not _is_admin():
                 helper_fallback_dirs.append(d)
 
     if helper_fallback_dirs:
-        direct_failures = list(details['failed'])
+        direct_failures = list(failed)
         helper_ok, helper_details = _install_ca_into_roblox_with_helper(
             ca_pem, helper_fallback_dirs
         )
@@ -3465,16 +3783,17 @@ def _install_ca_into_roblox(ca_pem: str, *, include_studio: bool = True) -> tupl
         details['helper'] = helper_details
         details['helper_required'] = not helper_ok
         fallback_keys = {str(path.resolve()).lower() for path in helper_fallback_dirs}
-        details['failed'] = [
+        failed = [
             item
-            for item in details['failed']
-            if str(Path(item['resource_dir']).resolve()).lower() not in fallback_keys
+            for item in failed
+            if str(Path(_preserve_str(item['resource_dir'])).resolve()).lower() not in fallback_keys
         ]
-        details['patched'].extend(helper_details.get('patched') or [])
-        details['patched'].extend(helper_details.get('skipped') or [])
-        details['failed'].extend(helper_details.get('failed') or [])
-        details['verified'].extend(helper_details.get('verified') or [])
-        ok = helper_ok and not details['failed']
+        details['failed'] = failed
+        patched.extend(_error_detail_list(helper_details.get('patched') or []))
+        patched.extend(_error_detail_list(helper_details.get('skipped') or []))
+        failed.extend(_error_detail_list(helper_details.get('failed') or []))
+        verified.extend(_cacert_state_list(helper_details.get('verified') or []))
+        ok = helper_ok and not failed
     backup_ok, backup_details = _patch_bootstrapper_ca_backups(ca_pem)
     details['bootstrapper_backups'] = backup_details
     return ok and backup_ok, details
@@ -3493,7 +3812,7 @@ def _certutil_store_has_thumbprint(store_location: str, thumbprint: str) -> bool
         result = subprocess.run(
             [_CERTUTIL_EXE, '-store', store_location, thumbprint],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=10,
         )
     except Exception as exc:
@@ -3508,7 +3827,7 @@ def _certutil_fleasion_root_thumbprints(store_location: str) -> list[str]:
         result = subprocess.run(
             [_CERTUTIL_EXE, '-store', store_location],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=20,
         )
     except Exception as exc:
@@ -3553,7 +3872,7 @@ def _certutil_delete_from_store(store_location: str, thumbprint: str) -> bool:
         result = subprocess.run(
             [_CERTUTIL_EXE, '-delstore', store_location, thumbprint],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=20,
         )
     except Exception as exc:
@@ -3601,7 +3920,7 @@ def _install_ca_into_windows_root(ca_cert_path: Path, ca_pem: str) -> None:
         result = subprocess.run(
             [_CERTUTIL_EXE, '-addstore', '-f', store_location, str(ca_cert_path)],
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=20,
         )
     except Exception as exc:
@@ -3748,7 +4067,9 @@ def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> N
     )
 
 
-def _install_ca_into_macos_login_keychain(ca_cert_path: Path, ca_pem: str) -> tuple[bool, dict]:
+def _install_ca_into_macos_login_keychain(
+    ca_cert_path: Path, ca_pem: str
+) -> tuple[bool, _ErrorDetails]:
     """Trust Fleasion's CA for HTTP clients launched by the signed-in user."""
     thumbprint = _ca_thumbprint_sha1(ca_pem).upper()
     keychain = str(Path.home() / 'Library' / 'Keychains' / 'login.keychain-db')
@@ -3808,7 +4129,17 @@ def _install_ca_into_macos_login_keychain(ca_cert_path: Path, ca_pem: str) -> tu
     }
 
 
-def _selected_linux_client_installation():
+def _macos_resource_root_from_executable(exe_path: Path) -> Path | None:
+    from ..utils import platform_macos
+
+    resolver = cast(
+        'Callable[[Path], Path | None]',
+        getattr(platform_macos, '_resource_root_from_executable'),
+    )
+    return resolver(exe_path)
+
+
+def _selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve the selected Linux client without importing Linux helpers elsewhere."""
     if not IS_LINUX:
         return None
@@ -3820,7 +4151,7 @@ def _selected_linux_client_installation():
         return None
 
 
-def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
+def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
     Called when RobloxPlayerBeta.exe is detected launching at runtime.
@@ -3843,9 +4174,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     if IS_MACOS:
         _patch_bootstrapper_ca_backups(ca_pem)
     if IS_MACOS:
-        from ..utils.platform_macos import _resource_root_from_executable
-
-        roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+        roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
     elif IS_LINUX:
         from ..utils.platform_linux import find_roblox_resource_dirs
 
@@ -3864,7 +4193,11 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
         )
         pre_state_readable = bool(pre_state.get('exists')) and not bool(pre_state.get('error'))
         seeded = False
-        if (IS_WINDOWS or IS_LINUX) and _cacert_needs_seed(pre_state) and not pre_state.get('error'):
+        if (
+            (IS_WINDOWS or IS_LINUX)
+            and _cacert_needs_seed(pre_state)
+            and not pre_state.get('error')
+        ):
             seed_dirs = _find_roblox_dirs(include_studio=False)
             if roblox_dir not in seed_dirs:
                 seed_dirs.insert(0, roblox_dir)
@@ -3966,13 +4299,25 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
 # ---------------------------------------------------------------------------
 
 
+if TYPE_CHECKING:
+    _ = (
+        _resolve_real_ips,
+        _log_cacert_health,
+        _linux_cacert_needs_seed,
+        _healthy_linux_cacert_source,
+        _seed_linux_cacert_if_needed,
+        _cacert_has_only_current_fleasion_ca,
+        _install_ca_into_macos_system_keychain,
+    )
+
+
 class ProxyMaster:
     """Manages the Fleasion proxy lifecycle."""
 
     def __init__(
         self,
-        config_manager,
-        on_proxy_start_error: Optional[Callable[[str, dict], None]] = None,
+        config_manager: ConfigManager,
+        on_proxy_start_error: Callable[[str, _ErrorDetails], None] | None = None,
     ) -> None:
         self.config_manager = config_manager
         self._on_proxy_start_error = on_proxy_start_error
@@ -3985,7 +4330,8 @@ class ProxyMaster:
                     'Could not recover a stale Linux Env Proxy override during startup; '
                     'the persisted ownership marker was kept for a later retry',
                 )
-        self.cache_manager = CacheManager(config_manager)
+        cache_manager_factory = cast('Callable[[ConfigManager], CacheManager]', CacheManager)
+        self.cache_manager = cache_manager_factory(config_manager)
 
         # Singleton addon instances - GUI holds references to these directly
         self.cache_scraper = CacheScraper(self.cache_manager)
@@ -3998,16 +4344,16 @@ class ProxyMaster:
             config_manager, reload_settings_from_disk=True
         )
 
-        self._texture_stripper: Optional[TextureStripper] = None
+        self._texture_stripper: TextureStripper | None = None
 
-        self._proxy: Optional[FleasionProxy] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
+        self._proxy: FleasionProxy | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
         self._running = False
-        self._active_proxy_port: Optional[int] = None
+        self._active_proxy_port: int | None = None
         self._env_proxy_loopback_host = '127.0.0.1'
         self._active_local_tls_max_version = PROXY_TLS_MAX_VERSION
-        self._tls_startup_attempts: list[dict] = []
+        self._tls_startup_attempts: list[_ErrorDetails] = []
         self._lock = threading.Lock()
         self._env_proxy_ready = threading.Event()
         self._hosts_proxy_ready = threading.Event()
@@ -4030,11 +4376,11 @@ class ProxyMaster:
         # config_manager, so it always resets to False on every app launch.
         self._env_proxy_intercept_all: bool = False
         self._roblox_player_running: bool = False
-        self._watchdog_stop: Optional[threading.Event] = None
-        self._watchdog_thread: Optional[threading.Thread] = None
-        self._sober_fflag_timer_stop: Optional[threading.Event] = None
-        self._sober_fflag_timer_thread: Optional[threading.Thread] = None
-        self._module_interceptors: list = [self.username_spoofer]
+        self._watchdog_stop: threading.Event | None = None
+        self._watchdog_thread: threading.Thread | None = None
+        self._sober_fflag_timer_stop: threading.Event | None = None
+        self._sober_fflag_timer_thread: threading.Thread | None = None
+        self._module_interceptors: list[_ModuleInterceptor] = [self.username_spoofer]
         self._cert_refresh_lock = threading.Lock()
         self._last_cert_refresh_by_exe: dict[Path, tuple[float, str]] = {}
 
@@ -4077,7 +4423,7 @@ class ProxyMaster:
         url_host = f'[{host}]' if ':' in host else host
         return f'http://{url_host}:{port}'
 
-    def _linux_client_installation(self):
+    def _linux_client_installation(self) -> LinuxClientInstallation | None:
         installation = getattr(self, '_active_linux_client_installation', None)
         if installation is not None:
             return installation
@@ -4092,7 +4438,7 @@ class ProxyMaster:
         installation = self._linux_client_installation()
         return getattr(installation, 'key', None) or ('sober' if IS_LINUX else None)
 
-    def _linux_client_descriptor(self):
+    def _linux_client_descriptor(self) -> LinuxClientDescriptor | None:
         installation = self._linux_client_installation()
         descriptor = getattr(installation, 'client', None)
         if descriptor is not None:
@@ -4161,7 +4507,9 @@ class ProxyMaster:
         if IS_LINUX:
             self._clear_linux_env_proxy_override()
 
-    def wait_for_env_proxy_ready(self, timeout: float = 15.0, *, cancelled=None) -> bool:
+    def wait_for_env_proxy_ready(
+        self, timeout: float = 15.0, *, cancelled: _CancelCheck | None = None
+    ) -> bool:
         """Wait for bind/TLS readiness while allowing restart handoff cancellation."""
         deadline = time.monotonic() + max(0.0, timeout)
         while time.monotonic() < deadline:
@@ -4174,7 +4522,9 @@ class ProxyMaster:
                 return False
         return self._env_proxy_ready.is_set()
 
-    def wait_for_hosts_proxy_ready(self, timeout: float = 30.0, *, cancelled=None) -> bool:
+    def wait_for_hosts_proxy_ready(
+        self, timeout: float = 30.0, *, cancelled: _CancelCheck | None = None
+    ) -> bool:
         """Wait until port 443, TLS, hosts entries, and watchdog are all active."""
         deadline = time.monotonic() + max(0.0, timeout)
         while time.monotonic() < deadline:
@@ -4196,9 +4546,7 @@ class ProxyMaster:
             return None
         ca_pem = get_ca_pem(ca_cert_path)
         if IS_MACOS:
-            from ..utils.platform_macos import _resource_root_from_executable
-
-            roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+            roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
         elif IS_LINUX:
             from ..utils.platform_linux import find_roblox_resource_dirs
 
@@ -4208,14 +4556,14 @@ class ProxyMaster:
             roblox_dir = exe_path.parent
         return roblox_dir / 'ssl' / 'cacert.pem', ca_pem
 
-    def inspect_env_proxy_roblox_ca(self, exe_path: Path, reason: str) -> dict:
+    def inspect_env_proxy_roblox_ca(self, exe_path: Path, reason: str) -> _CacertInspection:
         target = self._roblox_ca_target(exe_path)
         if target is None:
             return {'healthy': False, 'error': 'Roblox CA target is unavailable'}
         ca_file, ca_pem = target
         return _log_cacert_state(ca_file, ca_pem, reason)
 
-    def ensure_env_proxy_roblox_ca(self, exe_path: Path, *, settle: bool = False) -> dict:
+    def ensure_env_proxy_roblox_ca(self, exe_path: Path, *, settle: bool = False) -> _ErrorDetails:
         """Settle, directly repair, and fully verify Player's CA bundle."""
         if settle:
             time.sleep(_CACERT_LAUNCH_SETTLE_SECONDS)
@@ -4242,11 +4590,11 @@ class ProxyMaster:
         cancel_event: threading.Event,
         *,
         duration: float = _CACERT_LAUNCH_POLL_SECONDS,
-    ) -> dict:
+    ) -> _ErrorDetails:
         """Require CA health for the complete post-launch observation window."""
         deadline = time.monotonic() + max(0.0, duration)
         unhealthy_samples = 0
-        last_state: dict = {}
+        last_state: _CacertInspection = {}
         while time.monotonic() < deadline:
             if cancel_event.is_set():
                 return {'success': False, 'cancelled': True, 'state': last_state}
@@ -4274,11 +4622,14 @@ class ProxyMaster:
             'state': last_state,
         }
 
-    def get_env_proxy_traffic(self) -> list[dict]:
+    def get_env_proxy_traffic(self) -> list[_ProxyRequestLogEntry]:
         """Every request/tunnel the explicit proxy has logged, intercepted or not."""
         if self._proxy is None:
             return []
-        get_log = getattr(self._proxy, 'get_request_log', None)
+        get_log = cast(
+            'Callable[[], list[_ProxyRequestLogEntry]] | None',
+            getattr(self._proxy, 'get_request_log', None),
+        )
         return get_log() if callable(get_log) else []
 
     def clear_env_proxy_traffic(self) -> None:
@@ -4288,16 +4639,22 @@ class ProxyMaster:
         if callable(clear_log):
             clear_log()
 
-    def format_env_proxy_request_preview(self, entry: dict) -> str:
+    def format_env_proxy_request_preview(self, entry: _ProxyRequestLogEntry) -> str:
         if self._proxy is None:
             return ''
-        fmt = getattr(self._proxy, 'format_request_preview', None)
+        fmt = cast(
+            'Callable[[_ProxyRequestLogEntry], str] | None',
+            getattr(self._proxy, 'format_request_preview', None),
+        )
         return fmt(entry) if callable(fmt) else ''
 
-    def format_env_proxy_response_preview(self, entry: dict) -> str:
+    def format_env_proxy_response_preview(self, entry: _ProxyRequestLogEntry) -> str:
         if self._proxy is None:
             return ''
-        fmt = getattr(self._proxy, 'format_response_preview', None)
+        fmt = cast(
+            'Callable[[_ProxyRequestLogEntry], str] | None',
+            getattr(self._proxy, 'format_response_preview', None),
+        )
         return fmt(entry) if callable(fmt) else ''
 
     def set_env_proxy_intercept_match(self, text: str) -> None:
@@ -4320,42 +4677,55 @@ class ProxyMaster:
             if callable(setter):
                 setter(enabled)
 
-    def get_auto_replace_rules(self) -> list:
+    def get_auto_replace_rules(self) -> list[_AutoReplaceRule]:
         """Auto Replace rules, persisted to config (unlike the env-proxy
         toggles above) so they survive a restart without the dialog needing
         to have been opened.
         """
-        return list(self.config_manager.settings.get('auto_replace_rules', []))
+        stored = self.config_manager.settings.get('auto_replace_rules', [])
+        return list(cast('list[_AutoReplaceRule]', stored))
 
-    def set_auto_replace_rules(self, rules: list) -> None:
-        self.config_manager.settings['auto_replace_rules'] = list(rules)
+    def set_auto_replace_rules(self, rules: list[_AutoReplaceRule]) -> None:
+        self.config_manager.settings['auto_replace_rules'] = cast('JsonValue', list(rules))
         self.config_manager.save()
         if self._proxy is not None:
-            setter = getattr(self._proxy, 'set_auto_replace_rules', None)
+            setter = cast(
+                'Callable[[list[_AutoReplaceRule]], None] | None',
+                getattr(self._proxy, 'set_auto_replace_rules', None),
+            )
             if callable(setter):
                 setter(rules)
 
-    def get_env_proxy_pending_intercepts(self) -> list:
+    def get_env_proxy_pending_intercepts(self) -> list[tuple[int, str]]:
         if self._proxy is None:
             return []
-        getter = getattr(self._proxy, 'get_pending_intercepts', None)
+        getter = cast(
+            'Callable[[], list[tuple[int, str]]] | None',
+            getattr(self._proxy, 'get_pending_intercepts', None),
+        )
         return getter() if callable(getter) else []
 
-    def get_env_proxy_pending_data(self, entry_id: int, stage: str):
+    def get_env_proxy_pending_data(self, entry_id: int, stage: str) -> bytes | None:
         if self._proxy is None:
             return None
-        getter = getattr(self._proxy, 'get_pending_data', None)
+        getter = cast(
+            'Callable[[int, str], bytes | None] | None',
+            getattr(self._proxy, 'get_pending_data', None),
+        )
         return getter(entry_id, stage) if callable(getter) else None
 
     def submit_env_proxy_pending(
-        self, entry_id: int, stage: str, action: str, edited_text: Optional[str] = None
+        self, entry_id: int, stage: str, action: str, edited_text: str | None = None
     ) -> bool:
         if self._proxy is None:
             return False
-        submitter = getattr(self._proxy, 'submit_pending', None)
+        submitter = cast(
+            'Callable[[int, str, str, str | None], bool] | None',
+            getattr(self._proxy, 'submit_pending', None),
+        )
         return submitter(entry_id, stage, action, edited_text) if callable(submitter) else False
 
-    def replay_env_proxy_request(self, entry_id: int, edited_text: Optional[str] = None) -> bool:
+    def replay_env_proxy_request(self, entry_id: int, edited_text: str | None = None) -> bool:
         """Resend a captured/edited request fresh, overwriting that SAME
         entry's request/response fields in place - not a new row.
         Fire-and-forget from the GUI's side; the row updates once the
@@ -4392,7 +4762,7 @@ class ProxyMaster:
             return True
         return self.config_manager.wire_preserving_passthrough
 
-    def register_module_interceptor(self, module) -> None:
+    def register_module_interceptor(self, module: _ModuleInterceptor) -> None:
         """Register a module whose request()/response() methods are called for gamejoin traffic."""
         with self._lock:
             if module not in self._module_interceptors:
@@ -4401,7 +4771,7 @@ class ProxyMaster:
         if self._proxy is not None:
             self._proxy.set_module_interceptors(interceptors)
 
-    def unregister_module_interceptor(self, module) -> None:
+    def unregister_module_interceptor(self, module: _ModuleInterceptor) -> None:
         """Unregister a gamejoin traffic interceptor when its owning UI is destroyed."""
         with self._lock:
             before = len(self._module_interceptors)
@@ -4502,7 +4872,9 @@ class ProxyMaster:
         """Keep Sober's pinned ClientSettings bootstrap outside TLS interception."""
         if self._proxy is None:
             return
-        excluded_hosts = set(getattr(self, '_env_proxy_intercept_excluded_hosts', set()))
+        excluded_hosts = set(
+            cast('set[str]', getattr(self, '_env_proxy_intercept_excluded_hosts', set[str]()))
+        )
         if enabled:
             excluded_hosts.update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
         else:
@@ -4550,8 +4922,7 @@ class ProxyMaster:
                 if process is not None:
                     _pid, started_at = process
                     ready = (
-                        custom_fflags_enabled
-                        and self._sober_boottime() - started_at >= route_delay
+                        custom_fflags_enabled and self._sober_boottime() - started_at >= route_delay
                     )
 
                 if process != previous_process:
@@ -4631,25 +5002,28 @@ class ProxyMaster:
         with self._lock:
             if desired_hosts == self._active_intercept_hosts:
                 return
-            if getattr(self, '_active_env_proxy_mode', False) and self._proxy is not None:
+            env_proxy = _maybe_proxy(self._proxy)
+            if getattr(self, '_active_env_proxy_mode', False) and env_proxy is not None:
                 previous_hosts = set(self._active_intercept_hosts)
                 added_hosts = desired_hosts - previous_hosts
                 retained_hosts = previous_hosts & desired_hosts
-                real_endpoints = self._proxy.upstream_endpoints_for_hosts(retained_hosts)
+                real_endpoints = env_proxy.upstream_endpoints_for_hosts(
+                    cast('Sequence[str]', retained_hosts)
+                )
                 added_endpoints = _resolve_real_endpoints(added_hosts) if added_hosts else {}
                 real_endpoints.update(added_endpoints)
-                self._proxy.set_upstream_endpoints(real_endpoints)
-                self._proxy.set_intercept_hosts(desired_hosts)
+                _set_proxy_upstream_endpoints(env_proxy, real_endpoints)
+                env_proxy.set_intercept_hosts(desired_hosts)
                 scraper_ips = _endpoint_ip_candidates(real_endpoints)
                 if scraper_ips:
-                    self.cache_scraper.set_real_ips(scraper_ips)
+                    _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
                 self._active_intercept_hosts = set(desired_hosts)
                 log_buffer.log(
                     'InterceptConfig',
                     f'Env proxy intercepts updated: {", ".join(sorted(desired_hosts))}',
                 )
                 return
-            if not self._hosts_installed or self._proxy is None:
+            if not self._hosts_installed or _maybe_proxy(self._proxy) is None:
                 self._active_intercept_hosts = set(desired_hosts)
                 return
 
@@ -4665,7 +5039,8 @@ class ProxyMaster:
         with self._lock:
             if desired_hosts == self._active_intercept_hosts:
                 return
-            if not self._hosts_installed or self._proxy is None:
+            proxy = _maybe_proxy(self._proxy)
+            if not self._hosts_installed or proxy is None:
                 self._active_intercept_hosts = set(desired_hosts)
                 return
 
@@ -4686,7 +5061,9 @@ class ProxyMaster:
             # they already point at our loopback proxy, which forces the
             # resolver down the public-DNS fallback and can replace a working
             # nearby Roblox API edge mid-browser-session.
-            real_endpoints = self._proxy.upstream_endpoints_for_hosts(retained_hosts)
+            real_endpoints = proxy.upstream_endpoints_for_hosts(
+                cast('Sequence[str]', retained_hosts)
+            )
             missing_retained_hosts = retained_hosts - set(real_endpoints)
             if missing_retained_hosts:
                 log_buffer.log(
@@ -4708,10 +5085,10 @@ class ProxyMaster:
                     )
                     return
                 self._active_intercept_hosts = set(desired_hosts)
-                self._proxy.set_upstream_endpoints(real_endpoints)
+                _set_proxy_upstream_endpoints(proxy, real_endpoints)
                 scraper_ips = _endpoint_ip_candidates(real_endpoints)
                 if scraper_ips:
-                    self.cache_scraper.set_real_ips(scraper_ips)
+                    _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
                 log_buffer.log(
                     'Hosts',
                     f'Requested Linux helper intercept update: {", ".join(sorted(desired_hosts))}',
@@ -4736,10 +5113,10 @@ class ProxyMaster:
                 return
 
             self._active_intercept_hosts = set(desired_hosts)
-            self._proxy.set_upstream_endpoints(real_endpoints)
+            _set_proxy_upstream_endpoints(proxy, real_endpoints)
             scraper_ips = _endpoint_ip_candidates(real_endpoints)
             if scraper_ips:
-                self.cache_scraper.set_real_ips(scraper_ips)
+                _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
             log_buffer.log(
                 'Hosts',
                 f'Active intercepts updated: {", ".join(sorted(desired_hosts))}',
@@ -4787,7 +5164,7 @@ class ProxyMaster:
             return False
         return bool(seed_startup_flags())
 
-    def _emit_proxy_start_error(self, code: str, details: dict) -> None:
+    def _emit_proxy_start_error(self, code: str, details: _ErrorDetails) -> None:
         """Forward startup failures to the app layer for user-facing dialogs."""
         if self._on_proxy_start_error is None:
             return
@@ -4835,10 +5212,10 @@ class ProxyMaster:
             )
             new_endpoints = _resolve_real_endpoints(active_hosts)
             if self._proxy is not None and new_endpoints:
-                self._proxy.set_upstream_endpoints(new_endpoints)
+                _set_proxy_upstream_endpoints(self._proxy, new_endpoints)
             scraper_ips = _endpoint_ip_candidates(new_endpoints)
             if scraper_ips:
-                self.cache_scraper.set_real_ips(scraper_ips)
+                _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
             return
         # Remove entries temporarily so getaddrinfo() sees real IPs again.
         _remove_hosts_entries(set(INTERCEPT_HOSTS))
@@ -4865,10 +5242,10 @@ class ProxyMaster:
             return
         # Update running proxy and scraper with fresh upstream IPs.
         if self._proxy is not None and new_endpoints:
-            self._proxy.set_upstream_endpoints(new_endpoints)
+            _set_proxy_upstream_endpoints(self._proxy, new_endpoints)
         scraper_ips = _endpoint_ip_candidates(new_endpoints)
         if scraper_ips:
-            self.cache_scraper.set_real_ips(scraper_ips)
+            _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
 
     def _repair_cert_refresh_ips_and_restart_roblox(
         self, exe_path: Path, ca_pem: str, ca_file: Path, reason: str
@@ -4947,9 +5324,7 @@ class ProxyMaster:
             return
         ca_pem = get_ca_pem(ca_cert_path)
         if IS_MACOS:
-            from ..utils.platform_macos import _resource_root_from_executable
-
-            roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+            roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
         elif IS_LINUX:
             from ..utils.platform_linux import find_roblox_resource_dirs
 
@@ -5043,7 +5418,9 @@ class ProxyMaster:
             self._cert_refresh_lock.release()
 
     @staticmethod
-    def _is_windows_proactor_accept_fault(loop, context: dict) -> bool:
+    def _is_windows_proactor_accept_fault(
+        loop: asyncio.AbstractEventLoop, context: dict[str, object]
+    ) -> bool:
         exc = context.get('exception')
         return bool(
             IS_WINDOWS
@@ -5053,7 +5430,9 @@ class ProxyMaster:
             and getattr(exc, 'winerror', None) == _WINDOWS_PROACTOR_ACCEPT_WINERROR
         )
 
-    def _install_proxy_loop_diagnostics(self, loop, env_proxy_mode: bool) -> None:
+    def _install_proxy_loop_diagnostics(
+        self, loop: asyncio.AbstractEventLoop, env_proxy_mode: bool
+    ) -> None:
         """Capture accept failures swallowed by asyncio's Proactor server loop."""
         self._windows_proactor_accept_fault = False
         loop_name = type(loop).__name__
@@ -5073,12 +5452,20 @@ class ProxyMaster:
 
         previous_handler = loop.get_exception_handler()
 
-        def _handle_loop_exception(active_loop, context: dict) -> None:
+        def _handle_loop_exception(
+            active_loop: asyncio.AbstractEventLoop, context: dict[str, object]
+        ) -> None:
             if self._is_windows_proactor_accept_fault(active_loop, context):
                 exc = context['exception']
                 socket_obj = context.get('socket')
                 try:
-                    local_address = socket_obj.getsockname() if socket_obj is not None else None
+                    if socket_obj is None:
+                        local_address: object | None = None
+                    else:
+                        getsockname = cast(
+                            'Callable[[], object]', getattr(socket_obj, 'getsockname')
+                        )
+                        local_address = getsockname()
                 except OSError:
                     local_address = None
                 if not self._windows_proactor_accept_fault:
@@ -5149,9 +5536,7 @@ class ProxyMaster:
             return True
 
         if not IS_WINDOWS:
-            ok = await _run_tls_self_test(
-                hosts, ca_cert_path, port, explicit_proxy=explicit_proxy
-            )
+            ok = await _run_tls_self_test(hosts, ca_cert_path, port, explicit_proxy=explicit_proxy)
             self._tls_startup_attempts = [
                 {
                     'loopback': '127.0.0.1',
@@ -5166,8 +5551,11 @@ class ProxyMaster:
             ('127.0.0.1', PROXY_TLS_MAX_VERSION),
             ('127.0.0.1', ssl.TLSVersion.MAXIMUM_SUPPORTED),
         ]
-        loopback_ips = getattr(self._proxy, 'loopback_ips_for_hosts', None)
-        available_loopbacks = (
+        loopback_ips = cast(
+            'Callable[[], set[str]] | None',
+            getattr(self._proxy, 'loopback_ips_for_hosts', None),
+        )
+        available_loopbacks: set[str] = (
             set(loopback_ips()) if callable(loopback_ips) else {'127.0.0.1', '::1'}
         )
         if explicit_proxy and '::1' in available_loopbacks:
@@ -5179,7 +5567,7 @@ class ProxyMaster:
             )
 
         representative_hosts = {min(hosts)}
-        attempts: list[dict] = []
+        attempts: list[_ErrorDetails] = []
         current_tls_max = PROXY_TLS_MAX_VERSION
 
         for index, (loopback_host, tls_max_version) in enumerate(profiles):
@@ -5270,7 +5658,8 @@ class ProxyMaster:
             'listener before Selector retry',
         )
         try:
-            await self._proxy.stop()
+            proxy = cast(FleasionProxy, self._proxy)
+            await proxy.stop()
         except Exception as exc:
             log_buffer.log('ProxyDiag', f'Failed listener cleanup reported: {exc}')
         self._proxy = None
@@ -5346,7 +5735,7 @@ class ProxyMaster:
 
                     hosts_cleaned = stop_helper()
                 else:
-                    cleanup_details: dict = {}
+                    cleanup_details: _ErrorDetails = {}
                     hosts_cleaned = _remove_hosts_entries(
                         set(INTERCEPT_HOSTS), error_details=cleanup_details
                     )
@@ -5431,7 +5820,7 @@ class ProxyMaster:
         elif self.config_manager.clear_cache_on_launch:
             log_buffer.log('Cleanup', 'Clear cache on launch enabled - deleting cache')
 
-            def _delete_and_log():
+            def _delete_and_log() -> None:
                 messages = delete_cache()
                 for msg in messages:
                     log_buffer.log('Cache', msg)
@@ -5453,7 +5842,7 @@ class ProxyMaster:
             self._running = False
             return
 
-        host_certs = {}
+        host_certs: dict[str, tuple[Path, Path]] = {}
         for host in INTERCEPT_HOSTS:
             try:
                 cert_path, key_path = generate_host_cert(
@@ -5500,7 +5889,7 @@ class ProxyMaster:
             return
         if env_proxy_mode and not ca_patch_ok:
             if not _env_proxy_global_ca_patch_failure_is_fatal():
-                failed = ca_patch_details.get('failed') or []
+                failed = _failed_details(ca_patch_details.get('failed'))
                 log_buffer.log(
                     'Certificate',
                     'One or more discovered Roblox CA bundles were not launch-healthy during '
@@ -5558,7 +5947,7 @@ class ProxyMaster:
                 # Unlike the hosts-mode branch below, a failure here doesn't
                 # abort startup: env mode doesn't depend on the hosts file
                 # working.
-                oversized_hosts_details: dict = {}
+                oversized_hosts_details: _ErrorDetails = {}
                 if hosts_file_is_oversized(oversized_hosts_details):
                     log_buffer.log(
                         'Error',
@@ -5592,7 +5981,7 @@ class ProxyMaster:
             # calling stop(), our entries may still be present.  getaddrinfo()
             # would return 127.0.0.1 instead of real CDN IPs, and upstream
             # connections would fail with WinError 1225.
-            stale_hosts_error_details: dict = {}
+            stale_hosts_error_details: _ErrorDetails = {}
             if not _remove_hosts_entries(
                 set(INTERCEPT_HOSTS), error_details=stale_hosts_error_details
             ):
@@ -5605,7 +5994,9 @@ class ProxyMaster:
                 )
                 if stale_hosts_error_details.get('notify_user'):
                     self._emit_proxy_start_error(
-                        stale_hosts_error_details.get('error_code', 'hosts_write_exhausted'),
+                        _preserve_str(
+                            stale_hosts_error_details.get('error_code', 'hosts_write_exhausted')
+                        ),
                         stale_hosts_error_details,
                     )
                 self._running = False
@@ -5649,11 +6040,11 @@ class ProxyMaster:
 
         # ── Create addon instances ────────────────────────────────────────
         self._texture_stripper = TextureStripper(self.config_manager)
-        self._texture_stripper.set_cache_scraper(self.cache_scraper)
+        _set_texture_scraper(self._texture_stripper, self.cache_scraper)
         # Give the scraper real IPs for ALL intercepted hosts so its API
         # calls bypass our hosts file redirect (including CDN redirects).
         scraper_ips = _endpoint_ip_candidates(real_endpoints)
-        self.cache_scraper.set_real_ips(scraper_ips)
+        _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
 
         # Wire the scraper into the json_viewer's AssetFetcherThread so the
         # Preview tab in the standalone JSON viewer also bypasses the hosts file.
@@ -5683,11 +6074,23 @@ class ProxyMaster:
         ):
             self._running = False
             return
+
+        def on_upstream_connect_failure(host: str, error: str) -> None:
+            self._emit_proxy_start_error(
+                'upstream_connect_failed',
+                {
+                    'host': host,
+                    'error': error,
+                    'proxy_mode': 'env' if env_proxy_mode else 'hosts',
+                    'listen_port': listen_port,
+                },
+            )
+
         self._proxy = FleasionProxy(
             texture_stripper=self._texture_stripper,
             cache_scraper=self.cache_scraper,
             host_certs=host_certs,
-            upstream_endpoints=real_endpoints,
+            upstream_endpoints=_upstream_endpoint_map(real_endpoints),
             default_cert=default_cert,
             port=listen_port,
             upstream_mode=effective_upstream_mode,
@@ -5706,15 +6109,7 @@ class ProxyMaster:
             vpn_compat_max_assetdelivery_connections=asset_connection_limit,
             vpn_compat_max_cdn_connections=cdn_connection_limit,
             custom_fflag_modifier=getattr(self, 'custom_fflag_modifier', None),
-            on_upstream_connect_failure=lambda host, error: self._emit_proxy_start_error(
-                'upstream_connect_failed',
-                {
-                    'host': host,
-                    'error': error,
-                    'proxy_mode': 'env' if env_proxy_mode else 'hosts',
-                    'listen_port': listen_port,
-                },
-            ),
+            on_upstream_connect_failure=on_upstream_connect_failure,
             upstream_endpoint_refresher=_refresh_real_upstream_endpoints,
         )
         with self._lock:
@@ -5809,10 +6204,7 @@ class ProxyMaster:
             self._active_proxy_port = int(self._proxy.port)
             listen_port = self._active_proxy_port
 
-        loopback_ips_for_hosts = getattr(self._proxy, 'loopback_ips_for_hosts', None)
-        _set_active_hosts_loopbacks(
-            loopback_ips_for_hosts() if IS_WINDOWS and callable(loopback_ips_for_hosts) else None
-        )
+        _set_active_hosts_loopbacks(_loopback_ips(self._proxy) if IS_WINDOWS else None)
 
         # ── TLS startup self-test ───────────────────────────────────────────
         # Probe every active intercepted host with SNI plus one no-SNI connection
@@ -5827,7 +6219,7 @@ class ProxyMaster:
         ):
             probe_host = min(active_hosts)
             tls_attempts = list(getattr(self, '_tls_startup_attempts', []))
-            raw_tls_attempts: list[dict] = []
+            raw_tls_attempts: list[_ErrorDetails] = []
             raw_probe_ok = False
             for attempt in tls_attempts:
                 loopback_host = str(attempt.get('loopback') or '127.0.0.1')
@@ -5868,7 +6260,7 @@ class ProxyMaster:
                     raw_probe_ok = True
                     break
 
-            memory_tls_attempts: list[dict] = []
+            memory_tls_attempts: list[_ErrorDetails] = []
             memory_probe_ok = False
             seen_tls_max: set[str] = set()
             for attempt in tls_attempts:
@@ -5986,7 +6378,7 @@ class ProxyMaster:
             log_buffer.log('Info', 'Launch Roblox through Fleasion or let Fleasion relaunch it')
             log_buffer.log('Info', '=' * 50)
 
-            if self._texture_stripper is not None:
+            if _maybe_texture(self._texture_stripper) is not None:
                 _precheck_thread = threading.Thread(
                     target=self._texture_stripper.precheck_replacements,
                     name='ReplacementPrecheck',
@@ -6024,7 +6416,7 @@ class ProxyMaster:
             ):
                 await self._proxy.stop()
                 _set_active_hosts_loopbacks(None)
-                details = last_start_error_details()
+                details = _error_details(last_start_error_details())
                 if details.get('code') == 'linux_hosts_read_only':
                     self._emit_proxy_start_error('linux_hosts_read_only', details)
                 else:
@@ -6054,22 +6446,17 @@ class ProxyMaster:
         else:
             relay_ok, relay_failures = True, []
         if not relay_ok:
-            relay_details: dict = {
+            relay_details: _ErrorDetails = {
                 'relay_port': PROXY_PORT,
                 'backend_port': listen_port,
                 'attempts': 3,
                 'tls_failures': relay_failures,
             }
             if IS_MACOS:
-                from ..utils.macos_proxy_helper import (
-                    helper_probe_backend,
-                    helper_status,
-                )
-
                 # _run_proxy itself runs on Fleasion's dedicated proxy thread,
                 # so these bounded control-socket calls do not block the GUI.
-                helper_state = helper_status()
-                backend_probe = helper_probe_backend()
+                helper_state = _macos_helper_status()
+                backend_probe = _macos_helper_probe_backend()
                 relay_details['helper_status'] = helper_state or {}
                 relay_details['backend_probe'] = backend_probe
                 reachable = bool(backend_probe.get('reachable'))
@@ -6097,13 +6484,13 @@ class ProxyMaster:
             return
 
         # ── Write hosts file entries ──────────────────────────────────────
-        hosts_error_details: dict = {}
+        hosts_error_details: _ErrorDetails = {}
         if use_linux_helper:
             self._hosts_installed = True
         elif not _add_hosts_entries(active_hosts, error_details=hosts_error_details):
             if hosts_error_details.get('notify_user'):
                 self._emit_proxy_start_error(
-                    hosts_error_details.get('error_code', 'hosts_write_exhausted'),
+                    _preserve_str(hosts_error_details.get('error_code', 'hosts_write_exhausted')),
                     hosts_error_details,
                 )
             # Hosts write failed - stop the server and bail
@@ -6120,10 +6507,8 @@ class ProxyMaster:
 
                 stop_helper()
             else:
-                rollback_details: dict = {}
-                if not _remove_hosts_entries(
-                    set(INTERCEPT_HOSTS), error_details=rollback_details
-                ):
+                rollback_details: _ErrorDetails = {}
+                if not _remove_hosts_entries(set(INTERCEPT_HOSTS), error_details=rollback_details):
                     log_buffer.log(
                         'Error',
                         'Proxy startup rollback could not remove Fleasion hosts entries: '
@@ -6159,7 +6544,7 @@ class ProxyMaster:
         # ── Pre-download private replacement assets in background ─────────
         # Runs eagerly at startup so pre-downloaded files are ready before
         # Roblox sends its first batch request.
-        if self._texture_stripper is not None:
+        if _maybe_texture(self._texture_stripper) is not None:
             _precheck_thread = threading.Thread(
                 target=self._texture_stripper.precheck_replacements,
                 name='ReplacementPrecheck',
@@ -6186,7 +6571,7 @@ class ProxyMaster:
             # Ensure hosts file is cleaned up even if stop() wasn't called
             if self._hosts_installed:
                 self._stop_watchdog()
-                cleanup_details: dict = {}
+                cleanup_details: _ErrorDetails = {}
                 hosts_cleaned = _remove_hosts_entries(
                     set(INTERCEPT_HOSTS), error_details=cleanup_details
                 )
@@ -6211,3 +6596,12 @@ class ProxyMaster:
             _set_active_hosts_loopbacks(None)
             self._running = False
             self._loop = None
+
+
+# Public module-level aliases for cross-module orchestration.  The underscore-prefixed
+# implementations remain for compatibility with existing internal imports and tests.
+flush_dns = _flush_dns
+other_proxy_owner_alive = _other_proxy_owner_alive
+cancel_hosts_cleanup_on_reboot = _cancel_hosts_cleanup_on_reboot
+remove_hosts_entries = _remove_hosts_entries
+find_roblox_dirs = _find_roblox_dirs

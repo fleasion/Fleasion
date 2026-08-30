@@ -5,16 +5,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .translations.de import GERMAN
 from .translations.en import ENGLISH
 from .translations.es import SPANISH
+from .translations.fr import FRENCH
+from .translations.kk import KAZAKH
+from .translations.pl import POLISH
 from .translations.pt import PORTUGUESE
 from .translations.ru import RUSSIAN
-from .translations.kk import KAZAKH
 from .translations.tr import TURKISH
-from .translations.de import GERMAN
-from .translations.fr import FRENCH
 from .translations.zh import CHINESE
-from .translations.pl import POLISH
 
 DEFAULT_LANGUAGE = 'en'
 

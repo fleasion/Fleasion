@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from typing import cast
 from urllib.parse import SplitResult
 
 import pytest
@@ -8,6 +10,19 @@ from fleasion.utils import update_resolver
 from fleasion.utils.metadata import APP_REPO
 from fleasion.utils.update_resolver import ReleaseCandidate, UpdateResolver
 from fleasion.utils.updater import QtUpdateChecker
+
+
+def _worker(checker: QtUpdateChecker) -> None:
+    callback = cast('Callable[[], None]', getattr(checker, '_worker'))
+    callback()
+
+
+def _record_found(values: list[tuple[str, str]]) -> Callable[[str, str], None]:
+    def record(tag: str, url: str) -> None:
+        values.append((tag, url))
+
+    return record
+
 
 _REPOSITORY_URL = 'https://github.com/fleasion/Fleasion'
 _LATEST_RELEASE_API = 'https://api.github.com/repos/fleasion/Fleasion/releases/latest'
@@ -197,9 +212,9 @@ def test_qt_checker_owns_resolver_and_emits_its_result(monkeypatch: MonkeyPatch)
     )
     checker = QtUpdateChecker(resolver)
     found: list[tuple[str, str]] = []
-    checker.found.connect(lambda tag, url: found.append((tag, url)))
+    checker.found.connect(_record_found(found))
 
-    checker._worker()
+    _worker(checker)
 
     assert checker.resolver is resolver
     assert found == [('v2.4.0b2', 'https://example.invalid/b2')]
