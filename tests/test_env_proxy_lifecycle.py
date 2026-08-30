@@ -3,7 +3,7 @@ import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal, cast
+from typing import Literal, TypeIs, cast
 from unittest.mock import patch
 
 import pytest
@@ -17,8 +17,29 @@ type RelaunchCall = tuple[str, str | None, bool, Path, bool]
 type LifecycleCall = RelaunchCall | tuple[Literal['terminate']]
 
 
+def _is_relaunch_call(call: LifecycleCall) -> TypeIs[RelaunchCall]:
+    return len(call) == 5
+
+
 def _relaunch_calls(calls: list[LifecycleCall]) -> list[RelaunchCall]:
-    return [call for call in calls if len(call) == 5]
+    assert all(_is_relaunch_call(call) for call in calls)
+    return [call for call in calls if _is_relaunch_call(call)]
+
+
+def test_relaunch_calls_rejects_unexpected_lifecycle_events() -> None:
+    calls: list[LifecycleCall] = [
+        (
+            'http://127.0.0.1:58443',
+            None,
+            False,
+            Path('/Roblox/RobloxPlayerBeta.exe'),
+            False,
+        ),
+        ('terminate',),
+    ]
+
+    with pytest.raises(AssertionError):
+        _relaunch_calls(calls)
 
 
 def _mark_intentional(controller: EnvProxyLifecycleController) -> None:
@@ -215,7 +236,7 @@ def test_env_lifecycle_never_attempts_a_third_ca_repair() -> None:
     )
 
     assert not controller.handle_player_launch(Path('/Roblox/RobloxPlayerBeta.exe'))
-    assert [call[2] for call in _relaunch_calls(calls)] == [False, True, True]
+    assert [call[2] for call in calls if _is_relaunch_call(call)] == [False, True, True]
     assert calls[-1] == ('terminate',)
     assert proxy.monitors == 3
     assert not running['value']

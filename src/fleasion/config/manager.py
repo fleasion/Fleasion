@@ -28,12 +28,12 @@ _BINARY_CONTROL_RATIO = 0.1
 _BINARY_REPLACEMENT_RATIO = 0.3
 _LINUX_MAX_SCAN_CODE = 0x2FF
 _WINDOWS_MAX_SCAN_CODE = 0xFF
-_HOTKEY_KINDS = frozenset({'key', 'mouse_button'})
-_MOUSE_WHEEL_PLATFORMS = frozenset({'linux_evdev', 'windows'})
-_MOUSE_WHEEL_DIRECTIONS = frozenset({'up', 'down'})
+_HOTKEY_KINDS = ('key', 'mouse_button')
+_MOUSE_WHEEL_PLATFORMS = ('linux_evdev', 'windows')
+_MOUSE_WHEEL_DIRECTIONS = ('up', 'down')
 _LINUX_MOUSE_BUTTON_CODES = frozenset({0x110, 0x111, 0x112, 0x113, 0x114})
 _WINDOWS_MOUSE_BUTTON_CODES = frozenset({1, 2, 4, 5, 6})
-_WINDOWS_HOTKEY_PLATFORMS = frozenset({None, 'windows'})
+_WINDOWS_HOTKEY_PLATFORMS = (None, 'windows')
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
@@ -1513,11 +1513,11 @@ class ConfigManager:  # ruff: ignore[too-many-public-methods] - Existing public 
     @property
     def subplace_blacklist_mode(self) -> str:
         mode = self.settings.get('subplace_blacklist_mode', 'block')
-        return mode if mode in {'block', 'stall'} else 'block'
+        return mode if mode in ('block', 'stall') else 'block'
 
     @subplace_blacklist_mode.setter
     def subplace_blacklist_mode(self, value: str) -> None:
-        self.settings['subplace_blacklist_mode'] = value if value in {'block', 'stall'} else 'block'
+        self.settings['subplace_blacklist_mode'] = value if value in ('block', 'stall') else 'block'
         self._save_settings()
 
     @property

@@ -10,8 +10,17 @@ import pytest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6.QtCore import QEvent, QPointF, QRect, QSize, Qt
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication, QMenu, QPushButton, QScrollArea, QWidget
+from PySide6.QtGui import QImage, QMouseEvent, QPainter, QStandardItem, QStandardItemModel
+from PySide6.QtWidgets import (
+    QApplication,
+    QMenu,
+    QPushButton,
+    QScrollArea,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QTreeWidgetItem,
+    QWidget,
+)
 
 from fleasion.config import manager as manager_module
 from fleasion.gui import replacer_config as replacer_config_module
@@ -31,6 +40,23 @@ def _qapp() -> QApplication:
     app = QApplication.instance()
     _app = cast(QApplication, app) if app is not None else QApplication([])
     return _app
+
+
+def _new_replacer_tree_item() -> QTreeWidgetItem:
+    factory = cast('Callable[[], QTreeWidgetItem]', replacer_config_module.__dict__['ReplacerTreeItem'])
+    return factory()
+
+
+def _new_profile_name_delegate() -> QStyledItemDelegate:
+    factory = cast(
+        'Callable[[], QStyledItemDelegate]',
+        replacer_config_module.__dict__['_ProfileNameDelegate'],
+    )
+    return factory()
+
+
+def _draw_group_icon_role() -> int:
+    return cast(int, replacer_config_module.__dict__['_ROLE_DRAW_GROUP_ICON'])
 
 
 def _new_scrollable_menu(*, checkable: bool = False) -> QMenu:
@@ -112,6 +138,41 @@ def _enabled_row_checked(window: ReplacerConfigWindow, name: str) -> bool:
 
 def _noop() -> None:
     return None
+
+
+def test_replacer_tree_item_compares_while_unattached() -> None:
+    left = _new_replacer_tree_item()
+    right = _new_replacer_tree_item()
+    left.setText(0, 'alpha')
+    right.setText(0, 'beta')
+
+    assert left.treeWidget() is None
+    assert right.treeWidget() is None
+    assert left < right
+
+
+def test_profile_name_delegate_paints_without_option_widget() -> None:
+    app = _qapp()
+    model = QStandardItemModel()
+    item = QStandardItem('Group')
+    model.appendRow(item)
+    index = model.index(0, 0)
+    model.setData(index, True, _draw_group_icon_role())
+
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 160, 30)
+    assert option.widget is None
+
+    image = QImage(200, 60, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.white)
+    painter = QPainter(image)
+    try:
+        _new_profile_name_delegate().paint(painter, option, index)
+    finally:
+        painter.end()
+
+    assert not image.isNull()
+    assert app is not None
 
 
 def test_scrollable_config_menu_constrains_height_and_scrolls() -> None:

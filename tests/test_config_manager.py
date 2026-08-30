@@ -373,6 +373,43 @@ class ConfigManagerEncodingTests(unittest.TestCase):
                 },
             )
 
+    def test_malformed_custom_fflag_keybind_fields_are_rejected_without_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+
+            malformed_keybinds: dict[str, object] = {
+                'BadPlatform': {
+                    'platform': [],
+                    'scan_code': 0x1E,
+                    'extended': False,
+                    'modifiers': 0,
+                },
+                'BadKind': {
+                    'platform': 'linux_evdev',
+                    'kind': [],
+                    'scan_code': 0x1E,
+                    'modifiers': 0,
+                },
+                'BadWheelDirection': {
+                    'platform': 'linux_evdev',
+                    'kind': 'mouse_wheel',
+                    'direction': [],
+                    'modifiers': 0,
+                },
+            }
+            manager.custom_fflag_keybinds = malformed_keybinds
+
+            self.assertEqual(manager.custom_fflag_keybinds, {})
+
+    def test_malformed_subplace_blacklist_mode_falls_back_without_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+            manager.settings['subplace_blacklist_mode'] = []
+
+            self.assertEqual(manager.subplace_blacklist_mode, 'block')
+
     def test_dummy_replacement_ids_are_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

@@ -103,6 +103,11 @@ if TYPE_CHECKING:
     from .subplace_joiner_tab import SubplaceJoinerTab
 
 
+def _qt_optional[T](value: T) -> T | None:
+    """Preserve Qt binding values whose stubs omit valid ``None`` states."""
+    return value
+
+
 class _ProfileRule(TypedDict, total=False):
     type: Literal['profile']
     name: str
@@ -535,8 +540,8 @@ class ReplacerTreeItem(QTreeWidgetItem):
 
     @override
     def __lt__(self, other: QTreeWidgetItem) -> bool:
-        tree = self.treeWidget()
-        column = tree.sortColumn()
+        tree = _qt_optional(self.treeWidget())
+        column = tree.sortColumn() if tree is not None else 0
         left = self._sort_key(self.data(column, _ROLE_SORT_BASE))
         right = self._sort_key(other.data(column, _ROLE_SORT_BASE))
         if left is not None and right is not None:
@@ -563,8 +568,8 @@ class _ProfileNameDelegate(QStyledItemDelegate):
         label = item_option.text
         item_option.text = ''
         item_option.icon = QIcon()
-        widget = item_option.widget
-        style = widget.style()
+        widget = _qt_optional(item_option.widget)
+        style = widget.style() if widget is not None else QApplication.style()
 
         painter.save()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, item_option, painter, widget)

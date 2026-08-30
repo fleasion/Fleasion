@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, cast
 
 from PySide6.QtCore import QDir, QMimeData, Signal
 from PySide6.QtWidgets import QLineEdit
@@ -11,15 +11,9 @@ from PySide6.QtWidgets import QLineEdit
 if TYPE_CHECKING:
     from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 
-    def _init_line_edit(
-        widget: QLineEdit, args: tuple[object, ...], kwargs: dict[str, object]
-    ) -> None: ...
-else:
 
-    def _init_line_edit(
-        widget: QLineEdit, args: tuple[object, ...], kwargs: dict[str, object]
-    ) -> None:
-        QLineEdit.__init__(widget, *args, **kwargs)
+class _CooperativeLineEditInitializer(Protocol):
+    def __init__(self, *args: object, **kwargs: object) -> None: ...
 
 
 def local_file_path_example() -> str:
@@ -50,7 +44,7 @@ class FileDropLineEdit(QLineEdit):
     fileDropped = Signal(str)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        _init_line_edit(self, args, kwargs)
+        cast(_CooperativeLineEditInitializer, super()).__init__(*args, **kwargs)
         self.setAcceptDrops(True)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802

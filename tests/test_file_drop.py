@@ -3,8 +3,9 @@ from pathlib import Path
 from typing import cast
 
 from PySide6.QtCore import QDir, QMimeData, QUrl
+from PySide6.QtWidgets import QApplication, QLineEdit
 
-from fleasion.gui.file_drop import local_file_path_from_mime_data
+from fleasion.gui.file_drop import FileDropLineEdit, local_file_path_from_mime_data
 from fleasion.gui import modifications_tab as modifications_tab_module
 
 
@@ -31,6 +32,29 @@ def test_local_file_path_from_mime_data_ignores_non_local_urls() -> None:
     mime_data.setUrls([QUrl('https://example.com/file.txt')])
 
     assert local_file_path_from_mime_data(mime_data) is None
+
+
+def test_file_drop_line_edit_keeps_cooperative_mro_initialization() -> None:
+    app = QApplication.instance()
+    qapp = cast(QApplication, app) if app is not None else QApplication([])
+
+    class TrackedLineEdit(QLineEdit):
+        tracked_init: bool
+
+        def __init__(self) -> None:
+            self.tracked_init = True
+            super().__init__()
+
+    class CombinedLineEdit(FileDropLineEdit, TrackedLineEdit):
+        pass
+
+    widget = CombinedLineEdit()
+    try:
+        assert widget.tracked_init
+        assert widget.acceptDrops()
+    finally:
+        widget.deleteLater()
+        qapp.processEvents()
 
 
 def test_relative_target_path_for_resource_file_requires_known_roblox_root(tmp_path: Path) -> None:

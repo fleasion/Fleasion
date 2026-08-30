@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 
     def _set_image_bits_size(value: object, size: int) -> None: ...
 
+    def _save_qimage(image: QImage, buffer: QBuffer, format_name: str) -> bool: ...
+
     def _windows_clipboard_modules() -> tuple[_Win32Clipboard, _Win32Con]: ...
 else:
 
@@ -44,6 +46,9 @@ else:
 
     def _set_image_bits_size(value: object, size: int) -> None:
         value.setsize(size)
+
+    def _save_qimage(image: QImage, buffer: QBuffer, format_name: str) -> bool:
+        return image.save(buffer, format_name)
 
     def _windows_clipboard_modules() -> tuple[_Win32Clipboard, _Win32Con]:
         return (
@@ -62,7 +67,7 @@ def _encode_png(image: QImage) -> bytes:
     if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
         raise RuntimeError('Failed to prepare clipboard image data')
     try:
-        if not image.save(buffer, b'PNG'):
+        if not _save_qimage(image, buffer, 'PNG'):
             raise RuntimeError('Failed to encode clipboard image as PNG')
     finally:
         buffer.close()
