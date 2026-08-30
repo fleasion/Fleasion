@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 from .logging import LogBuffer, log_buffer
 from .metadata import (
     APP_AUTHOR,
@@ -60,36 +65,39 @@ from .windows import (
 )
 
 
-def start_update_check() -> None:  # ruff: ignore[non-empty-init-module]
+def start_update_check(  # ruff: ignore[non-empty-init-module]
+    *args: object, **kwargs: object
+) -> None:
     from .updater import (  # ruff: ignore[import-outside-top-level]
         start_update_check as _start_update_check,
     )
 
-    return _start_update_check()
+    compatible = cast('Callable[..., None]', _start_update_check)
+    return compatible(*args, **kwargs)
 
 
-__all__ = [
+__all__ = [  # ruff: ignore[unsorted-dunder-all]
     'APP_AUTHOR',
-    'APP_CACHE_DIR',
+    'APP_LOGIC',
     'APP_CONCEPT',
     'APP_DISCORD',
-    'APP_LOGIC',
-    'APP_NAME',
     'APP_REPO',
+    'APP_NAME',
     'APP_VERSION',
+    'APP_CACHE_DIR',
     'CLOG_URL',
-    'CONFIGS_FOLDER',
     'CONFIG_DIR',
     'CONFIG_FILE',
+    'CONFIGS_FOLDER',
     'ICON_FILENAME',
     'LOCAL_APPDATA',
-    'LOGS_DIR',
     'LOG_FILE',
+    'LOGS_DIR',
     'MACOS_PROXY_BACKEND_PORT',
     'MACOS_PROXY_HELPER_CONTROL_PORT',
-    'MODIFICATIONS_JSON',
     'MOD_CACHE_DIR',
     'MOD_ORIGINALS_DIR',
+    'MODIFICATIONS_JSON',
     'ORIGINALS_DIR',
     'PREJSONS_DIR',
     'PROXY_CA_DIR',
@@ -104,23 +112,23 @@ __all__ = [
     'USER_HOME',
     'LogBuffer',
     'TimeTracker',
+    'time_tracker',
     'delete_cache',
-    'format_count',
     'get_icon_path',
+    'format_count',
     'get_roblox_player_exe_path',
     'get_roblox_process_identity',
     'get_roblox_studio_exe_path',
     'is_roblox_running',
     'is_studio_running',
-    'launch_as_standard_user',
     'log_buffer',
+    'launch_as_standard_user',
     'open_folder',
     'pluralize',
     'run_in_thread',
-    'show_message_box',
     'start_update_check',
+    'show_message_box',
     'terminate_roblox',
-    'time_tracker',
     'wait_for_roblox_exit',
     'wait_for_roblox_window',
 ]

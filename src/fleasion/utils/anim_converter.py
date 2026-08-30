@@ -170,7 +170,7 @@ def rbxm_to_rbxmx(data: bytes) -> bytes:
 
 
 class _Instance:
-    __slots__ = ('children', 'class_name', 'name', 'parent', 'properties')
+    __slots__ = ('class_name', 'name', 'properties', 'children', 'parent')  # ruff: ignore[unsorted-dunder-slots]
 
     def __init__(self, class_name: str) -> None:
         self.class_name: str = class_name

@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 
 from fleasion.localization import tr, tr_count
 from fleasion.utils.logging import log_buffer
-from fleasion.utils.paths import CONFIG_DIR
+from fleasion.utils.paths import CONFIG_DIR, PROXY_CA_DIR
 from fleasion.utils.roblox_auth import (
     get_roblosecurity as _get_roblosecurity,
     wait_for_roblosecurity as _wait_for_roblosecurity,
@@ -125,6 +125,8 @@ class _ConfigManager(Protocol):
 
 class _ProxyMaster(Protocol):
     def roblox_env_proxy_url(self) -> str: ...
+
+    def hosts_intercepts_host(self, host: str) -> bool: ...
 
 
 class _FlowHeaders(Protocol):
@@ -1803,7 +1805,13 @@ class SubplaceJoinerTab(QWidget):
                 'isImmersiveAdsTeleport': False,
                 'gameJoinAttemptId': str(uuid.uuid4()),
             }
-            r = sess.post('https://gamejoin.roblox.com/v1/join-game', json=payload, timeout=15)
+            join_url = 'https://gamejoin.roblox.com/v1/join-game'
+            r = sess.post(
+                join_url,
+                json=payload,
+                timeout=15,
+                verify=self._request_verify(join_url),
+            )
             try:
                 return r.status_code == 200 and r.json().get('status') == 2  # ruff: ignore[magic-value-comparison]
             except Exception:  # ruff: ignore[blind-except]
@@ -1838,7 +1846,15 @@ class SubplaceJoinerTab(QWidget):
 
     # HTTP helpers
 
-    def _get(  # ruff: ignore[no-self-use]
+    def _request_verify(self, url: str) -> bool | str:
+        host = (urlparse(url).hostname or '').strip().lower().rstrip('.')
+        proxy_master = self._proxy_master
+        if proxy_master is None or not proxy_master.hosts_intercepts_host(host):
+            return True
+        ca_cert = PROXY_CA_DIR / 'ca.crt'
+        return str(ca_cert) if ca_cert.is_file() else True
+
+    def _get(
         self,
         url: str,
         timeout: float = 10,
@@ -1851,6 +1867,7 @@ class SubplaceJoinerTab(QWidget):
             proxies={},
             cookies=cookies,
             headers=headers,
+            verify=self._request_verify(url),
         )
         return r  # ruff: ignore[unnecessary-assign]
 

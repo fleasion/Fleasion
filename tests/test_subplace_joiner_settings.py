@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fleasion.gui import subplace_joiner_tab
 
@@ -36,9 +36,28 @@ class _ConfigManagerStub:
 
 
 class _ProxyMasterStub:
+    def __init__(self, intercepted_hosts: set[str] | None = None) -> None:
+        self.intercepted_hosts: set[str] = (
+            set() if intercepted_hosts is None else set(intercepted_hosts)
+        )
+
     @staticmethod
     def roblox_env_proxy_url() -> str:
         return 'http://127.0.0.1:58443'
+
+    def hosts_intercepts_host(self, host: str) -> bool:
+        return host in self.intercepted_hosts
+
+
+class _SessionStub:
+    def __init__(self) -> None:
+        self.verify: bool | str | None = None
+        self.url = ''
+
+    def post(self, url: str, **kwargs: object) -> _FakeResponse:
+        self.url = url
+        self.verify = cast('bool | str | None', kwargs.get('verify'))
+        return _FakeResponse(200, {'status': 2})
 
 
 class _SettingsOwner(subplace_joiner_tab.SubplaceJoinerTab):
@@ -95,9 +114,98 @@ class _SettingsOwner(subplace_joiner_tab.SubplaceJoinerTab):
         self._config_manager = config_manager
         self._proxy_master = proxy_master
 
+    def request_verify(self, url: str) -> bool | str:
+        return self._request_verify(url)
+
+    def request_get(self, url: str) -> object:
+        return self._get(url)
+
+    def join_root(self, root_place_id: int | str, cookie: str | None = None) -> bool:
+        return self._join_root(root_place_id, cookie)
+
+    def install_session(self, session: object) -> None:
+        def new_session(_cookie: str | None) -> object:
+            return session
+
+        vars(self)['_new_session'] = new_session
+
 
 def _settings_owner() -> _SettingsOwner:
     return _SettingsOwner.uninitialized()
+
+
+def test_subplace_request_verify_uses_local_ca_only_for_active_intercept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ca_dir = tmp_path / 'proxy_ca'
+    ca_dir.mkdir()
+    ca_cert = ca_dir / 'ca.crt'
+    ca_cert.write_text('test-ca', encoding='utf-8')
+    monkeypatch.setattr(subplace_joiner_tab, 'PROXY_CA_DIR', ca_dir)
+
+    proxy_master = _ProxyMasterStub({'gamejoin.roblox.com', 'apis.roblox.com'})
+    owner = _settings_owner()
+    owner.configure_proxy(_ConfigManagerStub('hosts', True), proxy_master)
+
+    assert owner.request_verify('https://gamejoin.roblox.com/v1/join-game') == str(ca_cert)
+    assert owner.request_verify('https://apis.roblox.com/universes/v1/places/1/universe') == str(
+        ca_cert
+    )
+    assert owner.request_verify('https://games.roblox.com/v1/games/1/servers/Public') is True
+
+    proxy_master.intercepted_hosts.clear()
+    assert owner.request_verify('https://gamejoin.roblox.com/v1/join-game') is True
+
+
+def test_subplace_get_verifies_intercepted_api_host_with_local_ca(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ca_dir = tmp_path / 'proxy_ca'
+    ca_dir.mkdir()
+    ca_cert = ca_dir / 'ca.crt'
+    ca_cert.write_text('test-ca', encoding='utf-8')
+    monkeypatch.setattr(subplace_joiner_tab, 'PROXY_CA_DIR', ca_dir)
+
+    owner = _settings_owner()
+    owner.configure_proxy(
+        _ConfigManagerStub('hosts', True),
+        _ProxyMasterStub({'apis.roblox.com'}),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_get(url: str, **kwargs: object) -> _FakeResponse:
+        captured['url'] = url
+        captured.update(kwargs)
+        return _FakeResponse()
+
+    monkeypatch.setattr(subplace_joiner_tab.requests, 'get', fake_get)
+    url = 'https://apis.roblox.com/universes/v1/places/1/universe'
+    owner.request_get(url)
+
+    assert captured['url'] == url
+    assert captured['verify'] == str(ca_cert)
+
+
+def test_subplace_join_root_verifies_intercepted_gamejoin_with_local_ca(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ca_dir = tmp_path / 'proxy_ca'
+    ca_dir.mkdir()
+    ca_cert = ca_dir / 'ca.crt'
+    ca_cert.write_text('test-ca', encoding='utf-8')
+    monkeypatch.setattr(subplace_joiner_tab, 'PROXY_CA_DIR', ca_dir)
+
+    owner = _settings_owner()
+    owner.configure_proxy(
+        _ConfigManagerStub('hosts', True),
+        _ProxyMasterStub({'gamejoin.roblox.com'}),
+    )
+    session = _SessionStub()
+    owner.install_session(session)
+
+    assert owner.join_root(12345, 'cookie')
+    assert session.url == 'https://gamejoin.roblox.com/v1/join-game'
+    assert session.verify == str(ca_cert)
 
 
 def test_subplace_settings_save_uses_user_owned_config_root(

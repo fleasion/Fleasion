@@ -341,7 +341,7 @@ async def _reparse_request_bytes(raw: bytes) -> tuple[RawHeaders, RawBody] | Non
 class PendingIntercept:
     """A request or response held open, awaiting a forward/drop decision from the GUI."""
 
-    __slots__ = ('action', 'data', 'entry_id', 'event', 'stage')
+    __slots__ = ('entry_id', 'stage', 'data', 'event', 'action')  # ruff: ignore[unsorted-dunder-slots]
 
     def __init__(self, entry_id: int, stage: str, data: bytes) -> None:
         self.entry_id = entry_id

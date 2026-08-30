@@ -4414,6 +4414,18 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
     def is_running(self) -> bool:
         return self._running
 
+    def hosts_intercepts_host(self, host: str) -> bool:
+        """Return whether managed hosts routing currently sends *host* through Fleasion."""
+        normalized = host.strip().lower().rstrip('.')
+        if not normalized:
+            return False
+        with self._lock:
+            return (
+                self._running
+                and self._hosts_installed
+                and normalized in self._active_intercept_hosts
+            )
+
     def _proxy_debug_enabled(self) -> bool:
         return bool(self.config_manager.settings.get('_runtime_proxy_debug', False))
 

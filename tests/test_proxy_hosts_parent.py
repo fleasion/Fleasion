@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Never, cast
@@ -48,6 +49,25 @@ def _record_log(values: list[tuple[str, str]]) -> Callable[[str, str], None]:
 def _fail_read_text(*_args: object, **_kwargs: object) -> Never:
     msg = 'oversized file was read'
     raise AssertionError(msg)
+
+
+def test_proxy_master_reports_only_active_managed_hosts_intercepts() -> None:
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    state = vars(proxy)
+    state['_lock'] = threading.Lock()
+    state['_running'] = True
+    state['_hosts_installed'] = True
+    state['_active_intercept_hosts'] = {'gamejoin.roblox.com'}
+
+    assert proxy.hosts_intercepts_host('GAMEJOIN.ROBLOX.COM.')
+    assert not proxy.hosts_intercepts_host('apis.roblox.com')
+
+    state['_hosts_installed'] = False
+    assert not proxy.hosts_intercepts_host('gamejoin.roblox.com')
+
+    state['_hosts_installed'] = True
+    state['_running'] = False
+    assert not proxy.hosts_intercepts_host('gamejoin.roblox.com')
 
 
 def test_windows_hosts_writer_creates_missing_immediate_parent(
