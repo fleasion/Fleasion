@@ -416,6 +416,44 @@ def test_profile_api_has_upstream_connection_limit(
     assert PROFILE_API_HOST in limits
 
 
+def test_upstream_tls_context_preserves_default_certificate_verification(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class FakeSSLContext:
+        check_hostname = True
+        verify_mode: ssl.VerifyMode | None = ssl.CERT_REQUIRED
+        minimum_version = None
+        maximum_version = None
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def load_cert_chain(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_alpn_protocols(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_servername_callback(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    upstream_ctx = FakeSSLContext()
+    monkeypatch.setattr('fleasion.proxy.server.ssl.SSLContext', FakeSSLContext)
+    monkeypatch.setattr('fleasion.proxy.server.ssl.create_default_context', lambda: upstream_ctx)
+
+    proxy = FleasionProxy(
+        texture_stripper=_texture_stub(),
+        cache_scraper=_cache_stub(),
+        host_certs={},
+        default_cert=(tmp_path / 'default.crt', tmp_path / 'default.key'),
+        upstream_endpoints={},
+    )
+
+    assert proxy.__dict__['_upstream_ssl_ctx'] is upstream_ctx
+    assert upstream_ctx.check_hostname is True
+    assert upstream_ctx.verify_mode == ssl.CERT_REQUIRED
+
+
 def test_profile_api_preserves_unmodified_browser_wire(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

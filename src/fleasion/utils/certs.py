@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import ipaddress
 import logging
+import os
 from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
@@ -50,6 +51,20 @@ CA_MIN_REMAINING_DAYS = 30
 LEAF_MIN_REMAINING_DAYS = 7
 LEAF_CERT_VALIDITY_DAYS = 825
 NOT_VALID_BEFORE_SKEW_MINUTES = 5
+
+
+def _secure_private_key_permissions(path: Path) -> None:
+    """Restrict an existing private-key file to its owner on POSIX platforms."""
+    if os.name != 'nt' and path.exists():
+        path.chmod(0o600)
+
+
+def _write_private_key(path: Path, data: bytes) -> None:
+    """Write private-key bytes without creating a world-readable window."""
+    if os.name != 'nt':
+        path.touch(mode=0o600, exist_ok=True)
+        path.chmod(0o600)
+    path.write_bytes(data)
 
 
 def _crypto() -> tuple[ModuleType, type[object], ModuleType, ModuleType, ModuleType]:
@@ -256,6 +271,7 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
             time_ok = _cert_valid_for(existing_ca, CA_MIN_REMAINING_DAYS)
             ski_ok = _cert_has_subject_key_identifier(existing_ca)
             if key_ok and time_ok and ski_ok:
+                _secure_private_key_permissions(ca_key_path)
                 return ca_cert_path, ca_key_path
 
             logger.warning('Existing Fleasion CA is stale or mismatched; regenerating')
@@ -310,12 +326,13 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
     )
 
     ca_cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    ca_key_path.write_bytes(
+    _write_private_key(
+        ca_key_path,
         key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.TraditionalOpenSSL,
             serialization.NoEncryption(),
-        )
+        ),
     )
     logger.info('Generated new Fleasion CA cert at %s', ca_cert_path)
     return ca_cert_path, ca_key_path
@@ -332,6 +349,7 @@ def generate_host_cert(
     safe_host = host.replace('*', '_wildcard_')
     cert_path = ca_dir / f'{safe_host}.crt'
     key_path = ca_dir / f'{safe_host}.key'
+    _secure_private_key_permissions(ca_key_path)
 
     from cryptography import x509  # ruff: ignore[import-outside-top-level]
     from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
@@ -394,6 +412,7 @@ def generate_host_cert(
                 and aki_ok
                 and signature_ok
             ):
+                _secure_private_key_permissions(key_path)
                 return cert_path, key_path
 
             logger.warning('Cached leaf cert for %s is stale or mismatched; regenerating', host)
@@ -460,12 +479,13 @@ def generate_host_cert(
     )
 
     cert_path.write_bytes(leaf_cert.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(
+    _write_private_key(
+        key_path,
         leaf_key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.TraditionalOpenSSL,
             serialization.NoEncryption(),
-        )
+        ),
     )
     logger.debug('Generated leaf cert for %s', host)
     return cert_path, key_path
@@ -484,6 +504,7 @@ def generate_multi_host_cert(
     safe_name = _safe_cert_filename(cert_name)
     cert_path = ca_dir / f'{safe_name}.crt'
     key_path = ca_dir / f'{safe_name}.key'
+    _secure_private_key_permissions(ca_key_path)
 
     from cryptography import x509  # ruff: ignore[import-outside-top-level]
     from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
@@ -534,6 +555,7 @@ def generate_multi_host_cert(
                 and aki_ok
                 and signature_ok
             ):
+                _secure_private_key_permissions(key_path)
                 return cert_path, key_path
 
             logger.warning(
@@ -601,12 +623,13 @@ def generate_multi_host_cert(
     )
 
     cert_path.write_bytes(leaf_cert.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(
+    _write_private_key(
+        key_path,
         leaf_key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.TraditionalOpenSSL,
             serialization.NoEncryption(),
-        )
+        ),
     )
     logger.debug('Generated multi-host cert %s for %s', cert_name, ', '.join(normalized_hosts))
     return cert_path, key_path

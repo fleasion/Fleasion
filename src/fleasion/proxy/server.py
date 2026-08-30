@@ -1468,10 +1468,8 @@ class FleasionProxy:
             ctx.set_alpn_protocols(['http/1.1'])
             self._host_ssl_ctxs[host] = ctx
 
-        # Upstream: no cert verify, force HTTP/1.1 (we don't implement h2)
+        # Upstream: verify Roblox certificates while forcing HTTP/1.1 (we don't implement h2).
         self._upstream_ssl_ctx = ssl.create_default_context()
-        self._upstream_ssl_ctx.check_hostname = False
-        self._upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
         self._upstream_ssl_ctx.set_alpn_protocols(['http/1.1'])
 
         if default_cert is None:

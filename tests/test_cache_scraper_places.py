@@ -1,6 +1,7 @@
 import http.client
 import json
 import socket
+import ssl
 import struct
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -263,7 +264,7 @@ def test_https_get_tries_the_next_cached_endpoint_after_a_connect_failure(
 
     class _FakeContext:
         check_hostname = True
-        verify_mode: object | None = None
+        verify_mode: ssl.VerifyMode | None = ssl.CERT_REQUIRED
 
         def wrap_socket(self, raw_sock: _FakeSocket, server_hostname: str) -> _FakeSocket:
             assert server_hostname == 'assetdelivery.roblox.com'
@@ -276,8 +277,10 @@ def test_https_get_tries_the_next_cached_endpoint_after_a_connect_failure(
             raise OSError(msg)
         return _FakeSocket()
 
+    context = _FakeContext()
+
     def create_context() -> _FakeContext:
-        return _FakeContext()
+        return context
 
     def connection_init(*_args: object, **_kwargs: object) -> None:
         return None
@@ -307,6 +310,8 @@ def test_https_get_tries_the_next_cached_endpoint_after_a_connect_failure(
         _executor(scraper).shutdown(wait=False, cancel_futures=True)
 
     assert [address[0] for address, _timeout in attempts] == ['198.51.100.1', '93.184.216.34']
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
 
 
 def _fake_roblox_ktx2(

@@ -5,16 +5,19 @@ import threading
 import time
 import unittest
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import cast
 
 from fleasion.proxy import upstream as upstream_module, windows_proxy as windows_proxy_module
 from fleasion.proxy.upstream import (
     AutoConnector,
     BaseUpstreamConnector,
+    DirectIpConnector,
     UpstreamConnectResult,
     UpstreamEndpoint,
 )
 from fleasion.proxy.windows_proxy import parse_static_http_proxy
+from fleasion.utils.certs import generate_ca, generate_host_cert
 
 
 def _blocking_http_connect_socket(
@@ -103,6 +106,46 @@ def _recv_until(conn: socket.socket, marker: bytes) -> bytes:
             break
         buf += chunk
     return bytes(buf)
+
+
+def test_direct_ip_connector_supports_verified_tls_with_hostname_sni(tmp_path: Path) -> None:
+    async def run_test() -> None:
+        host = 'assetdelivery.roblox.com'
+        ca_cert, ca_key = generate_ca(tmp_path)
+        host_cert, host_key = generate_host_cert(host, ca_cert, ca_key, tmp_path)
+
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(str(host_cert), str(host_key))
+
+        async def handler(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            writer.write(b'ok')
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_server(handler, '127.0.0.1', 0, ssl=server_ctx)
+        sockets = server.sockets
+        assert sockets
+        port = int(sockets[0].getsockname()[1])
+        client_ctx = ssl.create_default_context(cafile=str(ca_cert))
+
+        try:
+            result = await DirectIpConnector().connect(
+                host,
+                [UpstreamEndpoint(host=host, ip='127.0.0.1', port=port)],
+                client_ctx,
+                2.0,
+            )
+            assert result.reader is not None
+            assert result.writer is not None
+            assert await result.reader.read(2) == b'ok'
+            result.writer.close()
+            await result.writer.wait_closed()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(run_test())
 
 
 class UpstreamHandshakeTests(unittest.TestCase):

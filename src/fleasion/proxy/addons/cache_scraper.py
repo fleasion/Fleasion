@@ -826,8 +826,6 @@ class CacheScraper:
         from urllib.parse import urlparse  # ruff: ignore[import-outside-top-level]
 
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
 
         cur_hostname = hostname
         cur_path = path
