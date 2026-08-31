@@ -1,4 +1,3 @@
-# -*- mode: python ; coding: utf-8 -*-
 from __future__ import annotations
 
 import importlib.util
@@ -10,7 +9,9 @@ from importlib.metadata import PackageNotFoundError, version as distribution_ver
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fleasion.version import build_artifact_version, macos_bundle_version, read_project_version
+from PyInstaller.building.api import COLLECT, EXE, PYZ
+from PyInstaller.building.build_main import Analysis
+from PyInstaller.building.osx import BUNDLE  # pyright: ignore[reportMissingTypeStubs]
 from PyInstaller.utils.hooks import (
     collect_all,
     collect_data_files,
@@ -18,16 +19,14 @@ from PyInstaller.utils.hooks import (
     copy_metadata,
 )
 
+from fleasion.version import build_artifact_version, macos_bundle_version, read_project_version
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
-    from typing import TypeAlias, TypeVar
+    from typing import TypeVar
 
-    from PyInstaller.building.api import COLLECT, EXE, PYZ
-    from PyInstaller.building.build_main import Analysis
-    from PyInstaller.building.osx import BUNDLE
-
-    CollectionEntry: TypeAlias = tuple[str, str]
-    TocEntry: TypeAlias = tuple[object, ...]
+    type CollectionEntry = tuple[str, str]
+    type TocEntry = tuple[object, ...]
     TocItem = TypeVar('TocItem', bound=tuple[object, ...])
 
 
@@ -217,7 +216,7 @@ def _entry_name_startswith(entry: TocEntry, prefixes: tuple[str, ...]) -> bool:
     return any(Path(str(part)).name.startswith(prefixes) for part in entry[:2])
 
 
-def _drop_entries(
+def _drop_entries[TocItem: tuple[object, ...]](
     entries: Iterable[TocItem],
     predicate: Callable[[TocItem], bool],
 ) -> list[TocItem]:
@@ -240,25 +239,26 @@ try:
     _artifact_version = build_artifact_version(_app_version)
     _bundle_version = macos_bundle_version(_app_version)
 except (OSError, ValueError) as exc:
-    raise SystemExit(f'Could not resolve the Fleasion build version: {exc}') from exc
+    msg = f'Could not resolve the Fleasion build version: {exc}'
+    raise SystemExit(msg) from exc
 _exe_name = f'Fleasion-v{_artifact_version}'
 try:
     _distribution_version = distribution_version('fleasion')
-except PackageNotFoundError:
-    raise SystemExit('Fleasion distribution metadata is missing. Run uv sync before building.')
+except PackageNotFoundError as e:
+    msg = 'Fleasion distribution metadata is missing. Run uv sync before building.'
+    raise SystemExit(msg) from e
 if _distribution_version != _app_version:
-    raise SystemExit(
+    msg = (
         f'Fleasion distribution metadata is {_distribution_version}, but pyproject.toml '
         f'declares {_app_version}. Run uv sync before building.'
     )
+    raise SystemExit(msg)
 if sys.platform == 'win32':
     _exe_name = f'{_exe_name}-Windows'
 elif sys.platform.startswith('linux'):
     _exe_name = f'{_exe_name}-Linux'
 _macos_target_arch = (
-    os.environ.get('MACOS_TARGET_ARCH', 'universal2')
-    if sys.platform == 'darwin'
-    else None
+    os.environ.get('MACOS_TARGET_ARCH', 'universal2') if sys.platform == 'darwin' else None
 )
 # Keep UPX's size savings for the Windows one-file build, but leave the native
 # Qt/PyQt graphics stack byte-for-byte as shipped by its wheels. The dashboard
@@ -331,29 +331,29 @@ elif sys.platform == 'darwin':
         if _macos_target_arch in _bundled_macos_helpers
         else list(_bundled_macos_helpers.values())
     )
-    _existing_macos_helpers = [
-        helper for helper in _wanted_macos_helpers if helper.exists()
-    ]
+    _existing_macos_helpers = [helper for helper in _wanted_macos_helpers if helper.exists()]
     if not _existing_macos_helpers and _bundled_legacy_macos_helper.exists():
         _existing_macos_helpers = [_bundled_legacy_macos_helper]
     if not _existing_macos_helpers:
-        raise SystemExit(
+        msg = (
             'Missing dist/fleasion-proxy-helper-arm64 or dist/fleasion-proxy-helper-x86_64. '
             'Fleasion.spec could not build the macOS helper.'
         )
-    for helper in _existing_macos_helpers:
-        datas.append((str(helper), '.'))
+        raise SystemExit(msg)
+    datas.extend((str(helper), '.') for helper in _existing_macos_helpers)
     _collect_package('browser_cookie3')
     _collect_package('Cryptodome')
 elif sys.platform.startswith('linux'):
     _build_linux_helper()
     if not _bundled_linux_helper.exists():
-        raise SystemExit(
+        msg = (
             'Missing dist/fleasion-linux-proxy-helper. '
             'Fleasion.spec could not build the Linux proxy helper.'
         )
-    datas.append((str(_bundled_linux_helper), '.'))
-    datas.append(('src/fleasion/linux_proxy_helper_daemon.py', '.'))
+        raise SystemExit(msg)
+    datas.extend(
+        ((str(_bundled_linux_helper), '.'), ('src/fleasion/linux_proxy_helper_daemon.py', '.'))
+    )
 
 a = Analysis(
     ['launcher.py'],
