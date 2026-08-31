@@ -50,6 +50,51 @@ def _macos_auth_sources() -> tuple[tuple[str, str], ...]:
     )
 
 
+def _ensure_macos_hosts_helper(parent: QWidget) -> bool:
+    """Ensure Hosts mode has its privileged helper before a mode transition."""
+    from ..utils.logging import log_buffer
+    from ..utils.macos_proxy_helper import helper_is_ready, install_helper
+
+    if helper_is_ready():
+        return True
+
+    prompt = QMessageBox(parent)
+    prompt.setWindowTitle(tr('app.install_proxy_helper'))
+    prompt.setIcon(QMessageBox.Icon.Information)
+    prompt.setText(tr('app.install_the_fleasion_macos_proxy_helper'))
+    prompt.setInformativeText(tr('app.macos_requires_a_small_root_service_to'))
+    install_button = prompt.addButton(tr('app.install_helper'), QMessageBox.ButtonRole.AcceptRole)
+    cancel_button = prompt.addButton(tr('app.not_now'), QMessageBox.ButtonRole.RejectRole)
+    prompt.setDefaultButton(install_button)
+    prompt.exec()
+    if prompt.clickedButton() == cancel_button:
+        log_buffer.log(
+            'ProxyHelper',
+            'macOS Hosts mode switch cancelled before restart because helper installation was postponed',
+        )
+        return False
+
+    log_buffer.log(
+        'ProxyHelper',
+        'Installing macOS proxy helper before switching the running app to Hosts File mode',
+    )
+    ok, detail = install_helper()
+    if ok:
+        log_buffer.log(
+            'ProxyHelper',
+            'macOS proxy helper is ready; continuing Hosts File mode switch in-process',
+        )
+        return True
+
+    log_buffer.log('ProxyHelper', f'macOS proxy helper install failed before mode switch: {detail}')
+    QMessageBox.warning(
+        parent,
+        tr('app.fleasion_proxy_helper_installation_failed'),
+        tr('app.fleasion_could_not_install_or_start_the', value0=detail),
+    )
+    return False
+
+
 class EnvProxyWarningDialog(QMessageBox):
     """Explain the Player-only relaunch behavior when Env Proxy is selected."""
 
@@ -761,6 +806,25 @@ class SettingsTab(QWidget):
     def _on_proxy_mode_changed(self, *_args):
         previous_mode = self._config.proxy_mode
         new_mode = self._proxy_mode_combo.currentData()
+
+        if (
+            new_mode == 'hosts'
+            and previous_mode != 'hosts'
+            and sys.platform == 'darwin'
+            and self._config.proxy_features_enabled
+            and not _ensure_macos_hosts_helper(self)
+        ):
+            # Do not persist Hosts mode or enter the verified restart handoff
+            # until its privileged prerequisite is actually available. Prompting
+            # from the replacement process can deadlock the handoff while the
+            # original process waits synchronously for replacement readiness.
+            previous_index = self._proxy_mode_combo.findData(previous_mode)
+            if previous_index >= 0:
+                self._proxy_mode_combo.blockSignals(True)
+                self._proxy_mode_combo.setCurrentIndex(previous_index)
+                self._proxy_mode_combo.blockSignals(False)
+            return
+
         self._config.proxy_mode = new_mode
         if self._config.run_on_boot:
             try:
