@@ -355,7 +355,7 @@ def launch_permission_setup() -> None:
     """Start the one-time, Polkit-authorized input-read permission installer."""
     pkexec = _trusted_system_executable('pkexec')
     shell = _trusted_system_executable('sh')
-    subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+    subprocess.Popen(
         [pkexec, shell, '-c', _PERMISSION_INSTALLER], close_fds=True
     )
 

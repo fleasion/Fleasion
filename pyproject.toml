@@ -129,6 +129,7 @@ ignore = [
     # Subprocess security
     "suspicious-subprocess-import",
     "subprocess-popen-with-shell-equals-true",
+    "subprocess-without-shell-equals-true",
 
     # Source and repository hygiene
     "ERA",  # Keep commented-out code

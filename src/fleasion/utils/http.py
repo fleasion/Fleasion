@@ -310,7 +310,7 @@ def _curl_download_to(
     cmd.extend(['--', url])
 
     try:
-        result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        result = subprocess.run(
             cmd,
             capture_output=True,
             check=False,

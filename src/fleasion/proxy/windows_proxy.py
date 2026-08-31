@@ -30,7 +30,7 @@ def _winreg_module() -> _WinregModule:
 
 def _run_text_command(args: list[str], *, timeout: float, creationflags: int = 0) -> subprocess.CompletedProcess[str]:
     executable = shutil.which(args[0]) or args[0]
-    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.run(
         [executable, *args[1:]],
         capture_output=True,
         text=True,

@@ -7,7 +7,7 @@ import json
 import struct
 import zlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, SupportsInt, TypeGuard, cast
+from typing import TYPE_CHECKING, Protocol, SupportsInt, TypeIs, cast
 
 import numpy as np
 
@@ -45,23 +45,23 @@ class _DracoModule(Protocol):
     def decode(self, buffer: bytes) -> object: ...
 
 
-def _has_points(value: object) -> TypeGuard[_DracoPoints]:
+def _has_points(value: object) -> TypeIs[_DracoPoints]:
     return hasattr(value, 'points')
 
 
-def _has_normals(value: _DracoPoints) -> TypeGuard[_DracoNormals]:
+def _has_normals(value: _DracoPoints) -> TypeIs[_DracoNormals]:
     return hasattr(value, 'normals')
 
 
-def _has_tex_coords(value: _DracoPoints) -> TypeGuard[_DracoTexCoords]:
+def _has_tex_coords(value: _DracoPoints) -> TypeIs[_DracoTexCoords]:
     return hasattr(value, 'tex_coord')
 
 
-def _has_faces(value: _DracoPoints) -> TypeGuard[_DracoFaces]:
+def _has_faces(value: _DracoPoints) -> TypeIs[_DracoFaces]:
     return hasattr(value, 'faces')
 
 
-def _has_attributes(value: _DracoPoints) -> TypeGuard[_DracoAttributes]:
+def _has_attributes(value: _DracoPoints) -> TypeIs[_DracoAttributes]:
     return hasattr(value, 'get_attribute_by_unique_id')
 
 
@@ -592,7 +592,7 @@ def _process_v6_v7_unchecked(data: bytes) -> str | None:
                     normals = np.array(normal_attr['data'], dtype=np.float32)
                     if normals.ndim == 1:
                         normals = normals.reshape(-1, 3)
-            except (KeyError, RuntimeError, TypeError, ValueError):
+            except KeyError, RuntimeError, TypeError, ValueError:
                 pass
         if normals is None and _has_normals(mesh) and mesh.normals is not None:
             normals = np.array(mesh.normals, dtype=np.float32)
@@ -616,7 +616,7 @@ def _process_v6_v7_unchecked(data: bytes) -> str | None:
                     tex_coords = np.array(uv_attr['data'], dtype=np.float32)
                     if tex_coords.ndim == 1:
                         tex_coords = tex_coords.reshape(-1, 2)
-            except (KeyError, RuntimeError, TypeError, ValueError):
+            except KeyError, RuntimeError, TypeError, ValueError:
                 pass
 
         colors: NDArray[np.uint8] | None = None
@@ -627,7 +627,7 @@ def _process_v6_v7_unchecked(data: bytes) -> str | None:
                     colors = np.array(color_attr['data'], dtype=np.uint8)
                     if colors.ndim == 1:
                         colors = colors.reshape(-1, 4)
-            except (KeyError, RuntimeError, TypeError, ValueError):
+            except KeyError, RuntimeError, TypeError, ValueError:
                 pass
         if colors is not None:
             if len(colors) == num_verts:
@@ -700,7 +700,7 @@ def _mesh_header(data: bytes) -> str:
     if data.startswith(b'\x1f\x8b'):
         try:
             data = gzip.decompress(data)
-        except (EOFError, OSError, zlib.error):
+        except EOFError, OSError, zlib.error:
             return ''
     return data[:12].decode('utf-8', errors='ignore').strip()
 

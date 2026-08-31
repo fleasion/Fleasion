@@ -193,7 +193,7 @@ def _flush_dns() -> None:
         ['/usr/bin/killall', '-HUP', 'mDNSResponder'],
     ):
         try:
-            subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            subprocess.run(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

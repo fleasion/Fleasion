@@ -448,7 +448,7 @@ exit 0
         'Requesting one-time administrator approval to install the macOS proxy helper',
     )
     try:
-        result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        result = subprocess.run(
             ['/usr/bin/osascript', '-e', apple_script],
             shell=False,
             capture_output=True,

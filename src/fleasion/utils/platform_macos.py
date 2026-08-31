@@ -459,7 +459,7 @@ def set_application_foreground_mode(enabled: bool) -> bool:
 def _run_command(
     args: list[str], *, text: bool, timeout: float | None = None
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    result = subprocess.run(
         args,
         shell=False,
         capture_output=True,
@@ -1273,7 +1273,7 @@ def _finish_env_proxy_relaunch(success: bool) -> None:
 
 
 def _detached_popen(args: list[str]) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.Popen(
         args,
         shell=False,
         stdin=subprocess.DEVNULL,

@@ -115,7 +115,7 @@ def _run_trusted_text_command(
     encoding: str | None = None,
     errors: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.run(
         args,
         capture_output=True,
         text=True,
@@ -131,7 +131,7 @@ def _run_trusted_text_command(
 def _run_trusted_command(
     args: list[str], *, timeout: float, creationflags: int = 0
 ) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.run(
         args,
         capture_output=True,
         timeout=timeout,
@@ -148,7 +148,7 @@ def _spawn_trusted_command(
     start_new_session: bool = False,
     creationflags: int = 0,
 ) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.Popen(
         args,
         shell=False,
         env=env,
@@ -214,14 +214,6 @@ def _preserve_object_list(value: object) -> list[object]:
 
 def _is_file_open_event(event: QEvent) -> TypeIs[QFileOpenEvent]:
     return event.type() == QEvent.Type.FileOpen
-
-
-def _empty_object_list() -> list[object]:
-    return []
-
-
-def _optional_screen(value: QScreen) -> QScreen | None:
-    return value
 
 
 def _optional_button[T: QAbstractButton](value: T) -> T | None:
@@ -403,7 +395,8 @@ class _FirstTimeSetupDialog(QDialog):
         self._can_accept = True
 
     def _fit_to_available_screen(self) -> None:
-        screen = _optional_screen(self.screen() or QApplication.primaryScreen())
+        screen = self.screen() or QApplication.primaryScreen()
+        screen = cast('QScreen | None', screen)
         if screen is None:
             return
 
@@ -575,9 +568,9 @@ def _quit_after_modal_closes(
     QTimer.singleShot(0, _quit)
 
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------
 # UAC / elevation helpers
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------
 
 
 def _is_admin() -> bool:
@@ -2690,8 +2683,8 @@ def _show_macos_ca_patch_failed_dialog(details: ErrorDetails) -> str | None:
         w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
-    failed: object = details.get('failed') or _empty_object_list()
-    verified: object = details.get('verified') or _empty_object_list()
+    failed: object = details.get('failed') or []
+    verified: object = details.get('verified') or []
     failed_items = _preserve_object_list(failed)
     verified_items = _preserve_object_list(verified)
     failed_lines: list[str] = []
@@ -2799,7 +2792,7 @@ def _show_macos_ca_trust_failed_dialog(details: ErrorDetails) -> None:
 
 
 def _show_roblox_ca_patch_failed_dialog(details: ErrorDetails) -> None:
-    failed: object = details.get('failed') or _empty_object_list()
+    failed: object = details.get('failed') or []
     failed_items = _preserve_object_list(failed)
     lines: list[str] = []
     for item in failed_items[:8] if isinstance(failed, list) else []:
@@ -2833,7 +2826,7 @@ def _windows_ca_permission_denied_dirs(details: ErrorDetails) -> list[Path]:
         return []
 
     denied: set[Path] = set()
-    failed: object = details.get('failed') or _empty_object_list()
+    failed: object = details.get('failed') or []
     failed_items = _preserve_object_list(failed)
     for item in failed_items if isinstance(failed, list) else []:
         if not isinstance(item, dict):
@@ -3197,8 +3190,8 @@ def _show_auth_cookie_unavailable_dialog(
 
     attempted_value = details.get('attempted_paths')
     existing_value = details.get('existing_paths')
-    attempted = attempted_value if _is_object_list(attempted_value) else _empty_object_list()
-    existing = existing_value if _is_object_list(existing_value) else _empty_object_list()
+    attempted = attempted_value if _is_object_list(attempted_value) else []
+    existing = existing_value if _is_object_list(existing_value) else []
 
     existing_html = ''
     if existing:
@@ -3915,7 +3908,7 @@ class RobloxExitMonitor(QObject):
         player_status_observed_at = time.monotonic()
         intentional_player_exit = False
 
-        # --- Roblox Player: player status changed signal ---
+        # Roblox Player: player status changed signal
         if self._player_was_running != is_running:
             self.player_status_changed.emit(is_running)
             if self._proxy_master is not None:
@@ -3927,12 +3920,12 @@ class RobloxExitMonitor(QObject):
                 if not intentional_player_exit:
                     self.env_lifecycle.note_unexpected_player_exit()
 
-        # --- Roblox Player: launch detection - check CA cert on new launch ---
+        # Roblox Player: launch detection - check CA cert on new launch
         if not self._player_was_running and is_running:
             self._handle_player_launch_detected()
         self._player_was_running = is_running
 
-        # --- Roblox Player: auto cache deletion on exit ---
+        # Roblox Player: auto cache deletion on exit
         if self.config_manager.auto_delete_cache_on_exit:
             if self.was_running and not is_running:
                 if intentional_player_exit or self._suppress_next_player_exit_cache_delete:
@@ -3948,7 +3941,7 @@ class RobloxExitMonitor(QObject):
         else:
             self.was_running = False
 
-        # --- Roblox Studio: Env Proxy deliberately leaves Studio untouched ---
+        # Roblox Studio: Env Proxy deliberately leaves Studio untouched
         studio_running = is_studio_running()
 
         if not self._studio_was_running and studio_running:

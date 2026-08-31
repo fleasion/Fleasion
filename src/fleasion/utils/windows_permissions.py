@@ -260,7 +260,7 @@ def grant_current_user_modify_access(
             '/C',
         ]
         try:
-            completed = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            completed = subprocess.run(
                 command,
                 shell=False,
                 capture_output=True,

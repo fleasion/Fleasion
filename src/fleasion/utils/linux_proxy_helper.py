@@ -149,7 +149,7 @@ def _run_host_command(
     errors: str | None = None,
     timeout: float,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    result = subprocess.run(
         cmd,
         shell=False,
         env=_host_subprocess_env(),
@@ -166,7 +166,7 @@ def _run_host_command(
 def _popen_host_command(
     cmd: list[str], *, stdout: BinaryIO, stderr: BinaryIO
 ) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.Popen(
         cmd,
         shell=False,
         env=_host_subprocess_env(),

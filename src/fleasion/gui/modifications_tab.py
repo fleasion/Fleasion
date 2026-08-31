@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict, TypeGuard, cast, override
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast, override
 
 from PySide6.QtCore import (
     QAbstractItemModel,
@@ -104,7 +104,7 @@ from .theme import ThemeManager
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from typing import ClassVar
+    from typing import ClassVar, TypeIs
 
     from fleasion.app import RobloxExitMonitor
     from fleasion.config.manager import ConfigManager
@@ -217,11 +217,11 @@ def _standard_button_or_none(
     return button_box.button(button)
 
 
-def _is_object_dict(value: object) -> TypeGuard[dict[object, object]]:
+def _is_object_dict(value: object) -> TypeIs[dict[object, object]]:
     return isinstance(value, dict)
 
 
-def _is_hotkey_bindings(value: object) -> TypeGuard[_HotkeyBindings]:
+def _is_hotkey_bindings(value: object) -> TypeIs[_HotkeyBindings]:
     return isinstance(value, dict)
 
 
@@ -241,10 +241,7 @@ def _object_flags(flags: dict[str, str]) -> dict[str, object]:
     return cast('dict[str, object]', flags)
 
 
-# ---------------------------------------------------------------------------
-# Built-in entry definitions
-# ---------------------------------------------------------------------------
-
+# Built-in entry definition
 AVATAR_MESHES = [
     (
         'modifications.builtin.avatar.left_arm',
@@ -557,9 +554,8 @@ _STATUS_STYLES = {
     'orphaned_stash': 'color: #c90; font-weight: bold;',
 }
 
-# ═══════════════════════════════════════════════════════════════════
+
 # _RichTextButton — QPushButton-like label that renders HTML/rich text
-# ═══════════════════════════════════════════════════════════════════
 
 
 class _RichTextButton(QPushButton):
@@ -682,9 +678,7 @@ class _RichTextButton(QPushButton):
         painter.end()
 
 
-# ═══════════════════════════════════════════════════════════════════
 # CollapsibleSection
-# ═══════════════════════════════════════════════════════════════════
 
 
 class CollapsibleSection(QWidget):
@@ -710,7 +704,7 @@ class CollapsibleSection(QWidget):
         self._expanded = expanded
         self._animation: QPropertyAnimation | None = None
 
-        # --- Header row ---
+        # Header row
         # Keep the header in its own fixed-height widget.  During a collapse,
         # the content's maximumHeight changes before the parent layout has
         # necessarily applied the section's new sizeHint.  A bare QHBoxLayout
@@ -843,9 +837,7 @@ class CollapsibleSection(QWidget):
         self._content_layout.activate()
 
 
-# ═══════════════════════════════════════════════════════════════════
 # NoWheelSpinBox — QSpinBox that ignores mouse wheel events
-# ═══════════════════════════════════════════════════════════════════
 
 
 class NoWheelSpinBox(QSpinBox):
@@ -864,9 +856,7 @@ class NoWheelSlider(QSlider):
         e.ignore()
 
 
-# ═══════════════════════════════════════════════════════════════════
 # DropdownComboBox — QComboBox with ▼ indicator instead of OS arrow
-# ═══════════════════════════════════════════════════════════════════
 
 
 class DropdownComboBox(QComboBox):
@@ -999,9 +989,7 @@ class FastFlagValueDelegate(QStyledItemDelegate):
         super().setModelData(editor, model, index)
 
 
-# ═══════════════════════════════════════════════════════════════════
 # ModRowWidget — the reusable row for each modifiable file
-# ═══════════════════════════════════════════════════════════════════
 
 
 class ModRowWidget(QWidget):
@@ -1120,9 +1108,7 @@ class ModRowWidget(QWidget):
 
         self.setLayout(layout)
 
-    # ------------------------------------------------------------------
     # Sync with manager
-    # ------------------------------------------------------------------
 
     def _sync_from_manager(self) -> None:
         """Find our entry in the manager (by target_path) and update UI."""
@@ -1193,9 +1179,7 @@ class ModRowWidget(QWidget):
 
         self._reset_btn.setVisible(status in {'applied', 'error', 'orphaned_stash'})
 
-    # ------------------------------------------------------------------
     # Actions
-    # ------------------------------------------------------------------
 
     def _apply_source(self, source_type: str, source_value: str) -> None:
         entry_data: _NewModificationEntry = {
@@ -1218,7 +1202,7 @@ class ModRowWidget(QWidget):
         self._pending_timer.start()
 
     def _on_edit(self) -> None:
-        # Kept as a no-op stub — inline textbox replaced the Edit dialog.
+        # Kept as a no-op stub — inline textbox replaced the Edit dialog
         pass
 
     def _on_reset(self) -> None:
@@ -1229,7 +1213,7 @@ class ModRowWidget(QWidget):
             # clear_entry deletes the entry from JSON; drop our reference
             # so _apply_source correctly calls add_entry next time.
             self._entry_id = None
-        # Orphaned stash with no JSON entry at all — restore directly.
+        # Orphaned stash with no JSON entry at all — restore directly
         elif not self._manager.restore_orphaned_stash(self._target_path):
             return
         self._set_source_text_silent('')
@@ -1249,9 +1233,7 @@ class ModRowWidget(QWidget):
         )
         dlg.exec()
 
-    # ------------------------------------------------------------------
     # External helpers
-    # ------------------------------------------------------------------
 
     @property
     def target_path(self) -> str:
@@ -1267,9 +1249,7 @@ class ModRowWidget(QWidget):
         display = source_value if source_type in {'local_file', 'asset_id', 'bundled'} else ''
         self._set_source_text_silent(display)
 
-    # ------------------------------------------------------------------
     # Inline source editing
-    # ------------------------------------------------------------------
 
     def _get_source_display_text(self) -> str:
         """Return the textbox display string for the current entry's source."""
@@ -1352,7 +1332,7 @@ class ModRowWidget(QWidget):
 
         if not text:
             self._clear_source_error()
-            # Empty box = user wants to clear the modification.
+            # Empty box = user wants to clear the modification
             self._on_reset()
             return
 
@@ -1360,7 +1340,7 @@ class ModRowWidget(QWidget):
 
         if src_type == 'local_file' and not Path(src_value).is_file():
             # Show red border but still apply — the manager will fail and
-            # the status indicator will show 'error', matching asset-ID behaviour.
+            # the status indicator will show 'error', matching asset-ID behaviour
             self._show_source_error(tr('modifications.error.file_not_found', path=src_value))
         else:
             self._clear_source_error()
@@ -1405,9 +1385,7 @@ class ModRowWidget(QWidget):
         self._apply_source('bundled', self._mute_bundled)
 
 
-# ═══════════════════════════════════════════════════════════════════
 # ModPreviewDialog
-# ═══════════════════════════════════════════════════════════════════
 
 
 class ModPreviewDialog(QDialog):
@@ -1697,7 +1675,7 @@ class ModPreviewDialog(QDialog):
                 if sys.platform == 'win32'
                 else Path('explorer.exe')
             )
-            subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+            subprocess.Popen(
                 [str(explorer), '/select,', str(paths[0].resolve())],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -1728,9 +1706,7 @@ class ModPreviewDialog(QDialog):
                 log_buffer.log('Export', f'Could not open exported file location: {exc}')
 
 
-# ═══════════════════════════════════════════════════════════════════
 # Fast Flags section widgets
-# ═══════════════════════════════════════════════════════════════════
 
 
 class CustomFFlagWarningDialog(QDialog):
@@ -3901,9 +3877,7 @@ class FFlagSection(QWidget):
         self._manager.fast_flags_enabled = False
 
 
-# ═══════════════════════════════════════════════════════════════════
 # ModificationsTab — the top-level tab widget
-# ═══════════════════════════════════════════════════════════════════
 
 
 class ModificationsTab(QWidget):
@@ -4201,9 +4175,7 @@ class ModificationsTab(QWidget):
         window = window_type()
         window.show()
 
-    # ------------------------------------------------------------------
     # Status bar
-    # ------------------------------------------------------------------
 
     def _on_apply_finished(self, _result: object) -> None:
         self._update_status_bar()
@@ -4235,9 +4207,7 @@ class ModificationsTab(QWidget):
         except RuntimeError:
             return
 
-    # ------------------------------------------------------------------
     # Section: Avatar Meshes — Add Head Variant
-    # ------------------------------------------------------------------
 
     def _on_add_head_variant(self) -> None:
         # Filter out already-added variants
@@ -4282,9 +4252,7 @@ class ModificationsTab(QWidget):
             )
             self._row_widgets[target] = row
 
-    # ------------------------------------------------------------------
     # Section: Skybox — Apply to All
-    # ------------------------------------------------------------------
 
     def _on_apply_all_sky(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -4310,9 +4278,7 @@ class ModificationsTab(QWidget):
             if target in self._row_widgets:
                 self._row_widgets[target].apply_source_external('local_file', path)
 
-    # ------------------------------------------------------------------
     # Section: Custom Modifications
-    # ------------------------------------------------------------------
 
     def _on_add_custom(self) -> None:
         dlg = _CustomModDialog(self._manager, self)
@@ -4349,9 +4315,7 @@ class ModificationsTab(QWidget):
         row.deleteLater()
         self._update_status_bar()
 
-    # ------------------------------------------------------------------
     # Fast Flags toggle
-    # ------------------------------------------------------------------
 
     def _on_fflag_toggle(self, checked: bool) -> None:
         self._manager.fast_flags_enabled = checked
@@ -4367,9 +4331,7 @@ class ModificationsTab(QWidget):
             self._manager.apply_pending_modifications()
 
 
-# ═══════════════════════════════════════════════════════════════════
 # Custom Modification Dialog
-# ═══════════════════════════════════════════════════════════════════
 
 
 def _relative_target_path_for_resource_file(

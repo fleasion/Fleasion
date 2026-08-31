@@ -160,7 +160,7 @@ def _register_macos_application(app_path: Path) -> None:
     if not lsregister.is_file():
         return
     try:
-        subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        subprocess.run(
             [str(lsregister), '-f', str(app_path)],
             capture_output=True,
             timeout=10,

@@ -170,7 +170,7 @@ def _run_text_subprocess(
     args: list[str], *, encoding: str, timeout: float
 ) -> subprocess.CompletedProcess[str]:
     """Run a trusted Windows command without a shell and decode text output."""
-    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.run(
         args,
         shell=False,
         capture_output=True,
@@ -187,7 +187,7 @@ def _spawn_windows_process(
     args: list[str], *, cwd: Path, env: dict[str, str] | None = None
 ) -> subprocess.Popen[bytes]:
     """Spawn a trusted Windows executable detached from Fleasion's stdio."""
-    return subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.Popen(
         args,
         shell=False,
         cwd=str(cwd),

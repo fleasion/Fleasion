@@ -53,7 +53,7 @@ def main(arguments: list[str] | None = None) -> int:
             command.append('--clean')
 
         log.info('Restarting build with reproducible environment')
-        result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        result = subprocess.run(
             command, cwd=Path.cwd(), env=environment, check=False, shell=False
         )
         return result.returncode

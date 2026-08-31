@@ -141,7 +141,7 @@ def _run_command(
     """Run a trusted shell-free command and capture diagnostics."""
     executable = (shutil.which(args[0]) or args[0]) if os.name == 'nt' else args[0]
     command = [executable, *args[1:]]
-    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.run(
         command,
         stdin=subprocess.DEVNULL if stdin_devnull else None,
         capture_output=True,

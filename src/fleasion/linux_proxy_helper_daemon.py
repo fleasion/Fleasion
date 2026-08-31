@@ -204,7 +204,7 @@ def _run_host_command(
     timeout: float,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     if text:
-        return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        return subprocess.run(
             cmd,
             env=_host_subprocess_env(),
             capture_output=capture_output,
@@ -215,7 +215,7 @@ def _run_host_command(
             check=False,
             shell=False,
         )
-    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.run(
         cmd,
         env=_host_subprocess_env(),
         capture_output=capture_output,

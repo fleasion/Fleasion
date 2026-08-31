@@ -111,7 +111,7 @@ def _netsh_executable() -> str:
 
 
 def _run_netsh(arguments: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.run(
         [_netsh_executable(), *arguments],
         capture_output=True,
         text=True,

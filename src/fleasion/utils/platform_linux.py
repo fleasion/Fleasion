@@ -153,7 +153,7 @@ def _run_subprocess(
 def _run_subprocess(
     args: list[str], **kwargs: Unpack[RunSubprocessKwargs]
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.run(
         args,
         check=False,
         **kwargs,
@@ -782,7 +782,7 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen[bytes]:
         )
         kwargs['user'] = uid
         kwargs['group'] = gid
-    return subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.Popen(
         args,
         **kwargs,
     )

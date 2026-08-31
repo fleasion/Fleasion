@@ -133,7 +133,7 @@ def _run_command(
     timeout: float,
     creationflags: int = 0,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+    result = subprocess.run(
         _resolve_command(args),
         capture_output=True,
         text=text,

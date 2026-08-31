@@ -9,7 +9,7 @@ import time
 from copy import deepcopy
 from operator import itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, TypedDict, TypeGuard, override
+from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, TypedDict, override
 from urllib.error import URLError
 
 from PySide6.QtCore import (
@@ -90,6 +90,7 @@ from .proxy_gate import ProxyGate
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from types import TracebackType
+    from typing import TypeIs
 
     from fleasion.app import RobloxExitMonitor
     from fleasion.cache.cache_viewer import CacheViewerTab
@@ -364,7 +365,9 @@ else:
 
     def _make_rando_tab(config: _ConfigManagerLike, proxy: ProxyMaster | None) -> RandoStuffTab:
         rando_stuff_tab = importlib.import_module('.rando_stuff_tab', __package__)
-        return rando_stuff_tab.RandoStuffTab(config_manager=_real_config(config), proxy_master=proxy)
+        return rando_stuff_tab.RandoStuffTab(
+            config_manager=_real_config(config), proxy_master=proxy
+        )
 
     def _make_subplace_tab(
         rando: RandoStuffTab,
@@ -1224,9 +1227,7 @@ class ReplacerConfigWindow(QDialog):
         if tab is None:
             return
         callback_name = (
-            '_on_show_names_toggled'
-            if setting == 'show_names'
-            else '_on_show_creator_id_toggled'
+            '_on_show_names_toggled' if setting == 'show_names' else '_on_show_creator_id_toggled'
         )
         callback = getattr(tab, callback_name, None)
         if callable(callback):
@@ -1637,11 +1638,11 @@ class ReplacerConfigWindow(QDialog):
         self._update_editing_button_style()
 
     @staticmethod
-    def _is_group(entry: _RuleEntry | None) -> TypeGuard[_GroupRule]:
+    def _is_group(entry: _RuleEntry | None) -> TypeIs[_GroupRule]:
         return isinstance(entry, dict) and entry.get('type') == _KIND_GROUP
 
     @staticmethod
-    def _is_profile(entry: _RuleEntry | None) -> TypeGuard[_ProfileRule]:
+    def _is_profile(entry: _RuleEntry | None) -> TypeIs[_ProfileRule]:
         return isinstance(entry, dict) and entry.get('type') != _KIND_GROUP
 
     def _iter_profiles(self, entries: _RuleList) -> Iterator[_ProfileRule]:
@@ -2619,7 +2620,9 @@ class ReplacerConfigWindow(QDialog):
                     popup = None
 
             if popup is None:
-                popup = asset_type_filter.CategoryFilterPopup(parent=dialog, active_filters=active_filters)
+                popup = asset_type_filter.CategoryFilterPopup(
+                    parent=dialog, active_filters=active_filters
+                )
                 popup.filters_changed.connect(on_filters_changed)
                 popup.aboutToHide.connect(self._mark_dialog_asset_types_popup_closed)
                 self._dialog_asset_types_popup = popup
@@ -3324,9 +3327,7 @@ class ReplacerConfigWindow(QDialog):
             valid_target = (
                 target_path is not None
                 and target_path not in selected_paths
-                and not any(
-                    self._is_descendant_path(target_path, path) for path in selected_paths
-                )
+                and not any(self._is_descendant_path(target_path, path) for path in selected_paths)
             )
             if valid_target and target_path is not None:
                 if drop_position == on_item:
