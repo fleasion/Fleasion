@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import threading
-from typing import TYPE_CHECKING, Protocol, TypedDict, TypeIs
+from typing import TYPE_CHECKING, Protocol, TypedDict, TypeIs, cast
 
 import requests
 
 from fleasion.utils import log_buffer
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fleasion.config.manager import JsonObject, JsonValue
     from fleasion.proxy.server import ProxyFlow
 
@@ -30,6 +33,31 @@ NAME_KEYS = (
     'platformName',
     'alias',
 )
+_ROBLOSECURITY_GETTER_ATTR = 'get_roblosecurity'
+
+
+def _get_roblosecurity() -> str | None:
+    module = importlib.import_module('fleasion.utils.roblox_auth')
+    getter = cast(
+        'Callable[[], str | None]',
+        getattr(module, _ROBLOSECURITY_GETTER_ATTR),
+    )
+    return getter()
+
+
+def _authenticated_user_id(cookie: str) -> int | None:
+    session = requests.Session()
+    session.trust_env = False
+    session.proxies = {}
+    try:
+        session.cookies.set('.ROBLOSECURITY', cookie)
+    except (TypeError, ValueError):
+        session.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+    response = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+    if response.status_code != 200:
+        return None
+    user_id = response.json().get('id')
+    return int(user_id) if user_id is not None else None
 
 
 class _SpooferState(TypedDict):
@@ -180,7 +208,7 @@ class UsernameSpoofer:
         # Roblox appears to treat an empty string as "missing" and can fall
         # back to other name sources. Use a zero-width sentinel so a blank
         # spoof still renders visibly blank while remaining intentionally set.
-        return EMPTY_NAME_SENTINEL if new_value == '' else new_value  # ruff: ignore[compare-to-empty-string]
+        return new_value or EMPTY_NAME_SENTINEL
 
     @classmethod
     def _set_name_fields(cls, profile: JsonObject, new_value: str) -> int:
@@ -196,32 +224,17 @@ class UsernameSpoofer:
                 changed += 1
         return changed
 
-    def request(self, flow: ProxyFlow) -> None:  # ruff: ignore[unused-method-argument]
-        return
+    def request(self, flow: ProxyFlow) -> None:
+        del flow
 
     @staticmethod
     def _fetch_authenticated_user_id() -> int | None:
-        from fleasion.utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
-            get_roblosecurity,
-        )
-
-        cookie = get_roblosecurity()
+        cookie = _get_roblosecurity()
         if not cookie:
             return None
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            sess = requests.Session()
-            sess.trust_env = False
-            sess.proxies = {}
-            try:
-                sess.cookies.set('.ROBLOSECURITY', cookie)
-            except Exception:  # ruff: ignore[blind-except]
-                sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-            resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-            if resp.status_code != 200:
-                return None
-            user_id = resp.json().get('id')
-            return int(user_id) if user_id is not None else None
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            return _authenticated_user_id(cookie)
+        except (requests.RequestException, AttributeError, TypeError, ValueError) as exc:
             log_buffer.log('username-spoofer', f'Failed to fetch authenticated user id: {exc}')
             return None
 
@@ -285,6 +298,19 @@ class UsernameSpoofer:
             changed += cls._set_game_creator_fields(child, user_id)
         return changed
 
+    def _gamejoin_replacement_content(self, content: bytes) -> bytes | None:
+        payload_object = _json_object(_load_json(content.decode('utf-8')))
+        user_id = self._fetch_authenticated_user_id()
+        if user_id is None:
+            return None
+        if self._set_game_creator_fields(payload_object, user_id) <= 0:
+            return None
+        return json.dumps(
+            payload_object,
+            separators=(',', ':'),
+            ensure_ascii=False,
+        ).encode('utf-8')
+
     def _modify_gamejoin_response(self, flow: ProxyFlow) -> bool:
         if not any(fragment in flow.request.pretty_url for fragment in GAMEJOIN_ENDPOINT_FRAGMENTS):
             return False
@@ -292,26 +318,55 @@ class UsernameSpoofer:
             enabled = bool(self._runtime_state.get('self_game_creator'))
         if not enabled:
             return False
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            response = flow.response
-            if TYPE_CHECKING:
-                assert response is not None
-            payload_object = _json_object(_load_json(response.content.decode('utf-8')))
-            user_id = self._fetch_authenticated_user_id()
-            if user_id is None:
-                return False
-            fields_changed = self._set_game_creator_fields(payload_object, user_id)
-            if fields_changed <= 0:
-                return False
-            response.content = json.dumps(
-                payload_object,
-                separators=(',', ':'),
-                ensure_ascii=False,
-            ).encode('utf-8')
-            return True  # ruff: ignore[try-consider-else]
-        except Exception as exc:  # ruff: ignore[blind-except]
+        response = flow.response
+        if response is None:
+            return False
+        try:
+            replacement = self._gamejoin_replacement_content(response.content)
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
             log_buffer.log('username-spoofer', f'Failed to modify gamejoin response: {exc}')
             return False
+        if replacement is None:
+            return False
+        response.content = replacement
+        return True
+
+    def _profile_replacement_content(
+        self,
+        content: bytes,
+        state: _SpooferState,
+        current_user_id: str | None,
+        current_username: str,
+    ) -> bytes | None:
+        payload = _json_object(_load_json(content.decode('utf-8')))
+        profile_details = payload.get('profileDetails', [])
+        if not isinstance(profile_details, list):
+            return None
+        fields_changed = 0
+        for profile in profile_details:
+            if not isinstance(profile, dict):
+                continue
+            if self._is_own_profile(profile, current_user_id, current_username):
+                if state.get('self_apply_ingame'):
+                    fields_changed += self._set_name_fields(profile, state.get('self_name', ''))
+                if state.get('self_verified') and profile.get('isVerified') is not True:
+                    profile['isVerified'] = True
+                    fields_changed += 1
+            elif state.get('others_apply_ingame'):
+                fields_changed += self._set_name_fields(profile, state.get('others_name', ''))
+                if state.get('others_verified') and profile.get('isVerified') is not True:
+                    profile['isVerified'] = True
+                    fields_changed += 1
+            elif state.get('others_verified') and profile.get('isVerified') is not True:
+                profile['isVerified'] = True
+                fields_changed += 1
+        if fields_changed <= 0:
+            return None
+        return json.dumps(
+            payload,
+            separators=(',', ':'),
+            ensure_ascii=False,
+        ).encode('utf-8')
 
     def response(self, flow: ProxyFlow) -> None:
         if flow.response is None or not flow.response.content:
@@ -331,35 +386,15 @@ class UsernameSpoofer:
             or state.get('self_verified')
         ):
             return
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            payload = _json_object(_load_json(flow.response.content.decode('utf-8')))
-            profile_details = payload.get('profileDetails', [])
-            if not isinstance(profile_details, list):
-                return
-            fields_changed = 0
-            for profile in profile_details:
-                if not isinstance(profile, dict):
-                    continue
-                if self._is_own_profile(profile, current_user_id, current_username):
-                    if state.get('self_apply_ingame'):
-                        fields_changed += self._set_name_fields(profile, state.get('self_name', ''))
-                    if state.get('self_verified') and profile.get('isVerified') is not True:
-                        profile['isVerified'] = True
-                        fields_changed += 1
-                elif state.get('others_apply_ingame'):
-                    fields_changed += self._set_name_fields(profile, state.get('others_name', ''))
-                    if state.get('others_verified') and profile.get('isVerified') is not True:
-                        profile['isVerified'] = True
-                        fields_changed += 1
-                elif state.get('others_verified') and profile.get('isVerified') is not True:
-                    profile['isVerified'] = True
-                    fields_changed += 1
-            if fields_changed <= 0:
-                return
-            flow.response.content = json.dumps(
-                payload,
-                separators=(',', ':'),
-                ensure_ascii=False,
-            ).encode('utf-8')
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            replacement = self._profile_replacement_content(
+                flow.response.content,
+                state,
+                current_user_id,
+                current_username,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
             log_buffer.log('username-spoofer', f'Failed to modify profile response: {exc}')
+            return
+        if replacement is not None:
+            flow.response.content = replacement

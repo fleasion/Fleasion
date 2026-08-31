@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
+from ._updater_compat import start_update_check
 from .logging import LogBuffer, log_buffer
 from .metadata import (
     APP_AUTHOR,
@@ -64,19 +60,7 @@ from .windows import (
     wait_for_roblox_window,
 )
 
-
-def start_update_check(  # ruff: ignore[non-empty-init-module]
-    *args: object, **kwargs: object
-) -> None:
-    from .updater import (  # ruff: ignore[import-outside-top-level]
-        start_update_check as _start_update_check,
-    )
-
-    compatible = cast('Callable[..., None]', _start_update_check)
-    return compatible(*args, **kwargs)
-
-
-__all__ = [  # ruff: ignore[unsorted-dunder-all]
+__all__ = [
     'APP_AUTHOR',
     'APP_LOGIC',
     'APP_CONCEPT',

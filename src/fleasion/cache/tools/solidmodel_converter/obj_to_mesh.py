@@ -18,6 +18,101 @@ log = logging.getLogger(__name__)
 # Temporary directory for converted meshes
 CONVERTED_MESHES_DIR = LOCAL_APPDATA / 'FleasionNT' / 'Temp' / 'ConvertedMeshes'
 
+_Vertex = tuple[float, float, float, float, float, float, float, float, float]
+_Color = tuple[int, int, int, int]
+_FaceVertex = tuple[int, int, int]
+
+
+def _parse_face_vertex(face_part: str) -> _FaceVertex:
+    indices_split = face_part.split('/')
+    v_idx = int(indices_split[0]) - 1
+    vt_idx = -1
+    vn_idx = -1
+    if len(indices_split) >= 2 and indices_split[1]:
+        vt_idx = int(indices_split[1]) - 1
+    if len(indices_split) >= 3 and indices_split[2]:
+        vn_idx = int(indices_split[2]) - 1
+    return v_idx, vt_idx, vn_idx
+
+
+def _intern_face_vertex(
+    face_vertex: _FaceVertex,
+    *,
+    raw_v: list[tuple[float, float, float]],
+    raw_vn: list[tuple[float, float, float]],
+    raw_vt: list[tuple[float, float]],
+    raw_vc: list[tuple[int, int, int]],
+    unique_verts: dict[_FaceVertex, int],
+    vertices_out: list[_Vertex],
+    colors_out: list[_Color],
+) -> int | None:
+    v_idx, vt_idx, vn_idx = face_vertex
+    if v_idx < 0 or v_idx >= len(raw_v):
+        return None
+
+    existing_idx = unique_verts.get(face_vertex)
+    if existing_idx is not None:
+        return existing_idx
+
+    vx, vy, vz = raw_v[v_idx]
+    cr, cg, cb = raw_vc[v_idx]
+
+    nx, ny, nz = 0.0, 1.0, 0.0
+    if vn_idx != -1 and 0 <= vn_idx < len(raw_vn):
+        nx, ny, nz = raw_vn[vn_idx]
+
+    tu, tv = 0.0, 0.0
+    if vt_idx != -1 and 0 <= vt_idx < len(raw_vt):
+        tu, tv = raw_vt[vt_idx]
+
+    # Roblox Version 2.00 flips V coordinate: (1.0f - tv)
+    tv = 1.0 - tv
+
+    vert_data: _Vertex = (vx, vy, vz, nx, ny, nz, tu, tv, 0.0)
+    vert_color: _Color = (cr, cg, cb, 255)
+
+    vert_idx = len(vertices_out)
+    vertices_out.append(vert_data)
+    colors_out.append(vert_color)
+    unique_verts[face_vertex] = vert_idx
+    return vert_idx
+
+
+def _append_face_triangles(
+    face_parts: list[str],
+    *,
+    raw_v: list[tuple[float, float, float]],
+    raw_vn: list[tuple[float, float, float]],
+    raw_vt: list[tuple[float, float]],
+    raw_vc: list[tuple[int, int, int]],
+    unique_verts: dict[_FaceVertex, int],
+    vertices_out: list[_Vertex],
+    colors_out: list[_Color],
+    indices_out: list[tuple[int, int, int]],
+) -> None:
+    face_verts = [_parse_face_vertex(face_part) for face_part in face_parts]
+
+    # Triangulate face (simple fan triangulation)
+    for i in range(1, len(face_verts) - 1):
+        tri = (face_verts[0], face_verts[i], face_verts[i + 1])
+        tri_indices: list[int] = []
+        for face_vertex in tri:
+            vert_idx = _intern_face_vertex(
+                face_vertex,
+                raw_v=raw_v,
+                raw_vn=raw_vn,
+                raw_vt=raw_vt,
+                raw_vc=raw_vc,
+                unique_verts=unique_verts,
+                vertices_out=vertices_out,
+                colors_out=colors_out,
+            )
+            if vert_idx is not None:
+                tri_indices.append(vert_idx)
+
+        if len(tri_indices) == 3:
+            indices_out.append((tri_indices[0], tri_indices[1], tri_indices[2]))
+
 
 def parse_obj_for_mesh(
     obj_content: str,
@@ -45,7 +140,7 @@ def parse_obj_for_mesh(
     colors_out: list[tuple[int, int, int, int]] = []
     indices_out: list[tuple[int, int, int]] = []
 
-    for raw_line in obj_content.splitlines():  # ruff: ignore[too-many-nested-blocks]
+    for raw_line in obj_content.splitlines():
         line = raw_line.strip()
         if not line or line.startswith('#'):
             continue
@@ -77,56 +172,17 @@ def parse_obj_for_mesh(
         elif parts[0] == 'vt':
             raw_vt.append((float(parts[1]), float(parts[2])))
         elif parts[0] == 'f':
-            face_verts: list[tuple[int, int, int]] = []
-            for face_part in parts[1:]:
-                indices_split = face_part.split('/')
-                v_idx = int(indices_split[0]) - 1
-                vt_idx = -1
-                vn_idx = -1
-                if len(indices_split) >= 2 and indices_split[1]:
-                    vt_idx = int(indices_split[1]) - 1
-                if len(indices_split) >= 3 and indices_split[2]:
-                    vn_idx = int(indices_split[2]) - 1
-                face_verts.append((v_idx, vt_idx, vn_idx))
-
-            # Triangulate face (simple fan triangulation)
-            for i in range(1, len(face_verts) - 1):
-                tri = [face_verts[0], face_verts[i], face_verts[i + 1]]
-                tri_indices: list[int] = []
-                for tv_idx, tvt_idx, tvn_idx in tri:
-                    if tv_idx < 0 or tv_idx >= len(raw_v):
-                        continue
-
-                    key = (tv_idx, tvt_idx, tvn_idx)
-                    if key not in unique_verts:
-                        vx, vy, vz = raw_v[tv_idx]
-                        cr, cg, cb = raw_vc[tv_idx]
-
-                        nx, ny, nz = 0.0, 1.0, 0.0
-                        if tvn_idx != -1 and 0 <= tvn_idx < len(raw_vn):
-                            nx, ny, nz = raw_vn[tvn_idx]
-
-                        tu, tv = 0.0, 0.0
-                        if tvt_idx != -1 and 0 <= tvt_idx < len(raw_vt):
-                            tu, tv = raw_vt[tvt_idx]
-
-                        # Roblox Version 2.00 flips V coordinate: (1.0f - tv)
-                        tv = 1.0 - tv
-
-                        # vertex: 9 floats (px, py, pz, nx, ny, nz, tu, tv, tw)
-                        # tw is standard padding/tangent W -> 0.0
-                        vert_data = (vx, vy, vz, nx, ny, nz, tu, tv, 0.0)
-                        vert_color = (cr, cg, cb, 255)  # Alpha opaque
-
-                        vert_idx = len(vertices_out)
-                        vertices_out.append(vert_data)
-                        colors_out.append(vert_color)
-                        unique_verts[key] = vert_idx
-
-                    tri_indices.append(unique_verts[key])
-
-                if len(tri_indices) == 3:
-                    indices_out.append((tri_indices[0], tri_indices[1], tri_indices[2]))
+            _append_face_triangles(
+                parts[1:],
+                raw_v=raw_v,
+                raw_vn=raw_vn,
+                raw_vt=raw_vt,
+                raw_vc=raw_vc,
+                unique_verts=unique_verts,
+                vertices_out=vertices_out,
+                colors_out=colors_out,
+                indices_out=indices_out,
+            )
 
     return vertices_out, colors_out, indices_out
 

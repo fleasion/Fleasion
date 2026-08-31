@@ -5,7 +5,6 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from pathlib import Path  # ruff: ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer
@@ -23,10 +22,20 @@ from fleasion.utils.threading import run_in_thread
 from .fflag_manager import CLIENT_SETTINGS_REL
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .manager import ModificationManager
 
 
 type VoidCallback = Callable[[], object]
+
+
+def _invoke_custom_fflag(callback: VoidCallback, *, failure_message: str) -> None:
+    try:
+        callback()
+    except Exception as exc:  # ruff: ignore[blind-except]
+        log_buffer.log('CustomFFlags', f'{failure_message}: {exc}')
+
 
 _SETTINGS_POLL_INTERVAL_MS = 25
 _TOPOLOGY_POLL_INTERVAL_MS = 500
@@ -162,9 +171,9 @@ class MacBootstrapperBridge(QObject):
     def _file_signature(path: Path) -> tuple[int, int] | None:
         try:
             stat_result = path.stat()
-            return stat_result.st_mtime_ns, stat_result.st_size  # ruff: ignore[try-consider-else]
         except OSError:
             return None
+        return stat_result.st_mtime_ns, stat_result.st_size
 
     def _reconcile_launch_settings(self) -> None:
         if self._stopped:
@@ -197,13 +206,10 @@ class MacBootstrapperBridge(QObject):
             self._sync_watches()
             if launch_rewrite:
                 if callable(self._custom_fflag_prepare):
-                    try:
-                        self._custom_fflag_prepare()
-                    except Exception as exc:  # ruff: ignore[blind-except]
-                        log_buffer.log(
-                            'CustomFFlags',
-                            f'Failed to arm a fresh response after bootstrapper rewrite: {exc}',
-                        )
+                    _invoke_custom_fflag(
+                        self._custom_fflag_prepare,
+                        failure_message='Failed to arm a fresh response after bootstrapper rewrite',
+                    )
                 self._start_launch_guard()
 
     @staticmethod
@@ -257,13 +263,10 @@ class MacBootstrapperBridge(QObject):
             self._internal_reapply_active = True
             self._manager.reapply_all()
             if callable(self._custom_fflag_seed):
-                try:
-                    self._custom_fflag_seed()
-                except Exception as exc:  # ruff: ignore[blind-except]
-                    log_buffer.log(
-                        'CustomFFlags',
-                        f'Failed to re-seed custom FastFlags after bootstrapper rewrite: {exc}',
-                    )
+                _invoke_custom_fflag(
+                    self._custom_fflag_seed,
+                    failure_message='Failed to re-seed custom FastFlags after bootstrapper rewrite',
+                )
             self._managed_signatures = self._path_signatures(self._manager.managed_resource_paths())
             self._managed_reapply_passes = max(self._managed_reapply_passes - 1, 0)
         finally:

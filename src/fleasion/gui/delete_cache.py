@@ -4,6 +4,7 @@ import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QDialog, QLabel, QTextEdit, QVBoxLayout
 
 from fleasion.localization import tr
@@ -37,8 +38,6 @@ class DeleteCacheWindow(QDialog):
     def _set_icon(self) -> None:
         """Set window icon."""
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
-
             self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self) -> None:
@@ -66,8 +65,6 @@ class DeleteCacheWindow(QDialog):
 
     def _get_monospace_font(self):
         """Get a monospace font."""
-        from PySide6.QtGui import QFontDatabase  # ruff: ignore[import-outside-top-level]
-
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setPointSize(9)
         return font

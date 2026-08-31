@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import socket
-import ssl  # ruff: ignore[typing-only-standard-library-import]
 import time
-from collections.abc import Sequence  # ruff: ignore[typing-only-standard-library-import]
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import ssl
+    from collections.abc import Sequence
 
 
-class UpstreamMode(str, Enum):  # ruff: ignore[replace-str-enum]
+class UpstreamMode(StrEnum):
     AUTO = 'auto'
     DIRECT_IP = 'direct_ip'
     SYSTEM_PROXY = 'system_proxy'
@@ -140,7 +144,7 @@ class DirectIpConnector(BaseUpstreamConnector):
                     method=UpstreamMode.DIRECT_IP.value,
                     endpoint=target,
                 )
-            except Exception as exc:  # ruff: ignore[blind-except]
+            except OSError as exc:
                 failures.append(f'{target}={_format_exc(exc)}')
 
         return UpstreamConnectResult(
@@ -166,40 +170,71 @@ def _recv_until_header_end(sock: socket.socket) -> bytes:
     return bytes(buf)
 
 
-def _blocking_http_connect_socket(  # ruff: ignore[too-many-positional-arguments]
+def _http_connect_request(
+    target_host: str,
+    target_port: int,
+    *,
+    username: str | None,
+    password: str | None,
+) -> bytes:
+    headers = [
+        f'CONNECT {target_host}:{target_port} HTTP/1.1',
+        f'Host: {target_host}:{target_port}',
+        'Proxy-Connection: Keep-Alive',
+    ]
+    if username:
+        raw = f'{username}:{password or ""}'.encode('utf-8', errors='replace')
+        token = base64.b64encode(raw).decode('ascii')
+        headers.append(f'Proxy-Authorization: Basic {token}')
+    return ('\r\n'.join(headers) + '\r\n\r\n').encode('ascii')
+
+
+def _http_connect_handshake(
+    sock: socket.socket,
+    target_host: str,
+    target_port: int,
+    *,
+    username: str | None,
+    password: str | None,
+) -> None:
+    request = _http_connect_request(
+        target_host,
+        target_port,
+        username=username,
+        password=password,
+    )
+    sock.sendall(request)
+    response = _recv_until_header_end(sock)
+    status_line = response.split(b'\r\n', 1)[0]
+    if b' 200 ' not in status_line and not status_line.startswith(b'HTTP/1.1 200'):
+        msg = f'proxy CONNECT failed: {status_line!r}'
+        raise OSError(msg)
+
+
+def _blocking_http_connect_socket(
     proxy_host: str,
     proxy_port: int,
     target_host: str,
     target_port: int,
     timeout: float,
+    *,
     username: str | None = None,
     password: str | None = None,
 ) -> socket.socket:
     sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        headers = [
-            f'CONNECT {target_host}:{target_port} HTTP/1.1',
-            f'Host: {target_host}:{target_port}',
-            'Proxy-Connection: Keep-Alive',
-        ]
-        if username:
-            raw = f'{username}:{password or ""}'.encode('utf-8', errors='replace')
-            token = base64.b64encode(raw).decode('ascii')
-            headers.append(f'Proxy-Authorization: Basic {token}')
-        req = ('\r\n'.join(headers) + '\r\n\r\n').encode('ascii')
-
-        sock.sendall(req)
-        response = _recv_until_header_end(sock)
-        status_line = response.split(b'\r\n', 1)[0]
-        if b' 200 ' not in status_line and not status_line.startswith(b'HTTP/1.1 200'):
-            msg = f'proxy CONNECT failed: {status_line!r}'
-            raise OSError(msg)
-
-        sock.setblocking(False)  # ruff: ignore[boolean-positional-value-in-call]
-        return sock  # ruff: ignore[try-consider-else]
+    try:
+        _http_connect_handshake(
+            sock,
+            target_host,
+            target_port,
+            username=username,
+            password=password,
+        )
     except Exception:
         sock.close()
         raise
+    sock.settimeout(0.0)
+    return sock
 
 
 class HttpConnectConnector(BaseUpstreamConnector):
@@ -221,17 +256,17 @@ class HttpConnectConnector(BaseUpstreamConnector):
         endpoint = f'{self.proxy.host}:{self.proxy.port}->{host}:{target_port}'
         raw_sock: socket.socket | None = None
         try:
-            raw_sock = await loop.run_in_executor(
-                None,
+            connect_socket = functools.partial(
                 _blocking_http_connect_socket,
                 self.proxy.host,
                 self.proxy.port,
                 host,
                 target_port,
                 timeout,
-                self.proxy.username,
-                self.proxy.password,
+                username=self.proxy.username,
+                password=self.proxy.password,
             )
+            raw_sock = await loop.run_in_executor(None, connect_socket)
 
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(
@@ -249,7 +284,7 @@ class HttpConnectConnector(BaseUpstreamConnector):
                 method=self.method,
                 endpoint=endpoint,
             )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except OSError as exc:
             if raw_sock is not None:
                 raw_sock.close()
             return UpstreamConnectResult(
@@ -272,79 +307,91 @@ def _recv_exact(sock: socket.socket, length: int) -> bytes:
     return bytes(data)
 
 
-def _blocking_socks5_connect_socket(  # ruff: ignore[too-many-positional-arguments]
+def _socks5_negotiate_auth(
+    sock: socket.socket,
+    *,
+    username: str | None,
+    password: str | None,
+) -> None:
+    methods = [0x00]
+    if username:
+        methods.append(0x02)
+    sock.sendall(bytes([0x05, len(methods), *methods]))
+    response = _recv_exact(sock, 2)
+    if response[0] != 0x05:
+        msg = f'SOCKS5 bad greeting response: {response!r}'
+        raise OSError(msg)
+    if response[1] == 0x02:
+        user_bytes = username.encode('utf-8', errors='replace') if username else b''
+        pass_bytes = (password or '').encode('utf-8', errors='replace')
+        if len(user_bytes) > 255 or len(pass_bytes) > 255:
+            msg = 'SOCKS5 username/password too long'
+            raise OSError(msg)
+        sock.sendall(
+            b'\x01'
+            + bytes([len(user_bytes)])
+            + user_bytes
+            + bytes([len(pass_bytes)])
+            + pass_bytes
+        )
+        auth = _recv_exact(sock, 2)
+        if auth != b'\x01\x00':
+            msg = f'SOCKS5 username/password rejected: {auth!r}'
+            raise OSError(msg)
+    elif response[1] != 0x00:
+        msg = f'SOCKS5 no-auth rejected: {response!r}'
+        raise OSError(msg)
+
+
+def _socks5_connect_target(sock: socket.socket, target_host: str, target_port: int) -> None:
+    host_bytes = target_host.encode('idna')
+    if len(host_bytes) > 255:
+        msg = 'SOCKS5 target host too long'
+        raise OSError(msg)
+    request = (
+        b'\x05\x01\x00'
+        b'\x03' + bytes([len(host_bytes)]) + host_bytes + target_port.to_bytes(2, 'big')
+    )
+    sock.sendall(request)
+
+    response = _recv_exact(sock, 4)
+    if response[0] != 0x05 or response[1] != 0:
+        msg = f'SOCKS5 connect failed: {response!r}'
+        raise OSError(msg)
+
+    address_type = response[3]
+    if address_type == 1:
+        _recv_exact(sock, 4)
+    elif address_type == 3:
+        length = _recv_exact(sock, 1)[0]
+        _recv_exact(sock, length)
+    elif address_type == 4:
+        _recv_exact(sock, 16)
+    else:
+        msg = f'SOCKS5 unknown address type: {address_type}'
+        raise OSError(msg)
+    _recv_exact(sock, 2)
+
+
+def _blocking_socks5_connect_socket(
     proxy_host: str,
     proxy_port: int,
     target_host: str,
     target_port: int,
     timeout: float,
+    *,
     username: str | None = None,
     password: str | None = None,
 ) -> socket.socket:
     sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        methods = [0x00]
-        if username:
-            methods.append(0x02)
-        sock.sendall(bytes([0x05, len(methods), *methods]))
-        resp = _recv_exact(sock, 2)
-        if resp[0] != 0x05:
-            msg = f'SOCKS5 bad greeting response: {resp!r}'
-            raise OSError(msg)
-        if resp[1] == 0x02:
-            user_bytes = username.encode('utf-8', errors='replace') if username else b''
-            pass_bytes = (password or '').encode('utf-8', errors='replace')
-            if len(user_bytes) > 255 or len(pass_bytes) > 255:
-                msg = 'SOCKS5 username/password too long'
-                raise OSError(msg)
-            sock.sendall(
-                b'\x01'
-                + bytes([len(user_bytes)])
-                + user_bytes
-                + bytes([len(pass_bytes)])
-                + pass_bytes
-            )
-            auth = _recv_exact(sock, 2)
-            if auth != b'\x01\x00':
-                msg = f'SOCKS5 username/password rejected: {auth!r}'
-                raise OSError(msg)
-        elif resp[1] != 0x00:
-            msg = f'SOCKS5 no-auth rejected: {resp!r}'
-            raise OSError(msg)
-
-        host_bytes = target_host.encode('idna')
-        if len(host_bytes) > 255:
-            msg = 'SOCKS5 target host too long'
-            raise OSError(msg)
-        req = (
-            b'\x05\x01\x00'
-            b'\x03' + bytes([len(host_bytes)]) + host_bytes + target_port.to_bytes(2, 'big')
-        )
-        sock.sendall(req)
-
-        resp = _recv_exact(sock, 4)
-        if resp[0] != 0x05 or resp[1] != 0:
-            msg = f'SOCKS5 connect failed: {resp!r}'
-            raise OSError(msg)
-
-        atyp = resp[3]
-        if atyp == 1:
-            _recv_exact(sock, 4)
-        elif atyp == 3:
-            n = _recv_exact(sock, 1)[0]
-            _recv_exact(sock, n)
-        elif atyp == 4:
-            _recv_exact(sock, 16)
-        else:
-            msg = f'SOCKS5 unknown address type: {atyp}'
-            raise OSError(msg)
-        _recv_exact(sock, 2)
-
-        sock.setblocking(False)  # ruff: ignore[boolean-positional-value-in-call]
-        return sock  # ruff: ignore[try-consider-else]
+    try:
+        _socks5_negotiate_auth(sock, username=username, password=password)
+        _socks5_connect_target(sock, target_host, target_port)
     except Exception:
         sock.close()
         raise
+    sock.settimeout(0.0)
+    return sock
 
 
 class Socks5Connector(BaseUpstreamConnector):
@@ -364,17 +411,17 @@ class Socks5Connector(BaseUpstreamConnector):
         endpoint = f'{self.proxy.host}:{self.proxy.port}->{host}:{target_port}'
         raw_sock: socket.socket | None = None
         try:
-            raw_sock = await loop.run_in_executor(
-                None,
+            connect_socket = functools.partial(
                 _blocking_socks5_connect_socket,
                 self.proxy.host,
                 self.proxy.port,
                 host,
                 target_port,
                 timeout,
-                self.proxy.username,
-                self.proxy.password,
+                username=self.proxy.username,
+                password=self.proxy.password,
             )
+            raw_sock = await loop.run_in_executor(None, connect_socket)
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(
                     sock=raw_sock,
@@ -391,7 +438,7 @@ class Socks5Connector(BaseUpstreamConnector):
                 method=self.method,
                 endpoint=endpoint,
             )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except OSError as exc:
             if raw_sock is not None:
                 raw_sock.close()
             return UpstreamConnectResult(
@@ -411,10 +458,11 @@ class UnavailableConnector(BaseUpstreamConnector):
     async def connect(
         self,
         host: str,
-        endpoints: Sequence[UpstreamEndpoint],  # ruff: ignore[unused-method-argument]
-        ssl_ctx: ssl.SSLContext,  # ruff: ignore[unused-method-argument]
-        timeout: float,  # ruff: ignore[unused-method-argument]
+        endpoints: Sequence[UpstreamEndpoint],
+        ssl_ctx: ssl.SSLContext,
+        timeout: float,
     ) -> UpstreamConnectResult:
+        del endpoints, ssl_ctx, timeout
         return UpstreamConnectResult(
             reader=None,
             writer=None,
@@ -488,13 +536,14 @@ class AutoConnector(BaseUpstreamConnector):
             connectors[UpstreamMode.SOCKS5.value] = self.manual_socks5
         return connectors
 
-    async def _try_connector(  # ruff: ignore[too-many-positional-arguments]
+    async def _try_connector(
         self,
         connector: BaseUpstreamConnector,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
         ssl_ctx: ssl.SSLContext,
         timeout: float,
+        *,
         failures: list[str],
     ) -> UpstreamConnectResult:
         result = await connector.connect(host, endpoints, ssl_ctx, timeout)
@@ -527,7 +576,7 @@ class AutoConnector(BaseUpstreamConnector):
                 endpoints,
                 ssl_ctx,
                 timeout,
-                failures,
+                failures=failures,
             )
             if result.writer is not None:
                 state.last_success_method = result.method
@@ -538,7 +587,12 @@ class AutoConnector(BaseUpstreamConnector):
         if UpstreamMode.DIRECT_IP.value not in attempted and not direct_unhealthy:
             attempted.add(UpstreamMode.DIRECT_IP.value)
             result = await self._try_connector(
-                self.direct, host, endpoints, ssl_ctx, timeout, failures
+                self.direct,
+                host,
+                endpoints,
+                ssl_ctx,
+                timeout,
+                failures=failures,
             )
             if result.writer is not None:
                 state.last_success_method = result.method
@@ -561,7 +615,12 @@ class AutoConnector(BaseUpstreamConnector):
                 continue
             attempted.add(method)
             result = await self._try_connector(
-                connector, host, endpoints, ssl_ctx, timeout, failures
+                connector,
+                host,
+                endpoints,
+                ssl_ctx,
+                timeout,
+                failures=failures,
             )
             if result.writer is not None:
                 state.preferred_method = result.method

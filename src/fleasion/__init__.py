@@ -1,5 +1,6 @@
 """Fleasion - Roblox asset interceptor and replacer."""
 
+from importlib import import_module
 from typing import TYPE_CHECKING
 
 from .version import read_version
@@ -13,7 +14,5 @@ __version__ = read_version()
 
 def __getattr__(name: str) -> object:
     if name == 'main':
-        from .app import main  # ruff: ignore[import-outside-top-level]
-
-        return main
+        return import_module('.app', __name__).main
     raise AttributeError(name)

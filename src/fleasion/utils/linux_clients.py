@@ -12,16 +12,18 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import (
-    Callable,  # ruff: ignore[typing-only-standard-library-import]
-    Iterable,  # ruff: ignore[typing-only-standard-library-import]
-    Mapping,  # ruff: ignore[typing-only-standard-library-import]
-    Sequence,  # ruff: ignore[typing-only-standard-library-import]
-)
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Protocol, TypedDict, Unpack
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, Unpack
+
+if TYPE_CHECKING:
+    from collections.abc import (
+        Callable,
+        Iterable,
+        Mapping,
+        Sequence,
+    )
 
 
 class CommandRunner(Protocol):
@@ -295,7 +297,7 @@ def _flatpak_info_succeeds(
             text=True,
             timeout=5,
         )
-    except Exception:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
 

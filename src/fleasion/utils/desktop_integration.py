@@ -7,6 +7,7 @@ between packaged builds and ``uv run`` development sessions.
 
 from __future__ import annotations
 
+import importlib
 import os
 import plistlib
 import shlex
@@ -36,11 +37,10 @@ _DESCRIPTION = 'Roblox asset interceptor and replacer'
 
 def _log(message: str) -> None:
     try:
-        from .logging import log_buffer  # ruff: ignore[import-outside-top-level]
-
-        log_buffer.log('DesktopIntegration', message)
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
-        pass
+        logging_module = importlib.import_module('.logging', __package__)
+        logging_module.log_buffer.log('DesktopIntegration', message)
+    except (ImportError, AttributeError, OSError):
+        return
 
 
 def _find_project_root() -> Path | None:
@@ -81,13 +81,34 @@ def _launch_command() -> tuple[list[str], Path | None, dict[str, str]]:
 def _remove_windows_shortcut() -> bool:
     try:
         WINDOWS_START_MENU_SHORTCUT_PATH.unlink(missing_ok=True)
-        return True  # ruff: ignore[try-consider-else]
     except OSError as exc:
         _log(f'Failed to remove Windows start-menu shortcut: {exc}')
         return False
+    return True
+
+
+def _write_windows_shortcut(
+    pythoncom: Any,
+    win32com_client: Any,
+    command: list[str],
+    working_dir: Path | None,
+    icon_path: Path | None,
+) -> None:
+    pythoncom.CoInitialize()
+    shell = win32com_client.Dispatch('WScript.Shell')
+    WINDOWS_START_MENU_SHORTCUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    shortcut = shell.CreateShortCut(str(WINDOWS_START_MENU_SHORTCUT_PATH))
+    shortcut.Targetpath = command[0]
+    shortcut.Arguments = subprocess.list2cmdline(command[1:])
+    shortcut.WorkingDirectory = str(working_dir or Path(command[0]).parent)
+    shortcut.Description = _DESCRIPTION
+    if icon_path is not None:
+        shortcut.IconLocation = f'{icon_path},0'
+    shortcut.Save()
 
 
 if TYPE_CHECKING:
+    from typing import Any
 
     def _create_windows_shortcut_runtime(
         command: list[str], working_dir: Path | None, icon_path: Path | None
@@ -97,26 +118,20 @@ else:
     def _create_windows_shortcut_runtime(
         command: list[str], working_dir: Path | None, icon_path: Path | None
     ) -> bool:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            import pythoncom  # ruff: ignore[import-outside-top-level]
-            import win32com.client  # ruff: ignore[import-outside-top-level]
+        try:
+            pythoncom = importlib.import_module('pythoncom')
+            win32com_client = importlib.import_module('win32com.client')
+        except ImportError as exc:
+            _log(f'Failed to load Windows shortcut support: {exc}')
+            return False
 
-            pythoncom.CoInitialize()
-            shell = win32com.client.Dispatch('WScript.Shell')
-            WINDOWS_START_MENU_SHORTCUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            shortcut = shell.CreateShortCut(str(WINDOWS_START_MENU_SHORTCUT_PATH))
-            shortcut.Targetpath = command[0]
-            shortcut.Arguments = subprocess.list2cmdline(command[1:])
-            shortcut.WorkingDirectory = str(working_dir or Path(command[0]).parent)
-            shortcut.Description = _DESCRIPTION
-            if icon_path is not None:
-                shortcut.IconLocation = f'{icon_path},0'
-            shortcut.Save()
-            _log(f'Windows start-menu shortcut updated: {WINDOWS_START_MENU_SHORTCUT_PATH}')
-            return True  # ruff: ignore[try-consider-else]
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            _write_windows_shortcut(pythoncom, win32com_client, command, working_dir, icon_path)
+        except (AttributeError, OSError, pythoncom.com_error) as exc:
             _log(f'Failed to create Windows start-menu shortcut: {exc}')
             return False
+        _log(f'Windows start-menu shortcut updated: {WINDOWS_START_MENU_SHORTCUT_PATH}')
+        return True
 
 
 def _create_windows_shortcut() -> bool:
@@ -145,10 +160,12 @@ def _register_macos_application(app_path: Path) -> None:
     if not lsregister.is_file():
         return
     try:
-        subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+        subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
             [str(lsregister), '-f', str(app_path)],
             capture_output=True,
             timeout=10,
+            check=False,
+            shell=False,
         )
     except OSError as exc:
         _log(f'Failed to register macOS launcher app with Launch Services: {exc}')
@@ -163,10 +180,51 @@ def _remove_macos_app() -> bool:
         return True
     try:
         shutil.rmtree(MACOS_APPLICATION_PATH)
-        return True  # ruff: ignore[try-consider-else]
     except OSError as exc:
         _log(f'Failed to remove macOS launcher app: {exc}')
         return False
+    return True
+
+
+def _write_macos_app_bundle(
+    command: list[str], working_dir: Path | None, env: dict[str, str], contents: Path
+) -> None:
+    macos_dir = contents / 'MacOS'
+    resources = contents / 'Resources'
+    marker = contents / _MACOS_MARKER_NAME
+    macos_dir.mkdir(parents=True, exist_ok=True)
+    resources.mkdir(parents=True, exist_ok=True)
+
+    executable = macos_dir / APP_NAME
+    executable.write_text(_macos_launcher_script(command, working_dir, env), encoding='utf-8')
+    executable.chmod(0o755)
+
+    icon_name = None
+    icon_path = get_icon_path()
+    if icon_path is not None and icon_path.suffix.lower() == '.icns':
+        icon_name = icon_path.stem
+        shutil.copy2(icon_path, resources / icon_path.name)
+
+    bundle_version = macos_bundle_version(APP_VERSION)
+    info = {
+        'CFBundleDevelopmentRegion': 'en',
+        'CFBundleDisplayName': APP_NAME,
+        'CFBundleExecutable': APP_NAME,
+        'CFBundleIdentifier': 'com.fleasion.launcher',
+        'CFBundleInfoDictionaryVersion': '6.0',
+        'CFBundleName': APP_NAME,
+        'CFBundlePackageType': 'APPL',
+        'CFBundleShortVersionString': bundle_version,
+        'CFBundleVersion': bundle_version,
+        'LSApplicationCategoryType': 'public.app-category.utilities',
+        'NSHumanReadableCopyright': _DESCRIPTION,
+    }
+    if icon_name:
+        info['CFBundleIconFile'] = icon_name
+    with (contents / 'Info.plist').open('wb') as plist_file:
+        plistlib.dump(info, plist_file)
+    _register_macos_application(MACOS_APPLICATION_PATH)
+    marker.write_text('Managed by Fleasion desktop integration.\n', encoding='utf-8')
 
 
 def _create_macos_app() -> bool:
@@ -175,8 +233,6 @@ def _create_macos_app() -> bool:
     # roblox:// here would launch a second Fleasion instance from the browser.
     command, working_dir, env = _launch_command()
     contents = MACOS_APPLICATION_PATH / 'Contents'
-    macos_dir = contents / 'MacOS'
-    resources = contents / 'Resources'
     marker = contents / _MACOS_MARKER_NAME
 
     if MACOS_APPLICATION_PATH.exists() and not marker.exists():
@@ -190,45 +246,13 @@ def _create_macos_app() -> bool:
         _log(f'Refusing to overwrite unmarked macOS app: {MACOS_APPLICATION_PATH}')
         return False
 
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        macos_dir.mkdir(parents=True, exist_ok=True)
-        resources.mkdir(parents=True, exist_ok=True)
-
-        executable = macos_dir / APP_NAME
-        executable.write_text(_macos_launcher_script(command, working_dir, env), encoding='utf-8')
-        executable.chmod(0o755)
-
-        icon_name = None
-        icon_path = get_icon_path()
-        if icon_path is not None and icon_path.suffix.lower() == '.icns':
-            icon_name = icon_path.stem
-            shutil.copy2(icon_path, resources / icon_path.name)
-
-        bundle_version = macos_bundle_version(APP_VERSION)
-        info = {
-            'CFBundleDevelopmentRegion': 'en',
-            'CFBundleDisplayName': APP_NAME,
-            'CFBundleExecutable': APP_NAME,
-            'CFBundleIdentifier': 'com.fleasion.launcher',
-            'CFBundleInfoDictionaryVersion': '6.0',
-            'CFBundleName': APP_NAME,
-            'CFBundlePackageType': 'APPL',
-            'CFBundleShortVersionString': bundle_version,
-            'CFBundleVersion': bundle_version,
-            'LSApplicationCategoryType': 'public.app-category.utilities',
-            'NSHumanReadableCopyright': _DESCRIPTION,
-        }
-        if icon_name:
-            info['CFBundleIconFile'] = icon_name
-        with (contents / 'Info.plist').open('wb') as f:
-            plistlib.dump(info, f)
-        _register_macos_application(MACOS_APPLICATION_PATH)
-        marker.write_text('Managed by Fleasion desktop integration.\n', encoding='utf-8')
-        _log(f'macOS launcher app updated: {MACOS_APPLICATION_PATH}')
-        return True  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
+    try:
+        _write_macos_app_bundle(command, working_dir, env, contents)
+    except (OSError, ValueError) as exc:
         _log(f'Failed to create macOS launcher app: {exc}')
         return False
+    _log(f'macOS launcher app updated: {MACOS_APPLICATION_PATH}')
+    return True
 
 
 if TYPE_CHECKING:
@@ -237,40 +261,37 @@ if TYPE_CHECKING:
 else:
 
     def _restore_linux_uri_handler_runtime() -> None:
-        from . import platform_linux  # ruff: ignore[import-outside-top-level]
-
-        platform_linux.__dict__['_restore_linux_roblox_uri_handler']()
+        platform_linux = importlib.import_module('.platform_linux', __package__)
+        platform_linux.restore_linux_roblox_uri_handler()
 
 
 def _remove_linux_desktop_entries() -> bool:
     try:
-        from .platform_linux import (  # ruff: ignore[import-outside-top-level]
-            LINUX_APPLICATIONS_DIR,
-            LINUX_DESKTOP_ENTRY_PATH,
-            LINUX_LAUNCHER_PATH,
-        )
-
-        for path in (LINUX_DESKTOP_ENTRY_PATH, LINUX_LAUNCHER_PATH):
+        platform_linux = importlib.import_module('.platform_linux', __package__)
+        for path in (
+            platform_linux.LINUX_DESKTOP_ENTRY_PATH,
+            platform_linux.LINUX_LAUNCHER_PATH,
+        ):
             path.unlink(missing_ok=True)
-        if LINUX_DESKTOP_ENTRY_PATH.parent == LINUX_APPLICATIONS_DIR:
+        if (
+            platform_linux.LINUX_DESKTOP_ENTRY_PATH.parent
+            == platform_linux.LINUX_APPLICATIONS_DIR
+        ):
             _restore_linux_uri_handler_runtime()
-        return True  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (ImportError, AttributeError, OSError) as exc:
         _log(f'Failed to remove Linux desktop integration: {exc}')
         return False
+    return True
 
 
 def _create_linux_desktop_entries() -> bool:
     try:
-        from .platform_linux import (  # ruff: ignore[import-outside-top-level]
-            install_desktop_entries,
-        )
-
-        install_desktop_entries()
-        return True  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
+        platform_linux = importlib.import_module('.platform_linux', __package__)
+        platform_linux.install_desktop_entries()
+    except (ImportError, AttributeError, OSError) as exc:
         _log(f'Failed to create Linux desktop integration: {exc}')
         return False
+    return True
 
 
 def sync_desktop_integration(enabled: bool) -> bool:

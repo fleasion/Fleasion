@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import sys
-from collections.abc import Iterable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,6 +15,7 @@ ROBLOX_DIRS_FILE = CONFIG_DIR / 'roblox_dirs.json'
 
 if TYPE_CHECKING:
 
+    from collections.abc import Iterable
     def _object_dict(value: object) -> dict[str, object] | None: ...
 
     def _object_list(value: object) -> list[object] | None: ...
@@ -27,85 +28,96 @@ else:
         return value if isinstance(value, list) else None
 
 
-def _normalise_roblox_dir(value: str | Path) -> Path | None:  # ruff: ignore[too-many-return-statements]
+def _normalise_macos_roblox_dir(path: Path) -> Path | None:
+    if path.name == ROBLOX_PROCESS:
+        resources = path.parent.parent / 'Resources'
+        return resources if resources.is_dir() else None
+    if path.suffix == '.app':
+        resources = path / 'Contents' / 'Resources'
+        executable = path / 'Contents' / 'MacOS' / ROBLOX_PROCESS
+        return resources if resources.is_dir() and executable.is_file() else None
+    if path.name == 'MacOS':
+        resources = path.parent / 'Resources'
+        return resources if resources.is_dir() else None
+    if path.name == 'Resources' and path.is_dir():
+        return path
+    if (path / 'ssl' / 'cacert.pem').is_file() or (path / 'content').is_dir():
+        return path if path.is_dir() else None
+    return None
+
+
+def _matches_known_sober_dir(path: Path) -> bool:
+    try:
+        platform_linux = importlib.import_module('.platform_linux', __package__)
+        resolved = path.resolve()
+    except (ImportError, AttributeError, OSError):
+        return False
+
+    for candidate in (
+        platform_linux.SOBER_ASSET_OVERLAY_DIR,
+        platform_linux.SOBER_LEGACY_EXE_DIR,
+    ):
+        try:
+            if resolved == candidate.resolve() and path.is_dir():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _normalise_linux_roblox_dir(path: Path) -> Path | None:
+    if _matches_known_sober_dir(path):
+        return path
+    if path.name in {'asset_overlay', 'exe'} and path.is_dir():
+        return path
+    if (path / 'ssl' / 'cacert.pem').is_file() or (path / 'content').is_dir():
+        return path if path.is_dir() else None
+    return None
+
+
+def _normalise_windows_roblox_dir(path: Path) -> Path | None:
+    install_dir = path.parent if path.name.lower() == ROBLOX_PROCESS.lower() else path
+    if install_dir.is_dir() and (install_dir / ROBLOX_PROCESS).is_file():
+        return install_dir
+    return None
+
+
+def _normalise_roblox_dir(value: str | Path) -> Path | None:
     """Return a valid Roblox install/resource directory, or None."""
     try:
         path = Path(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     if '\x00' in str(path):
         return None
     if sys.platform == 'darwin':
-        if path.name == ROBLOX_PROCESS:
-            resources = path.parent.parent / 'Resources'
-            return resources if resources.is_dir() else None
-        if path.suffix == '.app':
-            resources = path / 'Contents' / 'Resources'
-            exe = path / 'Contents' / 'MacOS' / ROBLOX_PROCESS
-            return resources if resources.is_dir() and exe.is_file() else None
-        if path.name == 'MacOS':
-            resources = path.parent / 'Resources'
-            return resources if resources.is_dir() else None
-        if path.name == 'Resources' and path.is_dir():
-            return path
-        if (path / 'ssl' / 'cacert.pem').is_file() or (path / 'content').is_dir():
-            return path if path.is_dir() else None
-        return None
-
+        return _normalise_macos_roblox_dir(path)
     if sys.platform.startswith('linux'):
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            from .platform_linux import (  # ruff: ignore[import-outside-top-level]
-                SOBER_ASSET_OVERLAY_DIR,
-                SOBER_LEGACY_EXE_DIR,
-            )
-
-            resolved = path.resolve()
-            for candidate in (SOBER_ASSET_OVERLAY_DIR, SOBER_LEGACY_EXE_DIR):
-                try:
-                    if resolved == candidate.resolve() and path.is_dir():
-                        return path
-                except OSError:
-                    pass
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
-        if path.name in {'asset_overlay', 'exe'} and path.is_dir():
-            return path
-        if (path / 'ssl' / 'cacert.pem').is_file() or (path / 'content').is_dir():
-            return path if path.is_dir() else None
-        return None
-
-    if path.name.lower() == ROBLOX_PROCESS.lower():
-        path = path.parent
-    if not path.is_dir():
-        return None
-    if not (path / ROBLOX_PROCESS).is_file():
-        return None
-    return path
+        return _normalise_linux_roblox_dir(path)
+    return _normalise_windows_roblox_dir(path)
 
 
-def is_roblox_studio_resource_dir(path: Path) -> bool:  # ruff: ignore[too-many-return-statements]
+def _is_macos_studio_resource_dir(path: Path) -> bool:
+    if path.name == 'RobloxStudio.app':
+        return True
+    if path.name == 'Resources':
+        return path.parent.parent.name == 'RobloxStudio.app'
+    return False
+
+
+def is_roblox_studio_resource_dir(path: Path) -> bool:
     """Return True when *path* points at a Roblox Studio resource root."""
     if '\x00' in str(path):
         return False
     try:
         resolved = path.resolve()
-    except OSError, ValueError:
+    except (OSError, ValueError):
         resolved = path
 
     if sys.platform == 'darwin':
-        if resolved.name == 'RobloxStudio.app':
-            return True
-        if resolved.name == 'Resources':
-            try:
-                app_bundle = resolved.parent.parent
-            except Exception:  # ruff: ignore[blind-except]
-                return False
-            return app_bundle.name == 'RobloxStudio.app'
-        return False
-
+        return _is_macos_studio_resource_dir(resolved)
     if sys.platform.startswith('linux'):
         return False
-
     try:
         return resolved.is_dir() and (resolved / ROBLOX_STUDIO_PROCESS).is_file()
     except OSError:

@@ -24,10 +24,10 @@ class _DisplayListWidget:
     def context(self):
         return object()
 
-    def makeCurrent(self) -> None:  # ruff: ignore[invalid-function-name]
+    def makeCurrent(self) -> None:
         self.made_current = True
 
-    def doneCurrent(self) -> None:  # ruff: ignore[invalid-function-name]
+    def doneCurrent(self) -> None:
         self.done_current = True
 
 

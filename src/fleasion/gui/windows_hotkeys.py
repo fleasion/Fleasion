@@ -13,7 +13,7 @@ import sys
 import threading
 from collections.abc import Mapping
 from ctypes import wintypes
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from PySide6.QtCore import QObject, Signal
 
@@ -22,6 +22,14 @@ from fleasion.utils import log_buffer
 from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
 
 type HotkeyBinding = dict[str, int | bool | str]
+
+
+class _DisabledConfigLike(Protocol):
+    custom_fflag_disabled: list[str]
+
+
+class _RefreshProxyLike(Protocol):
+    def refresh_custom_fflag_interception(self) -> None: ...
 
 
 class _WinFunction(Protocol):
@@ -130,11 +138,11 @@ else:
         disabled = getattr(config, 'custom_fflag_disabled', []) or []
         return [str(value) for value in disabled]
 
-    def _set_config_disabled(config: object, values: list[str]) -> None:
-        setattr(config, 'custom_fflag_disabled', values)  # ruff: ignore[set-attr-with-constant]
+    def _set_config_disabled(config: _DisabledConfigLike, values: list[str]) -> None:
+        config.custom_fflag_disabled = values
 
-    def _refresh_proxy(proxy: object) -> None:
-        getattr(proxy, 'refresh_custom_fflag_interception')()  # ruff: ignore[get-attr-with-constant]
+    def _refresh_proxy(proxy: _RefreshProxyLike) -> None:
+        proxy.refresh_custom_fflag_interception()
 
 
 MOD_SHIFT = 0x01
@@ -157,13 +165,13 @@ _VK_RMENU = 0xA5
 
 
 def modifier_mask_for_virtual_key(virtual_key: int) -> int:
-    if virtual_key in (_VK_SHIFT, _VK_LSHIFT, _VK_RSHIFT):  # ruff: ignore[literal-membership]
+    if virtual_key in {_VK_SHIFT, _VK_LSHIFT, _VK_RSHIFT}:
         return MOD_SHIFT
-    if virtual_key in (_VK_CONTROL, _VK_LCONTROL, _VK_RCONTROL):  # ruff: ignore[literal-membership]
+    if virtual_key in {_VK_CONTROL, _VK_LCONTROL, _VK_RCONTROL}:
         return MOD_CTRL
-    if virtual_key in (_VK_MENU, _VK_LMENU, _VK_RMENU):  # ruff: ignore[literal-membership]
+    if virtual_key in {_VK_MENU, _VK_LMENU, _VK_RMENU}:
         return MOD_ALT
-    if virtual_key in (_VK_LWIN, _VK_RWIN):  # ruff: ignore[literal-membership]
+    if virtual_key in {_VK_LWIN, _VK_RWIN}:
         return MOD_WIN
     return 0
 
@@ -171,16 +179,25 @@ def modifier_mask_for_virtual_key(virtual_key: int) -> int:
 def normalize_binding(binding: object) -> HotkeyBinding | None:
     """Validate a persisted physical-key binding."""
     binding_map = _binding_mapping(binding)
-    if binding_map is None or binding_map.get('platform') not in (None, 'windows'):  # ruff: ignore[literal-membership]
+    if binding_map is None or binding_map.get('platform') not in {None, 'windows'}:
         return None
     kind = binding_map.get('kind', 'key')
     modifiers = binding_map.get('modifiers', 0)
     extended = binding_map.get('extended', False)
-    if not isinstance(modifiers, int) or isinstance(modifiers, bool) or modifiers & ~MODIFIER_MASK:
+    if (
+        not isinstance(kind, str)
+        or not isinstance(modifiers, int)
+        or isinstance(modifiers, bool)
+        or modifiers & ~MODIFIER_MASK
+    ):
         return None
     if kind == 'mouse_wheel':
         direction = binding_map.get('direction')
-        if binding_map.get('platform') != 'windows' or direction not in ('up', 'down'):  # ruff: ignore[literal-membership]
+        if (
+            binding_map.get('platform') != 'windows'
+            or not isinstance(direction, str)
+            or direction not in {'up', 'down'}
+        ):
             return None
         return {
             'platform': 'windows',
@@ -189,15 +206,17 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
             'modifiers': modifiers,
         }
     scan_code = binding_map.get('scan_code')
-    if (
-        kind not in ('key', 'mouse_button')  # ruff: ignore[literal-membership, too-many-boolean-expressions]
-        or not isinstance(scan_code, int)
+    invalid_kind = kind not in {'key', 'mouse_button'}
+    invalid_scan_code = (
+        not isinstance(scan_code, int)
         or isinstance(scan_code, bool)
         or not 0 < scan_code <= 0xFF
-        or not isinstance(extended, bool)
-        or (kind == 'mouse_button' and scan_code not in (1, 2, 4, 5, 6))  # ruff: ignore[literal-membership]
-    ):
+    )
+    invalid_extended = not isinstance(extended, bool)
+    invalid_mouse_button = kind == 'mouse_button' and scan_code not in {1, 2, 4, 5, 6}
+    if invalid_kind or invalid_scan_code or invalid_extended or invalid_mouse_button:
         return None
+    scan_code = cast('int', scan_code)
     result: HotkeyBinding = {
         'scan_code': scan_code,
         'extended': extended,
@@ -392,31 +411,37 @@ class WindowsHotkeyService(QObject):
         )
         self._thread.start()
 
+    def _translate_bindings(
+        self, user32: _User32, bindings: Mapping[str, HotkeyBinding]
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        translated: dict[str, tuple[int, int]] = {}
+        wheel_bindings: dict[str, tuple[str, int]] = {}
+        for name, binding in bindings.items():
+            if binding.get('kind') == 'mouse_wheel':
+                wheel_bindings[name] = (str(binding['direction']), int(binding['modifiers']))
+                continue
+            if binding.get('kind') == 'mouse_button':
+                translated[name] = (int(binding['scan_code']), int(binding['modifiers']))
+                continue
+            scan_code = int(binding['scan_code'])
+            if binding['extended']:
+                scan_code |= 0xE000
+            virtual_key = int(user32.MapVirtualKeyW(scan_code, self._MAPVK_VSC_TO_VK_EX))
+            if virtual_key:
+                translated[name] = (virtual_key, int(binding['modifiers']))
+            else:
+                log_buffer.log('CustomFFlags', f'Could not map the keybind for {name}.')
+        return translated, wheel_bindings
+
     def _run(self, bindings: Mapping[str, HotkeyBinding]) -> None:
         user32 = _windll().user32
         user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
         user32.GetAsyncKeyState.restype = ctypes.c_short
         user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
         user32.MapVirtualKeyW.restype = wintypes.UINT
-        translated: dict[str, tuple[int, int]] = {}
-        wheel_bindings: dict[str, tuple[str, int]] = {}
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            for name, binding in bindings.items():
-                if binding.get('kind') == 'mouse_wheel':
-                    wheel_bindings[name] = (str(binding['direction']), int(binding['modifiers']))
-                    continue
-                if binding.get('kind') == 'mouse_button':
-                    translated[name] = (int(binding['scan_code']), int(binding['modifiers']))
-                    continue
-                scan_code = int(binding['scan_code'])
-                if binding['extended']:
-                    scan_code |= 0xE000
-                virtual_key = int(user32.MapVirtualKeyW(scan_code, self._MAPVK_VSC_TO_VK_EX))
-                if virtual_key:
-                    translated[name] = (virtual_key, int(binding['modifiers']))
-                else:
-                    log_buffer.log('CustomFFlags', f'Could not map the keybind for {name}.')
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            translated, wheel_bindings = self._translate_bindings(user32, bindings)
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError, ctypes.ArgumentError) as exc:
             log_buffer.log('CustomFFlags', f'Could not start Windows FastFlag key polling: {exc}')
             return
 

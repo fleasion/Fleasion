@@ -10,6 +10,8 @@ QOpenGLWidget top-level-window recreation behavior.
 
 from __future__ import annotations
 
+from typing import override
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import (
     QCloseEvent,
@@ -30,13 +32,13 @@ from fleasion.utils.logging import log_buffer
 class OffscreenOpenGLWidget(QWidget):
     """QWidget that renders OpenGL offscreen and presents it as a raster image."""
 
-    framePresented = Signal()  # ruff: ignore[mixed-case-variable-in-class-scope]
+    frame_presented = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(120, 120)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)  # ruff: ignore[boolean-positional-value-in-call]
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
 
         self._requested_gl_format = QSurfaceFormat()
         self._gl_context: QOpenGLContext | None = None
@@ -48,7 +50,7 @@ class OffscreenOpenGLWidget(QWidget):
         self._offscreen_error_logged = False
         self._rendering = False
 
-    def setFormat(self, fmt: QSurfaceFormat) -> None:  # ruff: ignore[invalid-function-name]
+    def setFormat(self, fmt: QSurfaceFormat) -> None:
         """Store the requested context format until the first rendered frame."""
         if self._gl_context is not None:
             log_buffer.log('OpenGL', 'Ignoring GL format change after context creation')
@@ -58,19 +60,19 @@ class OffscreenOpenGLWidget(QWidget):
     def context(self) -> QOpenGLContext | None:
         return self._gl_context
 
-    def defaultFramebufferObject(self) -> int:  # ruff: ignore[invalid-function-name]
+    def defaultFramebufferObject(self) -> int:
         return self._gl_fbo.handle() if self._gl_fbo is not None else 0
 
-    def isExposed(self) -> bool:  # ruff: ignore[invalid-function-name]
+    def isExposed(self) -> bool:
         """Compatibility helper for diagnostics retained from QOpenGLWindow."""
         return self.isVisible() and self.window().isVisible()
 
-    def makeCurrent(self) -> bool:  # ruff: ignore[invalid-function-name]
+    def makeCurrent(self) -> bool:
         if not self._ensure_context() or self._gl_context is None or self._gl_surface is None:
             return False
         return bool(self._gl_context.makeCurrent(self._gl_surface))
 
-    def doneCurrent(self) -> None:  # ruff: ignore[invalid-function-name]
+    def doneCurrent(self) -> None:
         if self._gl_context is not None:
             self._gl_context.doneCurrent()
 
@@ -143,7 +145,7 @@ class OffscreenOpenGLWidget(QWidget):
                 raise RuntimeError(msg)
             try:
                 self.paintGL()
-                image = self._gl_fbo.toImage(True)  # ruff: ignore[boolean-positional-value-in-call]
+                image = self._gl_fbo.toImage(flipped=True)
                 if image.isNull():
                     msg = 'OpenGL framebuffer readback returned a null image'
                     raise RuntimeError(msg)
@@ -153,7 +155,8 @@ class OffscreenOpenGLWidget(QWidget):
         finally:
             self._gl_context.doneCurrent()
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # ruff: ignore[invalid-function-name, unused-method-argument]
+    @override
+    def paintEvent(self, _event: QPaintEvent) -> None:
         if self._rendering:
             return
         self._rendering = True
@@ -184,49 +187,49 @@ class OffscreenOpenGLWidget(QWidget):
                 painter.end()
 
             if not self._frame_image.isNull():
-                self.framePresented.emit()
+                self.frame_presented.emit()
         finally:
             self._rendering = False
 
-    def resizeEvent(self, event: QResizeEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self.update()
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         context = self._gl_context
         surface = self._gl_surface
         if context is not None and surface is not None:
             try:
                 context.makeCurrent(surface)
                 self._gl_fbo = None
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
+            except RuntimeError:
                 pass
             finally:
                 try:
                     context.doneCurrent()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
+                except RuntimeError:
                     pass
         if surface is not None:
             try:
                 surface.destroy()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
+            except RuntimeError:
                 pass
         self._gl_surface = None
         self._gl_context = None
         super().closeEvent(event)
 
     # Hooks implemented by the concrete renderer classes.
-    def initializeGL(  # ruff: ignore[invalid-function-name]
+    def initializeGL(
         self,
     ) -> None:  # pragma: no cover - abstract hook
         raise NotImplementedError
 
-    def resizeGL(  # ruff: ignore[invalid-function-name]
-        self, width: int, height: int
-    ) -> None:  # pragma: no cover - abstract hook
+    def resizeGL(self, width: int, height: int) -> None:  # pragma: no cover - abstract hook
         raise NotImplementedError
 
-    def paintGL(  # ruff: ignore[invalid-function-name]
+    def paintGL(
         self,
     ) -> None:  # pragma: no cover - abstract hook
         raise NotImplementedError

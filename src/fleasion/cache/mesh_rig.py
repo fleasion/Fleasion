@@ -329,8 +329,9 @@ def _map_weights(
     return mapped
 
 
-def _assemble(  # ruff: ignore[too-many-positional-arguments]
+def _assemble(
     version: str,
+    *,
     vertices: list[mesh_processing.Vertex],
     faces: list[mesh_processing.Face],
     envelopes: list[_Envelope],
@@ -413,7 +414,15 @@ def _parse_v4_v5(data: bytes, version: str) -> RiggedMesh | None:
         msg = 'unexpected trailing mesh data'
         raise MeshRigError(msg)
 
-    return _assemble(version, vertices, faces, envelopes, bones, subsets, has_facs)
+    return _assemble(
+        version,
+        vertices=vertices,
+        faces=faces,
+        envelopes=envelopes,
+        bones=bones,
+        subsets=subsets,
+        has_facs=has_facs,
+    )
 
 
 def _parse_skinning_chunk(data: bytes) -> _SkinningData | None:
@@ -489,7 +498,7 @@ def _decode_draco_vertices(
                 dtype=dtype,
             )
             return values.reshape(-1, width) if values.ndim == 1 else values
-        except Exception:  # ruff: ignore[blind-except]
+        except (KeyError, RuntimeError, TypeError, ValueError):
             return None
 
     normals: NDArray[np.float32] | None = attribute(1, 3, np.float32)
@@ -649,7 +658,15 @@ def _parse_v6_v7(data: bytes, version: str) -> RiggedMesh | None:
     faces = _apply_chunked_lod(faces, lod_data)
 
     envelopes, bones, subsets = skinning
-    return _assemble(version, vertices, faces, envelopes, bones, subsets, has_facs)
+    return _assemble(
+        version,
+        vertices=vertices,
+        faces=faces,
+        envelopes=envelopes,
+        bones=bones,
+        subsets=subsets,
+        has_facs=has_facs,
+    )
 
 
 def parse_rigged_mesh(data: bytes) -> RiggedMesh | None:
@@ -658,48 +675,62 @@ def parse_rigged_mesh(data: bytes) -> RiggedMesh | None:
     if len(data) < 13:
         return None
     version = data[:12].decode('ascii', errors='ignore')
+    if version not in {
+        'version 4.00',
+        'version 4.01',
+        'version 5.00',
+        'version 6.00',
+        'version 7.00',
+    }:
+        return None
     try:
         if version in {'version 4.00', 'version 4.01', 'version 5.00'}:
             return _parse_v4_v5(data, version)
-        if version in {'version 6.00', 'version 7.00'}:
-            return _parse_v6_v7(data, version)
-        return None  # ruff: ignore[try-consider-else]
+        return _parse_v6_v7(data, version)
     except (IndexError, struct.error, ValueError) as exc:
         if isinstance(exc, MeshRigError):
             raise
         raise MeshRigError(str(exc)) from exc
 
 
-def has_embedded_rig(data: bytes) -> bool:  # ruff: ignore[too-many-return-statements]
+def _has_chunked_embedded_rig(data: bytes, version: str) -> bool:
+    if version == 'version 7.00' and not mesh_processing.DRACO_AVAILABLE:
+        return False
+    expected_coremesh_version = 1 if version == 'version 6.00' else 2
+    has_coremesh = False
+    valid_skinning = False
+    for chunk_type, chunk_version, chunk_data in _read_chunked_mesh(data):
+        if chunk_type == 'COREMESH':
+            has_coremesh = chunk_version == expected_coremesh_version
+        elif chunk_type == 'SKINNING':
+            if chunk_version != 1:
+                return False
+            skinning = _parse_skinning_chunk(chunk_data)
+            if skinning is None:
+                return False
+            envelopes, _bones, subsets = skinning
+            _map_weights(len(envelopes), envelopes, subsets)
+            valid_skinning = True
+    return has_coremesh and valid_skinning
+
+
+def _has_embedded_rig_unchecked(data: bytes) -> bool:
+    data = _decompress(data)
+    if len(data) < 29:
+        return False
+    version = data[:12].decode('ascii', errors='ignore')
+    if version in {'version 4.00', 'version 4.01', 'version 5.00'}:
+        return struct.unpack_from('<H', data, 27)[0] > 0
+    if version in {'version 6.00', 'version 7.00'}:
+        return _has_chunked_embedded_rig(data, version)
+    return False
+
+
+def has_embedded_rig(data: bytes) -> bool:
     """Return whether a payload contains valid embedded bones and vertex weights."""
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        data = _decompress(data)
-        if len(data) < 29:
-            return False
-        version = data[:12].decode('ascii', errors='ignore')
-        if version in {'version 4.00', 'version 4.01', 'version 5.00'}:
-            return struct.unpack_from('<H', data, 27)[0] > 0
-        if version not in {'version 6.00', 'version 7.00'}:
-            return False
-        if version == 'version 7.00' and not mesh_processing.DRACO_AVAILABLE:
-            return False
-        expected_coremesh_version = 1 if version == 'version 6.00' else 2
-        has_coremesh = False
-        valid_skinning = False
-        for chunk_type, chunk_version, chunk_data in _read_chunked_mesh(data):
-            if chunk_type == 'COREMESH':
-                has_coremesh = chunk_version == expected_coremesh_version
-            elif chunk_type == 'SKINNING':
-                if chunk_version != 1:
-                    return False
-                skinning = _parse_skinning_chunk(chunk_data)
-                if skinning is None:
-                    return False
-                envelopes, _bones, subsets = skinning
-                _map_weights(len(envelopes), envelopes, subsets)
-                valid_skinning = True
-        return has_coremesh and valid_skinning  # ruff: ignore[try-consider-else]
-    except MeshRigError, ValueError, struct.error:
+    try:
+        return _has_embedded_rig_unchecked(data)
+    except (MeshRigError, ValueError, struct.error):
         return False
 
 

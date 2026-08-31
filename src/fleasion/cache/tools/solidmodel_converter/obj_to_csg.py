@@ -48,7 +48,7 @@ def _clamp_byte(v: float) -> int:
 def _parse_vertex_color(parts: list[str]) -> tuple[int, int, int]:
     """Parse optional RGB vertex color from a 'v x y z r g b' OBJ line.
 
-    Supports both normalised (0.0–1.0) and absolute (0–255) ranges.
+    Supports both normalised (0.0-1.0) and absolute (0-255) ranges.
     """
     if len(parts) < 7:
         return 255, 255, 255
@@ -58,18 +58,16 @@ def _parse_vertex_color(parts: list[str]) -> tuple[int, int, int]:
     return _clamp_byte(r), _clamp_byte(g), _clamp_byte(b)
 
 
-def _compute_tangent(  # ruff: ignore[too-many-positional-arguments]
-    v0: tuple[float, float, float],
-    v1: tuple[float, float, float],
-    v2: tuple[float, float, float],
-    uv0: tuple[float, float],
-    uv1: tuple[float, float],
-    uv2: tuple[float, float],
+def _compute_tangent(
+    vertices: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+    uvs: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
 ) -> tuple[float, float, float]:
     """Compute a simple tangent vector for a triangle (Lengyel's method).
 
     Falls back to (1, 0, 0) when the UV triangle is degenerate.
     """
+    v0, v1, v2 = vertices
+    uv0, uv1, uv2 = uvs
     dp1 = (v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2])
     dp2 = (v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2])
     duv1 = (uv1[0] - uv0[0], uv1[1] - uv0[1])
@@ -87,6 +85,110 @@ def _compute_tangent(  # ruff: ignore[too-many-positional-arguments]
     if mag < 1e-10:
         return 1.0, 0.0, 0.0
     return tx / mag, ty / mag, tz / mag
+
+
+class _ObjParseState:
+    def __init__(self) -> None:
+        self.raw_v: list[tuple[float, float, float]] = []
+        self.raw_vn: list[tuple[float, float, float]] = []
+        self.raw_vt: list[tuple[float, float]] = []
+        self.raw_vc: list[tuple[int, int, int]] = []
+        self.unique_verts: dict[tuple[int, int, int], int] = {}
+        self.vertices_out: list[CSGVertex] = []
+        self.indices_out: list[int] = []
+        self.tangent_accum: list[list[float]] = []
+
+
+def _parse_face_corner(face_part: str) -> tuple[int, int, int]:
+    parts = face_part.split('/')
+    vi = int(parts[0]) - 1
+    ti = (int(parts[1]) - 1) if len(parts) >= 2 and parts[1] else -1
+    ni = (int(parts[2]) - 1) if len(parts) >= 3 and parts[2] else -1
+    return vi, ti, ni
+
+
+def _get_or_create_vertex(
+    state: _ObjParseState,
+    corner: tuple[int, int, int],
+) -> int | None:
+    vi, ti, ni = corner
+    if vi < 0 or vi >= len(state.raw_v):
+        return None
+
+    key = (vi, ti, ni)
+    if key in state.unique_verts:
+        return state.unique_verts[key]
+
+    vx, vy, vz = state.raw_v[vi]
+    cr, cg, cb = state.raw_vc[vi] if vi < len(state.raw_vc) else (255, 255, 255)
+
+    nx, ny, nz = (0.0, 1.0, 0.0)
+    if ni != -1 and 0 <= ni < len(state.raw_vn):
+        nx, ny, nz = state.raw_vn[ni]
+
+    tu, tv = 0.0, 0.0
+    if ti != -1 and 0 <= ti < len(state.raw_vt):
+        tu, tv = state.raw_vt[ti]
+    # Roblox's coordinate system flips the V axis
+    tv = 1.0 - tv
+
+    vert = CSGVertex(
+        px=vx,
+        py=vy,
+        pz=vz,
+        nx=nx,
+        ny=ny,
+        nz=nz,
+        cr=cr,
+        cg=cg,
+        cb=cb,
+        ca=255,
+        # extra_r is a 1-indexed surface/part ID mapping the vertex to one
+        # of the source Parts from ChildData. The engine rejects 0 as
+        # invalid. We have no per-face part information from OBJ, so we
+        # claim surface 1 for every vertex (the safest valid value).
+        extra_r=1,
+        extra_g=0,
+        extra_b=0,
+        extra_a=0,
+        u=tu,
+        v=tv,
+        # uvStuds / uvDecal are auxiliary UV channels used by Roblox's
+        # SurfaceAppearance system. The engine stores 0.0 for both when
+        # no stud/decal mapping is needed; non-zero values here confuse
+        # the texture pipeline and can cause visual or load failures.
+        u_studs=0.0,
+        v_studs=0.0,
+        u_decal=0.0,
+        v_decal=0.0,
+        # Tangent will be filled in during pass 2
+        tx=0.0,
+        ty=0.0,
+        tz=0.0,
+        ed0=0.0,
+        ed1=0.0,
+        ed2=0.0,
+        ed3=0.0,
+    )
+    vert_idx = len(state.vertices_out)
+    state.unique_verts[key] = vert_idx
+    state.vertices_out.append(vert)
+    state.tangent_accum.append([0.0, 0.0, 0.0])
+    return vert_idx
+
+
+def _append_face(state: _ObjParseState, face_parts: list[str]) -> None:
+    face_corners = [_parse_face_corner(face_part) for face_part in face_parts]
+    for i in range(1, len(face_corners) - 1):
+        tri_corners = (face_corners[0], face_corners[i], face_corners[i + 1])
+        tri_out: list[int] = []
+        for corner in tri_corners:
+            vert_idx = _get_or_create_vertex(state, corner)
+            if vert_idx is None:
+                break
+            tri_out.append(vert_idx)
+        if len(tri_out) == 3:
+            state.indices_out.extend(tri_out)
 
 
 def parse_obj_to_csg_vertices(
@@ -112,21 +214,17 @@ def parse_obj_to_csg_vertices(
         ``vertices`` is a list of fully-populated :class:`CSGVertex` objects.
         ``indices`` is a flat ``list[int]`` where every 3 entries form a face.
     """
-    raw_v: list[tuple[float, float, float]] = []
-    raw_vn: list[tuple[float, float, float]] = []
-    raw_vt: list[tuple[float, float]] = []
-    raw_vc: list[tuple[int, int, int]] = []  # per-position vertex colors
-
-    # Unique (v_idx, vt_idx, vn_idx) → output vertex index
-    unique_verts: dict[tuple[int, int, int], int] = {}
-    vertices_out: list[CSGVertex] = []
-    indices_out: list[int] = []
-
-    # Accumulate tangents per output vertex index for later averaging
-    tangent_accum: list[list[float]] = []  # [[tx, ty, tz], ...]
+    state = _ObjParseState()
+    raw_v = state.raw_v
+    raw_vn = state.raw_vn
+    raw_vt = state.raw_vt
+    raw_vc = state.raw_vc
+    vertices_out = state.vertices_out
+    indices_out = state.indices_out
+    tangent_accum = state.tangent_accum
 
     # ── Pass 1: geometry data lines ─────────────────────────────────────────
-    for raw_line in obj_content.splitlines():  # ruff: ignore[too-many-nested-blocks]
+    for raw_line in obj_content.splitlines():
         line = raw_line.strip()
         if not line or line.startswith('#'):
             continue
@@ -135,100 +233,17 @@ def parse_obj_to_csg_vertices(
         if not parts:
             continue
 
-        token = parts[0]
+        directive = parts[0]
 
-        if token == 'v':  # ruff: ignore[hardcoded-password-string]
+        if directive == 'v':
             raw_v.append(_parse_float3(parts))
             raw_vc.append(_parse_vertex_color(parts))
-
-        elif token == 'vn':  # ruff: ignore[hardcoded-password-string]
+        elif directive == 'vn':
             raw_vn.append(_parse_float3(parts))
-
-        elif token == 'vt':  # ruff: ignore[hardcoded-password-string]
+        elif directive == 'vt':
             raw_vt.append(_parse_float2(parts))
-
-        elif token == 'f':  # ruff: ignore[hardcoded-password-string]
-            # Each face_part is "v", "v/vt", "v//vn", or "v/vt/vn"
-            face_corners: list[tuple[int, int, int]] = []
-            for face_part in parts[1:]:
-                sp = face_part.split('/')
-                vi = int(sp[0]) - 1
-                ti = (int(sp[1]) - 1) if len(sp) >= 2 and sp[1] else -1
-                ni = (int(sp[2]) - 1) if len(sp) >= 3 and sp[2] else -1
-                face_corners.append((vi, ti, ni))
-
-            # Fan-triangulate the face
-            for i in range(1, len(face_corners) - 1):
-                tri_corners = [face_corners[0], face_corners[i], face_corners[i + 1]]
-                tri_out: list[int] = []
-
-                for vi, ti, ni in tri_corners:
-                    if vi < 0 or vi >= len(raw_v):
-                        break  # skip degenerate face
-
-                    # Build or reuse the unique vertex
-                    key = (vi, ti, ni)
-                    if key not in unique_verts:
-                        vx, vy, vz = raw_v[vi]
-                        cr, cg, cb = raw_vc[vi] if vi < len(raw_vc) else (255, 255, 255)
-
-                        nx, ny, nz = (0.0, 1.0, 0.0)
-                        if ni != -1 and 0 <= ni < len(raw_vn):
-                            nx, ny, nz = raw_vn[ni]
-
-                        tu, tv = 0.0, 0.0
-                        if ti != -1 and 0 <= ti < len(raw_vt):
-                            tu, tv = raw_vt[ti]
-                        # Roblox's coordinate system flips the V axis
-                        tv = 1.0 - tv
-
-                        vert = CSGVertex(
-                            px=vx,
-                            py=vy,
-                            pz=vz,
-                            nx=nx,
-                            ny=ny,
-                            nz=nz,
-                            cr=cr,
-                            cg=cg,
-                            cb=cb,
-                            ca=255,
-                            # extra_r is a 1-indexed surface/part ID mapping the vertex to one
-                            # of the source Parts from ChildData.  The engine rejects 0 as
-                            # invalid.  We have no per-face part information from OBJ, so we
-                            # claim surface 1 for every vertex (the safest valid value).
-                            extra_r=1,
-                            extra_g=0,
-                            extra_b=0,
-                            extra_a=0,
-                            u=tu,
-                            v=tv,
-                            # uvStuds / uvDecal are auxiliary UV channels used by Roblox's
-                            # SurfaceAppearance system.  The engine stores 0.0 for both when
-                            # no stud/decal mapping is needed; non-zero values here confuse
-                            # the texture pipeline and can cause visual or load failures.
-                            u_studs=0.0,
-                            v_studs=0.0,
-                            u_decal=0.0,
-                            v_decal=0.0,
-                            # Tangent will be filled in during pass 2
-                            tx=0.0,
-                            ty=0.0,
-                            tz=0.0,
-                            ed0=0.0,
-                            ed1=0.0,
-                            ed2=0.0,
-                            ed3=0.0,
-                        )
-                        vert_idx = len(vertices_out)
-                        unique_verts[key] = vert_idx
-                        vertices_out.append(vert)
-                        tangent_accum.append([0.0, 0.0, 0.0])
-
-                    tri_out.append(unique_verts[key])
-
-                if len(tri_out) == 3:
-                    indices_out.extend(tri_out)
+        elif directive == 'f':
+            _append_face(state, parts[1:])
 
     # ── Pass 2: compute and accumulate tangents ──────────────────────────────
     # Walk over every triangle and add its tangent contribution to each
@@ -244,7 +259,7 @@ def parse_obj_to_csg_vertices(
         uv1 = (vb.u, vb.v)
         uv2 = (vc.u, vc.v)
 
-        tx, ty, tz = _compute_tangent(p0, p1, p2, uv0, uv1, uv2)
+        tx, ty, tz = _compute_tangent((p0, p1, p2), (uv0, uv1, uv2))
 
         for vi in (ia, ib, ic):
             tangent_accum[vi][0] += tx

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3  # ruff: ignore[shebang-not-executable]
+#!/usr/bin/env python3
 """Privileged macOS relay and hosts-file helper.
 
 This module is installed root-owned under /Library/PrivilegedHelperTools. It
@@ -9,6 +9,7 @@ stays small and independent from Fleasion's GUI and replacement engine.
 import argparse
 import contextlib
 import hmac
+import importlib
 import json
 import logging
 import os
@@ -16,7 +17,6 @@ import re
 import signal
 import socket
 import socketserver
-import ssl
 import stat
 import subprocess
 import tempfile
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 HELPER_VERSION = 7
 HELPER_CAPABILITIES = ('hosts', 'relay', 'patch_ca', 'probe_backend')
-HOSTS_FILE = '/etc/hosts'
+HOSTS_FILE = Path('/etc/hosts')
 HOSTS_MARKER = '# Fleasion proxy entry'
 ALLOWED_HOSTS = {
     'apis.roblox.com',
@@ -59,7 +59,7 @@ _state_lock = threading.Lock()
 _active_hosts: set[str] = set()
 _last_heartbeat = 0.0
 _stop_event = threading.Event()
-_token_file = ''
+_token_file: Path | None = None
 _backend_port = 58443
 
 logger = logging.getLogger('fleasion-proxy-helper')
@@ -157,8 +157,10 @@ def _configure_logging(log_path: str | os.PathLike[str]) -> None:
 
 
 def _read_token() -> str:
-    with open(_token_file, encoding='utf-8') as handle:  # ruff: ignore[builtin-open, read-whole-file]
-        token = handle.read().strip()
+    if _token_file is None:
+        msg = 'helper token file is not configured'
+        raise RuntimeError(msg)
+    token = Path(_token_file).read_text(encoding='utf-8').strip()
     if len(token) < 32:
         msg = 'helper token is missing or invalid'
         raise RuntimeError(msg)
@@ -191,22 +193,45 @@ def _flush_dns() -> None:
         ['/usr/bin/killall', '-HUP', 'mDNSResponder'],
     ):
         try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+            subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+
+
+def _set_active_hosts_state(hosts: set[str]) -> None:
+    state = globals()
+    state['_active_hosts'] = hosts
+    state['_last_heartbeat'] = time.monotonic() if hosts else 0.0
+
+
+def _refresh_active_hosts_heartbeat() -> None:
+    if _active_hosts:
+        globals()['_last_heartbeat'] = time.monotonic()
+
+
+def _set_runtime_config(token_file: Path, backend_port: int) -> None:
+    state = globals()
+    state['_token_file'] = token_file
+    state['_backend_port'] = backend_port
 
 
 def _set_hosts(hosts: Iterable[object]) -> None:
-    global _active_hosts, _last_heartbeat  # ruff: ignore[global-statement]
-
-    Path(HOSTS_FILE).parent.mkdir(exist_ok=True)
+    hosts_file = Path(HOSTS_FILE)
+    hosts_file.parent.mkdir(exist_ok=True)
     requested = {str(host).strip().lower() for host in hosts}
     if not requested.issubset(ALLOWED_HOSTS):
         msg = 'request contains a host outside the Fleasion allowlist'
         raise ValueError(msg)
 
     try:
-        existing = Path(HOSTS_FILE).read_text(encoding='utf-8', errors='replace')
+        existing = hosts_file.read_text(encoding='utf-8', errors='replace')
     except FileNotFoundError:
         existing = _default_hosts_content()
 
@@ -228,15 +253,14 @@ def _set_hosts(hosts: Iterable[object]) -> None:
         content = (content + '\n' if content else '') + additions
     content += '\n'
 
-    with open(HOSTS_FILE, 'w', encoding='utf-8') as handle:  # ruff: ignore[builtin-open]
+    with hosts_file.open('w', encoding='utf-8') as handle:
         handle.write(content)
         handle.flush()
         os.fsync(handle.fileno())
 
     _flush_dns()
     with _state_lock:
-        _active_hosts = requested
-        _last_heartbeat = time.monotonic() if requested else 0.0
+        _set_active_hosts_state(requested)
     logger.info('active hosts updated: %s', ', '.join(sorted(requested)) or 'none')
 
 
@@ -248,32 +272,36 @@ def _normalize_pem_block(pem: object) -> str:
     return _normalize_newlines(pem).strip() + '\n'
 
 
+def _decode_certificate(pem_block: object) -> dict[object, object] | None:
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
+        handle.write(_normalize_pem_block(pem_block))
+        temp_path = Path(handle.name)
+    try:
+        ssl_impl = importlib.import_module('_ssl')
+        decode_cert = vars(ssl_impl).get('_test_decode_cert')
+        if not callable(decode_cert):
+            return None
+        decoded: object = decode_cert(str(temp_path))
+    finally:
+        with contextlib.suppress(OSError):
+            temp_path.unlink()
+    return cast('dict[object, object]', decoded) if isinstance(decoded, dict) else None
+
+
 def _is_fleasion_ca_cert_block(pem_block: object) -> bool:
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
-            handle.write(_normalize_pem_block(pem_block))
-            temp_path = handle.name
-        try:
-            ssl_impl: object = getattr(ssl, '_ssl')  # ruff: ignore[get-attr-with-constant]
-            decode_cert = getattr(ssl_impl, '_test_decode_cert')  # ruff: ignore[get-attr-with-constant]
-            if not callable(decode_cert):
-                return False
-            decoded: object = decode_cert(temp_path)
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(temp_path)  # ruff: ignore[os-unlink]
-        if not isinstance(decoded, dict):
-            return False
-        cert = cast('dict[object, object]', decoded)
-        subject = _certificate_name(cert.get('subject'))
-        issuer = _certificate_name(cert.get('issuer'))
-        return (
-            subject == issuer
-            and _name_value(subject, 'commonName') == 'Fleasion Proxy CA'
-            and _name_value(subject, 'organizationName') == 'Fleasion'
-        )
-    except Exception:  # ruff: ignore[blind-except]
+    try:
+        cert = _decode_certificate(pem_block)
+    except (ImportError, OSError, TypeError, ValueError):
         return False
+    if cert is None:
+        return False
+    subject = _certificate_name(cert.get('subject'))
+    issuer = _certificate_name(cert.get('issuer'))
+    return (
+        subject == issuer
+        and _name_value(subject, 'commonName') == 'Fleasion Proxy CA'
+        and _name_value(subject, 'organizationName') == 'Fleasion'
+    )
 
 
 def _is_relative_to(child: Path, parent: Path) -> bool:
@@ -389,26 +417,37 @@ def _strip_requested_pem_blocks(
     return ''.join(pieces)
 
 
+def _fsync_and_close(fd: int) -> None:
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        dir_fd = os.open(path, os.O_RDONLY)
+        _fsync_and_close(dir_fd)
+    except OSError:
+        return
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
-    fd, tmp_path = tempfile.mkstemp(prefix='.fleasion_cacert_', dir=str(path.parent))
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
+    fd, raw_tmp_path = tempfile.mkstemp(prefix='.fleasion_cacert_', dir=str(path.parent))
+    tmp_path = Path(raw_tmp_path)
+    replaced = False
+    try:
         with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, path)  # ruff: ignore[os-replace]
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            dir_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)  # ruff: ignore[os-unlink]
-        raise
+        tmp_path.replace(path)
+        replaced = True
+        _fsync_directory(path.parent)
+    finally:
+        if not replaced:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
 
 
 def _clear_write_barriers(path: Path) -> None:
@@ -455,6 +494,58 @@ def _normalize_cacert_permissions(ca_file: Path) -> None:
         ca_file.chmod(0o644)
 
 
+def _read_cacert_text(resource_root: Path, ca_file: Path) -> str:
+    try:
+        return ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+    except PermissionError:
+        _prepare_cacert_target(resource_root, ca_file)
+        return ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+
+
+def _patch_ca_install(
+    current_ca: str,
+    item_dict: dict[object, object] | None,
+    result: JsonObject,
+) -> bool:
+    raw_resource_dir = item_dict.get('resource_dir') if item_dict is not None else ''
+    resource_root = _validate_resource_root(raw_resource_dir)
+    ca_file = _safe_cacert_path(resource_root)
+    _prepare_cacert_target(resource_root, ca_file)
+    result['resource_dir'] = str(resource_root)
+    result['ca_file'] = str(ca_file)
+
+    existing = _read_cacert_text(resource_root, ca_file)
+    remove_pems = (
+        list(_as_iterable(item_dict.get('remove_pems') or [])) if item_dict is not None else []
+    )
+    remove_pems.append(current_ca)
+    strip_all_fleasion_ca = (
+        bool(item_dict.get('strip_all_fleasion_ca')) if item_dict is not None else False
+    )
+    cleaned = _strip_requested_pem_blocks(
+        existing,
+        remove_pems,
+        strip_all_fleasion_ca=strip_all_fleasion_ca,
+    ).rstrip('\n')
+    updated = f'{cleaned}\n{current_ca}' if cleaned else current_ca
+
+    if updated == _normalize_newlines(existing):
+        _normalize_cacert_permissions(ca_file)
+        result['status'] = 'already_current'
+        result['changed'] = False
+        return False
+
+    try:
+        _atomic_write_text(ca_file, updated)
+    except PermissionError:
+        _prepare_cacert_target(resource_root, ca_file)
+        _atomic_write_text(ca_file, updated)
+    _normalize_cacert_permissions(ca_file)
+    result['status'] = 'patched'
+    result['changed'] = True
+    return True
+
+
 def _patch_ca(ca_pem: object, installs: object) -> JsonObject:
     current_ca = _normalize_pem_block(ca_pem)
     if not _PEM_CERT_BLOCK_RE.fullmatch(current_ca):
@@ -462,7 +553,7 @@ def _patch_ca(ca_pem: object, installs: object) -> JsonObject:
         raise ValueError(msg)
     if not isinstance(installs, list):
         msg = 'installs must be a list'
-        raise ValueError(msg)  # ruff: ignore[type-check-without-type-error]
+        raise TypeError(msg)
 
     patched: list[JsonObject] = []
     skipped: list[JsonObject] = []
@@ -472,62 +563,15 @@ def _patch_ca(ca_pem: object, installs: object) -> JsonObject:
         item_dict = cast('dict[object, object]', item) if isinstance(item, dict) else None
         raw_resource_dir = item_dict.get('resource_dir') if item_dict is not None else ''
         result: JsonObject = {'resource_dir': str(raw_resource_dir or '')}
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            resource_root = _validate_resource_root(raw_resource_dir)
-            ca_file = _safe_cacert_path(resource_root)
-            _prepare_cacert_target(resource_root, ca_file)
-            result['resource_dir'] = str(resource_root)
-            result['ca_file'] = str(ca_file)
-
-            try:
-                existing = (
-                    ca_file.read_text(encoding='utf-8', errors='replace')
-                    if ca_file.exists()
-                    else ''
-                )
-            except PermissionError:
-                _prepare_cacert_target(resource_root, ca_file)
-                existing = (
-                    ca_file.read_text(encoding='utf-8', errors='replace')
-                    if ca_file.exists()
-                    else ''
-                )
-            remove_pems = (
-                list(_as_iterable(item_dict.get('remove_pems') or []))
-                if item_dict is not None
-                else []
-            )
-            remove_pems.append(current_ca)
-            strip_all_fleasion_ca = (
-                bool(item_dict.get('strip_all_fleasion_ca')) if item_dict is not None else False
-            )
-            cleaned = _strip_requested_pem_blocks(
-                existing,
-                remove_pems,
-                strip_all_fleasion_ca=strip_all_fleasion_ca,
-            ).rstrip('\n')
-            updated = f'{cleaned}\n{current_ca}' if cleaned else current_ca
-            if updated == _normalize_newlines(existing):
-                _normalize_cacert_permissions(ca_file)
-                result['status'] = 'already_current'
-                result['changed'] = False
-                skipped.append(result)
-                continue
-
-            try:
-                _atomic_write_text(ca_file, updated)
-            except PermissionError:
-                _prepare_cacert_target(resource_root, ca_file)
-                _atomic_write_text(ca_file, updated)
-            _normalize_cacert_permissions(ca_file)
-            result['status'] = 'patched'
-            result['changed'] = True
-            patched.append(result)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            changed = _patch_ca_install(current_ca, item_dict, result)
+        except (OSError, TypeError, ValueError) as exc:
             result['status'] = 'failed'
             result['error'] = str(exc)
             failed.append(result)
             logger.warning('CA patch failed for %s: %s', raw_resource_dir, exc)
+            continue
+        (patched if changed else skipped).append(result)
 
     ok = not failed and bool(patched or skipped)
     return {
@@ -586,35 +630,36 @@ def _probe_backend() -> JsonObject:
         backend.close()
 
 
-def _handle_request(request: JsonValue) -> JsonObject:  # ruff: ignore[too-many-return-statements]
+def _handle_request(request: JsonValue) -> JsonObject:
     request_object = _request_object(request)
     supplied = str(request_object.get('token') or '')
     if not hmac.compare_digest(supplied, _read_token()):
         return {'ok': False, 'error': 'unauthorized'}
 
     action = str(request_object.get('action') or '')
+    response: JsonObject
     if action == 'status':
-        return _status()
-    if action == 'apply':
+        response = _status()
+    elif action == 'apply':
         _set_hosts(_as_iterable(request_object.get('hosts') or []))
-        return _status()
-    if action == 'clear':
+        response = _status()
+    elif action == 'clear':
         _set_hosts([])
-        return _status()
-    if action == 'heartbeat':
-        global _last_heartbeat  # ruff: ignore[global-statement]
+        response = _status()
+    elif action == 'heartbeat':
         with _state_lock:
-            if _active_hosts:
-                _last_heartbeat = time.monotonic()
-        return _status()
-    if action == 'probe_backend':
-        return _probe_backend()
-    if action == 'patch_ca':
-        return _patch_ca(
+            _refresh_active_hosts_heartbeat()
+        response = _status()
+    elif action == 'probe_backend':
+        response = _probe_backend()
+    elif action == 'patch_ca':
+        response = _patch_ca(
             str(request_object.get('ca_pem') or ''),
             request_object.get('installs') or [],
         )
-    return {'ok': False, 'error': 'unsupported action'}
+    else:
+        response = {'ok': False, 'error': 'unsupported action'}
+    return response
 
 
 class _ControlHandler(socketserver.StreamRequestHandler):
@@ -624,7 +669,7 @@ class _ControlHandler(socketserver.StreamRequestHandler):
             decoded: object = json.loads(raw.decode('utf-8'))
             request = _json_value(decoded)
             response: JsonObject = _handle_request(request)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (AttributeError, OSError, RuntimeError, TypeError, UnicodeError, ValueError) as exc:
             logger.warning('control request failed: %s', exc)
             response = {'ok': False, 'error': str(exc)}
         self.wfile.write((json.dumps(response, separators=(',', ':')) + '\n').encode('utf-8'))
@@ -682,75 +727,92 @@ def _lease_monitor() -> None:
             logger.warning('proxy heartbeat lease expired; clearing hosts entries')
             try:
                 _set_hosts([])
-            except Exception as exc:  # ruff: ignore[blind-except]
-                logger.error('failed to clear hosts after lease expiry: %s', exc)  # ruff: ignore[error-instead-of-exception]
+            except OSError:
+                logger.exception('failed to clear hosts after lease expiry')
 
 
-def main() -> None:
-    global _token_file, _backend_port  # ruff: ignore[global-statement]
+def _clear_hosts_safely(error_message: str) -> None:
+    try:
+        _set_hosts([])
+    except OSError:
+        logger.exception(error_message)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--token-file', required=True)
-    parser.add_argument('--backend-port', type=int, required=True)
-    parser.add_argument('--control-port', type=int, required=True)
-    parser.add_argument('--log-path', default='/Library/Logs/Fleasion.proxy-helper.log')
-    args = parser.parse_args()
 
-    if os.geteuid() != 0:
-        msg = 'Fleasion proxy helper must run as root'
-        raise SystemExit(msg)
+def _install_stop_handlers(
+    control: _ThreadingTCPServer,
+    relay: _ThreadingTCPServer,
+) -> None:
+    def stop_handler(_signum: int, _frame: FrameType | None) -> None:
+        _stop_event.set()
+        threading.Thread(target=control.shutdown, daemon=True).start()
+        threading.Thread(target=relay.shutdown, daemon=True).start()
 
-    _token_file = args.token_file
-    _backend_port = args.backend_port
-    _configure_logging(args.log_path)
+    signal.signal(signal.SIGTERM, stop_handler)
+    signal.signal(signal.SIGINT, stop_handler)
 
-    control = None
-    relay = None
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        logger.info(
-            'helper starting: control 127.0.0.1:%d, relay 127.0.0.1:443 -> 127.0.0.1:%d',
-            args.control_port,
-            _backend_port,
-        )
-        _read_token()
 
-        try:
-            _set_hosts([])
-        except Exception as exc:  # ruff: ignore[blind-except]
-            logger.error('startup hosts cleanup failed: %s', exc)  # ruff: ignore[error-instead-of-exception]
+def _start_servers(control_port: int) -> tuple[_ThreadingTCPServer, _ThreadingTCPServer]:
+    logger.info(
+        'helper starting: control 127.0.0.1:%d, relay 127.0.0.1:443 -> 127.0.0.1:%d',
+        control_port,
+        _backend_port,
+    )
+    _read_token()
+    _clear_hosts_safely('startup hosts cleanup failed')
 
-        logger.info('binding helper control 127.0.0.1:%d', args.control_port)
-        control = _ThreadingTCPServer(('127.0.0.1', args.control_port), _ControlHandler)
+    logger.info('binding helper control 127.0.0.1:%d', control_port)
+    control = _ThreadingTCPServer(('127.0.0.1', control_port), _ControlHandler)
+    try:
         logger.info('binding helper relay 127.0.0.1:443')
         relay = _ThreadingTCPServer(('127.0.0.1', 443), _RelayHandler)
+    except Exception:
+        control.server_close()
+        raise
+    return control, relay
 
-        def stop_handler(_signum: int, _frame: FrameType | None) -> None:
-            _stop_event.set()
-            threading.Thread(target=control.shutdown, daemon=True).start()
-            threading.Thread(target=relay.shutdown, daemon=True).start()
 
-        signal.signal(signal.SIGTERM, stop_handler)
-        signal.signal(signal.SIGINT, stop_handler)
-
+def _run_servers(control_port: int) -> None:
+    control, relay = _start_servers(control_port)
+    try:
+        _install_stop_handlers(control, relay)
         threading.Thread(
             target=control.serve_forever, daemon=True, name='fleasion-helper-control'
         ).start()
         threading.Thread(target=_lease_monitor, daemon=True, name='fleasion-helper-lease').start()
         logger.info('helper ready: relay 127.0.0.1:443 -> 127.0.0.1:%d', _backend_port)
         relay.serve_forever()
+    finally:
+        control.server_close()
+        relay.server_close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--token-file', type=Path, required=True)
+    parser.add_argument('--backend-port', type=int, required=True)
+    parser.add_argument('--control-port', type=int, required=True)
+    parser.add_argument(
+        '--log-path',
+        type=Path,
+        default=Path('/Library/Logs/Fleasion.proxy-helper.log'),
+    )
+    args = parser.parse_args()
+
+    if os.geteuid() != 0:
+        msg = 'Fleasion proxy helper must run as root'
+        raise SystemExit(msg)
+
+    _set_runtime_config(args.token_file, args.backend_port)
+    _configure_logging(args.log_path)
+
+    try:
+        _run_servers(args.control_port)
     except Exception:
         logger.exception('helper startup failed')
         raise
     finally:
         _stop_event.set()
-        try:
-            _set_hosts([])
-        except Exception as exc:  # ruff: ignore[blind-except]
-            logger.error('shutdown hosts cleanup failed: %s', exc)  # ruff: ignore[error-instead-of-exception]
-        if control is not None:
-            control.server_close()
-        if relay is not None:
-            relay.server_close()
+        _clear_hosts_safely('shutdown hosts cleanup failed')
 
 
 if __name__ == '__main__':

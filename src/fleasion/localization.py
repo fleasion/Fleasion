@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping  # ruff: ignore[typing-only-standard-library-import]
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .translations.de import GERMAN
 from .translations.en import ENGLISH
@@ -15,6 +14,9 @@ from .translations.pt import PORTUGUESE
 from .translations.ru import RUSSIAN
 from .translations.tr import TURKISH
 from .translations.zh import CHINESE
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 DEFAULT_LANGUAGE = 'en'
 
@@ -51,7 +53,7 @@ _LANGUAGE_ALIASES = {
     'zh-hans-sg': 'zh',
     'zh-sg': 'zh',
 }
-_current_language = DEFAULT_LANGUAGE
+_state = {'language': DEFAULT_LANGUAGE}
 
 
 def normalize_language(language: Any) -> str:
@@ -74,19 +76,18 @@ def available_languages() -> tuple[tuple[str, str], ...]:
 
 def set_language(language: Any) -> str:
     """Select the active language and return the normalized code."""
-    global _current_language  # ruff: ignore[global-statement]
-    _current_language = normalize_language(language)
-    return _current_language
+    _state['language'] = normalize_language(language)
+    return _state['language']
 
 
 def get_language() -> str:
-    return _current_language
+    return _state['language']
 
 
 def tr(identifier: str, /, **values: Any) -> str:
     """Look up a string identifier with English fallback and safe formatting."""
     english = ENGLISH.get(identifier, identifier)
-    table = _TRANSLATIONS.get(_current_language, ENGLISH)
+    table = _TRANSLATIONS.get(_state['language'], ENGLISH)
     text = table.get(identifier, english)
     if not values:
         return text

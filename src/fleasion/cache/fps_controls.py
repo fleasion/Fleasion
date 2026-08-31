@@ -1,9 +1,11 @@
 """Keyboard helpers for OpenGL FPS camera controls."""
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeyEvent  # ruff: ignore[typing-only-third-party-import]
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QKeyEvent
 
 MovementKey = Literal[
     'forward',

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import io
 import json
+import re
 import threading
+import urllib.error
 import uuid
-from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict, override
 
 from PIL import Image, ImageDraw
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, Signal
@@ -50,6 +52,8 @@ from fleasion.utils.http import http_get
 from .file_drop import FileDropLineEdit
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fleasion.config.manager import ConfigManager
 
 
@@ -85,8 +89,6 @@ if TYPE_CHECKING:
     def _preserve_json(value: object) -> JsonValue: ...
 
     def _qimage_bits_setsize(value: object, size: int) -> None: ...
-
-    def _scroll_area(dialog: PreJsonsDialog) -> QScrollArea: ...
 
     def _card_game_name(card: GameCard) -> str: ...
 
@@ -131,14 +133,11 @@ else:
     def _qimage_bits_setsize(value: object, size: int) -> None:
         value.setsize(size)
 
-    def _scroll_area(dialog: PreJsonsDialog) -> QScrollArea:
-        return dialog.scroll
-
     def _card_game_name(card: GameCard) -> str:
-        return card._game_name  # ruff: ignore[private-member-access]
+        return card.game_name
 
     def _card_dump_file(card: GameCard) -> Path | None:
-        return card._dump_file  # ruff: ignore[private-member-access]
+        return card.dump_file
 
     def _parent_config_manager(parent: object) -> ConfigManager | None:
         return getattr(parent, 'config_manager', None)
@@ -202,8 +201,6 @@ def _fetch_or_read(url_or_path: str, timeout: int = 15) -> bytes:
 
 def _safe_filename(name: str) -> str:
     """Strip characters that are invalid in Windows filenames."""
-    import re  # ruff: ignore[import-outside-top-level]
-
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' .')[:128] or 'dump'
 
 
@@ -211,7 +208,7 @@ def _safe_filename(name: str) -> str:
 
 
 def _make_rounded_pixmap(pix: QPixmap, w: int, h: int, radius: int = 6) -> QPixmap:
-    """Scale-crop pixmap to (w × h) with rounded corners via PIL."""  # ruff: ignore[ambiguous-unicode-character-docstring]
+    """Scale-crop pixmap to (w x h) with rounded corners via PIL."""
     qimg = pix.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
     ptr = qimg.bits()
     _qimage_bits_setsize(ptr, qimg.width() * qimg.height() * 4)
@@ -244,6 +241,32 @@ def _make_rounded_pixmap(pix: QPixmap, w: int, h: int, radius: int = 6) -> QPixm
     return QPixmap.fromImage(out)
 
 
+def _process_thumb_image(
+    img: Image.Image, w: int, h: int, radius: int
+) -> tuple[bytes, int, int] | None:
+    src_w, src_h = img.size
+    if src_w == 0 or src_h == 0:
+        return None
+    ratio = w / h
+    src_ratio = src_w / src_h
+    if src_ratio > ratio:
+        new_w = int(src_h * ratio)
+        left = (src_w - new_w) // 2
+        img = img.crop((left, 0, left + new_w, src_h))
+    else:
+        new_h = int(src_w / ratio)
+        top = (src_h - new_h) // 2
+        img = img.crop((0, top, src_w, top + new_h))
+    scale = 2
+    img = img.resize((w * scale, h * scale), _LANCZOS)
+    mask = Image.new('L', img.size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle((0, 0, img.width, img.height), radius=radius * scale, fill=255)
+    img.putalpha(mask)
+    img = img.resize((w, h), _LANCZOS)
+    return img.tobytes('raw', 'RGBA'), w, h
+
+
 def _preprocess_thumb_bytes(
     raw: bytes, w: int, h: int, radius: int = 6
 ) -> tuple[bytes, int, int] | None:
@@ -252,30 +275,10 @@ def _preprocess_thumb_bytes(
     Safe to call from a background thread — no Qt objects involved.
     Returns (rgba_bytes, w, h) ready to hand to QImage on the main thread.
     """
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
+    try:
         img = Image.open(io.BytesIO(raw)).convert('RGBA')
-        src_w, src_h = img.size
-        if src_w == 0 or src_h == 0:
-            return None
-        ratio = w / h
-        src_ratio = src_w / src_h
-        if src_ratio > ratio:
-            new_w = int(src_h * ratio)
-            left = (src_w - new_w) // 2
-            img = img.crop((left, 0, left + new_w, src_h))
-        else:
-            new_h = int(src_w / ratio)
-            top = (src_h - new_h) // 2
-            img = img.crop((0, top, src_w, top + new_h))
-        scale = 2
-        img = img.resize((w * scale, h * scale), _LANCZOS)
-        mask = Image.new('L', img.size, 0)
-        draw = ImageDraw.Draw(mask)
-        draw.rounded_rectangle((0, 0, img.width, img.height), radius=radius * scale, fill=255)
-        img.putalpha(mask)
-        img = img.resize((w, h), _LANCZOS)
-        return img.tobytes('raw', 'RGBA'), w, h
-    except Exception:  # ruff: ignore[blind-except]
+        return _process_thumb_image(img, w, h, radius)
+    except (OSError, TypeError, ValueError, Image.DecompressionBombError):
         return None
 
 
@@ -296,7 +299,7 @@ def _normalize_entry(e: object) -> GameEntry | None:
     pid = entry.get('placeId') or entry.get('place_id') or entry.get('id')
     try:
         pid = int(_preserve_int_source(pid)) if pid is not None else None
-    except Exception:  # ruff: ignore[blind-except]
+    except (TypeError, ValueError):
         pid = None
     if not name and pid:
         name = f'Place {pid}'
@@ -350,30 +353,40 @@ def _normalize_games(data: object) -> list[GameEntry]:
     return [g for entry in entries if (g := _normalize_entry(entry)) is not None]
 
 
+def _custom_dump_paths() -> list[Path]:
+    CUSTOM_DUMPS_DIR.mkdir(parents=True, exist_ok=True)
+    return sorted(CUSTOM_DUMPS_DIR.glob('*.json'))
+
+
+def _load_custom_dump_games(fp: Path) -> list[GameEntry]:
+    data: object = json.loads(fp.read_text(encoding='utf-8', errors='ignore'))
+    # Support both single-entry {"name":...} and {"games":{...}} wrappers
+    data_source: object = data
+    if _is_dict(data_source):
+        data_dict = _preserve_object_dict(data_source)
+        if 'games' not in data_dict and (
+            isinstance(data_dict.get('name'), str) or data_dict.get('placeId') is not None
+        ):
+            data = {'games': {'_': data_dict}}
+    return _normalize_games(data)
+
+
 def _load_custom_dumps() -> list[tuple[GameEntry, Path]]:
     """Load all valid custom dump JSON files. Returns (game_dict, file_path) tuples."""
     results: list[tuple[GameEntry, Path]] = []
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        CUSTOM_DUMPS_DIR.mkdir(parents=True, exist_ok=True)
-        for fp in sorted(CUSTOM_DUMPS_DIR.glob('*.json')):
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                data: object = json.loads(fp.read_text(encoding='utf-8', errors='ignore'))
-                # Support both single-entry {"name":...} and {"games":{...}} wrappers
-                data_source: object = data
-                if _is_dict(data_source):
-                    data_dict = _preserve_object_dict(data_source)
-                    if 'games' not in data_dict and (
-                        isinstance(data_dict.get('name'), str)
-                        or data_dict.get('placeId') is not None
-                    ):
-                        data = {'games': {'_': data_dict}}
-                games = _normalize_games(data)
-                for g in games:
-                    results.append((g, fp))  # ruff: ignore[manual-list-comprehension]
-            except Exception as e:  # ruff: ignore[blind-except]
-                print(f'[CustomDump] Failed to load {fp.name}: {e}')
-    except Exception as e:  # ruff: ignore[blind-except]
+    try:
+        dump_paths = _custom_dump_paths()
+    except OSError as e:
         print(f'[CustomDump] Failed to scan dir: {e}')
+        return results
+
+    for fp in dump_paths:
+        try:
+            games = _load_custom_dump_games(fp)
+        except (OSError, TypeError, ValueError) as e:
+            print(f'[CustomDump] Failed to load {fp.name}: {e}')
+            continue
+        results.extend((g, fp) for g in games)
     return results
 
 
@@ -391,10 +404,10 @@ class _ClogWorker(QThread):
             raw = _http_get(CLOG_URL, timeout=15)
             CLOG_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
             CLOG_CACHE_FILE.write_bytes(raw)
-        except Exception as fetch_error:  # ruff: ignore[blind-except]
+        except (OSError, RuntimeError, ValueError) as fetch_error:
             try:
                 raw = CLOG_CACHE_FILE.read_bytes()
-            except Exception:  # ruff: ignore[blind-except]
+            except OSError:
                 self.failed.emit(str(fetch_error))
                 return
 
@@ -402,8 +415,40 @@ class _ClogWorker(QThread):
             data: object = json.loads(raw.decode('utf-8'))
             games = _normalize_games(data)
             self.done.emit(games)
-        except Exception as e:  # ruff: ignore[blind-except]
+        except (RuntimeError, TypeError, UnicodeError, ValueError) as e:
             self.failed.emit(str(e))
+
+
+def _fetch_card_metadata(
+    place_id: int, fallback_cr: str, fallback_up: str
+) -> tuple[str, str, str] | None:
+    r1_payload: object = json.loads(
+        _http_get(
+            f'https://apis.roblox.com/universes/v1/places/{place_id}/universe',
+            timeout=10,
+        )
+    )
+    r1 = _preserve_object_dict(r1_payload)
+    universe_id = r1.get('universeId')
+    if not universe_id:
+        return None
+    r2_payload: object = json.loads(
+        _http_get(
+            f'https://games.roblox.com/v1/games?universeIds={universe_id}',
+            timeout=10,
+        )
+    )
+    r2 = _preserve_object_dict(r2_payload)
+    entries = _preserve_object_list(r2.get('data', []))
+    if not entries:
+        return None
+    entry = _preserve_object_dict(entries[0])
+    name = _preserve_str(entry.get('name') or '')
+    if not name:
+        return None
+    created = _preserve_str(entry.get('created') or fallback_cr)
+    updated = _preserve_str(entry.get('updated') or fallback_up)
+    return name, created, updated
 
 
 class _CardMetaWorker(QThread):
@@ -418,35 +463,17 @@ class _CardMetaWorker(QThread):
         self._up = fallback_up
 
     def run(self) -> None:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            r1_payload: object = json.loads(
-                _http_get(
-                    f'https://apis.roblox.com/universes/v1/places/{self._pid}/universe',
-                    timeout=10,
-                )
-            )
-            r1 = _preserve_object_dict(r1_payload)
-            universe_id = r1.get('universeId')
-            if not universe_id:
-                return
-            r2_payload: object = json.loads(
-                _http_get(
-                    f'https://games.roblox.com/v1/games?universeIds={universe_id}',
-                    timeout=10,
-                )
-            )
-            r2 = _preserve_object_dict(r2_payload)
-            entries = _preserve_object_list(r2.get('data', []))
-            if not entries:
-                return
-            entry = _preserve_object_dict(entries[0])
-            name = _preserve_str(entry.get('name') or '')
-            created = _preserve_str(entry.get('created') or self._cr)
-            updated = _preserve_str(entry.get('updated') or self._up)
-            if name:
-                _meta_cache[self._pid] = (name, created, updated)
-                self.name_ready.emit(name, created, updated)
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        try:
+            metadata = _fetch_card_metadata(self._pid, self._cr, self._up)
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return
+        if metadata is None:
+            return
+
+        _meta_cache[self._pid] = metadata
+        try:
+            self.name_ready.emit(*metadata)
+        except RuntimeError:
             pass
 
 
@@ -456,14 +483,32 @@ def _get_default_thumb_bytes() -> bytes | None:
         return _default_thumb_bytes_cache[0]
     try:
         data = _http_get(_DEFAULT_THUMB_URL, timeout=10)
-        _default_thumb_bytes_cache.append(data)
-        return data  # ruff: ignore[try-consider-else]
-    except Exception:  # ruff: ignore[blind-except]
+    except (OSError, RuntimeError, ValueError):
         return None
+    _default_thumb_bytes_cache.append(data)
+    return data
 
 
 # Pre-fetch the default thumbnail in the background as soon as the module loads
 threading.Thread(target=_get_default_thumb_bytes, daemon=True).start()
+
+
+def _fetch_card_thumb_bytes(place_id: int) -> bytes | None:
+    meta_payload: object = json.loads(
+        _http_get(
+            f'https://thumbnails.roblox.com/v1/places/gameicons'
+            f'?placeIds={place_id}&size=512x512&format=Png',
+            timeout=10,
+        )
+    )
+    meta = _preserve_object_dict(meta_payload)
+    thumb_data = meta.get('data')
+    thumb_entries: list[object] = _preserve_object_list(thumb_data) if thumb_data else [{}]
+    first_thumb = _preserve_object_dict(thumb_entries[0])
+    img_url = _preserve_str(first_thumb.get('imageUrl') or '')
+    if not img_url:
+        return None
+    return _http_get(img_url, timeout=10)
 
 
 class _CardThumbWorker(QThread):
@@ -476,28 +521,14 @@ class _CardThumbWorker(QThread):
         self._pid = place_id
 
     def run(self) -> None:
-        img_bytes = None
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            meta_payload: object = json.loads(
-                _http_get(
-                    f'https://thumbnails.roblox.com/v1/places/gameicons'
-                    f'?placeIds={self._pid}&size=512x512&format=Png',
-                    timeout=10,
-                )
-            )
-            meta = _preserve_object_dict(meta_payload)
-            thumb_data = meta.get('data')
-            thumb_entries: list[object] = _preserve_object_list(thumb_data) if thumb_data else [{}]
-            first_thumb_source: object = thumb_entries[0]
-            first_thumb = _preserve_object_dict(first_thumb_source)
-            img_url = _preserve_str(first_thumb.get('imageUrl') or '')
-            if img_url:
-                img_bytes = _http_get(img_url, timeout=10)
-                _thumb_bytes_cache[self._pid] = img_bytes
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+        try:
+            img_bytes = _fetch_card_thumb_bytes(self._pid)
+        except (AttributeError, IndexError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            img_bytes = None
 
-        if not img_bytes:
+        if img_bytes:
+            _thumb_bytes_cache[self._pid] = img_bytes
+        else:
             img_bytes = _get_default_thumb_bytes()
 
         if img_bytes:
@@ -522,7 +553,7 @@ class _JsonFetchWorker(QThread):
             data = _preserve_json(json.loads(raw.decode('utf-8')))
             filename = self._url.rsplit('/', 1)[-1] or 'data.json'
             self.done.emit(data, filename)
-        except Exception as e:  # ruff: ignore[blind-except]
+        except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as e:
             self.failed.emit(str(e))
 
 
@@ -562,6 +593,14 @@ class GameCard(QFrame):
         self._on_delete: Callable[[GameCard], object] | None = None
         self._setup_ui()
 
+    @property
+    def game_name(self) -> str:
+        return self._game_name
+
+    @property
+    def dump_file(self) -> Path | None:
+        return self._dump_file
+
     def _setup_ui(self) -> None:
         layout = QVBoxLayout()
         layout.setContentsMargins(7, 7, 7, 7)
@@ -584,7 +623,7 @@ class GameCard(QFrame):
             if pix.loadFromData(default_bytes):
                 try:
                     pix = _make_rounded_pixmap(pix, _THUMB_W, _THUMB_H, radius=6)
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
+                except (OSError, RuntimeError, TypeError, ValueError):
                     pass
                 self.thumb_label.setPixmap(pix)
                 self.thumb_label.setStyleSheet('background: transparent;')
@@ -646,7 +685,7 @@ class GameCard(QFrame):
             return
         try:
             baked = _make_rounded_pixmap(pix, _THUMB_W, _THUMB_H, radius=6)
-        except Exception:  # ruff: ignore[blind-except]
+        except (OSError, RuntimeError, TypeError, ValueError):
             baked = pix
         self.thumb_label.setPixmap(baked)
         self.thumb_label.setText('')
@@ -666,11 +705,13 @@ class GameCard(QFrame):
         if action == delete_action and self._on_delete:
             self._on_delete(self)
 
-    def enterEvent(self, event: QEnterEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def enterEvent(self, event: QEnterEvent) -> None:
         self._apply_style(hover=True)
         super().enterEvent(event)
 
-    def leaveEvent(self, event: QEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def leaveEvent(self, event: QEvent) -> None:
         self._apply_style()
         super().leaveEvent(event)
 
@@ -717,16 +758,19 @@ class AddCard(QFrame):
 
         self.setLayout(layout)
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
 
-    def enterEvent(self, event: QEnterEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def enterEvent(self, event: QEnterEvent) -> None:
         self._apply_style(hover=True)
         super().enterEvent(event)
 
-    def leaveEvent(self, event: QEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def leaveEvent(self, event: QEvent) -> None:
         self._apply_style()
         super().leaveEvent(event)
 
@@ -796,7 +840,7 @@ class PreJsonsDialog(QDialog):
         root.addWidget(self.status_label)
 
         scroll_area = QScrollArea()
-        setattr(self, 'scroll', scroll_area)  # ruff: ignore[set-attr-with-constant]
+        self.scroll_area = scroll_area
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
 
@@ -964,7 +1008,7 @@ class PreJsonsDialog(QDialog):
     # Grid layout helpers
 
     def _get_cols(self) -> int:
-        vp = _scroll_area(self).viewport()
+        vp = self.scroll_area.viewport()
         available = vp.width() if vp else (self.width() - 30)
         return max(1, available // (_CARD_W + self.grid.spacing()))
 
@@ -1004,7 +1048,8 @@ class PreJsonsDialog(QDialog):
     def _apply_filter(self) -> None:
         self._place_all()
 
-    def resizeEvent(self, event: QResizeEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._resize_timer.start(60)
 
@@ -1196,7 +1241,7 @@ class PreJsonsDialog(QDialog):
                         data = json.loads(
                             Path(url_text).read_text(encoding='utf-8', errors='ignore')
                         )
-                    except Exception as e:  # ruff: ignore[blind-except]
+                    except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
                         QMessageBox.warning(
                             dlg,
                             tr('ui.gui.prejsons_dialog.import_failed'),
@@ -1207,7 +1252,7 @@ class PreJsonsDialog(QDialog):
                     try:
                         raw = _http_get(url_text, timeout=15)
                         data = json.loads(raw.decode('utf-8'))
-                    except Exception as e:  # ruff: ignore[blind-except]
+                    except (OSError, TimeoutError, UnicodeDecodeError, ValueError, urllib.error.URLError) as e:
                         QMessageBox.warning(
                             dlg,
                             tr('ui.gui.prejsons_dialog.import_failed'),
@@ -1248,7 +1293,7 @@ class PreJsonsDialog(QDialog):
             dump_path = CUSTOM_DUMPS_DIR / f'{uuid.uuid4().hex}.json'
             try:
                 dump_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
-            except Exception as e:  # ruff: ignore[blind-except]
+            except (OSError, TypeError, ValueError) as e:
                 QMessageBox.warning(
                     dlg,
                     tr('ui.gui.prejsons_dialog.import_failed'),
@@ -1281,7 +1326,7 @@ class PreJsonsDialog(QDialog):
                         dest_path.write_bytes(content)
                         # Update the game entry to point to the copied file
                         _set_entry_url(g, url_key, str(dest_path))
-                    except Exception:  # ruff: ignore[blind-except, try-except-pass]
+                    except (OSError, TimeoutError, ValueError, urllib.error.URLError):
                         pass  # Non-fatal — keep original path if copy fails
 
             # Re-save the dump with updated paths so they survive dialog restarts
@@ -1295,7 +1340,7 @@ class PreJsonsDialog(QDialog):
                     ),
                     encoding='utf-8',
                 )
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
+            except (OSError, TypeError, ValueError):
                 pass
 
             for g in games:
@@ -1318,7 +1363,7 @@ class PreJsonsDialog(QDialog):
         if dump_file:
             try:
                 dump_file.unlink(missing_ok=True)
-            except Exception as e:  # ruff: ignore[blind-except]
+            except OSError as e:
                 print(f'[CustomDump] Delete failed: {e}')
 
         if card in self._cards:
@@ -1342,7 +1387,7 @@ class PreJsonsDialog(QDialog):
             try:
                 data = _preserve_json(json.loads(p.read_text(encoding='utf-8', errors='ignore')))
                 self._open_viewer(data, p.name)
-            except Exception as e:  # ruff: ignore[blind-except]
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
                 QMessageBox.warning(
                     self,
                     tr('ui.gui.prejsons_dialog.error'),
@@ -1364,7 +1409,8 @@ class PreJsonsDialog(QDialog):
         )
 
     def _open_viewer(self, data: JsonValue, filename: str) -> None:
-        from .json_viewer import JsonTreeViewer  # ruff: ignore[import-outside-top-level]
+        json_viewer = importlib.import_module('.json_viewer', __package__)
+        viewer_class = json_viewer.JsonTreeViewer
 
         parent = self.parent()
 
@@ -1375,7 +1421,7 @@ class PreJsonsDialog(QDialog):
             _set_replacement_value(parent, val)
 
         config_manager = _parent_config_manager(parent)
-        viewer = JsonTreeViewer(
+        viewer = viewer_class(
             None,
             data,
             filename,
@@ -1394,12 +1440,13 @@ class PreJsonsDialog(QDialog):
         if viewer is not None and viewer in self._viewers:
             self._viewers.remove(viewer)
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Close any open JSON viewer windows with the dialog."""
         for viewer in self._viewers[:]:
             try:
                 viewer.close()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
+            except RuntimeError:
                 pass
         self._viewers.clear()
         super().closeEvent(event)

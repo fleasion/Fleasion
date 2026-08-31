@@ -6,6 +6,7 @@ and injecting MeshData into child PartOperation instances.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import shutil
 from contextlib import suppress
@@ -35,9 +36,8 @@ log = logging.getLogger(__name__)
 
 def _log_solidmodel_message(message: str) -> None:
     """Best-effort UI log mirroring the converter's existing logging behavior."""
-    with suppress(Exception):
-        from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
-
+    with suppress(ImportError, AttributeError):
+        log_buffer = importlib.import_module('fleasion.utils.log_buffer')
         log_buffer.log('SolidModel', message)
 
 

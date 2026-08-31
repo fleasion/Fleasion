@@ -12,14 +12,17 @@ import logging
 import os
 from typing import TYPE_CHECKING, Protocol, cast
 
+from cryptography import x509
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
-    from types import ModuleType
 
-    from cryptography import x509
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.hazmat.primitives.asymmetric.types import (
         CertificateIssuerPrivateKeyTypes,
         PrivateKeyTypes,
@@ -65,21 +68,6 @@ def _write_private_key(path: Path, data: bytes) -> None:
         path.touch(mode=0o600, exist_ok=True)
         path.chmod(0o600)
     path.write_bytes(data)
-
-
-def _crypto() -> tuple[ModuleType, type[object], ModuleType, ModuleType, ModuleType]:
-    """Lazy import of cryptography modules."""
-    from cryptography import x509  # ruff: ignore[import-outside-top-level]
-    from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
-        hashes,
-        serialization,
-    )
-    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
-        rsa,
-    )
-    from cryptography.x509.oid import NameOID  # ruff: ignore[import-outside-top-level]
-
-    return x509, NameOID, hashes, serialization, rsa
 
 
 def _as_utc(dt: datetime.datetime) -> datetime.datetime:
@@ -130,11 +118,6 @@ def _leaf_signed_by_ca(
     rsa_mod: _RsaModule,
 ) -> bool:
     """Return True if *leaf_cert* verifies with *ca_cert*'s public key."""
-    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
-        ec as ec_mod,
-        padding,
-    )
-
     ca_public_key = ca_cert.public_key()
     signature_hash_algorithm = leaf_cert.signature_hash_algorithm
     if signature_hash_algorithm is None:
@@ -149,11 +132,11 @@ def _leaf_signed_by_ca(
         )
         return True
 
-    if isinstance(ca_public_key, ec_mod.EllipticCurvePublicKey):
+    if isinstance(ca_public_key, ec.EllipticCurvePublicKey):
         ca_public_key.verify(
             leaf_cert.signature,
             leaf_cert.tbs_certificate_bytes,
-            ec_mod.ECDSA(signature_hash_algorithm),
+            ec.ECDSA(signature_hash_algorithm),
         )
         return True
 
@@ -175,8 +158,6 @@ def _normalise_hosts(hosts: Iterable[str]) -> list[str]:
 
 
 def _san_entries_for_hosts(hosts: Iterable[str]) -> list[x509.GeneralName]:
-    from cryptography import x509  # ruff: ignore[import-outside-top-level]
-
     san_entries: list[x509.GeneralName] = []
     for host in _normalise_hosts(hosts):
         try:
@@ -187,47 +168,38 @@ def _san_entries_for_hosts(hosts: Iterable[str]) -> list[x509.GeneralName]:
 
 
 def _cert_san_names(cert: x509.Certificate) -> tuple[set[str], set[str]]:
-    from cryptography import x509  # ruff: ignore[import-outside-top-level]
-
     try:
         san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-        san_dns = {name.lower() for name in san.get_values_for_type(x509.DNSName)}
-        san_ips = {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
-        return san_dns, san_ips  # ruff: ignore[try-consider-else]
     except x509.ExtensionNotFound:
         return set(), set()
+    san_dns = {name.lower() for name in san.get_values_for_type(x509.DNSName)}
+    san_ips = {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
+    return san_dns, san_ips
 
 
 def _cert_allows_server_auth(cert: x509.Certificate) -> bool:
-    from cryptography import x509  # ruff: ignore[import-outside-top-level]
-    from cryptography.x509.oid import ExtendedKeyUsageOID  # ruff: ignore[import-outside-top-level]
-
     try:
         eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
-        return ExtendedKeyUsageOID.SERVER_AUTH in eku  # ruff: ignore[try-consider-else]
     except x509.ExtensionNotFound:
-        # Absence of EKU is less restrictive than a wrong EKU.
+        # Absence of EKU is less restrictive than a wrong EKU
         return True
+    return ExtendedKeyUsageOID.SERVER_AUTH in eku
 
 
 def _cert_has_authority_key_identifier(cert: x509.Certificate) -> bool:
-    from cryptography import x509  # ruff: ignore[import-outside-top-level]
-
     try:
         cert.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier)
-        return True  # ruff: ignore[try-consider-else]
     except x509.ExtensionNotFound:
         return False
+    return True
 
 
 def _cert_has_subject_key_identifier(cert: x509.Certificate) -> bool:
-    from cryptography import x509  # ruff: ignore[import-outside-top-level]
-
     try:
         cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
-        return True  # ruff: ignore[try-consider-else]
     except x509.ExtensionNotFound:
         return False
+    return True
 
 
 def _cert_covers_hosts(cert: x509.Certificate, hosts: Iterable[str]) -> bool:
@@ -255,39 +227,23 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
     ca_key_path = ca_dir / 'ca.key'
 
     if ca_cert_path.exists() and ca_key_path.exists():
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            from cryptography import x509  # ruff: ignore[import-outside-top-level]
-            from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
-                serialization,
-            )
-            from cryptography.hazmat.primitives.serialization import (  # ruff: ignore[import-outside-top-level]
-                load_pem_private_key,
-            )
-
+        try:
             existing_ca = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
             existing_key = load_pem_private_key(ca_key_path.read_bytes(), password=None)
-
-            key_ok = _cert_matches_private_key(existing_ca, existing_key, serialization)
-            time_ok = _cert_valid_for(existing_ca, CA_MIN_REMAINING_DAYS)
-            ski_ok = _cert_has_subject_key_identifier(existing_ca)
-            if key_ok and time_ok and ski_ok:
+        except (OSError, TypeError, ValueError, UnsupportedAlgorithm) as exc:
+            logger.warning('Failed to load existing Fleasion CA; regenerating (%s)', exc)
+        else:
+            reusable = all(
+                (
+                    _cert_matches_private_key(existing_ca, existing_key, serialization),
+                    _cert_valid_for(existing_ca, CA_MIN_REMAINING_DAYS),
+                    _cert_has_subject_key_identifier(existing_ca),
+                )
+            )
+            if reusable:
                 _secure_private_key_permissions(ca_key_path)
                 return ca_cert_path, ca_key_path
-
             logger.warning('Existing Fleasion CA is stale or mismatched; regenerating')
-        except Exception as exc:  # ruff: ignore[blind-except]
-            logger.warning('Failed to load existing Fleasion CA; regenerating (%s)', exc)
-
-    _crypto()
-    from cryptography import x509  # ruff: ignore[import-outside-top-level]
-    from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
-        hashes,
-        serialization,
-    )
-    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
-        rsa,
-    )
-    from cryptography.x509.oid import NameOID  # ruff: ignore[import-outside-top-level]
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name(
@@ -351,77 +307,43 @@ def generate_host_cert(
     key_path = ca_dir / f'{safe_host}.key'
     _secure_private_key_permissions(ca_key_path)
 
-    from cryptography import x509  # ruff: ignore[import-outside-top-level]
-    from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
-        hashes,
-        serialization,
-    )
-    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
-        rsa,
-    )
-    from cryptography.hazmat.primitives.serialization import (  # ruff: ignore[import-outside-top-level]
-        load_pem_private_key,
-    )
-    from cryptography.x509.oid import (  # ruff: ignore[import-outside-top-level]
-        ExtendedKeyUsageOID,
-        NameOID,
-    )
-
     # Load CA once here so we can validate cached leaf cert issuer before reusing it.
     ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
 
     if cert_path.exists() and key_path.exists():
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        try:
             cached_leaf = x509.load_pem_x509_certificate(cert_path.read_bytes())
             cached_key = load_pem_private_key(key_path.read_bytes(), password=None)
-
-            cn_values = cached_leaf.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-            cn_ok = bool(cn_values and cn_values[0].value == host)
-
-            san_dns: set[str]
-            san_ips: set[str]
-            try:
-                san = cached_leaf.extensions.get_extension_for_class(
-                    x509.SubjectAlternativeName
-                ).value
-                san_dns = set(san.get_values_for_type(x509.DNSName))
-                san_ips = {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
-            except x509.ExtensionNotFound:
-                san_dns = set()
-                san_ips = set()
-
-            san_ok = host in san_dns or host in san_ips
-            issuer_ok = cached_leaf.issuer == ca_cert.subject
-            time_ok = _cert_valid_for(cached_leaf, LEAF_MIN_REMAINING_DAYS)
-            key_ok = _cert_matches_private_key(cached_leaf, cached_key, serialization)
-            ski_ok = _cert_has_subject_key_identifier(cached_leaf)
-            aki_ok = _cert_has_authority_key_identifier(cached_leaf)
-
-            try:
-                signature_ok = _leaf_signed_by_ca(cached_leaf, ca_cert, rsa)
-            except Exception:  # ruff: ignore[blind-except]
-                signature_ok = False
-
-            if (
-                cn_ok  # ruff: ignore[too-many-boolean-expressions]
-                and san_ok
-                and issuer_ok
-                and time_ok
-                and key_ok
-                and ski_ok
-                and aki_ok
-                and signature_ok
-            ):
-                _secure_private_key_permissions(key_path)
-                return cert_path, key_path
-
-            logger.warning('Cached leaf cert for %s is stale or mismatched; regenerating', host)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (OSError, TypeError, ValueError, UnsupportedAlgorithm) as exc:
             logger.warning(
                 'Failed to validate cached leaf cert for %s; regenerating (%s)',
                 host,
                 exc,
             )
+        else:
+            cn_values = cached_leaf.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+            cn_ok = bool(cn_values and cn_values[0].value == host)
+            san_dns, san_ips = _cert_san_names(cached_leaf)
+            try:
+                signature_ok = _leaf_signed_by_ca(cached_leaf, ca_cert, rsa)
+            except InvalidSignature, TypeError, ValueError, UnsupportedAlgorithm:
+                signature_ok = False
+            reusable = all(
+                (
+                    cn_ok,
+                    host in san_dns or host in san_ips,
+                    cached_leaf.issuer == ca_cert.subject,
+                    _cert_valid_for(cached_leaf, LEAF_MIN_REMAINING_DAYS),
+                    _cert_matches_private_key(cached_leaf, cached_key, serialization),
+                    _cert_has_subject_key_identifier(cached_leaf),
+                    _cert_has_authority_key_identifier(cached_leaf),
+                    signature_ok,
+                )
+            )
+            if reusable:
+                _secure_private_key_permissions(key_path)
+                return cert_path, key_path
+            logger.warning('Cached leaf cert for %s is stale or mismatched; regenerating', host)
 
     # Load CA
     ca_key = load_pem_private_key(ca_key_path.read_bytes(), password=None)
@@ -506,67 +428,44 @@ def generate_multi_host_cert(
     key_path = ca_dir / f'{safe_name}.key'
     _secure_private_key_permissions(ca_key_path)
 
-    from cryptography import x509  # ruff: ignore[import-outside-top-level]
-    from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
-        hashes,
-        serialization,
-    )
-    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
-        rsa,
-    )
-    from cryptography.hazmat.primitives.serialization import (  # ruff: ignore[import-outside-top-level]
-        load_pem_private_key,
-    )
-    from cryptography.x509.oid import (  # ruff: ignore[import-outside-top-level]
-        ExtendedKeyUsageOID,
-        NameOID,
-    )
-
     ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
 
     if cert_path.exists() and key_path.exists():
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        try:
             cached_leaf = x509.load_pem_x509_certificate(cert_path.read_bytes())
             cached_key = load_pem_private_key(key_path.read_bytes(), password=None)
-
-            cn_values = cached_leaf.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-            cn_ok = bool(cn_values and cn_values[0].value == cert_name)
-            issuer_ok = cached_leaf.issuer == ca_cert.subject
-            time_ok = _cert_valid_for(cached_leaf, LEAF_MIN_REMAINING_DAYS)
-            key_ok = _cert_matches_private_key(cached_leaf, cached_key, serialization)
-            san_ok = _cert_covers_hosts(cached_leaf, normalized_hosts)
-            eku_ok = _cert_allows_server_auth(cached_leaf)
-            ski_ok = _cert_has_subject_key_identifier(cached_leaf)
-            aki_ok = _cert_has_authority_key_identifier(cached_leaf)
-
-            try:
-                signature_ok = _leaf_signed_by_ca(cached_leaf, ca_cert, rsa)
-            except Exception:  # ruff: ignore[blind-except]
-                signature_ok = False
-
-            if (
-                cn_ok  # ruff: ignore[too-many-boolean-expressions]
-                and issuer_ok
-                and time_ok
-                and key_ok
-                and san_ok
-                and eku_ok
-                and ski_ok
-                and aki_ok
-                and signature_ok
-            ):
-                _secure_private_key_permissions(key_path)
-                return cert_path, key_path
-
-            logger.warning(
-                'Cached multi-host cert %s is stale or mismatched; regenerating',
-                cert_name,
-            )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (OSError, TypeError, ValueError, UnsupportedAlgorithm) as exc:
             logger.warning(
                 'Failed to validate cached multi-host cert %s; regenerating (%s)',
                 cert_name,
                 exc,
+            )
+        else:
+            cn_values = cached_leaf.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+            cn_ok = bool(cn_values and cn_values[0].value == cert_name)
+            try:
+                signature_ok = _leaf_signed_by_ca(cached_leaf, ca_cert, rsa)
+            except InvalidSignature, TypeError, ValueError, UnsupportedAlgorithm:
+                signature_ok = False
+            reusable = all(
+                (
+                    cn_ok,
+                    cached_leaf.issuer == ca_cert.subject,
+                    _cert_valid_for(cached_leaf, LEAF_MIN_REMAINING_DAYS),
+                    _cert_matches_private_key(cached_leaf, cached_key, serialization),
+                    _cert_covers_hosts(cached_leaf, normalized_hosts),
+                    _cert_allows_server_auth(cached_leaf),
+                    _cert_has_subject_key_identifier(cached_leaf),
+                    _cert_has_authority_key_identifier(cached_leaf),
+                    signature_ok,
+                )
+            )
+            if reusable:
+                _secure_private_key_permissions(key_path)
+                return cert_path, key_path
+            logger.warning(
+                'Cached multi-host cert %s is stale or mismatched; regenerating',
+                cert_name,
             )
 
     ca_key = load_pem_private_key(ca_key_path.read_bytes(), password=None)

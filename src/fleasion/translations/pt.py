@@ -1,4 +1,5 @@
 """Portuguese translations for Fleasion."""
+import string
 
 PORTUGUESE: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': 'Adicionar entradas do Fleasion faria o arquivo chegar a {value0:.1f} MiB, excedendo o limite de segurança de {value1:.0f} KiB do Fleasion. Nenhum mapeamento foi adicionado. Remova linhas obsoletas do arquivo hosts ou renomeie o arquivo e reinicie o Fleasion.\n\nCaminho do arquivo hosts:\n{value2}',
@@ -510,13 +511,13 @@ PORTUGUESE: dict[str, str] = {
     'count.server.other': '{count} servidores',
     'count.value.one': '{count} valor',
     'count.value.other': '{count} valores',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'Abcdefghijklmnopqrstuvwxyz',
     'font_viewer.sample.pack_my_box': 'Jovem craque belga prediz falhas no whisky e vê um fox terrier.',
     'font_viewer.sample.quick_brown_fox': 'Jane quer LP, fax, CD, giz, TV e bom whisky.',
     'font_viewer.sample.quick_zebras': 'Vovô pôs whisky no chá e julgou que a zebra fazia boxe durante a manhã.',
     'font_viewer.sample.symbols': "!@#$%^&&*()_+-=[]{}|;:',.<>?/`~",
-    'font_viewer.sample.uppercase': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    'font_viewer.sample.uppercase': string.ascii_uppercase,
     'json.fetch.asset_not_found': 'Recurso não encontrado (excluído ou ID inválido)',
     'json.fetch.asset_private': 'O recurso é privado (não foi possível contornar)',
     'json.fetch.cannot_fetch': 'Não é possível buscar: {value}',

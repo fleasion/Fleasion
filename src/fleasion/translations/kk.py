@@ -1,4 +1,5 @@
 """Kazakh source strings for Fleasion."""
+import string
 
 KAZAKH: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': 'Fleasion жазбаларын қосқанда көлем {value0:.1f} MiB болады, бұл Fleasion-ның {value1:.0f} KiB қауіпсіздік шегінен асады. Ешбір сәйкестендіру қосылмады. hosts файлындағы ескірген жолдарды жойыңыз немесе файлдың атын өзгертіңіз, содан кейін Fleasion-ды қайта іске қосыңыз.\n\nHosts файлының жолы:\n{value2}',
@@ -510,7 +511,7 @@ KAZAKH: dict[str, str] = {
     'count.server.other': '{count} сервер',
     'count.value.one': '{count} мән',
     'count.value.other': '{count} мән',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'а ә б в г ғ д е ё ж з и й к қ л м н ң о ө п р с т у ұ ү ф х һ ц ч ш щ ъ ы і ь э ю я',
     'font_viewer.sample.pack_my_box': 'Әсем өлкеде қаз, үйрек, бүркіт пен құлын бірге көрінді.',
     'font_viewer.sample.quick_brown_fox': 'Қоңыр түлкі жалқау иттің үстінен жылдам секіріп өтті.',

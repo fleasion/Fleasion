@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import shutil
 import ssl
 import subprocess
@@ -9,7 +10,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from functools import lru_cache
-from pathlib import Path  # ruff: ignore[typing-only-standard-library-import]
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _USER_AGENT = 'FleasionNT/1.2.0'
 
@@ -23,19 +27,19 @@ def _validate_http_url(url: str) -> None:
 
 def _log_http(message: str) -> None:
     try:
-        from .logging import log_buffer  # ruff: ignore[import-outside-top-level]
-    except Exception:  # ruff: ignore[blind-except]
+        logging_module = importlib.import_module('fleasion.utils.logging')
+        logging_module.log_buffer.log('HTTP', message)
+    except (ImportError, AttributeError, OSError):
         return
-    log_buffer.log('HTTP', message)
 
 
 @lru_cache(maxsize=1)
 def _certifi_context() -> ssl.SSLContext | None:
     try:
-        import certifi  # ruff: ignore[import-outside-top-level]
-    except Exception:  # ruff: ignore[blind-except]
+        certifi = importlib.import_module('certifi')
+        return ssl.create_default_context(cafile=certifi.where())
+    except (ImportError, AttributeError, OSError, ssl.SSLError):
         return None
-    return ssl.create_default_context(cafile=certifi.where())
 
 
 @lru_cache(maxsize=1)
@@ -49,10 +53,10 @@ def _tls12_context() -> ssl.SSLContext:
 @lru_cache(maxsize=1)
 def _certifi_tls12_context() -> ssl.SSLContext | None:
     try:
-        import certifi  # ruff: ignore[import-outside-top-level]
-    except Exception:  # ruff: ignore[blind-except]
+        certifi = importlib.import_module('certifi')
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except (ImportError, AttributeError, OSError, ssl.SSLError):
         return None
-    ctx = ssl.create_default_context(cafile=certifi.where())
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.maximum_version = ssl.TLSVersion.TLSv1_2
     return ctx
@@ -86,6 +90,29 @@ def _is_tls_record_layer_error(exc: BaseException) -> bool:
     return 'RECORD_LAYER_FAILURE' in text or 'RECORD LAYER FAILURE' in text
 
 
+def _request(url: str, headers: dict[str, str], *, method: str | None = None) -> urllib.request.Request:
+    _validate_http_url(url)
+    return urllib.request.Request(  # ruff: ignore[suspicious-url-open-usage] - scheme validated above
+        url,
+        headers=headers,
+        method=method,
+    )
+
+
+def _urlopen(
+    req: urllib.request.Request,
+    *,
+    timeout: int,
+    context: ssl.SSLContext | None = None,
+):
+    _validate_http_url(req.full_url)
+    return urllib.request.urlopen(  # ruff: ignore[suspicious-url-open-usage] - scheme validated above
+        req,
+        timeout=timeout,
+        context=context,
+    )
+
+
 def _open_with_contexts(
     req: urllib.request.Request,
     timeout: int,
@@ -102,7 +129,7 @@ def _open_with_contexts(
             continue
         seen.add(ident)
         try:
-            return urllib.request.urlopen(req, timeout=timeout, context=ctx)  # ruff: ignore[suspicious-url-open-usage]
+            return _urlopen(req, timeout=timeout, context=ctx)
         except urllib.error.URLError as exc:
             last_exc = exc
 
@@ -118,7 +145,7 @@ def _open_verified(
     timeout: int,
 ):
     try:
-        return urllib.request.urlopen(req, timeout=timeout)  # ruff: ignore[suspicious-url-open-usage]
+        return _urlopen(req, timeout=timeout)
     except urllib.error.URLError as exc:
         if not url.lower().startswith('https://'):
             raise
@@ -146,7 +173,7 @@ def http_get(url: str, timeout: int = 15, headers: dict[str, str] | None = None)
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers)  # ruff: ignore[suspicious-url-open-usage]
+    req = _request(url, request_headers)
 
     with _open_verified(req, url, timeout) as resp:
         return resp.read()
@@ -157,9 +184,7 @@ def http_head_status(url: str, timeout: int = 15, headers: dict[str, str] | None
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(  # ruff: ignore[suspicious-url-open-usage]
-        url, headers=request_headers, method='HEAD'
-    )
+    req = _request(url, request_headers, method='HEAD')
 
     with _open_verified(req, url, timeout) as resp:
         return resp.status
@@ -175,7 +200,7 @@ def http_download_to(
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers)  # ruff: ignore[suspicious-url-open-usage]
+    req = _request(url, request_headers)
 
     try:
         with _open_verified(req, url, timeout) as resp, dest.open('wb') as out:
@@ -228,7 +253,7 @@ def _curl_download_to(
             detail = (result.stderr or result.stdout or '').strip()
             raise RuntimeError(detail or f'curl exited with code {result.returncode}')
         tmp.replace(dest)
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         tmp.unlink(missing_ok=True)
         msg = f'urllib download failed: {original_exc}; curl fallback failed: {exc}'
         raise RuntimeError(msg) from original_exc

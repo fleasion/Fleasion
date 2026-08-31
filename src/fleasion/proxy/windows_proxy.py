@@ -2,14 +2,43 @@
 
 from __future__ import annotations
 
+import importlib
 import platform
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, cast
 from urllib.parse import urlparse
 
 from .upstream import HttpProxyConfig
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
+
+
+class _WinregModule(Protocol):
+    HKEY_CURRENT_USER: object
+    OpenKey: Callable[[object, str], object]
+    QueryValueEx: Callable[[object, str], tuple[object, int]]
+
+
+def _winreg_module() -> _WinregModule:
+    return cast('_WinregModule', importlib.import_module('winreg'))
+
+
+def _run_text_command(args: list[str], *, timeout: float, creationflags: int = 0) -> subprocess.CompletedProcess[str]:
+    executable = shutil.which(args[0]) or args[0]
+    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        [executable, *args[1:]],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        creationflags=creationflags,
+        check=False,
+        shell=False,
+    )
 
 
 @dataclass
@@ -25,36 +54,35 @@ class WindowsProxyInfo:
     macos_auto_config_url: str | None = None
 
 
-if TYPE_CHECKING:
+def _read_wininet_registry() -> tuple[bool, str | None, str | None]:
+    winreg = _winreg_module()
 
-    def _read_wininet_registry() -> tuple[bool, str | None, str | None]: ...
-else:
-
-    def _read_wininet_registry() -> tuple[bool, str | None, str | None]:
-        def query(key: object, name: str) -> object | None:
-            try:
-                value, _ = winreg.QueryValueEx(key, name)
-                return value  # ruff: ignore[try-consider-else]
-            except Exception:  # ruff: ignore[blind-except]
-                return None
-
+    def query(key: object, name: str) -> object | None:
         try:
-            import winreg  # ruff: ignore[import-outside-top-level]
+            value, _ = winreg.QueryValueEx(key, name)
+        except OSError:
+            return None
+        return value
 
-            with winreg.OpenKey(
+    try:
+        with cast(
+            'AbstractContextManager[object]',
+            winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 r'Software\Microsoft\Windows\CurrentVersion\Internet Settings',
-            ) as key:
-                enabled = bool(int(query(key, 'ProxyEnable') or 0))
-                proxy_server = query(key, 'ProxyServer')
-                auto_config_url = query(key, 'AutoConfigURL')
-                return (
-                    enabled,
-                    str(proxy_server) if proxy_server else None,
-                    str(auto_config_url) if auto_config_url else None,
-                )
-        except Exception:  # ruff: ignore[blind-except]
-            return False, None, None
+            ),
+        ) as key:
+            proxy_enable = cast('int | str', query(key, 'ProxyEnable') or 0)
+            enabled = bool(int(proxy_enable))
+            proxy_server = query(key, 'ProxyServer')
+            auto_config_url = query(key, 'AutoConfigURL')
+    except (ImportError, OSError, TypeError, ValueError):
+        return False, None, None
+    return (
+        enabled,
+        str(proxy_server) if proxy_server else None,
+        str(auto_config_url) if auto_config_url else None,
+    )
 
 
 def _read_wininet() -> tuple[bool, str | None, str | None]:
@@ -69,14 +97,12 @@ def _read_winhttp_proxy() -> str | None:
 
     try:
         creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check]
-            ['netsh', 'winhttp', 'show', 'proxy'],  # ruff: ignore[start-process-with-partial-path]
-            capture_output=True,
-            text=True,
+        result = _run_text_command(
+            ['netsh', 'winhttp', 'show', 'proxy'],
             timeout=5,
             creationflags=creationflags,
         )
-    except Exception:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError):
         return None
 
     text = (result.stdout or '') + '\n' + (result.stderr or '')
@@ -135,13 +161,8 @@ def _read_macos_proxies() -> tuple[bool, str | None, bool, str | None, str | Non
         return False, None, False, None, None
 
     try:
-        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check]
-            ['scutil', '--proxy'],  # ruff: ignore[start-process-with-partial-path]
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except Exception:  # ruff: ignore[blind-except]
+        result = _run_text_command(['scutil', '--proxy'], timeout=5)
+    except (OSError, subprocess.SubprocessError):
         return False, None, False, None, None
 
     return _parse_scutil_proxy_output((result.stdout or '') + '\n' + (result.stderr or ''))
@@ -167,36 +188,35 @@ def detect_windows_proxy() -> WindowsProxyInfo:
     )
 
 
-def _host_port_from_target(target: str) -> tuple[str, int] | None:  # ruff: ignore[too-many-return-statements]
+def _host_port_from_target(target: str) -> tuple[str, int] | None:
     target = target.strip()
     if not target:
         return None
 
     if '://' in target:
         parsed = urlparse(target)
-        host = parsed.hostname
-        port = parsed.port
-        if host and port:
-            return host, int(port)
-        return None
-
-    if target.startswith('['):
-        host, sep, rest = target[1:].partition(']')
-        if sep and rest.startswith(':'):
-            try:
-                return host, int(rest[1:])
-            except ValueError:
-                return None
-        return None
-
-    if target.count(':') == 1:
-        host, port_text = target.rsplit(':', 1)
-        try:
-            return host.strip(), int(port_text)
-        except ValueError:
+        if parsed.hostname is None or parsed.port is None:
             return None
+        return parsed.hostname, int(parsed.port)
 
-    return None
+    host: str | None = None
+    port_text: str | None = None
+    if target.startswith('['):
+        bracket_host, sep, rest = target[1:].partition(']')
+        if sep and rest.startswith(':'):
+            host = bracket_host
+            port_text = rest[1:]
+    elif target.count(':') == 1:
+        raw_host, port_text = target.rsplit(':', 1)
+        host = raw_host.strip()
+
+    if host is None or port_text is None:
+        return None
+    try:
+        port = int(port_text)
+    except ValueError:
+        return None
+    return host, port
 
 
 def parse_static_http_proxy(proxy_server: str | None) -> HttpProxyConfig | None:

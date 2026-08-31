@@ -188,6 +188,6 @@ class UpdateResolver:
             )
             response.raise_for_status()
             release_data = response.json()
-        except Exception:  # ruff: ignore[blind-except]
+        except (requests.RequestException, ValueError):
             return None
         return self.select_update(release_data)

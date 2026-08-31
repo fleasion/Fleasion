@@ -11,13 +11,15 @@ import contextlib
 import json
 import shutil
 import stat
-from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
-from typing import TypeIs
+from typing import TYPE_CHECKING, TypeIs
 
 from fleasion.utils import log_buffer
 
 from .stash_paths import resource_stash_dir
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Recognised font magic bytes (first 4 bytes of the file).
 FONT_HEADERS: dict[str, bytes] = {

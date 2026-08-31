@@ -6,12 +6,14 @@ import importlib
 import struct
 import sys
 import time
-from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QApplication
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _BI_BITFIELDS = 3
 _LCS_sRGB = 0x73524742
@@ -19,6 +21,7 @@ _LCS_GM_IMAGES = 4
 
 
 class _Win32Clipboard(Protocol):
+    error: type[Exception]
     RegisterClipboardFormat: Callable[[str], int]
     OpenClipboard: Callable[[], object]
     EmptyClipboard: Callable[[], object]
@@ -126,24 +129,13 @@ def _image_to_dibv5(image: QImage) -> bytes:
     return header + bytes(pixels)
 
 
-def _copy_windows_image_to_clipboard(image: QImage, png_data: bytes) -> None:
-    win32clipboard, win32con = _windows_clipboard_modules()
-
-    png_format = win32clipboard.RegisterClipboardFormat('PNG')
-    dibv5_data = _image_to_dibv5(image)
-
-    last_error = None
-    for _ in range(10):
-        try:
-            win32clipboard.OpenClipboard()
-            break
-        except Exception as e:  # ruff: ignore[blind-except]
-            last_error = e
-            time.sleep(0.025)
-    else:
-        msg = f'Failed to open clipboard: {last_error}'
-        raise RuntimeError(msg)
-
+def _write_windows_clipboard_data(
+    win32clipboard: _Win32Clipboard,
+    win32con: _Win32Con,
+    png_format: int,
+    png_data: bytes,
+    dibv5_data: bytes,
+) -> None:
     try:
         win32clipboard.EmptyClipboard()
         win32clipboard.SetClipboardData(png_format, png_data)
@@ -152,17 +144,52 @@ def _copy_windows_image_to_clipboard(image: QImage, png_data: bytes) -> None:
         win32clipboard.CloseClipboard()
 
 
+def _copy_windows_image_to_clipboard(image: QImage, png_data: bytes) -> None:
+    win32clipboard, win32con = _windows_clipboard_modules()
+
+    png_format = win32clipboard.RegisterClipboardFormat('PNG')
+    dibv5_data = _image_to_dibv5(image)
+
+    last_error: Exception | None = None
+    for _ in range(10):
+        try:
+            win32clipboard.OpenClipboard()
+            break
+        except win32clipboard.error as exc:
+            last_error = exc
+            time.sleep(0.025)
+    else:
+        msg = f'Failed to open clipboard: {last_error}'
+        raise RuntimeError(msg)
+
+    try:
+        _write_windows_clipboard_data(
+            win32clipboard,
+            win32con,
+            png_format,
+            png_data,
+            dibv5_data,
+        )
+    except win32clipboard.error as exc:
+        msg = f'Failed to write image to clipboard: {exc}'
+        raise RuntimeError(msg) from exc
+
+
 def copy_pixmap_to_clipboard(pixmap: QPixmap) -> None:
     """Copy a pixmap while preserving transparent pixels for PNG-aware targets."""
     image = _pixmap_to_rgba_image(pixmap)
     png_data = _encode_png(image)
 
     if sys.platform == 'win32':
+        copied = False
         try:
             _copy_windows_image_to_clipboard(image, png_data)
-            return  # ruff: ignore[try-consider-else]
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+        except (ImportError, RuntimeError):
+            copied = False
+        else:
+            copied = True
+        if copied:
+            return
 
     mime_data = QMimeData()
     mime_data.setData('image/png', png_data)

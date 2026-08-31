@@ -3,19 +3,32 @@
 from __future__ import annotations
 
 import contextlib
-import os
+import importlib
 import shutil
 import stat
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from defusedxml import ElementTree as DefusedElementTree
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import ParseError
 
 from fleasion.utils import USER_HOME, format_count, log_buffer
+
+if TYPE_CHECKING:
+    import xml.etree.ElementTree as ET
 
 from .stash_paths import resource_stash_dir
 
 GLOBAL_SETTINGS_REL = Path('GlobalBasicSettings_13.xml')
 DEFAULT_FRAMERATE_CAP = 60
+
+
+def _framerate_element(root: ET.Element | None) -> ET.Element | None:
+    if root is None:
+        return None
+    return root.find("./Item[@class='UserGameSettings']/Properties/int[@name='FramerateCap']")
 
 
 def _global_settings_stash_path(stash_dir: Path, roblox_dir: Path) -> Path:
@@ -39,6 +52,19 @@ def _global_settings_stash_path(stash_dir: Path, roblox_dir: Path) -> Path:
         with contextlib.suppress(OSError):
             shutil.copy2(legacy, destination)
     return destination
+
+
+
+
+def _windows_user_roblox_dirs(users_dir: Path) -> list[Path]:
+    roblox_dirs: list[Path] = []
+    for user_path in users_dir.iterdir():
+        if not user_path.is_dir():
+            continue
+        roblox_local = user_path / 'AppData' / 'Local' / 'Roblox'
+        if roblox_local.exists():
+            roblox_dirs.append(roblox_local)
+    return roblox_dirs
 
 
 class GlobalSettingsManager:
@@ -66,12 +92,9 @@ class GlobalSettingsManager:
 
         if sys.platform.startswith('linux'):
             try:
-                from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                    find_linux_global_settings_dirs,
-                )
-
-                roblox_dirs.extend(find_linux_global_settings_dirs())
-            except Exception as exc:  # ruff: ignore[blind-except]
+                platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+                roblox_dirs.extend(platform_linux.find_linux_global_settings_dirs())
+            except (ImportError, AttributeError, OSError) as exc:
                 log_buffer.log(
                     'GlobalSettings',
                     f'Could not discover Linux Roblox settings directories: {exc}',
@@ -86,17 +109,10 @@ class GlobalSettingsManager:
             log_buffer.log('GlobalSettings', 'C:\\Users directory not found')
             return roblox_dirs
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            for user_folder in os.listdir(users_dir):  # ruff: ignore[os-listdir]
-                user_path = users_dir / user_folder
-                if not user_path.is_dir():
-                    continue
-
-                roblox_local = user_path / 'AppData' / 'Local' / 'Roblox'
-                if roblox_local.exists():
-                    roblox_dirs.append(roblox_local)
-        except OSError as e:
-            log_buffer.log('GlobalSettings', f'Error scanning users: {e}')
+        try:
+            roblox_dirs.extend(_windows_user_roblox_dirs(users_dir))
+        except OSError as exc:
+            log_buffer.log('GlobalSettings', f'Error scanning users: {exc}')
 
         return roblox_dirs
 
@@ -105,8 +121,8 @@ class GlobalSettingsManager:
         """Remove read-only attribute from a file."""
         if path.exists():
             try:
-                current = stat.S_IMODE(os.stat(str(path)).st_mode)  # ruff: ignore[os-stat]
-                os.chmod(str(path), current | stat.S_IWUSR)  # ruff: ignore[os-chmod]
+                current = stat.S_IMODE(path.stat().st_mode)
+                path.chmod(current | stat.S_IWUSR)
             except OSError:
                 pass
 
@@ -116,10 +132,10 @@ class GlobalSettingsManager:
         if path.exists():
             try:
                 if read_only:
-                    os.chmod(str(path), stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # ruff: ignore[os-chmod]
+                    path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
                 else:
-                    current = stat.S_IMODE(os.stat(str(path)).st_mode)  # ruff: ignore[os-stat]
-                    os.chmod(str(path), current | stat.S_IWUSR)  # ruff: ignore[os-chmod]
+                    current = stat.S_IMODE(path.stat().st_mode)
+                    path.chmod(current | stat.S_IWUSR)
             except OSError:
                 pass
 
@@ -129,7 +145,7 @@ class GlobalSettingsManager:
         if not path.exists():
             return False
         try:
-            current = stat.S_IMODE(os.stat(str(path)).st_mode)  # ruff: ignore[os-stat]
+            current = stat.S_IMODE(path.stat().st_mode)
             # Read-only if no write permissions for owner
             return not (current & stat.S_IWUSR)
         except OSError:
@@ -140,25 +156,18 @@ class GlobalSettingsManager:
         if not xml_path.exists():
             return None
 
-        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
-            tree = ET.parse(str(xml_path))
-            root = tree.getroot()
+        try:
+            root = DefusedElementTree.parse(xml_path).getroot()
+        except (ParseError, DefusedXmlException, OSError) as exc:
+            log_buffer.log('GlobalSettings', f'Error reading XML: {exc}')
+            return None
 
-            # Navigate through the XML structure to find FramerateCap
-            # Structure: <roblox><Item class="UserGameSettings"><Properties>
-            #            <int name="FramerateCap">240</int>
-            for item in root.findall('Item'):
-                if item.get('class') == 'UserGameSettings':
-                    for props in item.findall('Properties'):
-                        for int_elem in props.findall('int'):
-                            if int_elem.get('name') == 'FramerateCap':
-                                try:
-                                    return int(int_elem.text or 0)
-                                except ValueError, TypeError:
-                                    return None
-            return None  # ruff: ignore[try-consider-else]
-        except Exception as e:  # ruff: ignore[blind-except]
-            log_buffer.log('GlobalSettings', f'Error reading XML: {e}')
+        element = _framerate_element(root)
+        if element is None:
+            return None
+        try:
+            return int(element.text or 0)
+        except (TypeError, ValueError):
             return None
 
     def read_framerate_cap(self) -> int | None:
@@ -175,49 +184,37 @@ class GlobalSettingsManager:
             log_buffer.log('GlobalSettings', f'XML file not found: {xml_path}')
             return
 
-        # Check and store read-only state
         was_read_only = self._get_read_only_state(xml_path)
+        if was_read_only:
+            self._remove_read_only(xml_path)
 
-        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
-            # Remove read-only temporarily if needed
+        try:
+            tree = DefusedElementTree.parse(xml_path)
+        except (ParseError, DefusedXmlException, OSError) as exc:
+            log_buffer.log('GlobalSettings', f'Error reading framerate cap: {exc}')
             if was_read_only:
-                self._remove_read_only(xml_path)
+                self._set_read_only(xml_path, read_only=True)
+            return
 
-            tree = ET.parse(str(xml_path))
-            root = tree.getroot()
-
-            found = False
-            # Navigate to FramerateCap and update it
-            for item in root.findall('Item'):
-                if item.get('class') == 'UserGameSettings':
-                    for props in item.findall('Properties'):
-                        for int_elem in props.findall('int'):
-                            if int_elem.get('name') == 'FramerateCap':
-                                int_elem.text = str(framerate)
-                                found = True
-                                break
-
-            if found:
-                tree.write(str(xml_path), encoding='utf-8', xml_declaration=True)
-                log_buffer.log(
-                    'GlobalSettings',
-                    f'Updated FramerateCap to {framerate} in {xml_path.name}',
-                )
-            else:
-                log_buffer.log('GlobalSettings', 'FramerateCap element not found in XML')
-
-            # Restore read-only state if it was set
+        element = _framerate_element(tree.getroot())
+        if element is None:
+            log_buffer.log('GlobalSettings', 'FramerateCap element not found in XML')
             if was_read_only:
-                self._set_read_only(xml_path, True)  # ruff: ignore[boolean-positional-value-in-call]
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            log_buffer.log('GlobalSettings', f'Error writing framerate cap: {e}')
-            # Try to restore read-only state on error
+                self._set_read_only(xml_path, read_only=True)
+            return
+        element.text = str(framerate)
+        try:
+            tree.write(xml_path, encoding='utf-8', xml_declaration=True)
+        except OSError as exc:
+            log_buffer.log('GlobalSettings', f'Error writing framerate cap: {exc}')
+        else:
+            log_buffer.log(
+                'GlobalSettings',
+                f'Updated FramerateCap to {framerate} in {xml_path.name}',
+            )
+        finally:
             if was_read_only:
-                try:
-                    self._set_read_only(xml_path, True)  # ruff: ignore[boolean-positional-value-in-call]
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
+                self._set_read_only(xml_path, read_only=True)
 
     def write(self, framerate: int | None) -> None:
         """Write FramerateCap to GlobalBasicSettings_13.xml in all user Roblox dirs."""
@@ -236,9 +233,9 @@ class GlobalSettingsManager:
                 shutil.copy2(dst, stash)
                 # Also preserve read-only state
                 if self._get_read_only_state(dst):
-                    with open(stash, 'a'):  # ruff: ignore[builtin-open, unspecified-encoding]
+                    with Path(stash).open('a', encoding='utf-8'):
                         pass  # Touch file
-                    self._set_read_only(stash, True)  # ruff: ignore[boolean-positional-value-in-call]
+                    self._set_read_only(stash, read_only=True)
 
             # Write the framerate cap
             if dst.exists():
@@ -289,7 +286,7 @@ class GlobalSettingsManager:
 
                 # Restore the read-only state
                 if self._get_read_only_state(stash):
-                    self._set_read_only(dst, True)  # ruff: ignore[boolean-positional-value-in-call]
+                    self._set_read_only(dst, read_only=True)
 
                 stash.unlink()
 

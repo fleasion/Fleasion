@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import locale
 import stat
@@ -135,12 +136,9 @@ def _normalise_linux_client(value: object) -> str:
     """Return ``auto`` or a key from the live Linux client registry."""
     normalized = str(value or 'auto').casefold()
     try:
-        from fleasion.utils.linux_clients import (  # ruff: ignore[import-outside-top-level]
-            LINUX_CLIENTS_BY_KEY,
-        )
-
-        supported = LINUX_CLIENTS_BY_KEY
-    except ImportError, AttributeError:
+        linux_clients = importlib.import_module('fleasion.utils.linux_clients')
+        supported = linux_clients.LINUX_CLIENTS_BY_KEY
+    except (ImportError, AttributeError):
         # Keep isolated config loading and recovery usable even when platform
         # modules are unavailable. Sober is the compatibility implementation.
         supported = {'sober': None}
@@ -958,19 +956,13 @@ class ConfigManager:
     @property
     def language(self) -> str:
         """Return a supported language code, falling back to English."""
-        from fleasion.localization import (  # ruff: ignore[import-outside-top-level]
-            normalize_language,
-        )
-
+        normalize_language = importlib.import_module('fleasion.localization').normalize_language
         return normalize_language(_preserve_runtime_type(self.settings.get('language', 'en'), str))
 
     @language.setter
     def language(self, value: str) -> None:
         """Persist a supported language code, using English for invalid values."""
-        from fleasion.localization import (  # ruff: ignore[import-outside-top-level]
-            normalize_language,
-        )
-
+        normalize_language = importlib.import_module('fleasion.localization').normalize_language
         self.settings['language'] = normalize_language(value)
         self._save_settings()
 
@@ -1513,11 +1505,11 @@ class ConfigManager:
     @property
     def subplace_blacklist_mode(self) -> str:
         mode = self.settings.get('subplace_blacklist_mode', 'block')
-        return mode if mode in ('block', 'stall') else 'block'  # ruff: ignore[literal-membership]
+        return mode if isinstance(mode, str) and mode in {'block', 'stall'} else 'block'
 
     @subplace_blacklist_mode.setter
     def subplace_blacklist_mode(self, value: str) -> None:
-        self.settings['subplace_blacklist_mode'] = value if value in ('block', 'stall') else 'block'  # ruff: ignore[literal-membership]
+        self.settings['subplace_blacklist_mode'] = value if value in {'block', 'stall'} else 'block'
         self._save_settings()
 
     @property

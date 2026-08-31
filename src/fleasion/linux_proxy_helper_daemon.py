@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import errno
 import hashlib
+import importlib
 import json
 import os
 
@@ -19,10 +20,12 @@ import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
-from types import FrameType  # ruff: ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, Literal, Protocol, overload
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from types import FrameType
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
@@ -201,7 +204,7 @@ def _run_host_command(
     timeout: float,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     if text:
-        return subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+        return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
             cmd,
             env=_host_subprocess_env(),
             capture_output=capture_output,
@@ -209,12 +212,16 @@ def _run_host_command(
             encoding=encoding,
             errors=errors,
             timeout=timeout,
+            check=False,
+            shell=False,
         )
-    return subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
         cmd,
         env=_host_subprocess_env(),
         capture_output=capture_output,
         timeout=timeout,
+        check=False,
+        shell=False,
     )
 
 
@@ -305,73 +312,85 @@ def _helper_install_metadata(
     }
 
 
+def _install_helper_files(
+    source: Path,
+    *,
+    source_helper_needs_dispatch_flag: bool,
+) -> JsonObject:
+    metadata = _helper_install_metadata(
+        source,
+        source_helper_needs_dispatch_flag=source_helper_needs_dispatch_flag,
+    )
+    if source_helper_needs_dispatch_flag:
+        _copy_root_file(source, INSTALLED_HELPER_SCRIPT_PATH, 0o755)
+        wrapper = (
+            '#!/bin/sh\n'
+            f'exec {shlex.quote(str(INSTALLED_HELPER_SCRIPT_PATH))} --linux-proxy-helper "$@"\n'
+        )
+        _write_root_file(INSTALLED_HELPER_PATH, wrapper, 0o755)
+    elif source.suffix == '.py':
+        python = shutil.which('python3') or '/usr/bin/env python3'
+        _copy_root_file(source, INSTALLED_HELPER_SCRIPT_PATH, 0o755)
+        wrapper = (
+            f'#!/bin/sh\nexec {python} {shlex.quote(str(INSTALLED_HELPER_SCRIPT_PATH))} "$@"\n'
+        )
+        _write_root_file(INSTALLED_HELPER_PATH, wrapper, 0o755)
+    else:
+        _copy_root_file(source, INSTALLED_HELPER_PATH, 0o755)
+
+    policy_xml = _polkit_policy_xml()
+    _write_root_file(POLKIT_POLICY_PATH, policy_xml, 0o644)
+    _write_root_file(LEGACY_POLKIT_POLICY_PATH, policy_xml, 0o644)
+    _write_root_file(
+        INSTALLED_HELPER_METADATA_PATH,
+        json.dumps(metadata, sort_keys=True, separators=(',', ':')) + '\n',
+        0o644,
+    )
+    return {
+        'ok': True,
+        'helper': str(INSTALLED_HELPER_PATH),
+        'helper_metadata': metadata,
+        'policy': str(POLKIT_POLICY_PATH),
+        'legacy_policy': str(LEGACY_POLKIT_POLICY_PATH),
+        'promptless_rule': None,
+    }
+
+
 def _install_privileged_helper(
     source_helper: str | None,
     *,
-    enable_promptless: bool = False,  # ruff: ignore[unused-function-argument]
+    enable_promptless: bool = False,
     source_helper_needs_dispatch_flag: bool = False,
     ca_cert: str | None = None,
 ) -> JsonObject:
+    del enable_promptless
     source = Path(source_helper or '').resolve(strict=False)
     if not source.is_file() or source.is_symlink():
         return {'ok': False, 'error': f'helper source is not a real file: {source}'}
 
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        metadata = _helper_install_metadata(
+    try:
+        details = _install_helper_files(
             source,
             source_helper_needs_dispatch_flag=source_helper_needs_dispatch_flag,
         )
-        if source_helper_needs_dispatch_flag:
-            _copy_root_file(source, INSTALLED_HELPER_SCRIPT_PATH, 0o755)
-            wrapper = (
-                '#!/bin/sh\n'
-                f'exec {shlex.quote(str(INSTALLED_HELPER_SCRIPT_PATH))} --linux-proxy-helper "$@"\n'
-            )
-            _write_root_file(INSTALLED_HELPER_PATH, wrapper, 0o755)
-        elif source.suffix == '.py':
-            python = shutil.which('python3') or '/usr/bin/env python3'
-            _copy_root_file(source, INSTALLED_HELPER_SCRIPT_PATH, 0o755)
-            wrapper = (
-                f'#!/bin/sh\nexec {python} {shlex.quote(str(INSTALLED_HELPER_SCRIPT_PATH))} "$@"\n'
-            )
-            _write_root_file(INSTALLED_HELPER_PATH, wrapper, 0o755)
-        else:
-            _copy_root_file(source, INSTALLED_HELPER_PATH, 0o755)
-
-        policy_xml = _polkit_policy_xml()
-        _write_root_file(POLKIT_POLICY_PATH, policy_xml, 0o644)
-        _write_root_file(LEGACY_POLKIT_POLICY_PATH, policy_xml, 0o644)
-        _write_root_file(
-            INSTALLED_HELPER_METADATA_PATH,
-            json.dumps(metadata, sort_keys=True, separators=(',', ':')) + '\n',
-            0o644,
-        )
-
-        details: JsonObject = {
-            'ok': True,
-            'helper': str(INSTALLED_HELPER_PATH),
-            'helper_metadata': metadata,
-            'policy': str(POLKIT_POLICY_PATH),
-            'legacy_policy': str(LEGACY_POLKIT_POLICY_PATH),
-            'promptless_rule': None,
-        }
-        if ca_cert:
-            system_ca: JsonObject
-            try:
-                ca_path = _validate_install_system_ca_args(ca_cert)
-                system_ca = _install_system_ca(ca_path)
-            except Exception as exc:  # ruff: ignore[blind-except]
-                system_ca = {'ok': False, 'error': str(exc)}
-            details['system_ca'] = system_ca
-            if (
-                not system_ca.get('ok')
-                and system_ca.get('error') != 'no_supported_system_trust_store'
-            ):
-                details['ok'] = False
-                details['error'] = system_ca.get('error') or system_ca
-        return details  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, RuntimeError, ValueError) as exc:
         return {'ok': False, 'error': str(exc)}
+
+    if ca_cert:
+        system_ca: JsonObject
+        try:
+            ca_path = _validate_install_system_ca_args(ca_cert)
+            system_ca = _install_system_ca(ca_path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            system_ca = {'ok': False, 'error': str(exc)}
+        details['system_ca'] = system_ca
+        if (
+            not system_ca.get('ok')
+            and system_ca.get('error') != 'no_supported_system_trust_store'
+        ):
+            details['ok'] = False
+            details['error'] = system_ca.get('error') or system_ca
+    return details
 
 
 def _linux_process_state_and_start_time(pid: int) -> tuple[str | None, str | None]:
@@ -386,7 +405,16 @@ def _linux_process_state_and_start_time(pid: int) -> tuple[str | None, str | Non
     return state, start_time
 
 
-def _parent_alive(pid: int, expected_start_time: str | None = None) -> bool:  # ruff: ignore[too-many-return-statements]
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    else:
+        return True
+
+
+def _parent_alive(pid: int, expected_start_time: str | None = None) -> bool:
     if pid <= 0:
         return True
     if sys.platform.startswith('linux'):
@@ -402,15 +430,11 @@ def _parent_alive(pid: int, expected_start_time: str | None = None) -> bool:  # 
             return False
         if state is not None:
             return True
-    try:
-        os.kill(pid, 0)
-        return True  # ruff: ignore[try-consider-else]
-    except OSError:
-        return False
+    return _pid_exists(pid)
 
 
 def _path_is_within(path: Path, parent: Path) -> bool:
-    return parent in (path, *path.parents)  # ruff: ignore[literal-membership]
+    return parent in {path, *path.parents}
 
 
 def _reject_symlink(path: Path, label: str) -> None:
@@ -561,9 +585,9 @@ def _validate_install_system_ca_args(ca_cert: str | None) -> Path:
 def _validate_fleasion_ca_certificate(ca_path: Path) -> None:
     """Reject non-Fleasion CA material before installing system trust."""
     try:
-        from cryptography import x509  # ruff: ignore[import-outside-top-level]
-        from cryptography.x509.oid import NameOID  # ruff: ignore[import-outside-top-level]
-    except Exception as exc:
+        x509 = importlib.import_module('cryptography.x509')
+        name_oid = importlib.import_module('cryptography.x509.oid').NameOID
+    except (ImportError, AttributeError) as exc:
         msg = f'could not load certificate validator: {exc}'
         raise RuntimeError(msg) from exc
 
@@ -573,8 +597,8 @@ def _validate_fleasion_ca_certificate(ca_path: Path) -> None:
         msg = f'CA certificate is not a valid PEM certificate: {exc}'
         raise RuntimeError(msg) from exc
 
-    cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-    org_attrs = cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
+    cn_attrs = cert.subject.get_attributes_for_oid(name_oid.COMMON_NAME)
+    org_attrs = cert.subject.get_attributes_for_oid(name_oid.ORGANIZATION_NAME)
     common_name = cn_attrs[0].value if cn_attrs else ''
     organization = org_attrs[0].value if org_attrs else ''
     if (
@@ -751,6 +775,22 @@ def _boot_guard_command() -> str:
     )
 
 
+def _run_systemctl(systemctl: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return _run_host_command(
+        [systemctl, *args],
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        timeout=10,
+    )
+
+
+def _write_boot_guard_unit(unit: str) -> None:
+    BOOT_GUARD_PATH.write_text(unit, encoding='utf-8')
+    BOOT_GUARD_PATH.chmod(0o644)
+
+
 def _install_boot_guard() -> bool:
     """Install a one-shot boot cleanup for power-loss/system-crash recovery."""
     systemctl = _systemctl()
@@ -771,26 +811,15 @@ ExecStart=/bin/sh -c {shlex.quote(_boot_guard_command())}
 [Install]
 WantedBy=multi-user.target
 """
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        BOOT_GUARD_PATH.write_text(unit, encoding='utf-8')
-        BOOT_GUARD_PATH.chmod(0o644)
-        for cmd in (
-            [systemctl, 'daemon-reload'],
-            [systemctl, 'enable', BOOT_GUARD_SERVICE],
-        ):
-            result = _run_host_command(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=10,
-            )
+    try:
+        _write_boot_guard_unit(unit)
+        for args in (('daemon-reload',), ('enable', BOOT_GUARD_SERVICE)):
+            result = _run_systemctl(systemctl, *args)
             if result.returncode != 0:
                 err = (result.stderr or result.stdout or str(result.returncode)).strip()
-                _log(f'Linux hosts boot guard command failed ({cmd[1]}): {err}')
+                _log(f'Linux hosts boot guard command failed ({args[0]}): {err}')
                 return False
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError) as exc:
         _log(f'Linux hosts boot guard install failed: {exc}')
         return False
 
@@ -803,16 +832,9 @@ def _remove_boot_guard() -> bool:
     ok = True
     if systemctl:
         try:
-            result = _run_host_command(
-                [systemctl, 'disable', BOOT_GUARD_SERVICE],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=10,
-            )
+            result = _run_systemctl(systemctl, 'disable', BOOT_GUARD_SERVICE)
             ok = ok and result.returncode == 0
-        except Exception:  # ruff: ignore[blind-except]
+        except (OSError, subprocess.SubprocessError):
             ok = False
     try:
         BOOT_GUARD_PATH.unlink(missing_ok=True)
@@ -820,16 +842,9 @@ def _remove_boot_guard() -> bool:
         ok = False
     if systemctl:
         try:
-            result = _run_host_command(
-                [systemctl, 'daemon-reload'],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=10,
-            )
+            result = _run_systemctl(systemctl, 'daemon-reload')
             ok = ok and result.returncode == 0
-        except Exception:  # ruff: ignore[blind-except]
+        except (OSError, subprocess.SubprocessError):
             ok = False
     if ok:
         _log('Linux hosts boot guard removed')
@@ -901,7 +916,6 @@ def _apply_hosts_or_use_existing_read_only(hosts: set[str]) -> bool:
         _clear_hosts()
         _install_boot_guard()
         _apply_hosts(hosts)
-        return False  # ruff: ignore[try-consider-else]
     except OSError as exc:
         if _is_read_only_filesystem_error(exc) and _hosts_file_has_loopback_entries(hosts):
             _log(
@@ -910,6 +924,8 @@ def _apply_hosts_or_use_existing_read_only(hosts: set[str]) -> bool:
             )
             return True
         raise
+    else:
+        return False
 
 
 def _apply_hosts_delta_or_use_existing_read_only(
@@ -919,7 +935,6 @@ def _apply_hosts_delta_or_use_existing_read_only(
     try:
         _install_boot_guard()
         _apply_hosts_delta(previous_hosts, updated_hosts)
-        return False  # ruff: ignore[try-consider-else]
     except OSError as exc:
         if _is_read_only_filesystem_error(exc) and _hosts_file_has_loopback_entries(updated_hosts):
             _log(
@@ -928,6 +943,8 @@ def _apply_hosts_delta_or_use_existing_read_only(
             )
             return True
         raise
+    else:
+        return False
 
 
 def _flush_dns() -> None:
@@ -938,11 +955,11 @@ def _flush_dns() -> None:
     ):
         try:
             result = _run_host_command(cmd, capture_output=True, timeout=5)
-            if result.returncode == 0:
-                _log(f'Flushed DNS with {cmd[0]}')
-                return
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0:
+            _log(f'Flushed DNS with {cmd[0]}')
+            return
     _log('DNS flush skipped: no supported command succeeded')
 
 
@@ -956,7 +973,7 @@ def _run_trust_update(cmd: list[str]) -> tuple[bool, str]:
             errors='replace',
             timeout=60,
         )
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc)
     if result.returncode == 0:
         return True, ''
@@ -976,6 +993,26 @@ def _target_has_ca(source: Path, target: Path) -> bool:
         return False
 
 
+def _install_ca_store(
+    ca_cert: Path,
+    target: Path,
+    update_cmd: list[str],
+    store_name: str,
+) -> tuple[str | None, JsonObject | None]:
+    try:
+        already_current = _target_has_ca(ca_cert, target)
+        if not already_current:
+            _copy_ca(ca_cert, target)
+    except OSError as exc:
+        return None, {'store': store_name, 'error': str(exc)}
+
+    ok, err = _run_trust_update(update_cmd)
+    if not ok:
+        return None, {'store': store_name, 'error': err}
+    suffix = ':already-current' if already_current else ''
+    return f'{store_name}{suffix}', None
+
+
 def _install_system_ca(ca_cert: Path) -> JsonObject:
     """Install Fleasion's CA into common Linux system trust stores."""
     if not ca_cert.is_file():
@@ -986,39 +1023,23 @@ def _install_system_ca(ca_cert: Path) -> JsonObject:
     update_ca_certificates = shutil.which('update-ca-certificates')
     update_ca_trust = shutil.which('update-ca-trust')
 
-    if update_ca_certificates and SYSTEM_CA_DIRS[0].is_dir():
-        target = SYSTEM_CA_DIRS[0] / SYSTEM_CA_NAME
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            already_current = _target_has_ca(ca_cert, target)
-            if not already_current:
-                _copy_ca(ca_cert, target)
-            ok, err = _run_trust_update([update_ca_certificates])
-            if ok:
-                stores.append(
-                    'update-ca-certificates:already-current'
-                    if already_current
-                    else 'update-ca-certificates'
-                )
-            else:
-                failures.append({'store': 'update-ca-certificates', 'error': err})
-        except Exception as exc:  # ruff: ignore[blind-except]
-            failures.append({'store': 'update-ca-certificates', 'error': str(exc)})
-
-    if update_ca_trust and SYSTEM_CA_DIRS[1].is_dir():
-        target = SYSTEM_CA_DIRS[1] / SYSTEM_CA_NAME
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            already_current = _target_has_ca(ca_cert, target)
-            if not already_current:
-                _copy_ca(ca_cert, target)
-            ok, err = _run_trust_update([update_ca_trust, 'extract'])
-            if ok:
-                stores.append(
-                    'update-ca-trust:already-current' if already_current else 'update-ca-trust'
-                )
-            else:
-                failures.append({'store': 'update-ca-trust', 'error': err})
-        except Exception as exc:  # ruff: ignore[blind-except]
-            failures.append({'store': 'update-ca-trust', 'error': str(exc)})
+    candidates: tuple[tuple[str | None, Path, tuple[str, ...], str], ...] = (
+        (update_ca_certificates, SYSTEM_CA_DIRS[0], (), 'update-ca-certificates'),
+        (update_ca_trust, SYSTEM_CA_DIRS[1], ('extract',), 'update-ca-trust'),
+    )
+    for executable, directory, extra_args, store_name in candidates:
+        if not executable or not directory.is_dir():
+            continue
+        installed_store, failure = _install_ca_store(
+            ca_cert,
+            directory / SYSTEM_CA_NAME,
+            [executable, *extra_args],
+            store_name,
+        )
+        if installed_store is not None:
+            stores.append(installed_store)
+        if failure is not None:
+            failures.append(failure)
 
     if stores:
         return {
@@ -1067,14 +1088,14 @@ def _repair_config_ownership(config_dir: Path, uid: int, gid: int) -> None:
     try:
         user_home = Path(_pwd_entry(uid).pw_dir).resolve()
         config_resolved = config_dir.resolve()
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (KeyError, OSError, RuntimeError) as exc:
         _log(f'Skipped config ownership repair: {exc}')
         return
 
-    if user_home == Path('/') or user_home not in (  # ruff: ignore[literal-membership]
+    if user_home == Path('/') or user_home not in {
         config_resolved,
         *config_resolved.parents,
-    ):
+    }:
         _log(f'Skipped config ownership repair outside user home: {config_resolved}')
         return
 
@@ -1105,7 +1126,7 @@ def _repair_sober_cert_ownership(uid: int, gid: int) -> None:
         return
     try:
         user_home = Path(_pwd_entry(uid).pw_dir).resolve()
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (KeyError, OSError, RuntimeError) as exc:
         _log(f'Skipped Sober cert ownership repair: {exc}')
         return
 
@@ -1120,7 +1141,7 @@ def _repair_sober_cert_ownership(uid: int, gid: int) -> None:
             resolved = path.resolve()
         except OSError:
             continue
-        if user_home == Path('/') or user_home not in (resolved, *resolved.parents):  # ruff: ignore[literal-membership]
+        if user_home == Path('/') or user_home not in {resolved, *resolved.parents}:
             continue
         try:
             stat_result = path.lstat()
@@ -1139,11 +1160,11 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
         while data := await reader.read(BUFFER_SIZE):
             writer.write(data)
             await writer.drain()
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
-        pass
+    except (ConnectionError, OSError):
+        return
     finally:
         writer.close()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(ConnectionError, OSError):
             await writer.wait_closed()
 
 
@@ -1155,9 +1176,9 @@ async def _relay_client(
 ) -> None:
     try:
         backend_reader, backend_writer = await asyncio.open_connection(backend_host, backend_port)
-    except Exception:  # ruff: ignore[blind-except]
+    except OSError:
         client_writer.close()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(ConnectionError, OSError):
             await client_writer.wait_closed()
         return
 
@@ -1165,6 +1186,77 @@ async def _relay_client(
         _pipe(client_reader, backend_writer),
         _pipe(backend_reader, client_writer),
     )
+
+
+def _remove_runtime_markers(ready_file: Path, stop_file: Path) -> None:
+    ready_file.unlink(missing_ok=True)
+    stop_file.unlink(missing_ok=True)
+
+
+def _runtime_stop_requested(stop_file: Path) -> bool:
+    return stop_file.exists()
+
+
+def _apply_live_hosts_update(
+    current_hosts: set[str],
+    updated_hosts: set[str],
+    ca_cert: str | None,
+    *,
+    require_system_ca: bool,
+) -> bool | None:
+    update_ca_details = _ensure_system_ca_for_hosts(updated_hosts, ca_cert, install=False)
+    if update_ca_details is not None and not update_ca_details.get('ok'):
+        error = update_ca_details.get('error') or update_ca_details
+        if require_system_ca:
+            _log(
+                'Skipped Linux hosts update because system trust-store '
+                f'install failed: {error}'
+            )
+            return None
+        _log(
+            'Continuing Linux hosts update without confirmed system trust-store '
+            f'install: {error}'
+        )
+    read_only_hosts_mode = _apply_hosts_delta_or_use_existing_read_only(
+        current_hosts, updated_hosts
+    )
+    _flush_dns()
+    _log(f'Applied live hosts update: {", ".join(sorted(updated_hosts))}')
+    return read_only_hosts_mode
+
+
+def _poll_live_hosts_update(
+    hosts_file: Path,
+    previous_mtime_ns: int | None,
+    current_hosts: set[str],
+    read_only_hosts_mode: bool,
+    ca_cert: str | None,
+    *,
+    require_system_ca: bool,
+) -> tuple[int | None, set[str], bool]:
+    next_mtime_ns = previous_mtime_ns
+    try:
+        next_mtime_ns = hosts_file.stat().st_mtime_ns
+        if next_mtime_ns == previous_mtime_ns:
+            return next_mtime_ns, current_hosts, read_only_hosts_mode
+        updated_hosts = _read_hosts_update(hosts_file)
+        if updated_hosts == current_hosts:
+            return next_mtime_ns, current_hosts, read_only_hosts_mode
+        updated_read_only_mode = _apply_live_hosts_update(
+            current_hosts,
+            updated_hosts,
+            ca_cert,
+            require_system_ca=require_system_ca,
+        )
+    except FileNotFoundError:
+        return next_mtime_ns, current_hosts, read_only_hosts_mode
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        _log(f'Ignored invalid Linux helper hosts update: {exc}')
+        return next_mtime_ns, current_hosts, read_only_hosts_mode
+
+    if updated_read_only_mode is None:
+        return next_mtime_ns, current_hosts, read_only_hosts_mode
+    return next_mtime_ns, set(updated_hosts), updated_read_only_mode
 
 
 async def _serve(args: _RuntimeArgs) -> int:
@@ -1175,8 +1267,7 @@ async def _serve(args: _RuntimeArgs) -> int:
 
     stop_file = Path(args.stop_file)
     ready_file = Path(args.ready_file)
-    ready_file.unlink(missing_ok=True)  # ruff: ignore[blocking-path-method-in-async-function]
-    stop_file.unlink(missing_ok=True)  # ruff: ignore[blocking-path-method-in-async-function]
+    _remove_runtime_markers(ready_file, stop_file)
 
     _repair_config_ownership(Path(args.config_dir), owner_uid, owner_gid)
     _repair_sober_cert_ownership(owner_uid, owner_gid)
@@ -1220,50 +1311,24 @@ async def _serve(args: _RuntimeArgs) -> int:
     hosts_file = Path(args.hosts_file) if args.hosts_file else None
     hosts_file_mtime_ns: int | None = None
 
-    try:  # ruff: ignore[too-many-nested-blocks]
+    try:
         shutdown_requested = getattr(args, 'shutdown_requested', lambda: False)
         while (
             not shutdown_requested()
-            and not stop_file.exists()  # ruff: ignore[blocking-path-method-in-async-function]
+            and not _runtime_stop_requested(stop_file)
             and _parent_alive(args.parent_pid, getattr(args, 'parent_start_time', None))
         ):
             if hosts_file is not None:
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    stat_result = hosts_file.stat()
-                    if stat_result.st_mtime_ns != hosts_file_mtime_ns:
-                        hosts_file_mtime_ns = stat_result.st_mtime_ns
-                        updated_hosts = _read_hosts_update(hosts_file)
-                        if updated_hosts != current_hosts:
-                            update_ca_details = _ensure_system_ca_for_hosts(
-                                updated_hosts,
-                                args.ca_cert,
-                                install=False,
-                            )
-                            if update_ca_details is not None and not update_ca_details.get('ok'):
-                                error = update_ca_details.get('error') or update_ca_details
-                                if args.require_system_ca:
-                                    _log(
-                                        'Skipped Linux hosts update because system trust-store '
-                                        f'install failed: {error}'
-                                    )
-                                    continue
-                                _log(
-                                    'Continuing Linux hosts update without confirmed system trust-store '
-                                    f'install: {error}'
-                                )
-                            update_read_only_hosts_mode = (
-                                _apply_hosts_delta_or_use_existing_read_only(
-                                    current_hosts, updated_hosts
-                                )
-                            )
-                            _flush_dns()
-                            current_hosts = set(updated_hosts)
-                            read_only_hosts_mode = update_read_only_hosts_mode
-                            _log(f'Applied live hosts update: {", ".join(sorted(current_hosts))}')
-                except FileNotFoundError:
-                    pass
-                except Exception as exc:  # ruff: ignore[blind-except]
-                    _log(f'Ignored invalid Linux helper hosts update: {exc}')
+                hosts_file_mtime_ns, current_hosts, read_only_hosts_mode = (
+                    _poll_live_hosts_update(
+                        hosts_file,
+                        hosts_file_mtime_ns,
+                        current_hosts,
+                        read_only_hosts_mode,
+                        args.ca_cert,
+                        require_system_ca=args.require_system_ca,
+                    )
+                )
             await asyncio.sleep(0.5)
     finally:
         server.close()
@@ -1273,8 +1338,7 @@ async def _serve(args: _RuntimeArgs) -> int:
         _flush_dns()
         if not read_only_hosts_mode:
             _remove_boot_guard()
-        ready_file.unlink(missing_ok=True)  # ruff: ignore[blocking-path-method-in-async-function]
-        stop_file.unlink(missing_ok=True)  # ruff: ignore[blocking-path-method-in-async-function]
+        _remove_runtime_markers(ready_file, stop_file)
         _log('Cleaned hosts entries and stopped')
 
     return 0
@@ -1334,9 +1398,9 @@ def main() -> None:
     if args.install_system_ca:
         try:
             ca_cert = _validate_install_system_ca_args(args.ca_cert)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (OSError, RuntimeError, ValueError) as exc:
             print(json.dumps({'ok': False, 'error': str(exc)}), flush=True)
-            raise SystemExit(1)  # ruff: ignore[raise-without-from-inside-except]
+            raise SystemExit(1) from None
         details = _install_system_ca(ca_cert)
         print(json.dumps(details), flush=True)
         raise SystemExit(0 if details.get('ok') else 1)
@@ -1356,8 +1420,8 @@ def main() -> None:
 
     try:
         owner_uid, owner_gid = _validate_runtime_args(runtime_args)
-    except Exception as exc:  # ruff: ignore[blind-except]
-        raise SystemExit(str(exc))  # ruff: ignore[raise-without-from-inside-except]
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
 
     shutting_down = False
 
@@ -1371,7 +1435,7 @@ def main() -> None:
 
     try:
         raise SystemExit(asyncio.run(_serve(runtime_args)))
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, RuntimeError, ValueError) as exc:
         if args.ready_file:
             ready_file = Path(args.ready_file)
             with contextlib.suppress(OSError):
@@ -1383,10 +1447,10 @@ def main() -> None:
                 )
         if not shutting_down:
             _log(f'Helper failed: {exc}')
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError):
             _clear_hosts()
             _flush_dns()
-        raise SystemExit(1)  # ruff: ignore[raise-without-from-inside-except]
+        raise SystemExit(1) from None
 
 
 if __name__ == '__main__':

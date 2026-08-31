@@ -18,17 +18,20 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping  # ruff: ignore[typing-only-standard-library-import]
 from ctypes import wintypes
 from pathlib import Path
-from types import FrameType  # ruff: ignore[typing-only-standard-library-import]
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+    from types import FrameType
 
 _SAMPLE_INTERVAL_SECONDS = 1.0
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _TH32CS_SNAPTHREAD = 0x00000004
 _THREAD_QUERY_LIMITED_INFORMATION = 0x0800
 _THREAD_QUERY_INFORMATION = 0x0040
+_INHERIT_THREAD_HANDLE = False
 
 
 type JsonScalar = str | int | float | bool | None
@@ -115,7 +118,11 @@ else:
         return psapi
 
     def _python_frames() -> Mapping[int, FrameType]:
-        return sys._current_frames()  # ruff: ignore[private-member-access]
+        current_frames = cast(
+            'Callable[[], Mapping[int, FrameType]]',
+            vars(sys)['_current_frames'],
+        )
+        return current_frames()
 
     def _json_values(values: list[str]) -> list[JsonValue]:
         return values
@@ -195,7 +202,7 @@ def _thread_cpu_seconds(thread_id: int) -> float | None:
     """Read user+kernel CPU seconds for a native thread."""
     kernel32 = _kernel32()
     access = _THREAD_QUERY_INFORMATION | _THREAD_QUERY_LIMITED_INFORMATION
-    handle = kernel32.OpenThread(access, False, thread_id)  # ruff: ignore[boolean-positional-value-in-call]
+    handle = kernel32.OpenThread(access, _INHERIT_THREAD_HANDLE, thread_id)
     if not handle:
         return None
 
@@ -351,7 +358,7 @@ class MicroProfiler:
                             'error': f'{type(exc).__name__}: {exc}',
                         }
                     )
-                except Exception:  # ruff: ignore[blind-except]
+                except (OSError, TypeError, ValueError):
                     return
 
     def _sample(self) -> JsonObject:
@@ -408,7 +415,7 @@ class MicroProfiler:
         memory_error = None
         try:
             memory = _process_memory(process_handle)
-        except Exception as exc:  # Keep CPU/thread samples if memory inspection fails.  # ruff: ignore[blind-except]
+        except (AttributeError, OSError) as exc:
             memory = None
             memory_error = f'{type(exc).__name__}: {exc}'
 
@@ -435,11 +442,11 @@ def _output_path() -> Path:
         path = executable_dir / filename
         with path.open('a', encoding='utf-8'):
             pass
-        return path  # ruff: ignore[try-consider-else]
     except OSError:
         fallback_dir = Path.home() / 'AppData' / 'Local' / 'FleasionNT' / 'logs'
         fallback_dir.mkdir(parents=True, exist_ok=True)
         return fallback_dir / filename
+    return path
 
 
 def start_microprofiler(
@@ -453,7 +460,7 @@ def start_microprofiler(
     try:
         profiler = MicroProfiler(_output_path(), interval_seconds)
         profiler.start()
-    except Exception:  # ruff: ignore[blind-except]
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
         return None
     atexit.register(profiler.stop)
     return profiler

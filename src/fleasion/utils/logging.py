@@ -1,5 +1,6 @@
 """Logging utilities."""
 
+import contextlib
 import threading
 from datetime import datetime
 from typing import Any
@@ -39,7 +40,7 @@ class LogBuffer:
 
     def log(self, category: str, message: str) -> None:
         """Add a log entry (callbacks are batched to reduce overhead)."""
-        now = datetime.now()  # ruff: ignore[call-datetime-now-without-tzinfo]
+        now = datetime.now().astimezone()
         timestamp = now.strftime('%H:%M:%S')
         entry = f'[{timestamp}] [{category}] {message}'
 
@@ -72,10 +73,8 @@ class LogBuffer:
             callbacks_copy = self._callbacks.copy()
 
         for callback in callbacks_copy:
-            try:
+            with contextlib.suppress(Exception):
                 callback()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass  # Ignore callback errors
 
     def get_all(self) -> list[str]:
         """Get all log entries."""

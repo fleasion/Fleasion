@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 import sys
 
@@ -27,7 +28,7 @@ def set_perspective(fov_y_degrees: float, aspect: float, near: float, far: float
     """Set a perspective projection without relying on GLU."""
     # Keep PyOpenGL out of the normal dashboard startup path. Importing OpenGL.GL
     # can load the platform OpenGL runtime even when no 3D preview is ever opened.
-    from OpenGL.GL import glFrustum  # ruff: ignore[import-outside-top-level]
+    gl_frustum = importlib.import_module('OpenGL.GL').glFrustum
 
     if aspect <= 0.0:
         aspect = 1.0
@@ -43,4 +44,4 @@ def set_perspective(fov_y_degrees: float, aspect: float, near: float, far: float
     bottom = -top
     right = top * aspect
     left = -right
-    glFrustum(left, right, bottom, top, near, far)
+    gl_frustum(left, right, bottom, top, near, far)

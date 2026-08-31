@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sized  # ruff: ignore[typing-only-standard-library-import]
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sized
 
 
 def _count(value: int | Sized) -> int:

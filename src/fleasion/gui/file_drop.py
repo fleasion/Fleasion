@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast, override
 
 from PySide6.QtCore import QDir, QMimeData, Signal
 from PySide6.QtWidgets import QLineEdit
@@ -41,25 +41,28 @@ def local_file_path_from_mime_data(mime_data: QMimeData) -> str | None:
 class FileDropLineEdit(QLineEdit):
     """QLineEdit that accepts a dragged local file and inserts its path."""
 
-    fileDropped = Signal(str)  # ruff: ignore[mixed-case-variable-in-class-scope]
+    fileDropped = Signal(str)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         cast('_CooperativeLineEditInitializer', super()).__init__(*args, **kwargs)
         self.setAcceptDrops(True)
 
-    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if local_file_path_from_mime_data(event.mimeData()):
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
-    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
         if local_file_path_from_mime_data(event.mimeData()):
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
 
-    def dropEvent(self, event: QDropEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def dropEvent(self, event: QDropEvent) -> None:
         path = local_file_path_from_mime_data(event.mimeData())
         if not path:
             super().dropEvent(event)

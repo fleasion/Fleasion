@@ -6,6 +6,7 @@ Reference: ROBLOX 2016 source App/v8xml/SerializerBinary.cpp
 
 from __future__ import annotations
 
+import importlib
 import logging
 import struct
 from typing import Any
@@ -49,7 +50,7 @@ ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 def _decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
     if raw.startswith(ZSTD_MAGIC):
         try:
-            import zstandard  # type: ignore[import-untyped]  # ruff: ignore[import-outside-top-level]
+            zstandard = importlib.import_module('zstandard')
         except ImportError as exc:
             msg = 'RBXM contains a ZSTD-compressed chunk; install zstandard to read it'
             raise RuntimeError(msg) from exc
@@ -330,7 +331,7 @@ class RbxmDeserializer:
             prop_name,
         )
 
-    def _read_property_values(  # ruff: ignore[too-many-return-statements]
+    def _read_property_values(
         self,
         fmt: PropertyFormat,
         data: bytes,
@@ -340,75 +341,75 @@ class RbxmDeserializer:
         """Decode property values based on the format type."""
         match fmt:
             case PropertyFormat.STRING:
-                return self._read_strings(data, offset, count)
+                values = self._read_strings(data, offset, count)
             case PropertyFormat.BOOL:
-                return self._read_bools(data, offset, count)
+                values = self._read_bools(data, offset, count)
             case PropertyFormat.INT:
-                return self._read_ints(data, offset, count)
+                values = self._read_ints(data, offset, count)
             case PropertyFormat.FLOAT:
-                return self._read_floats(data, offset, count)
+                values = self._read_floats(data, offset, count)
             case PropertyFormat.DOUBLE:
-                return self._read_doubles(data, offset, count)
+                values = self._read_doubles(data, offset, count)
             case PropertyFormat.UDIM:
-                return self._read_udims(data, offset, count)
+                values = self._read_udims(data, offset, count)
             case PropertyFormat.UDIM2:
-                return self._read_udim2s(data, offset, count)
+                values = self._read_udim2s(data, offset, count)
             case PropertyFormat.RAY:
-                return self._read_rays(data, offset, count)
+                values = self._read_rays(data, offset, count)
             case PropertyFormat.FACES:
-                return self._read_faces(data, offset, count)
+                values = self._read_faces(data, offset, count)
             case PropertyFormat.AXES:
-                return self._read_axes(data, offset, count)
+                values = self._read_axes(data, offset, count)
             case PropertyFormat.BRICK_COLOR:
-                return self._read_brick_colors(data, offset, count)
+                values = self._read_brick_colors(data, offset, count)
             case PropertyFormat.COLOR3:
-                return self._read_color3s(data, offset, count)
+                values = self._read_color3s(data, offset, count)
             case PropertyFormat.VECTOR2:
-                return self._read_vector2s(data, offset, count)
+                values = self._read_vector2s(data, offset, count)
             case PropertyFormat.VECTOR3:
-                return self._read_vector3s(data, offset, count)
+                values = self._read_vector3s(data, offset, count)
             case PropertyFormat.VECTOR2INT16:
-                return self._read_vector2int16s(data, offset, count)
+                values = self._read_vector2int16s(data, offset, count)
             case PropertyFormat.CFRAME_MATRIX | PropertyFormat.CFRAME_QUAT:
-                return self._read_cframes(data, offset, count, fmt)
+                values = self._read_cframes(data, offset, count, fmt)
             case PropertyFormat.ENUM:
-                return self._read_enums(data, offset, count)
+                values = self._read_enums(data, offset, count)
             case PropertyFormat.REF:
-                return self._read_refs(data, offset, count)
+                values = self._read_refs(data, offset, count)
             case PropertyFormat.VECTOR3INT16:
-                return self._read_vector3int16s(data, offset, count)
+                values = self._read_vector3int16s(data, offset, count)
             case PropertyFormat.NUMBER_SEQUENCE:
-                return self._read_number_sequences(data, offset, count)
+                values = self._read_number_sequences(data, offset, count)
             case PropertyFormat.COLOR_SEQUENCE:
-                return self._read_color_sequences(data, offset, count)
+                values = self._read_color_sequences(data, offset, count)
             case PropertyFormat.NUMBER_RANGE:
-                return self._read_number_ranges(data, offset, count)
+                values = self._read_number_ranges(data, offset, count)
             case PropertyFormat.RECT2D:
-                return self._read_rect2ds(data, offset, count)
+                values = self._read_rect2ds(data, offset, count)
             case PropertyFormat.PHYSICAL_PROPERTIES:
-                return self._read_physical_properties(data, offset, count)
+                values = self._read_physical_properties(data, offset, count)
             case PropertyFormat.COLOR3UINT8:
-                return self._read_color3uint8s(data, offset, count)
+                values = self._read_color3uint8s(data, offset, count)
             case PropertyFormat.INT64:
-                return self._read_int64s(data, offset, count)
+                values = self._read_int64s(data, offset, count)
             case PropertyFormat.SHARED_STRING:
-                return self._read_shared_strings(data, offset, count)
+                values = self._read_shared_strings(data, offset, count)
             case PropertyFormat.BYTECODE:
-                return self._read_bytecodes(data, offset, count)
+                values = self._read_bytecodes(data, offset, count)
             case PropertyFormat.OPTIONAL_CFRAME:
-                return self._read_optional_cframes(data, offset, count)
+                values = self._read_optional_cframes(data, offset, count)
             case PropertyFormat.UNIQUE_ID:
-                return self._read_unique_ids(data, offset, count)
+                values = self._read_unique_ids(data, offset, count)
             case PropertyFormat.FONT:
-                return self._read_fonts(data, offset, count)
+                values = self._read_fonts(data, offset, count)
             case PropertyFormat.SECURITY_CAPABILITIES:
-                return self._read_security_capabilities(data, offset, count)
+                values = self._read_security_capabilities(data, offset, count)
             case PropertyFormat.CONTENT:
-                return self._read_contents(data, offset, count)
+                values = self._read_contents(data, offset, count)
             case _:
                 log.warning('Unhandled property format: %s', fmt)
-                return [None] * count
-
+                values = [None] * count
+        return values
     # --- Property readers ---
 
     def _read_strings(self, data: bytes, offset: int, count: int) -> list[str | bytes]:

@@ -7,18 +7,20 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import (
-    Callable,  # ruff: ignore[typing-only-standard-library-import]
-    Iterable,  # ruff: ignore[typing-only-standard-library-import]
-)
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from .paths import CONFIG_DIR
 from .roblox_dirs import (
     _normalise_roblox_dir,  # pyright: ignore[reportPrivateUsage]
     is_roblox_studio_resource_dir,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import (
+        Callable,
+        Iterable,
+    )
 
 PENDING_REPAIR_FILENAME = 'roblox_permission_repair.json'
 RESULT_REPAIR_FILENAME = 'roblox_permission_repair_result.json'
@@ -39,6 +41,7 @@ class _Win32SecurityLike(Protocol):
     LookupAccountSid: Callable[[object | None, object], tuple[str, str, int]]
 
 
+
 def _win32api_module() -> _Win32ApiLike:
     return cast('_Win32ApiLike', __import__('win32api'))
 
@@ -55,7 +58,7 @@ def _atomic_write_json(path: Path, payload: ErrorDetails) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f'.{path.name}.tmp')
     temporary.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-    os.replace(temporary, path)  # ruff: ignore[os-replace]
+    Path(temporary).replace(path)
 
 
 def _read_json_object(path: Path) -> ErrorDetails | None:
@@ -78,7 +81,7 @@ def _serialise_paths(paths: Iterable[Path]) -> list[str]:
             resolved = path.resolve()
         except OSError:
             resolved = path
-        key = os.path.normcase(os.path.abspath(str(resolved)))  # ruff: ignore[os-path-abspath]
+        key = os.path.normcase(Path(str(resolved)).resolve())
         if key in seen:
             continue
         seen.add(key)
@@ -156,8 +159,8 @@ def _validated_install_dirs(paths: Iterable[Path]) -> tuple[list[Path], list[Pat
         # The request must name the installation directory itself.  Do not
         # accept an executable path or a parent Roblox directory by silently
         # widening the ACL target.
-        if os.path.normcase(os.path.abspath(str(normalised))) != os.path.normcase(  # ruff: ignore[os-path-abspath]
-            os.path.abspath(str(raw_resolved))  # ruff: ignore[os-path-abspath]
+        if os.path.normcase(Path(str(normalised)).resolve()) != os.path.normcase(
+            Path(str(raw_resolved)).resolve()
         ):
             rejected.append(
                 {'path': str(raw_path), 'error': 'path is not the installation directory'}
@@ -166,7 +169,7 @@ def _validated_install_dirs(paths: Iterable[Path]) -> tuple[list[Path], list[Pat
         if not normalised.is_dir() or is_roblox_studio_resource_dir(normalised):
             rejected.append({'path': str(raw_path), 'error': 'installation is not Roblox Player'})
             continue
-        key = os.path.normcase(os.path.abspath(str(normalised)))  # ruff: ignore[os-path-abspath]
+        key = os.path.normcase(Path(str(normalised)).resolve())
         if key not in seen:
             seen.add(key)
             valid.append(normalised)
@@ -237,7 +240,7 @@ def grant_current_user_modify_access(
 
     try:
         sid = _validated_user_sid(user_sid)
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (ImportError, OSError, TypeError, ValueError) as exc:
         return {
             'ok': False,
             'granted': [],
@@ -259,6 +262,7 @@ def grant_current_user_modify_access(
         try:
             completed = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
                 command,
+                shell=False,
                 capture_output=True,
                 text=True,
                 check=False,

@@ -1,4 +1,5 @@
 """German translations for Fleasion."""
+import string
 
 GERMAN: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': 'Durch das Hinzufügen von Fleasion-Einträgen würde die Datei {value0:.1f} MiB groß und damit Fleasions Sicherheitsgrenze von {value1:.0f} KiB überschreiten. Es wurden keine Zuordnungen hinzugefügt. Entfernen Sie veraltete Zeilen aus der Hosts-Datei oder benennen Sie die Datei um und starten Sie Fleasion anschließend neu.\n\nPfad zur Hosts-Datei:\n{value2}',
@@ -510,7 +511,7 @@ GERMAN: dict[str, str] = {
     'count.server.other': '{count} Server',
     'count.value.one': '{count} Wert',
     'count.value.other': '{count} Werte',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'abcdefghijklmnopqrstuvwxyzäöüß',
     'font_viewer.sample.pack_my_box': 'Zwölf Boxkämpfer jagen Viktor quer über den großen Sylter Deich.',
     'font_viewer.sample.quick_brown_fox': 'Falsches Üben von Xylophonmusik quält jeden größeren Zwerg.',

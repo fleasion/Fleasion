@@ -1,4 +1,5 @@
 """Russian translations for Fleasion."""
+import string
 
 RUSSIAN: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': 'Добавление записей Fleasion увеличит размер файла до {value0:.1f} МиБ, что превышает безопасный предел Fleasion в {value1:.0f} КиБ. Сопоставления не были добавлены. Удалите устаревшие строки файла hosts или переименуйте файл, затем перезапустите Fleasion.\n\nПуть к файлу hosts:\n{value2}',
@@ -510,7 +511,7 @@ RUSSIAN: dict[str, str] = {
     'count.server.other': '{count} серверов',
     'count.value.one': '{count} значение',
     'count.value.other': '{count} значений',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'Абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
     'font_viewer.sample.pack_my_box': 'Съешь же ещё этих мягких французских булок, да выпей чаю.',
     'font_viewer.sample.quick_brown_fox': 'Широкая электрификация южных губерний даст мощный толчок подъёму сельского хозяйства.',

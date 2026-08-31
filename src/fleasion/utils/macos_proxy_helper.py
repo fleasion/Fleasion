@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterable, Mapping  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,6 +49,7 @@ type HelperObject = dict[str, object]
 
 if TYPE_CHECKING:
 
+    from collections.abc import Iterable, Mapping
     def _object_dict(value: object) -> HelperObject: ...
 
     def _iter_values(value: object) -> Iterable[object]: ...
@@ -112,7 +112,7 @@ def _request(
 def helper_status(timeout: float = 1.0) -> HelperObject | None:
     try:
         return _request('status', timeout=timeout)
-    except Exception:  # ruff: ignore[blind-except]
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError):
         return None
 
 
@@ -151,7 +151,7 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
     """Return readiness plus the reason a newly-installed helper is not ready."""
     try:
         status = _request('status', timeout=1.0)
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
         return False, f'Could not contact the helper control service: {type(exc).__name__}: {exc}'
 
     try:
@@ -161,15 +161,15 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
     if not backend_ok:
         return (
             False,
-            'Helper reported an unexpected backend port: '  # ruff: ignore[implicit-string-concatenation-in-collection-literal]
-            f'{status.get("backend_port")!r} (expected {MACOS_PROXY_BACKEND_PORT})',
+            ('Helper reported an unexpected backend port: '
+            f'{status.get("backend_port")!r} (expected {MACOS_PROXY_BACKEND_PORT})'),
         )
     if not helper_has_expected_identity(status):
         return (
             False,
-            'Helper identity does not match this app build: '  # ruff: ignore[implicit-string-concatenation-in-collection-literal]
+            ('Helper identity does not match this app build: '
             f'version={status.get("version")!r} (expected {EXPECTED_HELPER_VERSION}), '
-            f'capabilities={status.get("capabilities")!r}',
+            f'capabilities={status.get("capabilities")!r}'),
         )
     return True, ''
 
@@ -177,33 +177,33 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
 def helper_apply_hosts(hosts: set[str]) -> bool:
     try:
         _request('apply', set(hosts), timeout=5.0)
-        return True  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
         log_buffer.log('ProxyHelper', f'Failed to apply macOS hosts entries: {exc}')
         return False
+    return True
 
 
 def helper_clear_hosts() -> bool:
     try:
         _request('clear', timeout=5.0)
-        return True  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
         log_buffer.log('ProxyHelper', f'Failed to clear macOS hosts entries: {exc}')
         return False
+    return True
 
 
 def helper_heartbeat() -> bool:
     try:
         _request('heartbeat', timeout=2.0)
-        return True  # ruff: ignore[try-consider-else]
-    except Exception:  # ruff: ignore[blind-except]
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError):
         return False
+    return True
 
 
 def helper_probe_backend() -> HelperObject:
     try:
         return _request('probe_backend', timeout=3.0)
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
         return {
             'ok': False,
             'reachable': False,
@@ -223,7 +223,7 @@ def helper_patch_ca(ca_pem: str, installs: list[HelperObject]) -> HelperObject |
             ca_pem=ca_pem,
             installs=installs,
         )
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
         log_buffer.log('ProxyHelper', f'Failed to request macOS Roblox CA patch: {exc}')
         return None
 
@@ -309,19 +309,25 @@ def _stage_installer_payload(source: Path) -> tuple[Path, Path, Path]:
     return staging_dir, staging_helper, staging_plist
 
 
-def install_helper() -> tuple[bool, str]:  # ruff: ignore[too-many-return-statements]
-    """Install/start the root helper with one macOS administrator approval."""
+def _installer_source() -> tuple[Path | None, str]:
     if sys.platform != 'darwin':
-        return False, 'The macOS proxy helper is only available on macOS.'
-
+        return None, 'The macOS proxy helper is only available on macOS.'
     _ensure_token()
     source = _source_helper_path()
     if not source.exists():
-        return False, f'Bundled helper executable is missing: {source}'
+        return None, f'Bundled helper executable is missing: {source}'
+    return source, ''
+
+
+def install_helper() -> tuple[bool, str]:
+    """Install/start the root helper with one macOS administrator approval."""
+    source, source_error = _installer_source()
+    if source is None:
+        return False, source_error
 
     try:
         staging_dir, staging_helper, staging_plist = _stage_installer_payload(source)
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except OSError as exc:
         return False, f'Could not stage the macOS proxy helper installer: {exc}'
 
     commands = [
@@ -439,13 +445,15 @@ exit 0
         'Requesting one-time administrator approval to install the macOS proxy helper',
     )
     try:
-        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+        result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
             ['/usr/bin/osascript', '-e', apple_script],
+            shell=False,
             capture_output=True,
             text=True,
             timeout=180,
+            check=False,
         )
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError) as exc:
         return False, f'Could not run the helper installer: {exc}'
     finally:
         with contextlib.suppress(OSError):

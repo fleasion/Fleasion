@@ -1,4 +1,5 @@
 """Turkish translations for Fleasion."""
+import string
 
 TURKISH: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': 'Fleasion girdileri eklendiğinde dosya {value0:.1f} MiB olacak; bu, Fleasion’ın {value1:.0f} KiB güvenlik sınırını aşıyor. Hiçbir eşleme eklenmedi. Eski hosts dosyası satırlarını kaldırın veya dosyayı yeniden adlandırın, ardından Fleasion’ı yeniden başlatın.\n\nHosts dosyası yolu:\n{value2}',
@@ -510,13 +511,13 @@ TURKISH: dict[str, str] = {
     'count.server.other': '{count} sunucu',
     'count.value.one': '{count} değer',
     'count.value.other': '{count} değer',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'Abcdefghijklmnopqrstuvwxyz',
     'font_viewer.sample.pack_my_box': 'Pijamalı hasta, yağız şoföre çabucak güvendi.',
     'font_viewer.sample.quick_brown_fox': 'Jöle kıvamında beyaz şarap satan iflah olmaz çocuğu gördüm.',
     'font_viewer.sample.quick_zebras': 'Saf ve haydut kız çocuğu bin plaj görmüş.',
     'font_viewer.sample.symbols': "!@#$%^&&*()_+-=[]{}|;:',.<>?/`~",
-    'font_viewer.sample.uppercase': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    'font_viewer.sample.uppercase': string.ascii_uppercase,
     'json.fetch.asset_not_found': 'Varlık bulunamadı (silinmiş veya geçersiz ID)',
     'json.fetch.asset_private': 'Varlık gizli (erişim kısıtlaması aşılamadı)',
     'json.fetch.cannot_fetch': 'Alınamıyor: {value}',

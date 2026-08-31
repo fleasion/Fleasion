@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import struct
 from itertools import starmap
-from pathlib import Path  # ruff: ignore[typing-only-standard-library-import]
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from PIL import Image
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 KTX2_MAGIC = b'\xabKTX 20\xbb\r\n\x1a\n'
 VK_FORMAT_R8G8B8A8_UNORM = 37
@@ -71,7 +73,7 @@ def generate_rgba8_mip_chain(
     if width <= 0 or height <= 0:
         msg = f'invalid KTX2 dimensions {width}x{height}'
         raise ValueError(msg)
-    if mipmap_mode not in ('color', 'linear', 'normal'):  # ruff: ignore[literal-membership]
+    if mipmap_mode not in {'color', 'linear', 'normal'}:
         msg = f'unsupported mipmap mode: {mipmap_mode}'
         raise ValueError(msg)
 
@@ -238,17 +240,18 @@ def read_rgba8_ktx2_levels(data: bytes) -> tuple[list[bytes], int, int] | None:
     # levelCount as a single base level.
     effective_level_count = level_count or 1
     level_index_end = _KTX2_HEADER_SIZE + 24 * effective_level_count
-    if (
-        vk_format != VK_FORMAT_R8G8B8A8_UNORM  # ruff: ignore[too-many-boolean-expressions]
-        or type_size != 1
-        or width <= 0
-        or height <= 0
-        or depth != 0
-        or layer_count != 0
-        or face_count != 1
-        or effective_level_count > _full_mip_level_count(width, height)
-        or supercompression != 0
-        or level_index_end > len(data)
+    invalid_format = vk_format != VK_FORMAT_R8G8B8A8_UNORM or type_size != 1
+    invalid_dimensions = width <= 0 or height <= 0 or depth != 0 or layer_count != 0
+    invalid_layout = face_count != 1 or supercompression != 0
+    invalid_level_count = effective_level_count > _full_mip_level_count(width, height)
+    if any(
+        (
+            invalid_format,
+            invalid_dimensions,
+            invalid_layout,
+            invalid_level_count,
+            level_index_end > len(data),
+        )
     ):
         return None
 

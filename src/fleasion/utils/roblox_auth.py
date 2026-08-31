@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import contextlib
 import errno
+import importlib
 import json
 import os
 import re
@@ -13,16 +15,10 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import (
-    Callable,  # ruff: ignore[typing-only-standard-library-import]
-    Iterable,  # ruff: ignore[typing-only-standard-library-import]
-    Mapping,  # ruff: ignore[typing-only-standard-library-import]
-)
 from dataclasses import dataclass
-from http.cookiejar import Cookie  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from .linux_clients import SOBER_CLIENT, LinuxClientInstallation
 from .logging import log_buffer
@@ -31,22 +27,22 @@ from .secure_tokens import decrypt_token, encrypt_token
 
 
 class _Win32CryptLike(Protocol):
-    def CryptUnprotectData(  # ruff: ignore[invalid-function-name]
-        self,
-        data: bytes,
-        description: object,
-        optional_entropy: object,
-        reserved: object,
-        flags: int,
-    ) -> tuple[object, bytes]: ...
+    CryptUnprotectData: Callable[[bytes, object, object, object, int], tuple[object, bytes]]
+    CryptProtectData: Callable[[bytes, object, object, object, object, int], bytes]
 
 
 if TYPE_CHECKING:
+    from collections.abc import (
+        Callable,
+        Iterable,
+        Mapping,
+    )
+    from http.cookiejar import Cookie
     win32crypt: _Win32CryptLike | None
 else:
     try:
-        import win32crypt
-    except Exception:  # ruff: ignore[blind-except]
+        win32crypt = cast('_Win32CryptLike', importlib.import_module('win32crypt'))
+    except ImportError:
         win32crypt = None
 
 
@@ -76,6 +72,18 @@ class _BrowserCookieModule(Protocol):
     vivaldi: _BrowserLoader
 
 
+class _FernetCipher(Protocol):
+    def encrypt(self, data: bytes) -> bytes: ...
+
+    def decrypt(self, token: bytes) -> bytes: ...
+
+
+class _FernetFactory(Protocol):
+    def __call__(self, key: bytes) -> _FernetCipher: ...
+
+    def generate_key(self) -> bytes: ...
+
+
 if TYPE_CHECKING:
 
     def _json_object(value: object) -> JsonObject | None: ...
@@ -92,13 +100,24 @@ else:
         return value
 
     def _browser_cookie_module() -> _BrowserCookieModule:
-        import browser_cookie3  # ruff: ignore[import-outside-top-level]
-
-        return browser_cookie3
+        return cast('_BrowserCookieModule', importlib.import_module('browser_cookie3'))
 
 
-def _set_module_state(name: str, value: object) -> None:
+def _set_module_state(name: str, *, value: object) -> None:
     globals()[name] = value
+
+
+@dataclass(frozen=True, slots=True)
+class _BackendCallFailure:
+    error: Exception
+
+
+def _contain_backend_call[T](operation: Callable[[], T]) -> T | _BackendCallFailure:
+    """Contain failures from optional/platform backends without hiding BaseException."""
+    try:
+        return operation()
+    except Exception as exc:  # ruff: ignore[blind-except] - third-party/platform backends expose backend-specific errors
+        return _BackendCallFailure(exc)
 
 
 _SOBER_LOCAL_COOKIE_RELATIVE_PATH = Path('cookies')
@@ -227,10 +246,7 @@ def _extract_roblosecurity(cookie_text: str) -> str | None:
 def _parse_plaintext_roblosecurity(payload: bytes) -> str | None:
     """Extract a token from a backend-owned plaintext cookie payload."""
     for encoding in ('latin-1', 'utf-8'):
-        try:
-            cookie = _extract_roblosecurity(payload.decode(encoding, errors='ignore'))
-        except Exception:  # ruff: ignore[blind-except, try-except-continue]
-            continue
+        cookie = _extract_roblosecurity(payload.decode(encoding, errors='ignore'))
         if cookie:
             return cookie
     return None
@@ -462,74 +478,149 @@ def _rewrite_sober_cookie_header(cookie_text: str, cookie: str) -> str:
     return '; '.join(rewritten) + trailing_newline
 
 
+
+def _fsync_directory(path: Path) -> None:
+    directory_flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0)
+    directory_fd = os.open(path, directory_flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _linux_cookie_write_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_uid,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _unlink_if_present(path: Path) -> None:
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
+
+
+def _write_linux_cookie_temp_file(
+    path: Path, payload: bytes, original: os.stat_result
+) -> Path:
+    with contextlib.ExitStack() as stack:
+        fd, temp_name = tempfile.mkstemp(prefix=f'.{path.name}.fleasion-', dir=str(path.parent))
+        temp_path = Path(temp_name)
+        stack.callback(_unlink_if_present, temp_path)
+        with os.fdopen(fd, 'wb', closefd=True) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fchmod(handle.fileno(), stat.S_IMODE(original.st_mode))
+            os.fsync(handle.fileno())
+        stack.pop_all()
+    return temp_path
+
+
+def _replace_linux_cookie_temp_file(
+    path: Path, temp_path: Path, original: os.stat_result
+) -> None:
+    current = path.lstat()
+    if (
+        _linux_cookie_write_identity(current) != _linux_cookie_write_identity(original)
+        or not stat.S_ISREG(current.st_mode)
+    ):
+        msg = 'cookie_store_changed_during_write'
+        raise LinuxAuthWriteError(
+            msg,
+            "Sober's cookie store changed while Fleasion was preparing the account switch. "
+            'Nothing was replaced; try again.',
+        )
+
+    temp_path.replace(path)
+    try:
+        _fsync_directory(path.parent)
+    except OSError as exc:
+        _log_auth_failure(
+            f'linux-cookie-directory-fsync:{path}:{type(exc).__name__}',
+            f'Updated Sober cookie store but could not fsync its directory: {type(exc).__name__}',
+        )
+
+
 def _atomic_replace_linux_cookie_file(
     path: Path,
     payload: bytes,
     original: os.stat_result,
 ) -> None:
     temp_path: Path | None = None
-    fd = -1
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        fd, temp_name = tempfile.mkstemp(prefix=f'.{path.name}.fleasion-', dir=str(path.parent))
-        temp_path = Path(temp_name)
-        with os.fdopen(fd, 'wb', closefd=True) as handle:
-            fd = -1
-            handle.write(payload)
-            handle.flush()
-            os.fchmod(handle.fileno(), stat.S_IMODE(original.st_mode))
-            os.fsync(handle.fileno())
-
-        current = path.lstat()
-        original_identity = (
-            original.st_dev,
-            original.st_ino,
-            original.st_uid,
-            original.st_mode,
-            original.st_nlink,
-            original.st_size,
-            original.st_mtime_ns,
-        )
-        current_identity = (
-            current.st_dev,
-            current.st_ino,
-            current.st_uid,
-            current.st_mode,
-            current.st_nlink,
-            current.st_size,
-            current.st_mtime_ns,
-        )
-        if current_identity != original_identity or not stat.S_ISREG(current.st_mode):
-            msg = 'cookie_store_changed_during_write'
-            raise LinuxAuthWriteError(
-                msg,
-                "Sober's cookie store changed while Fleasion was preparing the account switch. "
-                'Nothing was replaced; try again.',
-            )
-
-        os.replace(temp_path, path)  # ruff: ignore[os-replace]
+    try:
+        temp_path = _write_linux_cookie_temp_file(path, payload, original)
+        _replace_linux_cookie_temp_file(path, temp_path, original)
         temp_path = None
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            directory_flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0)
-            directory_fd = os.open(path.parent, directory_flags)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except OSError as exc:
-            _log_auth_failure(
-                f'linux-cookie-directory-fsync:{path}:{type(exc).__name__}',
-                f'Updated Sober cookie store but could not fsync its directory: {type(exc).__name__}',
-            )
     except LinuxAuthWriteError:
         raise
     except OSError as exc:
         raise _linux_auth_os_error(exc) from exc
     finally:
-        if fd >= 0:
-            os.close(fd)
         if temp_path is not None:
-            with contextlib.suppress(OSError):
-                temp_path.unlink()
+            _unlink_if_present(temp_path)
+
+
+def _read_linux_cookie_payload(
+    path: Path,
+    metadata: os.stat_result,
+    source_name: str,
+) -> bytes:
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, 'rb', closefd=True) as handle:
+        opened = os.fstat(handle.fileno())
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            msg = 'cookie_store_changed_during_read'
+            raise LinuxAuthWriteError(
+                msg,
+                f'{source_name} local cookie store changed while it was being opened.',
+            )
+        return handle.read()
+
+
+def _linux_cookie_file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_uid,
+        metadata.st_mode,
+        metadata.st_nlink,
+    )
+
+
+def _read_linux_cookie_payload_for_write_unchecked(
+    path: Path,
+    metadata: os.stat_result,
+) -> tuple[bytes, os.stat_result]:
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, 'rb', closefd=True) as handle:
+        opened = os.fstat(handle.fileno())
+        if _linux_cookie_file_identity(opened) != _linux_cookie_file_identity(metadata):
+            msg = 'cookie_store_changed_during_read'
+            raise LinuxAuthWriteError(
+                msg,
+                "Sober's cookie store changed while Fleasion was opening it. "
+                'Nothing was modified; try again.',
+            )
+        return handle.read(), opened
+
+
+def _read_linux_cookie_payload_for_write(
+    path: Path,
+    metadata: os.stat_result,
+) -> tuple[bytes, os.stat_result]:
+    try:
+        return _read_linux_cookie_payload_for_write_unchecked(path, metadata)
+    except LinuxAuthWriteError:
+        raise
+    except OSError as exc:
+        raise _linux_auth_os_error(exc) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -560,131 +651,95 @@ class LinuxLocalAuthProvider:
             return True
         return not _sober_use_libsecret(config_path)
 
-    def read_roblosecurity(self, path: Path) -> str | None:  # ruff: ignore[too-many-return-statements]
+    def _read_payload_safely(self, path: Path) -> bytes | None:
         try:
-            if not self._plaintext_storage_allowed(path):
-                _log_auth_failure(
-                    f'linux-cookie-libsecret-enabled:{self.client_key}',
-                    f'{self.source_name} use_libsecret is enabled; plaintext local auth is ignored',
-                )
-                return None
+            plaintext_allowed = self._plaintext_storage_allowed(path)
         except LinuxAuthWriteError as exc:
             _log_auth_failure(
                 f'linux-cookie-config-read:{self.client_key}:{exc.code}',
                 f'Could not safely determine {self.source_name} local auth storage mode: {exc}',
             )
             return None
+        if not plaintext_allowed:
+            _log_auth_failure(
+                f'linux-cookie-libsecret-enabled:{self.client_key}',
+                f'{self.source_name} use_libsecret is enabled; plaintext local auth is ignored',
+            )
+            return None
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        try:
             metadata = _validate_linux_cookie_file(path)
-            flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
-            fd = os.open(path, flags)
-            with os.fdopen(fd, 'rb', closefd=True) as handle:
-                opened = os.fstat(handle.fileno())
-                if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
-                    msg = 'cookie_store_changed_during_read'
-                    raise LinuxAuthWriteError(
-                        msg,
-                        f'{self.source_name} local cookie store changed while it was being opened.',
-                    )
-                payload = handle.read()
+            return _read_linux_cookie_payload(path, metadata, self.source_name)
         except LinuxAuthWriteError as exc:
             _log_auth_failure(
                 f'linux-cookie-read-safe:{self.client_key}:{path}:{exc.code}',
                 f'Could not safely read {self.source_name} local cookie file: {exc}',
             )
-            return None
         except OSError as exc:
             _log_auth_failure(
                 f'linux-cookie-read:{self.client_key}:{path}:{type(exc).__name__}',
                 f'Failed to read {self.source_name} local cookie file at {path}: '
                 f'{type(exc).__name__}',
             )
+        return None
+
+    def read_roblosecurity(self, path: Path) -> str | None:
+        payload = self._read_payload_safely(path)
+        if payload is None:
             return None
-        try:
-            cookie = self.parse_payload(payload)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        parsed = _contain_backend_call(lambda: self.parse_payload(payload))
+        if isinstance(parsed, _BackendCallFailure):
+            parse_error = parsed.error
             _log_auth_failure(
-                f'linux-cookie-parse:{self.client_key}:{path}:{type(exc).__name__}',
+                f'linux-cookie-parse:{self.client_key}:{path}:{type(parse_error).__name__}',
                 f'Failed to parse {self.source_name} local cookie file at {path}: '
-                f'{type(exc).__name__}',
+                f'{type(parse_error).__name__}',
             )
             return None
-        if cookie:
-            return cookie
-        _log_auth_failure(
-            f'linux-cookie-not-found:{self.client_key}:{path}',
-            f'{self.source_name} local cookie file at {path} does not contain .ROBLOSECURITY',
-        )
-        return None
+        cookie = parsed
+        if not cookie:
+            _log_auth_failure(
+                f'linux-cookie-not-found:{self.client_key}:{path}',
+                f'{self.source_name} local cookie file at {path} does not contain .ROBLOSECURITY',
+            )
+        return cookie
+
+    def _write_roblosecurity_unlocked(self, path: Path, cookie: str) -> None:
+        if not self._plaintext_storage_allowed(path):
+            msg = 'libsecret_enabled'
+            raise LinuxAuthWriteError(
+                msg,
+                "Sober account switching is unavailable because Sober's use_libsecret "
+                'setting is enabled. Fleasion will not write your Roblox session token '
+                'to the plaintext cookie file.',
+            )
+
+        metadata = _validate_linux_cookie_file(path)
+        payload, opened = _read_linux_cookie_payload_for_write(path, metadata)
+        try:
+            cookie_text = payload.decode('utf-8')
+        except UnicodeDecodeError as exc:
+            msg = 'cookie_store_unknown_format'
+            raise LinuxAuthWriteError(
+                msg,
+                "Sober's cookie store has an unknown format. Fleasion did not modify it.",
+            ) from exc
+
+        updated_text = _rewrite_sober_cookie_header(cookie_text, cookie)
+        _atomic_replace_linux_cookie_file(path, updated_text.encode('utf-8'), opened)
 
     def write_roblosecurity(self, path: Path, cookie: str) -> bool:
         """Safely replace this client's plaintext .ROBLOSECURITY value."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        try:
             with _LINUX_AUTH_WRITE_LOCK:
-                if not self._plaintext_storage_allowed(path):
-                    msg = 'libsecret_enabled'
-                    raise LinuxAuthWriteError(
-                        msg,
-                        "Sober account switching is unavailable because Sober's use_libsecret "
-                        'setting is enabled. Fleasion will not write your Roblox session token '
-                        'to the plaintext cookie file.',
-                    )
-
-                metadata = _validate_linux_cookie_file(path)
-                flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
-                try:
-                    fd = os.open(path, flags)
-                except OSError as exc:
-                    raise _linux_auth_os_error(exc) from exc
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    with os.fdopen(fd, 'rb', closefd=True) as handle:
-                        opened = os.fstat(handle.fileno())
-                        opened_identity = (
-                            opened.st_dev,
-                            opened.st_ino,
-                            opened.st_uid,
-                            opened.st_mode,
-                            opened.st_nlink,
-                        )
-                        metadata_identity = (
-                            metadata.st_dev,
-                            metadata.st_ino,
-                            metadata.st_uid,
-                            metadata.st_mode,
-                            metadata.st_nlink,
-                        )
-                        if opened_identity != metadata_identity:
-                            msg = 'cookie_store_changed_during_read'
-                            raise LinuxAuthWriteError(
-                                msg,
-                                "Sober's cookie store changed while Fleasion was opening it. "
-                                'Nothing was modified; try again.',
-                            )
-                        payload = handle.read()
-                except LinuxAuthWriteError:
-                    raise
-                except OSError as exc:
-                    raise _linux_auth_os_error(exc) from exc
-
-                try:
-                    cookie_text = payload.decode('utf-8')
-                except UnicodeDecodeError as exc:
-                    msg = 'cookie_store_unknown_format'
-                    raise LinuxAuthWriteError(
-                        msg,
-                        "Sober's cookie store has an unknown format. Fleasion did not modify it.",
-                    ) from exc
-
-                updated_text = _rewrite_sober_cookie_header(cookie_text, cookie)
-                _atomic_replace_linux_cookie_file(path, updated_text.encode('utf-8'), opened)
-            return True  # ruff: ignore[try-consider-else]
+                self._write_roblosecurity_unlocked(path, cookie)
         except LinuxAuthWriteError as exc:
             _log_auth_failure(
                 f'linux-cookie-write:{self.client_key}:{path}:{exc.code}',
                 f'Could not update {self.source_name} local auth cookie: {exc}',
             )
             raise
+        return True
 
 
 SOBER_LOCAL_AUTH_PROVIDER = LinuxLocalAuthProvider(
@@ -746,6 +801,10 @@ def _normalise_key(path: Path) -> str:
     return os.path.normcase(str(_safe_resolve(path)))
 
 
+def _environment_value(name: str, default: str = '') -> str:
+    return os.environ.get(name, default)
+
+
 def _path_exists(path: Path) -> bool:
     try:
         return path.exists()
@@ -755,18 +814,19 @@ def _path_exists(path: Path) -> bool:
 
 def _selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve only the configured Linux client; discovery reads no auth data."""
-    from .platform_linux import (  # ruff: ignore[import-outside-top-level]
-        get_selected_linux_client_installation,
+    platform_linux = importlib.import_module('.platform_linux', package=__package__)
+    get_selected = cast(
+        'Callable[[], LinuxClientInstallation | None]',
+        platform_linux.get_selected_linux_client_installation,
     )
-
-    return get_selected_linux_client_installation()
+    return get_selected()
 
 
 def _selected_linux_local_auth_candidate() -> tuple[LinuxLocalAuthProvider, Path] | None:
     """Return the selected client's opt-in local auth provider and path."""
     try:
         installation = _selected_linux_client_installation()
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (AttributeError, ImportError, OSError, RuntimeError, ValueError) as exc:
         _log_auth_failure(
             f'linux-auth-provider-selection:{type(exc).__name__}',
             'Could not resolve the selected Linux Roblox client auth provider: '
@@ -789,6 +849,25 @@ def _add_candidate(
         return
     seen.add(key)
     candidates.append((source, path))
+
+
+
+def _scan_user_profile_cookie_candidates(
+    users_root: Path, candidates: list[tuple[str, Path]], seen: set[str]
+) -> None:
+    with os.scandir(users_root) as entries:
+        for entry in entries:
+            try:
+                is_directory = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_directory:
+                _add_candidate(
+                    candidates,
+                    seen,
+                    'all-users',
+                    Path(entry.path) / _ROBLOX_COOKIE_RELATIVE_PATH,
+                )
 
 
 def _iter_user_profile_cookie_candidates() -> list[tuple[str, Path]]:
@@ -821,25 +900,13 @@ def _iter_user_profile_cookie_candidates() -> list[tuple[str, Path]]:
     if home:
         _add_candidate(candidates, seen, 'Path.home', home / _ROBLOX_COOKIE_RELATIVE_PATH)
 
-    system_drive = (os.environ.get('SystemDrive') or 'C:').strip().rstrip('\\/')  # ruff: ignore[uncapitalized-environment-variables]
+    system_drive = (_environment_value('SystemDrive', 'C:') or 'C:').strip().rstrip('\\/')
     if re.fullmatch(r'[A-Za-z]:', system_drive):
         users_root = Path(f'{system_drive}/') / 'Users'
     else:
         users_root = Path(system_drive) / 'Users'
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        with os.scandir(users_root) as entries:
-            for entry in entries:
-                try:
-                    if not entry.is_dir(follow_symlinks=False):
-                        continue
-                except OSError:
-                    continue
-                _add_candidate(
-                    candidates,
-                    seen,
-                    'all-users',
-                    Path(entry.path) / _ROBLOX_COOKIE_RELATIVE_PATH,
-                )
+    try:
+        _scan_user_profile_cookie_candidates(users_root, candidates, seen)
     except OSError as exc:
         _log_auth_failure(
             f'user-scan:{users_root}:{type(exc).__name__}',
@@ -849,28 +916,31 @@ def _iter_user_profile_cookie_candidates() -> list[tuple[str, Path]]:
     return candidates
 
 
-def _read_cookie_payload(path: Path) -> tuple[JsonObject, bytes] | None:  # ruff: ignore[too-many-return-statements]
+def _read_cookie_json(path: Path) -> JsonObject | None:
     if not _path_exists(path):
         _log_auth_failure(
             f'missing:{path}',
             f'RobloxCookies.dat not found at {path}',
         )
         return None
-
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        with path.open('r', encoding='utf-8') as f:
-            data_value: object = json.load(f)
-            data = _json_object(data_value)
-            if data is None:
-                msg = 'RobloxCookies.dat root must be an object'
-                raise ValueError(msg)
-    except Exception as exc:  # ruff: ignore[blind-except]
+    try:
+        data_value: object = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         _log_auth_failure(
             f'json:{path}:{type(exc).__name__}',
             f'Failed to read RobloxCookies.dat at {path}: {type(exc).__name__}: {exc}',
         )
         return None
+    data = _json_object(data_value)
+    if data is None:
+        _log_auth_failure(
+            f'json:{path}:ValueError',
+            f'Failed to read RobloxCookies.dat at {path}: root must be an object',
+        )
+    return data
 
+
+def _decode_cookie_data(path: Path, data: JsonObject) -> bytes | None:
     cookies_data = data.get('CookiesData')
     if not cookies_data:
         _log_auth_failure(
@@ -878,16 +948,19 @@ def _read_cookie_payload(path: Path) -> tuple[JsonObject, bytes] | None:  # ruff
             f'RobloxCookies.dat at {path} does not contain CookiesData',
         )
         return None
-
     try:
-        enc = base64.b64decode(_base64_source(cookies_data))
-    except Exception as exc:  # ruff: ignore[blind-except]
+        return base64.b64decode(_base64_source(cookies_data))
+    except (binascii.Error, TypeError, ValueError) as exc:
         _log_auth_failure(
             f'base64:{path}:{type(exc).__name__}',
             f'Failed to decode RobloxCookies.dat CookiesData at {path}: {type(exc).__name__}: {exc}',
         )
         return None
 
+
+def _decrypt_cookie_data(
+    path: Path, data: JsonObject, encrypted: bytes
+) -> tuple[JsonObject, bytes] | None:
     if win32crypt is None:
         if sys.platform == 'darwin':
             _log_auth_failure(
@@ -899,44 +972,47 @@ def _read_cookie_payload(path: Path) -> tuple[JsonObject, bytes] | None:  # ruff
                 'win32crypt-unavailable',
                 'Could not read Roblox auth cookie: pywin32/win32crypt is unavailable',
             )
-        return data, enc
-
-    try:
-        dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-    except Exception as exc:  # ruff: ignore[blind-except]
+        return data, encrypted
+    crypt = win32crypt
+    decrypted = _contain_backend_call(
+        lambda: crypt.CryptUnprotectData(encrypted, None, None, None, 0)[1]
+    )
+    if isinstance(decrypted, _BackendCallFailure):
+        decrypt_error = decrypted.error
         _log_auth_failure(
-            f'dpapi:{path}:{type(exc).__name__}:{exc}',
-            f'Failed to decrypt RobloxCookies.dat at {path}: {type(exc).__name__}: {exc}',
+            f'dpapi:{path}:{type(decrypt_error).__name__}:{decrypt_error}',
+            f'Failed to decrypt RobloxCookies.dat at {path}: '
+            f'{type(decrypt_error).__name__}: {decrypt_error}',
         )
         return None
+    return data, decrypted
 
-    return data, dec
+
+def _read_cookie_payload(path: Path) -> tuple[JsonObject, bytes] | None:
+    data = _read_cookie_json(path)
+    if data is None:
+        return None
+    encrypted = _decode_cookie_data(path, data)
+    if encrypted is None:
+        return None
+    return _decrypt_cookie_data(path, data, encrypted)
 
 
 def _get_roblosecurity_from_path(cookie_path: Path) -> str | None:
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        payload = _read_cookie_payload(cookie_path)
-        if payload is None:
-            return None
-        _data, dec = payload
-        # Use latin-1 first for a lossless byte-to-text mapping; fall back just
-        # in case Roblox changes the plaintext encoding.
-        for encoding in ('latin-1', 'utf-8'):
-            try:
-                cookie = _extract_roblosecurity(dec.decode(encoding, errors='ignore'))
-                if cookie:
-                    return cookie
-            except Exception:  # ruff: ignore[blind-except, try-except-continue]
-                continue
-        _log_auth_failure(
-            f'not-found:{cookie_path}',
-            f'Decrypted RobloxCookies.dat at {cookie_path}, but .ROBLOSECURITY was not found',
-        )
-    except Exception as exc:  # ruff: ignore[blind-except]
-        _log_auth_failure(
-            f'unexpected-read:{cookie_path}:{type(exc).__name__}:{exc}',
-            f'Unexpected error while reading Roblox auth cookie at {cookie_path}: {type(exc).__name__}: {exc}',
-        )
+    payload = _read_cookie_payload(cookie_path)
+    if payload is None:
+        return None
+    _data, dec = payload
+    # Use latin-1 first for a lossless byte-to-text mapping; fall back just
+    # in case Roblox changes the plaintext encoding
+    for encoding in ('latin-1', 'utf-8'):
+        cookie = _extract_roblosecurity(dec.decode(encoding, errors='ignore'))
+        if cookie:
+            return cookie
+    _log_auth_failure(
+        f'not-found:{cookie_path}',
+        f'Decrypted RobloxCookies.dat at {cookie_path}, but .ROBLOSECURITY was not found',
+    )
     return None
 
 
@@ -946,11 +1022,10 @@ def get_auth_failure_details() -> dict[str, object]:
 
 
 def _mark_auth_cookie_available(cookie: str) -> None:
-    global _AUTH_READY_COOKIE  # ruff: ignore[global-variable-not-assigned]
     if not cookie:
         return
     with _AUTH_READY_CONDITION:
-        _set_module_state('_AUTH_READY_COOKIE', cookie)
+        _set_module_state('_AUTH_READY_COOKIE', value=cookie)
         _AUTH_READY_CONDITION.notify_all()
 
 
@@ -975,37 +1050,42 @@ def wait_for_roblosecurity(
             _AUTH_READY_CONDITION.wait(timeout=max(0.25, retry_interval))
 
 
-def _get_macos_browser_auth_cipher(create: bool = True):
+def _load_browser_auth_key(create: bool, generate_key: Callable[[], bytes]) -> bytes | None:
+    key_path = _BROWSER_AUTH_CACHE_KEY_FILE
+    if key_path.exists():
+        return key_path.read_bytes().strip()
+    if not create:
+        return None
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key = generate_key()
+    flags = getattr(os, 'O_WRONLY', 1) | getattr(os, 'O_CREAT', 64) | getattr(os, 'O_EXCL', 128)
+    fd = os.open(key_path, flags, 0o600)
+    with os.fdopen(fd, 'wb') as handle:
+        handle.write(key)
+    return key
+
+
+def _get_macos_browser_auth_cipher(create: bool = True) -> _FernetCipher | None:
     if sys.platform != 'darwin':
         return None
     try:
-        from cryptography.fernet import Fernet  # ruff: ignore[import-outside-top-level]
-    except Exception as exc:  # ruff: ignore[blind-except]
+        fernet_module = importlib.import_module('cryptography.fernet')
+        fernet: _FernetFactory = fernet_module.Fernet
+    except ImportError as exc:
         _log_auth_failure(
             f'browser-auth-cache-crypto:{type(exc).__name__}',
             f'macOS browser auth cache encryption is unavailable: {type(exc).__name__}: {exc}',
         )
         return None
 
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        key_path = _BROWSER_AUTH_CACHE_KEY_FILE
-        if not key_path.exists():
-            if not create:
-                return None
-            key_path.parent.mkdir(parents=True, exist_ok=True)
-            key = Fernet.generate_key()
-            flags = (
-                getattr(os, 'O_WRONLY', 1) | getattr(os, 'O_CREAT', 64) | getattr(os, 'O_EXCL', 128)
-            )
-            fd = os.open(key_path, flags, 0o600)
-            with os.fdopen(fd, 'wb') as f:
-                f.write(key)
-        else:
-            key = key_path.read_bytes().strip()
+    try:
+        key = _load_browser_auth_key(create, fernet.generate_key)
+        if key is None:
+            return None
         with contextlib.suppress(OSError):
-            os.chmod(key_path, 0o600)  # ruff: ignore[os-chmod]
-        return Fernet(key)
-    except Exception as exc:  # ruff: ignore[blind-except]
+            _BROWSER_AUTH_CACHE_KEY_FILE.chmod(0o600)
+        return fernet(key)
+    except (OSError, TypeError, ValueError) as exc:
         _log_auth_failure(
             f'browser-auth-cache-key:{type(exc).__name__}:{exc}',
             f'macOS browser auth cache key failed: {type(exc).__name__}: {exc}',
@@ -1013,37 +1093,39 @@ def _get_macos_browser_auth_cipher(create: bool = True):
         return None
 
 
+def _roblox_authenticated_status(cookie: str) -> int:
+    requests = importlib.import_module('requests')
+    session = requests.Session()
+    session.trust_env = False
+    session.proxies = {}
+    try:
+        session.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
+    except (TypeError, ValueError):
+        session.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+    response = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+    return int(response.status_code)
+
+
 def _validate_roblosecurity(cookie: str) -> bool | None:
     """Return True/False for validation, or None when validation is inconclusive."""
-    global _LAST_BROWSER_AUTH_VALIDATION_DETAIL  # ruff: ignore[global-variable-not-assigned]
-
     if not cookie:
-        _set_module_state('_LAST_BROWSER_AUTH_VALIDATION_DETAIL', 'empty-cookie')
+        _set_module_state('_LAST_BROWSER_AUTH_VALIDATION_DETAIL', value='empty-cookie')
         return False
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        import requests  # ruff: ignore[import-outside-top-level]
-
-        sess = requests.Session()
-        sess.trust_env = False
-        sess.proxies = {}
-        try:
-            sess.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
-        except Exception:  # ruff: ignore[blind-except]
-            sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-        resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-        _set_module_state('_LAST_BROWSER_AUTH_VALIDATION_DETAIL', f'HTTP {resp.status_code}')
-        if resp.status_code == 200:
-            return True
-        if resp.status_code in (401, 403):  # ruff: ignore[literal-membership]
-            return False
-        return None  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
-        _set_module_state('_LAST_BROWSER_AUTH_VALIDATION_DETAIL', f'{type(exc).__name__}: {exc}')
+    try:
+        status_code = _roblox_authenticated_status(cookie)
+    except (ImportError, OSError, TypeError, ValueError) as exc:
+        _set_module_state('_LAST_BROWSER_AUTH_VALIDATION_DETAIL', value=f'{type(exc).__name__}: {exc}')
         _log_auth_failure(
             f'browser-auth-cache-validate:{type(exc).__name__}',
             f'Could not validate cached Roblox browser login: {type(exc).__name__}: {exc}',
         )
         return None
+    _set_module_state('_LAST_BROWSER_AUTH_VALIDATION_DETAIL', value=f'HTTP {status_code}')
+    if status_code == 200:
+        return True
+    if status_code in {401, 403}:
+        return False
+    return None
 
 
 def validate_roblosecurity_for_import(cookie: str) -> tuple[bool, str]:
@@ -1067,7 +1149,6 @@ def get_last_browser_auth_error_details() -> dict[str, object]:
 def _set_browser_auth_error_details(
     source: str, exc: Exception, *, cookie_file: Path | str | None = None
 ) -> None:
-    global _LAST_BROWSER_AUTH_ERROR_DETAILS  # ruff: ignore[global-variable-not-assigned]
 
     permission_error = isinstance(exc, PermissionError)
     blocked_file = str(cookie_file or getattr(exc, 'filename', '') or '')
@@ -1078,44 +1159,48 @@ def _set_browser_auth_error_details(
         'cookie_file': blocked_file,
         'full_disk_access_required': bool(source == 'Safari' and permission_error),
     }
-    _set_module_state('_LAST_BROWSER_AUTH_ERROR_DETAILS', browser_error_details)
+    _set_module_state('_LAST_BROWSER_AUTH_ERROR_DETAILS', value=browser_error_details)
 
 
 def _get_configured_macos_auth_source() -> str:
     if sys.platform != 'darwin':
         return ''
     try:
-        with CONFIG_FILE.open('r', encoding='utf-8') as f:
-            settings = json.load(f)
-    except Exception:  # ruff: ignore[blind-except]
+        settings = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return ''
     source = str(settings.get('macos_auth_source') or '')
     valid = {'', 'manual', *_MACOS_AUTH_BROWSER_NAMES}
     return source if source in valid else ''
 
 
+
+def _write_manual_auth_token(cookie: str) -> None:
+    _MANUAL_AUTH_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        'version': 1,
+        'token': encrypt_token(cookie, _MANUAL_AUTH_TOKEN_KEY_FILE),
+    }
+    _MANUAL_AUTH_TOKEN_FILE.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    with contextlib.suppress(OSError):
+        _MANUAL_AUTH_TOKEN_FILE.chmod(0o600)
+    _mark_auth_cookie_available(cookie)
+
+
 def store_manual_roblosecurity(cookie: str) -> bool:
     """Store a manually imported Roblox token encrypted for local reuse."""
     if not cookie or not cookie.strip():
         return False
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        _MANUAL_AUTH_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            'version': 1,
-            'token': encrypt_token(cookie.strip(), _MANUAL_AUTH_TOKEN_KEY_FILE),
-        }
-        with _MANUAL_AUTH_TOKEN_FILE.open('w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2)
-        with contextlib.suppress(OSError):
-            os.chmod(_MANUAL_AUTH_TOKEN_FILE, 0o600)  # ruff: ignore[os-chmod]
-        _mark_auth_cookie_available(cookie.strip())
-        return True  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
+    write_result = _contain_backend_call(lambda: _write_manual_auth_token(cookie.strip()))
+    if isinstance(write_result, _BackendCallFailure):
+        write_error = write_result.error
         _log_auth_failure(
-            f'manual-auth-token-write:{type(exc).__name__}:{exc}',
-            f'Could not store manually imported Roblox token: {type(exc).__name__}: {exc}',
+            f'manual-auth-token-write:{type(write_error).__name__}:{write_error}',
+            'Could not store manually imported Roblox token: '
+            f'{type(write_error).__name__}: {write_error}',
         )
         return False
+    return True
 
 
 def get_manual_roblosecurity() -> str | None:
@@ -1123,19 +1208,21 @@ def get_manual_roblosecurity() -> str | None:
     if not _MANUAL_AUTH_TOKEN_FILE.exists():
         return None
     try:
-        with _MANUAL_AUTH_TOKEN_FILE.open('r', encoding='utf-8') as f:
-            payload = json.load(f)
-        token_payload = str(payload.get('token') or '')
-        if not token_payload:
-            return None
-        cookie = decrypt_token(token_payload, _MANUAL_AUTH_TOKEN_KEY_FILE)
-        return cookie.strip() if cookie else None
-    except Exception as exc:  # ruff: ignore[blind-except]
+        payload_value: object = json.loads(_MANUAL_AUTH_TOKEN_FILE.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         _log_auth_failure(
             f'manual-auth-token-read:{type(exc).__name__}:{exc}',
             f'Could not read manually imported Roblox token: {type(exc).__name__}: {exc}',
         )
         return None
+    payload = _json_object(payload_value)
+    if payload is None:
+        return None
+    token_payload = str(payload.get('token') or '')
+    if not token_payload:
+        return None
+    cookie = decrypt_token(token_payload, _MANUAL_AUTH_TOKEN_KEY_FILE)
+    return cookie.strip() if cookie else None
 
 
 def _delete_cached_browser_roblosecurity() -> None:
@@ -1146,27 +1233,24 @@ def _delete_cached_browser_roblosecurity() -> None:
 def _log_browser_auth_cache_state(
     state: str, message: str, *, block_automatic_import: bool = False
 ) -> None:
-    global _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT  # ruff: ignore[global-variable-not-assigned]
 
-    _set_module_state('_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT', block_automatic_import)
+    _set_module_state('_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT', value=block_automatic_import)
     _log_auth_failure(f'browser-auth-cache-state:{state}', f'Browser auth cache state: {message}')
 
 
-def _read_cached_browser_roblosecurity(*, delete_invalid: bool = True) -> tuple[str | None, str]:  # ruff: ignore[too-many-return-statements]
-    global _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT  # ruff: ignore[global-variable-not-assigned]
-
+def _browser_auth_cache_cipher() -> _FernetCipher | None:
     if sys.platform != 'darwin':
-        return None, ''
+        return None
     if not _BROWSER_AUTH_CACHE_FILE.exists():
         _log_browser_auth_cache_state('no-cache', 'no encrypted browser login cache exists')
-        return None, ''
+        return None
     if not _BROWSER_AUTH_CACHE_KEY_FILE.exists():
         _log_browser_auth_cache_state(
             'missing-key',
             'encrypted browser login cache exists but its key file is missing; preserving cache',
             block_automatic_import=True,
         )
-        return None, ''
+        return None
 
     cipher = _get_macos_browser_auth_cipher(create=False)
     if cipher is None:
@@ -1175,11 +1259,14 @@ def _read_cached_browser_roblosecurity(*, delete_invalid: bool = True) -> tuple[
             'encrypted browser login cache key could not be loaded; preserving cache',
             block_automatic_import=True,
         )
-        return None, ''
+        return None
+    return cipher
 
+
+def _read_browser_auth_cache_fields() -> tuple[str, str] | None:
     try:
         with _BROWSER_AUTH_CACHE_FILE.open('r', encoding='utf-8') as f:
-            payload = json.load(f)
+            payload = cast('JsonObject', json.load(f))
     except json.JSONDecodeError as exc:
         _log_auth_failure(
             f'browser-auth-cache-json:{type(exc).__name__}:{exc}',
@@ -1190,7 +1277,7 @@ def _read_cached_browser_roblosecurity(*, delete_invalid: bool = True) -> tuple[
             'encrypted browser login cache is malformed; preserving cache and skipping automatic browser prompt',
             block_automatic_import=True,
         )
-        return None, ''
+        return None
     except OSError as exc:
         _log_auth_failure(
             f'browser-auth-cache-read-io:{type(exc).__name__}:{exc}',
@@ -1201,42 +1288,32 @@ def _read_cached_browser_roblosecurity(*, delete_invalid: bool = True) -> tuple[
             'encrypted browser login cache could not be read; preserving cache and skipping automatic browser prompt',
             block_automatic_import=True,
         )
-        return None, ''
+        return None
 
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        source = str(payload.get('source') or '')
-        if source not in _PERSISTENT_BROWSER_AUTH_SOURCES:
-            _log_browser_auth_cache_state(
-                'validation-inconclusive',
-                f'cache source {source or "(missing)"} is not eligible for automatic reuse; preserving cache',
-                block_automatic_import=True,
-            )
-            return None, ''
-        encrypted = str(payload.get('cookie') or '')
-        if not encrypted:
-            _log_browser_auth_cache_state(
-                'validation-inconclusive',
-                'encrypted browser login cache has no cookie payload; preserving cache',
-                block_automatic_import=True,
-            )
-            return None, ''
-        cookie = cipher.decrypt(encrypted.encode('ascii')).decode('utf-8').strip()
-    except Exception as exc:  # ruff: ignore[blind-except]
-        _log_auth_failure(
-            f'browser-auth-cache-decrypt:{type(exc).__name__}:{exc}',
-            f'Browser auth cache state: decrypt failed; preserving cache ({type(exc).__name__}: {exc})',
-        )
+    source = str(payload.get('source') or '')
+    if source not in _PERSISTENT_BROWSER_AUTH_SOURCES:
         _log_browser_auth_cache_state(
-            'decrypt-failed',
-            'encrypted browser login cache decrypt failed; preserving cache and skipping automatic browser prompt',
+            'validation-inconclusive',
+            f'cache source {source or "(missing)"} is not eligible for automatic reuse; preserving cache',
             block_automatic_import=True,
         )
-        return None, ''
+        return None
+    encrypted = str(payload.get('cookie') or '')
+    if not encrypted:
+        _log_browser_auth_cache_state(
+            'validation-inconclusive',
+            'encrypted browser login cache has no cookie payload; preserving cache',
+            block_automatic_import=True,
+        )
+        return None
+    return source, encrypted
 
+
+def _cached_browser_cookie_is_valid(cookie: str, source: str, *, delete_invalid: bool) -> bool:
     validation = _validate_roblosecurity(cookie)
     if validation is False:
         detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'invalid'
-        _set_module_state('_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT', False)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_module_state('_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT', value=False)
         if delete_invalid:
             _delete_cached_browser_roblosecurity()
             log_buffer.log(
@@ -1248,21 +1325,50 @@ def _read_cached_browser_roblosecurity(*, delete_invalid: bool = True) -> tuple[
                 'validation-invalid',
                 f'validation invalid ({detail}); preserving cache for startup or explicit import',
             )
-        return None, ''
+        return False
     if validation is not True:
-        _set_module_state('_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT', False)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_module_state('_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT', value=False)
         detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'inconclusive'
         log_buffer.log(
             'Auth',
             f'Browser auth cache state: validation inconclusive ({detail}); cached Roblox browser login was not reused',
         )
-        return None, ''
+        return False
 
     detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'valid'
-    _set_module_state('_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT', False)  # ruff: ignore[boolean-positional-value-in-call]
+    _set_module_state('_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT', value=False)
     log_buffer.log('Auth', f'Browser auth cache state: cache reused from {source} ({detail})')
-
     _LAST_AUTH_FAILURE_DETAILS.clear()
+    return True
+
+
+def _read_cached_browser_roblosecurity(*, delete_invalid: bool = True) -> tuple[str | None, str]:
+    cipher = _browser_auth_cache_cipher()
+    if cipher is None:
+        return None, ''
+    fields = _read_browser_auth_cache_fields()
+    if fields is None:
+        return None, ''
+    source, encrypted = fields
+
+    fernet_module = importlib.import_module('cryptography.fernet')
+    invalid_token = cast('type[Exception]', fernet_module.InvalidToken)
+    try:
+        cookie = cipher.decrypt(encrypted.encode('ascii')).decode('utf-8').strip()
+    except (invalid_token, UnicodeError, ValueError) as exc:
+        _log_auth_failure(
+            f'browser-auth-cache-decrypt:{type(exc).__name__}:{exc}',
+            f'Browser auth cache state: decrypt failed; preserving cache ({type(exc).__name__}: {exc})',
+        )
+        _log_browser_auth_cache_state(
+            'decrypt-failed',
+            'encrypted browser login cache decrypt failed; preserving cache and skipping automatic browser prompt',
+            block_automatic_import=True,
+        )
+        return None, ''
+
+    if not _cached_browser_cookie_is_valid(cookie, source, delete_invalid=delete_invalid):
+        return None, ''
     return cookie, source
 
 
@@ -1272,23 +1378,33 @@ def _write_cached_browser_roblosecurity(cookie: str, source: str) -> None:
     cipher = _get_macos_browser_auth_cipher()
     if cipher is None:
         return
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
+    encrypted_cookie = _contain_backend_call(
+        lambda: cipher.encrypt(cookie.encode('utf-8')).decode('ascii')
+    )
+    if isinstance(encrypted_cookie, _BackendCallFailure):
+        encrypt_error = encrypted_cookie.error
+        _log_auth_failure(
+            f'browser-auth-cache-write:{type(encrypt_error).__name__}:{encrypt_error}',
+            f'Could not cache Roblox browser login: {type(encrypt_error).__name__}: {encrypt_error}',
+        )
+        return
+    payload = {
+        'version': 1,
+        'source': source,
+        'cached_at': int(time.time()),
+        'cookie': encrypted_cookie,
+    }
+    try:
         _BROWSER_AUTH_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            'version': 1,
-            'source': source,
-            'cached_at': int(time.time()),
-            'cookie': cipher.encrypt(cookie.encode('utf-8')).decode('ascii'),
-        }
-        with _BROWSER_AUTH_CACHE_FILE.open('w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2)
-        with contextlib.suppress(OSError):
-            os.chmod(_BROWSER_AUTH_CACHE_FILE, 0o600)  # ruff: ignore[os-chmod]
-    except Exception as exc:  # ruff: ignore[blind-except]
+        _BROWSER_AUTH_CACHE_FILE.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    except OSError as exc:
         _log_auth_failure(
             f'browser-auth-cache-write:{type(exc).__name__}:{exc}',
             f'Could not cache Roblox browser login: {type(exc).__name__}: {exc}',
         )
+        return
+    with contextlib.suppress(OSError):
+        _BROWSER_AUTH_CACHE_FILE.chmod(0o600)
 
 
 def _macos_browser_cookie_files(source: str) -> list[Path]:
@@ -1368,17 +1484,19 @@ def _make_browser_cookie_loader(source: str, loader: _BrowserLoader) -> _Browser
         first_error: Exception | None = None
         errors: list[str] = []
         for candidate_file in cookie_files:
-            try:
-                jar = loader(
+            jar = _contain_backend_call(
+                lambda candidate_file=candidate_file: loader(
                     cookie_file=str(candidate_file),
                     domain_name=domain_name,
                     key_file=key_file,
                 )
-            except Exception as exc:  # ruff: ignore[blind-except]
-                _set_browser_auth_error_details(source, exc, cookie_file=candidate_file)
+            )
+            if isinstance(jar, _BackendCallFailure):
+                load_error = jar.error
+                _set_browser_auth_error_details(source, load_error, cookie_file=candidate_file)
                 if first_error is None:
-                    first_error = exc
-                errors.append(f'{candidate_file}: {type(exc).__name__}: {exc}')
+                    first_error = load_error
+                errors.append(f'{candidate_file}: {type(load_error).__name__}: {load_error}')
                 continue
             loaded_any = True
             combined.extend(jar)
@@ -1441,7 +1559,39 @@ def _candidate_roblosecurity_values(jar: Iterable[Cookie], now: float) -> list[s
     return values
 
 
-def discover_browser_roblosecurity(  # ruff: ignore[too-many-return-statements]
+def _browser_discovery_preflight(
+    *, include_keychain: bool, explicit_import: bool, browser: str | None
+) -> tuple[bool, tuple[str | None, str]]:
+    if (
+        not explicit_import
+        and _BROWSER_COOKIE_CACHE
+        and (not browser or browser == _BROWSER_COOKIE_SOURCE)
+    ):
+        return True, (_BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE)
+
+    if not explicit_import:
+        cached_cookie, cached_source = _read_cached_browser_roblosecurity(
+            delete_invalid=include_keychain
+        )
+        if cached_cookie and (not browser or browser == cached_source):
+            _set_module_state('_BROWSER_COOKIE_CACHE', value=cached_cookie)
+            _set_module_state('_BROWSER_COOKIE_SOURCE', value=cached_source)
+            return True, (cached_cookie, cached_source)
+
+    if include_keychain and _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT and not explicit_import:
+        log_buffer.log(
+            'Auth',
+            'Skipping automatic browser login prompt because encrypted cache recovery was inconclusive; use Import Browser Login to re-import explicitly',
+        )
+        return True, (None, '')
+    if not explicit_import and not include_keychain and _BROWSER_AUTO_DISCOVERY_ATTEMPTED:
+        return True, (None, '')
+    if not explicit_import and not include_keychain:
+        _set_module_state('_BROWSER_AUTO_DISCOVERY_ATTEMPTED', value=True)
+    return False, (None, '')
+
+
+def discover_browser_roblosecurity(
     include_keychain: bool = False,
     *,
     explicit_import: bool = False,
@@ -1453,43 +1603,26 @@ def discover_browser_roblosecurity(  # ruff: ignore[too-many-return-statements]
     Safari are only queried when ``include_keychain`` is True because macOS may
     ask the user to approve Safe Storage or browser-data access.
     """
-    global _BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE, _BROWSER_AUTO_DISCOVERY_ATTEMPTED  # ruff: ignore[global-variable-not-assigned]
 
     if browser is not None and browser not in _MACOS_AUTH_BROWSER_NAMES:
         return None, ''
 
     with _BROWSER_DISCOVERY_LOCK:
-        if (
-            not explicit_import
-            and _BROWSER_COOKIE_CACHE
-            and (not browser or browser == _BROWSER_COOKIE_SOURCE)
-        ):
-            return _BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE
-        if not explicit_import:
-            cached_cookie, cached_source = _read_cached_browser_roblosecurity(
-                delete_invalid=include_keychain
-            )
-            if cached_cookie and (not browser or browser == cached_source):
-                _set_module_state('_BROWSER_COOKIE_CACHE', cached_cookie)
-                _set_module_state('_BROWSER_COOKIE_SOURCE', cached_source)
-                return cached_cookie, cached_source
-        if include_keychain and _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT and not explicit_import:
-            log_buffer.log(
-                'Auth',
-                'Skipping automatic browser login prompt because encrypted cache recovery was inconclusive; use Import Browser Login to re-import explicitly',
-            )
-            return None, ''
-        if not explicit_import and not include_keychain and _BROWSER_AUTO_DISCOVERY_ATTEMPTED:
-            return None, ''
-        if not explicit_import and not include_keychain:
-            _set_module_state('_BROWSER_AUTO_DISCOVERY_ATTEMPTED', True)  # ruff: ignore[boolean-positional-value-in-call]
+        handled, result = _browser_discovery_preflight(
+            include_keychain=include_keychain,
+            explicit_import=explicit_import,
+            browser=browser,
+        )
+        if handled:
+            return result
 
-        try:
-            loaders = _browser_cookie_loaders(include_keychain)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        loaders = _contain_backend_call(lambda: _browser_cookie_loaders(include_keychain))
+        if isinstance(loaders, _BackendCallFailure):
+            loader_error = loaders.error
             _log_auth_failure(
-                f'browser-cookie-library:{type(exc).__name__}',
-                f'Browser cookie discovery is unavailable: {type(exc).__name__}: {exc}',
+                f'browser-cookie-library:{type(loader_error).__name__}',
+                'Browser cookie discovery is unavailable: '
+                f'{type(loader_error).__name__}: {loader_error}',
             )
             return None, ''
         if browser:
@@ -1497,14 +1630,18 @@ def discover_browser_roblosecurity(  # ruff: ignore[too-many-return-statements]
 
         now = time.time()
         for source, loader in loaders:
-            try:
-                jar = loader(domain_name='roblox.com')
-                candidates = _candidate_roblosecurity_values(jar, now)
-            except Exception as exc:  # ruff: ignore[blind-except]
-                _set_browser_auth_error_details(source, exc)
+            candidates = _contain_backend_call(
+                lambda loader=loader: _candidate_roblosecurity_values(
+                    loader(domain_name='roblox.com'), now
+                )
+            )
+            if isinstance(candidates, _BackendCallFailure):
+                browser_error = candidates.error
+                _set_browser_auth_error_details(source, browser_error)
                 _log_auth_failure(
-                    f'browser-cookie:{source}:{type(exc).__name__}:{exc}',
-                    f'Could not read Roblox browser login from {source}: {type(exc).__name__}: {exc}',
+                    f'browser-cookie:{source}:{type(browser_error).__name__}:{browser_error}',
+                    f'Could not read Roblox browser login from {source}: '
+                    f'{type(browser_error).__name__}: {browser_error}',
                 )
                 continue
 
@@ -1525,8 +1662,8 @@ def discover_browser_roblosecurity(  # ruff: ignore[too-many-return-statements]
                             f'Browser login discovered from {source} was not valid ({detail}); skipping',
                         )
                         continue
-                _set_module_state('_BROWSER_COOKIE_CACHE', cookie)
-                _set_module_state('_BROWSER_COOKIE_SOURCE', source)
+                _set_module_state('_BROWSER_COOKIE_CACHE', value=cookie)
+                _set_module_state('_BROWSER_COOKIE_SOURCE', value=source)
                 _LAST_AUTH_FAILURE_DETAILS.clear()
                 log_buffer.log(
                     'Auth',
@@ -1538,7 +1675,98 @@ def discover_browser_roblosecurity(  # ruff: ignore[too-many-return-statements]
     return None, ''
 
 
-def get_roblosecurity(  # ruff: ignore[too-many-return-statements]
+def _get_explicit_roblosecurity(path: Path) -> str | None:
+    if sys.platform.startswith('linux'):
+        candidate = _selected_linux_local_auth_candidate()
+        if candidate is not None and path == candidate[1]:
+            return candidate[0].read_roblosecurity(candidate[1])
+    return _get_roblosecurity_from_path(path)
+
+
+def _discover_local_roblosecurity(attempted: list[str], existing: list[str]) -> str | None:
+    if sys.platform.startswith('linux'):
+        candidate = _selected_linux_local_auth_candidate()
+        if candidate is not None:
+            provider, cookie_path = candidate
+            attempted.append(str(cookie_path))
+            if _path_exists(cookie_path):
+                existing.append(str(cookie_path))
+            cookie = provider.read_roblosecurity(cookie_path)
+            if cookie:
+                _set_module_state('_SUCCESSFUL_COOKIE_PATH', value=cookie_path)
+                _set_module_state('_LAST_AUTH_FAILURE_DETAILS', value={})
+                _mark_auth_cookie_available(cookie)
+                return cookie
+
+    if _SUCCESSFUL_COOKIE_PATH is not None and not sys.platform.startswith('linux'):
+        attempted.append(str(_SUCCESSFUL_COOKIE_PATH))
+        cookie = _get_roblosecurity_from_path(_SUCCESSFUL_COOKIE_PATH)
+        if cookie:
+            _mark_auth_cookie_available(cookie)
+            return cookie
+        _set_module_state('_SUCCESSFUL_COOKIE_PATH', value=None)
+
+    for source, cookie_path in _iter_user_profile_cookie_candidates():
+        attempted.append(str(cookie_path))
+        if source == 'all-users' and not _path_exists(cookie_path):
+            continue
+        if _path_exists(cookie_path):
+            existing.append(str(cookie_path))
+
+        cookie = _get_roblosecurity_from_path(cookie_path)
+        if not cookie:
+            continue
+        _set_module_state('_SUCCESSFUL_COOKIE_PATH', value=cookie_path)
+        if cookie_path != ROBLOX_COOKIES_PATH:
+            _log_auth_failure(
+                f'fallback-success:{cookie_path}',
+                f'Using Roblox auth cookie discovered from {source}: {cookie_path}',
+            )
+        _set_module_state('_LAST_AUTH_FAILURE_DETAILS', value={})
+        _mark_auth_cookie_available(cookie)
+        return cookie
+    return None
+
+
+def _discover_platform_roblosecurity(
+    *, include_keychain_browsers: bool
+) -> tuple[str | None, str]:
+    cookie: str | None = None
+    browser_source = ''
+
+    if sys.platform == 'darwin':
+        auth_source = _get_configured_macos_auth_source()
+        if auth_source == 'manual':
+            browser_source = 'manual'
+            manual_cookie = get_manual_roblosecurity()
+            if manual_cookie:
+                valid, detail = validate_roblosecurity_for_import(manual_cookie)
+                if valid:
+                    cookie = manual_cookie
+                else:
+                    log_buffer.log(
+                        'Auth',
+                        f'Manual Roblox token was not valid ({detail}); not using it',
+                    )
+        elif auth_source:
+            cookie, browser_source = discover_browser_roblosecurity(
+                include_keychain=include_keychain_browsers,
+                browser=auth_source,
+            )
+        else:
+            cookie, browser_source = discover_browser_roblosecurity(include_keychain=False)
+    elif sys.platform.startswith('linux'):
+        cookie, browser_source = discover_browser_roblosecurity(
+            include_keychain=include_keychain_browsers,
+        )
+
+    if cookie:
+        _set_module_state('_LAST_AUTH_FAILURE_DETAILS', value={})
+        _mark_auth_cookie_available(cookie)
+    return cookie, browser_source
+
+
+def get_roblosecurity(
     path: Path | None = None, *, include_keychain_browsers: bool = False
 ) -> str | None:
     """Return the .ROBLOSECURITY cookie value from a Roblox cookie store.
@@ -1549,101 +1777,21 @@ def get_roblosecurity(  # ruff: ignore[too-many-return-statements]
     browser-style .ROBLOSECURITY cookie. Set ``include_keychain_browsers`` for
     an explicit user-facing macOS browser permission request.
     """
-    global _SUCCESSFUL_COOKIE_PATH, _LAST_AUTH_FAILURE_DETAILS  # ruff: ignore[global-variable-not-assigned]
 
     if path is not None:
-        if sys.platform.startswith('linux'):
-            candidate = _selected_linux_local_auth_candidate()
-            if candidate is not None and Path(path) == candidate[1]:
-                return candidate[0].read_roblosecurity(candidate[1])
-        return _get_roblosecurity_from_path(Path(path))
+        return _get_explicit_roblosecurity(Path(path))
 
     attempted: list[str] = []
     existing: list[str] = []
+    cookie = _discover_local_roblosecurity(attempted, existing)
+    if cookie:
+        return cookie
 
-    if sys.platform.startswith('linux'):
-        candidate = _selected_linux_local_auth_candidate()
-        if candidate is not None:
-            provider, cookie_path = candidate
-            attempted.append(str(cookie_path))
-            if _path_exists(cookie_path):
-                existing.append(str(cookie_path))
-            cookie = provider.read_roblosecurity(cookie_path)
-            if cookie:
-                _set_module_state('_SUCCESSFUL_COOKIE_PATH', cookie_path)
-                _set_module_state('_LAST_AUTH_FAILURE_DETAILS', {})
-                _mark_auth_cookie_available(cookie)
-                return cookie
-
-    if _SUCCESSFUL_COOKIE_PATH is not None and not sys.platform.startswith('linux'):
-        attempted.append(str(_SUCCESSFUL_COOKIE_PATH))
-        cookie = _get_roblosecurity_from_path(_SUCCESSFUL_COOKIE_PATH)
-        if cookie:
-            _mark_auth_cookie_available(cookie)
-            return cookie
-        _set_module_state('_SUCCESSFUL_COOKIE_PATH', None)
-
-    for source, cookie_path in _iter_user_profile_cookie_candidates():
-        attempted.append(str(cookie_path))
-        if source == 'all-users' and not _path_exists(cookie_path):
-            continue
-        if _path_exists(cookie_path):
-            existing.append(str(cookie_path))
-
-        cookie = _get_roblosecurity_from_path(cookie_path)
-        if cookie:
-            _set_module_state('_SUCCESSFUL_COOKIE_PATH', cookie_path)
-            if cookie_path != ROBLOX_COOKIES_PATH:
-                _log_auth_failure(
-                    f'fallback-success:{cookie_path}',
-                    f'Using Roblox auth cookie discovered from {source}: {cookie_path}',
-                )
-            _set_module_state('_LAST_AUTH_FAILURE_DETAILS', {})
-            _mark_auth_cookie_available(cookie)
-            return cookie
-
-    if sys.platform == 'darwin':
-        auth_source = _get_configured_macos_auth_source()
-        if auth_source == 'manual':
-            manual_cookie = get_manual_roblosecurity()
-            browser_source = 'manual'
-            if manual_cookie:
-                valid, detail = validate_roblosecurity_for_import(manual_cookie)
-                if valid:
-                    _set_module_state('_LAST_AUTH_FAILURE_DETAILS', {})
-                    _mark_auth_cookie_available(manual_cookie)
-                    return manual_cookie
-                log_buffer.log(
-                    'Auth',
-                    f'Manual Roblox token was not valid ({detail}); not using it',
-                )
-        elif auth_source:
-            browser_cookie, browser_source = discover_browser_roblosecurity(
-                include_keychain=include_keychain_browsers,
-                browser=auth_source,
-            )
-            if browser_cookie:
-                _set_module_state('_LAST_AUTH_FAILURE_DETAILS', {})
-                _mark_auth_cookie_available(browser_cookie)
-                return browser_cookie
-        else:
-            browser_cookie, browser_source = discover_browser_roblosecurity(
-                include_keychain=False,
-            )
-            if browser_cookie:
-                _set_module_state('_LAST_AUTH_FAILURE_DETAILS', {})
-                _mark_auth_cookie_available(browser_cookie)
-                return browser_cookie
-    elif sys.platform.startswith('linux'):
-        browser_cookie, browser_source = discover_browser_roblosecurity(
-            include_keychain=include_keychain_browsers,
-        )
-        if browser_cookie:
-            _set_module_state('_LAST_AUTH_FAILURE_DETAILS', {})
-            _mark_auth_cookie_available(browser_cookie)
-            return browser_cookie
-    else:
-        browser_source = ''
+    browser_cookie, browser_source = _discover_platform_roblosecurity(
+        include_keychain_browsers=include_keychain_browsers
+    )
+    if browser_cookie:
+        return browser_cookie
 
     failure_details: dict[str, object] = {
         'local_appdata': str(LOCAL_APPDATA),
@@ -1655,7 +1803,7 @@ def get_roblosecurity(  # ruff: ignore[too-many-return-statements]
         'existing_paths': existing,
         'browser_source': browser_source,
     }
-    _set_module_state('_LAST_AUTH_FAILURE_DETAILS', failure_details)
+    _set_module_state('_LAST_AUTH_FAILURE_DETAILS', value=failure_details)
     _log_auth_failure(
         'all-cookie-candidates-failed',
         (
@@ -1664,6 +1812,29 @@ def get_roblosecurity(  # ruff: ignore[too-many-return-statements]
         ),
     )
     return None
+
+
+def _write_windows_roblosecurity(cookie_path: Path, cookie: str) -> bool:
+    if win32crypt is None:
+        return False
+    payload = _read_cookie_payload(cookie_path)
+    if payload is None:
+        return False
+
+    data, dec = payload
+    cookie_text = dec.decode('latin-1')
+    new_text, _count = _replace_roblosecurity(cookie_text, cookie)
+    new_enc = win32crypt.CryptProtectData(new_text.encode('latin-1'), None, None, None, None, 0)
+    data['CookiesData'] = base64.b64encode(new_enc).decode('ascii')
+    restore_read_only = _path_is_read_only(cookie_path)
+    _clear_read_only(cookie_path)
+    try:
+        with cookie_path.open('w', encoding='utf-8') as handle:
+            json.dump(data, handle)
+    finally:
+        if restore_read_only:
+            _restore_read_only(cookie_path)
+    return True
 
 
 def set_roblosecurity(cookie: str, path: Path | None = None) -> bool:
@@ -1692,28 +1863,13 @@ def set_roblosecurity(cookie: str, path: Path | None = None) -> bool:
             f'Cannot update Roblox auth storage at {cookie_path} on this platform',
         )
         return False
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        payload = _read_cookie_payload(cookie_path)
-        if payload is None:
-            return False
-
-        data, dec = payload
-        cookie_text = dec.decode('latin-1')
-        new_text, _count = _replace_roblosecurity(cookie_text, cookie)
-        new_enc = win32crypt.CryptProtectData(new_text.encode('latin-1'), None, None, None, None, 0)
-        data['CookiesData'] = base64.b64encode(new_enc).decode('ascii')
-        restore_read_only = _path_is_read_only(cookie_path)
-        _clear_read_only(cookie_path)
-        try:
-            with cookie_path.open('w', encoding='utf-8') as f:
-                json.dump(data, f)
-        finally:
-            if restore_read_only:
-                _restore_read_only(cookie_path)
-        return True  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
+    result = _contain_backend_call(lambda: _write_windows_roblosecurity(cookie_path, cookie))
+    if isinstance(result, _BackendCallFailure):
+        write_error = result.error
         _log_auth_failure(
-            f'write:{cookie_path}:{type(exc).__name__}:{exc}',
-            f'Failed to write Roblox auth cookie at {cookie_path}: {type(exc).__name__}: {exc}',
+            f'write:{cookie_path}:{type(write_error).__name__}:{write_error}',
+            f'Failed to write Roblox auth cookie at {cookie_path}: '
+            f'{type(write_error).__name__}: {write_error}',
         )
         return False
+    return result

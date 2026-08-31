@@ -18,7 +18,7 @@ import sys
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from PySide6.QtCore import QObject, Signal
 
@@ -28,6 +28,14 @@ from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_v
 from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, MODIFIER_MASK
 
 type HotkeyBinding = dict[str, int | str]
+
+
+class _DisabledConfigLike(Protocol):
+    custom_fflag_disabled: list[str]
+
+
+class _RefreshProxyLike(Protocol):
+    def refresh_custom_fflag_interception(self) -> None: ...
 
 
 class _SignalLike(Protocol):
@@ -74,11 +82,11 @@ else:
         disabled = getattr(config, 'custom_fflag_disabled', []) or []
         return [str(value) for value in disabled]
 
-    def _set_config_disabled(config: object, values: list[str]) -> None:
-        setattr(config, 'custom_fflag_disabled', values)  # ruff: ignore[set-attr-with-constant]
+    def _set_config_disabled(config: _DisabledConfigLike, values: list[str]) -> None:
+        config.custom_fflag_disabled = values
 
-    def _refresh_proxy(proxy: object) -> None:
-        getattr(proxy, 'refresh_custom_fflag_interception')()  # ruff: ignore[get-attr-with-constant]
+    def _refresh_proxy(proxy: _RefreshProxyLike) -> None:
+        proxy.refresh_custom_fflag_interception()
 
 
 # ``struct input_event`` on Linux.  Native alignment keeps this correct for
@@ -250,13 +258,13 @@ echo "Installed Fleasion Linux keybind permissions for $target_user."
 
 def modifier_mask_for_evdev_code(code: int) -> int:
     """Return the generic modifier represented by an evdev key code."""
-    if code in (_KEY_LEFTSHIFT, _KEY_RIGHTSHIFT):  # ruff: ignore[literal-membership]
+    if code in {_KEY_LEFTSHIFT, _KEY_RIGHTSHIFT}:
         return MOD_SHIFT
-    if code in (_KEY_LEFTCTRL, _KEY_RIGHTCTRL):  # ruff: ignore[literal-membership]
+    if code in {_KEY_LEFTCTRL, _KEY_RIGHTCTRL}:
         return MOD_CTRL
-    if code in (_KEY_LEFTALT, _KEY_RIGHTALT):  # ruff: ignore[literal-membership]
+    if code in {_KEY_LEFTALT, _KEY_RIGHTALT}:
         return MOD_ALT
-    if code in (_KEY_LEFTMETA, _KEY_RIGHTMETA):  # ruff: ignore[literal-membership]
+    if code in {_KEY_LEFTMETA, _KEY_RIGHTMETA}:
         return MOD_WIN
     return 0
 
@@ -268,11 +276,16 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
         return None
     kind = binding_map.get('kind', 'key')
     modifiers = binding_map.get('modifiers', 0)
-    if not isinstance(modifiers, int) or isinstance(modifiers, bool) or modifiers & ~MODIFIER_MASK:
+    if (
+        not isinstance(kind, str)
+        or not isinstance(modifiers, int)
+        or isinstance(modifiers, bool)
+        or modifiers & ~MODIFIER_MASK
+    ):
         return None
     if kind == 'mouse_wheel':
         direction = binding_map.get('direction')
-        if direction not in ('up', 'down'):  # ruff: ignore[literal-membership]
+        if not isinstance(direction, str) or direction not in {'up', 'down'}:
             return None
         return {
             'platform': 'linux_evdev',
@@ -281,14 +294,18 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
             'modifiers': modifiers,
         }
     scan_code = binding_map.get('scan_code')
-    if (
-        kind not in ('key', 'mouse_button')  # ruff: ignore[literal-membership, too-many-boolean-expressions]
-        or not isinstance(scan_code, int)
+    invalid_kind = kind not in {'key', 'mouse_button'}
+    invalid_scan_code = (
+        not isinstance(scan_code, int)
         or isinstance(scan_code, bool)
         or not 0 < scan_code <= 0x2FF
-        or (kind == 'mouse_button' and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114))  # ruff: ignore[literal-membership]
-    ):
+    )
+    invalid_mouse_button = (
+        kind == 'mouse_button' and scan_code not in {0x110, 0x111, 0x112, 0x113, 0x114}
+    )
+    if invalid_kind or invalid_scan_code or invalid_mouse_button:
         return None
+    scan_code = cast('int', scan_code)
     result: HotkeyBinding = {
         'platform': 'linux_evdev',
         'scan_code': scan_code,
@@ -458,7 +475,7 @@ class LinuxHotkeyService(QObject):
             try:
                 raw = os.read(fd, _INPUT_EVENT.size * 16)
             except OSError as exc:
-                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):  # ruff: ignore[literal-membership]
+                if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
                     return
                 self._drop_device(fd, exc)
                 return
@@ -468,7 +485,7 @@ class LinuxHotkeyService(QObject):
             complete_size = len(raw) - len(raw) % _INPUT_EVENT.size
             for offset in range(0, complete_size, _INPUT_EVENT.size):
                 _, _, event_type, code, value = _INPUT_EVENT.unpack_from(raw, offset)
-                if event_type == _EV_KEY and value in (0, 1):  # ruff: ignore[literal-membership]
+                if event_type == _EV_KEY and value in {0, 1}:
                     self._set_key_state(fd, code, value == 1)
                 elif event_type == _EV_REL and code == _REL_WHEEL and value:
                     self._handle_wheel(value)

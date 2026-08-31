@@ -122,10 +122,10 @@ def interleave_u64(values: list[int]) -> bytes:
     """Byte-interleave unsigned 64-bit integers."""
     count = len(values)
     out = bytearray(count * 8)
-    for i, v in enumerate(values):
-        v &= 0xFFFF_FFFF_FFFF_FFFF  # ruff: ignore[redefined-loop-name]
+    for i, value in enumerate(values):
+        masked = value & 0xFFFF_FFFF_FFFF_FFFF
         for byte_idx in range(8):
-            out[byte_idx * count + i] = (v >> (56 - byte_idx * 8)) & 0xFF
+            out[byte_idx * count + i] = (masked >> (56 - byte_idx * 8)) & 0xFF
     return bytes(out)
 
 

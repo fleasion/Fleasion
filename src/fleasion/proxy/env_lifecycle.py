@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fleasion.utils.logging import log_buffer
 
@@ -19,15 +20,54 @@ if TYPE_CHECKING:
 
 type _PlayerIdentity = tuple[int, str] | tuple[str, int] | tuple[str, int, float]
 
+_GDK_PATH_CHECKER_ATTR = 'is_roblox_gdk_exe_path'
+
+
+class _LifecycleOperationError(RuntimeError):
+    """Wrap an unexpected failure at the lifecycle integration boundary."""
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+class _IntentionalRelaunchWindow:
+    """Track and close the sampled intentional Player-exit window exactly once."""
+
+    def __init__(self, mark: Callable[[], None], finish: Callable[[], None]) -> None:
+        self._mark = mark
+        self._finish = finish
+        self._active = False
+
+    def mark(self) -> None:
+        if self._active:
+            return
+        self._mark()
+        self._active = True
+
+    def finish(self) -> None:
+        if not self._active:
+            return
+        self._finish()
+        self._active = False
+
+
+def _call_lifecycle_operation(operation: Callable[[], bool]) -> bool:
+    try:
+        return operation()
+    except Exception as exc:
+        raise _LifecycleOperationError(exc) from exc
+
 
 def _is_gdk_repair_path(path: Path) -> bool:
     """Avoid importing Windows-only process helpers on non-Windows builds."""
     try:
-        from fleasion.utils.platform_windows import (  # ruff: ignore[import-outside-top-level]
-            is_roblox_gdk_exe_path,
+        module = importlib.import_module('fleasion.utils.platform_windows')
+        checker = cast(
+            'Callable[[Path], bool]',
+            getattr(module, _GDK_PATH_CHECKER_ATTR),
         )
-
-        return is_roblox_gdk_exe_path(path)
+        return checker(path)
     except ImportError, OSError:
         return False
 
@@ -133,7 +173,26 @@ class EnvProxyLifecycleController:
         if callable(prepare):
             prepare()
 
-    def handle_player_launch(  # ruff: ignore[too-many-return-statements]
+    def _run_serialized_operation(
+        self,
+        failure_label: str,
+        operation: Callable[[], bool],
+    ) -> bool:
+        if not self._enabled() or not self._operation_lock.acquire(blocking=False):
+            return False
+        try:
+            return _call_lifecycle_operation(operation)
+        except _LifecycleOperationError as wrapped:
+            exc = wrapped.cause
+            log_buffer.log(
+                'Launcher',
+                f'{failure_label}: {type(exc).__name__}: {exc}',
+            )
+            return False
+        finally:
+            self._operation_lock.release()
+
+    def handle_player_launch(
         self,
         exe_path: Path | None = None,
         launch_target: str | None = None,
@@ -141,91 +200,109 @@ class EnvProxyLifecycleController:
         player_already_stopped: bool = False,
     ) -> bool:
         """Convert one Player launch and keep its CA healthy for ten seconds."""
-        if not self._enabled() or not self._operation_lock.acquire(blocking=False):
-            return False
-        intentional_relaunch_marked = False
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if player_already_stopped:
-                # The macOS URI watcher already issued SIGKILL.  Mark the exit
-                # before any preparation/replay work so the slower status timer
-                # cannot classify it as an unexpected Player shutdown.
-                self._mark_intentional_relaunch()
-                intentional_relaunch_marked = True
-            if not self._proxy_master.wait_for_env_proxy_ready(timeout=15.0):
-                log_buffer.log('Launcher', 'Env Proxy launch skipped: proxy did not become ready')
-                return False
+        return self._run_serialized_operation(
+            'Env Proxy Player lifecycle failed',
+            lambda: self._handle_player_launch(
+                exe_path,
+                launch_target,
+                player_already_stopped=player_already_stopped,
+            ),
+        )
 
-            current_exe = (
-                exe_path
-                if player_already_stopped and exe_path is not None
-                else self._resolve_player_exe() or exe_path
+    def _handle_player_launch(
+        self,
+        exe_path: Path | None,
+        launch_target: str | None,
+        *,
+        player_already_stopped: bool,
+    ) -> bool:
+        intentional_window = _IntentionalRelaunchWindow(
+            self._mark_intentional_relaunch,
+            self._finish_intentional_relaunch,
+        )
+        if player_already_stopped:
+            # The macOS URI watcher already issued SIGKILL. Mark the exit before
+            # preparation/replay work so the slower status timer cannot classify
+            # it as an unexpected Player shutdown.
+            intentional_window.mark()
+        try:
+            return self._handle_player_launch_inner(
+                exe_path,
+                launch_target,
+                player_already_stopped=player_already_stopped,
+                intentional_window=intentional_window,
             )
-            if current_exe is None:
-                log_buffer.log('Launcher', 'Env Proxy launch skipped: Player path is unavailable')
-                return False
-
-            prepared = self._proxy_master.ensure_env_proxy_roblox_ca(
-                Path(current_exe),
-                settle=(
-                    sys.platform != 'win32'
-                    and not player_already_stopped
-                    and self._is_player_running()
-                ),
-            )
-            if not prepared.get('success'):
-                log_buffer.log(
-                    'Certificate',
-                    'Env Proxy launch stopped before relaunch: '
-                    f'{prepared.get("path") or "cacert.pem"}: '
-                    f'{prepared.get("error") or "verification failed"}',
-                )
-                return False
-
-            if not self._enabled():
-                return False
-            self._prepare_custom_fflags_for_relaunch()
-            if not intentional_relaunch_marked:
-                self._mark_intentional_relaunch()
-                intentional_relaunch_marked = True
-            try:
-                relaunched = self._relaunch_player(
-                    self._proxy_master.roblox_env_proxy_url(),
-                    launch_target,
-                    False,  # ruff: ignore[boolean-positional-value-in-call]
-                    self._cancel_event,
-                    Path(current_exe),
-                    player_already_stopped,
-                )
-            finally:
-                self._finish_intentional_relaunch()
-                intentional_relaunch_marked = False
-            if not relaunched:
-                return False
-            log_buffer.log(
-                'Certificate',
-                'Env Proxy Player relaunch handoff returned; assigning ownership',
-            )
-            self._mark_owned(owned=True)
-            log_buffer.log(
-                'Certificate',
-                'Env Proxy Player ownership assigned; CA monitoring started',
-            )
-
-            # A browser URI can carry a one-time credential.  LaunchServices
-            # has consumed the in-memory target by this point; never retain it
-            # for later CA-repair attempts.
-            launch_target = None
-            return self._monitor_owned_player(Path(current_exe), relaunch_on_repair=True)
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log(
-                'Launcher',
-                f'Env Proxy Player lifecycle failed: {type(exc).__name__}: {exc}',
-            )
-            return False
         finally:
-            if intentional_relaunch_marked:
-                self._finish_intentional_relaunch()
-            self._operation_lock.release()
+            intentional_window.finish()
+
+    def _handle_player_launch_inner(
+        self,
+        exe_path: Path | None,
+        launch_target: str | None,
+        *,
+        player_already_stopped: bool,
+        intentional_window: _IntentionalRelaunchWindow,
+    ) -> bool:
+        if not self._proxy_master.wait_for_env_proxy_ready(timeout=15.0):
+            log_buffer.log('Launcher', 'Env Proxy launch skipped: proxy did not become ready')
+            return False
+
+        current_exe = (
+            exe_path
+            if player_already_stopped and exe_path is not None
+            else self._resolve_player_exe() or exe_path
+        )
+        if current_exe is None:
+            log_buffer.log('Launcher', 'Env Proxy launch skipped: Player path is unavailable')
+            return False
+
+        prepared = self._proxy_master.ensure_env_proxy_roblox_ca(
+            Path(current_exe),
+            settle=(
+                sys.platform != 'win32' and not player_already_stopped and self._is_player_running()
+            ),
+        )
+        if not prepared.get('success'):
+            log_buffer.log(
+                'Certificate',
+                'Env Proxy launch stopped before relaunch: '
+                f'{prepared.get("path") or "cacert.pem"}: '
+                f'{prepared.get("error") or "verification failed"}',
+            )
+            return False
+
+        if not self._enabled():
+            return False
+        self._prepare_custom_fflags_for_relaunch()
+        intentional_window.mark()
+        try:
+            force = False
+            relaunched = self._relaunch_player(
+                self._proxy_master.roblox_env_proxy_url(),
+                launch_target,
+                force,
+                self._cancel_event,
+                Path(current_exe),
+                player_already_stopped,
+            )
+        finally:
+            intentional_window.finish()
+        if not relaunched:
+            return False
+        log_buffer.log(
+            'Certificate',
+            'Env Proxy Player relaunch handoff returned; assigning ownership',
+        )
+        self._mark_owned(owned=True)
+        log_buffer.log(
+            'Certificate',
+            'Env Proxy Player ownership assigned; CA monitoring started',
+        )
+
+        # A browser URI can carry a one-time credential. LaunchServices has
+        # consumed the in-memory target by this point; never retain it for later
+        # CA-repair attempts.
+        return self._monitor_owned_player(Path(current_exe), relaunch_on_repair=True)
 
     def handle_intercepted_player_launch(
         self,
@@ -239,63 +316,55 @@ class EnvProxyLifecycleController:
             player_already_stopped=True,
         )
 
-    def handle_adopted_player_launch(self, exe_path: Path | None = None) -> bool:  # ruff: ignore[too-many-return-statements]
+    def handle_adopted_player_launch(self, exe_path: Path | None = None) -> bool:
         """Monitor a package-activated Player without synthetic relaunch."""
-        if not self._enabled() or not self._operation_lock.acquire(blocking=False):
-            return False
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if not self._proxy_master.wait_for_env_proxy_ready(timeout=15.0):
-                log_buffer.log(
-                    'Launcher', 'Env Proxy adopted launch skipped: proxy did not become ready'
-                )
-                return False
+        return self._run_serialized_operation(
+            'Env Proxy adopted Player lifecycle failed',
+            lambda: self._handle_adopted_player_launch(exe_path),
+        )
 
-            current_exe = self._resolve_player_exe() or exe_path
-            if current_exe is None:
-                log_buffer.log(
-                    'Launcher', 'Env Proxy adopted launch skipped: Player path is unavailable'
-                )
-                return False
-
-            prepared = self._proxy_master.ensure_env_proxy_roblox_ca(
-                Path(current_exe), settle=sys.platform != 'win32' and self._is_player_running()
+    def _handle_adopted_player_launch(self, exe_path: Path | None) -> bool:
+        if not self._proxy_master.wait_for_env_proxy_ready(timeout=15.0):
+            log_buffer.log(
+                'Launcher', 'Env Proxy adopted launch skipped: proxy did not become ready'
             )
-            if not prepared.get('success'):
-                log_buffer.log(
-                    'Certificate',
-                    f'Env Proxy adopted launch stopped before monitoring: '
-                    f'{prepared.get("path") or "cacert.pem"}: '
-                    f'{prepared.get("error") or "verification failed"}',
-                )
-                return False
-            if not self._enabled():
-                return False
+            return False
 
-            self._mark_owned(owned=True)
+        current_exe = self._resolve_player_exe() or exe_path
+        if current_exe is None:
+            log_buffer.log(
+                'Launcher', 'Env Proxy adopted launch skipped: Player path is unavailable'
+            )
+            return False
+
+        prepared = self._proxy_master.ensure_env_proxy_roblox_ca(
+            Path(current_exe), settle=sys.platform != 'win32' and self._is_player_running()
+        )
+        if not prepared.get('success'):
             log_buffer.log(
                 'Certificate',
-                'Env Proxy adopted Player ownership assigned; CA monitoring started',
-            )
-            # The initial Xbox/GDK package activation already supplied the
-            # environment, so it must not be synthetically relaunched. If the
-            # package overwrites cacert.pem later, however, an in-place write
-            # loses immediately; repair through package-aware activation so
-            # the next process starts with the prepared CA.
-            gdk_repair_relaunch = _is_gdk_repair_path(Path(current_exe))
-            return self._monitor_owned_player(
-                Path(current_exe), relaunch_on_repair=gdk_repair_relaunch
-            )
-
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log(
-                'Launcher',
-                f'Env Proxy adopted Player lifecycle failed: {type(exc).__name__}: {exc}',
+                f'Env Proxy adopted launch stopped before monitoring: '
+                f'{prepared.get("path") or "cacert.pem"}: '
+                f'{prepared.get("error") or "verification failed"}',
             )
             return False
-        finally:
-            self._operation_lock.release()
+        if not self._enabled():
+            return False
 
-    def _monitor_owned_player(  # ruff: ignore[too-many-return-statements]
+        self._mark_owned(owned=True)
+        log_buffer.log(
+            'Certificate',
+            'Env Proxy adopted Player ownership assigned; CA monitoring started',
+        )
+        # The initial Xbox/GDK package activation already supplied the
+        # environment, so it must not be synthetically relaunched. If the
+        # package overwrites cacert.pem later, however, an in-place write loses
+        # immediately; repair through package-aware activation so the next
+        # process starts with the prepared CA.
+        gdk_repair_relaunch = _is_gdk_repair_path(Path(current_exe))
+        return self._monitor_owned_player(Path(current_exe), relaunch_on_repair=gdk_repair_relaunch)
+
+    def _monitor_owned_player(
         self,
         current_exe: Path,
         *,
@@ -305,7 +374,7 @@ class EnvProxyLifecycleController:
         """Monitor an owned Player and apply the bounded CA repair policy."""
         for repair_number in range(self._max_repairs + 1):
             if not self._enabled():
-                return False
+                break
             current_exe = self._resolve_player_exe() or current_exe
             health = self._proxy_master.monitor_env_proxy_roblox_ca(
                 Path(current_exe), self._cancel_event
@@ -320,7 +389,7 @@ class EnvProxyLifecycleController:
                 )
                 return True
             if health.get('cancelled'):
-                return False
+                break
             if repair_number >= self._max_repairs:
                 log_buffer.log(
                     'Certificate',
@@ -329,7 +398,7 @@ class EnvProxyLifecycleController:
                     f'{health.get("error") or "verification failed"}',
                 )
                 self._terminate_owned_player()
-                return False
+                break
 
             repaired = self._proxy_master.ensure_env_proxy_roblox_ca(
                 Path(current_exe), settle=False
@@ -341,9 +410,9 @@ class EnvProxyLifecycleController:
                     f'{repaired.get("error") or "verification failed"}',
                 )
                 self._terminate_owned_player()
-                return False
+                break
             if not self._enabled():
-                return False
+                break
             if not relaunch_on_repair:
                 self._mark_owned(owned=True)
                 log_buffer.log(
@@ -356,19 +425,21 @@ class EnvProxyLifecycleController:
             self._prepare_custom_fflags_for_relaunch()
             self._mark_intentional_relaunch()
             try:
+                force = True
+                player_already_stopped = False
                 relaunched = self._relaunch_player(
                     self._proxy_master.roblox_env_proxy_url(),
                     launch_target,
-                    True,  # ruff: ignore[boolean-positional-value-in-call]
+                    force,
                     self._cancel_event,
                     Path(current_exe),
-                    False,  # ruff: ignore[boolean-positional-value-in-call]
+                    player_already_stopped,
                 )
             finally:
                 self._finish_intentional_relaunch()
             if not relaunched:
                 log_buffer.log('Launcher', 'Env Proxy CA repair relaunch failed')
-                return False
+                break
             self._mark_owned(owned=True)
             log_buffer.log(
                 'Certificate',

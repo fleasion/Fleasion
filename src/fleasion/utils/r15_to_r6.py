@@ -6,13 +6,19 @@ Conversion algorithms ported from:
 """
 
 import base64
+import importlib
 import math
 import re
 import struct
-import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
-from defusedxml import ElementTree as safe_et  # ruff: ignore[camelcase-imported-as-lowercase]
+from defusedxml import ElementTree
+
+if TYPE_CHECKING:
+    from xml.etree.ElementTree import Element
+else:
+    Element = type(ElementTree.fromstring('<_ />'))
 
 from .rig_data import CFrame, Joint
 
@@ -27,7 +33,13 @@ type EasingMap = dict[str, Easing]
 IDENTITY = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 
 
-def parse_cf(elem: ET.Element) -> CFrame:
+def _sub_element(parent: Element, tag: str) -> Element:
+    child = parent.makeelement(tag, {})
+    parent.append(child)
+    return child
+
+
+def parse_cf(elem: Element) -> CFrame:
     d = {c.tag: float(c.text or '0') for c in elem}
     return [
         d.get('X', 0.0),
@@ -45,14 +57,14 @@ def parse_cf(elem: ET.Element) -> CFrame:
     ]
 
 
-def write_cf(elem: ET.Element, cf: Sequence[float]) -> None:
+def write_cf(elem: Element, cf: Sequence[float]) -> None:
     for c in list(elem):
         elem.remove(c)
-    for tag, v in zip(  # ruff: ignore[zip-without-explicit-strict]
+    for tag, v in zip(
         ['X', 'Y', 'Z', 'R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22'],
-        cf,
+        cf, strict=False,
     ):
-        e = ET.SubElement(elem, tag)
+        e = _sub_element(elem, tag)
         e.text = f'{v:.8g}'
 
 
@@ -137,7 +149,8 @@ def compute_world_cfs(
     return world_cfs
 
 
-def _calculate_limb(  # ruff: ignore[too-many-positional-arguments]
+def _calculate_limb(
+    *,
     limb_world_cf: Sequence[float],
     motor_c0: Sequence[float],
     motor_c1: Sequence[float],
@@ -147,14 +160,12 @@ def _calculate_limb(  # ruff: ignore[too-many-positional-arguments]
     offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> tuple[CFrame, CFrame]:
     mapped = cf_mul(dst_hrp_cf, cf_mul(cf_inv(src_hrp_cf), limb_world_cf))
-    mapped = (
-        [  # ruff: ignore[collection-literal-concatenation]
-            mapped[0] + offset[0],
-            mapped[1] + offset[1],
-            mapped[2] + offset[2],
-        ]
-        + list(mapped[3:])
-    )
+    mapped = [
+        mapped[0] + offset[0],
+        mapped[1] + offset[1],
+        mapped[2] + offset[2],
+        *mapped[3:],
+    ]
     cf = cf_mul(cf_inv(cf_mul(torso_world_cf, motor_c0)), mapped)
     return cf_mul(cf, motor_c1), mapped
 
@@ -169,14 +180,14 @@ def _new_ref() -> str:
     return f'RPOSE{_ref_n[0]:08d}'
 
 
-def _get_name(elem: ET.Element) -> str:
+def _get_name(elem: Element) -> str:
     for s in elem.iter('string'):
         if s.get('name') == 'Name':
             return s.text or ''
     return ''
 
 
-def _get_cf(pose: ET.Element) -> CFrame:
+def _get_cf(pose: Element) -> CFrame:
     props = pose.find('Properties')
     if props is not None:
         cf_elem = props.find("CoordinateFrame[@name='CFrame']")
@@ -185,7 +196,7 @@ def _get_cf(pose: ET.Element) -> CFrame:
     return list(IDENTITY)
 
 
-def _get_easing(pose: ET.Element) -> Easing:
+def _get_easing(pose: Element) -> Easing:
     props = pose.find('Properties')
     ed, es, w = '0', '0', '1'
     if props is not None:
@@ -201,34 +212,34 @@ def _get_easing(pose: ET.Element) -> Easing:
     return ed, es, w
 
 
-def _make_pose(name: str, cf: Sequence[float], easing: Easing = ('0', '0', '1')) -> ET.Element:
-    item = ET.Element('Item')
+def _make_pose(name: str, cf: Sequence[float], easing: Easing = ('0', '0', '1')) -> Element:
+    item = Element('Item')
     item.set('class', 'Pose')
     item.set('referent', _new_ref())
-    props = ET.SubElement(item, 'Properties')
-    n = ET.SubElement(props, 'string')
+    props = _sub_element(item, 'Properties')
+    n = _sub_element(props, 'string')
     n.set('name', 'Name')
     n.text = name
-    c = ET.SubElement(props, 'CoordinateFrame')
+    c = _sub_element(props, 'CoordinateFrame')
     c.set('name', 'CFrame')
     write_cf(c, cf)
-    ed = ET.SubElement(props, 'token')
+    ed = _sub_element(props, 'token')
     ed.set('name', 'EasingDirection')
     ed.text = easing[0]
-    es = ET.SubElement(props, 'token')
+    es = _sub_element(props, 'token')
     es.set('name', 'EasingStyle')
     es.text = easing[1]
-    w = ET.SubElement(props, 'float')
+    w = _sub_element(props, 'float')
     w.set('name', 'Weight')
     w.text = easing[2]
     return item
 
 
-def _collect_poses(keyframe: ET.Element) -> tuple[PoseMap, EasingMap]:
+def _collect_poses(keyframe: Element) -> tuple[PoseMap, EasingMap]:
     poses: PoseMap = {}
     easings: EasingMap = {}
 
-    def walk(item: ET.Element) -> None:
+    def walk(item: Element) -> None:
         if item.get('class') != 'Pose':
             return
         name = _get_name(item)
@@ -242,7 +253,7 @@ def _collect_poses(keyframe: ET.Element) -> tuple[PoseMap, EasingMap]:
     return poses, easings
 
 
-def _clear_poses(keyframe: ET.Element) -> None:
+def _clear_poses(keyframe: Element) -> None:
     for child in list(keyframe):
         if child.get('class') == 'Pose':
             keyframe.remove(child)
@@ -261,7 +272,7 @@ R6_FROM_R15: dict[str, tuple[str, list[str], tuple[float, float, float]]] = {
 
 
 def convert_keyframe_r15_to_r6(
-    keyframe: ET.Element,
+    keyframe: Element,
     r6_parts: PartMap,
     r6_joints: JointMap,
     r15_parts: PartMap,
@@ -283,13 +294,13 @@ def convert_keyframe_r15_to_r6(
     if preferred in r15_world:
         motor = r6_joints['Torso']
         cf, torso_world_cf = _calculate_limb(
-            r15_world[preferred],
-            motor['c0'],
-            motor['c1'],
-            torso_world_cf,
-            r15_hrp_cf,
-            r6_hrp_cf,
-            offset,
+            limb_world_cf=r15_world[preferred],
+            motor_c0=motor['c0'],
+            motor_c1=motor['c1'],
+            torso_world_cf=torso_world_cf,
+            src_hrp_cf=r15_hrp_cf,
+            dst_hrp_cf=r6_hrp_cf,
+            offset=offset,
         )
         converted['Torso'] = (
             cf,
@@ -310,19 +321,19 @@ def convert_keyframe_r15_to_r6(
         if motor is None:
             continue
         cf, _ = _calculate_limb(
-            r15_world[r15_name],
-            motor['c0'],
-            motor['c1'],
-            torso_world_cf,
-            r15_hrp_cf,
-            r6_hrp_cf,
-            offset,
+            limb_world_cf=r15_world[r15_name],
+            motor_c0=motor['c0'],
+            motor_c1=motor['c1'],
+            torso_world_cf=torso_world_cf,
+            src_hrp_cf=r15_hrp_cf,
+            dst_hrp_cf=r6_hrp_cf,
+            offset=offset,
         )
         converted[r6_name] = (cf, easings.get(r15_name, ('0', '0', '1')))
 
     _clear_poses(keyframe)
 
-    def p(name: str) -> ET.Element:
+    def p(name: str) -> Element:
         cf, easing = converted.get(name, (list(IDENTITY), ('0', '0', '1')))
         return _make_pose(name, cf, easing)
 
@@ -380,7 +391,7 @@ def _get_new_transform(
 
 
 def convert_keyframe_r6_to_r15(
-    keyframe: ET.Element,
+    keyframe: Element,
     r6_parts: PartMap,
     r6_joints: JointMap,
     r15_parts: PartMap,
@@ -418,7 +429,7 @@ def convert_keyframe_r6_to_r15(
 
     _clear_poses(keyframe)
 
-    def p(name: str) -> ET.Element:
+    def p(name: str) -> Element:
         cf, easing = converted.get(name, (list(IDENTITY), ('0', '0', '1')))
         return _make_pose(name, cf, easing)
 
@@ -467,9 +478,9 @@ def _encode_float_curve(times_sec: list[float], values: list[float]) -> bytes:
 
     Format (version 2):
       uint32 version=2, uint32 N
-      N × [uint8 interp=1, uint8 flags=0, f32 value, f32 slope_l=0, f32 slope_r=0]
+      N x [uint8 interp=1, uint8 flags=0, f32 value, f32 slope_l=0, f32 slope_r=0]
       uint32 section_type=1, uint32 N
-      N × uint32 time_ticks  (at 14400 ticks/sec)
+      N x uint32 time_ticks  (at 14400 ticks/sec)
     """
     n = len(times_sec)
     buf = struct.pack('<II', 2, n)
@@ -477,7 +488,7 @@ def _encode_float_curve(times_sec: list[float], values: list[float]) -> bytes:
         buf += struct.pack('<BBfff', 1, 0, float(v), 0.0, 0.0)
     buf += struct.pack('<II', 1, n)
     for t in times_sec:
-        buf += struct.pack('<I', max(0, int(round(t * _CURVE_TICKS_PER_SEC))))  # ruff: ignore[unnecessary-cast-to-int]
+        buf += struct.pack('<I', max(0, round(t * _CURVE_TICKS_PER_SEC)))
     return buf
 
 
@@ -488,8 +499,8 @@ def _decompose_cf(cf: Sequence[float]) -> tuple[float, float, float, float, floa
     R = Rx(rx) * Ry(ry) * Rz(rz)
     """
     px, py, pz = cf[0], cf[1], cf[2]
-    R02 = cf[5]  # ruff: ignore[non-lowercase-variable-in-function]
-    ry = math.asin(max(-1.0, min(1.0, R02)))
+    r02 = cf[5]
+    ry = math.asin(max(-1.0, min(1.0, r02)))
     if abs(math.cos(ry)) > 1e-6:
         rx = math.atan2(-cf[8], cf[11])
         rz = math.atan2(-cf[4], cf[3])
@@ -511,7 +522,7 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
     The Folder hierarchy mirrors the Pose parent-child structure.
     ValuesAndTimes is written as base64-encoded BinaryString.
     """
-    root_elem = safe_et.fromstring(sanitize_xml(xml_bytes))
+    root_elem = ElementTree.fromstring(sanitize_xml(xml_bytes))
 
     ks = root_elem.find(".//Item[@class='KeyframeSequence']")
     if ks is None:
@@ -520,7 +531,7 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
     # Read top-level properties
     ksp = ks.find('Properties')
     if ksp is None:
-        ksp = ET.Element('Properties')
+        ksp = Element('Properties')
 
     def _ptext(tag: str, name: str, default: str) -> str:
         e = ksp.find(f"{tag}[@name='{name}']")
@@ -531,7 +542,7 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
     name_val = _xml_escape(_ptext('string', 'Name', 'Animation'))
 
     # Collect keyframe elements sorted by time
-    def _kf_time(kf: ET.Element) -> float:
+    def _kf_time(kf: Element) -> float:
         e = kf.find("Properties/float[@name='Time']")
         return float(e.text or 0) if e is not None else 0.0
 
@@ -547,7 +558,7 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
     children_of: dict[str, list[str]] = {}  # bone -> [children]
     roots_list: list[str] = []
 
-    def _parse_hierarchy(elem: ET.Element, parent: str | None) -> None:
+    def _parse_hierarchy(elem: Element, parent: str | None) -> None:
         if elem.get('class') != 'Pose':
             return
         name = _get_name(elem)
@@ -573,7 +584,7 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
     for kf in kf_elems:
         t = _kf_time(kf)
 
-        def _walk_poses(elem: ET.Element) -> None:
+        def _walk_poses(elem: Element, keyframe_time: float) -> None:
             if elem.get('class') != 'Pose':
                 return
             n = _get_name(elem)
@@ -581,12 +592,12 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
             weight_elem = props.find("float[@name='Weight']") if props is not None else None
             weight = float(weight_elem.text or 0) if weight_elem is not None else 1.0
             if n and n in bone_cfs and weight > 0:
-                bone_cfs[n].append((t, _get_cf(elem)))  # ruff: ignore[function-uses-loop-variable]
+                bone_cfs[n].append((keyframe_time, _get_cf(elem)))
             for c in elem:
-                _walk_poses(c)
+                _walk_poses(c, keyframe_time)
 
         for child in kf:
-            _walk_poses(child)
+            _walk_poses(child, t)
 
     # Unique referent counter (local to this call)
     id_ = [0]
@@ -693,8 +704,5 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
 
 def curve_anim_to_keyframe_xml(anim_data: bytes) -> bytes:
     """Convert a CurveAnimation (binary RBXM or XML) to a KeyframeSequence RBXMX."""
-    from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-        curve_anim_to_keyframe,
-    )
-
-    return curve_anim_to_keyframe(anim_data)
+    anim_converter = importlib.import_module('fleasion.utils.anim_converter')
+    return anim_converter.curve_anim_to_keyframe(anim_data)

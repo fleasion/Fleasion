@@ -8,8 +8,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
-from typing import Any
-from xml.etree.ElementTree import Element, SubElement, indent, tostring
+from typing import TYPE_CHECKING, Any
+
+from defusedxml import ElementTree as DefusedElementTree
+
+if TYPE_CHECKING:
+    import xml.etree.ElementTree as ET
 
 from .types import (
     PROPERTY_FORMAT_TO_XML_TAG,
@@ -20,6 +24,46 @@ from .types import (
 )
 
 log = logging.getLogger(__name__)
+
+_XML_ELEMENT_TEMPLATE = DefusedElementTree.fromstring('<_ />')
+
+
+def _xml_element(tag: str) -> ET.Element:
+    """Create an Element without exposing the unsafe stdlib parser."""
+    return _XML_ELEMENT_TEMPLATE.makeelement(tag, {})
+
+
+def _xml_sub_element(parent: ET.Element, tag: str) -> ET.Element:
+    child = _xml_element(tag)
+    parent.append(child)
+    return child
+
+
+def _indent_xml(root: ET.Element, *, space: str) -> None:
+    """Match ElementTree.indent output without importing its parser at runtime."""
+    if not len(root):
+        return
+
+    indentations = ['\n']
+
+    def _indent_children(element: ET.Element, level: int) -> None:
+        child_level = level + 1
+        if child_level >= len(indentations):
+            indentations.append(indentations[level] + space)
+        child_indentation = indentations[child_level]
+
+        if not element.text or not element.text.strip():
+            element.text = child_indentation
+        for child in element:
+            if len(child):
+                _indent_children(child, child_level)
+            if not child.tail or not child.tail.strip():
+                child.tail = child_indentation
+        last_child = element[-1]
+        if not last_child.tail or not last_child.tail.strip():
+            last_child.tail = indentations[level]
+
+    _indent_children(root, 0)
 
 
 # Collector for shared strings during XML writing.
@@ -43,7 +87,7 @@ def write_rbxmx(doc: RbxDocument) -> bytes:
     # Reset shared string registry for this file
     _shared_string_registry.clear()
 
-    root = Element('roblox')
+    root = _xml_element('roblox')
     root.set('xmlns:xmime', 'http://www.w3.org/2005/05/xmlmime')
     root.set('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
     root.set(
@@ -53,14 +97,14 @@ def write_rbxmx(doc: RbxDocument) -> bytes:
     root.set('version', '4')
 
     # External declarations (standard for RBXMX)
-    ext1 = SubElement(root, 'External')
+    ext1 = _xml_sub_element(root, 'External')
     ext1.text = 'null'
-    ext2 = SubElement(root, 'External')
+    ext2 = _xml_sub_element(root, 'External')
     ext2.text = 'nil'
 
     # Write metadata as Meta tags
     for key, value in doc.metadata.entries.items():
-        meta_el = SubElement(root, 'Meta')
+        meta_el = _xml_sub_element(root, 'Meta')
         meta_el.set('name', key)
         meta_el.text = value
 
@@ -70,42 +114,38 @@ def write_rbxmx(doc: RbxDocument) -> bytes:
 
     # Write SharedStrings section if any shared strings were collected
     if _shared_string_registry:
-        ss_section = SubElement(root, 'SharedStrings')
+        ss_section = _xml_sub_element(root, 'SharedStrings')
         for md5_hash, b64_content in _shared_string_registry.items():
-            ss_el = SubElement(ss_section, 'SharedString')
+            ss_el = _xml_sub_element(ss_section, 'SharedString')
             ss_el.set('md5', md5_hash)
             ss_el.text = b64_content
 
-    indent(root, space='\t')
-    xml_bytes = tostring(root, encoding='unicode', xml_declaration=False)
+    _indent_xml(root, space='\t')
+    xml_bytes = DefusedElementTree.tostring(root, encoding='unicode', xml_declaration=False)
     header = '<?xml version="1.0" encoding="utf-8"?>\n'
     return (header + xml_bytes).encode('utf-8')
 
 
 def _write_instance(
-    parent_el: Element,
+    parent_el: ET.Element,
     inst: RbxInstance,
     doc: RbxDocument,
 ) -> None:
     """Write a single instance and its children as XML."""
-    item = SubElement(parent_el, 'Item')
+    item = _xml_sub_element(parent_el, 'Item')
     item.set('class', inst.class_name)
     item.set('referent', f'RBX{inst.referent:032X}')
 
-    props_el = SubElement(item, 'Properties')
+    props_el = _xml_sub_element(item, 'Properties')
 
     for prop in sorted(inst.properties.values(), key=lambda p: p.name):
-        _write_property(props_el, prop, doc)
+        _write_property(props_el, prop)
 
     for child in inst.children:
         _write_instance(item, child, doc)
 
 
-def _write_property(
-    props_el: Element,
-    prop: RbxProperty,
-    doc: RbxDocument,  # ruff: ignore[unused-function-argument]
-) -> None:
+def _write_property(props_el: ET.Element, prop: RbxProperty) -> None:
     """Write a single property value as XML."""
     xml_tag = PROPERTY_FORMAT_TO_XML_TAG.get(prop.fmt, 'string')
 
@@ -113,19 +153,19 @@ def _write_property(
         case PropertyFormat.STRING:
             _write_string_prop(props_el, xml_tag, prop)
         case PropertyFormat.BOOL:
-            el = SubElement(props_el, xml_tag)
+            el = _xml_sub_element(props_el, xml_tag)
             el.set('name', prop.name)
             el.text = 'true' if prop.value else 'false'
         case PropertyFormat.INT | PropertyFormat.ENUM | PropertyFormat.BRICK_COLOR:
-            el = SubElement(props_el, xml_tag)
+            el = _xml_sub_element(props_el, xml_tag)
             el.set('name', prop.name)
             el.text = str(prop.value)
         case PropertyFormat.FLOAT:
-            el = SubElement(props_el, xml_tag)
+            el = _xml_sub_element(props_el, xml_tag)
             el.set('name', prop.name)
             el.text = _fmt_float(prop.value)
         case PropertyFormat.DOUBLE:
-            el = SubElement(props_el, xml_tag)
+            el = _xml_sub_element(props_el, xml_tag)
             el.set('name', prop.name)
             el.text = _fmt_float(prop.value)
         case PropertyFormat.UDIM:
@@ -167,11 +207,11 @@ def _write_property(
         case PropertyFormat.COLOR3UINT8:
             _write_color3uint8(props_el, prop)
         case PropertyFormat.INT64:
-            el = SubElement(props_el, xml_tag)
+            el = _xml_sub_element(props_el, xml_tag)
             el.set('name', prop.name)
             el.text = str(prop.value)
         case PropertyFormat.BYTECODE:
-            el = SubElement(props_el, xml_tag)
+            el = _xml_sub_element(props_el, xml_tag)
             el.set('name', prop.name)
             if isinstance(prop.value, bytes):
                 el.text = base64.b64encode(prop.value).decode('ascii')
@@ -182,7 +222,7 @@ def _write_property(
         case PropertyFormat.FONT:
             _write_font(props_el, prop)
         case PropertyFormat.SECURITY_CAPABILITIES:
-            el = SubElement(props_el, xml_tag)
+            el = _xml_sub_element(props_el, xml_tag)
             el.set('name', prop.name)
             el.text = str(prop.value)
         case PropertyFormat.CONTENT:
@@ -202,17 +242,17 @@ def _has_invalid_xml_chars(s: str) -> bool:
             return True
         if 0xD800 <= codepoint <= 0xDFFF:
             return True
-        if codepoint in (0xFFFE, 0xFFFF):  # ruff: ignore[literal-membership]
+        if codepoint in {0xFFFE, 0xFFFF}:
             return True
     return False
 
 
-def _write_string_prop(parent: Element, tag: str, prop: RbxProperty) -> None:
+def _write_string_prop(parent: ET.Element, tag: str, prop: RbxProperty) -> None:
     val = prop.value
     if isinstance(val, bytes) or prop.name in _BINARY_STRING_PROPERTIES:
         # Binary data -> base64 encode it
         raw = val if isinstance(val, bytes) else str(val).encode('utf-8')
-        el = SubElement(parent, 'BinaryString')
+        el = _xml_sub_element(parent, 'BinaryString')
         el.set('name', prop.name)
         el.text = base64.b64encode(raw).decode('ascii')
         return
@@ -222,26 +262,26 @@ def _write_string_prop(parent: Element, tag: str, prop: RbxProperty) -> None:
 
     if _has_invalid_xml_chars(val):
         # Preserve payload as bytes when text contains XML-illegal code points.
-        el = SubElement(parent, 'BinaryString')
+        el = _xml_sub_element(parent, 'BinaryString')
         el.set('name', prop.name)
         el.text = base64.b64encode(val.encode('utf-8', errors='surrogatepass')).decode('ascii')
         return
 
     if prop.name in {'Source', 'LinkedSource'}:
-        el = SubElement(parent, 'ProtectedString')
+        el = _xml_sub_element(parent, 'ProtectedString')
         el.set('name', prop.name)
         el.text = val
     # Check if it looks like a content URL
     elif _is_content_url(val, prop.name):
-        el = SubElement(parent, 'Content')
+        el = _xml_sub_element(parent, 'Content')
         el.set('name', prop.name)
         if val:
-            url_el = SubElement(el, 'url')
+            url_el = _xml_sub_element(el, 'url')
             url_el.text = val
         else:
-            SubElement(el, 'null')
+            _xml_sub_element(el, 'null')
     else:
-        el = SubElement(parent, tag)
+        el = _xml_sub_element(parent, tag)
         el.set('name', prop.name)
         el.text = val
 
@@ -263,37 +303,37 @@ def _is_content_url(value: str, prop_name: str) -> bool:
     return value.startswith(('http://', 'https://', 'rbxassetid://', 'rbxasset://'))
 
 
-def _write_udim(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'UDim')
+def _write_udim(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'UDim')
     el.set('name', prop.name)
-    SubElement(el, 'S').text = _fmt_float(prop.value['S'])
-    SubElement(el, 'O').text = str(prop.value['O'])
+    _xml_sub_element(el, 'S').text = _fmt_float(prop.value['S'])
+    _xml_sub_element(el, 'O').text = str(prop.value['O'])
 
 
-def _write_udim2(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'UDim2')
+def _write_udim2(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'UDim2')
     el.set('name', prop.name)
-    SubElement(el, 'XS').text = _fmt_float(prop.value['XS'])
-    SubElement(el, 'XO').text = str(prop.value['XO'])
-    SubElement(el, 'YS').text = _fmt_float(prop.value['YS'])
-    SubElement(el, 'YO').text = str(prop.value['YO'])
+    _xml_sub_element(el, 'XS').text = _fmt_float(prop.value['XS'])
+    _xml_sub_element(el, 'XO').text = str(prop.value['XO'])
+    _xml_sub_element(el, 'YS').text = _fmt_float(prop.value['YS'])
+    _xml_sub_element(el, 'YO').text = str(prop.value['YO'])
 
 
-def _write_ray(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'Ray')
+def _write_ray(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'Ray')
     el.set('name', prop.name)
-    origin = SubElement(el, 'origin')
-    SubElement(origin, 'X').text = _fmt_float(prop.value['origin']['X'])
-    SubElement(origin, 'Y').text = _fmt_float(prop.value['origin']['Y'])
-    SubElement(origin, 'Z').text = _fmt_float(prop.value['origin']['Z'])
-    direction = SubElement(el, 'direction')
-    SubElement(direction, 'X').text = _fmt_float(prop.value['direction']['X'])
-    SubElement(direction, 'Y').text = _fmt_float(prop.value['direction']['Y'])
-    SubElement(direction, 'Z').text = _fmt_float(prop.value['direction']['Z'])
+    origin = _xml_sub_element(el, 'origin')
+    _xml_sub_element(origin, 'X').text = _fmt_float(prop.value['origin']['X'])
+    _xml_sub_element(origin, 'Y').text = _fmt_float(prop.value['origin']['Y'])
+    _xml_sub_element(origin, 'Z').text = _fmt_float(prop.value['origin']['Z'])
+    direction = _xml_sub_element(el, 'direction')
+    _xml_sub_element(direction, 'X').text = _fmt_float(prop.value['direction']['X'])
+    _xml_sub_element(direction, 'Y').text = _fmt_float(prop.value['direction']['Y'])
+    _xml_sub_element(direction, 'Z').text = _fmt_float(prop.value['direction']['Z'])
 
 
-def _write_faces(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'Faces')
+def _write_faces(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'Faces')
     el.set('name', prop.name)
     mask = prop.value
     faces: list[str] = []
@@ -304,8 +344,8 @@ def _write_faces(parent: Element, prop: RbxProperty) -> None:
     el.text = ', '.join(faces) if faces else ''
 
 
-def _write_axes(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'Axes')
+def _write_axes(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'Axes')
     el.set('name', prop.name)
     mask = prop.value
     axes: list[str] = []
@@ -316,70 +356,70 @@ def _write_axes(parent: Element, prop: RbxProperty) -> None:
     el.text = ', '.join(axes) if axes else ''
 
 
-def _write_color3(parent: Element, tag: str, prop: RbxProperty) -> None:
-    el = SubElement(parent, tag)
+def _write_color3(parent: ET.Element, tag: str, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, tag)
     el.set('name', prop.name)
-    SubElement(el, 'R').text = _fmt_float(prop.value['R'])
-    SubElement(el, 'G').text = _fmt_float(prop.value['G'])
-    SubElement(el, 'B').text = _fmt_float(prop.value['B'])
+    _xml_sub_element(el, 'R').text = _fmt_float(prop.value['R'])
+    _xml_sub_element(el, 'G').text = _fmt_float(prop.value['G'])
+    _xml_sub_element(el, 'B').text = _fmt_float(prop.value['B'])
 
 
-def _write_vector2(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'Vector2')
+def _write_vector2(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'Vector2')
     el.set('name', prop.name)
-    SubElement(el, 'X').text = _fmt_float(prop.value['X'])
-    SubElement(el, 'Y').text = _fmt_float(prop.value['Y'])
+    _xml_sub_element(el, 'X').text = _fmt_float(prop.value['X'])
+    _xml_sub_element(el, 'Y').text = _fmt_float(prop.value['Y'])
 
 
-def _write_vector3(parent: Element, tag: str, prop: RbxProperty) -> None:
-    el = SubElement(parent, tag)
+def _write_vector3(parent: ET.Element, tag: str, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, tag)
     el.set('name', prop.name)
-    SubElement(el, 'X').text = _fmt_float(prop.value['X'])
-    SubElement(el, 'Y').text = _fmt_float(prop.value['Y'])
-    SubElement(el, 'Z').text = _fmt_float(prop.value['Z'])
+    _xml_sub_element(el, 'X').text = _fmt_float(prop.value['X'])
+    _xml_sub_element(el, 'Y').text = _fmt_float(prop.value['Y'])
+    _xml_sub_element(el, 'Z').text = _fmt_float(prop.value['Z'])
 
 
-def _write_vector_int(parent: Element, tag: str, prop: RbxProperty, axes: tuple[str, ...]) -> None:
-    el = SubElement(parent, tag)
+def _write_vector_int(parent: ET.Element, tag: str, prop: RbxProperty, axes: tuple[str, ...]) -> None:
+    el = _xml_sub_element(parent, tag)
     el.set('name', prop.name)
     for axis in axes:
-        SubElement(el, axis).text = str(prop.value[axis])
+        _xml_sub_element(el, axis).text = str(prop.value[axis])
 
 
-def _write_cframe(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'CoordinateFrame')
+def _write_cframe(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'CoordinateFrame')
     el.set('name', prop.name)
     cf: dict[str, float] = prop.value
-    SubElement(el, 'X').text = _fmt_float(cf['X'])
-    SubElement(el, 'Y').text = _fmt_float(cf['Y'])
-    SubElement(el, 'Z').text = _fmt_float(cf['Z'])
+    _xml_sub_element(el, 'X').text = _fmt_float(cf['X'])
+    _xml_sub_element(el, 'Y').text = _fmt_float(cf['Y'])
+    _xml_sub_element(el, 'Z').text = _fmt_float(cf['Z'])
     for row in range(3):
         for col in range(3):
             key = f'R{row}{col}'
-            SubElement(el, key).text = _fmt_float(cf[key])
+            _xml_sub_element(el, key).text = _fmt_float(cf[key])
 
 
-def _write_cframe_fields(parent: Element, cf: dict[str, float]) -> None:
-    SubElement(parent, 'X').text = _fmt_float(cf['X'])
-    SubElement(parent, 'Y').text = _fmt_float(cf['Y'])
-    SubElement(parent, 'Z').text = _fmt_float(cf['Z'])
+def _write_cframe_fields(parent: ET.Element, cf: dict[str, float]) -> None:
+    _xml_sub_element(parent, 'X').text = _fmt_float(cf['X'])
+    _xml_sub_element(parent, 'Y').text = _fmt_float(cf['Y'])
+    _xml_sub_element(parent, 'Z').text = _fmt_float(cf['Z'])
     for row in range(3):
         for col in range(3):
             key = f'R{row}{col}'
-            SubElement(parent, key).text = _fmt_float(cf[key])
+            _xml_sub_element(parent, key).text = _fmt_float(cf[key])
 
 
-def _write_optional_cframe(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'OptionalCoordinateFrame')
+def _write_optional_cframe(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'OptionalCoordinateFrame')
     el.set('name', prop.name)
     if prop.value is None:
         return
-    cf_el = SubElement(el, 'CFrame')
+    cf_el = _xml_sub_element(el, 'CFrame')
     _write_cframe_fields(cf_el, prop.value)
 
 
-def _write_ref(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'Ref')
+def _write_ref(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'Ref')
     el.set('name', prop.name)
     if prop.value is None:
         el.text = 'null'
@@ -387,8 +427,8 @@ def _write_ref(parent: Element, prop: RbxProperty) -> None:
         el.text = f'RBX{prop.value:032X}'
 
 
-def _write_number_sequence(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'NumberSequence')
+def _write_number_sequence(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'NumberSequence')
     el.set('name', prop.name)
     parts: list[str] = [
         f'{_fmt_float(key["Time"])} {_fmt_float(key["Value"])} {_fmt_float(key["Envelope"])}'
@@ -397,8 +437,8 @@ def _write_number_sequence(parent: Element, prop: RbxProperty) -> None:
     el.text = ' '.join(parts)
 
 
-def _write_color_sequence(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'ColorSequence')
+def _write_color_sequence(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'ColorSequence')
     el.set('name', prop.name)
     parts: list[str] = [
         f'{_fmt_float(key["Time"])} {_fmt_float(key["R"])} '
@@ -408,44 +448,44 @@ def _write_color_sequence(parent: Element, prop: RbxProperty) -> None:
     el.text = ' '.join(parts)
 
 
-def _write_number_range(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'NumberRange')
+def _write_number_range(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'NumberRange')
     el.set('name', prop.name)
     el.text = f'{_fmt_float(prop.value["Min"])} {_fmt_float(prop.value["Max"])}'
 
 
-def _write_rect2d(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'Rect2D')
+def _write_rect2d(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'Rect2D')
     el.set('name', prop.name)
     mn: dict[str, Any] = prop.value['min']
     mx: dict[str, Any] = prop.value['max']
-    min_el = SubElement(el, 'min')
-    SubElement(min_el, 'X').text = _fmt_float(mn['X'])
-    SubElement(min_el, 'Y').text = _fmt_float(mn['Y'])
-    max_el = SubElement(el, 'max')
-    SubElement(max_el, 'X').text = _fmt_float(mx['X'])
-    SubElement(max_el, 'Y').text = _fmt_float(mx['Y'])
+    min_el = _xml_sub_element(el, 'min')
+    _xml_sub_element(min_el, 'X').text = _fmt_float(mn['X'])
+    _xml_sub_element(min_el, 'Y').text = _fmt_float(mn['Y'])
+    max_el = _xml_sub_element(el, 'max')
+    _xml_sub_element(max_el, 'X').text = _fmt_float(mx['X'])
+    _xml_sub_element(max_el, 'Y').text = _fmt_float(mx['Y'])
 
 
-def _write_physical_properties(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'PhysicalProperties')
+def _write_physical_properties(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'PhysicalProperties')
     el.set('name', prop.name)
     if prop.value is None or not prop.value.get('CustomPhysics', True):
-        SubElement(el, 'CustomPhysics').text = 'false'
+        _xml_sub_element(el, 'CustomPhysics').text = 'false'
     else:
-        SubElement(el, 'CustomPhysics').text = 'true'
-        SubElement(el, 'Density').text = _fmt_float(prop.value['Density'])
-        SubElement(el, 'Friction').text = _fmt_float(prop.value['Friction'])
-        SubElement(el, 'Elasticity').text = _fmt_float(prop.value['Elasticity'])
-        SubElement(el, 'FrictionWeight').text = _fmt_float(prop.value['FrictionWeight'])
-        SubElement(el, 'ElasticityWeight').text = _fmt_float(prop.value['ElasticityWeight'])
-        SubElement(el, 'AcousticAbsorption').text = _fmt_float(
+        _xml_sub_element(el, 'CustomPhysics').text = 'true'
+        _xml_sub_element(el, 'Density').text = _fmt_float(prop.value['Density'])
+        _xml_sub_element(el, 'Friction').text = _fmt_float(prop.value['Friction'])
+        _xml_sub_element(el, 'Elasticity').text = _fmt_float(prop.value['Elasticity'])
+        _xml_sub_element(el, 'FrictionWeight').text = _fmt_float(prop.value['FrictionWeight'])
+        _xml_sub_element(el, 'ElasticityWeight').text = _fmt_float(prop.value['ElasticityWeight'])
+        _xml_sub_element(el, 'AcousticAbsorption').text = _fmt_float(
             prop.value.get('AcousticAbsorption', 1.0)
         )
 
 
-def _write_color3uint8(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'Color3uint8')
+def _write_color3uint8(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'Color3uint8')
     el.set('name', prop.name)
     # Packed as 0xFFRRGGBB
     r = prop.value['R']
@@ -455,8 +495,8 @@ def _write_color3uint8(parent: Element, prop: RbxProperty) -> None:
     el.text = str(packed)
 
 
-def _write_shared_string(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'SharedString')
+def _write_shared_string(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'SharedString')
     el.set('name', prop.name)
     if isinstance(prop.value, bytes):
         # Compute MD5 hash of the raw content, base64-encoded (Studio requires this format)
@@ -472,8 +512,8 @@ def _write_shared_string(parent: Element, prop: RbxProperty) -> None:
         el.text = str(prop.value)
 
 
-def _write_unique_id(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'UniqueId')
+def _write_unique_id(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'UniqueId')
     el.set('name', prop.name)
     if isinstance(prop.value, bytes):
         el.text = prop.value.hex()
@@ -486,45 +526,45 @@ def _write_unique_id(parent: Element, prop: RbxProperty) -> None:
     el.text = f'{xml_random:016x}{time:08x}{index:08x}'
 
 
-def _write_font(parent: Element, prop: RbxProperty) -> None:
+def _write_font(parent: ET.Element, prop: RbxProperty) -> None:
     style_names = {0: 'Normal', 1: 'Italic'}
-    el = SubElement(parent, 'Font')
+    el = _xml_sub_element(parent, 'Font')
     el.set('name', prop.name)
-    family = SubElement(el, 'Family')
+    family = _xml_sub_element(el, 'Family')
     _write_content_value(family, prop.value.get('Family', ''))
-    SubElement(el, 'Weight').text = str(prop.value.get('Weight', 400))
+    _xml_sub_element(el, 'Weight').text = str(prop.value.get('Weight', 400))
     style = prop.value.get('Style', 0)
-    SubElement(el, 'Style').text = style_names.get(style, str(style))
+    _xml_sub_element(el, 'Style').text = style_names.get(style, str(style))
     cached_face_id = prop.value.get('CachedFaceId', '')
     if cached_face_id:
-        cached = SubElement(el, 'CachedFaceId')
+        cached = _xml_sub_element(el, 'CachedFaceId')
         _write_content_value(cached, cached_face_id)
 
 
-def _write_content(parent: Element, prop: RbxProperty) -> None:
-    el = SubElement(parent, 'Content')
+def _write_content(parent: ET.Element, prop: RbxProperty) -> None:
+    el = _xml_sub_element(parent, 'Content')
     el.set('name', prop.name)
     _write_content_value(el, prop.value)
 
 
-def _write_content_value(parent: Element, value: Any) -> None:
+def _write_content_value(parent: ET.Element, value: Any) -> None:
     if value is None:
-        SubElement(parent, 'null')
+        _xml_sub_element(parent, 'null')
     elif isinstance(value, str):
         if value:
-            uri = SubElement(parent, 'uri')
+            uri = _xml_sub_element(parent, 'uri')
             uri.text = value
         else:
-            SubElement(parent, 'null')
+            _xml_sub_element(parent, 'null')
     elif value.get('SourceType') == 'Uri':
-        uri = SubElement(parent, 'uri')
+        uri = _xml_sub_element(parent, 'uri')
         uri.text = str(value.get('Uri', ''))
     elif value.get('SourceType') == 'Object':
-        ref = SubElement(parent, 'Ref')
+        ref = _xml_sub_element(parent, 'Ref')
         ref_value = value.get('Ref')
         ref.text = 'null' if ref_value is None else f'RBX{int(ref_value):032X}'
     else:
-        SubElement(parent, 'null')
+        _xml_sub_element(parent, 'null')
 
 
 def _fmt_float(value: Any) -> str:

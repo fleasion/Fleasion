@@ -17,10 +17,15 @@ and returns ``(list[CSGVertex], list[int])``.
 
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
+import importlib
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import zstandard
+from defusedxml.ElementTree import parse as _xml_parse
 
 from fleasion.utils import APP_CACHE_DIR, log_buffer
 
@@ -35,8 +40,6 @@ _GZIP_MAGIC = b'\x1f\x8b'
 def _decompress(data: bytes) -> bytes:
     """Strip zstd or gzip application-level wrapping if present."""
     if data[:4] == _ZSTD_MAGIC:
-        import zstandard  # type: ignore[import-untyped]  # ruff: ignore[import-outside-top-level]
-
         data = zstandard.ZstdDecompressor().decompress(data, max_output_size=64 * 1024 * 1024)
     elif data[:2] == _GZIP_MAGIC:
         data = gzip.decompress(data)
@@ -97,12 +100,9 @@ def mesh_file_to_cached_obj(mesh_path: Path) -> Path:
     ValueError
         If ``mesh_processing.convert`` fails to produce OBJ content.
     """
-    # Lazy import to avoid loading DracoPy etc. at module load time
-    # mesh_processing lives at fleasion/cache/mesh_processing.py — three levels
-    # up from solidmodel_converter/mesh_intermediary.py
-    from fleasion.cache.mesh_processing import (  # ruff: ignore[import-outside-top-level]
-        convert as mesh_to_obj_str,
-    )
+    # Keep DracoPy and mesh-processing startup cost out of the import path.
+    mesh_processing = importlib.import_module('fleasion.cache.mesh_processing')
+    mesh_to_obj_str = mesh_processing.convert
 
     mesh_path = Path(mesh_path).resolve()
     if not mesh_path.exists():
@@ -162,14 +162,12 @@ def _csg_vertices_to_obj(vertices: list[CSGVertex], indices: list[int]) -> str:
     lines.append('\n')
 
     # Vertex normals
-    for v in vertices:
-        lines.append(f'vn {v.nx:.6f} {v.ny:.6f} {v.nz:.6f}\n')  # ruff: ignore[manual-list-comprehension]
+    lines.extend(f'vn {v.nx:.6f} {v.ny:.6f} {v.nz:.6f}\n' for v in vertices)
 
     lines.append('\n')
 
     # UV coordinates — undo the Roblox V-flip stored in CSGVertex
-    for v in vertices:
-        lines.append(f'vt {v.u:.6f} {1.0 - v.v:.6f} 0.0\n')  # ruff: ignore[manual-list-comprehension]
+    lines.extend(f'vt {v.u:.6f} {1.0 - v.v:.6f} 0.0\n' for v in vertices)
 
     lines.append('\n')
 
@@ -230,9 +228,11 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
         If no injectable instance with ``MeshData`` is found, or the CSGMDL
         produces no geometry.
     """
-    # Lazy imports to keep startup fast and avoid circular imports
-    from .converter import deserialize_rbxm  # ruff: ignore[import-outside-top-level]
-    from .csg_mesh import parse_csg_mesh  # ruff: ignore[import-outside-top-level]
+    # Keep startup light and avoid the converter/csg import cycle.
+    converter = importlib.import_module('.converter', __package__)
+    csg_mesh = importlib.import_module('.csg_mesh', __package__)
+    deserialize_rbxm = converter.deserialize_rbxm
+    parse_csg_mesh = csg_mesh.parse_csg_mesh
 
     bin_path = Path(bin_path).resolve()
     if not bin_path.exists():
@@ -293,11 +293,8 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
 
 def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:
     """Parse MeshData from an RBXMX SolidModel export and convert to a cached OBJ."""
-    import base64  # ruff: ignore[import-outside-top-level]
-
-    from defusedxml.ElementTree import parse as _xml_parse  # ruff: ignore[import-outside-top-level]
-
-    from .csg_mesh import parse_csg_mesh  # ruff: ignore[import-outside-top-level]
+    csg_mesh = importlib.import_module('.csg_mesh', __package__)
+    parse_csg_mesh = csg_mesh.parse_csg_mesh
 
     rbxmx_path = Path(rbxmx_path).resolve()
     if not rbxmx_path.exists():

@@ -44,7 +44,7 @@ def _atomic_write_json(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f'.{path.name}.tmp')
     temporary.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-    os.replace(temporary, path)  # ruff: ignore[os-replace]
+    Path(temporary).replace(path)
 
 
 def write_pending_repair(config_dir: Path | None = None) -> None:
@@ -100,8 +100,26 @@ def _is_admin() -> bool:
         return False
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:  # ruff: ignore[blind-except]
+    except (AttributeError, OSError):
         return False
+
+
+
+def _netsh_executable() -> str:
+    system_root = Path(os.environ.get('SYSTEMROOT', r'C:\Windows'))
+    return str(system_root / 'System32' / 'netsh.exe')
+
+
+def _run_netsh(arguments: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        [_netsh_executable(), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+        shell=False,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        timeout=timeout,
+    )
 
 
 def get_fleasion_firewall_rule_status(
@@ -117,9 +135,8 @@ def get_fleasion_firewall_rule_status(
     errors: list[str] = []
     for _direction, rule_name in _RULES:
         try:
-            completed = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
-                [  # ruff: ignore[start-process-with-partial-path]
-                    'netsh.exe',
+            completed = _run_netsh(
+                [
                     'advfirewall',
                     'firewall',
                     'show',
@@ -127,10 +144,6 @@ def get_fleasion_firewall_rule_status(
                     f'name={rule_name}',
                     'verbose',
                 ],
-                capture_output=True,
-                text=True,
-                check=False,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
                 timeout=15,
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -180,7 +193,6 @@ def install_fleasion_firewall_rules(
     failed: list[dict[str, str]] = []
     for direction, rule_name in _RULES:
         command = [
-            'netsh.exe',
             'advfirewall',
             'firewall',
             'add',
@@ -194,14 +206,7 @@ def install_fleasion_firewall_rules(
             'protocol=any',
         ]
         try:
-            completed = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-                timeout=30,
-            )
+            completed = _run_netsh(command, timeout=30)
         except (OSError, subprocess.SubprocessError) as exc:
             failed.append({'rule': rule_name, 'error': str(exc)})
             continue

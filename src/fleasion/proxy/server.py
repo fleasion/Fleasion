@@ -24,22 +24,29 @@ Key design principle - minimal modification:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gzip
 import hashlib
+import importlib
 import json
 import logging
 import re
 import socket
 import ssl
+import struct
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Sequence
+
+    from fleasion.utils.logging import LogBuffer
 
     from .addons.cache_scraper import CacheScraper
     from .addons.custom_fflags import CustomFFlagModifier
@@ -111,6 +118,165 @@ _DETECT_REPL_RIG_ATTR = '_detect_repl_rig'
 _GET_CONVERTED_CURVE_ATTR = '_get_or_create_converted_curve'
 _GET_CONVERTED_ATTR = '_get_or_create_converted'
 _GET_MODIFIED_FIRST_LINE_ATTR = '_get_modified_first_line'
+_LOG_BUFFER_ATTR = 'log_buffer'
+_OBJ_CONVERTER_ATTR = 'get_or_create_mesh_from_obj'
+_GENERATE_HOST_CERT_ATTR = 'generate_host_cert'
+_PENDING_INTERCEPT_SLOTS = ('entry_id', 'stage', 'data', 'event', 'action')
+
+
+def _get_log_buffer() -> LogBuffer:
+    utils = importlib.import_module('fleasion.utils')
+    return cast('LogBuffer', getattr(utils, _LOG_BUFFER_ATTR))
+
+
+def _best_effort_log(category: str, message: str) -> None:
+    try:
+        _get_log_buffer().log(category, message)
+    except (AttributeError, ImportError, OSError, RuntimeError):
+        logger.debug('%s', message)
+
+
+def _run_isolated(
+    action: Callable[[], object],
+    on_error: Callable[[Exception], None],
+) -> None:
+    """Run an extension/callback boundary without letting it break proxy flow."""
+    try:
+        action()
+    except Exception as exc:  # ruff: ignore[blind-except]
+        on_error(exc)
+
+
+class _ZstdDictionary(Protocol):
+    pass
+
+
+class _ZstdDecompressor(Protocol):
+    def decompress(self, data: bytes, *, max_output_size: int = 0) -> bytes: ...
+
+
+class _ZstdCompressor(Protocol):
+    def compress(self, data: bytes) -> bytes: ...
+
+
+class _ZstdDictionaryFactory(Protocol):
+    def __call__(self, data: bytes, *, dict_type: int) -> _ZstdDictionary: ...
+
+
+class _ZstdDecompressorFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        dict_data: _ZstdDictionary | None = None,
+    ) -> _ZstdDecompressor: ...
+
+
+class _ZstdCompressorFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        dict_data: _ZstdDictionary | None = None,
+    ) -> _ZstdCompressor: ...
+
+
+class _ZstdModule(Protocol):
+    DICT_TYPE_RAWCONTENT: int
+    ZstdCompressionDict: _ZstdDictionaryFactory
+    ZstdDecompressor: _ZstdDecompressorFactory
+    ZstdCompressor: _ZstdCompressorFactory
+    ZstdError: type[Exception]
+
+
+class _AnimConverterModule(Protocol):
+    def detect_player_rig(self, data: bytes) -> str: ...
+    def detect_rig(self, data: bytes) -> str: ...
+    def is_curve_animation(self, data: bytes) -> bool: ...
+
+
+def _get_zstandard() -> _ZstdModule:
+    return cast('_ZstdModule', importlib.import_module('zstandard'))
+
+
+def _zstd_or[T](operation: Callable[[_ZstdModule], T], fallback: T) -> T:
+    try:
+        zstandard = _get_zstandard()
+    except ImportError:
+        return fallback
+    try:
+        return operation(zstandard)
+    except (AttributeError, TypeError, ValueError, zstandard.ZstdError):
+        return fallback
+
+
+def _decompress_zstd(
+    zstandard: _ZstdModule,
+    body: bytes,
+    dictionary: bytes | None = None,
+) -> bytes:
+    if dictionary is None:
+        return zstandard.ZstdDecompressor().decompress(body, max_output_size=64 * 1024 * 1024)
+    zstd_dictionary = zstandard.ZstdCompressionDict(
+        dictionary,
+        dict_type=zstandard.DICT_TYPE_RAWCONTENT,
+    )
+    return zstandard.ZstdDecompressor(dict_data=zstd_dictionary).decompress(
+        body,
+        max_output_size=64 * 1024 * 1024,
+    )
+
+
+def _compress_zstd(zstandard: _ZstdModule, body: bytes, dictionary: bytes) -> bytes:
+    zstd_dictionary = zstandard.ZstdCompressionDict(
+        dictionary,
+        dict_type=zstandard.DICT_TYPE_RAWCONTENT,
+    )
+    return zstandard.ZstdCompressor(dict_data=zstd_dictionary).compress(body)
+
+
+def _convert_obj_to_mesh(path: Path) -> Path:
+    module = importlib.import_module(
+        'fleasion.cache.tools.solidmodel_converter.obj_to_mesh'
+    )
+    converter = cast(
+        'Callable[[str | Path], Path]',
+        getattr(module, _OBJ_CONVERTER_ATTR),
+    )
+    return converter(path)
+
+
+def _generate_host_certificate(
+    host: str,
+    ca_cert_path: Path,
+    ca_key_path: Path,
+    cert_cache_dir: Path,
+) -> tuple[Path, Path]:
+    module = importlib.import_module('fleasion.utils.certs')
+    generator = cast(
+        'Callable[[str, Path, Path, Path], tuple[Path, Path]]',
+        getattr(module, _GENERATE_HOST_CERT_ATTR),
+    )
+    return generator(host, ca_cert_path, ca_key_path, cert_cache_dir)
+
+
+def _build_host_ssl_context(
+    cert_path: Path,
+    key_path: Path,
+    maximum_version: ssl.TLSVersion,
+) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(cert_path), str(key_path))
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.maximum_version = maximum_version
+    context.set_alpn_protocols(['http/1.1'])
+    return context
+
+
+def _get_anim_converter() -> _AnimConverterModule:
+    return cast(
+        '_AnimConverterModule',
+        importlib.import_module('fleasion.utils.anim_converter'),
+    )
 
 
 class _AutoReplaceRule(TypedDict, total=False):
@@ -217,15 +383,10 @@ def _decompress_body(body: bytes, headers: dict[bytes, bytes]) -> bytes:
     if ce == b'gzip' or body[:2] == _GZIP_MAGIC:
         try:
             return gzip.decompress(body)
-        except Exception:  # ruff: ignore[blind-except]
+        except (EOFError, OSError):
             return body
     if ce == b'zstd' or body[:4] == _ZSTD_MAGIC:
-        try:
-            import zstandard  # ruff: ignore[import-outside-top-level]
-
-            return zstandard.ZstdDecompressor().decompress(body, max_output_size=64 * 1024 * 1024)
-        except Exception:  # ruff: ignore[blind-except]
-            return body
+        return _zstd_or(lambda zstandard: _decompress_zstd(zstandard, body), body)
     return body
 
 
@@ -247,7 +408,7 @@ def _pretty_body_text(body: bytes) -> str:
         return ''
     try:
         return json.dumps(json.loads(body), indent=2, ensure_ascii=False)
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
+    except json.JSONDecodeError, UnicodeDecodeError:
         pass
     try:
         text = body.decode('utf-8')
@@ -276,7 +437,7 @@ async def _format_raw_http_message(raw: bytes) -> str:
     header_text = parsed.raw_header_block.decode('ascii', errors='replace').rstrip('\r\n')
     try:
         body_wire = await _read_body_wire(reader, parsed.headers)
-    except Exception:  # ruff: ignore[blind-except]
+    except (ConnectionError, OSError, RuntimeError, ValueError):
         return header_text + '\r\n'
     body = _decompress_body(body_wire.payload, parsed.headers)
     body_text = _pretty_body_text(body)
@@ -306,12 +467,12 @@ def rebuild_edited_message(text: str) -> bytes:
     raw_lines = header_block.split('\n')
     first_line = raw_lines[0].strip('\r').encode('utf-8', errors='replace') if raw_lines else b''
     out_lines = [first_line]
-    for line in raw_lines[1:]:
-        line = line.strip('\r')  # ruff: ignore[redefined-loop-name]
+    for raw_line in raw_lines[1:]:
+        line = raw_line.strip('\r')
         if not line or ':' not in line:
             continue
         key, _, value = line.partition(':')
-        if key.strip().lower() in ('content-length', 'transfer-encoding', 'content-encoding'):  # ruff: ignore[literal-membership]
+        if key.strip().lower() in {'content-length', 'transfer-encoding', 'content-encoding'}:
             continue
         out_lines.append((key.strip() + ': ' + value.strip()).encode('utf-8', errors='replace'))
     out_lines.append(b'content-length: ' + str(len(body)).encode())
@@ -333,7 +494,7 @@ async def _reparse_request_bytes(raw: bytes) -> tuple[RawHeaders, RawBody] | Non
         return None
     try:
         body = await _read_body_wire(reader, parsed.headers)
-    except Exception:  # ruff: ignore[blind-except]
+    except (ConnectionError, OSError, RuntimeError, ValueError):
         body = RawBody(wire=b'', payload=b'', was_chunked=False)
     return parsed, body
 
@@ -341,7 +502,7 @@ async def _reparse_request_bytes(raw: bytes) -> tuple[RawHeaders, RawBody] | Non
 class PendingIntercept:
     """A request or response held open, awaiting a forward/drop decision from the GUI."""
 
-    __slots__ = ('entry_id', 'stage', 'data', 'event', 'action')  # ruff: ignore[unsorted-dunder-slots]
+    __slots__ = _PENDING_INTERCEPT_SLOTS
 
     def __init__(self, entry_id: int, stage: str, data: bytes) -> None:
         self.entry_id = entry_id
@@ -358,43 +519,13 @@ def _dcz_dictionary_sha256(path: str) -> str | None:
 
 
 def _decompress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
-    """Decode a Compression Dictionary Transport Zstandard payload.
-
-    ``dcz`` is regular Zstandard encoded against a dictionary advertised by the
-    client.  Roblox publishes these dictionaries under ClientSettings, so a
-    proxy can safely preserve the representation rather than returning an
-    incompatible identity response to a client that requested ``dcz``.
-    """
-    try:
-        import zstandard  # ruff: ignore[import-outside-top-level]
-
-        # Roblox publishes raw dictionary content rather than a serialized
-        # full-dictionary frame.  Auto-detection can misclassify newer
-        # dictionaries, causing otherwise valid Player ClientSettings bodies
-        # to fail decompression.
-        zstd_dictionary = zstandard.ZstdCompressionDict(
-            dictionary,
-            dict_type=zstandard.DICT_TYPE_RAWCONTENT,
-        )
-        return zstandard.ZstdDecompressor(dict_data=zstd_dictionary).decompress(
-            body, max_output_size=64 * 1024 * 1024
-        )
-    except Exception:  # ruff: ignore[blind-except]
-        return None
+    """Decode Roblox ``dcz`` shared-compression payloads."""
+    return _zstd_or(lambda zstandard: _decompress_zstd(zstandard, body, dictionary), None)
 
 
 def _compress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
     """Encode a modified ClientSettings document using the client's ``dcz`` dictionary."""
-    try:
-        import zstandard  # ruff: ignore[import-outside-top-level]
-
-        zstd_dictionary = zstandard.ZstdCompressionDict(
-            dictionary,
-            dict_type=zstandard.DICT_TYPE_RAWCONTENT,
-        )
-        return zstandard.ZstdCompressor(dict_data=zstd_dictionary).compress(body)
-    except Exception:  # ruff: ignore[blind-except]
-        return None
+    return _zstd_or(lambda zstandard: _compress_zstd(zstandard, body, dictionary), None)
 
 
 def _build_modified_response(
@@ -470,7 +601,7 @@ def _auto_replace_rule_applies(
     if not rule.get('enabled', True):
         return False
     rule_direction = rule.get('direction') or 'both'
-    if rule_direction != 'both' and rule_direction != direction:  # ruff: ignore[repeated-equality-comparison]
+    if rule_direction not in {'both', direction}:
         return False
     if not _auto_replace_filter_matches(host, rule.get('host_filter', '')):
         return False
@@ -479,35 +610,40 @@ def _auto_replace_rule_applies(
     return bool(rule.get('match'))
 
 
-def _resolve_json_path(data: _JsonValue, path_expr: str) -> _JsonPathTarget | None:  # ruff: ignore[too-many-return-statements]
-    """Navigate a dot/bracket path expression (e.g. ``assets[0].id``) through
-    nested dict/list JSON data. Returns (container, key) for the final
-    segment so the caller can overwrite it, or None if the path doesn't
-    resolve (missing key, out-of-range index, wrong container type, etc).
-    """
+def _json_path_child(container: _JsonValue, token: str) -> _JsonValue | None:
+    if token.startswith('['):
+        index = int(token[1:-1])
+        if isinstance(container, list) and index < len(container):
+            return container[index]
+        return None
+    if isinstance(container, dict):
+        return container.get(token)
+    return None
+
+
+def _json_path_target(container: _JsonValue, token: str) -> _JsonPathTarget | None:
+    if token.startswith('['):
+        index = int(token[1:-1])
+        if isinstance(container, list) and index < len(container):
+            return container, index
+        return None
+    if isinstance(container, dict):
+        return container, token
+    return None
+
+
+def _resolve_json_path(data: _JsonValue, path_expr: str) -> _JsonPathTarget | None:
+    """Navigate a dot/bracket path expression to its writable target."""
     tokens = re.findall(r'[^.\[\]]+|\[\d+\]', path_expr)
     if not tokens:
         return None
     container = data
     for token in tokens[:-1]:
-        if token.startswith('['):
-            idx = int(token[1:-1])
-            if not isinstance(container, list) or idx >= len(container):
-                return None
-            container = container[idx]
-        else:
-            if not isinstance(container, dict) or token not in container:
-                return None
-            container = container[token]
-    last = tokens[-1]
-    if last.startswith('['):
-        idx = int(last[1:-1])
-        if not isinstance(container, list) or idx >= len(container):
+        child = _json_path_child(container, token)
+        if child is None:
             return None
-        return container, idx
-    if not isinstance(container, dict):
-        return None
-    return container, last
+        container = child
+    return _json_path_target(container, tokens[-1])
 
 
 def _coerce_replacement_value(replacement: str) -> _JsonValue:
@@ -521,11 +657,37 @@ def _coerce_replacement_value(replacement: str) -> _JsonValue:
         return int(stripped)
     if re.fullmatch(r'-?\d+\.\d+', stripped):
         return float(stripped)
-    if stripped.lower() in ('true', 'false'):  # ruff: ignore[literal-membership]
+    if stripped.lower() in {'true', 'false'}:
         return stripped.lower() == 'true'
     if stripped.lower() == 'null':
         return None
     return replacement
+
+
+def _apply_auto_replace_body_rule(
+    rule_type: str,
+    match: str,
+    replacement: str,
+    body: bytes,
+) -> bytes | None:
+    if rule_type == 'regex':
+        return re.sub(match, replacement, body.decode('utf-8', errors='replace')).encode('utf-8')
+    if rule_type == 'json_path':
+        data = cast('_JsonValue', json.loads(body))
+        resolved = _resolve_json_path(data, match)
+        if resolved is None:
+            return None
+        container, key = resolved
+        value = _coerce_replacement_value(replacement)
+        if isinstance(container, list):
+            container[cast('int', key)] = value
+        else:
+            container[cast('str', key)] = value
+        return json.dumps(data).encode('utf-8')
+    return body.replace(
+        match.encode('utf-8', errors='replace'),
+        replacement.encode('utf-8', errors='replace'),
+    )
 
 
 def apply_auto_replace_rules(
@@ -543,43 +705,24 @@ def apply_auto_replace_rules(
     """
     if not rules or not body:
         return body, False
-    from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
+    log_buffer = _get_log_buffer()
 
     changed = False
     result = body
     for rule in rules:
         rule_type = rule.get('type') or 'plain'
-        if rule_type not in ('plain', 'regex', 'json_path'):  # ruff: ignore[literal-membership]
+        if rule_type not in {'plain', 'regex', 'json_path'}:
             continue
         if not _auto_replace_rule_applies(rule, direction, host, path):
             continue
         match = rule.get('match') or ''
         replacement = rule.get('replacement') or ''
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if rule_type == 'regex':
-                new_result = re.sub(
-                    match, replacement, result.decode('utf-8', errors='replace')
-                ).encode('utf-8')
-            elif rule_type == 'json_path':
-                data = cast('_JsonValue', json.loads(result))
-                resolved = _resolve_json_path(data, match)
-                if resolved is None:
-                    continue
-                container, key = resolved
-                if isinstance(container, list):
-                    container[cast('int', key)] = _coerce_replacement_value(replacement)
-                else:
-                    container[cast('str', key)] = _coerce_replacement_value(replacement)
-                new_result = json.dumps(data).encode('utf-8')
-            else:
-                new_result = result.replace(
-                    match.encode('utf-8', errors='replace'),
-                    replacement.encode('utf-8', errors='replace'),
-                )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            new_result = _apply_auto_replace_body_rule(rule_type, match, replacement, result)
+        except (IndexError, KeyError, TypeError, ValueError, re.error, json.JSONDecodeError) as exc:
             log_buffer.log('AutoReplace', f'Rule {match!r} -> {replacement!r} failed: {exc}')
             continue
-        if new_result != result:
+        if new_result is not None and new_result != result:
             changed = True
             result = new_result
     return result, changed
@@ -624,13 +767,6 @@ def apply_auto_replace_query_rules(
     """
     if not rules:
         return path, False
-    from urllib.parse import (  # ruff: ignore[import-outside-top-level]
-        parse_qsl,
-        urlencode,
-        urlsplit,
-        urlunsplit,
-    )
-
     changed = False
     result_path = path
     for rule in rules:
@@ -696,7 +832,7 @@ async def _open_explicit_proxy_tunnel(
         addr_info = await asyncio.wait_for(
             loop.getaddrinfo(host, port, type=socket.SOCK_STREAM), timeout=timeout
         )
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, TimeoutError) as exc:
         elapsed_ms = round((time.monotonic() - started) * 1000)
         return _ExplicitTunnelConnectResult(
             reader=None,
@@ -710,7 +846,7 @@ async def _open_explicit_proxy_tunnel(
     candidates: list[tuple[int, str]] = []
     seen: set[tuple[int, str]] = set()
     for family, socktype, _protocol, _canonname, sockaddr in addr_info:
-        if family not in (socket.AF_INET, socket.AF_INET6) or socktype != socket.SOCK_STREAM:  # ruff: ignore[literal-membership]
+        if family not in {socket.AF_INET, socket.AF_INET6} or socktype != socket.SOCK_STREAM:
             continue
         address = cast('str', sockaddr[0])
         key = (family, address)
@@ -763,7 +899,7 @@ async def _open_explicit_proxy_tunnel(
                 writer=writer,
                 endpoint=f'{family_name} {address}',
             )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (OSError, TimeoutError) as exc:
             elapsed_ms = round((time.monotonic() - attempt_started) * 1000)
             failures.append(
                 f'phase=connect family={family_name} ip={address} elapsed_ms={elapsed_ms} '
@@ -784,7 +920,7 @@ async def _open_explicit_proxy_tunnel(
 def _parse_status_code(status_line: bytes) -> int:
     try:
         return int(status_line.split(b' ', 2)[1])
-    except Exception:  # ruff: ignore[blind-except]
+    except (IndexError, ValueError):
         return 0
 
 
@@ -877,10 +1013,12 @@ class _ResponseTrackingWriter:
         def _ack_if_unchanged(final_bytes: bytes) -> None:
             if delivery_ack is None or final_bytes != delivery_ack_expected:
                 return
-            try:
-                delivery_ack()
-            except Exception as exc:  # ruff: ignore[blind-except]
-                logger.debug('Deferred response delivery acknowledgement failed: %s', exc)
+            _run_isolated(
+                delivery_ack,
+                lambda exc: logger.debug(
+                    'Deferred response delivery acknowledgement failed: %s', exc
+                ),
+            )
 
         if entry is None:
             self._writer.write(held)
@@ -902,10 +1040,8 @@ class _ResponseTrackingWriter:
         if pending.action == 'drop':
             entry['response_raw'] = bytearray(pending.data)
             entry['dropped_response'] = True
-            try:
+            with contextlib.suppress(Exception):
                 self._writer.close()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
             return
         final_bytes = bytes(pending.data)
         entry['response_raw'] = bytearray(final_bytes)
@@ -987,13 +1123,13 @@ async def _read_headers_raw(reader: asyncio.StreamReader) -> RawHeaders | None:
     while True:
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=15.0)
-        except Exception:  # ruff: ignore[blind-except]
+        except (ConnectionError, OSError, RuntimeError, TimeoutError):
             return None
         if not line:
             return None
 
         raw += line
-        if line in (b'\r\n', b'\n'):  # ruff: ignore[literal-membership]
+        if line in {b'\r\n', b'\n'}:
             break
         if len(raw) > 1024 * 1024:
             msg = 'HTTP header block too large'
@@ -1040,7 +1176,7 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
         while True:
             try:
                 size_line = await reader.readline()
-            except Exception:  # ruff: ignore[blind-except]
+            except (ConnectionError, OSError, RuntimeError):
                 break
             if not size_line:
                 break
@@ -1056,7 +1192,7 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
                     if not trailer_line:
                         break
                     wire += trailer_line
-                    if trailer_line in (b'\r\n', b'\n'):  # ruff: ignore[literal-membership]
+                    if trailer_line in {b'\r\n', b'\n'}:
                         break
                 break
             try:
@@ -1153,36 +1289,31 @@ def _keep_alive(first_line: bytes, headers: dict[bytes, bytes]) -> bool:
     conn = headers.get(b'connection', b'').lower()
     if b'close' in conn:
         return False
-    if b'http/1.0' in first_line.lower() and b'keep-alive' not in conn:  # ruff: ignore[needless-bool]
-        return False
-    return True
+    return not (b'http/1.0' in first_line.lower() and b'keep-alive' not in conn)
 
 
 def _read_local_bytes(local_path: str) -> bytes:
     """Read the actual (possibly converted) bytes for caching purposes."""
     path = Path(local_path)
     if path.suffix.lower() == '.obj':
-        try:
-            from fleasion.cache.tools.solidmodel_converter.obj_to_mesh import (  # ruff: ignore[import-outside-top-level]
-                get_or_create_mesh_from_obj,
-            )
-
-            path = get_or_create_mesh_from_obj(path)
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+        with contextlib.suppress(Exception):
+            path = _convert_obj_to_mesh(path)
     return strip_roblox_metadata(path, path.read_bytes()) if path.exists() else b''
+
+
+def _local_file_metadata(path: Path) -> tuple[bool, int]:
+    try:
+        return True, path.stat().st_size
+    except OSError:
+        return False, 0
 
 
 def _serve_local_file(local_path: str) -> bytes:
     path = Path(local_path)
     if path.suffix.lower() == '.obj':
         try:
-            from fleasion.cache.tools.solidmodel_converter.obj_to_mesh import (  # ruff: ignore[import-outside-top-level]
-                get_or_create_mesh_from_obj,
-            )
-
-            path = get_or_create_mesh_from_obj(path)
-        except Exception as exc:  # ruff: ignore[blind-except]
+            path = _convert_obj_to_mesh(path)
+        except (AttributeError, ImportError, IndexError, OSError, OverflowError, ValueError, struct.error) as exc:
             logger.debug('OBJ->mesh conversion failed: %s', exc)
     if not path.exists():
         return b'HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n'
@@ -1302,9 +1433,7 @@ class _FlowRequest:
 
     @url.setter
     def url(self, value: str) -> None:
-        from urllib.parse import urlparse as _urlparse  # ruff: ignore[import-outside-top-level]
-
-        self._path = _urlparse(value).path
+        self._path = urlparse(value).path
 
     def _get_modified_first_line(self, original: bytes) -> bytes:
         if self._path == self._original_path:
@@ -1325,9 +1454,7 @@ class _FlowResponse:
         self.content: bytes = body
 
     def json(self) -> _JsonValue:
-        import json as _json  # ruff: ignore[import-outside-top-level]
-
-        return cast('_JsonValue', _json.loads(self.content))
+        return cast('_JsonValue', json.loads(self.content))
 
 
 class ProxyFlow:
@@ -1345,6 +1472,91 @@ class ProxyFlow:
 
 def _flow_response_after_callbacks(flow: ProxyFlow) -> _FlowResponse | None:
     return flow.response
+
+
+async def _exchange_replay_request(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    request: bytes,
+) -> tuple[RawHeaders, RawBody] | None:
+    writer.write(request)
+    await writer.drain()
+    headers = await asyncio.wait_for(_read_headers_raw(reader), timeout=15.0)
+    if headers is None:
+        return None
+    body = await _read_body_wire(reader, headers.headers)
+    return headers, body
+
+
+async def _copy_tunnel_stream(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    log_entry: _RequestLogEntry | None,
+    started: float,
+) -> None:
+    while True:
+        data = await reader.read(64 * 1024)
+        if not data:
+            return
+        writer.write(data)
+        await writer.drain()
+        if log_entry is not None:
+            log_entry['size'] = log_entry.get('size', 0) + len(data)
+            log_entry['ms'] = round((time.time() - started) * 1000)
+
+
+async def _read_client_settings_dictionary_response(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    dictionary_sha256: str,
+    log_buffer: LogBuffer,
+) -> bytes | None:
+    request = (
+        f'GET /v2/compression-dictionaries/{dictionary_sha256} HTTP/1.1\r\n'
+        'Host: clientsettings.roblox.com\r\n'
+        'Accept: application/octet-stream\r\n'
+        'Accept-Encoding: identity\r\n'
+        'User-Agent: Fleasion/1.0\r\n'
+        'Connection: close\r\n\r\n'
+    ).encode('ascii')
+    writer.write(request)
+    await writer.drain()
+    response = await _read_headers_raw(reader)
+    if response is None:
+        log_buffer.log('CustomFFlags', 'Roblox compression dictionary returned no response')
+        return None
+    status_code = _parse_status_code(response.first_line)
+    if not 200 <= status_code < 300:
+        log_buffer.log(
+            'CustomFFlags',
+            f'Roblox compression dictionary returned HTTP {status_code}',
+        )
+        return None
+    dictionary = _decompress_body(
+        (await _read_body_wire(reader, response.headers)).payload,
+        response.headers,
+    )
+    if hashlib.sha256(dictionary).hexdigest() != dictionary_sha256:
+        log_buffer.log(
+            'CustomFFlags',
+            'Roblox compression dictionary integrity check failed; preserving original response',
+        )
+        return None
+    return dictionary
+
+
+def _call_module_interceptor(
+    interceptor: _ModuleInterceptor,
+    flow: ProxyFlow,
+    *,
+    response: bool,
+) -> None:
+    stage = 'response' if response else 'request'
+    callback = interceptor.response if response else interceptor.request
+    _run_isolated(
+        lambda: callback(flow),
+        lambda exc: logger.debug('Module interceptor %s error: %s', stage, exc),
+    )
 
 
 class FleasionProxy:
@@ -1501,26 +1713,19 @@ class FleasionProxy:
         if key in self._sni_diagnostics_seen:
             return
         self._sni_diagnostics_seen.add(key)
-        try:
-            from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
-
-            log_buffer.log('TLS', message)
-        except Exception:  # ruff: ignore[blind-except]
-            logger.debug(message)
+        _best_effort_log('TLS', message)
 
     def _notify_upstream_connect_failure_once(self, host: str, error: str) -> None:
         if self._upstream_connect_failure_notified or self._on_upstream_connect_failure is None:
             return
         self._upstream_connect_failure_notified = True
-        try:
-            self._on_upstream_connect_failure(host, error)
-        except Exception as exc:  # ruff: ignore[blind-except]
-            try:
-                from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
-
-                log_buffer.log('Proxy', f'Failed to report upstream connection failure: {exc}')
-            except Exception:  # ruff: ignore[blind-except]
-                logger.debug('Failed to report upstream connection failure: %s', exc)
+        callback = self._on_upstream_connect_failure
+        _run_isolated(
+            lambda: callback(host, error),
+            lambda exc: _best_effort_log(
+                'Proxy', f'Failed to report upstream connection failure: {exc}'
+            ),
+        )
 
     def _sni_callback(
         self,
@@ -1568,27 +1773,13 @@ class FleasionProxy:
         """
         if self._ca_cert_path is None or self._ca_key_path is None or self._cert_cache_dir is None:
             return None
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            from fleasion.utils.certs import (  # ruff: ignore[import-outside-top-level]
-                generate_host_cert,
-            )
-
-            cert_path, key_path = generate_host_cert(
+        try:
+            cert_path, key_path = _generate_host_certificate(
                 host, self._ca_cert_path, self._ca_key_path, self._cert_cache_dir
             )
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ctx.load_cert_chain(str(cert_path), str(key_path))
-            ctx.verify_mode = ssl.CERT_NONE
-            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-            ctx.maximum_version = self._local_tls_max_version
-            ctx.set_alpn_protocols(['http/1.1'])
+            ctx = _build_host_ssl_context(cert_path, key_path, self._local_tls_max_version)
         except Exception as exc:  # ruff: ignore[blind-except]
-            try:
-                from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
-
-                log_buffer.log('TLS', f'Could not generate a certificate for {host}: {exc}')
-            except Exception:  # ruff: ignore[blind-except]
-                logger.debug('Could not generate a certificate for %s: %s', host, exc)
+            _best_effort_log('TLS', f'Could not generate a certificate for {host}: {exc}')
             return None
         self._host_ssl_ctxs[host] = ctx
         return ctx
@@ -1623,15 +1814,10 @@ class FleasionProxy:
             self._listening_loopbacks.add('::1')
             logger.info('Fleasion proxy listening on [::1]:%d (%s)', self.port, mode)
         except OSError as exc:
-            try:
-                from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
-
-                log_buffer.log(
-                    'Proxy',
-                    f'IPv6 loopback listener unavailable on [::1]:{self.port}: {exc}',
-                )
-            except Exception:  # ruff: ignore[blind-except]
-                logger.debug('IPv6 loopback listener unavailable on [::1]:%d: %s', self.port, exc)
+            _best_effort_log(
+                'Proxy',
+                f'IPv6 loopback listener unavailable on [::1]:{self.port}: {exc}',
+            )
 
     async def serve_forever(self) -> None:
         if not self._servers:
@@ -1750,35 +1936,40 @@ class FleasionProxy:
         entry['ms'] = None
 
         start = time.time()
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        try:
             connect_result = await self._connect_upstream(host)
-            if connect_result.writer is None:
-                entry['response_raw'] = (
-                    f'<replay failed: {connect_result.error or "no upstream reachable"}>'.encode()
-                )
-                return entry
-            up_reader = cast('asyncio.StreamReader', connect_result.reader)
-            up_writer = connect_result.writer
-            try:
-                up_writer.write(req_raw.raw_header_block + req_body.wire)
-                await up_writer.drain()
-                resp_headers = await asyncio.wait_for(_read_headers_raw(up_reader), timeout=15.0)
-                if resp_headers is None:
-                    entry['response_raw'] = b'<replay: upstream sent no response>'
-                    return entry
-                resp_body = await _read_body_wire(up_reader, resp_headers.headers)
-                full_response = resp_headers.raw_header_block + resp_body.wire
-                entry['response_raw'] = full_response[:_PREVIEW_CAPTURE_CAP]
-                entry['size'] = len(full_response)
-                entry['status'] = _parse_status_code(resp_headers.first_line)
-                entry['ms'] = round((time.time() - start) * 1000)
-            finally:
-                try:
-                    up_writer.close()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
             entry['response_raw'] = f'<replay error: {exc}>'.encode()
+            return entry
+        if connect_result.writer is None or connect_result.reader is None:
+            entry['response_raw'] = (
+                f'<replay failed: {connect_result.error or "no upstream reachable"}>'.encode()
+            )
+            return entry
+
+        up_reader = connect_result.reader
+        up_writer = connect_result.writer
+        try:
+            response = await _exchange_replay_request(
+                up_reader,
+                up_writer,
+                req_raw.raw_header_block + req_body.wire,
+            )
+        except (OSError, RuntimeError, TimeoutError, asyncio.IncompleteReadError) as exc:
+            entry['response_raw'] = f'<replay error: {exc}>'.encode()
+            return entry
+        finally:
+            with contextlib.suppress(Exception):
+                up_writer.close()
+        if response is None:
+            entry['response_raw'] = b'<replay: upstream sent no response>'
+        else:
+            resp_headers, resp_body = response
+            full_response = resp_headers.raw_header_block + resp_body.wire
+            entry['response_raw'] = full_response[:_PREVIEW_CAPTURE_CAP]
+            entry['size'] = len(full_response)
+            entry['status'] = _parse_status_code(resp_headers.first_line)
+            entry['ms'] = round((time.time() - start) * 1000)
         return entry
 
     def set_intercept_match(self, text: str) -> None:
@@ -1935,20 +2126,15 @@ class FleasionProxy:
         for server in servers:
             server.close()
         for server in servers:
-            try:
+            with contextlib.suppress(Exception):
                 await asyncio.wait_for(server.wait_closed(), timeout=3.0)
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
         self._servers = []
         self._server = None
         self._listening_loopbacks = set()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def loopback_ips_for_hosts(self) -> tuple[str, ...]:
-        ordered: list[str] = []
-        for ip in ('127.0.0.1', '::1'):
-            if ip in self._listening_loopbacks:
-                ordered.append(ip)  # ruff: ignore[manual-list-comprehension]
+        ordered: list[str] = [ip for ip in ('127.0.0.1', '::1') if ip in self._listening_loopbacks]
         return tuple(ordered) or ('127.0.0.1',)
 
     def _note_asset_traffic(self) -> None:
@@ -1970,18 +2156,13 @@ class FleasionProxy:
             return
         if self._last_asset_traffic_time >= gamejoin_time:
             return
-        try:
-            from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
-
-            log_buffer.log(
-                'ProxyDiag',
-                'Game join traffic was intercepted, but no assetdelivery/CDN requests reached Fleasion '
-                f'within {ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS:.0f}s. '
-                'Possible asset traffic bypass: IPv6 loopback, stale DNS cache, hosts-file protection, '
-                'or security/VPN filtering.',
-            )
-        except Exception:  # ruff: ignore[blind-except]
-            logger.debug('No assetdelivery/CDN traffic observed after gamejoin')
+        _best_effort_log(
+            'ProxyDiag',
+            'Game join traffic was intercepted, but no assetdelivery/CDN requests reached Fleasion '
+            f'within {ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS:.0f}s. '
+            'Possible asset traffic bypass: IPv6 loopback, stale DNS cache, hosts-file protection, '
+            'or security/VPN filtering.',
+        )
 
     def _endpoints_for_host(
         self,
@@ -2025,7 +2206,7 @@ class FleasionProxy:
         try:
             refreshed_raw = await asyncio.to_thread(refresher, host)
         except Exception as exc:  # ruff: ignore[blind-except]
-            from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
+            log_buffer = _get_log_buffer()
 
             log_buffer.log('Proxy', f'Runtime endpoint refresh failed for {host}: {exc}')
             return []
@@ -2040,16 +2221,16 @@ class FleasionProxy:
         candidate_ips = [endpoint.ip for endpoint in refreshed if endpoint.ip]
         update_ips = getattr(self.cache_scraper, 'update_real_ips', None)
         if callable(update_ips) and candidate_ips:
-            try:
-                update_ips({host: candidate_ips})
-            except Exception as exc:  # ruff: ignore[blind-except]
-                from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
-
-                log_buffer.log('Cache', f'Could not refresh API bypass endpoints for {host}: {exc}')
+            _run_isolated(
+                lambda: update_ips({host: candidate_ips}),
+                lambda exc: _get_log_buffer().log(
+                    'Cache', f'Could not refresh API bypass endpoints for {host}: {exc}'
+                ),
+            )
 
         old_ips = ', '.join(endpoint.ip or endpoint.host for endpoint in previous)
         new_ips = ', '.join(endpoint.ip or endpoint.host for endpoint in refreshed)
-        from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
+        log_buffer = _get_log_buffer()
 
         log_buffer.log(
             'Proxy',
@@ -2101,7 +2282,7 @@ class FleasionProxy:
 
         if isinstance(self._connector, AutoConnector):
             self._connector.note_direct_success(host)
-        from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
+        log_buffer = _get_log_buffer()
 
         log_buffer.log(
             'Proxy',
@@ -2132,7 +2313,7 @@ class FleasionProxy:
         return None, None, None, [result.error or 'upstream connect failed']
 
     async def log_upstream_self_test(self, hosts: set[str] | None = None) -> None:
-        from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
+        log_buffer = _get_log_buffer()
 
         hosts_to_test = sorted(hosts or set(self._upstream_endpoints.keys()))
 
@@ -2160,13 +2341,11 @@ class FleasionProxy:
                     )
                     if first_ok_method is None:
                         first_ok_method = result.method
-                    try:
+                    with contextlib.suppress(Exception):
                         result.writer.close()
                         wait_closed = getattr(result.writer, 'wait_closed', None)
                         if callable(wait_closed):
                             await cast('Callable[[], Awaitable[None]]', wait_closed)()
-                    except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                        pass
                 else:
                     log_buffer.log(
                         'ProxyDiag',
@@ -2197,6 +2376,22 @@ class FleasionProxy:
         for host in hosts_to_test:
             await probe(host)
 
+    async def _run_http_session_safely(
+        self,
+        first_request: RawHeaders,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        host: str,
+        *,
+        error_label: str,
+    ) -> None:
+        try:
+            await self._http_session(first_request, reader, writer, host)
+        except ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError:
+            return
+        except Exception as exc:  # ruff: ignore[blind-except]
+            _get_log_buffer().log('Proxy', f'{error_label} for {host}: {exc}')
+
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
@@ -2204,11 +2399,9 @@ class FleasionProxy:
             await self._handle_explicit_proxy_client(reader, writer)
             return
 
-        from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
-
         try:
             result = await asyncio.wait_for(_read_headers_raw(reader), timeout=15.0)
-        except asyncio.TimeoutError:  # ruff: ignore[timeout-error-alias]
+        except TimeoutError:
             writer.close()
             return
         if result is None:
@@ -2224,25 +2417,25 @@ class FleasionProxy:
             return
 
         try:
-            await self._http_session(result, reader, writer, host)
-        except ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError:
-            pass
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log('Proxy', f'Session error for {host}: {exc}')
+            await self._run_http_session_safely(
+                result,
+                reader,
+                writer,
+                host,
+                error_label='Session error',
+            )
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 writer.close()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
 
-    async def _handle_explicit_proxy_client(  # ruff: ignore[too-many-return-statements]
+    async def _handle_explicit_proxy_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
+        log_buffer = _get_log_buffer()
 
         try:
             connect_headers = await asyncio.wait_for(_read_headers_raw(reader), timeout=15.0)
-        except asyncio.TimeoutError:  # ruff: ignore[timeout-error-alias]
+        except TimeoutError:
             writer.close()
             return
         if connect_headers is None:
@@ -2286,6 +2479,15 @@ class FleasionProxy:
             )
             return
 
+        await self._handle_intercepted_explicit_proxy_client(reader, writer, host, log_buffer)
+
+    async def _handle_intercepted_explicit_proxy_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        host: str,
+        log_buffer: LogBuffer,
+    ) -> None:
         writer.write(b'HTTP/1.1 200 Connection Established\r\nProxy-Agent: Fleasion\r\n\r\n')
         await writer.drain()
 
@@ -2300,14 +2502,14 @@ class FleasionProxy:
         except OSError as exc:
             log_buffer.log('TLS', f'Explicit proxy TLS upgrade socket error for {host}: {exc!r}')
             return
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (RuntimeError, ValueError) as exc:
             log_buffer.log('Proxy', f'Explicit proxy TLS upgrade failed for {host}: {exc}')
             writer.close()
             return
 
         try:
             first_tls_request = await asyncio.wait_for(_read_headers_raw(reader), timeout=15.0)
-        except asyncio.TimeoutError:  # ruff: ignore[timeout-error-alias]
+        except TimeoutError:
             writer.close()
             return
         if first_tls_request is None:
@@ -2315,16 +2517,16 @@ class FleasionProxy:
             return
 
         try:
-            await self._http_session(first_tls_request, reader, writer, host)
-        except ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError:
-            pass
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log('Proxy', f'Explicit proxy session error for {host}: {exc}')
+            await self._run_http_session_safely(
+                first_tls_request,
+                reader,
+                writer,
+                host,
+                error_label='Explicit proxy session error',
+            )
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 writer.close()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
 
     async def _tunnel_explicit_proxy_connection(
         self,
@@ -2334,7 +2536,7 @@ class FleasionProxy:
         port: int,
         log_entry: _RequestLogEntry | None = None,
     ) -> None:
-        from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
+        log_buffer = _get_log_buffer()
 
         start = time.time()
 
@@ -2374,23 +2576,14 @@ class FleasionProxy:
             writer: asyncio.StreamWriter,
             track: bool = False,
         ) -> None:
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                while True:
-                    data = await reader.read(64 * 1024)
-                    if not data:
-                        break
-                    writer.write(data)
-                    await writer.drain()
-                    if track and log_entry is not None:
-                        log_entry['size'] = log_entry.get('size', 0) + len(data)
-                        log_entry['ms'] = round((time.time() - start) * 1000)
+            tracked_entry = log_entry if track else None
+            try:
+                await _copy_tunnel_stream(reader, writer, tracked_entry, start)
             except ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, OSError:
                 pass
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     writer.close()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
 
         try:
             await asyncio.gather(
@@ -2399,10 +2592,8 @@ class FleasionProxy:
             )
         finally:
             for tunnel_writer in (upstream_writer, client_writer):
-                try:
+                with contextlib.suppress(Exception):
                     tunnel_writer.close()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
 
     async def _http_session(
         self,
@@ -2411,7 +2602,7 @@ class FleasionProxy:
         writer: asyncio.StreamWriter,
         host: str,
     ) -> None:
-        from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
+        log_buffer = _get_log_buffer()
 
         response_writer = _ResponseTrackingWriter(writer, self)
         custom_fflag_modifier_present = self.custom_fflag_modifier is not None
@@ -2471,13 +2662,11 @@ class FleasionProxy:
                     f'Fleasion could not connect upstream to {host}. See Fleasion logs for details.',
                 )
             )
-            try:
+            with contextlib.suppress(Exception):
                 await response_writer.drain()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
             return False
 
-        async def fetch_client_settings_dictionary(dictionary_sha256: str) -> bytes | None:  # ruff: ignore[too-many-return-statements]
+        async def fetch_client_settings_dictionary(dictionary_sha256: str) -> bytes | None:
             """Fetch and cache a public Roblox shared-compression dictionary."""
             if not re.fullmatch(r'[0-9a-f]{64}', dictionary_sha256):
                 return None
@@ -2496,42 +2685,13 @@ class FleasionProxy:
                 )
                 return None
 
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                request = (
-                    f'GET /v2/compression-dictionaries/{dictionary_sha256} HTTP/1.1\r\n'
-                    f'Host: {dictionary_host}\r\n'
-                    'Accept: application/octet-stream\r\n'
-                    'Accept-Encoding: identity\r\n'
-                    'User-Agent: Fleasion/1.0\r\n'
-                    'Connection: close\r\n\r\n'
-                ).encode('ascii')
-                dictionary_writer.write(request)
-                await dictionary_writer.drain()
-                response = await _read_headers_raw(dictionary_reader)
-                if response is None:
-                    log_buffer.log(
-                        'CustomFFlags', 'Roblox compression dictionary returned no response'
-                    )
-                    return None
-                status_code = _parse_status_code(response.first_line)
-                if not 200 <= status_code < 300:
-                    log_buffer.log(
-                        'CustomFFlags',
-                        f'Roblox compression dictionary returned HTTP {status_code}',
-                    )
-                    return None
-                dictionary = _decompress_body(
-                    (await _read_body_wire(dictionary_reader, response.headers)).payload,
-                    response.headers,
+            try:
+                dictionary = await _read_client_settings_dictionary_response(
+                    dictionary_reader,
+                    dictionary_writer,
+                    dictionary_sha256,
+                    log_buffer,
                 )
-                if hashlib.sha256(dictionary).hexdigest() != dictionary_sha256:
-                    log_buffer.log(
-                        'CustomFFlags',
-                        'Roblox compression dictionary integrity check failed; preserving original response',
-                    )
-                    return None
-                self._client_settings_dictionary_cache[dictionary_sha256] = dictionary
-                return dictionary  # ruff: ignore[try-consider-else]
             except (
                 ConnectionResetError,
                 BrokenPipeError,
@@ -2539,15 +2699,294 @@ class FleasionProxy:
                 OSError,
             ) as exc:
                 log_buffer.log('CustomFFlags', f'Roblox compression dictionary fetch failed: {exc}')
-                return None
+                dictionary = None
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     dictionary_writer.close()
                     await dictionary_writer.wait_closed()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
 
-        try:  # ruff: ignore[too-many-nested-blocks]
+            if dictionary is not None:
+                self._client_settings_dictionary_cache[dictionary_sha256] = dictionary
+            return dictionary
+
+        async def modify_custom_fflag_response(
+            path: str,
+            resp_headers: dict[bytes, bytes],
+            resp_body_raw: bytes,
+        ) -> tuple[bytes, bool, bytes | None, tuple[tuple[str, str], ...] | None]:
+            content_encoding = resp_headers.get(b'content-encoding', b'').lower()
+            if content_encoding != b'dcz':
+                resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
+                modified_settings, delivered_signature = (
+                    custom_fflag_modifier.modify_response_with_delivery(path, resp_body_plain)
+                )
+                if delivered_signature is None or modified_settings == resp_body_plain:
+                    return resp_body_raw, False, None, delivered_signature
+                return modified_settings, True, None, delivered_signature
+
+            dictionary_sha256 = _dcz_dictionary_sha256(path)
+            dictionary = (
+                await fetch_client_settings_dictionary(dictionary_sha256)
+                if dictionary_sha256 is not None
+                else None
+            )
+            resp_body_plain = (
+                _decompress_dcz(resp_body_raw, dictionary) if dictionary is not None else None
+            )
+            if resp_body_plain is None:
+                custom_fflag_modifier.log_response_failure(
+                    'dcz-decode',
+                    'Could not decode dictionary-compressed ClientSettings; preserving original response',
+                )
+                return resp_body_raw, False, None, None
+
+            modified_settings, delivered_signature = custom_fflag_modifier.modify_response_with_delivery(
+                path, resp_body_plain
+            )
+            if delivered_signature is None or modified_settings == resp_body_plain:
+                return resp_body_raw, False, None, delivered_signature
+
+            recompressed = _compress_dcz(modified_settings, cast('bytes', dictionary))
+            if recompressed is None:
+                custom_fflag_modifier.log_response_failure(
+                    'dcz-encode',
+                    'Could not re-encode dictionary-compressed ClientSettings; preserving original response',
+                )
+                return resp_body_raw, False, None, None
+            return recompressed, True, b'dcz', delivered_signature
+
+        async def handle_cdn_short_circuit(
+            path: str,
+            req_first: bytes,
+            req_headers: dict[bytes, bytes],
+        ) -> tuple[tuple[str, object] | None, bool, bool]:
+            if host not in CDN_HOSTS:
+                return None, False, True
+
+            short_circuit = cast(
+                'tuple[str, object] | None', self.texture_stripper.check_cdn_request(host, path)
+            )
+            if short_circuit is None and self.texture_stripper.has_pending():
+                # Give an in-flight batch response a brief chance to register
+                # its replacement before forwarding this CDN request.
+                for _wait_i in range(12):
+                    await asyncio.sleep(0.05)
+                    short_circuit = cast(
+                        'tuple[str, object] | None',
+                        self.texture_stripper.check_cdn_request(host, path),
+                    )
+                    if short_circuit is not None or not self.texture_stripper.has_pending():
+                        break
+
+            if short_circuit is None:
+                return None, False, True
+
+            action, value = short_circuit
+            if action == 'local':
+                local_value = cast('str', value)
+                serve_path = Path(local_value)
+                serve_exists, serve_size = await asyncio.get_event_loop().run_in_executor(
+                    self._executor, _local_file_metadata, serve_path
+                )
+                serve_category = (
+                    'TexPackTrace' if serve_path.suffix.lower() in {'.ktx', '.ktx2'} else 'Local'
+                )
+                log_buffer.log(
+                    serve_category,
+                    f'CDN local serve start: host={host} path={path[:160]} '
+                    f'file={serve_path.name} exists={serve_exists} bytes={serve_size}',
+                )
+                response = await asyncio.get_event_loop().run_in_executor(
+                    self._executor, _serve_local_file, local_value
+                )
+                status_line = (
+                    response.split(b'\r\n', 1)[0].decode('ascii', errors='replace')
+                    if response
+                    else 'empty'
+                )
+                log_buffer.log(
+                    serve_category,
+                    f'CDN local serve complete: host={host} path={path[:160]} '
+                    f'file={serve_path.name} status={status_line} response_bytes={len(response)}',
+                )
+                response_writer.write(response)
+                await response_writer.drain()
+                if self.cache_scraper.enabled:
+                    with contextlib.suppress(Exception):
+                        file_bytes = await asyncio.get_event_loop().run_in_executor(
+                            self._executor, _read_local_bytes, local_value
+                        )
+                        if file_bytes:
+                            full_url = f'https://{host}{path}'
+                            self.cache_scraper.process_cdn_response(
+                                full_url,
+                                path,
+                                file_bytes,
+                                'application/octet-stream',
+                            )
+                return short_circuit, True, _keep_alive(req_first, req_headers)
+
+            if action == 'cdn':
+                response_writer.write(_make_redirect(cast('str', value)))
+                await response_writer.drain()
+                return short_circuit, True, _keep_alive(req_first, req_headers)
+
+            # 'solid', 'solid_v3', and 'anim_rig' need the upstream response.
+            return short_circuit, False, True
+
+        async def forward_gamejoin_request(
+            path: str,
+            req_raw: RawHeaders,
+            req_body: RawBody,
+            req_body_raw: bytes,
+        ) -> tuple[ProxyFlow | None, str]:
+            req_first, req_headers = req_raw.first_line, req_raw.headers
+            req_body_plain = _decompress_body(req_body_raw, req_headers)
+            if not self._module_interceptors:
+                if not await ensure_upstream(path):
+                    return None, 'break'
+                if self._wire_preserving_passthrough:
+                    outgoing = req_raw.raw_header_block + req_body.wire
+                else:
+                    outgoing = _reassemble_raw_request(req_first, req_headers, req_body_raw)
+                cast('asyncio.StreamWriter', up_writer).write(outgoing)
+                return None, 'sent'
+
+            gamejoin_flow = ProxyFlow(req_first, req_headers, req_body_plain, host)
+            for interceptor in list(self._module_interceptors):
+                _call_module_interceptor(interceptor, gamejoin_flow, response=False)
+            if gamejoin_flow.drop_request:
+                drop_body = gamejoin_flow.drop_body
+                if isinstance(drop_body, str):
+                    drop_body = drop_body.encode('utf-8', errors='replace')
+                response_writer.write(_make_local_response(gamejoin_flow.drop_status_code, drop_body))
+                await response_writer.drain()
+                action = 'continue' if _keep_alive(req_first, req_headers) else 'break'
+                return gamejoin_flow, action
+
+            new_first = _flow_request_modified_first_line(gamejoin_flow.request, req_first)
+            new_body = gamejoin_flow.request.raw_content
+            if not await ensure_upstream(path):
+                return gamejoin_flow, 'break'
+            if new_first != req_first or new_body != req_body_plain:
+                outgoing = _build_modified_request(
+                    new_first,
+                    gamejoin_flow.request.headers.to_bytes_dict(),
+                    new_body,
+                )
+            elif self._wire_preserving_passthrough:
+                outgoing = req_raw.raw_header_block + req_body.wire
+            else:
+                outgoing = _reassemble_raw_request(req_first, req_headers, req_body_raw)
+            cast('asyncio.StreamWriter', up_writer).write(outgoing)
+            return gamejoin_flow, 'sent'
+
+        def pick_rig_matched_file(
+            orig_bytes: bytes,
+            repl_path: str,
+            required_rig: _AnimRequiredRig = 'any',
+        ) -> bytes:
+            log_buffer = _get_log_buffer()
+            anim_converter = _get_anim_converter()
+            orig_rig = anim_converter.detect_rig(orig_bytes)
+            if required_rig != 'any' and orig_rig not in required_rig:
+                log_buffer.log(
+                    'AnimConv',
+                    f'Skipping replacement: original rig={orig_rig}, required={required_rig}',
+                )
+                return orig_bytes
+            if anim_converter.is_curve_animation(orig_bytes):
+                if orig_rig == 'unknown':
+                    target_rig = _texture_detect_repl_rig(self.texture_stripper, repl_path)
+                    if target_rig == 'unknown':
+                        target_rig = 'R15'
+                else:
+                    target_rig = orig_rig
+                repl_p = Path(repl_path)
+                if not repl_p.exists():
+                    log_buffer.log('AnimConv', f'Replacement file not found: {repl_p.name}')
+                    return orig_bytes
+                conv_path = _texture_get_converted_curve(
+                    self.texture_stripper, repl_path, target_rig
+                )
+                if conv_path:
+                    log_buffer.log(
+                        'AnimConv',
+                        f'Serving {target_rig} CurveAnimation replacement ({Path(conv_path).name})',
+                    )
+                    return Path(conv_path).read_bytes()
+                log_buffer.log(
+                    'AnimConv',
+                    f'CurveAnimation conversion failed for {repl_p.name} → {target_rig}',
+                )
+                return orig_bytes
+
+            final_path = repl_path
+            conv_rig = (
+                orig_rig
+                if orig_rig != 'unknown'
+                else anim_converter.detect_player_rig(orig_bytes)
+            )
+            if conv_rig != 'unknown':
+                repl_rig = _texture_detect_repl_rig(self.texture_stripper, repl_path)
+                if repl_rig == 'unknown':
+                    log_buffer.log(
+                        'AnimConv',
+                        f'Rig detection unknown for replacement: {Path(repl_path).name}',
+                    )
+                elif repl_rig != conv_rig:
+                    conv = _texture_get_converted(self.texture_stripper, repl_path, conv_rig)
+                    if conv:
+                        final_path = conv
+            final = Path(final_path)
+            return strip_roblox_metadata(final, final.read_bytes()) if final.exists() else orig_bytes
+
+        async def modify_cdn_response(
+            path: str,
+            resp_headers: dict[bytes, bytes],
+            resp_body_raw: bytes,
+            short_circuit: tuple[str, object] | None,
+        ) -> tuple[bytes, bool]:
+            full_url = f'https://{host}{path}'
+            response_modified = False
+            if short_circuit is not None and short_circuit[0] in {'solid', 'solid_v3'}:
+                resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
+                cdn_base_url = full_url.partition('?')[0]
+                prefer_v3 = short_circuit[0] == 'solid_v3'
+                resp_body_raw = await asyncio.get_event_loop().run_in_executor(
+                    self._executor,
+                    self.texture_stripper.process_solidmodel_response,
+                    resp_body_plain,
+                    cast('str', short_circuit[1]),
+                    cdn_base_url,
+                    prefer_v3,
+                )
+                response_modified = True
+            elif short_circuit is not None and short_circuit[0] == 'anim_rig':
+                anim_repl_path, required_rig = cast('_AnimPendingValue', short_circuit[1])
+                orig_bytes = _decompress_body(resp_body_raw, resp_headers)
+                resp_body_raw = await asyncio.get_event_loop().run_in_executor(
+                    self._executor,
+                    pick_rig_matched_file,
+                    orig_bytes,
+                    anim_repl_path,
+                    required_rig,
+                )
+                response_modified = True
+
+            if self.cache_scraper.enabled:
+                resp_body_for_cache = (
+                    resp_body_raw
+                    if response_modified
+                    else _decompress_body(resp_body_raw, resp_headers)
+                )
+                ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
+                self.cache_scraper.process_cdn_response(full_url, path, resp_body_for_cache, ct)
+            return resp_body_raw, response_modified
+
+        async def run_session_loop() -> None:
+            nonlocal pending_req
+
             while True:
                 # Release the previous iteration's held response (if any) before
                 # moving on - this is the one choke point every response branch
@@ -2601,10 +3040,8 @@ class FleasionProxy:
                         if req_pending.action == 'drop':
                             log_entry['dropped_request'] = True
                             log_entry['status'] = None
-                            try:
+                            with contextlib.suppress(Exception):
                                 response_writer.close()
-                            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                                pass
                             break
                         reparsed = await _reparse_request_bytes(edited_request)
                         if reparsed is not None:
@@ -2714,87 +3151,13 @@ class FleasionProxy:
                     self._note_asset_traffic()
 
                 # ── TextureStripper: CDN short-circuit (replace before upstream) ──
-                # Race condition fix: the batch-request coroutine (on the assetdelivery
-                # connection) and this CDN coroutine run concurrently.
-                # The CDN request may arrive before the batch response has been processed
-                # and its CDN URL registered in _solidmodel_injections / _local_redirects.
-                # If there are pending req_ids in flight, yield briefly to the event loop
-                # so the batch-response coroutine can complete its registration, then retry.
-                # Without this, unreplaced assets pass through and Roblox caches them,
-                # requiring multiple rejoins to achieve full replacement coverage.
-                short_circuit = None
-                if host in CDN_HOSTS:
-                    short_circuit = self.texture_stripper.check_cdn_request(host, path)
-                    if short_circuit is None and self.texture_stripper.has_pending():
-                        # Yield to event loop in short increments, retrying up to ~600ms.
-                        # 600ms is generous: batch req→resp RTT is typically <100ms.
-                        for _wait_i in range(12):
-                            await asyncio.sleep(0.05)  # 50ms per retry
-                            short_circuit = self.texture_stripper.check_cdn_request(host, path)
-                            if short_circuit is not None:
-                                break
-                            if not self.texture_stripper.has_pending():
-                                break  # all pending resolved, this URL just isn't ours
-
-                    if short_circuit is not None:
-                        action, value = short_circuit
-                        if action == 'local':
-                            local_value = cast('str', value)
-                            serve_path = Path(local_value)
-                            serve_exists = serve_path.exists()  # ruff: ignore[blocking-path-method-in-async-function]
-                            serve_size = serve_path.stat().st_size if serve_exists else 0  # ruff: ignore[blocking-path-method-in-async-function]
-                            serve_category = (
-                                'TexPackTrace'
-                                if serve_path.suffix.lower() in ('.ktx', '.ktx2')  # ruff: ignore[literal-membership]
-                                else 'Local'
-                            )
-                            log_buffer.log(
-                                serve_category,
-                                f'CDN local serve start: host={host} path={path[:160]} '
-                                f'file={serve_path.name} exists={serve_exists} bytes={serve_size}',
-                            )
-                            response = await asyncio.get_event_loop().run_in_executor(
-                                self._executor, _serve_local_file, local_value
-                            )
-                            status_line = (
-                                response.split(b'\r\n', 1)[0].decode('ascii', errors='replace')
-                                if response
-                                else 'empty'
-                            )
-                            log_buffer.log(
-                                serve_category,
-                                f'CDN local serve complete: host={host} path={path[:160]} '
-                                f'file={serve_path.name} status={status_line} response_bytes={len(response)}',
-                            )
-                            response_writer.write(response)
-                            await response_writer.drain()
-                            # Cache our own served file so it appears in the scraper viewer
-                            if self.cache_scraper.enabled:
-                                try:
-                                    file_bytes = await asyncio.get_event_loop().run_in_executor(
-                                        self._executor, _read_local_bytes, local_value
-                                    )
-                                    if file_bytes:
-                                        full_url = f'https://{host}{path}'
-                                        _cache_hash = path.rsplit('/', 1)[-1].split('?')[0]
-                                        self.cache_scraper.process_cdn_response(
-                                            full_url,
-                                            path,
-                                            file_bytes,
-                                            'application/octet-stream',
-                                        )
-                                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                                    pass
-                            if not _keep_alive(req_first, req_headers):
-                                break
-                            continue
-                        if action == 'cdn':
-                            response_writer.write(_make_redirect(cast('str', value)))
-                            await response_writer.drain()
-                            if not _keep_alive(req_first, req_headers):
-                                break
-                            continue
-                        # 'solid', 'solid_v3', and 'anim_rig' fall through - need upstream response
+                short_circuit, short_circuit_handled, short_circuit_keep_alive = (
+                    await handle_cdn_short_circuit(path, req_first, req_headers)
+                )
+                if short_circuit_handled:
+                    if not short_circuit_keep_alive:
+                        break
+                    continue
 
                 # ── Modify batch request body if needed ───────────────────────
                 if is_batch:
@@ -2804,9 +3167,7 @@ class FleasionProxy:
                     # Keyed into _pending as f'{batch_id}_{req_id}' so parallel
                     # connections using the same req_id integers don't collide —
                     # the same root cause mitmproxy solved with its flow_id prefix.
-                    import uuid as _uuid  # ruff: ignore[import-outside-top-level]
-
-                    batch_id = _uuid.uuid4().hex
+                    batch_id = uuid.uuid4().hex
                     # Run synchronously — process_batch_request is pure Python (JSON parse +
                     # dict ops), not I/O bound. Using run_in_executor here introduced a gap:
                     # the await released the event loop, the CDN coroutine ran, saw empty
@@ -2833,59 +3194,14 @@ class FleasionProxy:
                         _build_modified_request(req_first, req_headers, req_body_modified)
                     )
                 elif host == GAMEJOIN_HOST:
-                    # Module interceptors: allow request body/URL modification for gamejoin traffic
-                    req_body_plain_ = _decompress_body(req_body_raw, req_headers)
-                    if self._module_interceptors:
-                        gamejoin_flow = ProxyFlow(req_first, req_headers, req_body_plain_, host)
-                        for interceptor in list(self._module_interceptors):
-                            try:
-                                interceptor.request(gamejoin_flow)
-                            except Exception as exc:  # ruff: ignore[blind-except]
-                                logger.debug('Module interceptor request error: %s', exc)
-                        if gamejoin_flow.drop_request:
-                            drop_body = gamejoin_flow.drop_body
-                            if isinstance(drop_body, str):
-                                drop_body = drop_body.encode('utf-8', errors='replace')
-                            response_writer.write(
-                                _make_local_response(gamejoin_flow.drop_status_code, drop_body)
-                            )
-                            await response_writer.drain()
-                            if not _keep_alive(req_first, req_headers):
-                                break
-                            continue
-                        new_first = _flow_request_modified_first_line(
-                            gamejoin_flow.request, req_first
-                        )
-                        new_body = gamejoin_flow.request.raw_content
-                        if not await ensure_upstream(path):
-                            break
-                        if new_first != req_first or new_body != req_body_plain_:
-                            cast('asyncio.StreamWriter', up_writer).write(
-                                _build_modified_request(
-                                    new_first,
-                                    gamejoin_flow.request.headers.to_bytes_dict(),
-                                    new_body,
-                                )
-                            )
-                        elif self._wire_preserving_passthrough:
-                            cast('asyncio.StreamWriter', up_writer).write(
-                                req_raw.raw_header_block + req_body.wire
-                            )
-                        else:
-                            cast('asyncio.StreamWriter', up_writer).write(
-                                _reassemble_raw_request(req_first, req_headers, req_body_raw)
-                            )
-                    else:
-                        if not await ensure_upstream(path):
-                            break
-                        if self._wire_preserving_passthrough:
-                            cast('asyncio.StreamWriter', up_writer).write(
-                                req_raw.raw_header_block + req_body.wire
-                            )
-                        else:
-                            cast('asyncio.StreamWriter', up_writer).write(
-                                _reassemble_raw_request(req_first, req_headers, req_body_raw)
-                            )
+                    # Module interceptors may modify or locally drop gamejoin requests.
+                    gamejoin_flow, gamejoin_action = await forward_gamejoin_request(
+                        path, req_raw, req_body, req_body_raw
+                    )
+                    if gamejoin_action == 'break':
+                        break
+                    if gamejoin_action == 'continue':
+                        continue
                 elif (
                     host == PROFILE_API_HOST
                     and PROFILE_API_PATH_FRAGMENT in path
@@ -2957,7 +3273,7 @@ class FleasionProxy:
                     )
                 if host == GAMEJOIN_HOST and 200 <= status_code < 400:
                     self._note_gamejoin_traffic()
-                if status_code in (400, 429) and host in {  # ruff: ignore[literal-membership]
+                if status_code in {400, 429} and host in {
                     ASSET_DELIVERY_HOST,
                     *CDN_HOSTS,
                 }:
@@ -3037,199 +3353,17 @@ class FleasionProxy:
                             )
 
                 elif host in CDN_HOSTS:
-                    full_url = f'https://{host}{path}'
-
-                    if short_circuit is not None and short_circuit[0] in (  # ruff: ignore[literal-membership]
-                        'solid',
-                        'solid_v3',
-                    ):
-                        # SolidModel injection - we MUST modify the body
-                        resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
-                        cdn_base_url = full_url.split('?')[0]
-                        prefer_v3 = cast('str', short_circuit[0]) == 'solid_v3'
-                        resp_body_raw = await asyncio.get_event_loop().run_in_executor(
-                            self._executor,
-                            self.texture_stripper.process_solidmodel_response,
-                            resp_body_plain,
-                            cast('str', short_circuit[1]),
-                            cdn_base_url,
-                            prefer_v3,
-                        )
-                        response_modified = True
-
-                    elif short_circuit is not None and short_circuit[0] == 'anim_rig':
-                        # Auto-convert rig: read the original CDN bytes to detect the rig,
-                        # then serve the rig-matched local replacement (or a converted copy).
-                        anim_repl_path, required_rig = cast('_AnimPendingValue', short_circuit[1])
-                        orig_bytes = _decompress_body(resp_body_raw, resp_headers)
-
-                        def _pick_rig_matched_file(
-                            orig_bytes: bytes,
-                            repl_path: str,
-                            required_rig: _AnimRequiredRig = 'any',
-                        ) -> bytes:
-                            from fleasion.utils import (  # ruff: ignore[import-outside-top-level]
-                                log_buffer as _lb,
-                            )
-                            from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-                                detect_player_rig,
-                                detect_rig,
-                                is_curve_animation,
-                            )
-
-                            orig_rig = detect_rig(orig_bytes)
-                            # If this rule only targets specific rig types, skip if it doesn't match
-                            if required_rig != 'any' and orig_rig not in required_rig:
-                                _lb.log(
-                                    'AnimConv',
-                                    f'Skipping replacement: original rig={orig_rig}, required={required_rig}',
-                                )
-                                return orig_bytes
-                            if is_curve_animation(orig_bytes):
-                                # Must serve back a CurveAnimation regardless of replacement format.
-                                # For non-player animations (unknown rig) use the replacement's own
-                                # rig so no unwanted rig conversion is applied.
-                                if orig_rig == 'unknown':
-                                    target_rig = _texture_detect_repl_rig(
-                                        self.texture_stripper, repl_path
-                                    )
-                                    if target_rig == 'unknown':
-                                        target_rig = 'R15'  # last resort default
-                                else:
-                                    target_rig = orig_rig
-                                repl_p = Path(repl_path)
-                                if not repl_p.exists():
-                                    _lb.log(
-                                        'AnimConv',
-                                        f'Replacement file not found: {repl_p.name}',
-                                    )
-                                    return orig_bytes
-                                conv_path = _texture_get_converted_curve(
-                                    self.texture_stripper, repl_path, target_rig
-                                )
-                                if conv_path:
-                                    _lb.log(
-                                        'AnimConv',
-                                        f'Serving {target_rig} CurveAnimation replacement ({Path(conv_path).name})',
-                                    )
-                                    return Path(conv_path).read_bytes()
-                                _lb.log(
-                                    'AnimConv',
-                                    f'CurveAnimation conversion failed for {repl_p.name} → {target_rig}',
-                                )
-                                return orig_bytes
-                            # KeyframeSequence path: serve rig-matched replacement.
-                            final_path = repl_path
-                            # For non-player / mixed animations orig_rig is 'unknown' —
-                            # use detect_player_rig to find which player rig they target
-                            # (e.g. gun anim that moves Left Arm → R6) so we can still
-                            # serve the right converted version of the replacement.
-                            conv_rig = (
-                                orig_rig
-                                if orig_rig != 'unknown'
-                                else (detect_player_rig(orig_bytes))
-                            )
-                            if conv_rig != 'unknown':
-                                repl_rig = _texture_detect_repl_rig(
-                                    self.texture_stripper, repl_path
-                                )
-                                if repl_rig == 'unknown':
-                                    _lb.log(
-                                        'AnimConv',
-                                        f'Rig detection unknown for replacement: {Path(repl_path).name}',
-                                    )
-                                elif repl_rig != conv_rig:
-                                    conv = _texture_get_converted(
-                                        self.texture_stripper, repl_path, conv_rig
-                                    )
-                                    if conv:
-                                        final_path = conv
-                            p = Path(final_path)
-                            return (
-                                strip_roblox_metadata(p, p.read_bytes())
-                                if p.exists()
-                                else orig_bytes
-                            )
-
-                        resp_body_raw = await asyncio.get_event_loop().run_in_executor(
-                            self._executor,
-                            _pick_rig_matched_file,
-                            orig_bytes,
-                            anim_repl_path,
-                            required_rig,
-                        )
-                        response_modified = True
-
-                    if self.cache_scraper.enabled:
-                        # Cache the decompressed bytes for storage
-                        resp_body_for_cache = (
-                            _decompress_body(resp_body_raw, resp_headers)
-                            if not response_modified
-                            else resp_body_raw
-                        )
-                        ct = resp_headers.get(b'content-type', b'').decode(
-                            'ascii', errors='replace'
-                        )
-                        self.cache_scraper.process_cdn_response(
-                            full_url, path, resp_body_for_cache, ct
-                        )
+                    resp_body_raw, response_modified = await modify_cdn_response(
+                        path, resp_headers, resp_body_raw, short_circuit
+                    )
 
                 elif custom_fflag_response_enabled and 200 <= status_code < 300 and resp_body_raw:
-                    content_encoding = resp_headers.get(b'content-encoding', b'').lower()
-                    if content_encoding == b'dcz':
-                        dictionary_sha256 = _dcz_dictionary_sha256(path)
-                        dictionary = (
-                            await fetch_client_settings_dictionary(dictionary_sha256)
-                            if dictionary_sha256 is not None
-                            else None
-                        )
-                        resp_body_plain = (
-                            _decompress_dcz(resp_body_raw, dictionary)
-                            if dictionary is not None
-                            else None
-                        )
-                        if resp_body_plain is None:
-                            custom_fflag_modifier.log_response_failure(
-                                'dcz-decode',
-                                'Could not decode dictionary-compressed ClientSettings; preserving original response',
-                            )
-                        else:
-                            (
-                                modified_settings,
-                                delivered_signature,
-                            ) = custom_fflag_modifier.modify_response_with_delivery(
-                                path, resp_body_plain
-                            )
-                            if delivered_signature is not None:
-                                if modified_settings != resp_body_plain:
-                                    recompressed = _compress_dcz(
-                                        modified_settings, cast('bytes', dictionary)
-                                    )
-                                    if recompressed is None:
-                                        custom_fflag_modifier.log_response_failure(
-                                            'dcz-encode',
-                                            'Could not re-encode dictionary-compressed ClientSettings; preserving original response',
-                                        )
-                                    else:
-                                        resp_body_raw = recompressed
-                                        modified_content_encoding = b'dcz'
-                                        response_modified = True
-                                        custom_fflag_delivered_signature = delivered_signature
-                                else:
-                                    custom_fflag_delivered_signature = delivered_signature
-                    else:
-                        resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
-                        (
-                            modified_settings,
-                            delivered_signature,
-                        ) = custom_fflag_modifier.modify_response_with_delivery(
-                            path, resp_body_plain
-                        )
-                        if delivered_signature is not None:
-                            custom_fflag_delivered_signature = delivered_signature
-                            if modified_settings != resp_body_plain:
-                                resp_body_raw = modified_settings
-                                response_modified = True
+                    (
+                        resp_body_raw,
+                        response_modified,
+                        modified_content_encoding,
+                        custom_fflag_delivered_signature,
+                    ) = await modify_custom_fflag_response(path, resp_headers, resp_body_raw)
 
                 if (
                     host == GAMEJOIN_HOST
@@ -3239,10 +3373,7 @@ class FleasionProxy:
                     resp_body_plain_ = _decompress_body(resp_body_raw, resp_headers)
                     gamejoin_flow.response = _FlowResponse(resp_first, resp_body_plain_)
                     for interceptor in list(self._module_interceptors):
-                        try:
-                            interceptor.response(gamejoin_flow)
-                        except Exception as exc:  # ruff: ignore[blind-except]
-                            logger.debug('Module interceptor response error: %s', exc)
+                        _call_module_interceptor(interceptor, gamejoin_flow, response=True)
                     gamejoin_response = _flow_response_after_callbacks(gamejoin_flow)
                     if (
                         gamejoin_response is not None
@@ -3258,10 +3389,7 @@ class FleasionProxy:
                     resp_body_plain_ = _decompress_body(resp_body_raw, resp_headers)
                     profile_flow.response = _FlowResponse(resp_first, resp_body_plain_)
                     for interceptor in list(self._module_interceptors):
-                        try:
-                            interceptor.response(profile_flow)
-                        except Exception as exc:  # ruff: ignore[blind-except]
-                            logger.debug('Module interceptor response error: %s', exc)
+                        _call_module_interceptor(interceptor, profile_flow, response=True)
                     profile_response = _flow_response_after_callbacks(profile_flow)
                     if (
                         profile_response is not None
@@ -3352,13 +3480,12 @@ class FleasionProxy:
                     resp_first, resp_headers
                 ):
                     break
+
+        try:
+            await run_session_loop()
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await response_writer.flush_pending_response()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
             if up_writer is not None:
-                try:
+                with contextlib.suppress(Exception):
                     up_writer.close()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass

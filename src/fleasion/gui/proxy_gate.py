@@ -71,7 +71,7 @@ class ProxyGate(QWidget):
         self._apply_style()
 
     def event(self, event: QEvent) -> bool:
-        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):  # ruff: ignore[literal-membership]
+        if event.type() in {QEvent.Type.Resize, QEvent.Type.Show}:
             self._overlay.setGeometry(self.rect())
             self._overlay.raise_()
         return super().event(event)

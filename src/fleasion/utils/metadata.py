@@ -1,18 +1,20 @@
 """Application metadata."""
 
-__all__ = [  # ruff: ignore[unsorted-dunder-all]
-    'APP_NAME',
+__all__ = [
     'APP_AUTHOR',
-    'APP_LOGIC',
     'APP_CONCEPT',
     'APP_DISCORD',
+    'APP_LOGIC',
+    'APP_NAME',
     'APP_REPO',
     'APP_VERSION',
 ]
 
 from importlib.metadata import PackageNotFoundError, metadata as distribution_metadata
 
-from fleasion import __version__ as APP_VERSION  # ruff: ignore[lowercase-imported-as-non-lowercase]
+from fleasion import __version__
+
+APP_VERSION = __version__
 
 
 def _project_url(label: str) -> str:

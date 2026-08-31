@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Literal, TypedDict, overload
+from typing import TYPE_CHECKING, BinaryIO, Literal, TypedDict, cast, overload
 
 from .logging import log_buffer
 from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, PROXY_PORT
@@ -35,6 +35,13 @@ POLKIT_POLICY_PATH = Path('/usr/share/polkit-1/actions') / f'{POLKIT_ACTION_NAME
 LEGACY_POLKIT_POLICY_PATH = (
     Path('/usr/local/share/polkit-1/actions') / f'{POLKIT_ACTION_NAMESPACE}.policy'
 )
+_force_source_helper_for_session = False
+
+
+def _set_force_source_helper_for_session(*, value: bool) -> None:
+    globals()['_force_source_helper_for_session'] = value
+
+
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
@@ -77,7 +84,6 @@ SYSTEM_CA_DIRS = (
     Path('/etc/pki/ca-trust/source/anchors'),
 )
 _last_start_error_details: JsonObject = {}
-_force_source_helper_for_session = False
 _PEM_CERT_BLOCK_RE = re.compile(
     r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
     re.DOTALL,
@@ -143,28 +149,30 @@ def _run_host_command(
     errors: str | None = None,
     timeout: float,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    if text:
-        return subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
-            cmd,
-            env=_host_subprocess_env(),
-            capture_output=capture_output,
-            text=True,
-            encoding=encoding,
-            errors=errors,
-            timeout=timeout,
-        )
-    return subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+    result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
         cmd,
+        shell=False,
         env=_host_subprocess_env(),
         capture_output=capture_output,
+        text=text,
+        encoding=encoding if text else None,
+        errors=errors if text else None,
         timeout=timeout,
+        check=False,
     )
+    return cast('subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]', result)
 
 
 def _popen_host_command(
     cmd: list[str], *, stdout: BinaryIO, stderr: BinaryIO
 ) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(cmd, env=_host_subprocess_env(), stdout=stdout, stderr=stderr)  # ruff: ignore[subprocess-without-shell-equals-true]
+    return subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+        cmd,
+        shell=False,
+        env=_host_subprocess_env(),
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
 def _source_helper_path() -> Path:
@@ -305,7 +313,7 @@ def _read_ready() -> JsonObject | None:
     try:
         payload: object = json.loads(HELPER_READY_FILE.read_text(encoding='utf-8'))
         return _json_object(payload)
-    except Exception:  # ruff: ignore[blind-except]
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
 
 
@@ -345,10 +353,10 @@ def update_helper_hosts(hosts: set[str]) -> bool:
             encoding='utf-8',
         )
         tmp_path.replace(HELPER_HOSTS_FILE)
-        return True  # ruff: ignore[try-consider-else]
     except OSError as exc:
         log_buffer.log('ProxyHelper', f'Failed to request Linux helper hosts update: {exc}')
         return False
+    return True
 
 
 def install_privileged_helper(
@@ -386,7 +394,7 @@ def install_privileged_helper(
             errors='replace',
             timeout=timeout,
         )
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError) as exc:
         return {'ok': False, 'error': str(exc)}
 
     output = (result.stdout or '').strip()
@@ -402,22 +410,43 @@ def install_privileged_helper(
     return details
 
 
-def ensure_privileged_helper_installed(  # ruff: ignore[too-many-return-statements]
+def _installed_helper_is_current_after_install() -> bool:
+    if not _is_trusted_installed_helper():
+        log_buffer.log(
+            'ProxyHelper',
+            'Linux privileged helper install finished but installed helper was not trusted',
+        )
+        return False
+    if not _installed_policy_is_current():
+        log_buffer.log(
+            'ProxyHelper',
+            'Linux privileged helper install finished but Polkit policy was not current',
+        )
+        return False
+    if not _installed_helper_metadata_is_current():
+        log_buffer.log(
+            'ProxyHelper',
+            'Linux privileged helper install finished but helper metadata was not current',
+        )
+        return False
+    return True
+
+
+def ensure_privileged_helper_installed(
     *,
     enable_promptless: bool = True,
     ca_cert_path: Path | None = None,
 ) -> bool:
     """Ensure runtime launches use Fleasion's installed Polkit action."""
-    global _force_source_helper_for_session  # ruff: ignore[global-statement]
     trusted_helper = _is_trusted_installed_helper()
     current_policy = _installed_policy_is_current()
     current_metadata = _installed_helper_metadata_is_current()
     if trusted_helper and current_policy and current_metadata:
-        _force_source_helper_for_session = False
+        _set_force_source_helper_for_session(value=False)
         return True
 
     if _persistent_helper_install_path_is_read_only():
-        _force_source_helper_for_session = True
+        _set_force_source_helper_for_session(value=True)
         log_buffer.log(
             'ProxyHelper',
             'Persistent Linux helper install path is read-only; using the current helper directly for this session',
@@ -445,7 +474,7 @@ def ensure_privileged_helper_installed(  # ruff: ignore[too-many-return-statemen
             f'Linux privileged helper install failed: {error}',
         )
         if _error_text_is_read_only_filesystem(error):
-            _force_source_helper_for_session = True
+            _set_force_source_helper_for_session(value=True)
             log_buffer.log(
                 'ProxyHelper',
                 'Persistent Linux helper install path is read-only; using the current helper directly for this session',
@@ -453,23 +482,7 @@ def ensure_privileged_helper_installed(  # ruff: ignore[too-many-return-statemen
             return True
         return False
 
-    if not _is_trusted_installed_helper():
-        log_buffer.log(
-            'ProxyHelper',
-            'Linux privileged helper install finished but installed helper was not trusted',
-        )
-        return False
-    if not _installed_policy_is_current():
-        log_buffer.log(
-            'ProxyHelper',
-            'Linux privileged helper install finished but Polkit policy was not current',
-        )
-        return False
-    if not _installed_helper_metadata_is_current():
-        log_buffer.log(
-            'ProxyHelper',
-            'Linux privileged helper install finished but helper metadata was not current',
-        )
+    if not _installed_helper_is_current_after_install():
         return False
 
     system_ca = _json_object(details.get('system_ca'))
@@ -493,30 +506,27 @@ def ensure_privileged_helper_installed(  # ruff: ignore[too-many-return-statemen
         log_buffer.log('ProxyHelper', 'Updated Fleasion proxy helper for this app build')
     else:
         log_buffer.log('ProxyHelper', 'Installed Fleasion proxy helper Polkit action')
-    _force_source_helper_for_session = False
+    _set_force_source_helper_for_session(value=False)
     return True
 
 
-def start_helper(  # ruff: ignore[too-many-return-statements]
-    hosts: set[str],
-    backend_port: int = MACOS_PROXY_BACKEND_PORT,
-    timeout: float = 120.0,
-    ca_cert_path: Path | None = None,
-    require_system_ca: bool = False,
-) -> bool:
-    """Start the privileged Linux port/hosts helper and wait until it is ready."""
-    _set_last_start_error()
+def _prepare_helper_start(
+    ca_cert_path: Path | None,
+    *,
+    require_system_ca: bool,
+) -> tuple[str, bool] | None:
     pkexec = shutil.which('pkexec')
     if not pkexec:
         error = 'pkexec not found'
         _set_last_start_error({'code': 'pkexec_not_found'}, error=error)
         log_buffer.log('ProxyHelper', f'Linux proxy helper failed: {error}')
-        return False
+        return None
     if require_system_ca and ca_cert_path is None:
         error = 'system CA trust is required but no CA cert was supplied'
         _set_last_start_error(error=error)
         log_buffer.log('ProxyHelper', f'Linux proxy helper failed: {error}')
-        return False
+        return None
+
     system_ca_supported = linux_system_ca_store_supported()
     enforce_system_ca = require_system_ca and system_ca_supported
     if require_system_ca and not system_ca_supported and ca_cert_path is not None:
@@ -536,7 +546,7 @@ def start_helper(  # ruff: ignore[too-many-return-statements]
         ca_cert_path=helper_install_ca,
     ):
         _set_last_start_error(error='privileged helper install failed')
-        return False
+        return None
     if (
         needs_system_ca_install
         and ca_cert_path is not None
@@ -560,7 +570,74 @@ def start_helper(  # ruff: ignore[too-many-return-statements]
                     'ProxyHelper',
                     f'Linux proxy helper failed: system CA trust could not be installed: {error}',
                 )
-                return False
+                return None
+    return pkexec, enforce_system_ca
+
+
+def _wait_for_helper_ready(
+    process: subprocess.Popen[bytes],
+    *,
+    timeout: float,
+    enforce_system_ca: bool,
+) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ready = _read_ready()
+        if ready:
+            if ready.get('ok'):
+                ready_system_ca = _json_object(ready.get('system_ca'))
+                if enforce_system_ca and not (ready_system_ca or {}).get('ok'):
+                    _set_last_start_error(ready, error='system CA trust was not confirmed')
+                    log_buffer.log(
+                        'ProxyHelper',
+                        'Linux proxy helper failed: system CA trust was not confirmed',
+                    )
+                    return False
+                log_buffer.log('ProxyHelper', f'Linux proxy helper ready on port {PROXY_PORT}')
+                return True
+            _set_last_start_error(ready)
+            log_buffer.log(
+                'ProxyHelper',
+                f'Linux proxy helper failed: {ready.get("error") or "unknown error"}',
+            )
+            return False
+
+        returncode = process.poll()
+        if returncode is not None:
+            _set_last_start_error(
+                error=f'helper exited before becoming ready with code {returncode}'
+            )
+            log_buffer.log(
+                'ProxyHelper',
+                f'Linux proxy helper exited before becoming ready with code {returncode}; log: {HELPER_LOG_FILE}',
+            )
+            return False
+        time.sleep(0.2)
+
+    _set_last_start_error(error=f'timed out waiting for readiness; log: {HELPER_LOG_FILE}')
+    log_buffer.log(
+        'ProxyHelper',
+        f'Linux proxy helper timed out waiting for readiness; log: {HELPER_LOG_FILE}',
+    )
+    return False
+
+
+def start_helper(
+    hosts: set[str],
+    backend_port: int = MACOS_PROXY_BACKEND_PORT,
+    timeout: float = 120.0,
+    ca_cert_path: Path | None = None,
+    require_system_ca: bool = False,
+) -> bool:
+    """Start the privileged Linux port/hosts helper and wait until it is ready."""
+    _set_last_start_error()
+    prepared = _prepare_helper_start(
+        ca_cert_path,
+        require_system_ca=require_system_ca,
+    )
+    if prepared is None:
+        return False
+    pkexec, enforce_system_ca = prepared
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(OSError):
@@ -621,51 +698,16 @@ def start_helper(  # ruff: ignore[too-many-return-statements]
             # parent PID and removes its hosts entries when that parent exits, so
             # it does not need a separate session to be cleaned up safely.
             process = _popen_host_command(cmd, stdout=log_file, stderr=log_file)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except OSError as exc:
             _set_last_start_error(error=f'could not start Linux proxy helper: {exc}')
             log_buffer.log('ProxyHelper', f'Could not start Linux proxy helper: {exc}')
             return False
 
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        ready = _read_ready()
-        if ready:
-            if ready.get('ok'):
-                ready_system_ca = _json_object(ready.get('system_ca'))
-                if enforce_system_ca and not (ready_system_ca or {}).get('ok'):
-                    _set_last_start_error(ready, error='system CA trust was not confirmed')
-                    log_buffer.log(
-                        'ProxyHelper',
-                        'Linux proxy helper failed: system CA trust was not confirmed',
-                    )
-                    return False
-                log_buffer.log('ProxyHelper', f'Linux proxy helper ready on port {PROXY_PORT}')
-                return True
-            _set_last_start_error(ready)
-            log_buffer.log(
-                'ProxyHelper',
-                f'Linux proxy helper failed: {ready.get("error") or "unknown error"}',
-            )
-            return False
-
-        returncode = process.poll()
-        if returncode is not None:
-            _set_last_start_error(
-                error=f'helper exited before becoming ready with code {returncode}'
-            )
-            log_buffer.log(
-                'ProxyHelper',
-                f'Linux proxy helper exited before becoming ready with code {returncode}; log: {HELPER_LOG_FILE}',
-            )
-            return False
-        time.sleep(0.2)
-
-    _set_last_start_error(error=f'timed out waiting for readiness; log: {HELPER_LOG_FILE}')
-    log_buffer.log(
-        'ProxyHelper',
-        f'Linux proxy helper timed out waiting for readiness; log: {HELPER_LOG_FILE}',
+    return _wait_for_helper_ready(
+        process,
+        timeout=timeout,
+        enforce_system_ca=enforce_system_ca,
     )
-    return False
 
 
 def stop_helper(timeout: float = 8.0) -> bool:
@@ -706,7 +748,7 @@ def cleanup_hosts_with_pkexec(timeout: float = 120.0) -> bool:
             errors='replace',
             timeout=timeout,
         )
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError) as exc:
         log_buffer.log('ProxyHelper', f'Linux hosts cleanup child failed: {exc}')
         return False
 
@@ -786,7 +828,7 @@ def _ensure_shared_nss_db(home: Path) -> Path | None:
             errors='replace',
             timeout=10,
         )
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError) as exc:
         log_buffer.log(
             'Certificate',
             f'Could not create shared NSS certificate DB at {nssdb}: {exc}',
@@ -829,7 +871,7 @@ def _nss_db_fleasion_ca_status(certutil: str, db_dir: Path, ca_cert_path: Path) 
             errors='replace',
             timeout=10,
         )
-    except Exception:  # ruff: ignore[blind-except]
+    except (OSError, UnicodeError, subprocess.SubprocessError):
         return 'missing'
     if result.returncode != 0:
         return 'missing'
@@ -868,7 +910,7 @@ def _install_ca_into_nss_db(certutil: str, db_dir: Path, ca_cert_path: Path) -> 
             errors='replace',
             timeout=10,
         )
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError) as exc:
         return {'db': str(db_dir), 'ok': False, 'error': str(exc)}
 
     if result.returncode == 0:
@@ -957,20 +999,16 @@ def linux_system_ca_store_supported() -> bool:
     """Return True when this host has a system trust store Fleasion can refresh."""
     return any(
         bool(shutil.which(command)) and directory.is_dir()
-        for command, directory in zip(  # ruff: ignore[zip-without-explicit-strict]
+        for command, directory in zip(
             ('update-ca-certificates', 'update-ca-trust'),
-            SYSTEM_CA_DIRS,
+            SYSTEM_CA_DIRS, strict=False,
         )
     )
 
 
 def linux_system_ca_needs_install(ca_cert_path: Path) -> bool:
     """Return True when a supported Linux system CA target is missing/stale."""
-    if not linux_system_ca_store_supported():
-        return False
-    if linux_system_ca_is_current(ca_cert_path):  # ruff: ignore[needless-bool]
-        return False
-    return True
+    return linux_system_ca_store_supported() and not linux_system_ca_is_current(ca_cert_path)
 
 
 def _system_ca_error_is_unsupported(error: object) -> bool:
@@ -1002,7 +1040,7 @@ def _install_ca_into_linux_system_store(ca_cert_path: Path) -> JsonObject:
             errors='replace',
             timeout=120,
         )
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, subprocess.SubprocessError) as exc:
         log_buffer.log('Certificate', f'Failed to install CA into Linux system trust store: {exc}')
         return {'ok': False, 'error': str(exc)}
 

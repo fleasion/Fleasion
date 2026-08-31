@@ -1,6 +1,7 @@
 """Logs window."""
 
 import sys
+from typing import override
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import (
@@ -8,6 +9,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontDatabase,
+    QIcon,
     QKeySequence,
     QShortcut,
     QShowEvent,
@@ -52,8 +54,6 @@ class LogsWindow(QDialog):
 
     def _set_icon(self) -> None:
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
-
             self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self) -> None:
@@ -171,7 +171,8 @@ class LogsWindow(QDialog):
         self.time_timer.timeout.connect(self._refresh_time_label)
         self.time_timer.start(1000)
 
-    def showEvent(self, a0: QShowEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def showEvent(self, a0: QShowEvent) -> None:
         if not self.timer.isActive():
             self.timer.start(250)
         if not self.time_timer.isActive():
@@ -213,7 +214,8 @@ class LogsWindow(QDialog):
             tr('ui.gui.logs.time_wasted_value', value0=time_tracker.format_duration(total))
         )
 
-    def closeEvent(self, a0: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def closeEvent(self, a0: QCloseEvent) -> None:
         self.timer.stop()
         self.time_timer.stop()
         super().closeEvent(a0)

@@ -8,12 +8,11 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, override
 
 import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent  # ruff: ignore[typing-only-third-party-import]
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -24,6 +23,9 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QCloseEvent
 from fleasion.utils import log_buffer
 
 type AudioArray = NDArray[np.float32]
@@ -54,6 +56,7 @@ class _SoundDeviceDefault(Protocol):
 
 class _SoundDeviceModule(Protocol):
     OutputStream: _OutputStreamFactory
+    PortAudioError: type[Exception]
     default: _SoundDeviceDefault
 
     def query_devices(self) -> Sequence[object]: ...
@@ -61,10 +64,14 @@ class _SoundDeviceModule(Protocol):
 
 
 class _SoundFileModule(Protocol):
+    LibsndfileError: type[Exception]
+
     def read(self, path: str, *, dtype: str) -> tuple[AudioArray, int]: ...
 
 
 if TYPE_CHECKING:
+    from PySide6.QtGui import QCloseEvent
+
     sf: _SoundFileModule
 
     def _import_sounddevice_runtime() -> _SoundDeviceModule: ...
@@ -91,10 +98,10 @@ else:
         return value
 
     def _config_audio_volume(config: object) -> int:
-        return getattr(config, 'audio_volume')  # ruff: ignore[get-attr-with-constant]
+        return config.audio_volume
 
     def _set_config_audio_volume(config: object, value: int) -> None:
-        setattr(config, 'audio_volume', value)  # ruff: ignore[set-attr-with-constant]
+        config.audio_volume = value
 
 
 _LINUX_LIBRARY_SEARCH_DIRS = (
@@ -176,44 +183,38 @@ def _import_sounddevice_with_preferred_portaudio() -> _SoundDeviceModule:
 
 
 sd = _import_sounddevice_with_preferred_portaudio()
-_audio_backend_logged = False
+_audio_backend_logged = threading.Event()
+
+
+def _audio_diagnostic_value(callback: Callable[[], object]) -> object:
+    try:
+        return callback()
+    except (OSError, RuntimeError, sd.PortAudioError) as exc:
+        return f'unavailable ({type(exc).__name__}: {exc})'
 
 
 def _log_audio_backend_once() -> None:
     """Log the PortAudio backend selected by the GUI player once per process."""
-    global _audio_backend_logged  # ruff: ignore[global-statement]
-    if _audio_backend_logged:
+    if _audio_backend_logged.is_set():
         return
-    _audio_backend_logged = True
+    _audio_backend_logged.set()
 
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        preferred = _preferred_portaudio_path()
-        loaded = getattr(sd, '_libname', None)
-        version = getattr(sd, '__version__', 'unknown')
-        try:
-            portaudio_version = sd.get_portaudio_version()
-        except Exception as exc:  # ruff: ignore[blind-except]
-            portaudio_version = f'unavailable ({type(exc).__name__}: {exc})'
-        try:
-            default_device = sd.default.device
-        except Exception as exc:  # ruff: ignore[blind-except]
-            default_device = f'unavailable ({type(exc).__name__}: {exc})'
-        try:
-            device_count = len(sd.query_devices())
-        except Exception as exc:  # ruff: ignore[blind-except]
-            device_count = f'unavailable ({type(exc).__name__}: {exc})'
-        log_buffer.log(
-            'Audio',
-            'Backend '
-            f'sounddevice={version} '
-            f'preferred_portaudio={preferred or "default"} '
-            f'loaded_portaudio={loaded or "unknown"} '
-            f'portaudio_version={portaudio_version} '
-            f'default_device={default_device} '
-            f'device_count={device_count}',
-        )
-    except Exception as exc:  # ruff: ignore[blind-except]
-        log_buffer.log('Audio', f'Backend diagnostic failed: {type(exc).__name__}: {exc}')
+    preferred = _audio_diagnostic_value(_preferred_portaudio_path)
+    loaded = getattr(sd, '_libname', None)
+    version = getattr(sd, '__version__', 'unknown')
+    portaudio_version = _audio_diagnostic_value(sd.get_portaudio_version)
+    default_device = _audio_diagnostic_value(lambda: sd.default.device)
+    device_count = _audio_diagnostic_value(lambda: len(sd.query_devices()))
+    log_buffer.log(
+        'Audio',
+        'Backend '
+        f'sounddevice={version} '
+        f'preferred_portaudio={preferred or "default"} '
+        f'loaded_portaudio={loaded or "unknown"} '
+        f'portaudio_version={portaudio_version} '
+        f'default_device={default_device} '
+        f'device_count={device_count}',
+    )
 
 
 class AudioPlayerWidget(QWidget):
@@ -253,10 +254,7 @@ class AudioPlayerWidget(QWidget):
         self.duration = 0.0
 
         # Volume
-        if config_manager:  # ruff: ignore[if-else-block-instead-of-if-exp]
-            initial_slider = _config_audio_volume(config_manager)
-        else:
-            initial_slider = 70
+        initial_slider = _config_audio_volume(config_manager) if config_manager else 70
 
         if initial_slider <= 0:
             self.volume = 0.0
@@ -280,31 +278,27 @@ class AudioPlayerWidget(QWidget):
         self.timer.timeout.connect(self._update_ui)
         self.timer.start(50)  # 20 FPS
 
+    def _read_audio_data(self) -> None:
+        self.audio_data, self.sample_rate = sf.read(self.audio_file_path, dtype='float32')
+        if len(self.audio_data.shape) == 1:
+            self.audio_data = np.column_stack((self.audio_data, self.audio_data))
+        elif self.audio_data.shape[1] == 1:
+            self.audio_data = np.repeat(self.audio_data, 2, axis=1)
+        elif self.audio_data.shape[1] > 2:
+            mono = self.audio_data.mean(axis=1)
+            self.audio_data = np.column_stack((mono, mono))
+
+        self.audio_data = np.ascontiguousarray(
+            np.clip(self.audio_data, -1.0, 1.0), dtype=np.float32
+        )
+        self.duration = len(_audio_data(self.audio_data)) / _sample_rate(self.sample_rate)
+
     def _load_audio(self) -> None:
         """Load audio file and get metadata."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            # Load audio as float32 so the callback writes the same dtype that
-            # PortAudio receives from sounddevice.
-            self.audio_data, self.sample_rate = sf.read(self.audio_file_path, dtype='float32')
-
-            # Convert to exactly stereo for the fixed two-channel output stream.
-            if len(self.audio_data.shape) == 1:
-                self.audio_data = np.column_stack((self.audio_data, self.audio_data))
-            elif self.audio_data.shape[1] == 1:
-                self.audio_data = np.repeat(self.audio_data, 2, axis=1)
-            elif self.audio_data.shape[1] > 2:
-                mono = self.audio_data.mean(axis=1)
-                self.audio_data = np.column_stack((mono, mono))
-
-            self.audio_data = np.ascontiguousarray(
-                np.clip(self.audio_data, -1.0, 1.0), dtype=np.float32
-            )
-
-            # Calculate duration
-            self.duration = len(_audio_data(self.audio_data)) / _sample_rate(self.sample_rate)
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            log_buffer.log('Audio', f'Error loading audio: {e}')
+        try:
+            self._read_audio_data()
+        except (OSError, RuntimeError, TypeError, ValueError, sf.LibsndfileError) as exc:
+            log_buffer.log('Audio', f'Error loading audio: {exc}')
             self.duration = 0
 
     def _setup_ui(self) -> None:
@@ -436,102 +430,106 @@ class AudioPlayerWidget(QWidget):
         # Start playing
         self._play()
 
+    def _write_audio_callback(
+        self,
+        stop_event: threading.Event,
+        outdata: AudioArray,
+        frames: int,
+        status: object,
+    ) -> None:
+        if status:
+            log_buffer.log('Audio', f'Audio callback status: {status}')
+        with self.position_lock:
+            start_pos = self.playback_position
+            audio_data = _audio_data(self.audio_data)
+            end_pos = min(start_pos + frames, len(audio_data))
+            chunk_size = end_pos - start_pos
+            if chunk_size <= 0 or stop_event.is_set():
+                outdata[:] = 0
+                stop_event.set()
+                return
+            outdata[:chunk_size] = audio_data[start_pos:end_pos] * self.volume
+            if chunk_size < frames:
+                outdata[chunk_size:] = 0
+            self.playback_position = end_pos
+
+    def _create_output_stream(self, stop_event: threading.Event) -> _OutputStreamLike:
+        def callback(
+            outdata: AudioArray,
+            frames: int,
+            _time_info: object,
+            status: object,
+        ) -> None:
+            self._write_audio_callback(stop_event, outdata, frames, status)
+
+        return sd.OutputStream(
+            samplerate=_sample_rate(self.sample_rate),
+            channels=2,
+            dtype='float32',
+            callback=callback,
+            blocksize=2048,
+        )
+
+    def _wait_for_playback_stop(self, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            time.sleep(0.01)
+            with self.position_lock:
+                if self.playback_position >= len(_audio_data(self.audio_data)):
+                    self.should_stop = True
+                    stop_event.set()
+
+    @staticmethod
+    def _close_output_stream(stream: _OutputStreamLike) -> None:
+        try:
+            stream.stop()
+        except (RuntimeError, sd.PortAudioError) as exc:
+            log_buffer.log('Audio', f'Error stopping audio stream: {exc}')
+        try:
+            stream.close()
+        except (RuntimeError, sd.PortAudioError) as exc:
+            log_buffer.log('Audio', f'Error closing audio stream: {exc}')
+
+    def _finish_playback(
+        self,
+        stop_event: threading.Event,
+        stream: _OutputStreamLike | None,
+    ) -> None:
+        is_current_playback = False
+        with self.stream_lock:
+            if self.stream is stream:
+                self.stream = None
+            if self.stop_event is stop_event:
+                self.stop_event = None
+                is_current_playback = True
+        if not is_current_playback:
+            return
+        self.is_playing = False
+        try:
+            QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
+        except RuntimeError:
+            pass
+
     def _playback_worker(self, stop_event: threading.Event) -> None:
         """Worker thread for audio playback."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-
-            def callback(
-                outdata: AudioArray, frames: int, _time_info: object, status: object
-            ) -> None:
-                if status:
-                    log_buffer.log('Audio', f'Audio callback status: {status}')
-
-                with self.position_lock:
-                    start_pos = self.playback_position
-                    audio_data = _audio_data(self.audio_data)
-                    end_pos = min(start_pos + frames, len(audio_data))
-                    chunk_size = end_pos - start_pos
-
-                    if chunk_size <= 0 or stop_event.is_set():
-                        outdata[:] = 0
-                        stop_event.set()
-                        return
-
-                    # Get audio data and apply volume
-                    chunk = audio_data[start_pos:end_pos] * self.volume
-                    outdata[:chunk_size] = chunk
-
-                    # Fill remaining with silence
-                    if chunk_size < frames:
-                        outdata[chunk_size:] = 0
-
-                    self.playback_position = end_pos
-
-            # Create and start stream
-            stream = sd.OutputStream(
-                samplerate=_sample_rate(self.sample_rate),
-                channels=2,
-                dtype='float32',
-                callback=callback,
-                blocksize=2048,
-            )
+        stream: _OutputStreamLike | None = None
+        try:
+            stream = self._create_output_stream(stop_event)
             with self.stream_lock:
                 self.stream = stream
-
             stream.start()
-            try:
-                while not stop_event.is_set():
-                    time.sleep(0.01)
-
-                    # Check if reached end
-                    with self.position_lock:
-                        if self.playback_position >= len(_audio_data(self.audio_data)):
-                            self.should_stop = True
-                            stop_event.set()
-            finally:
-                try:
-                    stream.stop()
-                except Exception as e:  # ruff: ignore[blind-except]
-                    log_buffer.log('Audio', f'Error stopping audio stream: {e}')
-                try:
-                    stream.close()
-                except Exception as e:  # ruff: ignore[blind-except]
-                    log_buffer.log('Audio', f'Error closing audio stream: {e}')
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            log_buffer.log('Audio', f'Playback error: {e}')
+            self._wait_for_playback_stop(stop_event)
+        except (RuntimeError, TypeError, ValueError, sd.PortAudioError) as exc:
+            log_buffer.log('Audio', f'Playback error: {exc}')
         finally:
-            is_current_playback = False
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                with self.stream_lock:
-                    if self.stream is locals().get('stream'):
-                        self.stream = None
-                    if self.stop_event is stop_event:
-                        self.stop_event = None
-                        is_current_playback = True
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
-            if is_current_playback:
-                self.is_playing = False
-                # Schedule UI update on the main thread to avoid manipulating
-                # Qt widgets from this worker thread (which can cause
-                # "wrapped C/C++ object ... has been deleted" errors).
-                try:
-                    QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    # If scheduling fails for any reason, ignore silently.
-                    pass
+            if stream is not None:
+                self._close_output_stream(stream)
+            self._finish_playback(stop_event, stream)
 
     def _safe_set_play_pause_text(self, text: str) -> None:
-        """Set play/pause button text from the main thread, safely.
-
-        This method swallows exceptions that occur if the underlying
-        C++ widget has been deleted.
-        """
+        """Set play/pause button text from the main thread, safely."""
         try:
             self.play_pause_btn.setText(text)
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            # Widget may have been deleted; ignore.
+        except RuntimeError:
             pass
 
     def _start_scrub(self) -> None:
@@ -601,7 +599,8 @@ class AudioPlayerWidget(QWidget):
 
         self.stopped.emit()
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Handle widget close."""
         self.stop()
         super().closeEvent(event)

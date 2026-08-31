@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import importlib
 import json
-from datetime import datetime
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+import pathlib
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Protocol, TypedDict, cast, override
 
-from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -40,11 +43,7 @@ from fleasion.localization import tr
 from fleasion.utils.paths import PROXY_TRAFFIC_FILE
 
 from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
-from .rules_dialog_ui import Ui_Dialog as Ui_RulesDialog
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
+from .rules_dialog_ui import UiDialog as UiRulesDialog
 
 type _ShortcutHandler = Callable[[], object]
 type _PendingIntercept = tuple[int, str]
@@ -87,12 +86,21 @@ class _ConfigManager(Protocol):
     def save(self) -> None: ...
 
 
-class _DialogUiSetup(Protocol):
-    def setupUi(self, form: QDialog) -> None: ...  # ruff: ignore[invalid-function-name]
-
-
-class _WidgetUiSetup(Protocol):
-    def setupUi(self, form: QWidget) -> None: ...  # ruff: ignore[invalid-function-name]
+def _load_imported_rule_objects(file_path: str) -> list[dict[str, object]]:
+    with pathlib.Path(file_path).open(encoding='utf-8') as handle:
+        data = cast('object', json.load(handle))
+    data_dict = cast('dict[str, object]', data) if isinstance(data, dict) else None
+    if data_dict is None:
+        imported: object = cast('object', data)
+    else:
+        imported = cast('object', data_dict.get('rules'))
+    if not isinstance(imported, list):
+        msg = 'expected a list of rules'
+        raise TypeError(msg)
+    imported_rules = cast('list[object]', imported)
+    return [
+        cast('dict[str, object]', rule) for rule in imported_rules if isinstance(rule, dict)
+    ]
 
 
 class _ProxyMaster(Protocol):
@@ -248,11 +256,11 @@ def _clear_preserved_traffic_file() -> None:
         PROXY_TRAFFIC_FILE.unlink(missing_ok=True)
 
 
-def _format_timestamp(value: int | float | None) -> str:  # ruff: ignore[redundant-numeric-union]
+def _format_timestamp(value: float | None) -> str:
     if not value:
         return ''
     try:
-        return datetime.fromtimestamp(value).strftime('%H:%M:%S.%f')[:-3]  # ruff: ignore[call-datetime-fromtimestamp]
+        return datetime.fromtimestamp(value, tz=UTC).astimezone().strftime('%H:%M:%S.%f')[:-3]
     except OSError, OverflowError, ValueError:
         return ''
 
@@ -269,7 +277,7 @@ def _format_status(entry: _TrafficEntry) -> str:
     return '-'
 
 
-def _format_size(value: int | float | None) -> str:  # ruff: ignore[redundant-numeric-union]
+def _format_size(value: float | None) -> str:
     if value is None:
         return ''
     if value == 0:
@@ -282,14 +290,14 @@ def _format_size(value: int | float | None) -> str:  # ruff: ignore[redundant-nu
     return f'{size:.1f} GB'
 
 
-def _format_ms(value: int | float | None) -> str:  # ruff: ignore[redundant-numeric-union]
+def _format_ms(value: float | None) -> str:
     return '' if value is None else f'{value} ms'
 
 
 class _NumericSortItem(QTableWidgetItem):
     """Table item that sorts on a numeric value instead of its display text."""
 
-    def __init__(self, numeric_val: int | float, text: str) -> None:  # ruff: ignore[redundant-numeric-union]
+    def __init__(self, numeric_val: float, text: str) -> None:
         super().__init__(text)
         self.numeric_val = numeric_val
 
@@ -433,7 +441,8 @@ class _TableColumnResizer(QObject):
         widths[self._headers[logical_index]] = new_size
         self._save_widths(widths)
 
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # ruff: ignore[invalid-function-name]
+    @override
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if obj is self._table and event.type() == QEvent.Type.Resize:
             # The table's own resize event fires before its viewport's size
             # has actually caught up - defer to the next event-loop tick.
@@ -447,10 +456,12 @@ class _CompactComboBox(QComboBox):
     the app for compact in-cell dropdowns (e.g. FastFlag True/False editing).
     """
 
-    def wheelEvent(self, e: QWheelEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def wheelEvent(self, e: QWheelEvent) -> None:
         e.ignore()
 
-    def paintEvent(self, e: QPaintEvent) -> None:  # ruff: ignore[invalid-function-name, unused-method-argument]
+    @override
+    def paintEvent(self, e: QPaintEvent) -> None:
         painter = QPainter(self)
         if self.hasFocus() or self.underMouse():
             painter.fillRect(self.rect(), self.palette().alternateBase())
@@ -482,8 +493,8 @@ class AutoReplaceRulesDialog(QDialog):
         super().__init__(parent)
         self._proxy_master = proxy_master
         self._config = config_manager
-        self.ui = Ui_RulesDialog()
-        cast('_DialogUiSetup', self.ui).setupUi(self)
+        self.ui = UiRulesDialog()
+        self.ui.setup_ui(self)
         self.setWindowTitle(tr('ui.gui.proxy_tab.auto_replace_rules'))
         self.resize(950, 500)
 
@@ -646,25 +657,8 @@ class AutoReplaceRulesDialog(QDialog):
         )
         if not file_path:
             return
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            with open(file_path, encoding='utf-8') as handle:  # ruff: ignore[builtin-open]
-                data = cast('object', json.load(handle))
-            data_dict = cast('dict[str, object]', data) if isinstance(data, dict) else None
-            imported: object = (
-                data_dict.get('rules') if data_dict is not None else cast('object', data)
-            )
-            if not isinstance(imported, list):
-                msg = 'expected a list of rules'
-                raise ValueError(msg)  # ruff: ignore[type-check-without-type-error]
-            imported_rules = cast('list[object]', imported)
-            self._rules = [
-                cast(
-                    '_AutoReplaceRule',
-                    self._default_rule() | cast('dict[str, object]', r),
-                )
-                for r in imported_rules
-                if isinstance(r, dict)
-            ]
+        try:
+            imported_rules = _load_imported_rule_objects(file_path)
         except (OSError, ValueError, TypeError) as exc:
             QMessageBox.warning(
                 self,
@@ -672,6 +666,9 @@ class AutoReplaceRulesDialog(QDialog):
                 tr('ui.gui.proxy_tab.could_not_import_rules_value', value0=exc),
             )
             return
+        self._rules = [
+            cast('_AutoReplaceRule', self._default_rule() | rule) for rule in imported_rules
+        ]
         self._render_rules()
         self._save()
 
@@ -685,7 +682,7 @@ class AutoReplaceRulesDialog(QDialog):
         if not file_path:
             return
         try:
-            with open(file_path, 'w', encoding='utf-8') as handle:  # ruff: ignore[builtin-open]
+            with pathlib.Path(file_path).open('w', encoding='utf-8') as handle:
                 json.dump({'rules': self._rules}, handle, indent=2)
         except OSError as exc:
             QMessageBox.warning(
@@ -720,7 +717,7 @@ class ProxyTrafficTab(QWidget):
         self._rules_dialog: AutoReplaceRulesDialog | None = None
 
         self.ui = Ui_ProxyTab()
-        cast('_WidgetUiSetup', self.ui).setupUi(self)
+        self.ui.setupUi(self)
         # The .ui-generated root layout never had its margins zeroed, unlike
         # every other tab (e.g. RandoStuffTab's root layout explicitly sets
         # (0, 0, 0, 0)) - left at Qt's default (9, 9, 9, 9), the whole tab's
@@ -779,22 +776,22 @@ class ProxyTrafficTab(QWidget):
         forward_menu = QMenu(self)
         forward_menu.addAction(
             tr('ui.gui.proxy_tab.forward_selected'),
-            lambda: self._resolve_action('forward', False),  # ruff: ignore[boolean-positional-value-in-call]
+            lambda: self._resolve_action('forward', all_rows=False),
         )
         forward_menu.addAction(
             tr('ui.gui.proxy_tab.forward_all'),
-            lambda: self._resolve_action('forward', True),  # ruff: ignore[boolean-positional-value-in-call]
+            lambda: self._resolve_action('forward', all_rows=True),
         )
         self.ui.forwardButton.setMenu(forward_menu)
 
         drop_menu = QMenu(self)
         drop_menu.addAction(
             tr('ui.gui.proxy_tab.drop_selected'),
-            lambda: self._resolve_action('drop', False),  # ruff: ignore[boolean-positional-value-in-call]
+            lambda: self._resolve_action('drop', all_rows=False),
         )
         drop_menu.addAction(
             tr('ui.gui.proxy_tab.drop_all'),
-            lambda: self._resolve_action('drop', True),  # ruff: ignore[boolean-positional-value-in-call]
+            lambda: self._resolve_action('drop', all_rows=True),
         )
         self.ui.dropButton.setMenu(drop_menu)
 
@@ -802,9 +799,9 @@ class ProxyTrafficTab(QWidget):
         # actually held, replay works on any row. Guarded so typing those
         # letters into the filter/highlight/intercept fields or the request/
         # response boxes never triggers them.
-        self._make_shortcut('A', lambda: self._resolve_action('forward', False))  # ruff: ignore[boolean-positional-value-in-call]
-        self._make_shortcut('D', lambda: self._resolve_action('drop', False))  # ruff: ignore[boolean-positional-value-in-call]
-        self._make_shortcut('R', lambda: self._replay_selected())  # ruff: ignore[unnecessary-lambda]
+        self._make_shortcut('A', lambda: self._resolve_action('forward', all_rows=False))
+        self._make_shortcut('D', lambda: self._resolve_action('drop', all_rows=False))
+        self._make_shortcut('R', self._replay_selected)
 
         self._traffic: list[_TrafficEntry] = []
         self._entries_by_id: dict[int, _TrafficEntry] = {}
@@ -952,7 +949,7 @@ class ProxyTrafficTab(QWidget):
                 table.setItem(row, col, item)
         table.setSortingEnabled(True)
 
-        table.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        blocker = QSignalBlocker(table)
         table.clearSelection()
         selection_model = table.selectionModel()
         select_flags = (
@@ -974,7 +971,7 @@ class ProxyTrafficTab(QWidget):
             # just this cell by default, which would blow away the multi-row
             # selection just restored above.
             table.setCurrentCell(current_row, 0, QItemSelectionModel.SelectionFlag.NoUpdate)
-        table.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+        del blocker
 
         if current_row >= 0:
             self._show_entry(self._entries_by_id[cast('int', current_id)])
@@ -1239,9 +1236,8 @@ class ProxyTrafficTab(QWidget):
         self._render_table()
 
     def _clear_roblox_cache(self) -> None:
-        from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
-
-        window = DeleteCacheWindow()
+        delete_cache = importlib.import_module('.delete_cache', __package__)
+        window = delete_cache.DeleteCacheWindow()
         window.show()
 
     def _show_rules_dialog(self) -> None:

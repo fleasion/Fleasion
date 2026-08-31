@@ -1,6 +1,7 @@
 """About window."""
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
 
 from fleasion.localization import tr
@@ -32,8 +33,6 @@ class AboutWindow(QDialog):
 
     def _set_icon(self) -> None:
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
-
             self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self) -> None:

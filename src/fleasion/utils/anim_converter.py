@@ -8,18 +8,21 @@ SharedStrings, markers, FaceControls / NumberPose, and full pose interpolation.
 from __future__ import annotations
 
 import base64
-import contextlib
+import binascii
+import importlib
 import io
 import math
 import struct
 import uuid
-import xml.etree.ElementTree as ET
-from typing import Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
-from defusedxml import ElementTree as safe_et  # ruff: ignore[camelcase-imported-as-lowercase]
+from defusedxml import ElementTree
+
+if TYPE_CHECKING:
+    import xml.etree.ElementTree as ET
 
 type CFrameProperties = dict[str, float | int]
-type PropertyValue = str | bool | int | float | bytes | None | CFrameProperties  # ruff: ignore[none-not-at-end-of-union]
+type PropertyValue = str | bool | int | float | bytes | CFrameProperties | None
 
 
 class FloatCurveKey(TypedDict):
@@ -34,6 +37,50 @@ class PoseEntry(TypedDict):
 
 type PoseMap = dict[str, dict[float, PoseEntry]]
 type FaceControlMap = dict[str, dict[float, float]]
+
+_XML_ELEMENT_TEMPLATE = ElementTree.fromstring('<_ />')
+
+
+def _xml_element(tag: str, *, attrib: dict[str, str] | None = None) -> ET.Element:
+    return _XML_ELEMENT_TEMPLATE.makeelement(tag, attrib or {})
+
+
+def _xml_sub_element(
+    parent: ET.Element,
+    tag: str,
+    *,
+    attrib: dict[str, str] | None = None,
+) -> ET.Element:
+    child = _xml_element(tag, attrib=attrib)
+    parent.append(child)
+    return child
+
+
+def _indent_xml(root: ET.Element, *, space: str) -> None:
+    if not len(root):
+        return
+
+    indentations = ['\n']
+
+    def _indent_children(element: ET.Element, level: int) -> None:
+        child_level = level + 1
+        if child_level >= len(indentations):
+            indentations.append(indentations[level] + space)
+        child_indentation = indentations[child_level]
+
+        if not element.text or not element.text.strip():
+            element.text = child_indentation
+        children = list(element)
+        for child in children:
+            if len(child):
+                _indent_children(child, child_level)
+            if not child.tail or not child.tail.strip():
+                child.tail = child_indentation
+        last_child = children[-1]
+        if not last_child.tail or not last_child.tail.strip():
+            last_child.tail = indentations[level]
+
+    _indent_children(root, 0)
 
 
 # Signature sets used for rig auto-detection
@@ -95,6 +142,24 @@ def is_curve_animation(data: bytes) -> bool:
     return b'CurveAnimation' in data
 
 
+class _AnimationProbeError(RuntimeError):
+    pass
+
+
+def _animation_pose_names(data: bytes) -> set[str] | None:
+    try:
+        animation_viewer = importlib.import_module('fleasion.cache.animation_viewer')
+        keyframes = animation_viewer.load_animation_data(data)
+    except Exception as exc:
+        raise _AnimationProbeError from exc
+    if not keyframes:
+        return None
+    names: set[str] = set()
+    for keyframe in keyframes:
+        names.update(keyframe.pose_by_part_name.keys())
+    return names
+
+
 def detect_rig(data: bytes) -> str:
     """Return 'R6', 'R15', or 'unknown' by fully parsing the animation.
 
@@ -104,25 +169,16 @@ def detect_rig(data: bytes) -> str:
     replacement filters.  Use detect_player_rig() when you need rig info for
     conversion even on mixed animations.
     """
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        from fleasion.cache.animation_viewer import (  # ruff: ignore[import-outside-top-level]
-            load_animation_data,
-        )
-
-        keyframes = load_animation_data(data)
-        if not keyframes:
-            return 'unknown'
-        names: set[str] = set()
-        for kf in keyframes:
-            names.update(kf.pose_by_part_name.keys())
-        if names - _ALL_PLAYER_PARTS:
-            return 'unknown'
-        if names & _R6_SIGNS:
-            return 'R6'
-        if names & _R15_SIGNS:
-            return 'R15'
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
-        pass
+    try:
+        names = _animation_pose_names(data)
+    except _AnimationProbeError:
+        return 'unknown'
+    if not names or names - _ALL_PLAYER_PARTS:
+        return 'unknown'
+    if names & _R6_SIGNS:
+        return 'R6'
+    if names & _R15_SIGNS:
+        return 'R15'
     return 'unknown'
 
 
@@ -134,43 +190,33 @@ def detect_player_rig(data: bytes) -> str:
     version of a replacement can be served.  Returns 'unknown' only when no
     player body part names are present at all.
     """
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        from fleasion.cache.animation_viewer import (  # ruff: ignore[import-outside-top-level]
-            load_animation_data,
-        )
-
-        keyframes = load_animation_data(data)
-        if not keyframes:
-            return 'unknown'
-        names: set[str] = set()
-        for kf in keyframes:
-            names.update(kf.pose_by_part_name.keys())
-        if names & _R6_SIGNS:
-            return 'R6'
-        if names & _R15_SIGNS:
-            return 'R15'
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
-        pass
+    try:
+        names = _animation_pose_names(data)
+    except _AnimationProbeError:
+        return 'unknown'
+    if not names:
+        return 'unknown'
+    if names & _R6_SIGNS:
+        return 'R6'
+    if names & _R15_SIGNS:
+        return 'R15'
     return 'unknown'
 
 
 def rbxm_to_rbxmx(data: bytes) -> bytes:
     """Convert binary .rbxm bytes to .rbxmx XML bytes."""
-    from fleasion.cache.tools.solidmodel_converter.rbxm.deserializer import (  # ruff: ignore[import-outside-top-level]
-        RbxmDeserializer,
+    deserializer = importlib.import_module(
+        'fleasion.cache.tools.solidmodel_converter.rbxm.deserializer'
     )
-    from fleasion.cache.tools.solidmodel_converter.rbxm.xml_writer import (  # ruff: ignore[import-outside-top-level]
-        write_rbxmx as _write,
-    )
-
-    return _write(RbxmDeserializer().deserialize(data))
+    xml_writer = importlib.import_module('fleasion.cache.tools.solidmodel_converter.rbxm.xml_writer')
+    return xml_writer.write_rbxmx(deserializer.RbxmDeserializer().deserialize(data))
 
 
 # Lightweight instance model (ported from curve_to_keyframe.py)
 
 
 class _Instance:
-    __slots__ = ('class_name', 'name', 'properties', 'children', 'parent')  # ruff: ignore[unsorted-dunder-slots]
+    __slots__ = ('class_name', 'name', 'properties', 'children', 'parent')
 
     def __init__(self, class_name: str) -> None:
         self.class_name: str = class_name
@@ -204,28 +250,28 @@ class _Instance:
 
 def _parse_float_curve_binary(data: bytes) -> list[FloatCurveKey]:
     """Decode binary FloatCurve ValuesAndTimes -> list of {'Time': float, 'Value': float}."""
-    HDR = 8  # ruff: ignore[non-lowercase-variable-in-function]
-    KEY_STRIDE = 14  # ruff: ignore[non-lowercase-variable-in-function]
-    TIME_HDR = 8  # ruff: ignore[non-lowercase-variable-in-function]
-    TIME_SCALE = 14400.0  # ruff: ignore[non-lowercase-variable-in-function]
+    header_size = 8
+    key_stride = 14
+    time_header_size = 8
+    time_scale = 14400.0
 
-    if len(data) < HDR:
+    if len(data) < header_size:
         return []
     key_count = struct.unpack_from('<I', data, 4)[0]
     if key_count == 0:
         return []
 
-    times_base = HDR + key_count * KEY_STRIDE + TIME_HDR
+    times_base = header_size + key_count * key_stride + time_header_size
     if times_base + key_count * 4 > len(data):
         return []
 
     keys: list[FloatCurveKey] = []
     for i in range(key_count):
-        k_off = HDR + i * KEY_STRIDE
+        k_off = header_size + i * key_stride
         t_off = times_base + i * 4
         value = struct.unpack_from('<f', data, k_off + 2)[0]
         time_unit = struct.unpack_from('<I', data, t_off)[0]
-        keys.append({'Time': time_unit / TIME_SCALE, 'Value': value})
+        keys.append({'Time': time_unit / time_scale, 'Value': value})
     return keys
 
 
@@ -237,9 +283,9 @@ def _load_rbxmx_instances(
 ) -> tuple[list[_Instance], dict[str, bytes]]:
     """Parse .rbxmx XML bytes or filepath into (list[_Instance], shared_strings dict)."""
     if isinstance(source, (bytes, bytearray)):
-        tree = safe_et.parse(io.BytesIO(source))
+        tree = ElementTree.parse(io.BytesIO(source))
     else:
-        tree = safe_et.parse(source)
+        tree = ElementTree.parse(source)
     root = cast('ET.Element', tree.getroot())
 
     shared_strings: dict[str, bytes] = {}
@@ -251,8 +297,8 @@ def _load_rbxmx_instances(
             if md5 and text:
                 try:
                     shared_strings[md5] = base64.b64decode(text)
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
+                except (binascii.Error, ValueError):
+                    continue
 
     def parse_props(props_elem: ET.Element, inst: _Instance) -> None:
         for prop in props_elem:
@@ -266,12 +312,12 @@ def _load_rbxmx_instances(
                     inst.name = prop.text or ''
             elif tag == 'bool':
                 inst.properties[pname] = text.lower() == 'true'
-            elif tag in ('int', 'token'):  # ruff: ignore[literal-membership]
+            elif tag in {'int', 'token'}:
                 try:
                     inst.properties[pname] = int(text)
                 except ValueError:
                     inst.properties[pname] = 0
-            elif tag in ('float', 'double'):  # ruff: ignore[literal-membership]
+            elif tag in {'float', 'double'}:
                 try:
                     inst.properties[pname] = float(text)
                 except ValueError:
@@ -279,7 +325,7 @@ def _load_rbxmx_instances(
             elif tag == 'BinaryString':
                 try:
                     inst.properties[pname] = base64.b64decode(text) if text else b''
-                except Exception:  # ruff: ignore[blind-except]
+                except (binascii.Error, ValueError):
                     inst.properties[pname] = b''
             elif tag == 'SharedString':
                 inst.properties[pname] = shared_strings.get(text, b'')
@@ -346,14 +392,15 @@ def _map_poses(
 
         pose_name = curve.parent.name if curve.parent else ''
 
-        if curve_type in ('Position', 'Rotation'):  # ruff: ignore[literal-membership]
+        if curve_type in {'Position', 'Rotation'}:
+            pose_curve_type = cast("Literal['Position', 'Rotation']", curve_type)
             pose_map.setdefault(pose_name, {})
             for axis in ('X', 'Y', 'Z'):
                 for key in _get_axis_keys(curve, axis):
                     t, v = key['Time'], key['Value']
                     times.add(t)
                     pose_map[pose_name].setdefault(t, {'Position': {}, 'Rotation': {}})
-                    pose_map[pose_name][t][curve_type][axis] = v
+                    pose_map[pose_name][t][pose_curve_type][axis] = v
         else:  # FaceControl
             fc_name = curve.name
             face_control_map.setdefault(fc_name, {})
@@ -438,29 +485,33 @@ def _euler_xyz_to_rotation_matrix(rx: float, ry: float, rz: float) -> list[float
 # Marker parsing
 
 
-def _parse_markers(data: bytes, curve_name: str) -> list[tuple[float, str, str]]:
+def _read_markers(
+    data: bytes, curve_name: str, count: int, offset: int
+) -> list[tuple[float, str, str]]:
     markers: list[tuple[float, str, str]] = []
-    offset = 0
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        count = struct.unpack_from('<I', data, offset)[0]
+    for _ in range(count):
+        if offset + 8 > len(data):
+            break
+        t = struct.unpack_from('<f', data, offset)[0]
         offset += 4
+        str_len = struct.unpack_from('<I', data, offset)[0]
+        offset += 4
+        if offset + str_len > len(data):
+            break
+        value = data[offset : offset + str_len].decode('utf-8', errors='replace')
+        offset += str_len
+        markers.append((t, curve_name, value))
+    return markers
+
+
+def _parse_markers(data: bytes, curve_name: str) -> list[tuple[float, str, str]]:
+    try:
+        count = struct.unpack_from('<I', data, 0)[0]
         if count > 10_000:
             return []
-        for _ in range(count):
-            if offset + 8 > len(data):
-                break
-            t = struct.unpack_from('<f', data, offset)[0]
-            offset += 4
-            str_len = struct.unpack_from('<I', data, offset)[0]
-            offset += 4
-            if offset + str_len > len(data):
-                break
-            value = data[offset : offset + str_len].decode('utf-8', errors='replace')
-            offset += str_len
-            markers.append((t, curve_name, value))
-    except struct.error, UnicodeDecodeError:
-        pass
-    return markers
+        return _read_markers(data, curve_name, count, 4)
+    except (struct.error, UnicodeDecodeError):
+        return []
 
 
 def _handle_markers(
@@ -594,9 +645,9 @@ def _convert_curve_anim(curve_anim: _Instance) -> _Instance:
             }
             _interpolate_values(fv, pose_name, t, pose_map, key_times)
 
-            for k in fv:  # ruff: ignore[dict-index-missing-items]
-                if fv[k] is None:
-                    fv[k] = 0.0
+            for key, value in fv.items():
+                if value is None:
+                    fv[key] = 0.0
             # Every entry was populated above; this cast expresses that loop invariant.
             resolved_fv = cast('dict[str, float]', fv)
 
@@ -631,29 +682,29 @@ def _new_ref() -> str:
 
 
 def _instance_to_xml(inst: _Instance, parent_elem: ET.Element) -> None:
-    item = ET.SubElement(parent_elem, 'Item')
+    item = _xml_sub_element(parent_elem, 'Item')
     item.set('class', inst.class_name)
     item.set('referent', _new_ref())
 
-    props = ET.SubElement(item, 'Properties')
+    props = _xml_sub_element(item, 'Properties')
 
     for pname, val in inst.properties.items():
         if pname == 'Name':
-            ET.SubElement(props, 'string', attrib={'name': 'Name'}).text = str(val)
+            _xml_sub_element(props, 'string', attrib={'name': 'Name'}).text = str(val)
         elif pname == 'Loop':
-            ET.SubElement(props, 'bool', attrib={'name': 'Loop'}).text = 'true' if val else 'false'
+            _xml_sub_element(props, 'bool', attrib={'name': 'Loop'}).text = 'true' if val else 'false'
         elif pname == 'Priority':
-            ET.SubElement(props, 'token', attrib={'name': 'Priority'}).text = str(val)
+            _xml_sub_element(props, 'token', attrib={'name': 'Priority'}).text = str(val)
         elif pname == 'Time' and inst.class_name == 'Keyframe':
-            ET.SubElement(props, 'float', attrib={'name': 'Time'}).text = str(val)
+            _xml_sub_element(props, 'float', attrib={'name': 'Time'}).text = str(val)
         elif pname == 'Weight':
-            ET.SubElement(props, 'float', attrib={'name': 'Weight'}).text = str(val)
+            _xml_sub_element(props, 'float', attrib={'name': 'Weight'}).text = str(val)
         elif pname == 'Value' and inst.class_name == 'NumberPose':
-            ET.SubElement(props, 'float', attrib={'name': 'Value'}).text = str(val)
+            _xml_sub_element(props, 'float', attrib={'name': 'Value'}).text = str(val)
         elif pname == 'Value' and inst.class_name == 'KeyframeMarker':
-            ET.SubElement(props, 'string', attrib={'name': 'Value'}).text = str(val)
+            _xml_sub_element(props, 'string', attrib={'name': 'Value'}).text = str(val)
         elif pname == 'CFrame' and isinstance(val, dict):
-            cf = ET.SubElement(props, 'CoordinateFrame', attrib={'name': 'CFrame'})
+            cf = _xml_sub_element(props, 'CoordinateFrame', attrib={'name': 'CFrame'})
             for comp in (
                 'X',
                 'Y',
@@ -668,14 +719,14 @@ def _instance_to_xml(inst: _Instance, parent_elem: ET.Element) -> None:
                 'R21',
                 'R22',
             ):
-                ET.SubElement(cf, comp).text = str(val.get(comp, 0))
+                _xml_sub_element(cf, comp).text = str(val.get(comp, 0))
 
     for child in inst.children:
         _instance_to_xml(child, item)
 
 
 def _instances_to_rbxmx_bytes(instances: list[_Instance]) -> bytes:
-    root = ET.Element('roblox')
+    root = _xml_element('roblox')
     root.set('xmlns:xmime', 'http://www.w3.org/2005/05/xmlmime')
     root.set('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
     root.set('xsi:noNamespaceSchemaLocation', 'http://www.roblox.com/roblox.xsd')
@@ -684,13 +735,12 @@ def _instances_to_rbxmx_bytes(instances: list[_Instance]) -> bytes:
     for inst in instances:
         _instance_to_xml(inst, root)
 
-    tree = ET.ElementTree(root)
-    with contextlib.suppress(AttributeError):
-        ET.indent(tree, space='  ')
-
-    buf = io.StringIO()
-    tree.write(buf, encoding='unicode', xml_declaration=True)
-    return buf.getvalue().encode('utf-8')
+    _indent_xml(root, space='  ')
+    return ElementTree.tostring(
+        root,
+        encoding='unicode',
+        xml_declaration=True,
+    ).encode('utf-8')
 
 
 # Public entry point

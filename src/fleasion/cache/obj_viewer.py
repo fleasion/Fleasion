@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 import time
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast, override
+from typing import TYPE_CHECKING, Literal, TypedDict, cast, override
 
 import numpy as np
 import numpy.typing as npt
@@ -59,18 +60,14 @@ type CameraMode = Literal['orbit', 'fps']
 type FloatVector = npt.NDArray[np.float64]
 type PixelReadback = bytes | bytearray | memoryview | npt.NDArray[np.uint8]
 
+_OPENGL_ERROR = cast('type[Exception]', vars(importlib.import_module('OpenGL.error'))['Error'])
+
 
 class ObjFace(TypedDict):
     """Indices for one parsed OBJ face."""
 
     v: list[int]
     n: list[int]
-
-
-class _TypedOffscreenBase(Protocol):
-    def __init__(self, parent: QWidget | None = None) -> None: ...
-
-    def closeEvent(self, event: QCloseEvent) -> None: ...  # ruff: ignore[invalid-function-name]
 
 
 def _screen_refresh_rate(screen: QScreen | None) -> float:
@@ -103,7 +100,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         # Render into an offscreen framebuffer and let QWidget paint the result.
         # This avoids both QOpenGLWidget top-level recreation and black native
         # QOpenGLWindow child surfaces seen on some Windows/AMD configurations.
-        cast('_TypedOffscreenBase', super()).__init__(parent)
+        OffscreenOpenGLWidget.__init__(self, parent)
 
         # Mesh Data
         self.vertices: list[Vec3] = []
@@ -139,7 +136,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         self._first_paint_completed_logged = False
         self._first_frame_presented_logged = False
         self._presentation_watchdog_scheduled = False
-        self.framePresented.connect(self._on_frame_presented)
+        self.frame_presented.connect(self._on_frame_presented)
 
         # Display options
         self.show_wireframe = False
@@ -155,7 +152,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             refresh = _screen_refresh_rate(screen)
             if not refresh or refresh <= 0:
                 refresh = 60.0
-        except Exception:  # ruff: ignore[blind-except]
+        except RuntimeError:
             refresh = 60.0
         interval_ms = max(1, round(1000.0 / refresh))
         self.timer.start(interval_ms)
@@ -167,7 +164,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             refresh = _screen_refresh_rate(screen)
             if not refresh or refresh <= 0:
                 refresh = 60.0
-        except Exception:  # ruff: ignore[blind-except]
+        except RuntimeError:
             refresh = 60.0
         return max(1, round(1000.0 / refresh))
 
@@ -180,8 +177,8 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         self.normals = []
         self.face_normals = []
 
-        for line in obj_content.splitlines():
-            line = line.strip()  # ruff: ignore[redefined-loop-name]
+        for raw_line in obj_content.splitlines():
+            line = raw_line.strip()
             if not line or line.startswith('#'):
                 continue
 
@@ -266,10 +263,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                 edge2 = v2 - v0
                 normal = np.cross(edge1, edge2)
                 norm = np.linalg.norm(normal)
-                if norm > 0:  # ruff: ignore[if-else-block-instead-of-if-exp]
-                    normal = normal / norm  # ruff: ignore[non-augmented-assignment]
-                else:
-                    normal = np.array([0.0, 1.0, 0.0])
+                normal = normal / norm if norm > 0 else np.array([0.0, 1.0, 0.0])
 
                 self.face_normals.append(normal.tolist())
             else:
@@ -355,36 +349,38 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             f'{self._surface_state()}',
         )
 
+    def _gl_context_details(self) -> str:
+        context = self.context()
+        if context is None:
+            msg = 'OpenGL context is unavailable'
+            raise RuntimeError(msg)
+        fmt = context.format()
+        version = GL.glGetString(GL.GL_VERSION)
+        renderer = GL.glGetString(GL.GL_RENDERER)
+        vendor = GL.glGetString(GL.GL_VENDOR)
+        return (
+            f'{fmt.majorVersion()}.{fmt.minorVersion()} '
+            f'profile={fmt.profile().name} '
+            f'renderable={fmt.renderableType().name} '
+            f'samples={fmt.samples()} '
+            f'depth={fmt.depthBufferSize()} stencil={fmt.stencilBufferSize()} '
+            f'alpha={fmt.alphaBufferSize()} swap={fmt.swapBehavior().name} '
+            f'swap_interval={fmt.swapInterval()} context_valid={context.isValid()} '
+            f'version={version.decode(errors="replace") if version else "unknown"} '
+            f'renderer={renderer.decode(errors="replace") if renderer else "unknown"} '
+            f'vendor={vendor.decode(errors="replace") if vendor else "unknown"}'
+        )
+
     def _log_gl_context_once(self) -> None:
         if self._gl_context_logged:
             return
         self._gl_context_logged = True
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            context = self.context()
-            if TYPE_CHECKING:
-                assert context is not None
-            fmt = context.format()
-            version = GL.glGetString(GL.GL_VERSION)
-            renderer = GL.glGetString(GL.GL_RENDERER)
-            vendor = GL.glGetString(GL.GL_VENDOR)
-            log_buffer.log(
-                'OpenGL',
-                (
-                    'OBJ viewer context: '
-                    f'{fmt.majorVersion()}.{fmt.minorVersion()} '
-                    f'profile={fmt.profile().name} '
-                    f'renderable={fmt.renderableType().name} '
-                    f'samples={fmt.samples()} '
-                    f'depth={fmt.depthBufferSize()} stencil={fmt.stencilBufferSize()} '
-                    f'alpha={fmt.alphaBufferSize()} swap={fmt.swapBehavior().name} '
-                    f'swap_interval={fmt.swapInterval()} context_valid={context.isValid()} '
-                    f'version={version.decode(errors="replace") if version else "unknown"} '
-                    f'renderer={renderer.decode(errors="replace") if renderer else "unknown"} '
-                    f'vendor={vendor.decode(errors="replace") if vendor else "unknown"}'
-                ),
-            )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            details = self._gl_context_details()
+        except (RuntimeError, _OPENGL_ERROR) as exc:
             log_buffer.log('OpenGL', f'Could not read OBJ viewer context details: {exc}')
+        else:
+            log_buffer.log('OpenGL', f'OBJ viewer context: {details}')
 
     @staticmethod
     def _gl_error_text(error: int) -> str:
@@ -401,21 +397,24 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                 f'visible={self.isVisible()} exposed={self.isExposed()} '
                 f'context_valid={context_valid} fbo={self.defaultFramebufferObject()}'
             )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except RuntimeError as exc:
             return f'state_unavailable={type(exc).__name__}: {exc}'
+
+    def _center_pixel_description(self) -> str:
+        size = self.size()
+        x = max(0, size.width() // 2)
+        y = max(0, size.height() // 2)
+        pixel = GL.glReadPixels(x, y, 1, 1, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+        values = _readback_values(pixel)
+        if values.size < 4:
+            return f'unexpected_readback_size={values.size}'
+        return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
 
     def _sample_center_pixel(self) -> str:
         """Sample one rendered pixel so logs can separate rendering from presentation."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            size = self.size()
-            x = max(0, size.width() // 2)
-            y = max(0, size.height() // 2)
-            pixel = GL.glReadPixels(x, y, 1, 1, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
-            values = _readback_values(pixel)
-            if values.size < 4:
-                return f'unexpected_readback_size={values.size}'
-            return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            return self._center_pixel_description()
+        except (RuntimeError, TypeError, ValueError, _OPENGL_ERROR) as exc:
             return f'readback_failed={type(exc).__name__}: {exc}'
 
     def _schedule_presentation_watchdog(self) -> None:
@@ -462,6 +461,20 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                 f'gl_error={self._gl_error_text(error)}; {self._surface_state()}',
             )
 
+    def _log_first_paint_complete(self) -> None:
+        render_error = GL.glGetError()
+        center_pixel = self._sample_center_pixel()
+        readback_error = GL.glGetError()
+        self._first_paint_completed_logged = True
+        log_buffer.log(
+            'OpenGL',
+            f'OBJ viewer first paintGL complete; '
+            f'render_gl_error={self._gl_error_text(render_error)}; '
+            f'center_pixel={center_pixel}; '
+            f'readback_gl_error={self._gl_error_text(readback_error)}; '
+            f'{self._surface_state()}',
+        )
+
     @override
     def paintGL(self) -> None:
         """Render the scene using cached display list."""
@@ -469,29 +482,18 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         if first_paint:
             self._first_paint_started_logged = True
             log_buffer.log('OpenGL', f'OBJ viewer first paintGL started; {self._surface_state()}')
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        try:
             self._paint_scene()
             if first_paint:
-                render_error = GL.glGetError()
-                center_pixel = self._sample_center_pixel()
-                readback_error = GL.glGetError()
-                self._first_paint_completed_logged = True
-                log_buffer.log(
-                    'OpenGL',
-                    f'OBJ viewer first paintGL complete; '
-                    f'render_gl_error={self._gl_error_text(render_error)}; '
-                    f'center_pixel={center_pixel}; '
-                    f'readback_gl_error={self._gl_error_text(readback_error)}; '
-                    f'{self._surface_state()}',
-                )
-        except Exception as exc:  # ruff: ignore[blind-except]
+                self._log_first_paint_complete()
+        except (RuntimeError, TypeError, ValueError, _OPENGL_ERROR) as exc:
             if not self._paint_error_logged:
                 self._paint_error_logged = True
                 log_buffer.log('OpenGL', f'OBJ viewer paint failed: {type(exc).__name__}: {exc}')
             try:
                 GL.glClearColor(0.08, 0.08, 0.10, 1.0)
                 GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
+            except _OPENGL_ERROR:
                 pass
 
     def _paint_scene(self) -> None:
@@ -540,7 +542,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
                     try:
                         GL.glLineWidth(0.5)
-                    except Exception:  # ruff: ignore[blind-except, try-except-pass]
+                    except _OPENGL_ERROR:
                         pass  # Some drivers don't support width < 1.0
 
                     GL.glCallList(self.mesh_display_list)
@@ -935,13 +937,13 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                 self.makeCurrent()
                 made_current = True
             GL.glDeleteLists(display_list, 1)
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except (RuntimeError, _OPENGL_ERROR):
             pass
         finally:
             if made_current:
                 try:
                     self.doneCurrent()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
+                except RuntimeError:
                     pass
 
     @override
@@ -949,7 +951,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         """Stop updates and release the display list before context teardown."""
         self.timer.stop()
         self._discard_mesh_display_list()
-        cast('_TypedOffscreenBase', super()).closeEvent(event)
+        OffscreenOpenGLWidget.closeEvent(self, event)
 
 
 class ObjViewerPanel(QWidget):
@@ -1055,8 +1057,9 @@ class ObjViewerPanel(QWidget):
             self.config_manager.settings['obj_show_grid'] = enabled
             self.config_manager.save()
 
-    def load_obj(self, obj_content: str, asset_id: str = '') -> None:  # ruff: ignore[unused-method-argument]
+    def load_obj(self, obj_content: str, asset_id: str = '') -> None:
         """Load OBJ file content."""
+        del asset_id
         self.viewer.load_obj_data(obj_content)
 
         v_count = len(self.viewer.vertices)

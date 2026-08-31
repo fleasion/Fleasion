@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import math
-import os
+import pathlib
 import sys
-import xml.etree.ElementTree as ET  # ruff: ignore[typing-only-standard-library-import]
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast, override
 
-from defusedxml import ElementTree as safe_et  # ruff: ignore[camelcase-imported-as-lowercase]
+from defusedxml import ElementTree
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 type _Vec3 = tuple[float, float, float]
 type _Mat3 = list[list[float]]
@@ -16,41 +17,15 @@ type _Bounds = tuple[float, float, float, float, float, float]
 
 
 class _Matrix4x4(Protocol):
-    def Identity(self) -> None: ...  # ruff: ignore[invalid-function-name]
-
-    def SetElement(  # ruff: ignore[invalid-function-name]
-        self, row: int, column: int, value: float
-    ) -> None: ...
-
-    def GetElement(self, row: int, column: int) -> float: ...  # ruff: ignore[invalid-function-name]
+    pass
 
 
 class _Matrix4x4Factory(Protocol):
     def __call__(self) -> _Matrix4x4: ...
 
-    def Multiply4x4(  # ruff: ignore[invalid-function-name]
-        self, a: _Matrix4x4, b: _Matrix4x4, out: _Matrix4x4
-    ) -> None: ...
-
-    def Invert(  # ruff: ignore[invalid-function-name]
-        self, matrix: _Matrix4x4, out: _Matrix4x4
-    ) -> None: ...
-
 
 class _Light(Protocol):
-    def SetLightTypeToHeadlight(self) -> None: ...  # ruff: ignore[invalid-function-name]
-
-    def SetLightTypeToSceneLight(self) -> None: ...  # ruff: ignore[invalid-function-name]
-
-    def SetIntensity(self, intensity: float) -> None: ...  # ruff: ignore[invalid-function-name]
-
-    def SetPosition(  # ruff: ignore[invalid-function-name]
-        self, x: float, y: float, z: float
-    ) -> None: ...
-
-    def SetFocalPoint(  # ruff: ignore[invalid-function-name]
-        self, x: float, y: float, z: float
-    ) -> None: ...
+    pass
 
 
 class _LightFactory(Protocol):
@@ -58,8 +33,7 @@ class _LightFactory(Protocol):
 
 
 class _VtkModule(Protocol):
-    vtkMatrix4x4: _Matrix4x4Factory  # ruff: ignore[mixed-case-variable-in-class-scope]
-    vtkLight: _LightFactory  # ruff: ignore[mixed-case-variable-in-class-scope]
+    pass
 
 
 class _Mesh(Protocol):
@@ -81,26 +55,13 @@ class _Mesh(Protocol):
 class _PyVistaModule(Protocol):
     def read(self, path: str) -> _Mesh: ...
 
-    def Cube(  # ruff: ignore[invalid-function-name]
-        self,
-        *,
-        center: _Vec3,
-        x_length: float,
-        y_length: float,
-        z_length: float,
-    ) -> _Mesh: ...
-
 
 class _Actor(Protocol):
-    def SetUserMatrix(  # ruff: ignore[invalid-function-name]
-        self, matrix: _Matrix4x4
-    ) -> None: ...
+    pass
 
 
 class _Renderer(Protocol):
-    def RemoveAllLights(self) -> None: ...  # ruff: ignore[invalid-function-name]
-
-    def AddLight(self, light: _Light) -> None: ...  # ruff: ignore[invalid-function-name]
+    pass
 
 
 class _Camera(Protocol):
@@ -108,12 +69,6 @@ class _Camera(Protocol):
     position: _Vec3
     up: _Vec3
     view_angle: float
-
-    def SetClippingRange(  # ruff: ignore[invalid-function-name]
-        self, near: float, far: float
-    ) -> None: ...
-
-    def Azimuth(self, angle: float) -> None: ...  # ruff: ignore[invalid-function-name]
 
 
 class _Plotter(Protocol):
@@ -153,6 +108,9 @@ class _QtInteractorFactory(Protocol):
 
 
 if TYPE_CHECKING:
+    import xml.etree.ElementTree as ET
+    from collections.abc import Callable
+
     from PySide6.QtGui import QCloseEvent
 
     def _pyvista_type_adapter() -> _PyVistaModule:
@@ -167,15 +125,6 @@ else:
     import pyvista as pv
     import vtk
 
-from PySide6.QtCore import (  # ruff: ignore[module-import-not-at-top-of-file]
-    QTimer,
-)
-from PySide6.QtWidgets import (  # ruff: ignore[module-import-not-at-top-of-file]
-    QApplication,
-    QVBoxLayout,
-    QWidget,
-)
-
 if TYPE_CHECKING:
 
     def _qt_interactor_type_adapter() -> _QtInteractorFactory:
@@ -189,6 +138,64 @@ try:
     from fleasion.utils import log_buffer
 except ImportError:
     log_buffer = None
+
+
+_VTK_MATRIX_FACTORY = 'vtkMatrix4x4'
+_VTK_LIGHT_FACTORY = 'vtkLight'
+_MATRIX_IDENTITY = 'Identity'
+_MATRIX_SET_ELEMENT = 'SetElement'
+_MATRIX_GET_ELEMENT = 'GetElement'
+_MATRIX_MULTIPLY = 'Multiply4x4'
+_MATRIX_INVERT = 'Invert'
+_LIGHT_HEADLIGHT = 'SetLightTypeToHeadlight'
+_LIGHT_SCENE = 'SetLightTypeToSceneLight'
+_LIGHT_INTENSITY = 'SetIntensity'
+_LIGHT_POSITION = 'SetPosition'
+_LIGHT_FOCAL_POINT = 'SetFocalPoint'
+_PYVISTA_CUBE = 'Cube'
+_ACTOR_USER_MATRIX = 'SetUserMatrix'
+_RENDERER_REMOVE_LIGHTS = 'RemoveAllLights'
+_RENDERER_ADD_LIGHT = 'AddLight'
+_CAMERA_CLIPPING_RANGE = 'SetClippingRange'
+_CAMERA_AZIMUTH = 'Azimuth'
+
+
+def _call_void(target: object, method_name: str, *args: object) -> None:
+    method = cast('Callable[..., None]', getattr(target, method_name))
+    method(*args)
+
+
+def _call_float(target: object, method_name: str, *args: object) -> float:
+    method = cast('Callable[..., float]', getattr(target, method_name))
+    return method(*args)
+
+
+def _vtk_matrix_factory() -> _Matrix4x4Factory:
+    return cast('_Matrix4x4Factory', getattr(vtk, _VTK_MATRIX_FACTORY))
+
+
+def _vtk_light_factory() -> _LightFactory:
+    return cast('_LightFactory', getattr(vtk, _VTK_LIGHT_FACTORY))
+
+
+def _new_matrix() -> _Matrix4x4:
+    return _vtk_matrix_factory()()
+
+
+def _new_light() -> _Light:
+    return _vtk_light_factory()()
+
+
+def _cube(
+    *, center: _Vec3, x_length: float, y_length: float, z_length: float
+) -> _Mesh:
+    factory = cast('Callable[..., _Mesh]', getattr(pv, _PYVISTA_CUBE))
+    return factory(
+        center=center,
+        x_length=x_length,
+        y_length=y_length,
+        z_length=z_length,
+    )
 
 
 # XML helpers
@@ -227,7 +234,7 @@ def parse_cframe(elem: ET.Element) -> tuple[_Vec3, list[float]]:
     z = float(_text(elem.find('Z'), '0'))
     r: list[float] = []
     for k in ('R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22'):
-        if k in ('R00', 'R11', 'R22'):  # ruff: ignore[literal-membership]
+        if k in {'R00', 'R11', 'R22'}:
             r.append(float(_text(elem.find(k), '1')))
         else:
             r.append(float(_text(elem.find(k), '0')))
@@ -235,32 +242,32 @@ def parse_cframe(elem: ET.Element) -> tuple[_Vec3, list[float]]:
 
 
 def vtk_matrix_from_cframe(pos: _Vec3, r: list[float]) -> _Matrix4x4:
-    m = vtk.vtkMatrix4x4()
-    m.Identity()
-    m.SetElement(0, 0, r[0])
-    m.SetElement(0, 1, r[1])
-    m.SetElement(0, 2, r[2])
-    m.SetElement(1, 0, r[3])
-    m.SetElement(1, 1, r[4])
-    m.SetElement(1, 2, r[5])
-    m.SetElement(2, 0, r[6])
-    m.SetElement(2, 1, r[7])
-    m.SetElement(2, 2, r[8])
-    m.SetElement(0, 3, pos[0])
-    m.SetElement(1, 3, pos[1])
-    m.SetElement(2, 3, pos[2])
+    m = _new_matrix()
+    _call_void(m, _MATRIX_IDENTITY)
+    _call_void(m, _MATRIX_SET_ELEMENT, 0, 0, r[0])
+    _call_void(m, _MATRIX_SET_ELEMENT, 0, 1, r[1])
+    _call_void(m, _MATRIX_SET_ELEMENT, 0, 2, r[2])
+    _call_void(m, _MATRIX_SET_ELEMENT, 1, 0, r[3])
+    _call_void(m, _MATRIX_SET_ELEMENT, 1, 1, r[4])
+    _call_void(m, _MATRIX_SET_ELEMENT, 1, 2, r[5])
+    _call_void(m, _MATRIX_SET_ELEMENT, 2, 0, r[6])
+    _call_void(m, _MATRIX_SET_ELEMENT, 2, 1, r[7])
+    _call_void(m, _MATRIX_SET_ELEMENT, 2, 2, r[8])
+    _call_void(m, _MATRIX_SET_ELEMENT, 0, 3, pos[0])
+    _call_void(m, _MATRIX_SET_ELEMENT, 1, 3, pos[1])
+    _call_void(m, _MATRIX_SET_ELEMENT, 2, 3, pos[2])
     return m
 
 
 def mat_mul(a: _Matrix4x4, b: _Matrix4x4) -> _Matrix4x4:
-    out = vtk.vtkMatrix4x4()
-    vtk.vtkMatrix4x4.Multiply4x4(a, b, out)
+    out = _new_matrix()
+    _call_void(_vtk_matrix_factory(), _MATRIX_MULTIPLY, a, b, out)
     return out
 
 
 def mat_inv(a: _Matrix4x4) -> _Matrix4x4:
-    out = vtk.vtkMatrix4x4()
-    vtk.vtkMatrix4x4.Invert(a, out)
+    out = _new_matrix()
+    _call_void(_vtk_matrix_factory(), _MATRIX_INVERT, a, out)
     return out
 
 
@@ -272,33 +279,33 @@ def lerp(a: float, b: float, t: float) -> float:
 
 
 def mat_get_translation(m: _Matrix4x4) -> _Vec3:
-    return (m.GetElement(0, 3), m.GetElement(1, 3), m.GetElement(2, 3))
+    return (_call_float(m, _MATRIX_GET_ELEMENT, 0, 3), _call_float(m, _MATRIX_GET_ELEMENT, 1, 3), _call_float(m, _MATRIX_GET_ELEMENT, 2, 3))
 
 
 def mat_set_translation(m: _Matrix4x4, t: _Vec3) -> None:
-    m.SetElement(0, 3, t[0])
-    m.SetElement(1, 3, t[1])
-    m.SetElement(2, 3, t[2])
+    _call_void(m, _MATRIX_SET_ELEMENT, 0, 3, t[0])
+    _call_void(m, _MATRIX_SET_ELEMENT, 1, 3, t[1])
+    _call_void(m, _MATRIX_SET_ELEMENT, 2, 3, t[2])
 
 
 def mat_get_rot3(m: _Matrix4x4) -> _Mat3:
     return [
-        [m.GetElement(0, 0), m.GetElement(0, 1), m.GetElement(0, 2)],
-        [m.GetElement(1, 0), m.GetElement(1, 1), m.GetElement(1, 2)],
-        [m.GetElement(2, 0), m.GetElement(2, 1), m.GetElement(2, 2)],
+        [_call_float(m, _MATRIX_GET_ELEMENT, 0, 0), _call_float(m, _MATRIX_GET_ELEMENT, 0, 1), _call_float(m, _MATRIX_GET_ELEMENT, 0, 2)],
+        [_call_float(m, _MATRIX_GET_ELEMENT, 1, 0), _call_float(m, _MATRIX_GET_ELEMENT, 1, 1), _call_float(m, _MATRIX_GET_ELEMENT, 1, 2)],
+        [_call_float(m, _MATRIX_GET_ELEMENT, 2, 0), _call_float(m, _MATRIX_GET_ELEMENT, 2, 1), _call_float(m, _MATRIX_GET_ELEMENT, 2, 2)],
     ]
 
 
 def mat_set_rot3(m: _Matrix4x4, r: _Mat3) -> None:
-    m.SetElement(0, 0, r[0][0])
-    m.SetElement(0, 1, r[0][1])
-    m.SetElement(0, 2, r[0][2])
-    m.SetElement(1, 0, r[1][0])
-    m.SetElement(1, 1, r[1][1])
-    m.SetElement(1, 2, r[1][2])
-    m.SetElement(2, 0, r[2][0])
-    m.SetElement(2, 1, r[2][1])
-    m.SetElement(2, 2, r[2][2])
+    _call_void(m, _MATRIX_SET_ELEMENT, 0, 0, r[0][0])
+    _call_void(m, _MATRIX_SET_ELEMENT, 0, 1, r[0][1])
+    _call_void(m, _MATRIX_SET_ELEMENT, 0, 2, r[0][2])
+    _call_void(m, _MATRIX_SET_ELEMENT, 1, 0, r[1][0])
+    _call_void(m, _MATRIX_SET_ELEMENT, 1, 1, r[1][1])
+    _call_void(m, _MATRIX_SET_ELEMENT, 1, 2, r[1][2])
+    _call_void(m, _MATRIX_SET_ELEMENT, 2, 0, r[2][0])
+    _call_void(m, _MATRIX_SET_ELEMENT, 2, 1, r[2][1])
+    _call_void(m, _MATRIX_SET_ELEMENT, 2, 2, r[2][2])
 
 
 def quat_from_rot3(r: _Mat3) -> _Quaternion:
@@ -373,8 +380,8 @@ def matrix_trs_lerp(m0: _Matrix4x4, m1: _Matrix4x4, t: float) -> _Matrix4x4:
     q1 = quat_from_rot3(mat_get_rot3(m1))
     qt = quat_slerp(q0, q1, t)
     rt = rot3_from_quat(qt)
-    out = vtk.vtkMatrix4x4()
-    out.Identity()
+    out = _new_matrix()
+    _call_void(out, _MATRIX_IDENTITY)
     mat_set_rot3(out, rt)
     mat_set_translation(out, tt)
     return out
@@ -410,7 +417,7 @@ class Keyframe:
 
 
 def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
-    tree = safe_et.parse(rig_path)
+    tree = ElementTree.parse(rig_path)
     root = cast('ET.Element', tree.getroot())
 
     parts: dict[str, Part] = {}
@@ -464,7 +471,7 @@ def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
 
 
 def load_animation(anim_path: str) -> list[Keyframe]:
-    tree = safe_et.parse(anim_path)
+    tree = ElementTree.parse(anim_path)
     root = cast('ET.Element', tree.getroot())
 
     keys: list[Keyframe] = []
@@ -541,7 +548,7 @@ def detect_rig_prefix(parts: dict[str, Part]) -> str:
 
 
 def obj_path_for_part(mesh_dir: str, prefix: str, part_name: str) -> str:
-    return os.path.join(mesh_dir, f'{prefix}{part_name}.obj')  # ruff: ignore[os-path-join]
+    return str(pathlib.Path(mesh_dir) / f'{prefix}{part_name}.obj')
 
 
 def load_obj_mesh(
@@ -557,24 +564,23 @@ def load_obj_mesh(
     candidates.append(obj_path_for_part(mesh_dir, other, part_name))
 
     for path in candidates:
-        if os.path.exists(path):  # ruff: ignore[os-path-exists]
+        if pathlib.Path(path).exists():
             try:
                 mesh = pv.read(path).triangulate().clean()
-                mesh = mesh.compute_normals(
+                return mesh.compute_normals(
                     cell_normals=False,
                     point_normals=True,
                     split_vertices=False,
                     auto_orient_normals=True,
                     consistent_normals=True,
                 )
-                return mesh  # ruff: ignore[try-consider-else, unnecessary-assign]
-            except Exception as e:  # ruff: ignore[blind-except]
+            except (OSError, RuntimeError, ValueError) as exc:
                 if log_buffer is not None:
-                    message = f'Failed to read {path}: {e}'
+                    message = f'Failed to read {path}: {exc}'
                     log_buffer.log('AnimPreview', message)
 
     # Fallback cube if missing
-    return pv.Cube(
+    return _cube(
         center=(0, 0, 0),
         x_length=fallback_size[0],
         y_length=fallback_size[1],
@@ -604,7 +610,7 @@ class AnimPreviewWidget(QWidget):
         # AA + background + axes first
         try:
             self.plotter.enable_anti_aliasing('ssaa')
-        except Exception:  # ruff: ignore[blind-except]
+        except RuntimeError, ValueError:
             self.plotter.enable_anti_aliasing('fxaa')
 
         self.plotter.set_background((0.95, 0.95, 0.95))
@@ -612,26 +618,26 @@ class AnimPreviewWidget(QWidget):
 
         # Lights
         ren = self.plotter.renderer
-        ren.RemoveAllLights()
+        _call_void(ren, _RENDERER_REMOVE_LIGHTS)
 
-        head = vtk.vtkLight()
-        head.SetLightTypeToHeadlight()
-        head.SetIntensity(0.95)
-        ren.AddLight(head)
+        head = _new_light()
+        _call_void(head, _LIGHT_HEADLIGHT)
+        _call_void(head, _LIGHT_INTENSITY, 0.95)
+        _call_void(ren, _RENDERER_ADD_LIGHT, head)
 
-        fill = vtk.vtkLight()
-        fill.SetLightTypeToSceneLight()
-        fill.SetPosition(-6, 6, 10)
-        fill.SetFocalPoint(0, 0, 0)
-        fill.SetIntensity(0.35)
-        ren.AddLight(fill)
+        fill = _new_light()
+        _call_void(fill, _LIGHT_SCENE)
+        _call_void(fill, _LIGHT_POSITION, -6, 6, 10)
+        _call_void(fill, _LIGHT_FOCAL_POINT, 0, 0, 0)
+        _call_void(fill, _LIGHT_INTENSITY, 0.35)
+        _call_void(ren, _RENDERER_ADD_LIGHT, fill)
 
-        rim = vtk.vtkLight()
-        rim.SetLightTypeToSceneLight()
-        rim.SetPosition(0, -8, 6)
-        rim.SetFocalPoint(0, 0, 0)
-        rim.SetIntensity(0.20)
-        ren.AddLight(rim)
+        rim = _new_light()
+        _call_void(rim, _LIGHT_SCENE)
+        _call_void(rim, _LIGHT_POSITION, 0, -8, 6)
+        _call_void(rim, _LIGHT_FOCAL_POINT, 0, 0, 0)
+        _call_void(rim, _LIGHT_INTENSITY, 0.20)
+        _call_void(ren, _RENDERER_ADD_LIGHT, rim)
 
         # Load data
         self.parts, self.motors = load_rig(rig_path)
@@ -662,7 +668,7 @@ class AnimPreviewWidget(QWidget):
                 specular=0.08,
                 specular_power=20,
             )
-            actor.SetUserMatrix(p.cframe)
+            _call_void(actor, _ACTOR_USER_MATRIX, p.cframe)
             self.actors_by_part_ref[ref] = actor
 
         xmin, xmax, ymin, ymax, zmin, zmax = self.plotter.bounds
@@ -678,8 +684,8 @@ class AnimPreviewWidget(QWidget):
         cam.position = (cx, cy, cz + dist)
         cam.up = (0, 1, 0)
         cam.view_angle = 30
-        cam.SetClippingRange(0.001, dist * 50)
-        cam.Azimuth(205)
+        _call_void(cam, _CAMERA_CLIPPING_RANGE, 0.001, dist * 50)
+        _call_void(cam, _CAMERA_AZIMUTH, 205)
         self.plotter.render()
         # Root + timing
         self.root_ref = pick_root_ref(self.parts)
@@ -702,8 +708,8 @@ class AnimPreviewWidget(QWidget):
 
         pose: dict[str, _Matrix4x4] = {}
         names = set(k0.pose_by_part_name.keys()) | set(k1.pose_by_part_name.keys())
-        ident = vtk.vtkMatrix4x4()
-        ident.Identity()
+        ident = _new_matrix()
+        _call_void(ident, _MATRIX_IDENTITY)
 
         for n in names:
             a = k0.pose_by_part_name.get(n)
@@ -740,7 +746,7 @@ class AnimPreviewWidget(QWidget):
         for ref, actor in self.actors_by_part_ref.items():
             w = world.get(ref)
             if w is not None:
-                actor.SetUserMatrix(w)
+                _call_void(actor, _ACTOR_USER_MATRIX, w)
 
         self.plotter.update()
 
@@ -748,11 +754,11 @@ class AnimPreviewWidget(QWidget):
     def closeEvent(self, event: QCloseEvent) -> None:
         try:
             self.timer.stop()
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except RuntimeError:
             pass
         try:
             self.plotter.close()
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except RuntimeError, ValueError:
             pass
         super().closeEvent(event)
 

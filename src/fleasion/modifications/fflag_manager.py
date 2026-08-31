@@ -6,12 +6,12 @@ and ``FastFlagsViewModel.cs``.
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shutil
 import stat
 import sys
-from collections.abc import Mapping  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -64,6 +64,7 @@ type FlagValue = str | bool | int
 
 if TYPE_CHECKING:
 
+    from collections.abc import Mapping
     def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str: ...
 
     def _setting_int_source(settings: Mapping[str, object], key: str, default: int) -> object: ...
@@ -120,13 +121,13 @@ def _sober_config_path_for_resource_dir(roblox_dir: Path) -> Path | None:
     if not sys.platform.startswith('linux'):
         return None
     try:
-        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-            SOBER_CONFIG_FILE,
-            is_sober_resource_dir,
+        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+        return (
+            platform_linux.SOBER_CONFIG_FILE
+            if platform_linux.is_sober_resource_dir(roblox_dir)
+            else None
         )
-
-        return SOBER_CONFIG_FILE if is_sober_resource_dir(roblox_dir) else None
-    except Exception:  # ruff: ignore[blind-except]
+    except (ImportError, AttributeError, OSError):
         return None
 
 
@@ -166,12 +167,113 @@ def _sober_flag_value(value: str) -> FlagValue:
         return value
 
 
+def _write_client_settings_target(dst: Path, stash: Path, content: bytes) -> None:
+    if dst.exists() and not stash.exists():
+        stash.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(dst, stash)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    _clear_read_only(dst)
+    dst.write_bytes(content)
+
+
+def _write_sober_config(sober_config: Path, stash_config: Path, flags: dict[str, str]) -> None:
+    config_payload: JsonObject = {}
+    if sober_config.exists():
+        if not stash_config.exists():
+            stash_config.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sober_config, stash_config)
+        try:
+            loaded_value: object = json.loads(sober_config.read_text(encoding='utf-8'))
+            loaded = _json_object(loaded_value)
+            if loaded is not None:
+                config_payload = loaded
+        except json.JSONDecodeError:
+            config_payload = {}
+    config_payload['fflags'] = {key: _sober_flag_value(value) for key, value in flags.items()}
+    sober_config.parent.mkdir(parents=True, exist_ok=True)
+    restore_read_only = _is_read_only(sober_config)
+    _clear_read_only(sober_config)
+    try:
+        sober_config.write_text(json.dumps(config_payload, indent=2), encoding='utf-8')
+    finally:
+        if restore_read_only:
+            _restore_read_only(sober_config)
+
+
+def _merge_bootstrapper_flag_file(target: Path, flags: dict[str, str]) -> bool:
+    try:
+        existing_value: object = json.loads(target.read_text(encoding='utf-8'))
+        existing = _json_object(existing_value) or {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        existing = {}
+    merged = {**existing, **flags}
+    if merged == existing:
+        return False
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _clear_read_only(target)
+    temporary = target.with_name(f'.{target.name}.fleasion-{os.getpid()}.tmp')
+    try:
+        temporary.write_text(json.dumps(merged, indent=2), encoding='utf-8')
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def _restore_client_settings_target(dst: Path, stash: Path) -> bool:
+    if stash.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        _clear_read_only(dst)
+        shutil.copy2(stash, dst)
+        _clear_read_only(stash)
+        stash.unlink()
+        return True
+    if dst.exists():
+        _clear_read_only(dst)
+        dst.unlink()
+        return True
+    return False
+
+
+def _restore_sober_config(sober_config: Path, stash_config: Path) -> None:
+    if stash_config.exists():
+        sober_config.parent.mkdir(parents=True, exist_ok=True)
+        _clear_read_only(sober_config)
+        shutil.copy2(stash_config, sober_config)
+        _clear_read_only(stash_config)
+        stash_config.unlink()
+        return
+    if not sober_config.exists():
+        return
+
+    restore_read_only = _is_read_only(sober_config)
+    try:
+        payload_value: object = json.loads(sober_config.read_text(encoding='utf-8'))
+        payload = _json_object(payload_value) or {}
+    except json.JSONDecodeError:
+        payload = {}
+    if 'fflags' not in payload:
+        return
+    payload.pop('fflags', None)
+    _clear_read_only(sober_config)
+    try:
+        sober_config.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    finally:
+        if restore_read_only:
+            _restore_read_only(sober_config)
+
+
 class FastFlagManager:
     """Builds and writes ``ClientAppSettings.json`` from a UI settings dict."""
 
     def __init__(self, roblox_dirs: list[Path], stash_dir: Path) -> None:
         self._roblox_dirs = roblox_dirs
         self._stash_dir = stash_dir
+
+    def update_roblox_dirs(self, roblox_dirs: list[Path]) -> None:
+        """Replace the Roblox resource roots used for subsequent flag operations."""
+        self._roblox_dirs = roblox_dirs
 
     # ------------------------------------------------------------------
     # Public API
@@ -188,7 +290,7 @@ class FastFlagManager:
             if flag_key in PRESET_FLAGS:
                 flags[PRESET_FLAGS[flag_key]] = 'True'
             # Vulkan and OpenGL require disabling D3D11
-            if mode in ('Vulkan', 'OpenGL'):  # ruff: ignore[literal-membership]
+            if mode in {'Vulkan', 'OpenGL'}:
                 flags[PRESET_FLAGS['Rendering.Mode.DisableD3D11']] = 'True'
 
         # ── MSAA ────────────────────────────────────────────────────
@@ -239,7 +341,7 @@ class FastFlagManager:
 
         for key in ('grass_max', 'grass_min', 'grass_motion'):
             val = _setting_value(settings, key)
-            if val is not None and val != '':  # ruff: ignore[compare-to-empty-string]
+            if val not in {None, ''}:
                 flags[EXTRA_FLAGS[key]] = str(_int_value(val))
 
         return flags
@@ -253,56 +355,25 @@ class FastFlagManager:
         failed = 0
         failed_dirs: set[Path] = set()
 
-        for roblox_dir in self._roblox_dirs:  # ruff: ignore[too-many-nested-blocks]
+        for roblox_dir in self._roblox_dirs:
             install_stash = resource_stash_dir(self._stash_dir, roblox_dir)
             wrote_dir = False
             for dst, stash_rel in client_settings_targets_for_resource_dir(roblox_dir):
                 stash = install_stash / stash_rel
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    # Stash original once
-                    if dst.exists() and not stash.exists():
-                        stash.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(dst, stash)
-
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    _clear_read_only(dst)
-                    dst.write_bytes(content)
-                    wrote_dir = True
+                try:
+                    _write_client_settings_target(dst, stash, content)
                 except PermissionError as exc:
                     failed += 1
                     failed_dirs.add(roblox_dir)
                     log_buffer.log('FastFlags', f'Permission denied writing {dst}: {exc}')
+                else:
+                    wrote_dir = True
+
             sober_config = _sober_config_path_for_resource_dir(roblox_dir)
             if sober_config is not None:
                 stash_config = install_stash / 'sober_config.json'
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    config_payload: JsonObject = {}
-                    if sober_config.exists():
-                        if not stash_config.exists():
-                            stash_config.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(sober_config, stash_config)
-                        try:
-                            loaded_value: object = json.loads(
-                                sober_config.read_text(encoding='utf-8')
-                            )
-                            loaded = _json_object(loaded_value)
-                            if loaded is not None:
-                                config_payload = loaded
-                        except json.JSONDecodeError:
-                            config_payload = {}
-                    config_payload['fflags'] = {
-                        key: _sober_flag_value(value) for key, value in flags.items()
-                    }
-                    sober_config.parent.mkdir(parents=True, exist_ok=True)
-                    restore_read_only = _is_read_only(sober_config)
-                    _clear_read_only(sober_config)
-                    try:
-                        sober_config.write_text(
-                            json.dumps(config_payload, indent=2), encoding='utf-8'
-                        )
-                    finally:
-                        if restore_read_only:
-                            _restore_read_only(sober_config)
+                try:
+                    _write_sober_config(sober_config, stash_config, flags)
                 except PermissionError as exc:
                     failed += 1
                     failed_dirs.add(roblox_dir)
@@ -355,31 +426,16 @@ class FastFlagManager:
             if not target.is_file():
                 continue
 
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                try:
-                    existing_value: object = json.loads(target.read_text(encoding='utf-8'))
-                    existing = _json_object(existing_value) or {}
-                except UnicodeDecodeError, json.JSONDecodeError:
-                    existing = {}
-                merged = {**existing, **flags}
-                if merged == existing:
-                    continue
-
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _clear_read_only(target)
-                temporary = target.with_name(f'.{target.name}.fleasion-{os.getpid()}.tmp')
-                try:
-                    temporary.write_text(json.dumps(merged, indent=2), encoding='utf-8')
-                    temporary.replace(target)
-                finally:
-                    temporary.unlink(missing_ok=True)
-                updated_count += 1
+            try:
+                updated = _merge_bootstrapper_flag_file(target, flags)
             except (PermissionError, OSError) as exc:
                 log_buffer.log(
                     'FastFlags',
                     f'Failed to merge Fleasion flags into bootstrapper launch settings '
                     f'{target}: {exc}',
                 )
+            else:
+                updated_count += int(updated)
 
         if updated_count:
             log_buffer.log(
@@ -394,58 +450,26 @@ class FastFlagManager:
         restored = 0
         failed = 0
 
-        for roblox_dir in self._roblox_dirs:  # ruff: ignore[too-many-nested-blocks]
+        for roblox_dir in self._roblox_dirs:
             install_stash = resource_stash_dir(self._stash_dir, roblox_dir)
             restored_dir = False
             for dst, stash_rel in client_settings_targets_for_resource_dir(roblox_dir):
                 stash = install_stash / stash_rel
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    if stash.exists():
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        _clear_read_only(dst)
-                        shutil.copy2(stash, dst)
-                        _clear_read_only(stash)
-                        stash.unlink()
-                        restored_dir = True
-                    elif dst.exists():
-                        _clear_read_only(dst)
-                        dst.unlink()
-                        restored_dir = True
+                try:
+                    restored_target = _restore_client_settings_target(dst, stash)
                 except PermissionError as exc:
                     failed += 1
                     log_buffer.log('FastFlags', f'Permission denied restoring {dst}: {exc}')
+                else:
+                    restored_dir = restored_dir or restored_target
             if restored_dir:
                 restored += 1
 
             sober_config = _sober_config_path_for_resource_dir(roblox_dir)
             if sober_config is not None:
                 stash_config = install_stash / 'sober_config.json'
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    if stash_config.exists():
-                        sober_config.parent.mkdir(parents=True, exist_ok=True)
-                        _clear_read_only(sober_config)
-                        shutil.copy2(stash_config, sober_config)
-                        _clear_read_only(stash_config)
-                        stash_config.unlink()
-                    elif sober_config.exists():
-                        restore_read_only = _is_read_only(sober_config)
-                        try:
-                            payload_value: object = json.loads(
-                                sober_config.read_text(encoding='utf-8')
-                            )
-                            payload = _json_object(payload_value) or {}
-                        except json.JSONDecodeError:
-                            payload = {}
-                        if 'fflags' in payload:
-                            payload.pop('fflags', None)
-                            _clear_read_only(sober_config)
-                            try:
-                                sober_config.write_text(
-                                    json.dumps(payload, indent=2), encoding='utf-8'
-                                )
-                            finally:
-                                if restore_read_only:
-                                    _restore_read_only(sober_config)
+                try:
+                    _restore_sober_config(sober_config, stash_config)
                 except PermissionError as exc:
                     failed += 1
                     log_buffer.log(

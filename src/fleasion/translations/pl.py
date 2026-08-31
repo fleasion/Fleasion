@@ -1,4 +1,5 @@
 """Polish source strings for Fleasion."""
+import string
 
 POLISH: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': 'Dodanie wpisów Fleasion zwiększyłoby rozmiar pliku do {value0:.1f} MiB, co przekracza limit bezpieczeństwa Fleasion wynoszący {value1:.0f} KiB. Nie dodano żadnych mapowań. Usuń nieaktualne wiersze z pliku hosts lub zmień nazwę pliku, a następnie uruchom ponownie Fleasion.\n\nŚcieżka pliku hosts:\n{value2}',
@@ -510,13 +511,13 @@ POLISH: dict[str, str] = {
     'count.server.other': 'Serwery: {count}',
     'count.value.one': 'Wartość: {count}',
     'count.value.other': 'Wartości: {count}',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'Abcdefghijklmnopqrstuvwxyz',
     'font_viewer.sample.pack_my_box': 'Pchnąć w tę łódź jeża lub ośm skrzyń fig',
     'font_viewer.sample.quick_brown_fox': 'Zażółć gęślą jaźń',
     'font_viewer.sample.quick_zebras': 'Mężny bądź, chroń pułk twój i sześć flag',
     'font_viewer.sample.symbols': "!@#$%^&&*()_+-=[]{}|;:',.<>?/`~",
-    'font_viewer.sample.uppercase': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    'font_viewer.sample.uppercase': string.ascii_uppercase,
     'json.fetch.asset_not_found': 'Nie znaleziono zasobu (usunięty lub nieprawidłowy ID)',
     'json.fetch.asset_private': 'Zasób jest prywatny (nie można go ominąć)',
     'json.fetch.cannot_fetch': 'Nie można pobrać: {value}',

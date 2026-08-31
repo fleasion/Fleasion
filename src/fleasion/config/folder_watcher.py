@@ -1,8 +1,9 @@
 """Watch the Fleasion config folder for externally copied configuration files."""
 
+import contextlib
 import os
-from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
@@ -12,7 +13,28 @@ from fleasion.utils import log_buffer
 
 from .manager import MAX_CONFIG_ASSET_FOLDER_DEPTH, ConfigManager
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 _WATCH_RETRY_INTERVAL_MS = 2000
+
+
+
+
+def _collect_watched_directories(folder: Path) -> set[str]:
+    watched = {str(folder)}
+    for current_root, directory_names, _file_names in os.walk(folder):
+        current = Path(current_root)
+        try:
+            depth = len(current.relative_to(folder).parts)
+        except ValueError:
+            directory_names[:] = []
+            continue
+        if depth >= MAX_CONFIG_ASSET_FOLDER_DEPTH:
+            directory_names[:] = []
+            continue
+        watched.update(str(current / name) for name in directory_names)
+    return watched
 
 
 def _is_ignored_name(name: str) -> bool:
@@ -93,22 +115,7 @@ class ConfigFolderWatcher(QObject):
 
     def _directories_to_watch(self) -> set[str]:
         """Return Configs and asset directories through the supported depth."""
-        watched = {str(self.folder)}
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            for current_root, directory_names, _file_names in os.walk(self.folder):
-                current = Path(current_root)
-                try:
-                    depth = len(current.relative_to(self.folder).parts)
-                except ValueError:
-                    directory_names[:] = []
-                    continue
-                if depth >= MAX_CONFIG_ASSET_FOLDER_DEPTH:
-                    directory_names[:] = []
-                    continue
-                watched.update(str(current / name) for name in directory_names)
-        except OSError:
-            pass
-        return watched
+        return _collect_watched_directories(self.folder)
 
     def _sync_watched_directories(self) -> None:
         """Keep QFileSystemWatcher aligned with the current asset folder tree."""
@@ -188,7 +195,7 @@ class ConfigFolderWatcher(QObject):
         if self._pending_names:
             self._retry_timer.start(1000)
 
-    def _check_new_file(self, name: str, path: Path) -> None:  # ruff: ignore[unused-method-argument]
+    def _check_new_file(self, name: str, _path: Path) -> None:
         # Defer every candidate until it has survived the one-second stability
         # window. Editors write through temporary files and rename them into
         # place; inspecting those files immediately races their atomic save.
@@ -314,10 +321,8 @@ class ConfigFolderWatcher(QObject):
 
     def _parent_widget(self) -> QWidget | None:
         if self._parent_provider is not None:
-            try:
+            with contextlib.suppress(Exception):
                 parent = self._parent_provider()
                 if parent is not None:
                     return parent
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
         return QApplication.activeWindow()

@@ -1,4 +1,5 @@
 """Simplified Chinese source strings for Fleasion."""
+import string
 
 CHINESE: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': '添加 Fleasion 条目后文件大小将达到 {value0:.1f} MiB，超过 Fleasion 的 {value1:.0f} KiB 安全限制。未添加任何映射。请删除过时的 hosts 文件行或重命名该文件，然后重启 Fleasion。\n\nhosts 文件路径：\n{value2}',
@@ -510,13 +511,13 @@ CHINESE: dict[str, str] = {
     'count.server.other': '{count} 个服务器',
     'count.value.one': '{count} 个值',
     'count.value.other': '{count} 个值',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'Abcdefghijklmnopqrstuvwxyz',
     'font_viewer.sample.pack_my_box': '汉字字形测试：简体中文，横竖撇捺，方圆曲直。',
     'font_viewer.sample.quick_brown_fox': '天地玄黄，宇宙洪荒；日月盈昃，辰宿列张。',
     'font_viewer.sample.quick_zebras': '春夏秋冬，东南西北；山川湖海，风雨雷电。',
     'font_viewer.sample.symbols': "!@#$%^&&*()_+-=[]{}|;:',.<>?/`~",
-    'font_viewer.sample.uppercase': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    'font_viewer.sample.uppercase': string.ascii_uppercase,
     'json.fetch.asset_not_found': '未找到资产（已删除或 ID 无效）',
     'json.fetch.asset_private': '资产已设为私有（无法绕过）',
     'json.fetch.cannot_fetch': '无法获取：{value}',

@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Protocol, TypedDict
 
 
 class _Lz4Block(Protocol):
+    LZ4BlockError: type[Exception]
+
     def decompress(self, data: bytes, *, uncompressed_size: int = 0) -> bytes: ...
 
 
@@ -46,6 +48,10 @@ RBXM_MAGIC = b'<roblox!'
 RBXM_SIGNATURE = bytes([0x89, 0xFF, 0x0D, 0x0A, 0x1A, 0x0A])
 
 
+def _new_children() -> list[RbxmInstance]:
+    return []
+
+
 @dataclass
 class RbxmInstance:
     """Represents a Roblox instance."""
@@ -53,7 +59,7 @@ class RbxmInstance:
     class_name: str
     referent: int
     properties: dict[str, PropertyValue] = field(default_factory=dict[str, PropertyValue])
-    children: list[RbxmInstance] = field(default_factory=lambda: [])
+    children: list[RbxmInstance] = field(default_factory=_new_children)
     parent: RbxmInstance | None = None
 
 
@@ -78,10 +84,7 @@ def decode_interleaved_i32(data: bytes, count: int) -> list[int]:
         value = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
 
         # Decode transformed integer (rotate right by 1, then negate if odd)
-        if value & 1:  # ruff: ignore[if-else-block-instead-of-if-exp]
-            value = -((value >> 1) + 1)
-        else:
-            value = value >> 1  # ruff: ignore[non-augmented-assignment]
+        value = -((value >> 1) + 1) if value & 1 else value >> 1
 
         result.append(value)
 
@@ -129,11 +132,11 @@ def decompress_chunk(data: bytes, compressed_size: int, uncompressed_size: int) 
 
     try:
         return lz4_block.decompress(data[:compressed_size], uncompressed_size=uncompressed_size)
-    except Exception:  # ruff: ignore[blind-except]
+    except lz4_block.LZ4BlockError:
         # Try without size hint
         try:
             return lz4_block.decompress(data[:compressed_size])
-        except Exception:  # ruff: ignore[blind-except]
+        except lz4_block.LZ4BlockError:
             # Return raw data if decompression fails
             return data[:compressed_size]
 
@@ -238,7 +241,7 @@ def parse_rbxm(data: bytes) -> dict[int, RbxmInstance]:
             _parse_prop_chunk(chunk_data, class_info, instances)
         elif chunk_name == 'PRNT':
             _parse_prnt_chunk(chunk_data, instances, parent_refs)
-        elif chunk_name == 'END\x00' or chunk_name == 'END':  # ruff: ignore[repeated-equality-comparison]
+        elif chunk_name in {'END\x00', 'END'}:
             break
 
     # Build parent-child relationships
@@ -407,7 +410,7 @@ def _parse_cframes(data: bytes, count: int) -> list[CFrameValue]:
     return cframes
 
 
-def _parse_prnt_chunk(data: bytes, instances: InstanceMap, parent_refs: dict[int, int]) -> None:  # ruff: ignore[unused-function-argument]
+def _parse_prnt_chunk(data: bytes, _instances: InstanceMap, parent_refs: dict[int, int]) -> None:
     """Parse a PRNT chunk."""
     offset = 0
 

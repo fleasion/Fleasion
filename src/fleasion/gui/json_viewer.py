@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import gzip as gzip_module
+import importlib
 import io
-from collections.abc import Callable
+import json
+import tempfile
+from collections.abc import Callable, Iterator
 from functools import partial
-from typing import TYPE_CHECKING, Protocol, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast, override
+from urllib.parse import urlparse
 
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QImage, QKeyEvent, QPixmap, QResizeEvent
+import requests as _requests
+from defusedxml import ElementTree as DefusedElementTree, minidom as defused_minidom
+from defusedxml.common import DefusedXmlException
+from PIL import Image, UnidentifiedImageError
+from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QIcon, QImage, QKeyEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -35,7 +44,11 @@ from fleasion.utils import get_icon_path
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 
 if TYPE_CHECKING:
+    from fleasion.cache.animation_viewer import AnimationViewerPanel
     from fleasion.cache.audio_player import AudioPlayerWidget
+    from fleasion.cache.cache_json_viewer import CacheJsonViewer
+    from fleasion.cache.font_viewer import FontViewerWidget
+    from fleasion.cache.obj_viewer import ObjViewerPanel
     from fleasion.config.manager import ConfigManager
 
 
@@ -46,8 +59,96 @@ type ImportIdsCallback = Callable[[list[ImportValue]], object]
 type ImportReplacementCallback = Callable[[ImportValue], object]
 
 
+class _ExportObjFromDoc(Protocol):
+    def __call__(self, doc: object, output_path: Path, *, decompose: bool = False) -> None: ...
+
+
 class _CacheScraperLike(Protocol):
-    """Marker protocol for the cache scraper shared with proxy startup."""
+    """Cache scraper surface used by the JSON viewer."""
+
+    def fetch_asset_with_place_id_retry(
+        self,
+        asset_id: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[bytes | None, int | None]: ...
+
+    def https_get(
+        self,
+        hostname: str,
+        path: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> bytes | None: ...
+
+
+def _import_attr(module_name: str, attr_name: str) -> object:
+    return vars(importlib.import_module(module_name))[attr_name]
+
+
+def _convert_mesh(data: bytes) -> str | None:
+    convert = cast(
+        'Callable[[bytes], str | None]',
+        _import_attr('fleasion.cache.mesh_processing', 'convert'),
+    )
+    return convert(data)
+
+
+def _creator_game_settings() -> tuple[
+    int,
+    tuple[int, ...],
+    Callable[[int, int, int], list[str]],
+]:
+    module_name = 'fleasion.proxy.addons.cache_scraper'
+    max_scan = cast('int', _import_attr(module_name, 'CREATOR_GAME_MAX_SCAN'))
+    page_limits = cast('tuple[int, ...]', _import_attr(module_name, 'CREATOR_GAME_PAGE_LIMITS'))
+    base_paths = cast(
+        'Callable[[int, int, int], list[str]]',
+        _import_attr(module_name, 'creator_game_base_paths'),
+    )
+    return max_scan, page_limits, base_paths
+
+
+def _solid_model_tools() -> tuple[Callable[[bytes], object], _ExportObjFromDoc]:
+    module_name = 'fleasion.cache.tools.solidmodel_converter.converter'
+    deserialize = cast('Callable[[bytes], object]', _import_attr(module_name, 'deserialize_rbxm'))
+    export_obj = cast('_ExportObjFromDoc', _import_attr(module_name, '_export_obj_from_doc'))
+    return deserialize, export_obj
+
+
+def _animation_viewer_panel_type() -> type[AnimationViewerPanel]:
+    return cast(
+        'type[AnimationViewerPanel]',
+        _import_attr('fleasion.cache.animation_viewer', 'AnimationViewerPanel'),
+    )
+
+
+def _cache_json_viewer_type() -> type[CacheJsonViewer]:
+    return cast(
+        'type[CacheJsonViewer]',
+        _import_attr('fleasion.cache.cache_json_viewer', 'CacheJsonViewer'),
+    )
+
+
+def _obj_viewer_panel_type() -> type[ObjViewerPanel]:
+    return cast(
+        'type[ObjViewerPanel]',
+        _import_attr('fleasion.cache.obj_viewer', 'ObjViewerPanel'),
+    )
+
+
+def _audio_player_widget_type() -> type[AudioPlayerWidget]:
+    return cast(
+        'type[AudioPlayerWidget]',
+        _import_attr('fleasion.cache.audio_player', 'AudioPlayerWidget'),
+    )
+
+
+def _font_viewer_widget_type() -> type[FontViewerWidget]:
+    return cast(
+        'type[FontViewerWidget]',
+        _import_attr('fleasion.cache.font_viewer', 'FontViewerWidget'),
+    )
 
 
 if TYPE_CHECKING:
@@ -91,7 +192,7 @@ else:
         asset_id: str,
         extra_headers: dict[str, str] | None,
     ) -> tuple[bytes | None, int | None]:
-        return scraper._fetch_asset_with_place_id_retry(  # ruff: ignore[private-member-access]
+        return scraper.fetch_asset_with_place_id_retry(
             asset_id,
             extra_headers=extra_headers,
         )
@@ -102,7 +203,7 @@ else:
         path: str,
         extra_headers: dict[str, str] | None,
     ) -> bytes | None:
-        return scraper._https_get(hostname, path, extra_headers=extra_headers)  # ruff: ignore[private-member-access]
+        return scraper.https_get(hostname, path, extra_headers=extra_headers)
 
     def _preserve_object_dict(value: object) -> dict[str, object]:
         return value
@@ -132,7 +233,7 @@ else:
         return value
 
     def _toggle_audio_player(player: AudioPlayerWidget) -> None:
-        player._toggle_play_pause()  # ruff: ignore[private-member-access]
+        player.play_pause_btn.click()
 
 
 def _coerce_import_value(value: object) -> ImportValue | None:
@@ -201,11 +302,7 @@ class JsonSearchWorker(QThread):
                 matches.append(item)
 
             # Search children
-            for i in range(item.childCount()):  # ruff: ignore[reimplemented-builtin]
-                if not search_item(_tree_child(item, i)):
-                    return False
-
-            return True
+            return all(search_item(_tree_child(item, i)) for i in range(item.childCount()))
 
         # Search all root items
         for root_item in self.root_items:
@@ -242,187 +339,254 @@ class AssetFetcherThread(QThread):
         self._stop_requested = True
 
     def _get_roblosecurity(self) -> str | None:
-        from fleasion.utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
-            get_roblosecurity,
+        get_roblosecurity = cast(
+            'Callable[[], str | None]',
+            _import_attr('fleasion.utils.roblox_auth', 'get_roblosecurity'),
         )
-
         return get_roblosecurity()
 
-    def run(self) -> None:
-        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
-            val = self._asset
-            scraper = self.__class__._scraper  # ruff: ignore[private-member-access]
+    @staticmethod
+    def _request_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {
+            'User-Agent': 'Roblox/WinInet',
+            'Accept-Encoding': 'gzip, deflate',
+        }
+        if extra:
+            headers.update(extra)
+        return headers
 
-            if isinstance(val, int) or (isinstance(val, str) and val.strip().lstrip('-').isdigit()):
-                cookie = self._get_roblosecurity()
-                extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
-                status = None
+    @staticmethod
+    def _place_ids_for_game_path(
+        game_path: str,
+        max_pages: int,
+        seen_pids: set[int],
+    ) -> Iterator[int]:
+        cursor = ''
+        for _page in range(max_pages):
+            path = game_path + (f'&cursor={cursor}' if cursor else '')
+            response = _requests.get(
+                f'https://games.roblox.com{path}',
+                headers={'Accept': 'application/json'},
+                timeout=10,
+            )
+            if response.status_code != 200:
+                break
+            response_payload: object = response.json()
+            response_json = _preserve_object_dict(response_payload)
+            games = _preserve_object_list(response_json.get('data', []))
+            for game_value in games:
+                game = _preserve_object_dict(game_value)
+                root_place_value = game.get('rootPlace')
+                root_place = _preserve_object_dict(root_place_value) if root_place_value else {}
+                if root_place.get('id'):
+                    place_id = int(_preserve_int_source(root_place['id']))
+                    if place_id not in seen_pids:
+                        seen_pids.add(place_id)
+                        yield place_id
+            cursor = _preserve_str(response_json.get('nextPageCursor') or '')
+            if not cursor:
+                break
 
-                if scraper is not None:
-                    data, status = _scraper_fetch_asset(scraper, str(val), extra)
-                else:
-                    import requests as _req  # ruff: ignore[import-outside-top-level]
+    @classmethod
+    def _creator_place_ids(cls, creator_id: int, creator_type: int) -> Iterator[int]:
+        creator_game_max_scan, creator_game_page_limits, creator_game_base_paths = (
+            _creator_game_settings()
+        )
+        seen_pids: set[int] = set()
+        attempted_paths: set[str] = set()
+        for limit in creator_game_page_limits:
+            found_before_limit = len(seen_pids)
+            max_pages = max(1, (creator_game_max_scan + limit - 1) // limit)
+            for game_path in creator_game_base_paths(creator_id, creator_type, limit):
+                if game_path in attempted_paths:
+                    continue
+                attempted_paths.add(game_path)
+                yield from cls._place_ids_for_game_path(game_path, max_pages, seen_pids)
+            if len(seen_pids) > found_before_limit:
+                break
 
-                    headers = {
-                        'User-Agent': 'Roblox/WinInet',
-                        'Accept-Encoding': 'gzip, deflate',
-                    }
-                    if extra:
-                        headers.update(extra)
-                    r = _req.get(
-                        f'https://assetdelivery.roblox.com/v1/asset/?id={val}',
-                        headers=headers,
-                        timeout=15,
-                    )
-                    status = r.status_code
-                    data = r.content if r.status_code == 200 else None
-                    # Attempt place-ID retry on 403 via inline logic
-                    if data is None and r.status_code == 403:
-                        try:  # ruff: ignore[too-many-statements-in-try-clause]
-                            info_r = _req.get(
-                                f'https://develop.roblox.com/v1/assets?assetIds={val}',
-                                headers={'Accept': 'application/json', **(extra or {})},
-                                timeout=10,
-                            )
-                            if info_r.status_code == 200:
-                                info_payload: object = info_r.json()
-                                info = _preserve_object_dict(info_payload)
-                                items = _preserve_object_list(info.get('data', []))
-                                if items:
-                                    first_item = _preserve_object_dict(items[0])
-                                    creator = _preserve_object_dict(first_item.get('creator') or {})
-                                    cid = creator.get('targetId') or first_item.get(
-                                        'creatorTargetId'
-                                    )
-                                    ctype = creator.get('typeId') or first_item.get('creatorType')
-                                    if cid is not None and ctype is not None:
-                                        cid = int(_preserve_int_source(cid))
-                                        ctype = int(_preserve_int_source(ctype))
-                                        from fleasion.proxy.addons.cache_scraper import (  # ruff: ignore[import-outside-top-level]
-                                            CREATOR_GAME_MAX_SCAN,
-                                            CREATOR_GAME_PAGE_LIMITS,
-                                            creator_game_base_paths,
-                                        )
+    def _retry_asset_for_creator_places_impl(
+        self,
+        asset_value: int | str,
+        headers: dict[str, str],
+        extra: dict[str, str] | None,
+    ) -> tuple[bytes | None, int | None]:
+        info_response = _requests.get(
+            f'https://develop.roblox.com/v1/assets?assetIds={asset_value}',
+            headers={'Accept': 'application/json', **(extra or {})},
+            timeout=10,
+        )
+        if info_response.status_code != 200:
+            return None, None
+        info_payload: object = info_response.json()
+        info = _preserve_object_dict(info_payload)
+        items = _preserve_object_list(info.get('data', []))
+        if not items:
+            return None, None
+        first_item = _preserve_object_dict(items[0])
+        creator = _preserve_object_dict(first_item.get('creator') or {})
+        creator_id = creator.get('targetId') or first_item.get('creatorTargetId')
+        creator_type = creator.get('typeId') or first_item.get('creatorType')
+        if creator_id is None or creator_type is None:
+            return None, None
 
-                                        seen_pids: set[int] = set()
-                                        attempted_paths: set[str] = set()
-                                        for limit in CREATOR_GAME_PAGE_LIMITS:
-                                            found_before_limit = len(seen_pids)
-                                            max_pages = max(
-                                                1,
-                                                (CREATOR_GAME_MAX_SCAN + limit - 1) // limit,
-                                            )
-                                            for g_path in creator_game_base_paths(
-                                                cid, ctype, limit
-                                            ):
-                                                if g_path in attempted_paths:
-                                                    continue
-                                                attempted_paths.add(g_path)
-                                                cursor = ''
-                                                for _page in range(max_pages):
-                                                    path = g_path + (
-                                                        f'&cursor={cursor}' if cursor else ''
-                                                    )
-                                                    g_r = _req.get(
-                                                        f'https://games.roblox.com{path}',
-                                                        headers={'Accept': 'application/json'},
-                                                        timeout=10,
-                                                    )
-                                                    if g_r.status_code != 200:
-                                                        break
-                                                    response_payload: object = g_r.json()
-                                                    resp_json = _preserve_object_dict(
-                                                        response_payload
-                                                    )
-                                                    games = _preserve_object_list(
-                                                        resp_json.get('data', [])
-                                                    )
-                                                    for game_value in games:
-                                                        game = _preserve_object_dict(game_value)
-                                                        rp_value = game.get('rootPlace')
-                                                        if rp_value:
-                                                            rp = _preserve_object_dict(rp_value)
-                                                        else:
-                                                            rp = {}
-                                                        if rp.get('id'):
-                                                            pid = int(
-                                                                _preserve_int_source(rp['id'])
-                                                            )
-                                                            if pid in seen_pids:
-                                                                continue
-                                                            seen_pids.add(pid)
-                                                            retry_h = {
-                                                                **headers,
-                                                                'Roblox-Place-Id': str(pid),
-                                                            }
-                                                            r2 = _req.get(
-                                                                f'https://assetdelivery.roblox.com/v1/asset/?id={val}',
-                                                                headers=retry_h,
-                                                                timeout=15,
-                                                            )
-                                                            status = r2.status_code
-                                                            if r2.status_code == 200 and r2.content:
-                                                                data = r2.content
-                                                                break  # Found working place ID
-                                                    if data:
-                                                        break
-                                                    cursor = resp_json.get('nextPageCursor') or ''
-                                                    if not cursor:
-                                                        break
-                                                if data:
-                                                    break
-                                            if data or len(seen_pids) > found_before_limit:
-                                                break
-                        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                            pass
+        last_status: int | None = None
+        for place_id in self._creator_place_ids(
+            int(_preserve_int_source(creator_id)),
+            int(_preserve_int_source(creator_type)),
+        ):
+            retry_headers = {**headers, 'Roblox-Place-Id': str(place_id)}
+            retry_response = _requests.get(
+                f'https://assetdelivery.roblox.com/v1/asset/?id={asset_value}',
+                headers=retry_headers,
+                timeout=15,
+            )
+            last_status = retry_response.status_code
+            if retry_response.status_code == 200 and retry_response.content:
+                return retry_response.content, last_status
+        return None, last_status
 
-                if self._stop_requested:
-                    return
-                if data:
-                    self.data_ready.emit(data)
-                elif status == 404:
-                    self.error.emit(tr('json.fetch.asset_not_found'))
-                elif status == 403:
-                    self.error.emit(tr('json.fetch.asset_private'))
-                else:
-                    self.error.emit(tr('json.fetch.no_data'))
+    def _retry_asset_for_creator_places(
+        self,
+        asset_value: int | str,
+        headers: dict[str, str],
+        extra: dict[str, str] | None,
+    ) -> tuple[bytes | None, int | None]:
+        try:
+            return self._retry_asset_for_creator_places_impl(asset_value, headers, extra)
+        except (
+            ImportError,
+            KeyError,
+            TypeError,
+            ValueError,
+            _requests.RequestException,
+        ):
+            return None, None
 
-            elif isinstance(val, str) and (val.startswith('http://') or val.startswith('https://')):  # ruff: ignore[multiple-starts-ends-with]
-                from urllib.parse import urlparse as _up  # ruff: ignore[import-outside-top-level]
+    def _fetch_asset_id(
+        self,
+        asset_value: int | str,
+        scraper: _CacheScraperLike | None,
+    ) -> tuple[bytes | None, int | None]:
+        cookie = self._get_roblosecurity()
+        extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
+        if scraper is not None:
+            return _scraper_fetch_asset(scraper, str(asset_value), extra)
 
-                parsed = _up(val)
-                hostname = (parsed.hostname or '').lower()
-                path = parsed.path + ('?' + parsed.query if parsed.query else '')
-                is_roblox = 'roblox.com' in hostname
+        headers = self._request_headers(extra)
+        response = _requests.get(
+            f'https://assetdelivery.roblox.com/v1/asset/?id={asset_value}',
+            headers=headers,
+            timeout=15,
+        )
+        status = response.status_code
+        data = response.content if status == 200 else None
+        if data is None and status == 403:
+            retry_data, retry_status = self._retry_asset_for_creator_places(
+                asset_value,
+                headers,
+                extra,
+            )
+            if retry_status is not None:
+                status = retry_status
+            if retry_data is not None:
+                data = retry_data
+        return data, status
 
-                cookie = self._get_roblosecurity() if is_roblox else None
-                extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
+    def _fetch_url(
+        self,
+        value: str,
+        scraper: _CacheScraperLike | None,
+    ) -> bytes | None:
+        parsed = urlparse(value)
+        hostname = (parsed.hostname or '').lower()
+        path = parsed.path + ('?' + parsed.query if parsed.query else '')
+        is_roblox = 'roblox.com' in hostname
+        cookie = self._get_roblosecurity() if is_roblox else None
+        extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
+        if scraper is not None and is_roblox:
+            return _scraper_https_get(scraper, hostname, path, extra)
+        response = _requests.get(value, headers=self._request_headers(extra), timeout=15)
+        return response.content if response.status_code == 200 else None
 
-                if scraper is not None and is_roblox:
-                    data = _scraper_https_get(scraper, hostname, path, extra)
-                else:
-                    import requests as _req  # ruff: ignore[import-outside-top-level]
+    def _emit_asset_result(self, data: bytes | None, status: int | None) -> None:
+        if self._stop_requested:
+            return
+        if data:
+            self.data_ready.emit(data)
+        elif status == 404:
+            self.error.emit(tr('json.fetch.asset_not_found'))
+        elif status == 403:
+            self.error.emit(tr('json.fetch.asset_private'))
+        else:
+            self.error.emit(tr('json.fetch.no_data'))
 
-                    headers = {
-                        'User-Agent': 'Roblox/WinInet',
-                        'Accept-Encoding': 'gzip, deflate',
-                    }
-                    if extra:
-                        headers.update(extra)
-                    r = _req.get(val, headers=headers, timeout=15)
-                    data = r.content if r.status_code == 200 else None
-
-                if self._stop_requested:
-                    return
-                if data:
-                    self.data_ready.emit(data)
-                else:
-                    self.error.emit(tr('json.fetch.no_data'))
-            else:
-                self.error.emit(tr('json.fetch.cannot_fetch', value=val))
-        except Exception as e:  # ruff: ignore[blind-except]
+    def _run_fetch(self) -> None:
+        value = self._asset
+        scraper = self._scraper
+        if isinstance(value, int) or (
+            isinstance(value, str) and value.strip().lstrip('-').isdigit()
+        ):
+            data, status = self._fetch_asset_id(value, scraper)
+            self._emit_asset_result(data, status)
+        elif isinstance(value, str) and value.startswith(('http://', 'https://')):
+            data = self._fetch_url(value, scraper)
             if not self._stop_requested:
-                self.error.emit(str(e))
+                if data:
+                    self.data_ready.emit(data)
+                else:
+                    self.error.emit(tr('json.fetch.no_data'))
+        else:
+            self.error.emit(tr('json.fetch.cannot_fetch', value=value))
+
+    def run(self) -> None:
+        try:
+            self._run_fetch()
+        except (
+            ImportError,
+            KeyError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            _requests.RequestException,
+        ) as exc:
+            if not self._stop_requested:
+                self.error.emit(str(exc))
+
+
+def _decode_image_pixmap(data: bytes) -> QPixmap:
+    image = Image.open(io.BytesIO(data))
+    if image.mode != 'RGBA':
+        image = image.convert('RGBA')
+    qimage = QImage(
+        image.tobytes(),
+        image.width,
+        image.height,
+        QImage.Format.Format_RGBA8888,
+    )
+    return QPixmap.fromImage(qimage)
+
+
+def _mesh_obj_content(data: bytes) -> str | None:
+    working = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
+    return _convert_mesh(working)
+
+
+def _solid_model_obj_content(data: bytes) -> str:
+    deserialize_rbxm, export_obj_from_doc = _solid_model_tools()
+    working = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
+    doc = deserialize_rbxm(working)
+    with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as file:
+        temp_obj_path = Path(file.name)
+    try:
+        export_obj_from_doc(doc, temp_obj_path, decompose=False)
+        return temp_obj_path.read_text(encoding='utf-8')
+    finally:
+        try:
+            temp_obj_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 class ImageLoaderThread(QThread):
@@ -440,26 +604,14 @@ class ImageLoaderThread(QThread):
         self._stop_requested = True
 
     def run(self) -> None:
-        from PIL import Image  # ruff: ignore[import-outside-top-level]
-
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            image = Image.open(io.BytesIO(self.data))
-            if image.mode not in ('RGB', 'RGBA') or image.mode == 'RGB':  # ruff: ignore[literal-membership]
-                image = image.convert('RGBA')
-            if self._stop_requested:
-                return
-            qimage = QImage(
-                image.tobytes(),
-                image.width,
-                image.height,
-                QImage.Format.Format_RGBA8888,
-            )
-            pixmap = QPixmap.fromImage(qimage)
+        try:
+            pixmap = _decode_image_pixmap(self.data)
+        except (OSError, RuntimeError, TypeError, ValueError, UnidentifiedImageError) as exc:
             if not self._stop_requested:
-                self.image_ready.emit(pixmap)
-        except Exception as e:  # ruff: ignore[blind-except]
-            if not self._stop_requested:
-                self.error.emit(str(e))
+                self.error.emit(str(exc))
+            return
+        if not self._stop_requested:
+            self.image_ready.emit(pixmap)
 
 
 class MeshLoaderThread(QThread):
@@ -477,24 +629,18 @@ class MeshLoaderThread(QThread):
         self._stop_requested = True
 
     def run(self) -> None:
-        from fleasion.cache import mesh_processing  # ruff: ignore[import-outside-top-level]
-
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            decompressed = self.data
-            if self.data.startswith(b'\x1f\x8b'):
-                decompressed = gzip_module.decompress(self.data)
-            if self._stop_requested:
-                return
-            obj_content = mesh_processing.convert(decompressed)
-            if self._stop_requested:
-                return
-            if obj_content:
-                self.mesh_ready.emit(obj_content)
-            else:
-                self.error.emit(tr('json.preview.mesh_conversion_failed'))
-        except Exception as e:  # ruff: ignore[blind-except]
+        try:
+            obj_content = _mesh_obj_content(self.data)
+        except (EOFError, OSError, RuntimeError, TypeError, ValueError) as exc:
             if not self._stop_requested:
-                self.error.emit(str(e))
+                self.error.emit(str(exc))
+            return
+        if self._stop_requested:
+            return
+        if obj_content:
+            self.mesh_ready.emit(obj_content)
+        else:
+            self.error.emit(tr('json.preview.mesh_conversion_failed'))
 
 
 class SolidModelLoaderThread(QThread):
@@ -512,53 +658,18 @@ class SolidModelLoaderThread(QThread):
         self._stop_requested = True
 
     def run(self) -> None:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            import tempfile  # ruff: ignore[import-outside-top-level]
-            from pathlib import Path  # ruff: ignore[import-outside-top-level]
-
-            if TYPE_CHECKING:
-                from fleasion.cache.tools.solidmodel_converter.converter import (  # ruff: ignore[import-outside-top-level]
-                    deserialize_rbxm,
-                )
-
-                def export_obj_from_doc(
-                    doc: object, output_path: Path, *, decompose: bool = False
-                ) -> None: ...
-            else:
-                from fleasion.cache.tools.solidmodel_converter.converter import (  # ruff: ignore[import-outside-top-level]
-                    _export_obj_from_doc as export_obj_from_doc,
-                    deserialize_rbxm,
-                )
-
-            decompressed = self.data
-            if self.data.startswith(b'\x1f\x8b'):
-                decompressed = gzip_module.decompress(self.data)
-
-            if self._stop_requested:
-                return
-
-            doc = deserialize_rbxm(decompressed)
-
-            with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as f:
-                temp_obj_path = Path(f.name)
-
-            try:
-                export_obj_from_doc(doc, temp_obj_path, decompose=False)
-                obj_content = temp_obj_path.read_text(encoding='utf-8')
-            finally:
-                if temp_obj_path.exists():
-                    temp_obj_path.unlink()
-
-            if self._stop_requested:
-                return
-
-            if obj_content:
-                self.mesh_ready.emit(obj_content)
-            else:
-                self.error.emit(tr('json.preview.solidmodel_conversion_failed'))
-        except Exception as e:  # ruff: ignore[blind-except]
+        try:
+            obj_content = _solid_model_obj_content(self.data)
+        except (ImportError, OSError, RuntimeError, TypeError, UnicodeError, ValueError) as exc:
             if not self._stop_requested:
-                self.error.emit(str(e))
+                self.error.emit(str(exc))
+            return
+        if self._stop_requested:
+            return
+        if obj_content:
+            self.mesh_ready.emit(obj_content)
+        else:
+            self.error.emit(tr('json.preview.solidmodel_conversion_failed'))
 
 
 class JsonTreeViewer(QDialog):
@@ -626,8 +737,6 @@ class JsonTreeViewer(QDialog):
     def _set_icon(self) -> None:
         """Set window icon."""
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
-
             self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self) -> None:
@@ -671,7 +780,7 @@ class JsonTreeViewer(QDialog):
         search_layout.addWidget(self.next_match_btn)
 
         clear_btn = QPushButton(tr('ui.gui.json_viewer.clear'))
-        clear_btn.clicked.connect(lambda: self.search_input.clear())  # ruff: ignore[unnecessary-lambda]
+        clear_btn.clicked.connect(self.search_input.clear)
         search_layout.addWidget(clear_btn)
 
         expand_btn = QPushButton(tr('ui.gui.json_viewer.expand_all'))
@@ -776,20 +885,21 @@ class JsonTreeViewer(QDialog):
 
     def _populate_tree(self) -> None:
         """Populate the tree with data."""
-        self.tree.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
-        self.tree.setUpdatesEnabled(False)
-        try:
-            self.tree.clear()
-            if isinstance(self.data, (dict, list)):
-                items = self.data.items() if isinstance(self.data, dict) else enumerate(self.data)
-                for k, v in items:
-                    child_key = f'[{k}]' if isinstance(self.data, list) else str(k)
-                    self._add_node(self.tree, child_key, v)
-            else:
-                self._add_node(self.tree, '', self.data)
-        finally:
-            self.tree.setUpdatesEnabled(True)
-            self.tree.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+        with QSignalBlocker(self.tree):
+            self.tree.setUpdatesEnabled(False)
+            try:
+                self.tree.clear()
+                if isinstance(self.data, (dict, list)):
+                    items = (
+                        self.data.items() if isinstance(self.data, dict) else enumerate(self.data)
+                    )
+                    for k, v in items:
+                        child_key = f'[{k}]' if isinstance(self.data, list) else str(k)
+                        self._add_node(self.tree, child_key, v)
+                else:
+                    self._add_node(self.tree, '', self.data)
+            finally:
+                self.tree.setUpdatesEnabled(True)
 
     def _get_all_leaf_descendants(self, item: QTreeWidgetItem) -> list[QTreeWidgetItem]:
         """Get all leaf descendants of an item."""
@@ -811,9 +921,7 @@ class JsonTreeViewer(QDialog):
         if value.startswith('/') or (len(value) > 2 and value[1] == ':'):
             return True
         # Check for relative paths with directory separators
-        if '/' in value or '\\' in value:  # ruff: ignore[needless-bool]
-            return True
-        return False
+        return bool('/' in value or '\\' in value)
 
     def _get_selected_values(self) -> list[int | str]:
         """Get numeric values and links/file paths from selected items."""
@@ -868,15 +976,9 @@ class JsonTreeViewer(QDialog):
 
     def _create_preview_panel(self) -> QWidget:
         """Create the right-side preview panel (mirrors cache_viewer's panel)."""
-        from fleasion.cache.animation_viewer import (  # ruff: ignore[import-outside-top-level]
-            AnimationViewerPanel,
-        )
-        from fleasion.cache.cache_json_viewer import (  # ruff: ignore[import-outside-top-level]
-            CacheJsonViewer,
-        )
-        from fleasion.cache.obj_viewer import (  # ruff: ignore[import-outside-top-level]
-            ObjViewerPanel,
-        )
+        animation_viewer_type = _animation_viewer_panel_type()
+        cache_json_viewer_type = _cache_json_viewer_type()
+        obj_viewer_type = _obj_viewer_panel_type()
 
         preview_widget = QWidget()
         preview_layout = QVBoxLayout()
@@ -900,7 +1002,7 @@ class JsonTreeViewer(QDialog):
         self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
 
         # 3D viewer for meshes
-        self.obj_viewer = ObjViewerPanel(config_manager=self.config_manager)
+        self.obj_viewer = obj_viewer_type(config_manager=self.config_manager)
         self.obj_viewer.clear_requested.connect(self._clear_preview)
         self.preview_container_layout.addWidget(self.obj_viewer)
 
@@ -938,7 +1040,7 @@ class JsonTreeViewer(QDialog):
         self.preview_container_layout.addWidget(self.audio_wrapper)
 
         # Animation viewer
-        self.animation_viewer = AnimationViewerPanel(config_manager=self.config_manager)
+        self.animation_viewer = animation_viewer_type(config_manager=self.config_manager)
         self.preview_container_layout.addWidget(self.animation_viewer)
 
         # Text viewer (hex dump / plain text)
@@ -948,7 +1050,7 @@ class JsonTreeViewer(QDialog):
         self.preview_container_layout.addWidget(self.text_viewer)
 
         # JSON viewer
-        self.json_viewer = CacheJsonViewer()
+        self.json_viewer = cache_json_viewer_type()
         self.preview_container_layout.addWidget(self.json_viewer)
 
         # RBXM/RBXMX structure viewer
@@ -1027,7 +1129,7 @@ class JsonTreeViewer(QDialog):
             if len(display) > 60:
                 display = display[:57] + '...'
             self.preview_title_label.setText(tr('ui.gui.json_viewer.preview_value', value0=display))
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except RuntimeError:
             pass
 
         self._asset_fetcher = AssetFetcherThread(val)
@@ -1062,7 +1164,7 @@ class JsonTreeViewer(QDialog):
             self._preview_font(data)
         elif content_type == 'texturepack':
             self._preview_texturepack(data)
-        elif content_type in ('rbxm', 'rbxmx'):  # ruff: ignore[literal-membership]
+        elif content_type in {'rbxm', 'rbxmx'}:
             if is_rbx_model_data(data):
                 self.rbxm_view_btn.show()
             self._preview_animation(data)
@@ -1071,81 +1173,61 @@ class JsonTreeViewer(QDialog):
         else:
             self._preview_hex(data)
 
-    def _detect_content_type(self, data: bytes) -> str:  # ruff: ignore[too-many-return-statements]
+    def _detect_content_type(self, data: bytes) -> str:
         """Detect content type from magic bytes."""
         working = data
         if data[:2] == b'\x1f\x8b':
             try:
                 working = gzip_module.decompress(data)
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
+            except EOFError, OSError:
                 pass
 
-        # Images
-        if working[:4] == b'\x89PNG':
-            return 'image'
-        if working[:2] == b'\xff\xd8':
-            return 'image'
-        if working[:4] == b'RIFF' and working[8:12] == b'WEBP':
-            return 'image'
-        if working[:3] == b'GIF':
-            return 'image'
-
-        # Audio
-        if working[:4] == b'OggS':
-            return 'audio'
-        if working[:3] == b'ID3' or working[:2] in (  # ruff: ignore[literal-membership]
-            b'\xff\xfb',
-            b'\xff\xf3',
-            b'\xff\xf2',
-        ):
-            return 'audio'
-
-        # Fonts (TrueType/OpenType)
-        if working[:4] == b'\x00\x01\x00\x00':  # TrueType
-            return 'font'
-        if working[:4] == b'OTTO':  # OpenType (CFF-based)
-            return 'font'
-        if working[:4] == b'ttcf':  # TrueType Collection
-            return 'font'
-        if working[:2] == b'\x01\x00':  # Alternative TrueType magic
-            return 'font'
-
-        # Roblox mesh (starts with "version")
-        if working[:7] == b'version':
-            return 'mesh'
-
-        # RBXM binary
-        if working[:8] == b'<roblox!':
-            return 'rbxm'
-
-        # XML (RBXMX / animation / texturepack)
-        if working[:7] == b'<roblox' or working[:5] == b'<?xml':
-            # Check for texturepack XML (has color/normal/metalness/roughness/emissive elements)
+        image_signatures = (
+            working[:4] == b'\x89PNG',
+            working[:2] == b'\xff\xd8',
+            working[:4] == b'RIFF' and working[8:12] == b'WEBP',
+            working[:3] == b'GIF',
+        )
+        audio_signatures = (
+            working[:4] == b'OggS',
+            working[:3] == b'ID3',
+            working[:2] in {b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'},
+        )
+        font_signatures = (
+            working[:4] == b'\x00\x01\x00\x00',
+            working[:4] == b'OTTO',
+            working[:4] == b'ttcf',
+            working[:2] == b'\x01\x00',
+        )
+        content_type = 'unknown'
+        if any(image_signatures):
+            content_type = 'image'
+        elif any(audio_signatures):
+            content_type = 'audio'
+        elif any(font_signatures):
+            content_type = 'font'
+        elif working[:7] == b'version':
+            content_type = 'mesh'
+        elif working[:8] == b'<roblox!':
+            content_type = 'rbxm'
+        elif working[:7] == b'<roblox' or working[:5] == b'<?xml':
+            content_type = 'rbxmx'
             try:
-                from defusedxml import (  # ruff: ignore[import-outside-top-level]
-                    ElementTree as ET,  # ruff: ignore[camelcase-imported-as-acronym]
-                )
-
-                root = ET.fromstring(working)
-                tp_elems = ['color', 'normal', 'metalness', 'roughness', 'emissive']
-                if any(root.find(e) is not None for e in tp_elems):
-                    return 'texturepack'
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
+                root = DefusedElementTree.fromstring(working)
+                texture_elements = ('color', 'normal', 'metalness', 'roughness', 'emissive')
+                if any(root.find(element) is not None for element in texture_elements):
+                    content_type = 'texturepack'
+            except DefusedXmlException, DefusedElementTree.ParseError:
                 pass
-            return 'rbxmx'
-
-        # JSON
-        try:
-            stripped = working.lstrip()
-            if stripped[:1] in (b'{', b'['):  # ruff: ignore[literal-membership]
-                import json  # ruff: ignore[import-outside-top-level]
-
-                json.loads(working.decode('utf-8'))
-                return 'json'
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
-
-        return 'unknown'
+        else:
+            try:
+                stripped = working.lstrip()
+                if stripped[:1] in {b'{', b'['}:
+                    json.loads(working.decode('utf-8'))
+                    content_type = 'json'
+            except UnicodeDecodeError, json.JSONDecodeError:
+                pass
+        return content_type
 
     # ──────────────────────────────────────────────────────────────────────
     # Per-type preview handlers
@@ -1191,151 +1273,132 @@ class JsonTreeViewer(QDialog):
         self.obj_viewer.show()
         self.stop_preview_btn.show()
 
+    def _show_audio_preview(self, data: bytes, audio_player_type: type[AudioPlayerWidget]) -> None:
+        temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
+        temp_dir.mkdir(exist_ok=True)
+        temp_file = temp_dir / f'preview_{id(self)}.mp3'
+        temp_file.write_bytes(data)
+
+        self.audio_player = audio_player_type(str(temp_file), self, self.config_manager)
+        while self.audio_container_layout.count():
+            child = _take_layout_item(self.audio_container_layout)
+            child_widget = child.widget()
+            if child_widget:
+                child_widget.deleteLater()
+
+        self.audio_container_layout.addWidget(self.audio_player)
+        self._hide_loading()
+        self.audio_wrapper.show()
+        self.stop_preview_btn.show()
+        try:
+            _require_application(QApplication.instance()).installEventFilter(self)
+            self._audio_key_filter_installed = True
+        except RuntimeError, TypeError:
+            self._audio_key_filter_installed = False
+        try:
+            self.audio_player.stopped.connect(self._remove_audio_key_filter)
+        except RuntimeError, TypeError:
+            pass
+
     def _preview_audio(self, data: bytes) -> None:
-        import tempfile  # ruff: ignore[import-outside-top-level]
-        from pathlib import Path  # ruff: ignore[import-outside-top-level]
+        audio_player_type = _audio_player_widget_type()
+        try:
+            self._show_audio_preview(data, audio_player_type)
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._show_text_preview(tr('json.preview.audio_error', error=exc))
 
-        from fleasion.cache.audio_player import (  # ruff: ignore[import-outside-top-level]
-            AudioPlayerWidget,
-        )
-
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
-            temp_dir.mkdir(exist_ok=True)
-            temp_file = temp_dir / f'preview_{id(self)}.mp3'
-            Path(temp_file).write_bytes(data)
-
-            self.audio_player = AudioPlayerWidget(str(temp_file), self, self.config_manager)
-
-            while self.audio_container_layout.count():
-                child = _take_layout_item(self.audio_container_layout)
-                child_widget = child.widget()
-                if child_widget:
-                    child_widget.deleteLater()
-
-            self.audio_container_layout.addWidget(self.audio_player)
-            self._hide_loading()
-            self.audio_wrapper.show()
-            self.stop_preview_btn.show()
-
-            # Install global event filter to catch Space for play/pause while audio preview is active
-            try:
-                from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
-
-                _require_application(QApplication.instance()).installEventFilter(self)
-                self._audio_key_filter_installed = True
-            except Exception:  # ruff: ignore[blind-except]
-                self._audio_key_filter_installed = False
-
-            # When audio stops or widget is deleted, remove the event filter
-            try:
-                self.audio_player.stopped.connect(lambda: self._remove_audio_key_filter())  # ruff: ignore[unnecessary-lambda]
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('json.preview.audio_error', error=e))
+    def _show_font_preview(self, data: bytes, font_viewer_type: type[FontViewerWidget]) -> None:
+        font_viewer = font_viewer_type(data, self)
+        while self.font_container_layout.count():
+            child = _take_layout_item(self.font_container_layout)
+            child_widget = child.widget()
+            if child_widget:
+                child_widget.deleteLater()
+        self.font_container_layout.addWidget(font_viewer)
+        self._hide_loading()
+        self.font_wrapper.show()
+        self.stop_preview_btn.show()
 
     def _preview_font(self, data: bytes) -> None:
         """Preview a font asset (TTF, OTF, TTC)."""
-        from fleasion.cache.font_viewer import (  # ruff: ignore[import-outside-top-level]
-            FontViewerWidget,
-        )
+        font_viewer_type = _font_viewer_widget_type()
+        try:
+            self._show_font_preview(data, font_viewer_type)
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._show_text_preview(tr('json.preview.font_error', error=exc))
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            font_viewer = FontViewerWidget(data, self)
+    def _show_animation_preview(self, data: bytes) -> None:
+        decompressed = data
+        if data[:2] == b'\x1f\x8b':
+            decompressed = gzip_module.decompress(data)
 
-            # Clear previous font widgets
-            while self.font_container_layout.count():
-                child = _take_layout_item(self.font_container_layout)
-                child_widget = child.widget()
-                if child_widget:
-                    child_widget.deleteLater()
-
-            # Add new font viewer
-            self.font_container_layout.addWidget(font_viewer)
+        if self.animation_viewer.load_animation(decompressed):
             self._hide_loading()
-            self.font_wrapper.show()
+            self.animation_viewer.show()
             self.stop_preview_btn.show()
+            return
+        if decompressed[:8] == b'<roblox!':
+            self._preview_solidmodel(data)
+            return
 
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('json.preview.font_error', error=e))
+        text = decompressed.decode('utf-8', errors='replace')
+        if text.strip().startswith('<'):
+            try:
+                dom = defused_minidom.parseString(cast('str', decompressed))
+                pretty = dom.toprettyxml(indent='  ')
+            except DefusedXmlException, ValueError:
+                pass
+            else:
+                lines = [line for line in pretty.split('\n') if line.strip()]
+                self._show_text_preview('\n'.join(lines[:500]))
+                return
+        self._preview_hex(decompressed)
 
     def _preview_animation(self, data: bytes) -> None:
         """Preview RBXM/RBXMX animation data."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            decompressed = data
-            if data[:2] == b'\x1f\x8b':
-                decompressed = gzip_module.decompress(data)
+        try:
+            self._show_animation_preview(data)
+        except (EOFError, OSError, RuntimeError, TypeError, ValueError, DefusedXmlException) as exc:
+            self._show_text_preview(tr('json.preview.animation_error', error=exc))
 
-            if self.animation_viewer.load_animation(decompressed):
-                self._hide_loading()
-                self.animation_viewer.show()
-                self.stop_preview_btn.show()
-                return
-
-            # Binary RBXM that isn't an animation — try SolidModel
-            if decompressed[:8] == b'<roblox!':
-                self._preview_solidmodel(data)
-                return
-
-            # Fallback: pretty-print XML
-            text = decompressed.decode('utf-8', errors='replace')
-            if text.strip().startswith('<'):
-                try:
-                    from defusedxml import (  # ruff: ignore[import-outside-top-level]
-                        minidom as safe_minidom,
-                    )
-
-                    dom = safe_minidom.parseString(cast('str', decompressed))
-                    pretty = dom.toprettyxml(indent='  ')
-                    lines = [ln for ln in pretty.split('\n') if ln.strip()]
-                    self._show_text_preview('\n'.join(lines[:500]))
-                    return  # ruff: ignore[try-consider-else]
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
-            self._preview_hex(decompressed)
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('json.preview.animation_error', error=e))
+    def _show_json_preview(self, data: bytes) -> None:
+        working = gzip_module.decompress(data) if data[:2] == b'\x1f\x8b' else data
+        parsed = json.loads(working.decode('utf-8'))
+        self.json_viewer.load_json(parsed)
+        self._hide_loading()
+        self.json_viewer.show()
+        self.stop_preview_btn.show()
 
     def _preview_json(self, data: bytes) -> None:
         """Preview JSON data in the embedded JSON viewer."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            working = data
-            if data[:2] == b'\x1f\x8b':
-                working = gzip_module.decompress(data)
-            import json  # ruff: ignore[import-outside-top-level]
+        try:
+            self._show_json_preview(data)
+        except (EOFError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._show_text_preview(tr('json.preview.json_error', error=exc))
 
-            parsed = json.loads(working.decode('utf-8'))
-            self.json_viewer.load_json(parsed)
-            self._hide_loading()
-            self.json_viewer.show()
-            self.stop_preview_btn.show()
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('json.preview.json_error', error=e))
+    def _show_rbxm_preview(self, data: bytes, title_prefix: str | None) -> None:
+        if title_prefix is None:
+            title_prefix = tr('json.preview.rbxm_structure')
+        asset_label = '' if self._previewing_value is None else str(self._previewing_value).strip()
+        self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
+        self._hide_loading()
+        self.rbxm_viewer.show()
+        self.stop_preview_btn.show()
+        display = str(self._previewing_value)
+        if len(display) > 60:
+            display = display[:57] + '...'
+        self.preview_title_label.setText(
+            tr('json.preview.title_with_value', title=title_prefix, value=display)
+            if display
+            else title_prefix
+        )
 
     def _preview_rbxm(self, data: bytes, title_prefix: str | None = None) -> None:
         """Preview raw RBXM/RBXMX structure in the shared RBXM viewer."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if title_prefix is None:
-                title_prefix = tr('json.preview.rbxm_structure')
-            asset_label = (
-                '' if self._previewing_value is None else str(self._previewing_value).strip()
-            )
-            self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
-            self._hide_loading()
-            self.rbxm_viewer.show()
-            self.stop_preview_btn.show()
-            display = str(self._previewing_value)
-            if len(display) > 60:
-                display = display[:57] + '...'
-            self.preview_title_label.setText(
-                tr('json.preview.title_with_value', title=title_prefix, value=display)
-                if display
-                else title_prefix
-            )
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._preview_hex(data, reason=tr('json.preview.rbxm_parse_failed', error=e))
+        try:
+            self._show_rbxm_preview(data, title_prefix)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._preview_hex(data, reason=tr('json.preview.rbxm_parse_failed', error=exc))
 
     def _preview_hex(self, data: bytes, reason: str | None = None) -> None:
         """Show a hex dump for unrecognised content."""
@@ -1368,178 +1431,178 @@ class JsonTreeViewer(QDialog):
         self._solidmodel_loader.error.connect(self._on_solidmodel_error)
         self._solidmodel_loader.start()
 
+    def _show_texturepack_preview(self, data: bytes) -> None:
+        self._cleanup_texturepack()
+
+        # Parse XML to get texture map IDs
+        working = data
+        if data[:2] == b'\x1f\x8b':
+            working = gzip_module.decompress(data)
+
+        xml_text = working.decode('utf-8', errors='replace')
+        self._texturepack_xml = xml_text
+        root = DefusedElementTree.fromstring(xml_text)
+
+        # Extract texture map IDs in order
+        map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
+        map_display_names = {
+            'color': tr('json.texture_map.color'),
+            'normal': tr('json.texture_map.normal'),
+            'metalness': tr('json.texture_map.metalness'),
+            'roughness': tr('json.texture_map.roughness'),
+            'emissive': tr('json.texture_map.emissive'),
+        }
+        maps: dict[str, str] = {}
+        for elem in map_order:
+            node = root.find(elem)
+            if node is not None and node.text:
+                maps[map_display_names[elem]] = node.text
+
+        if not maps:
+            self._show_text_preview(tr('json.preview.texturepack_no_maps'))
+            return
+
+        # Clear texture data storage
+        self._texturepack_data = {}
+
+        # Create container widget for texture pack preview
+        self.texturepack_widget = QWidget()
+        tp_layout = QVBoxLayout()
+        tp_layout.setContentsMargins(0, 0, 0, 0)
+        tp_layout.setSpacing(10)
+
+        # Store references for async loading
+        self._tp_image_labels = {}
+        self._tp_pixmaps = {}
+
+        # Create placeholder for each texture map
+        for map_name, map_id in maps.items():
+            header = QLabel(tr('ui.gui.json_viewer.value_value', value0=map_name, value1=map_id))
+            header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
+            header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            tp_layout.addWidget(header)
+
+            img_label = QLabel(tr('ui.gui.json_viewer.loading'))
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            img_label.setStyleSheet(
+                'background-color: palette(base); padding: 10px; min-height: 100px;'
+            )
+            img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            img_label.setProperty('map_name', map_name)
+            img_label.setProperty('map_id', map_id)
+            img_label.customContextMenuRequested.connect(
+                partial(self._show_texturepack_context_menu, label=img_label)
+            )
+            tp_layout.addWidget(img_label)
+            self._tp_image_labels[map_name] = img_label
+
+        tp_layout.addStretch()
+        self.texturepack_widget.setLayout(tp_layout)
+        self.preview_container_layout.addWidget(self.texturepack_widget)
+        self.texturepack_widget.show()
+        self.stop_preview_btn.show()
+
+        # Fetch each texture map via network
+        self._tp_fetchers = []
+        for map_name, map_id in maps.items():
+            fetcher = AssetFetcherThread(map_id)
+            fetcher.data_ready.connect(
+                partial(self._on_texturepack_texture_fetched, map_name, map_id)
+            )
+            fetcher.error.connect(partial(self._on_texturepack_texture_error, map_name))
+            self._tp_fetchers.append(fetcher)
+            fetcher.start()
+
+        self._hide_loading()
+
     def _preview_texturepack(self, data: bytes) -> None:
         """Preview a texture pack by showing all texture maps."""
-        from defusedxml import (  # ruff: ignore[import-outside-top-level]
-            ElementTree as ET,  # ruff: ignore[camelcase-imported-as-acronym]
-        )
+        try:
+            self._show_texturepack_preview(data)
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            # Clean up previous texture pack if any
-            self._cleanup_texturepack()
+        except (EOFError, OSError, RuntimeError, TypeError, ValueError, DefusedXmlException) as exc:
+            self._show_text_preview(tr('json.preview.texturepack_error', error=exc))
 
-            # Parse XML to get texture map IDs
-            working = data
-            if data[:2] == b'\x1f\x8b':
+    def _update_texturepack_texture(self, map_name: str, map_id: str, data: bytes) -> None:
+        if map_name not in self._tp_image_labels:
+            return
+
+        img_label = self._tp_image_labels[map_name]
+        try:
+            _ = img_label.isVisible()
+        except RuntimeError:
+            return
+
+        # Store texture data for context menu
+        self._texturepack_data[map_name] = {'id': map_id, 'data': data}
+
+        working = data
+        if data[:2] == b'\x1f\x8b':
+            try:
                 working = gzip_module.decompress(data)
+            except EOFError, OSError:
+                pass
 
-            xml_text = working.decode('utf-8', errors='replace')
-            self._texturepack_xml = xml_text
-            root = ET.fromstring(xml_text)
+        image = Image.open(io.BytesIO(working))
+        if image.mode not in {'RGB', 'RGBA'} or image.mode == 'RGB':
+            image = image.convert('RGBA')
 
-            # Extract texture map IDs in order
-            map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
-            map_display_names = {
-                'color': tr('json.texture_map.color'),
-                'normal': tr('json.texture_map.normal'),
-                'metalness': tr('json.texture_map.metalness'),
-                'roughness': tr('json.texture_map.roughness'),
-                'emissive': tr('json.texture_map.emissive'),
-            }
-            maps: dict[str, str] = {}
-            for elem in map_order:
-                node = root.find(elem)
-                if node is not None and node.text:
-                    maps[map_display_names[elem]] = node.text
+        # Scale up small images to 512x512 minimum
+        min_size = 512
+        if image.width < min_size or image.height < min_size:
+            scale_factor = max(min_size / image.width, min_size / image.height)
+            new_width = int(image.width * scale_factor)
+            new_height = int(image.height * scale_factor)
+            image = image.resize((new_width, new_height), Image.Resampling.NEAREST)
 
-            if not maps:
-                self._show_text_preview(tr('json.preview.texturepack_no_maps'))
-                return
+        qimage = QImage(
+            image.tobytes(),
+            image.width,
+            image.height,
+            QImage.Format.Format_RGBA8888,
+        )
+        pixmap = QPixmap.fromImage(qimage)
+        self._tp_pixmaps[map_name] = pixmap
 
-            # Clear texture data storage
-            self._texturepack_data = {}
+        # Scale to fit container
+        container_width = self.preview_scroll.viewport().width() - 30
+        if container_width < 100:
+            container_width = 400
 
-            # Create container widget for texture pack preview
-            self.texturepack_widget = QWidget()
-            tp_layout = QVBoxLayout()
-            tp_layout.setContentsMargins(0, 0, 0, 0)
-            tp_layout.setSpacing(10)
+        if pixmap.width() > container_width:
+            scaled = pixmap.scaledToWidth(
+                container_width, Qt.TransformationMode.SmoothTransformation
+            )
+        else:
+            scaled = pixmap
 
-            # Store references for async loading
-            self._tp_image_labels = {}
-            self._tp_pixmaps = {}
-
-            # Create placeholder for each texture map
-            for map_name, map_id in maps.items():
-                header = QLabel(
-                    tr('ui.gui.json_viewer.value_value', value0=map_name, value1=map_id)
-                )
-                header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
-                header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                tp_layout.addWidget(header)
-
-                img_label = QLabel(tr('ui.gui.json_viewer.loading'))
-                img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                img_label.setStyleSheet(
-                    'background-color: palette(base); padding: 10px; min-height: 100px;'
-                )
-                img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                img_label.setProperty('map_name', map_name)
-                img_label.setProperty('map_id', map_id)
-                img_label.customContextMenuRequested.connect(
-                    partial(self._show_texturepack_context_menu, label=img_label)
-                )
-                tp_layout.addWidget(img_label)
-                self._tp_image_labels[map_name] = img_label
-
-            tp_layout.addStretch()
-            self.texturepack_widget.setLayout(tp_layout)
-            self.preview_container_layout.addWidget(self.texturepack_widget)
-            self.texturepack_widget.show()
-            self.stop_preview_btn.show()
-
-            # Fetch each texture map via network
-            self._tp_fetchers = []
-            for map_name, map_id in maps.items():
-                fetcher = AssetFetcherThread(map_id)
-                fetcher.data_ready.connect(
-                    partial(self._on_texturepack_texture_fetched, map_name, map_id)
-                )
-                fetcher.error.connect(partial(self._on_texturepack_texture_error, map_name))
-                self._tp_fetchers.append(fetcher)
-                fetcher.start()
-
-            self._hide_loading()
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('json.preview.texturepack_error', error=e))
+        img_label.setPixmap(scaled)
+        img_label.setStyleSheet('')
 
     def _on_texturepack_texture_fetched(self, map_name: str, map_id: str, data: bytes) -> None:
         """Handle fetched texture data for a texture pack map."""
-        from PIL import Image  # ruff: ignore[import-outside-top-level]
+        try:
+            self._update_texturepack_texture(map_name, map_id, data)
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if map_name not in self._tp_image_labels:
-                return
+        except (OSError, RuntimeError, TypeError, ValueError, UnidentifiedImageError) as exc:
+            self._on_texturepack_texture_error(map_name, str(exc))
 
-            img_label = self._tp_image_labels[map_name]
-            try:
-                _ = img_label.isVisible()
-            except RuntimeError:
-                return
-
-            # Store texture data for context menu
-            self._texturepack_data[map_name] = {'id': map_id, 'data': data}
-
-            working = data
-            if data[:2] == b'\x1f\x8b':
-                try:
-                    working = gzip_module.decompress(data)
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
-
-            image = Image.open(io.BytesIO(working))
-            if image.mode not in ('RGB', 'RGBA') or image.mode == 'RGB':  # ruff: ignore[literal-membership]
-                image = image.convert('RGBA')
-
-            # Scale up small images to 512x512 minimum
-            min_size = 512
-            if image.width < min_size or image.height < min_size:
-                scale_factor = max(min_size / image.width, min_size / image.height)
-                new_width = int(image.width * scale_factor)
-                new_height = int(image.height * scale_factor)
-                image = image.resize((new_width, new_height), Image.Resampling.NEAREST)
-
-            qimage = QImage(
-                image.tobytes(),
-                image.width,
-                image.height,
-                QImage.Format.Format_RGBA8888,
-            )
-            pixmap = QPixmap.fromImage(qimage)
-            self._tp_pixmaps[map_name] = pixmap
-
-            # Scale to fit container
-            container_width = self.preview_scroll.viewport().width() - 30
-            if container_width < 100:
-                container_width = 400
-
-            if pixmap.width() > container_width:
-                scaled = pixmap.scaledToWidth(
-                    container_width, Qt.TransformationMode.SmoothTransformation
-                )
-            else:
-                scaled = pixmap
-
-            img_label.setPixmap(scaled)
-            img_label.setStyleSheet('')
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._on_texturepack_texture_error(map_name, str(e))
+    def _show_texturepack_texture_error(self, map_name: str, error: str) -> None:
+        if map_name not in self._tp_image_labels:
+            return
+        img_label = self._tp_image_labels[map_name]
+        try:
+            _ = img_label.isVisible()
+        except RuntimeError:
+            return
+        img_label.setText(tr('ui.gui.json_viewer.error_value', value0=error))
+        img_label.setStyleSheet('color: #ff6b6b; padding: 10px;')
 
     def _on_texturepack_texture_error(self, map_name: str, error: str) -> None:
         """Handle texture load error for a texture pack map."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if map_name not in self._tp_image_labels:
-                return
-            img_label = self._tp_image_labels[map_name]
-            try:
-                _ = img_label.isVisible()
-            except RuntimeError:
-                return
-            img_label.setText(tr('ui.gui.json_viewer.error_value', value0=error))
-            img_label.setStyleSheet('color: #ff6b6b; padding: 10px;')
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        try:
+            self._show_texturepack_texture_error(map_name, error)
+        except RuntimeError:
             pass
 
     def _cleanup_texturepack(self) -> None:
@@ -1549,7 +1612,7 @@ class JsonTreeViewer(QDialog):
                 fetcher.stop()
                 fetcher.quit()
                 fetcher.wait()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
+            except RuntimeError:
                 pass
         self._tp_fetchers = []
 
@@ -1579,8 +1642,6 @@ class JsonTreeViewer(QDialog):
 
     def _show_texturepack_context_menu(self, pos: QPoint, label: QLabel) -> None:
         """Show context menu for texturepack image."""
-        from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
-
         map_name = _preserve_str(label.property('map_name'))
         map_id = label.property('map_id')
 
@@ -1628,13 +1689,13 @@ class JsonTreeViewer(QDialog):
         self._hide_all_preview_widgets()
         try:
             self.rbxm_viewer.clear()
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except RuntimeError:
             pass
         self.preview_panel.hide()
         self._previewing_value = None
         try:
             self.preview_title_label.setText(tr('ui.gui.json_viewer.preview'))
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except RuntimeError:
             pass
 
     def _hide_all_preview_widgets(self) -> None:
@@ -1679,7 +1740,7 @@ class JsonTreeViewer(QDialog):
                     loader.stop()
                     loader.quit()
                     loader.wait()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
+                except RuntimeError:
                     pass
         self._asset_fetcher = None
         self._image_loader = None
@@ -1693,31 +1754,37 @@ class JsonTreeViewer(QDialog):
                 fetcher.stop()
                 fetcher.quit()
                 fetcher.wait()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
+            except RuntimeError:
                 pass
         self._tp_fetchers = []
 
-    def _on_splitter_moved(self, pos: int, index: int) -> None:  # ruff: ignore[unused-method-argument]
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
         if self._current_pixmap is not None and self.image_label.isVisible():
             self._scale_and_show_image(self._current_pixmap)
 
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # ruff: ignore[invalid-function-name]
-        """Global event filter to catch space key and toggle audio play/pause."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            from PySide6.QtCore import QEvent  # ruff: ignore[import-outside-top-level]
+    def _handle_audio_key_event(self, event: QEvent) -> bool:
+        if event.type() != QEvent.Type.KeyPress:
+            return False
+        key_event = _key_event(event)
+        if (
+            key_event.key() != Qt.Key.Key_Space
+            or not self.audio_player
+            or not self.audio_wrapper.isVisible()
+        ):
+            return False
+        try:
+            _toggle_audio_player(self.audio_player)
+        except RuntimeError:
+            pass
+        return True
 
-            if event.type() == QEvent.Type.KeyPress:
-                # Space toggles play/pause when audio preview is active
-                key_event = _key_event(event)
-                if key_event.key() == Qt.Key.Key_Space:  # ruff: ignore[collapsible-if]
-                    if self.audio_player and self.audio_wrapper.isVisible():
-                        try:
-                            # Toggle play/pause on the audio widget
-                            _toggle_audio_player(self.audio_player)
-                        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                            pass
-                        return True
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+    @override
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        """Global event filter to catch space key and toggle audio play/pause."""
+        try:
+            if self._handle_audio_key_event(event):
+                return True
+        except RuntimeError, TypeError:
             pass
         return super().eventFilter(obj, event)
 
@@ -1725,19 +1792,19 @@ class JsonTreeViewer(QDialog):
         """Remove global audio key event filter if installed."""
         try:
             if self._audio_key_filter_installed:
-                from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
-
                 _require_application(QApplication.instance()).removeEventFilter(self)
                 self._audio_key_filter_installed = False
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except RuntimeError:
             pass
 
-    def resizeEvent(self, event: QResizeEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         if self._current_pixmap is not None and self.image_label.isVisible():
             self._scale_and_show_image(self._current_pixmap)
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Handle dialog close - cleanup all resources including audio."""
         self._clear_preview()
         self._stop_all_loaders()
@@ -1783,9 +1850,9 @@ class JsonTreeViewer(QDialog):
             self._search_worker = None
 
         # Get all root items
-        root_items: list[QTreeWidgetItem] = []
-        for i in range(self.tree.topLevelItemCount()):
-            root_items.append(_top_level_item(self.tree, i))  # ruff: ignore[manual-list-comprehension]
+        root_items: list[QTreeWidgetItem] = [
+            _top_level_item(self.tree, i) for i in range(self.tree.topLevelItemCount())
+        ]
 
         # Always use worker thread to prevent UI freezing
         self._is_searching = True

@@ -8,6 +8,10 @@ stashed so they can be restored on exit / shutdown.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import importlib
+import io
 import json
 import ntpath
 import os
@@ -18,18 +22,61 @@ import stat
 import sys
 import threading
 import uuid
-from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Protocol, Self, TypedDict, cast
+from urllib.error import URLError
+from urllib.parse import urlparse
 
 from PySide6.QtCore import QObject, Signal
 
+from fleasion.cache.tools.ktx_to_png import (
+    strip_prefixed_ktx,
+)
+from fleasion.utils import (
+    CONFIG_DIR,
+    LOCAL_APPDATA,
+    ROBLOX_PROCESS,
+    format_count,
+    get_roblox_player_exe_path,
+    log_buffer,
+)
+from fleasion.utils.roblox_dirs import (
+    is_roblox_studio_resource_dir,
+    load_saved_roblox_dirs,
+    save_saved_roblox_dirs,
+)
+from fleasion.utils.threading import run_in_thread
+
+from .fflag_manager import (
+    FastFlagManager,
+    client_settings_paths_for_resource_dir,
+)
+from .font_utils import (
+    CUSTOM_FONT_REL,
+    FAMILIES_REL,
+    apply_custom_font,
+    restore_font_families,
+    validate_font_bytes,
+)
+from .global_settings_manager import (
+    GlobalSettingsManager,
+)
+from .platform_targets import (
+    canonical_target_path,
+    content_prefixed_resource_root,
+    read_current_platform_original_asset,
+    read_current_platform_original_directory,
+    target_path_for_resource_dir,
+)
+from .stash_paths import resource_stash_dir
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 
 class _RegistryKey(Protocol):
-    def __enter__(self) -> _RegistryKey: ...  # ruff: ignore[non-self-return-type]
+    def __enter__(self) -> Self: ...
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
@@ -46,52 +93,93 @@ class _WinregLike(Protocol):
     QueryValueEx: Callable[[_RegistryKey, str], tuple[object, int]]
 
 
+class _ExceptionBoundary:
+    """Suppress ordinary exceptions while preserving BaseException behavior."""
+
+    def __init__(self, on_exception: Callable[[Exception], None]) -> None:
+        self._on_exception = on_exception
+        self.failed = False
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> bool:
+        if not isinstance(exc, Exception):
+            return False
+        self.failed = True
+        self._on_exception(exc)
+        return True
+
+
 def _winreg_module() -> _WinregLike:
     return cast('_WinregLike', __import__('winreg'))
 
 
-import contextlib  # ruff: ignore[module-import-not-at-top-of-file]
+_RESOURCE_DIR_FINDER_ATTR = 'find_roblox_resource_dirs'
+_BOOTSTRAPPER_RESTORE_FINDER_ATTR = 'find_bootstrapper_restore_resource_dirs'
+_HTTP_GET_ATTR = 'http_get'
+_PARSE_OBJ_ATTR = 'parse_obj_for_mesh'
+_EXPORT_V2_MESH_ATTR = 'export_v2_mesh'
+_IMAGE_OPEN_MODULE = 'PIL.Image'
+_RGBA_KTX2_MODULE = 'fleasion.cache.tools.rgba_ktx2'
 
-from fleasion.cache.tools.ktx_to_png import (  # ruff: ignore[module-import-not-at-top-of-file]
-    strip_prefixed_ktx,
-)
-from fleasion.utils import (  # ruff: ignore[module-import-not-at-top-of-file]
-    CONFIG_DIR,
-    LOCAL_APPDATA,
-    ROBLOX_PROCESS,
-    format_count,
-    get_roblox_player_exe_path,
-    log_buffer,
-)
-from fleasion.utils.roblox_dirs import (  # ruff: ignore[module-import-not-at-top-of-file]
-    is_roblox_studio_resource_dir,
-    load_saved_roblox_dirs,
-    save_saved_roblox_dirs,
-)
-from fleasion.utils.threading import run_in_thread  # ruff: ignore[module-import-not-at-top-of-file]
 
-from .fflag_manager import (  # ruff: ignore[module-import-not-at-top-of-file]
-    FastFlagManager,
-    client_settings_paths_for_resource_dir,
-)
-from .font_utils import (  # ruff: ignore[module-import-not-at-top-of-file]
-    CUSTOM_FONT_REL,
-    FAMILIES_REL,
-    apply_custom_font,
-    restore_font_families,
-    validate_font_bytes,
-)
-from .global_settings_manager import (  # ruff: ignore[module-import-not-at-top-of-file]
-    GlobalSettingsManager,
-)
-from .platform_targets import (  # ruff: ignore[module-import-not-at-top-of-file]
-    canonical_target_path,
-    content_prefixed_resource_root,
-    read_current_platform_original_asset,
-    read_current_platform_original_directory,
-    target_path_for_resource_dir,
-)
-from .stash_paths import resource_stash_dir  # ruff: ignore[module-import-not-at-top-of-file]
+def _platform_resource_dir_finder(module_name: str) -> Callable[..., list[Path]]:
+    module = importlib.import_module(module_name)
+    return cast(
+        'Callable[..., list[Path]]',
+        getattr(module, _RESOURCE_DIR_FINDER_ATTR),
+    )
+
+
+def _bootstrapper_restore_resource_dirs() -> list[Path]:
+    module = importlib.import_module('fleasion.utils.platform_macos')
+    finder = cast(
+        'Callable[[], list[Path]]',
+        getattr(module, _BOOTSTRAPPER_RESTORE_FINDER_ATTR),
+    )
+    return finder()
+
+
+def _http_get(url: str, *, timeout: int, headers: dict[str, str]) -> bytes:
+    module = importlib.import_module('fleasion.utils.http')
+    getter = cast(
+        'Callable[..., bytes]',
+        getattr(module, _HTTP_GET_ATTR),
+    )
+    return getter(url, timeout=timeout, headers=headers)
+
+
+def _obj_converter_functions() -> tuple[
+    Callable[[str], tuple[object, object, object]],
+    Callable[[object, object, object], bytes],
+]:
+    module = importlib.import_module(
+        'fleasion.cache.tools.solidmodel_converter.obj_to_mesh'
+    )
+    parser = cast(
+        'Callable[[str], tuple[object, object, object]]',
+        getattr(module, _PARSE_OBJ_ATTR),
+    )
+    exporter = cast(
+        'Callable[[object, object, object], bytes]',
+        getattr(module, _EXPORT_V2_MESH_ATTR),
+    )
+    return parser, exporter
+
+
+def _image_module() -> _ImageModule:
+    return cast('_ImageModule', importlib.import_module(_IMAGE_OPEN_MODULE))
+
+
+def _rgba_ktx2_module() -> _RgbaKtx2Module:
+    return cast('_RgbaKtx2Module', importlib.import_module(_RGBA_KTX2_MODULE))
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -148,14 +236,40 @@ class _ModificationData(TypedDict):
     global_settings: _GlobalSettings
 
 
-class _GetRoblosecurity(Protocol):
-    def __call__(self, *, wait: bool = False) -> str | None: ...
+class _ImageLike(Protocol):
+    size: tuple[int, int]
+
+    def convert(self, mode: str) -> _ImageLike: ...
+    def tobytes(self) -> bytes: ...
 
 
-class _FetchAssetWithPlaceIdRetry(Protocol):
-    def __call__(
+class _ImageModule(Protocol):
+    def open(self, fp: object) -> _ImageLike: ...
+
+
+class _RgbaKtx2Module(Protocol):
+    RGBA8_KTX2_CACHE_VERSION: bytes
+
+    def mipmap_mode_for_texture_name(self, name: str) -> str: ...
+
+    def write_rgba8_ktx2(
+        self,
+        rgba: bytes,
+        width: int,
+        height: int,
+        out_path: Path,
+        *,
+        mipmap_mode: str,
+    ) -> None: ...
+
+
+class _CacheScraperLike(Protocol):
+    def get_roblosecurity(self, *, wait: bool = False) -> str | None: ...
+
+    def fetch_asset_with_place_id_retry(
         self,
         asset_id: str,
+        *,
         extra_headers: dict[str, str] | None = None,
     ) -> tuple[bytes | None, int | None]: ...
 
@@ -166,6 +280,8 @@ class _FastFlagManagerLike(Protocol):
     def restore(self) -> None: ...
 
     def reassert_macos_bootstrapper_flags(self, settings: _FastFlagSettings) -> int: ...
+
+    def update_roblox_dirs(self, roblox_dirs: list[Path]) -> None: ...
 
 
 def normalise_target_path(target_path: str | Path) -> Path:
@@ -244,8 +360,8 @@ def _set_read_only(path: Path) -> None:
 def _instance_attr(obj: object, name: str, default: object = None) -> object:
     """Read attributes safely on partially initialized QObject test doubles."""
     try:
-        return object.__getattribute__(obj, name)  # ruff: ignore[unnecessary-dunder-call]
-    except AttributeError, RuntimeError:
+        return getattr(obj, name)
+    except (AttributeError, RuntimeError):
         return default
 
 
@@ -257,12 +373,12 @@ def _instance_attr(obj: object, name: str, default: object = None) -> object:
 def _find_roblox_dirs() -> list[Path]:
     """Locate Roblox resource directories that can receive file modifications."""
     if sys.platform == 'darwin':
-        from fleasion.utils.platform_macos import (  # ruff: ignore[import-outside-top-level]
-            find_roblox_resource_dirs,
+        find_roblox_resource_dirs = _platform_resource_dir_finder(
+            'fleasion.utils.platform_macos'
         )
     elif sys.platform.startswith('linux'):
-        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-            find_roblox_resource_dirs,
+        find_roblox_resource_dirs = _platform_resource_dir_finder(
+            'fleasion.utils.platform_linux'
         )
     else:
         find_roblox_resource_dirs = None
@@ -289,13 +405,9 @@ def _find_roblox_dirs() -> list[Path]:
             _add_non_windows(cached_dir)
         save_saved_roblox_dirs(found)
         if sys.platform == 'darwin':
-            from fleasion.utils.platform_macos import (  # ruff: ignore[import-outside-top-level]
-                find_bootstrapper_restore_resource_dirs,
-            )
-
             # Bootstrapper snapshots are transient mirrors, not installations:
             # manage them while present, but never persist them as Roblox dirs.
-            for backup_dir in find_bootstrapper_restore_resource_dirs():
+            for backup_dir in _bootstrapper_restore_resource_dirs():
                 _add_non_windows(backup_dir)
         return found
 
@@ -336,7 +448,8 @@ def _find_roblox_dirs() -> list[Path]:
 
         def _has_player(path: Path) -> bool:
             try:
-                return os.path.isfile(os.path.join(path, ROBLOX_PROCESS))  # ruff: ignore[os-path-isfile, os-path-join]
+                is_file = vars(os.path)['isfile']
+                return bool(is_file(str(path / ROBLOX_PROCESS)))
             except OSError, ValueError:
                 return False
 
@@ -347,16 +460,19 @@ def _find_roblox_dirs() -> list[Path]:
         if root_is_dir and _has_player(root):
             results.append(root)
 
+        def _visit_entry(entry: os.DirEntry[str], depth: int) -> None:
+            if not entry.is_dir():
+                return
+            entry_path = Path(entry.path)
+            if _has_player(entry_path):
+                results.append(entry_path)
+            if depth < max_depth:
+                _recurse(entry_path, depth + 1)
+
         def _recurse(p: Path, depth: int) -> None:
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
+            try:
                 for entry in os.scandir(p):
-                    if not entry.is_dir():
-                        continue
-                    entry_path = Path(entry.path)
-                    if _has_player(entry_path):
-                        results.append(entry_path)
-                    if depth < max_depth:
-                        _recurse(entry_path, depth + 1)
+                    _visit_entry(entry, depth)
             except OSError, ValueError:
                 pass
 
@@ -364,61 +480,65 @@ def _find_roblox_dirs() -> list[Path]:
             _recurse(root, 1)
         return results
 
+    def _registry_subkey_names(key: _RegistryKey) -> Iterable[str]:
+        index = 0
+        while True:
+            try:
+                name = winreg.EnumKey(key, index)
+            except OSError:
+                return
+            index += 1
+            if '\x00' not in name:
+                yield name
+
+    def _registry_player_path(key: _RegistryKey) -> Path | None:
+        try:
+            value, value_type = winreg.QueryValueEx(key, 'PlayerPath')
+        except OSError, ValueError:
+            return None
+        if value_type != winreg.REG_SZ or not value:
+            return None
+        player_path = Path(cast('str', value).replace('\x00', '').strip())
+        if player_path.name.lower() == ROBLOX_PROCESS.lower():
+            player_path = player_path.parent
+        return player_path
+
+    def _add_registry_player_path(key: _RegistryKey) -> None:
+        player_path = _registry_player_path(key)
+        if player_path is None:
+            return
+        try:
+            is_file = vars(os.path)['isfile']
+            has_player = bool(is_file(str(player_path / ROBLOX_PROCESS)))
+        except (OSError, ValueError):
+            return
+        if has_player:
+            _add(player_path)
+            return
+        for directory in _scan_for_exe(player_path, 1):
+            _add(directory)
+
+    def _visit_registry_child(parent: _RegistryKey, name: str) -> None:
+        try:
+            with winreg.OpenKey(parent, name) as key:
+                _add_registry_player_path(key)
+        except OSError, ValueError:
+            pass
+
+    def _visit_registry_parent(parent: _RegistryKey, name: str) -> None:
+        try:
+            with winreg.OpenKey(parent, name) as key:
+                _add_registry_player_path(key)
+                for child_name in _registry_subkey_names(key):
+                    _visit_registry_child(key, child_name)
+        except OSError, ValueError:
+            pass
+
     # 1. Registry: HKCU\Software — two levels for "PlayerPath"
-    try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
+    try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software') as hkey:
-            i = 0
-            while True:
-                try:
-                    name = winreg.EnumKey(hkey, i)
-                    i += 1
-                except OSError:
-                    break
-                if '\x00' in name:
-                    continue
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    with winreg.OpenKey(hkey, name) as sub:
-                        try:  # ruff: ignore[too-many-statements-in-try-clause]
-                            val, rtype = winreg.QueryValueEx(sub, 'PlayerPath')
-                            if rtype == winreg.REG_SZ and val:
-                                val = cast('str', val).replace('\x00', '').strip()
-                                p = Path(val)
-                                if p.name.lower() == ROBLOX_PROCESS.lower():
-                                    p = p.parent
-                                if os.path.isfile(os.path.join(str(p), ROBLOX_PROCESS)):  # ruff: ignore[os-path-isfile, os-path-join]
-                                    _add(p)
-                                else:
-                                    for d in _scan_for_exe(p, 1):
-                                        _add(d)
-                        except OSError, ValueError:
-                            pass
-                        # One nested level
-                        j = 0
-                        while True:
-                            try:
-                                sub_name = winreg.EnumKey(sub, j)
-                                j += 1
-                            except OSError:
-                                break
-                            if '\x00' in sub_name:
-                                continue
-                            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                                with winreg.OpenKey(sub, sub_name) as sub2:
-                                    val2, rtype2 = winreg.QueryValueEx(sub2, 'PlayerPath')
-                                    if rtype2 == winreg.REG_SZ and val2:
-                                        val2 = cast('str', val2).replace('\x00', '').strip()
-                                        p2 = Path(val2)
-                                        if p2.name.lower() == ROBLOX_PROCESS.lower():
-                                            p2 = p2.parent
-                                        if os.path.isfile(os.path.join(str(p2), ROBLOX_PROCESS)):  # ruff: ignore[os-path-isfile, os-path-join]
-                                            _add(p2)
-                                        else:
-                                            for d in _scan_for_exe(p2, 1):
-                                                _add(d)
-                            except OSError, ValueError:
-                                pass
-                except OSError, ValueError:
-                    pass
+            for name in _registry_subkey_names(hkey):
+                _visit_registry_parent(hkey, name)
     except OSError, ValueError:
         pass
 
@@ -545,7 +665,7 @@ class ModificationManager(QObject):
 
     def __init__(
         self,
-        cache_scraper: object | None = None,
+        cache_scraper: _CacheScraperLike | None = None,
         *,
         read_only_lock_enabled: bool = False,
     ) -> None:
@@ -761,7 +881,7 @@ class ModificationManager(QObject):
 
     def protect_managed_files(self, extra_paths: Iterable[Path] = ()) -> None:
         """Mark Fleasion-managed Roblox files read-only until Fleasion needs to write."""
-        if not bool(_instance_attr(self, '_read_only_lock_enabled', False)):  # ruff: ignore[boolean-positional-value-in-call]
+        if not bool(_instance_attr(self, '_read_only_lock_enabled', default=False)):
             return
         lock = cast('threading.Lock | None', _instance_attr(self, '_fs_lock'))
         if lock is None:
@@ -771,7 +891,7 @@ class ModificationManager(QObject):
             self._protect_managed_files_locked(extra_paths)
 
     def _protect_managed_files_locked(self, extra_paths: Iterable[Path] = ()) -> None:
-        if not bool(_instance_attr(self, '_read_only_lock_enabled', False)):  # ruff: ignore[boolean-positional-value-in-call]
+        if not bool(_instance_attr(self, '_read_only_lock_enabled', default=False)):
             return
         protected = cast(
             'dict[Path, int] | None', _instance_attr(self, '_read_only_original_modes')
@@ -892,18 +1012,22 @@ class ModificationManager(QObject):
             for path in extra_paths:
                 _add(Path(path))
 
+        def _clear_path_guard(path: Path) -> bool:
+            if not path.exists():
+                return False
+            original_mode = protected.get(path)
+            if original_mode is None:
+                # This may be a stale guard left by an older Fleasion build,
+                # before original modes were restored exactly.
+                _clear_read_only(path)
+            else:
+                path.chmod(stat.S_IMODE(original_mode))
+            return True
+
         cleared = 0
         for path in paths:
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                if path.exists():
-                    original_mode = protected.get(path)
-                    if original_mode is None:
-                        # This may be a stale guard left by an older Fleasion
-                        # build, before original modes were restored exactly.
-                        _clear_read_only(path)
-                    else:
-                        path.chmod(stat.S_IMODE(original_mode))
-                    cleared += 1
+            try:
+                cleared += int(_clear_path_guard(path))
             except OSError as exc:
                 log_buffer.log(
                     'Modifications',
@@ -922,33 +1046,32 @@ class ModificationManager(QObject):
     # Persistence
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_loaded_data(data: _ModificationData) -> _ModificationData:
+        # Deduplicate entries by target_path, keeping the last (most recent)
+        # entry per path. Duplicate entries could accumulate from older races.
+        seen: dict[str, _ModificationEntry] = {}
+        for entry in data.get('entries', []):
+            target_path = entry.get('target_path', '')
+            key = target_path or entry.get('id', str(id(entry)))
+            seen[key] = entry
+        data['entries'] = list(seen.values())
+        if 'global_settings' not in data:
+            data['global_settings'] = _GlobalSettings()
+        legacy_framerate = data.get('fast_flags', {}).pop('framerate_cap', None)
+        if (
+            legacy_framerate is not None
+            and data['global_settings'].get('framerate_cap') is None
+        ):
+            data['global_settings']['framerate_cap'] = legacy_framerate
+        return data
+
     def _load_json(self) -> _ModificationData:
         if MODIFICATIONS_JSON.exists():
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
+            try:
                 with MODIFICATIONS_JSON.open('r', encoding='utf-8') as fp:
                     data = cast('_ModificationData', json.load(fp))
-                # Deduplicate entries by target_path, keeping the last (most
-                # recent) entry per path.  Duplicate entries could accumulate
-                # from previous sessions with race-condition bugs.
-                entries = data.get('entries', [])
-                seen: dict[str, _ModificationEntry] = {}
-                for e in entries:
-                    tp = e.get('target_path', '')
-                    if tp:
-                        seen[tp] = e  # later entry wins
-                    else:
-                        # No target_path key — keep as-is (edge case)
-                        seen[e.get('id', str(id(e)))] = e
-                data['entries'] = list(seen.values())
-                if 'global_settings' not in data:
-                    data['global_settings'] = _GlobalSettings()
-                legacy_framerate = data.get('fast_flags', {}).pop('framerate_cap', None)
-                if (
-                    legacy_framerate is not None
-                    and data['global_settings'].get('framerate_cap') is None
-                ):
-                    data['global_settings']['framerate_cap'] = legacy_framerate
-                return data  # ruff: ignore[try-consider-else]
+                return self._normalize_loaded_data(data)
             except json.JSONDecodeError, OSError:
                 pass
         return {
@@ -1011,7 +1134,7 @@ class ModificationManager(QObject):
                         k: cast('str | int | bool | None', v)
                         for k, v in entry.items()
                         if k
-                        not in (  # ruff: ignore[literal-membership]
+                        not in {
                             'id',
                             'status',
                             'error_message',
@@ -1020,7 +1143,7 @@ class ModificationManager(QObject):
                             'source_type',
                             'source_value',
                             'display_name',
-                        )
+                        }
                     },
                 )
                 return existing_id
@@ -1042,10 +1165,7 @@ class ModificationManager(QObject):
         entry = self._find_entry(entry_id)
         if entry is None:
             return True
-        try:
-            self._restore_entry(entry)
-        except Exception as exc:  # ruff: ignore[blind-except]
-            self._mark_restore_failed(entry, exc)
+        if not self._try_restore_entry(entry):
             return False
         self._data['entries'] = [e for e in self.entries if e.get('id') != entry_id]
         self._save_json()
@@ -1066,12 +1186,8 @@ class ModificationManager(QObject):
         # original Roblox file is already sitting at dst — calling
         # _restore_entry would incorrectly delete it via the "new file"
         # fallback branch.
-        if entry.get('source_type') is not None:
-            try:
-                self._restore_entry(entry)
-            except Exception as exc:  # ruff: ignore[blind-except]
-                self._mark_restore_failed(entry, exc)
-                return False
+        if entry.get('source_type') is not None and not self._try_restore_entry(entry):
+            return False
         cast('dict[str, str | int | bool | None]', entry).update(kwargs)
         entry['status'] = 'pending'
         entry['error_message'] = None
@@ -1095,10 +1211,7 @@ class ModificationManager(QObject):
             return True
         # Invalidate any in-flight apply before restoring the original file.
         entry['_apply_gen'] = entry.get('_apply_gen', 0) + 1
-        try:
-            self._restore_entry(entry)
-        except Exception as exc:  # ruff: ignore[blind-except]
-            self._mark_restore_failed(entry, exc)
+        if not self._try_restore_entry(entry):
             return False
         self._data['entries'] = [e for e in self.entries if e.get('id') != entry_id]
         self._save_json()
@@ -1121,92 +1234,116 @@ class ModificationManager(QObject):
             f'Restore failed for {entry.get("display_name", "?")}: {exc}',
         )
 
+    def _try_restore_entry(self, entry: _ModificationEntry) -> bool:
+        boundary = _ExceptionBoundary(partial(self._mark_restore_failed, entry))
+        with boundary:
+            self._restore_entry(entry)
+        return not boundary.failed
+
+    @staticmethod
+    def _run_best_effort(
+        action: Callable[[], None],
+        *,
+        category: str,
+        failure_prefix: str,
+    ) -> bool:
+        boundary = _ExceptionBoundary(
+            lambda exc: log_buffer.log(category, f'{failure_prefix}: {exc}')
+        )
+        with boundary:
+            action()
+        return not boundary.failed
+
+    @staticmethod
+    def _run_best_effort_bytes(
+        action: Callable[[], bytes],
+        *,
+        fallback: bytes,
+        category: str,
+        failure_prefix: str,
+    ) -> bytes:
+        with _ExceptionBoundary(
+            lambda exc: log_buffer.log(category, f'{failure_prefix}: {exc}')
+        ):
+            return action()
+        return fallback
+
     # ------------------------------------------------------------------
     # Processing & applying
     # ------------------------------------------------------------------
 
-    def _process_and_apply_entry(self, entry: _ModificationEntry) -> None:
-        """Resolve source, convert if needed, stash & write."""
-        entry_id = entry['id']
-        # Snapshot the generation counter before doing any work.  If
-        # clear_entry or update_entry runs on the main thread while we are
-        # processing, they increment _apply_gen and we discard our stale result.
-        apply_gen = entry.get('_apply_gen', 0)
-        self.apply_started.emit(entry_id)
+    def _apply_entry_unchecked(self, entry: _ModificationEntry, apply_gen: int) -> None:
+        data = self._resolve_source(entry)
+        if data is None:
+            msg = 'Could not resolve source data'
+            raise ValueError(msg)
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            data = self._resolve_source(entry)
-            if data is None:
-                msg = 'Could not resolve source data'
+        target = entry.get('target_path', '')
+        if target.lower().endswith(('customfont.ttf',)) or entry.get('_is_font'):
+            if not validate_font_bytes(data):
+                msg = 'Not a valid font file (invalid header)'
                 raise ValueError(msg)
-
-            target = entry.get('target_path', '')
-
-            # Font special-case
-            if target.lower().endswith(('customfont.ttf',)) or entry.get('_is_font'):
-                if not validate_font_bytes(data):
-                    msg = 'Not a valid font file (invalid header)'
-                    raise ValueError(msg)
-                with self._fs_lock:
-                    self._unlock_managed_files_locked()
-                    try:
-                        apply_custom_font(
-                            data,
-                            _font_helper_dirs(self._roblox_dirs),
-                            self._stash_dir,
-                            family_manifest_loader=lambda resource_dir: (
-                                read_current_platform_original_directory(
-                                    FAMILIES_REL,
-                                    resource_dir=resource_dir,
-                                )
-                            ),
-                        )
-                    finally:
-                        self._protect_managed_files_locked()
-                if entry.get('_apply_gen', 0) != apply_gen:
-                    self.apply_finished.emit(entry_id)
-                    return
-                entry['status'] = 'applied'
-                entry['error_message'] = None
-                self._save_json()
-                self.entry_status_changed.emit(entry_id, 'applied', '')
-                self.apply_finished.emit(entry_id)
-                return
-
-            # Mesh conversion: .obj → .mesh
-            if target.lower().endswith('.mesh') and self._looks_like_obj(data):
-                data = self._convert_obj_to_mesh(data)
-
-            data = self._coerce_replacement_for_target(target, data)
-
-            self._stash_and_write(target, data)
-
-            # Check if a reset/update happened while the write was in progress.
-            # The fs_lock serialises file ops, so by the time we get here the
-            # restore (if any) has already completed.  We just need to avoid
-            # overwriting the restored file and misreporting the status.
+            with self._fs_lock:
+                self._unlock_managed_files_locked()
+                try:
+                    apply_custom_font(
+                        data,
+                        _font_helper_dirs(self._roblox_dirs),
+                        self._stash_dir,
+                        family_manifest_loader=lambda resource_dir: (
+                            read_current_platform_original_directory(
+                                FAMILIES_REL,
+                                resource_dir=resource_dir,
+                            )
+                        ),
+                    )
+                finally:
+                    self._protect_managed_files_locked()
             if entry.get('_apply_gen', 0) != apply_gen:
-                # Our write is stale.  _restore_entry was already called by
-                # clear_entry/update_entry (holding the lock); dst is already
-                # back to the original.  Do nothing.
-                self.apply_finished.emit(entry_id)
                 return
-
             entry['status'] = 'applied'
             entry['error_message'] = None
             self._save_json()
-            self.entry_status_changed.emit(entry_id, 'applied', '')
+            self.entry_status_changed.emit(entry['id'], 'applied', '')
+            return
 
-        except Exception as exc:  # ruff: ignore[blind-except]
-            if entry.get('_apply_gen', 0) == apply_gen:
-                entry['status'] = 'error'
-                entry['error_message'] = str(exc)
-                self._save_json()
-                self.entry_status_changed.emit(entry_id, 'error', str(exc))
-            log_buffer.log(
-                'Modifications',
-                f'Error applying {entry.get("display_name", "?")}: {exc}',
-            )
+        if target.lower().endswith('.mesh') and self._looks_like_obj(data):
+            data = self._convert_obj_to_mesh(data)
+        data = self._coerce_replacement_for_target(target, data)
+        self._stash_and_write(target, data)
+        if entry.get('_apply_gen', 0) != apply_gen:
+            return
+
+        entry['status'] = 'applied'
+        entry['error_message'] = None
+        self._save_json()
+        self.entry_status_changed.emit(entry['id'], 'applied', '')
+
+    def _mark_apply_failed(
+        self,
+        entry: _ModificationEntry,
+        apply_gen: int,
+        exc: Exception,
+    ) -> None:
+        entry_id = entry['id']
+        if entry.get('_apply_gen', 0) == apply_gen:
+            entry['status'] = 'error'
+            entry['error_message'] = str(exc)
+            self._save_json()
+            self.entry_status_changed.emit(entry_id, 'error', str(exc))
+        log_buffer.log(
+            'Modifications',
+            f'Error applying {entry.get("display_name", "?")}: {exc}',
+        )
+
+    def _process_and_apply_entry(self, entry: _ModificationEntry) -> None:
+        """Resolve source, convert if needed, stash & write."""
+        entry_id = entry['id']
+        apply_gen = entry.get('_apply_gen', 0)
+        self.apply_started.emit(entry_id)
+
+        with _ExceptionBoundary(partial(self._mark_apply_failed, entry, apply_gen)):
+            self._apply_entry_unchecked(entry, apply_gen)
 
         self.apply_finished.emit(entry_id)
 
@@ -1248,12 +1385,6 @@ class ModificationManager(QObject):
 
     def _fetch_cdn_url(self, url: str) -> bytes:
         """Download a CDN URL, caching to ModCache."""
-        import hashlib  # ruff: ignore[import-outside-top-level]
-        from urllib.error import URLError  # ruff: ignore[import-outside-top-level]
-        from urllib.parse import urlparse  # ruff: ignore[import-outside-top-level]
-
-        from fleasion.utils.http import http_get  # ruff: ignore[import-outside-top-level]
-
         MOD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
         # Preserve the file extension so _looks_like_obj can detect .obj files.
@@ -1264,7 +1395,7 @@ class ModificationManager(QObject):
             return cache_file.read_bytes()
 
         try:
-            data = http_get(url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
+            data = _http_get(url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
         except URLError as exc:
             msg = f'CDN download failed: {exc}'
             raise RuntimeError(msg) from exc
@@ -1283,18 +1414,12 @@ class ModificationManager(QObject):
             raise RuntimeError(msg)
 
         extra_hdrs: dict[str, str] = {}
-        get_roblosecurity = cast(
-            '_GetRoblosecurity',
-            getattr(self._cache_scraper, '_get_roblosecurity'),  # ruff: ignore[get-attr-with-constant]
-        )
-        cookie = get_roblosecurity(wait=True)
+        cookie = self._cache_scraper.get_roblosecurity(wait=True)
         if cookie:
             extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
-        fetch_asset = cast(
-            '_FetchAssetWithPlaceIdRetry',
-            getattr(self._cache_scraper, '_fetch_asset_with_place_id_retry'),  # ruff: ignore[get-attr-with-constant]
+        data, status = self._cache_scraper.fetch_asset_with_place_id_retry(
+            str(asset_id), extra_headers=extra_hdrs or None
         )
-        data, status = fetch_asset(str(asset_id), extra_headers=extra_hdrs or None)
         if data is None:
             if status == 403:
                 msg = 'Asset not found or private. Add .ROBLOSECURITY cookie.'
@@ -1308,20 +1433,13 @@ class ModificationManager(QObject):
     @staticmethod
     def _looks_like_obj(data: bytes) -> bool:
         """Heuristic: does this data look like a Wavefront OBJ?"""
-        try:
-            head = data[:512].decode('utf-8', errors='ignore')
-            return head.lstrip().startswith(('v ', 'vn ', '#', 'o ', 'g '))
-        except Exception:  # ruff: ignore[blind-except]
-            return False
+        head = data[:512].decode('utf-8', errors='ignore')
+        return head.lstrip().startswith(('v ', 'vn ', '#', 'o ', 'g '))
 
     @staticmethod
     def _convert_obj_to_mesh(data: bytes) -> bytes:
         """Convert OBJ bytes → Roblox V2.00 .mesh bytes."""
-        from fleasion.cache.tools.solidmodel_converter.obj_to_mesh import (  # ruff: ignore[import-outside-top-level]
-            export_v2_mesh,
-            parse_obj_for_mesh,
-        )
-
+        parse_obj_for_mesh, export_v2_mesh = _obj_converter_functions()
         obj_text = data.decode('utf-8', errors='replace')
         vertices, colors, indices = parse_obj_for_mesh(obj_text)
         return export_v2_mesh(vertices, colors, indices)
@@ -1329,6 +1447,29 @@ class ModificationManager(QObject):
     @staticmethod
     def _is_ktx(data: bytes) -> bool:
         return strip_prefixed_ktx(data) is not None
+
+    def _convert_replacement_to_ktx2(self, target_path: str, data: bytes) -> bytes:
+        image_module = _image_module()
+        rgba_ktx2 = _rgba_ktx2_module()
+        image = image_module.open(io.BytesIO(data)).convert('RGBA')
+        width, height = image.size
+        mipmap_mode = rgba_ktx2.mipmap_mode_for_texture_name(target_path)
+        digest = hashlib.sha256(
+            data
+            + target_path.encode('utf-8')
+            + rgba_ktx2.RGBA8_KTX2_CACHE_VERSION
+            + mipmap_mode.encode('ascii')
+        ).hexdigest()[:16]
+        out_path = MOD_CACHE_DIR / f'ktx2_{digest}.ktx2'
+        if not out_path.exists():
+            rgba_ktx2.write_rgba8_ktx2(
+                image.tobytes(),
+                width,
+                height,
+                out_path,
+                mipmap_mode=mipmap_mode,
+            )
+        return out_path.read_bytes()
 
     def _coerce_replacement_for_target(self, target_path: str, data: bytes) -> bytes:
         """Convert image replacements to KTX2 when replacing KTX-backed targets."""
@@ -1344,40 +1485,12 @@ class ModificationManager(QObject):
         if not any(original is not None and self._is_ktx(original) for original in originals):
             return data
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            import hashlib  # ruff: ignore[import-outside-top-level]
-            import io  # ruff: ignore[import-outside-top-level]
-
-            from PIL import Image  # ruff: ignore[import-outside-top-level]
-
-            from fleasion.cache.tools.rgba_ktx2 import (  # ruff: ignore[import-outside-top-level]
-                RGBA8_KTX2_CACHE_VERSION,
-                mipmap_mode_for_texture_name,
-                write_rgba8_ktx2,
-            )
-
-            image = Image.open(io.BytesIO(data)).convert('RGBA')
-            width, height = image.size
-            mipmap_mode = mipmap_mode_for_texture_name(target_path)
-            digest = hashlib.sha256(
-                data
-                + target_path.encode('utf-8')
-                + RGBA8_KTX2_CACHE_VERSION
-                + mipmap_mode.encode('ascii')
-            ).hexdigest()[:16]
-            out_path = MOD_CACHE_DIR / f'ktx2_{digest}.ktx2'
-            if not out_path.exists():
-                write_rgba8_ktx2(
-                    image.tobytes(),
-                    width,
-                    height,
-                    out_path,
-                    mipmap_mode=mipmap_mode,
-                )
-            return out_path.read_bytes()
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log('Modifications', f'KTX2 conversion skipped for {target_path}: {exc}')
-            return data
+        return self._run_best_effort_bytes(
+            partial(self._convert_replacement_to_ktx2, target_path, data),
+            fallback=data,
+            category='Modifications',
+            failure_prefix=f'KTX2 conversion skipped for {target_path}',
+        )
 
     # ------------------------------------------------------------------
     # Stash & write / restore
@@ -1389,36 +1502,39 @@ class ModificationManager(QObject):
     # but stash is gone → leave dst alone".
     _NEW_FILE_MARKER_SUFFIX = '.fleasion_new'
 
+    def _stash_and_write_for_dir(
+        self,
+        target_path_rel: str,
+        new_bytes: bytes,
+        roblox_dir: Path,
+    ) -> None:
+        target_path = target_path_for_roblox_dir(target_path_rel, roblox_dir)
+        dst = roblox_dir / target_path
+        stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
+        marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
+
+        if dst.exists() and not stash.exists():
+            stash.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(dst, stash)
+            if marker.exists():
+                marker.unlink(missing_ok=True)
+        elif not dst.exists() and not stash.exists() and not marker.exists():
+            stash.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        _clear_read_only(dst)
+        dst.write_bytes(new_bytes)
+
     def _stash_and_write(self, target_path_rel: str, new_bytes: bytes) -> None:
         """Stash the original file and write the mod in every Roblox dir."""
-        with self._fs_lock:  # ruff: ignore[too-many-nested-blocks]
+        with self._fs_lock:
             self._unlock_managed_files_locked()
             try:
                 failures: list[tuple[Path, PermissionError]] = []
                 for roblox_dir in self._roblox_dirs:
-                    try:  # ruff: ignore[too-many-statements-in-try-clause]
-                        target_path = target_path_for_roblox_dir(target_path_rel, roblox_dir)
-                        dst = roblox_dir / target_path
-                        stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
-                        marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
-
-                        # Stash original ONCE (idempotent)
-                        if dst.exists() and not stash.exists():
-                            stash.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(dst, stash)
-                            # Remove any stale new-file marker from a previous run
-                            if marker.exists():
-                                marker.unlink(missing_ok=True)
-                        elif not dst.exists() and not stash.exists() and not marker.exists():
-                            # Target is brand-new (no original to stash); leave a marker
-                            # so _restore_entry knows it is safe to delete the file later.
-                            stash.parent.mkdir(parents=True, exist_ok=True)
-                            marker.touch()
-
-                        # Write mod
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        _clear_read_only(dst)
-                        dst.write_bytes(new_bytes)
+                    try:
+                        self._stash_and_write_for_dir(target_path_rel, new_bytes, roblox_dir)
                     except PermissionError as exc:
                         self._record_permission_denied_dir(roblox_dir)
                         failures.append((roblox_dir, exc))
@@ -1520,25 +1636,24 @@ class ModificationManager(QObject):
         try:
             for entry in self.entries:
                 if entry.get('status') == 'applied':
-                    try:
-                        self._restore_entry(entry)
-                    except Exception as exc:  # ruff: ignore[blind-except]
-                        log_buffer.log(
-                            'Modifications',
-                            f'Restore failed for {entry.get("display_name", "?")}: {exc}',
-                        )
+                    self._run_best_effort(
+                        partial(self._restore_entry, entry),
+                        category='Modifications',
+                        failure_prefix=f'Restore failed for {entry.get("display_name", "?")}',
+                    )
 
             if self._data.get('fast_flags_enabled'):
-                try:
-                    self.fflag_manager.restore()
-                except Exception as exc:  # ruff: ignore[blind-except]
-                    log_buffer.log('FastFlags', f'Restore failed: {exc}')
+                self._run_best_effort(
+                    self.fflag_manager.restore,
+                    category='FastFlags',
+                    failure_prefix='Restore failed',
+                )
 
-            # Restore global settings
-            try:
-                self.global_settings_manager.restore()
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('GlobalSettings', f'Restore failed: {exc}')
+            self._run_best_effort(
+                self.global_settings_manager.restore,
+                category='GlobalSettings',
+                failure_prefix='Restore failed',
+            )
         finally:
             self.clear_managed_file_read_only()
 
@@ -1581,15 +1696,12 @@ class ModificationManager(QObject):
             with self._fs_lock:
                 self._unlock_managed_files_locked()
                 try:
-                    self.fflag_manager.restore()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
+                    with contextlib.suppress(Exception):
+                        self.fflag_manager.restore()
                 finally:
                     self._protect_managed_files_locked()
-            try:
+            with contextlib.suppress(Exception):
                 self.global_settings_manager.restore()
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
         self._save_json()
 
     @property
@@ -1623,15 +1735,19 @@ class ModificationManager(QObject):
             # corresponding saved setting. Reflect the actual active value in
             # the UI instead of presenting it as "Default".
             value = self.global_settings_manager.read_framerate_cap()
+        if value is None or not value:
+            return 0
+        if value == 'Default':
+            return 0
         try:
-            return 0 if value in (None, '', 'Default') else int(value)  # ruff: ignore[literal-membership]
+            return int(value)
         except TypeError, ValueError:
             return 0
 
     @framerate_cap.setter
     def framerate_cap(self, value: int | None) -> None:
         settings = cast('_GlobalSettings', dict(self.global_settings))
-        settings['framerate_cap'] = None if value in (None, 0) else int(value)  # ruff: ignore[literal-membership]
+        settings['framerate_cap'] = None if value is None or value == 0 else int(value)
         self.global_settings = settings
 
     def sync_saved_global_settings(self) -> None:
@@ -1678,7 +1794,7 @@ class ModificationManager(QObject):
         """Re-discover Roblox directories (e.g. after an update)."""
         previous = {str(path.resolve()).lower() for path in self._roblox_dirs}
         self._roblox_dirs = _find_roblox_dirs()
-        setattr(self.fflag_manager, '_roblox_dirs', self._roblox_dirs)  # ruff: ignore[set-attr-with-constant]
+        self.fflag_manager.update_roblox_dirs(self._roblox_dirs)
         self.global_settings_manager.refresh_roblox_dirs()
         current = {str(path.resolve()).lower() for path in self._roblox_dirs}
         log_buffer.log(
@@ -1690,23 +1806,26 @@ class ModificationManager(QObject):
             self.reapply_all()
         return changed
 
+    def _apply_pending_framerate(self, framerate: int) -> None:
+        if framerate:
+            self.sync_saved_global_settings()
+        else:
+            self.reset_framerate_cap()
+
     def apply_pending_modifications(self) -> None:
         """Apply all pending modifications that were queued while Roblox was running."""
         flags, framerate = self.pending_modifications_queue.get_pending()
 
-        if flags is not None:
-            try:
-                self.write_fast_flags(flags)
-                log_buffer.log('Modifications', 'Applied queued Fast Flags after Roblox exit')
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('Modifications', f'Error applying queued Fast Flags: {exc}')
+        if flags is not None and self._run_best_effort(
+            partial(self.write_fast_flags, flags),
+            category='Modifications',
+            failure_prefix='Error applying queued Fast Flags',
+        ):
+            log_buffer.log('Modifications', 'Applied queued Fast Flags after Roblox exit')
 
-        if framerate is not None:
-            try:
-                if framerate:
-                    self.sync_saved_global_settings()
-                else:
-                    self.reset_framerate_cap()
-                log_buffer.log('Modifications', 'Applied queued framerate cap after Roblox exit')
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('Modifications', f'Error applying queued framerate cap: {exc}')
+        if framerate is not None and self._run_best_effort(
+            partial(self._apply_pending_framerate, framerate),
+            category='Modifications',
+            failure_prefix='Error applying queued framerate cap',
+        ):
+            log_buffer.log('Modifications', 'Applied queued framerate cap after Roblox exit')

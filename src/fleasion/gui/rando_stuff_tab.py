@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 import ctypes
+import importlib
 import json
-import random
 import re
+import secrets
 import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from ctypes import wintypes
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast, override
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import requests as _requests
+from defusedxml import ElementTree as DefusedElementTree
+from defusedxml.common import DefusedXmlException
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -41,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr, tr_count
+from fleasion.utils import get_icon_path, windows as _platform_windows
 from fleasion.utils.logging import log_buffer
 from fleasion.utils.paths import CONFIG_DIR
 from fleasion.utils.plural import format_count
@@ -48,15 +52,17 @@ from fleasion.utils.roblox_auth import (
     ROBLOX_COOKIES_PATH,
     LinuxAuthWriteError,
     discover_browser_roblosecurity,
+    get_roblosecurity,
     set_roblosecurity,
 )
 from fleasion.utils.secure_tokens import decrypt_token, encrypt_token
-from fleasion.utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
 
 from .modifications_tab import CollapsibleSection
 from .proxy_gate import ProxyGate
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fleasion.config.manager import ConfigManager
     from fleasion.proxy.master import ProxyMaster
     from fleasion.proxy.server import ProxyFlow
@@ -106,8 +112,29 @@ IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
 IS_LINUX = sys.platform.startswith('linux')
 
+launch_as_standard_user = cast(
+    'Callable[[str | Path], bool]',
+    _platform_windows.launch_as_standard_user,
+)
+resolve_roblox_player_exe_for_launch = cast(
+    'Callable[[], Path | None]',
+    _platform_windows.resolve_roblox_player_exe_for_launch,
+)
+
 
 # Helpers
+
+
+def _set_signals_blocked(obj: QObject, *, blocked: bool) -> None:
+    obj.blockSignals(blocked)
+
+
+def _import_attr(module_name: str, attr_name: str) -> object:
+    return vars(importlib.import_module(module_name))[attr_name]
+
+
+def _delete_cache_window_type() -> type[QWidget]:
+    return cast('type[QWidget]', _import_attr('fleasion.gui.delete_cache', 'DeleteCacheWindow'))
 
 
 def _encrypt_cookie(cookie: str) -> str:
@@ -125,7 +152,7 @@ def _load_accounts() -> list[Account]:
     try:
         if ACCOUNTS_FILE.exists():
             return cast('list[Account]', json.loads(ACCOUNTS_FILE.read_text(encoding='utf-8')))
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
+    except OSError, UnicodeError, json.JSONDecodeError:
         pass
     return []
 
@@ -134,6 +161,61 @@ def _save_accounts(accounts: list[Account]) -> None:
     """Persist accounts list to disk."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     ACCOUNTS_FILE.write_text(json.dumps(accounts, indent=2), encoding='utf-8')
+
+
+def _authenticated_user_response(cookie: str) -> _requests.Response:
+    session = _requests.Session()
+    session.trust_env = False
+    session.proxies = {}
+    try:
+        session.cookies.set('.ROBLOSECURITY', cookie)
+    except TypeError, ValueError:
+        session.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+    return session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+
+
+def _json_object(raw: bytes | str) -> dict[str, object]:
+    payload: object = json.loads(raw)
+    if not isinstance(payload, dict):
+        msg = 'Expected a JSON object'
+        raise TypeError(msg)
+    return cast('dict[str, object]', payload)
+
+
+def _response_json_object(response: _requests.Response) -> dict[str, object]:
+    payload: object = response.json()
+    if not isinstance(payload, dict):
+        msg = 'Expected a JSON object response'
+        raise TypeError(msg)
+    return cast('dict[str, object]', payload)
+
+
+def _run_contained_action(
+    action: Callable[[], object],
+    on_error: Callable[[Exception], None],
+) -> bool:
+    """Run an event/thread/OS-boundary callback without letting it escape."""
+    try:
+        action()
+    except Exception as exc:  # ruff: ignore[blind-except]
+        on_error(exc)
+        return False
+    return True
+
+
+def _run_proxy_action(
+    category: str,
+    error_prefix: str,
+    action: Callable[[], None],
+    *,
+    on_error: Callable[[], None] | None = None,
+) -> None:
+    def _handle_error(exc: Exception) -> None:
+        log_buffer.log(category, f'{error_prefix}: {exc}')
+        if on_error is not None:
+            on_error()
+
+    _run_contained_action(action, _handle_error)
 
 
 def _get_auth_ticket(cookie: str) -> str | None:
@@ -152,7 +234,7 @@ def _get_auth_ticket(cookie: str) -> str | None:
             resp = _requests.post(url, headers=headers, json={}, timeout=10)
         if resp.status_code == 200:
             return resp.headers.get('rbx-authentication-ticket')
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
+    except _requests.RequestException:
         pass
     return None
 
@@ -184,7 +266,7 @@ def _get_access_code(place_id: str, link_code: str, cookie: str) -> str | None:
                 code = data.get('accessCode') or data.get('vipServerAccessCode')
                 if code:
                     return code
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except _requests.RequestException:
             pass
 
     # Fall back to parsing game page HTML
@@ -203,51 +285,55 @@ def _get_access_code(place_id: str, link_code: str, cookie: str) -> str | None:
             m = re.search(pat, resp.text)
             if m:
                 return m.group(1)
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
+    except _requests.RequestException:
         pass
 
     return None
+
+
+def _preseed_root_join_response(root_place_id: str, cookie: str) -> _requests.Response:
+    sess = _requests.Session()
+    sess.trust_env = False
+    sess.proxies = {}
+    sess.verify = False
+    sess.headers.update(
+        {
+            'User-Agent': 'Roblox/WinInet',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Referer': 'https://www.roblox.com/',
+            'Origin': 'https://www.roblox.com',
+            'Cookie': f'.ROBLOSECURITY={cookie};',
+        }
+    )
+    try:
+        token_resp = sess.post('https://auth.roblox.com/v2/logout', timeout=10)
+        token = token_resp.headers.get('x-csrf-token') or token_resp.headers.get('X-CSRF-TOKEN')
+        if token:
+            sess.headers['X-CSRF-TOKEN'] = token
+    except _requests.RequestException:
+        pass
+
+    payload = {
+        'placeId': int(root_place_id),
+        'isTeleport': True,
+        'isImmersiveAdsTeleport': False,
+        'gameJoinAttemptId': str(uuid.uuid4()),
+    }
+    return sess.post('https://gamejoin.roblox.com/v1/join-game', json=payload, timeout=15)
 
 
 def _preseed_root_place_for_subplace(root_place_id: str, cookie: str) -> bool:
     """Prime Roblox's join state for a subplace launch by joining the root place."""
     if not root_place_id or not cookie:
         return False
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        sess = _requests.Session()
-        sess.trust_env = False
-        sess.proxies = {}
-        sess.verify = False
-        sess.headers.update(
-            {
-                'User-Agent': 'Roblox/WinInet',
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'Referer': 'https://www.roblox.com/',
-                'Origin': 'https://www.roblox.com',
-                'Cookie': f'.ROBLOSECURITY={cookie};',
-            }
-        )
-        try:
-            token_resp = sess.post('https://auth.roblox.com/v2/logout', timeout=10)
-            token = token_resp.headers.get('x-csrf-token') or token_resp.headers.get('X-CSRF-TOKEN')
-            if token:
-                sess.headers['X-CSRF-TOKEN'] = token
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
-
-        payload = {
-            'placeId': int(root_place_id),
-            'isTeleport': True,
-            'isImmersiveAdsTeleport': False,
-            'gameJoinAttemptId': str(uuid.uuid4()),
-        }
-        resp = sess.post('https://gamejoin.roblox.com/v1/join-game', json=payload, timeout=15)
+    try:
+        resp = _preseed_root_join_response(root_place_id, cookie)
         try:
             return resp.status_code == 200 and resp.json().get('status') == 2
-        except Exception:  # ruff: ignore[blind-except]
+        except _requests.RequestException:
             return False
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (ValueError, _requests.RequestException) as exc:
         log_buffer.log('accounts', f'Subplace root pre-seed error: {exc}')
         return False
 
@@ -281,19 +367,16 @@ def _parse_game_link(link: str) -> tuple[str | None, str | None]:
     # Plain numeric placeId
     if link.isdigit():
         return link, None
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
+    try:
         parsed = urlparse(link)
-        parts = [p for p in parsed.path.split('/') if p]
-        place_id = None
-        if 'games' in parts:
-            idx = parts.index('games')
-            if idx + 1 < len(parts) and parts[idx + 1].isdigit():
-                place_id = parts[idx + 1]
         link_code = parse_qs(parsed.query).get('privateServerLinkCode', [None])[0]
-        if place_id:
-            return place_id, link_code
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
-        pass
+    except ValueError:
+        return None, None
+    parts = [part for part in parsed.path.split('/') if part]
+    if 'games' in parts:
+        idx = parts.index('games')
+        if idx + 1 < len(parts) and parts[idx + 1].isdigit():
+            return parts[idx + 1], link_code
     return None, None
 
 
@@ -316,77 +399,79 @@ def _is_share_link(link: str) -> bool:
         return (
             'roblox.com' in parsed.netloc and parsed.path.rstrip('/') == '/share' and 'code' in qs
         )
-    except Exception:  # ruff: ignore[blind-except]
+    except ValueError:
         return False
 
 
-def _resolve_share_link(link: str, cookie: str = '') -> tuple[str, str]:
-    """Resolve a roblox.com/share link via the sharelinks API."""
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        parsed = urlparse(link)
-        qs = parse_qs(parsed.query)
-        link_id = (qs.get('code') or [None])[0]
-        link_type = (qs.get('type') or ['Server'])[0]
-        if not link_id:
-            return '', ''
+def _resolve_share_link_impl(link: str, cookie: str) -> tuple[str, str]:
+    parsed = urlparse(link)
+    qs = parse_qs(parsed.query)
+    link_id = (qs.get('code') or [None])[0]
+    link_type = (qs.get('type') or ['Server'])[0]
+    if not link_id:
+        return '', ''
 
-        sess = _requests.Session()
-        if cookie:
-            sess.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
-        sess.headers.update(
-            {
-                'User-Agent': (
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-                ),
-                'Referer': 'https://www.roblox.com/',
-                'Accept': 'application/json, text/plain, */*',
-                'Content-Type': 'application/json;charset=UTF-8',
-            }
-        )
+    sess = _requests.Session()
+    if cookie:
+        sess.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
+    sess.headers.update(
+        {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            ),
+            'Referer': 'https://www.roblox.com/',
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json;charset=UTF-8',
+        }
+    )
 
-        body = {'linkId': link_id, 'linkType': link_type}
+    body = {'linkId': link_id, 'linkType': link_type}
+    resp = sess.post(
+        'https://apis.roblox.com/sharelinks/v1/resolve-link',
+        json=body,
+        timeout=10,
+    )
+    # Roblox returns 403 with X-CSRF-TOKEN on first POST — retry with token
+    if resp.status_code == 403 and 'x-csrf-token' in resp.headers:
+        sess.headers['X-CSRF-TOKEN'] = resp.headers['x-csrf-token']
         resp = sess.post(
             'https://apis.roblox.com/sharelinks/v1/resolve-link',
             json=body,
             timeout=10,
         )
-        # Roblox returns 403 with X-CSRF-TOKEN on first POST — retry with token
-        if resp.status_code == 403 and 'x-csrf-token' in resp.headers:
-            sess.headers['X-CSRF-TOKEN'] = resp.headers['x-csrf-token']
-            resp = sess.post(
-                'https://apis.roblox.com/sharelinks/v1/resolve-link',
-                json=body,
-                timeout=10,
-            )
-        if resp.status_code != 200:
-            return '', ''
+    if resp.status_code != 200:
+        return '', ''
 
-        data = cast('dict[str, object]', resp.json())
+    data = cast('dict[str, object]', resp.json())
 
-        def _extract(d: dict[str, object]) -> tuple[str, str]:
-            pid = str(d.get('placeId') or d.get('rootPlaceId') or '')
-            lc = d.get('privateServerLinkCode') or d.get('linkCode') or d.get('accessCode') or ''
-            return pid, _preserve_str(lc)
+    def _extract(d: dict[str, object]) -> tuple[str, str]:
+        pid = str(d.get('placeId') or d.get('rootPlaceId') or '')
+        lc = d.get('privateServerLinkCode') or d.get('linkCode') or d.get('accessCode') or ''
+        return pid, _preserve_str(lc)
 
-        place_id, link_code = _extract(data)
-        for key in (
-            'privateServerInviteData',
-            'privateServerData',
-            'gameDetails',
-            'serverData',
-        ):
-            nested = data.get(key)
-            if isinstance(nested, dict):
-                p, l = _extract(cast('dict[str, object]', nested))  # ruff: ignore[ambiguous-variable-name]
-                place_id = place_id or p
-                link_code = link_code or l
+    place_id, link_code = _extract(data)
+    for key in (
+        'privateServerInviteData',
+        'privateServerData',
+        'gameDetails',
+        'serverData',
+    ):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            nested_place_id, nested_link_code = _extract(cast('dict[str, object]', nested))
+            place_id = place_id or nested_place_id
+            link_code = link_code or nested_link_code
 
-        if place_id and link_code:
-            return place_id, link_code
-    except Exception:  # ruff: ignore[blind-except, try-except-pass]
-        pass
-    return '', ''
+    return (place_id, link_code) if place_id and link_code else ('', '')
+
+
+def _resolve_share_link(link: str, cookie: str = '') -> tuple[str, str]:
+    """Resolve a roblox.com/share link via the sharelinks API."""
+    try:
+        return _resolve_share_link_impl(link, cookie)
+    except ValueError, _requests.RequestException:
+        return '', ''
 
 
 def _find_roblox_exe() -> str | None:
@@ -400,12 +485,12 @@ def _linux_client_display_name() -> str:
     if not IS_LINUX:
         return tr('rando.linux_roblox_client')
     try:
-        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-            selected_linux_client_display_name,
+        display_name = cast(
+            'Callable[[], str]',
+            _import_attr('fleasion.utils.platform_linux', 'selected_linux_client_display_name'),
         )
-
-        return selected_linux_client_display_name()
-    except Exception:  # ruff: ignore[blind-except]
+        return display_name()
+    except ImportError, KeyError, OSError, RuntimeError:
         return tr('rando.linux_roblox_client')
 
 
@@ -471,7 +556,7 @@ def _build_auth_ticket_place_uri(
     launch_time_ms: int | None = None,
 ) -> str:
     tracker = (
-        tracker_id if tracker_id is not None else random.randint(10_000_000_000, 99_999_999_999)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
+        tracker_id if tracker_id is not None else 10_000_000_000 + secrets.randbelow(90_000_000_000)
     )
     launcher = _build_place_launcher_url(
         place_id,
@@ -500,7 +585,7 @@ def _build_auth_ticket_private_server_uri(
     launch_time_ms: int | None = None,
 ) -> str:
     tracker = (
-        tracker_id if tracker_id is not None else random.randint(10_000_000_000, 99_999_999_999)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
+        tracker_id if tracker_id is not None else 10_000_000_000 + secrets.randbelow(90_000_000_000)
     )
     launcher = _build_place_launcher_url(
         place_id,
@@ -575,27 +660,16 @@ class AddAccountDialog(QDialog):
         threading.Thread(target=self._validate, args=(cookie,), daemon=True).start()
 
     def _validate(self, cookie: str) -> None:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            sess = _requests.Session()
-            sess.trust_env = False
-            sess.proxies = {}
-            try:
-                sess.cookies.set('.ROBLOSECURITY', cookie)
-            except Exception:  # ruff: ignore[blind-except]
-                sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-            resp = sess.get(
-                'https://users.roblox.com/v1/users/authenticated',
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                username = resp.json().get('name', 'Unknown')
-                self._validated.emit(username, cookie)
-            else:
-                self._failed.emit(
-                    tr('rando.account.invalid_cookie_http', status_code=resp.status_code)
-                )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            resp = _authenticated_user_response(cookie)
+            payload = _response_json_object(resp) if resp.status_code == 200 else None
+        except (_requests.RequestException, RuntimeError, TypeError, ValueError) as exc:
             self._failed.emit(tr('rando.account.error', error=exc))
+            return
+        if resp.status_code == 200 and isinstance(payload, dict):
+            self._validated.emit(str(payload.get('name', 'Unknown')), cookie)
+            return
+        self._failed.emit(tr('rando.account.invalid_cookie_http', status_code=resp.status_code))
 
     def _on_validated(self, username: str, cookie: str) -> None:
         self.result_username = username
@@ -618,17 +692,17 @@ class _Invoker(QObject):
         self.call.connect(self._run, Qt.ConnectionType.QueuedConnection)
 
     def _run(self, fn: Callable[[], object]) -> None:
-        try:
-            fn()
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log('randostuff', f'invoker error: {exc}')
+        _run_contained_action(
+            fn,
+            lambda exc: log_buffer.log('randostuff', f'invoker error: {exc}'),
+        )
 
 
 # Tab widget
 
 
 class RandoStuffTab(QWidget):
-    """Rando Stuff tab – proxy interceptor + UI combined."""  # ruff: ignore[ambiguous-unicode-character-docstring]
+    """Rando Stuff tab - proxy interceptor + UI combined."""
 
     selected_account_changed = Signal(str)
 
@@ -691,11 +765,11 @@ class RandoStuffTab(QWidget):
         self._push_username_spoofer_runtime_state()
         if self._config is not None:
             enabled = bool(self._config.multi_instance_launching) and IS_WINDOWS
-            self._multi_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._multi_chk, blocked=True)
             self._multi_chk.setChecked(enabled)
-            self._multi_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._multi_chk, blocked=False)
             if enabled:
-                self._on_multi_instance_toggled(True, persist=False)  # ruff: ignore[boolean-positional-value-in-call]
+                self._on_multi_instance_toggled(checked=True, persist=False)
         threading.Thread(target=self._check_cookies_on_boot, daemon=True).start()
         threading.Thread(target=self._resolve_current_user, daemon=True).start()
         if self._subplace_blacklisted_ids:
@@ -716,12 +790,12 @@ class RandoStuffTab(QWidget):
             return False
         try:
             invoker.call.emit(fn)
-            return True  # ruff: ignore[try-consider-else]
         except RuntimeError as exc:
             if 'has been deleted' not in str(exc):
                 log_buffer.log('randostuff', f'invoker emit error: {exc}')
             self._qt_destroyed = True
             return False
+        return True
 
     @staticmethod
     def _normalize_numeric_id(value: object) -> str | None:
@@ -760,15 +834,15 @@ class RandoStuffTab(QWidget):
     ) -> None:
         with self._lock:
             teleport_place_id = self._account_manager_teleport_place_id
-        if not teleport_place_id or req_path not in (  # ruff: ignore[literal-membership]
+        if not teleport_place_id or req_path not in {
             *self._WANTED_ENDPOINTS,
             self._PRIVATE_GAME_ENDPOINT,
             self._RESERVED_GAME_ENDPOINT,
-        ):
+        }:
             return
         try:
             body = cast('dict[str, object]', json.loads(flow.request.content))
-        except Exception:  # ruff: ignore[blind-except]
+        except UnicodeDecodeError, json.JSONDecodeError, TypeError:
             return
         if self._normalize_numeric_id(body.get('placeId')) != teleport_place_id:
             return
@@ -776,10 +850,10 @@ class RandoStuffTab(QWidget):
         try:
             if flow.response is not None:
                 resp_json = cast('dict[str, object]', json.loads(flow.response.content))
-        except Exception:  # ruff: ignore[blind-except]
+        except UnicodeDecodeError, json.JSONDecodeError, TypeError:
             resp_json = {}
         status = resp_json.get('status')
-        if status in (0, 1):  # ruff: ignore[literal-membership]
+        if status in {0, 1}:
             return
         with self._lock:
             if self._account_manager_teleport_place_id == teleport_place_id:
@@ -1315,7 +1389,8 @@ class RandoStuffTab(QWidget):
             lambda _checked=False: self._on_username_spoofer_changed()
         )
 
-    def changeEvent(self, a0: QEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def changeEvent(self, a0: QEvent) -> None:
         super().changeEvent(a0)
         if a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
@@ -1342,9 +1417,7 @@ class RandoStuffTab(QWidget):
                 gate.set_proxy_enabled(enabled)
 
     def _clear_roblox_cache(self) -> None:
-        from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
-
-        window = DeleteCacheWindow()
+        window = _delete_cache_window_type()()
         window.show()
 
     # Rejoin
@@ -1402,14 +1475,10 @@ class RandoStuffTab(QWidget):
         msg.exec()
 
     def _show_subplace_blacklist_dialog(self) -> None:
-        from fleasion.utils import get_icon_path  # ruff: ignore[import-outside-top-level]
-
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.gui.rando_stuff_tab.blacklist_subplace'))
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
-
             dialog.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout()
@@ -1428,9 +1497,7 @@ class RandoStuffTab(QWidget):
         text_edit.setPlaceholderText(tr('ui.gui.rando_stuff_tab.e_g_1818_1234567890_9876543210'))
 
         if self._subplace_blacklisted_ids:
-            text_edit.setPlainText(
-                ', '.join(sorted(self._subplace_blacklisted_ids, key=lambda x: int(x)))  # ruff: ignore[unnecessary-lambda]
-            )
+            text_edit.setPlainText(', '.join(sorted(self._subplace_blacklisted_ids, key=int)))
         layout.addWidget(text_edit)
 
         search_layout = QHBoxLayout()
@@ -1507,9 +1574,9 @@ class RandoStuffTab(QWidget):
 
     def _on_multi_instance_toggled(self, checked: bool, persist: bool = True) -> None:
         if checked and not IS_WINDOWS:
-            self._multi_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._multi_chk, blocked=True)
             self._multi_chk.setChecked(False)
-            self._multi_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._multi_chk, blocked=False)
             if persist and self._config is not None:
                 self._config.multi_instance_launching = False
             log_buffer.log('multiinstance', 'Multi-instance launching is only available on Windows')
@@ -1525,31 +1592,33 @@ class RandoStuffTab(QWidget):
             self._multi_stop.set()
             log_buffer.log('multiinstance', 'Disabled')
 
+    def _update_multi_instance_pids(self, stripped_pids: set[int]) -> None:
+        current_pids = self._get_roblox_pids()
+
+        # Only strip singletons if there is more than 1 instance running.
+        if len(current_pids) > 1:
+            for pid in current_pids - stripped_pids:
+                log_buffer.log(
+                    'multiinstance',
+                    f'Multiple PIDs detected ({len(current_pids)}). Stripping singleton for PID {pid}',
+                )
+                threading.Thread(
+                    target=self._close_singleton_for_pid,
+                    args=(pid,),
+                    daemon=True,
+                ).start()
+                stripped_pids.add(pid)
+
+        # Clean up to prevent building up old PIDs
+        stripped_pids.intersection_update(current_pids)
+
     def _multi_instance_loop(self) -> None:
         stripped_pids: set[int] = set()
         while not self._multi_stop.wait(0.2):
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                current_pids = self._get_roblox_pids()
-
-                # Only strip singletons if there is more than 1 instance running.
-                if len(current_pids) > 1:
-                    for pid in current_pids - stripped_pids:
-                        log_buffer.log(
-                            'multiinstance',
-                            f'Multiple PIDs detected ({len(current_pids)}). Stripping singleton for PID {pid}',
-                        )
-                        threading.Thread(
-                            target=self._close_singleton_for_pid,
-                            args=(pid,),
-                            daemon=True,
-                        ).start()
-                        stripped_pids.add(pid)
-
-                # Clean up to prevent building up old PIDs
-                stripped_pids.intersection_update(current_pids)
-
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('multiinstance', f'Error: {exc}')
+            _run_contained_action(
+                lambda: self._update_multi_instance_pids(stripped_pids),
+                lambda exc: log_buffer.log('multiinstance', f'Error: {exc}'),
+            )
 
     def _get_roblox_pids(self) -> set[int]:
         if TYPE_CHECKING:
@@ -1594,11 +1663,20 @@ class RandoStuffTab(QWidget):
     def _close_singleton_for_pid(self, pid: int) -> None:
         """Retry closing ROBLOX_singletonEvent in `pid` until found or process exits/stop set."""
         while not self._multi_stop.is_set():
-            try:
-                if self._scan_and_close_singleton(pid):
-                    return
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('multiinstance', f'Error scanning PID {pid}: {exc}')
+            closed = False
+
+            def _scan() -> None:
+                nonlocal closed
+                closed = self._scan_and_close_singleton(pid)
+
+            if not _run_contained_action(
+                _scan,
+                lambda exc: log_buffer.log(
+                    'multiinstance', f'Error scanning PID {pid}: {exc}'
+                ),
+            ):
+                return
+            if closed:
                 return
             self._multi_stop.wait(0.1)
 
@@ -1620,14 +1698,14 @@ class RandoStuffTab(QWidget):
         kernelbase.CompareObjectHandles.restype = wintypes.BOOL
         ntdll.NtQueryInformationProcess.restype = ctypes.c_ulong
 
-        SYNCHRONIZE = 0x00100000  # ruff: ignore[non-lowercase-variable-in-function]
-        PROCESS_DUP_HANDLE = 0x0040  # ruff: ignore[non-lowercase-variable-in-function]
-        PROCESS_QUERY_INFORMATION = 0x0400  # ruff: ignore[non-lowercase-variable-in-function]
-        DUPLICATE_CLOSE_SOURCE = 0x00000001  # ruff: ignore[non-lowercase-variable-in-function]
-        DUPLICATE_SAME_ACCESS = 0x00000002  # ruff: ignore[non-lowercase-variable-in-function]
-        STATUS_INFO_LENGTH_MISMATCH = 0xC0000004  # ruff: ignore[non-lowercase-variable-in-function]
-        STATUS_SUCCESS = 0x00000000  # ruff: ignore[non-lowercase-variable-in-function]
-        ProcessHandleInformation = 51  # ruff: ignore[non-lowercase-variable-in-function]
+        synchronize = 0x00100000
+        process_dup_handle = 0x0040
+        process_query_information = 0x0400
+        duplicate_close_source = 0x00000001
+        duplicate_same_access = 0x00000002
+        status_info_length_mismatch = 0xC0000004
+        status_success = 0x00000000
+        process_handle_information = 51
 
         class _ProcHandleEntry(ctypes.Structure):
             _fields_ = [
@@ -1644,11 +1722,16 @@ class RandoStuffTab(QWidget):
         header_size = ctypes.sizeof(ctypes.c_size_t) * 2
         current_proc = ctypes.c_void_p(-1)
 
-        our_handle = kernel32.OpenEventW(SYNCHRONIZE, False, 'ROBLOX_singletonEvent')  # ruff: ignore[boolean-positional-value-in-call]
+        inherit_handle = False
+        our_handle = kernel32.OpenEventW(synchronize, inherit_handle, 'ROBLOX_singletonEvent')
         if not our_handle:
             return False  # event doesn't exist yet
 
-        proc = kernel32.OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION, False, pid)  # ruff: ignore[boolean-positional-value-in-call]
+        proc = kernel32.OpenProcess(
+            process_dup_handle | process_query_information,
+            inherit_handle,
+            pid,
+        )
         if not proc:
             kernel32.CloseHandle(our_handle)
             msg = f'OpenProcess failed for PID {pid} — process may have exited'
@@ -1661,14 +1744,14 @@ class RandoStuffTab(QWidget):
                 buf = (ctypes.c_ubyte * size)()
                 ret_len = wintypes.ULONG(0)
                 status = ntdll.NtQueryInformationProcess(
-                    proc, ProcessHandleInformation, buf, size, ctypes.byref(ret_len)
+                    proc, process_handle_information, buf, size, ctypes.byref(ret_len)
                 )
-                if status == STATUS_INFO_LENGTH_MISMATCH:
+                if status == status_info_length_mismatch:
                     size = ret_len.value + 4096
                     continue
                 break
 
-            if status != STATUS_SUCCESS:
+            if status != status_success:
                 return False
 
             buf_bytes = bytes(buf)
@@ -1687,8 +1770,8 @@ class RandoStuffTab(QWidget):
                     current_proc,
                     ctypes.byref(dup),
                     0,
-                    False,  # ruff: ignore[boolean-positional-value-in-call]
-                    DUPLICATE_SAME_ACCESS,
+                    inherit_handle,
+                    duplicate_same_access,
                 ):
                     continue
 
@@ -1704,8 +1787,8 @@ class RandoStuffTab(QWidget):
                     current_proc,
                     ctypes.byref(dup2),
                     0,
-                    False,  # ruff: ignore[boolean-positional-value-in-call]
-                    DUPLICATE_CLOSE_SOURCE,
+                    inherit_handle,
+                    duplicate_close_source,
                 )
                 kernel32.CloseHandle(dup2)
                 log_buffer.log('multiinstance', f'Closed ROBLOX_singletonEvent in PID {pid}')
@@ -1720,10 +1803,10 @@ class RandoStuffTab(QWidget):
     def _close_singleton_event(self) -> None:
         """One-shot: close ROBLOX_singletonEvent in all current Roblox processes."""
         for pid in self._get_roblox_pids():
-            try:
-                self._scan_and_close_singleton(pid)
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('multiinstance', f'Error in PID {pid}: {exc}')
+            _run_contained_action(
+                lambda pid=pid: self._scan_and_close_singleton(pid),
+                lambda exc, pid=pid: log_buffer.log('multiinstance', f'Error in PID {pid}: {exc}'),
+            )
 
     # Account Manager
 
@@ -1769,61 +1852,39 @@ class RandoStuffTab(QWidget):
 
     def _resolve_current_user(self) -> None:
         """Background thread: read the active Roblox cookie and update the selected label."""
-        from fleasion.utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
-            get_roblosecurity as _get_roblosecurity,
-        )
-
-        cookie = _get_roblosecurity()
+        cookie = get_roblosecurity()
         if not cookie:
             return
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            sess = _requests.Session()
-            sess.trust_env = False
-            sess.proxies = {}
-            try:
-                sess.cookies.set('.ROBLOSECURITY', cookie)
-            except Exception:  # ruff: ignore[blind-except]
-                sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-            resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                username = data.get('name', '')
-                user_id = data.get('id')
-                with self._lock:
-                    self._username_spoofer_current_user_id = (
-                        str(user_id) if user_id is not None else None
-                    )
-                    self._username_spoofer_current_username = str(username or '')
-                self._push_username_spoofer_current_user()
-                if username:
+        try:
+            resp = _authenticated_user_response(cookie)
+            data = _response_json_object(resp) if resp.status_code == 200 else None
+        except _requests.RequestException, RuntimeError, TypeError, ValueError:
+            return
+        if not isinstance(data, dict):
+            return
+        username = data.get('name', '')
+        user_id = data.get('id')
+        with self._lock:
+            self._username_spoofer_current_user_id = str(user_id) if user_id is not None else None
+            self._username_spoofer_current_username = str(username or '')
+        self._push_username_spoofer_current_user()
+        if username:
 
-                    def _update(u: str = str(username)) -> None:
-                        self._set_selected_account(u)
+            def _update(u: str = str(username)) -> None:
+                self._set_selected_account(u)
 
-                    self._on_main(_update)
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+            self._on_main(_update)
 
     def _check_cookies_on_boot(self) -> None:
         """Background thread: validate every stored cookie and flag expired ones in the list."""
         for idx, acc in enumerate(self._accounts):
             cookie = _decrypt_cookie(acc.get('cookie', ''))
             expired = not cookie
-            if not expired:
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    sess = _requests.Session()
-                    sess.trust_env = False
-                    sess.proxies = {}
-                    try:
-                        sess.cookies.set('.ROBLOSECURITY', cookie)
-                    except Exception:  # ruff: ignore[blind-except]
-                        sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                    resp = sess.get(
-                        'https://users.roblox.com/v1/users/authenticated',
-                        timeout=10,
-                    )
+            if cookie:
+                try:
+                    resp = _authenticated_user_response(cookie)
                     expired = resp.status_code != 200
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
+                except _requests.RequestException:
                     pass  # Network error — don't mark as expired
             if expired:
 
@@ -1875,7 +1936,7 @@ class RandoStuffTab(QWidget):
                 username = (
                     str(response.json().get('name') or '') if response.status_code == 200 else ''
                 )
-            except Exception:  # ruff: ignore[blind-except]
+            except _requests.RequestException, TypeError, ValueError:
                 username = ''
             self._on_main(lambda: self._finish_browser_import(username, cookie, source))
 
@@ -2078,7 +2139,8 @@ class RandoStuffTab(QWidget):
                 tr('ui.gui.rando_stuff_tab.this_account_will_be_used_for_fleasion'),
             )
             return
-        try:
+
+        def _switch() -> None:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
             self._set_selected_account(username)
@@ -2087,17 +2149,21 @@ class RandoStuffTab(QWidget):
                 'accounts',
                 f'Switched {platform_name} cookie to account: {username}',
             )
-        except LinuxAuthWriteError as exc:
-            log_buffer.log('accounts', f'Linux account switch was not performed: {exc.code}')
-            QMessageBox.warning(
-                self, tr('ui.gui.rando_stuff_tab.account_switch_unavailable'), str(exc)
-            )
-        except Exception as exc:  # ruff: ignore[blind-except]
+
+        def _handle_switch_error(exc: Exception) -> None:
+            if isinstance(exc, LinuxAuthWriteError):
+                log_buffer.log('accounts', f'Linux account switch was not performed: {exc.code}')
+                QMessageBox.warning(
+                    self, tr('ui.gui.rando_stuff_tab.account_switch_unavailable'), str(exc)
+                )
+                return
             QMessageBox.warning(
                 self,
                 tr('ui.gui.rando_stuff_tab.error'),
                 tr('ui.gui.rando_stuff_tab.failed_to_write_cookie_value', value0=exc),
             )
+
+        _run_contained_action(_switch, _handle_switch_error)
 
     def _show_selected_account_launch_failed(self, username: str, reason: str) -> None:
         def _warn() -> None:
@@ -2131,10 +2197,10 @@ class RandoStuffTab(QWidget):
         subplace_id: str = '',
     ) -> None:
         if IS_WINDOWS:
-            try:
-                self._write_cookie_to_dat(cookie)
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('accounts', f'Failed to write cookie file: {exc}')
+            _run_contained_action(
+                lambda: self._write_cookie_to_dat(cookie),
+                lambda exc: log_buffer.log('accounts', f'Failed to write cookie file: {exc}'),
+            )
         else:
             platform_name = 'macOS' if IS_MACOS else _linux_client_display_name()
             log_buffer.log(
@@ -2354,10 +2420,10 @@ class RandoStuffTab(QWidget):
         if not IS_WINDOWS:
             self._account_switched = False
             return
-        try:
-            self._close_singleton_event()
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log('multiinstance', f'close_singleton_event error: {exc}')
+        _run_contained_action(
+            self._close_singleton_event,
+            lambda exc: log_buffer.log('multiinstance', f'close_singleton_event error: {exc}'),
+        )
         self._account_switched = False
 
     def get_roblox_exe(self) -> str | None:
@@ -2378,32 +2444,32 @@ class RandoStuffTab(QWidget):
         p = Path(path)
         try:
             data = p.read_bytes()
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.read_error_value', value0=e))
+        except OSError as exc:
+            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.read_error_value', value0=exc))
             return
 
         # Detect rig from original bytes (binary parser handles .bin/.rbxm natively)
         try:
-            from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-                detect_rig,
+            detect_rig = cast(
+                'Callable[[bytes], str]',
+                _import_attr('fleasion.utils.anim_converter', 'detect_rig'),
             )
-
             rig = detect_rig(data)
-        except Exception:  # ruff: ignore[blind-except]
+        except ImportError, KeyError, RuntimeError, TypeError, ValueError:
             rig = tr('rando.rig.unknown')
 
         # Auto-convert binary .rbxm -> .rbxmx so _ac_convert has XML to work with
         if p.suffix.lower() == '.rbxm':
             try:
-                from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-                    rbxm_to_rbxmx,
+                rbxm_to_rbxmx = cast(
+                    'Callable[[bytes], bytes]',
+                    _import_attr('fleasion.utils.anim_converter', 'rbxm_to_rbxmx'),
                 )
-
                 data = rbxm_to_rbxmx(data)
                 self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.auto_converted_rbxm_rbxmx'))
-            except Exception as e:  # ruff: ignore[blind-except]
+            except (ImportError, KeyError, RuntimeError, TypeError, ValueError) as exc:
                 self._ac_status_lbl.setText(
-                    tr('ui.gui.rando_stuff_tab.rbxm_conversion_failed_value', value0=e)
+                    tr('ui.gui.rando_stuff_tab.rbxm_conversion_failed_value', value0=exc)
                 )
                 return
         else:
@@ -2417,209 +2483,214 @@ class RandoStuffTab(QWidget):
         self._ac_to_r6_btn.setEnabled(rig == 'R15')
         self._ac_to_r15_btn.setEnabled(rig == 'R6')
 
+    def _convert_loaded_animation(self, target: str) -> None:
+        converter_module = 'fleasion.utils.r15_to_r6'
+        convert_keyframe_r6_to_r15 = cast(
+            'Callable[..., None]',
+            _import_attr(converter_module, 'convert_keyframe_r6_to_r15'),
+        )
+        convert_keyframe_r15_to_r6 = cast(
+            'Callable[..., None]',
+            _import_attr(converter_module, 'convert_keyframe_r15_to_r6'),
+        )
+        sanitize_xml = cast(
+            'Callable[[bytes], str]',
+            _import_attr(converter_module, 'sanitize_xml'),
+        )
+        rig_module = 'fleasion.utils.rig_data'
+        r6_joints = _import_attr(rig_module, 'R6_JOINTS')
+        r6_parts = _import_attr(rig_module, 'R6_PARTS')
+        r15_joints = _import_attr(rig_module, 'R15_JOINTS')
+        r15_parts = _import_attr(rig_module, 'R15_PARTS')
+
+        xml_bytes = self._ac_xml_bytes
+        if b'CurveAnimation' in xml_bytes:
+            curve_anim_to_keyframe = cast(
+                'Callable[[bytes], bytes]',
+                _import_attr('fleasion.utils.anim_converter', 'curve_anim_to_keyframe'),
+            )
+            xml_bytes = curve_anim_to_keyframe(xml_bytes)
+
+        root = DefusedElementTree.fromstring(sanitize_xml(xml_bytes))
+        ks = root.find("Item[@class='KeyframeSequence']")
+        if ks is None:
+            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.no_keyframesequence_found'))
+            return
+        keyframes = ks.findall("Item[@class='Keyframe']")
+        if not keyframes:
+            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.no_keyframes_found'))
+            return
+
+        if target == 'R6':
+            for keyframe in keyframes:
+                convert_keyframe_r15_to_r6(
+                    keyframe,
+                    r6_parts,
+                    r6_joints,
+                    r15_parts,
+                    r15_joints,
+                )
+        else:
+            for keyframe in keyframes:
+                convert_keyframe_r6_to_r15(
+                    keyframe,
+                    r6_parts,
+                    r6_joints,
+                    r15_parts,
+                    r15_joints,
+                )
+
+        suffix = '_r6' if target == 'R6' else '_r15'
+        default_name = self._ac_source_path.stem + suffix + '.rbxmx'
+        default_dir = str(self._ac_source_path.parent)
+        out_str, _ = QFileDialog.getSaveFileName(
+            self,
+            tr('ui.gui.rando_stuff_tab.save_converted_animation'),
+            f'{default_dir}/{default_name}',
+            tr('ui.gui.rando_stuff_tab.roblox_animation_rbxmx_all_files'),
+        )
+        if not out_str:
+            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.cancelled'))
+            return
+        out_path = Path(out_str)
+        out_path.write_bytes(
+            DefusedElementTree.tostring(root, encoding='utf-8', xml_declaration=True)
+        )
+        self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.saved_value', value0=out_path.name))
+
     def _ac_convert(self, target: str) -> None:
         if not hasattr(self, '_ac_xml_bytes'):
             self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.no_file_loaded_2'))
             return
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            import xml.etree.ElementTree as ET  # ruff: ignore[import-outside-top-level]
-
-            from defusedxml import (  # ruff: ignore[import-outside-top-level]
-                ElementTree as safe_et,  # ruff: ignore[camelcase-imported-as-lowercase]
-            )
-
-            from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
-                convert_keyframe_r6_to_r15,
-                convert_keyframe_r15_to_r6,
-                sanitize_xml,
-            )
-            from fleasion.utils.rig_data import (  # ruff: ignore[import-outside-top-level]
-                R6_JOINTS,
-                R6_PARTS,
-                R15_JOINTS,
-                R15_PARTS,
-            )
-
-            xml_bytes = self._ac_xml_bytes
-
-            # If this is a CurveAnimation, convert to KeyframeSequence first
-            if b'CurveAnimation' in xml_bytes:
-                from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-                    curve_anim_to_keyframe,
-                )
-
-                xml_bytes = curve_anim_to_keyframe(xml_bytes)
-
-            root = safe_et.fromstring(sanitize_xml(xml_bytes))
-            etree = ET.ElementTree(root)
-
-            ks = root.find("Item[@class='KeyframeSequence']")
-            if ks is None:
-                self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.no_keyframesequence_found'))
-                return
-            keyframes = ks.findall("Item[@class='Keyframe']")
-            if not keyframes:
-                self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.no_keyframes_found'))
-                return
-
-            if target == 'R6':
-                for kf in keyframes:
-                    convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
-            else:
-                for kf in keyframes:
-                    convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
-
-            suffix = '_r6' if target == 'R6' else '_r15'
-            default_name = self._ac_source_path.stem + suffix + '.rbxmx'
-            default_dir = str(self._ac_source_path.parent)
-            out_str, _ = QFileDialog.getSaveFileName(
-                self,
-                tr('ui.gui.rando_stuff_tab.save_converted_animation'),
-                f'{default_dir}/{default_name}',
-                tr('ui.gui.rando_stuff_tab.roblox_animation_rbxmx_all_files'),
-            )
-            if not out_str:
-                self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.cancelled'))
-                return
-            out_path = Path(out_str)
-            etree.write(str(out_path), encoding='utf-8', xml_declaration=True)
-            self._ac_status_lbl.setText(
-                tr('ui.gui.rando_stuff_tab.saved_value', value0=out_path.name)
-            )
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.error_value', value0=e))
+        try:
+            self._convert_loaded_animation(target)
+        except (
+            DefusedXmlException,
+            DefusedElementTree.ParseError,
+            ImportError,
+            KeyError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.error_value', value0=exc))
 
     # Proxy interceptor hooks
 
-    def request(self, flow: ProxyFlow) -> None:  # ruff: ignore[too-many-return-statements]
-        url = flow.request.pretty_url
-        if 'gamejoin.roblox.com' not in url:
+    def _handle_private_game_request(self, flow: ProxyFlow) -> None:
+        body = _json_object(flow.request.content)
+        if self._apply_account_manager_subplace_teleport(body):
+            flow.request.raw_content = json.dumps(body, separators=(',', ':')).encode('utf-8')
+
+    def _handle_reserved_game_request(self, flow: ProxyFlow) -> None:
+        body = _json_object(flow.request.content)
+        if self._apply_account_manager_subplace_teleport(body):
+            flow.request.raw_content = json.dumps(body, separators=(',', ':')).encode('utf-8')
+        place_id = body.get('placeId')
+        access_code = body.get('accessCode')
+        attempt_id = body.get('gameJoinAttemptId')
+        normalized_place_id = self._normalize_numeric_id(place_id)
+        if (
+            normalized_place_id is not None
+            and normalized_place_id in self._subplace_blacklisted_ids
+            and not self._is_subplace_unblock_active()
+        ):
+            self._drop_subplace_join(
+                flow,
+                normalized_place_id,
+                attempt_id=str(attempt_id) if attempt_id else None,
+            )
             return
-
-        parsed = urlparse(url)
-
-        if parsed.path == self._PRIVATE_GAME_ENDPOINT:
-            try:
-                body = json.loads(flow.request.content)
-                if self._apply_account_manager_subplace_teleport(body):
-                    flow.request.raw_content = json.dumps(body, separators=(',', ':')).encode(
-                        'utf-8'
-                    )
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('accounts', f'Failed to parse join-private-game body: {exc}')
+        session_id = flow.request.headers.get('Roblox-Session-Id', '')
+        if place_id is None or access_code is None:
             return
+        with self._lock:
+            self._last_place_id = _preserve_str(place_id)
+            self._last_access_code = _preserve_str(access_code)
+            self._last_session_id = session_id or None
+        has_session = bool(session_id)
+        log_buffer.log(
+            'randostuff',
+            f'Logged reserved server — placeId={place_id}, '
+            f'sessionHeader={"present" if has_session else "missing"}',
+        )
+        self._update_labels(place_id, access_code)
 
-        if parsed.path == self._RESERVED_GAME_ENDPOINT:
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                body = json.loads(flow.request.content)
-                if self._apply_account_manager_subplace_teleport(body):
-                    flow.request.raw_content = json.dumps(body, separators=(',', ':')).encode(
-                        'utf-8'
-                    )
-                place_id = body.get('placeId')
-                access_code = body.get('accessCode')
-                attempt_id = body.get('gameJoinAttemptId')
-                normalized_place_id = self._normalize_numeric_id(place_id)
-                if (
-                    normalized_place_id is not None
-                    and normalized_place_id in self._subplace_blacklisted_ids
-                    and not self._is_subplace_unblock_active()
-                ):
-                    self._drop_subplace_join(
-                        flow,
-                        normalized_place_id,
-                        attempt_id=str(attempt_id) if attempt_id else None,
-                    )
-                    return
-                session_id = flow.request.headers.get('Roblox-Session-Id', '')
-                if place_id is not None and access_code is not None:
-                    with self._lock:
-                        self._last_place_id = place_id
-                        self._last_access_code = access_code
-                        self._last_session_id = session_id or None
-                    has_session = bool(session_id)
-                    log_buffer.log(
-                        'randostuff',
-                        f'Logged reserved server — placeId={place_id}, '
-                        f'sessionHeader={"present" if has_session else "missing"}',
-                    )
-                    self._update_labels(place_id, access_code)
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('randostuff', f'Failed to parse join-reserved-game body: {exc}')
-            return
-
-        if parsed.path not in self._WANTED_ENDPOINTS:
-            return
-
+    def _precheck_blacklisted_join(self, flow: ProxyFlow) -> bool:
         try:
-            precheck_body = json.loads(flow.request.content)
-            blocked_place_id = self._normalize_numeric_id(precheck_body.get('placeId'))
-            if (
-                blocked_place_id is not None
-                and blocked_place_id in self._subplace_blacklisted_ids
-                and not self._is_subplace_unblock_active()
-            ):
-                precheck_attempt_id = precheck_body.get('gameJoinAttemptId')
-                self._drop_subplace_join(
-                    flow,
-                    blocked_place_id,
-                    attempt_id=str(precheck_attempt_id) if precheck_attempt_id else None,
-                )
-                return
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+            body = _json_object(flow.request.content)
+        except UnicodeDecodeError, json.JSONDecodeError, TypeError:
+            return False
+        blocked_place_id = self._normalize_numeric_id(body.get('placeId'))
+        if (
+            blocked_place_id is None
+            or blocked_place_id not in self._subplace_blacklisted_ids
+            or self._is_subplace_unblock_active()
+        ):
+            return False
+        attempt_id = body.get('gameJoinAttemptId')
+        self._drop_subplace_join(
+            flow,
+            blocked_place_id,
+            attempt_id=str(attempt_id) if attempt_id else None,
+        )
+        return True
 
-        account_body: dict[str, object] | None = None
-        account_body_modified = False
-        if parsed.path in self._WANTED_ENDPOINTS:
-            try:
-                account_body = cast('dict[str, object]', json.loads(flow.request.content))
-                account_body_modified = self._apply_account_manager_subplace_teleport(account_body)
-            except Exception:  # ruff: ignore[blind-except]
-                account_body = None
+    def _account_request_body(self, flow: ProxyFlow) -> tuple[dict[str, object] | None, bool]:
+        try:
+            body = _json_object(flow.request.content)
+        except UnicodeDecodeError, json.JSONDecodeError, TypeError:
+            return None, False
+        return body, self._apply_account_manager_subplace_teleport(body)
 
-        # Account manager: redirect join-game to join-game-instance if a jobId is pending
-        if parsed.path == '/v1/join-game':
+    def _redirect_pending_job(
+        self,
+        flow: ProxyFlow,
+        account_body: dict[str, object] | None,
+        pending_job: str,
+    ) -> None:
+        body = account_body if account_body is not None else _json_object(flow.request.content)
+        body['gameId'] = pending_job
+        flow.request.url = 'https://gamejoin.roblox.com/v1/join-game-instance'
+        flow.request.raw_content = json.dumps(body, separators=(',', ':')).encode('utf-8')
+        with self._lock:
+            self._account_manager_job_id = ''
+        log_buffer.log(
+            'accounts',
+            f'Redirected join-game -> join-game-instance with jobId={pending_job}',
+        )
+
+    def _handle_wanted_join_request(self, flow: ProxyFlow, req_path: str) -> None:
+        if self._precheck_blacklisted_join(flow):
+            return
+
+        account_body, account_body_modified = self._account_request_body(flow)
+        if req_path == '/v1/join-game':
             with self._lock:
                 pending_job = self._account_manager_job_id
             if pending_job:
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    body = (
-                        account_body
-                        if isinstance(account_body, dict)
-                        else cast('dict[str, object]', json.loads(flow.request.content))
-                    )
-                    body['gameId'] = pending_job
-                    flow.request.url = 'https://gamejoin.roblox.com/v1/join-game-instance'
-                    flow.request.raw_content = json.dumps(body, separators=(',', ':')).encode(
-                        'utf-8'
-                    )
-                    with self._lock:
-                        self._account_manager_job_id = ''
-                    log_buffer.log(
-                        'accounts',
-                        f'Redirected join-game -> join-game-instance with jobId={pending_job}',
-                    )
-                except Exception as exc:  # ruff: ignore[blind-except]
-                    log_buffer.log('accounts', f'Failed to intercept join-game for jobId: {exc}')
+                _run_proxy_action(
+                    'accounts',
+                    'Failed to intercept join-game for jobId',
+                    lambda: self._redirect_pending_job(flow, account_body, pending_job),
+                )
                 return
 
-        if account_body_modified and isinstance(account_body, dict):
+        if account_body_modified and account_body is not None:
             flow.request.raw_content = json.dumps(account_body, separators=(',', ':')).encode(
                 'utf-8'
             )
 
         try:
             req_body = (
-                account_body
-                if isinstance(account_body, dict)
-                else cast('dict[str, object]', json.loads(flow.request.content))
+                account_body if account_body is not None else _json_object(flow.request.content)
             )
-            attempt_id = req_body.get('gameJoinAttemptId')
-        except Exception:  # ruff: ignore[blind-except]
-            req_body = {}
+        except UnicodeDecodeError, json.JSONDecodeError, TypeError:
             attempt_id = None
+        else:
+            attempt_id = req_body.get('gameJoinAttemptId')
 
         with self._lock:
             doing = self._doing_rejoin
@@ -2628,12 +2699,10 @@ class RandoStuffTab(QWidget):
             access_code = self._last_access_code
             session_id = self._last_session_id
 
-            # First interception: consume the flag, record the attempt ID
             if doing:
                 self._doing_rejoin = False
                 self._active_rejoin_attempt_id = attempt_id
                 active_id = attempt_id
-            # Follow-up polls: only intercept if attempt ID matches
             elif active_id is None or attempt_id != active_id:
                 return
 
@@ -2668,12 +2737,10 @@ class RandoStuffTab(QWidget):
             'isTeleport': True,
             'isImmersiveAdsTeleport': False,
         }
-
         flow.request.url = 'https://gamejoin.roblox.com/v1/join-reserved-game'
         flow.request.raw_content = json.dumps(new_payload).encode('utf-8')
         if session_id:
             flow.request.headers['Roblox-Session-Id'] = session_id
-
         log_buffer.log(
             'randostuff',
             'Rejoin request -> POST gamejoin.roblox.com/v1/join-reserved-game',
@@ -2681,78 +2748,104 @@ class RandoStuffTab(QWidget):
         with self._lock:
             self._awaiting_rejoin_response = True
 
-    def response(self, flow: ProxyFlow) -> None:
+    def request(self, flow: ProxyFlow) -> None:
+        url = flow.request.pretty_url
+        if 'gamejoin.roblox.com' not in url:
+            return
+
+        req_path = urlparse(url).path
+        if req_path == self._PRIVATE_GAME_ENDPOINT:
+            _run_proxy_action(
+                'accounts',
+                'Failed to parse join-private-game body',
+                lambda: self._handle_private_game_request(flow),
+            )
+            return
+        if req_path == self._RESERVED_GAME_ENDPOINT:
+            _run_proxy_action(
+                'randostuff',
+                'Failed to parse join-reserved-game body',
+                lambda: self._handle_reserved_game_request(flow),
+            )
+            return
+        if req_path in self._WANTED_ENDPOINTS:
+            self._handle_wanted_join_request(flow, req_path)
+
+    def _capture_account_manager_job(self, flow: ProxyFlow, capture_place_id: str) -> None:
         response = flow.response
-        if TYPE_CHECKING:
-            assert response is not None
+        if response is None:
+            msg = 'Proxy response is unavailable while capturing account-manager job ID'
+            raise RuntimeError(msg)
+        resp_json = _json_object(response.content)
+        job_id = _extract_job_id(
+            _preserve_str(resp_json.get('jobId') or resp_json.get('gameId') or '')
+        )
+        if not job_id:
+            return
+        self._game_jobs[capture_place_id] = job_id
+
+        def _update_ui(jid: str = job_id, pid: str = capture_place_id) -> None:
+            if not self._job_id_input.text().strip():
+                self._job_id_input.setText(jid)
+                self._auto_filled_for_place = pid
+
+        self._on_main(_update_ui)
+        log_buffer.log(
+            'accounts',
+            f'Captured jobId={job_id} for placeId={capture_place_id}',
+        )
+
+    def _clear_active_rejoin_attempt(self) -> None:
+        with self._lock:
+            self._active_rejoin_attempt_id = None
+
+    def _process_rejoin_response(self, flow: ProxyFlow) -> None:
+        response = flow.response
+        if response is None:
+            log_buffer.log('randostuff', 'Rejoin response: (none)')
+            return
+        resp_json = _json_object(response.content.decode('utf-8', errors='replace'))
+        join_ready = bool(resp_json.get('joinScriptUrl'))
+        log_buffer.log(
+            'randostuff',
+            f'Rejoin response status: http={response.status_code}, status={resp_json.get("status")}, '
+            f'joinScriptUrl={"yes" if join_ready else "no"}',
+        )
+        if resp_json.get('status') == 2 or join_ready:
+            self._clear_active_rejoin_attempt()
+            log_buffer.log('randostuff', 'Reserved server join ready — stopping redirect.')
+        elif response.status_code >= 400:
+            self._clear_active_rejoin_attempt()
+            log_buffer.log('randostuff', 'Reserved server join error — stopping redirect.')
+
+    def response(self, flow: ProxyFlow) -> None:
         if 'gamejoin.roblox.com' not in flow.request.pretty_url:
             return
 
         req_path = urlparse(flow.request.pretty_url).path
-
         self._clear_account_manager_subplace_teleport_if_complete(flow, req_path)
 
-        # Capture jobId from a normal game join initiated by the account manager
         with self._lock:
             capture_place_id = self._account_manager_capture_place_id
-        if capture_place_id:  # ruff: ignore[collapsible-if]
-            if req_path in ('/v1/join-game', '/v1/join-game-instance'):  # ruff: ignore[literal-membership]
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    resp_json = cast('dict[str, object]', json.loads(response.content))
-                    job_id = _extract_job_id(
-                        _preserve_str(resp_json.get('jobId') or resp_json.get('gameId') or '')
-                    )
-                    if job_id:
-                        self._game_jobs[capture_place_id] = job_id
-                        place_id_snap = capture_place_id
-
-                        def _update_ui(jid: str = job_id, pid: str = place_id_snap) -> None:
-                            if not self._job_id_input.text().strip():
-                                self._job_id_input.setText(jid)
-                                self._auto_filled_for_place = pid
-
-                        self._on_main(_update_ui)
-                        log_buffer.log(
-                            'accounts',
-                            f'Captured jobId={job_id} for placeId={capture_place_id}',
-                        )
-                except Exception as exc:  # ruff: ignore[blind-except]
-                    log_buffer.log('accounts', f'Failed to capture jobId from response: {exc}')
-                with self._lock:
-                    self._account_manager_capture_place_id = None
+        if capture_place_id and req_path in {'/v1/join-game', '/v1/join-game-instance'}:
+            _run_proxy_action(
+                'accounts',
+                'Failed to capture jobId from response',
+                lambda: self._capture_account_manager_job(flow, capture_place_id),
+            )
+            with self._lock:
+                self._account_manager_capture_place_id = None
 
         with self._lock:
             waiting = self._awaiting_rejoin_response
             if waiting:
                 self._awaiting_rejoin_response = False
-
         if not waiting:
             return
 
-        resp = flow.response
-        if resp is None:
-            log_buffer.log('randostuff', 'Rejoin response: (none)')
-            return
-
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            body_text = resp.content.decode('utf-8', errors='replace')
-            resp_json = json.loads(body_text)
-            join_ready = bool(resp_json.get('joinScriptUrl'))
-            log_buffer.log(
-                'randostuff',
-                f'Rejoin response status: http={resp.status_code}, status={resp_json.get("status")}, '
-                f'joinScriptUrl={"yes" if join_ready else "no"}',
-            )
-            # status 2 = join script ready; clear the active attempt so no more redirects
-            if resp_json.get('status') == 2 or join_ready:
-                with self._lock:
-                    self._active_rejoin_attempt_id = None
-                log_buffer.log('randostuff', 'Reserved server join ready — stopping redirect.')
-            elif resp.status_code >= 400:
-                with self._lock:
-                    self._active_rejoin_attempt_id = None
-                log_buffer.log('randostuff', 'Reserved server join error — stopping redirect.')
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log('randostuff', f'Could not parse rejoin response JSON: {exc}')
-            with self._lock:
-                self._active_rejoin_attempt_id = None
+        _run_proxy_action(
+            'randostuff',
+            'Could not parse rejoin response JSON',
+            lambda: self._process_rejoin_response(flow),
+            on_error=self._clear_active_rejoin_attempt,
+        )

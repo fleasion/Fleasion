@@ -1,4 +1,5 @@
 """English source strings for Fleasion."""
+import string
 
 ENGLISH: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': 'Adding Fleasion entries would make it {value0:.1f} MiB, which exceeds Fleasion’s {value1:.0f} KiB safety limit. No mappings were added. Remove obsolete hosts-file lines or rename the file, then restart Fleasion.\n\nHosts file path:\n{value2}',
@@ -510,13 +511,13 @@ ENGLISH: dict[str, str] = {
     'count.server.other': '{count} servers',
     'count.value.one': '{count} value',
     'count.value.other': '{count} values',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'Abcdefghijklmnopqrstuvwxyz',
     'font_viewer.sample.pack_my_box': 'Pack my box with five dozen liquor jugs',
     'font_viewer.sample.quick_brown_fox': 'The quick brown fox jumps over the lazy dog',
     'font_viewer.sample.quick_zebras': 'How vexingly quick daft zebras jump',
     'font_viewer.sample.symbols': "!@#$%^&&*()_+-=[]{}|;:',.<>?/`~",
-    'font_viewer.sample.uppercase': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    'font_viewer.sample.uppercase': string.ascii_uppercase,
     'json.fetch.asset_not_found': 'Asset not found (deleted or invalid ID)',
     'json.fetch.asset_private': 'Asset is privated (could not bypass)',
     'json.fetch.cannot_fetch': 'Cannot fetch: {value}',

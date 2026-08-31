@@ -6,15 +6,19 @@ threading.Lock so it is safely shared across all MITM thread-pool workers.
 
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
+import importlib
 import io
 import json
 import logging
+import struct
 import time
+import zlib
 from pathlib import Path
 from threading import Lock, Thread
-from typing import TYPE_CHECKING, Literal, Protocol, TypeIs
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, TypeIs, cast
 from urllib.parse import urlparse
 
 from fleasion.proxy.roblox_metadata import strip_roblox_metadata
@@ -22,7 +26,12 @@ from fleasion.utils import APP_CACHE_DIR, format_count, log_buffer
 from fleasion.utils.http import http_download_to
 
 if TYPE_CHECKING:
+    import xml.etree.ElementTree as ET
+    from collections.abc import Callable
+
+    from fleasion.cache.tools.solidmodel_converter.rbxm.types import RbxDocument, RbxProperty
     from fleasion.config.manager import ConfigManager, ReplacementMaps
+    from fleasion.utils.r15_to_r6 import JointMap, PartMap
 
 type _JsonScalar = str | int | float | bool | None
 type _JsonValue = _JsonScalar | list[_JsonValue] | dict[str, _JsonValue]
@@ -50,75 +59,486 @@ class _CacheManagerLike(Protocol):
 
 class _CacheScraperLike(Protocol):
     cache_manager: _CacheManagerLike
-    _texpack_subasset_lookup: dict[int, tuple[int, int]]
 
     def prefetch_texpack_layout(self, parent_id: int) -> None: ...
+    def get_roblosecurity(self, *, wait: bool = False) -> str | None: ...
+    def fetch_asset_with_place_id_retry(
+        self,
+        asset_id: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[bytes | None, int | None]: ...
 
 
-if TYPE_CHECKING:
+class _RoblosecurityGetter(Protocol):
+    def __call__(self, *, wait: bool = False) -> str | None: ...
 
-    def _scraper_get_roblosecurity(
-        scraper: _CacheScraperLike, *, wait: bool = False
-    ) -> str | None: ...
 
-    def _scraper_https_get(
-        scraper: _CacheScraperLike,
+class _AssetRetryGetter(Protocol):
+    def __call__(
+        self,
+        asset_id: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[bytes | None, int | None]: ...
+
+
+class _HttpsBodyGetter(Protocol):
+    def __call__(
+        self,
         hostname: str,
         path: str,
+        *,
         extra_headers: dict[str, str] | None = None,
     ) -> bytes | None: ...
 
-    def _scraper_https_get_status(
-        scraper: _CacheScraperLike,
+
+class _HttpsStatusGetter(Protocol):
+    def __call__(
+        self,
         hostname: str,
         path: str,
-        extra_headers: dict[str, str] | None = None,
-    ) -> tuple[bytes | None, int | None]: ...
-
-    def _scraper_fetch_asset_with_place_id_retry(
-        scraper: _CacheScraperLike,
-        asset_id: str,
         *,
         extra_headers: dict[str, str] | None = None,
+        return_status: Literal[True],
     ) -> tuple[bytes | None, int | None]: ...
-else:
 
-    def _scraper_get_roblosecurity(scraper: _CacheScraperLike, *, wait: bool = False) -> str | None:
-        if wait:
-            return scraper._get_roblosecurity(wait=True)  # ruff: ignore[private-member-access]
-        return scraper._get_roblosecurity()  # ruff: ignore[private-member-access]
 
-    def _scraper_https_get(
-        scraper: _CacheScraperLike,
-        hostname: str,
-        path: str,
-        extra_headers: dict[str, str] | None = None,
-    ) -> bytes | None:
-        return scraper._https_get(hostname, path, extra_headers=extra_headers)  # ruff: ignore[private-member-access]
+class _ZstdDecompressor(Protocol):
+    def decompress(self, data: bytes, *, max_output_size: int) -> bytes: ...
 
-    def _scraper_https_get_status(
-        scraper: _CacheScraperLike,
-        hostname: str,
-        path: str,
-        extra_headers: dict[str, str] | None = None,
-    ) -> tuple[bytes | None, int | None]:
-        return scraper._https_get(  # ruff: ignore[private-member-access]
-            hostname,
-            path,
-            extra_headers=extra_headers,
-            return_status=True,
-        )
 
-    def _scraper_fetch_asset_with_place_id_retry(
-        scraper: _CacheScraperLike,
-        asset_id: str,
+class _ElementTreeWriter(Protocol):
+    def write(
+        self,
+        file: str | Path | io.BytesIO,
         *,
-        extra_headers: dict[str, str] | None = None,
-    ) -> tuple[bytes | None, int | None]:
-        return scraper._fetch_asset_with_place_id_retry(  # ruff: ignore[private-member-access]
-            asset_id,
-            extra_headers=extra_headers,
+        encoding: str,
+        xml_declaration: bool,
+    ) -> object: ...
+
+
+_SCRAPER_HTTPS_GET_ATTR = '_https_get'
+_SCRAPER_PRIVATE_ROBLOSECURITY_ATTR = '_get_roblosecurity'
+_SCRAPER_PRIVATE_ASSET_RETRY_ATTR = '_fetch_asset_with_place_id_retry'
+
+
+class _DynamicBoundaryError(RuntimeError):
+    """Wrap failures from optional/dynamically loaded integration boundaries."""
+
+
+def _call_dynamic[T](callback: Callable[..., T], /, *args: object, **kwargs: object) -> T:
+    try:
+        return callback(*args, **kwargs)
+    except Exception as exc:
+        raise _DynamicBoundaryError(str(exc)) from exc
+
+
+_BEST_EFFORT_ERRORS = (
+    _DynamicBoundaryError,
+    OSError,
+    TypeError,
+    ValueError,
+    EOFError,
+    OverflowError,
+    struct.error,
+    zlib.error,
+)
+
+
+def _scraper_get_roblosecurity(scraper: _CacheScraperLike, *, wait: bool = False) -> str | None:
+    getter = getattr(scraper, 'get_roblosecurity', None)
+    if getter is not None:
+        return _call_dynamic(cast('_RoblosecurityGetter', getter), wait=wait)
+
+    legacy_getter = cast(
+        '_RoblosecurityGetter', getattr(scraper, _SCRAPER_PRIVATE_ROBLOSECURITY_ATTR)
+    )
+    if wait:
+        return _call_dynamic(legacy_getter, wait=True)
+    return _call_dynamic(legacy_getter)
+
+
+def _scraper_https_get(
+    scraper: _CacheScraperLike,
+    hostname: str,
+    path: str,
+    extra_headers: dict[str, str] | None = None,
+) -> bytes | None:
+    getter = cast('_HttpsBodyGetter', getattr(scraper, _SCRAPER_HTTPS_GET_ATTR))
+    return _call_dynamic(getter, hostname, path, extra_headers=extra_headers)
+
+
+def _scraper_https_get_status(
+    scraper: _CacheScraperLike,
+    hostname: str,
+    path: str,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[bytes | None, int | None]:
+    getter = cast('_HttpsStatusGetter', getattr(scraper, _SCRAPER_HTTPS_GET_ATTR))
+    return _call_dynamic(
+        getter,
+        hostname,
+        path,
+        extra_headers=extra_headers,
+        return_status=True,
+    )
+
+
+def _scraper_fetch_asset_with_place_id_retry(
+    scraper: _CacheScraperLike,
+    asset_id: str,
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[bytes | None, int | None]:
+    getter = getattr(scraper, 'fetch_asset_with_place_id_retry', None)
+    if getter is None:
+        getter = getattr(scraper, _SCRAPER_PRIVATE_ASSET_RETRY_ATTR)
+    return _call_dynamic(
+        cast('_AssetRetryGetter', getter),
+        asset_id,
+        extra_headers=extra_headers,
+    )
+
+
+def _lazy_attr(module_name: str, attr_name: str) -> object:
+    try:
+        return vars(importlib.import_module(module_name))[attr_name]
+    except (ImportError, KeyError) as exc:
+        raise _DynamicBoundaryError(str(exc)) from exc
+
+
+def _zstd_decompress(data: bytes) -> bytes:
+    factory = cast(
+        'Callable[[], _ZstdDecompressor]',
+        _lazy_attr('zstandard', 'ZstdDecompressor'),
+    )
+    decompressor = _call_dynamic(factory)
+    return _call_dynamic(decompressor.decompress, data, max_output_size=64 * 1024 * 1024)
+
+
+def _deserialize_rbxm(data: bytes) -> RbxDocument:
+    callback = cast(
+        'Callable[[bytes], RbxDocument]',
+        _lazy_attr('fleasion.cache.tools.solidmodel_converter.converter', 'deserialize_rbxm'),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _detect_csgmdl_version(data: bytes) -> int | None:
+    callback = cast(
+        'Callable[[bytes], int | None]',
+        _lazy_attr(
+            'fleasion.cache.tools.solidmodel_converter.csg_mesh',
+            '_detect_csgmdl_version',
+        ),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _export_csg_mesh(obj_path: Path, *, version: int) -> bytes:
+    callback = cast(
+        'Callable[..., bytes]',
+        _lazy_attr('fleasion.cache.tools.solidmodel_converter.obj_to_csg', 'export_csg_mesh'),
+    )
+    return _call_dynamic(callback, obj_path, version=version)
+
+
+def _write_rbxm(doc: RbxDocument) -> bytes:
+    callback = cast(
+        'Callable[[RbxDocument], bytes]',
+        _lazy_attr('fleasion.cache.tools.solidmodel_converter.rbxm.serializer', 'write_rbxm'),
+    )
+    return _call_dynamic(callback, doc)
+
+
+def _make_rbx_property(name: str, fmt_name: str, value: object) -> RbxProperty:
+    module_name = 'fleasion.cache.tools.solidmodel_converter.rbxm.types'
+    factory = cast('Callable[..., RbxProperty]', _lazy_attr(module_name, 'RbxProperty'))
+    property_format = _lazy_attr(module_name, 'PropertyFormat')
+    fmt = getattr(property_format, fmt_name)
+    return _call_dynamic(factory, name=name, fmt=fmt, value=value)
+
+
+def _mesh_file_to_cached_obj(path: Path) -> Path:
+    callback = cast(
+        'Callable[[Path], Path]',
+        _lazy_attr(
+            'fleasion.cache.tools.solidmodel_converter.mesh_intermediary',
+            'mesh_file_to_cached_obj',
+        ),
+    )
+    return _call_dynamic(callback, path)
+
+
+def _bin_file_to_cached_obj(path: Path) -> Path:
+    callback = cast(
+        'Callable[[Path], Path]',
+        _lazy_attr(
+            'fleasion.cache.tools.solidmodel_converter.mesh_intermediary',
+            'bin_file_to_cached_obj',
+        ),
+    )
+    return _call_dynamic(callback, path)
+
+
+def _rbxmx_file_to_cached_obj(path: Path) -> Path:
+    callback = cast(
+        'Callable[[Path], Path]',
+        _lazy_attr(
+            'fleasion.cache.tools.solidmodel_converter.mesh_intermediary',
+            'rbxmx_file_to_cached_obj',
+        ),
+    )
+    return _call_dynamic(callback, path)
+
+
+def _is_binary_rbxm(data: bytes) -> bool:
+    callback = cast(
+        'Callable[[bytes], bool]',
+        _lazy_attr(
+            'fleasion.cache.tools.solidmodel_converter.mesh_intermediary',
+            'is_binary_rbxm',
+        ),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _detect_rig(data: bytes) -> str:
+    callback = cast(
+        'Callable[[bytes], str]',
+        _lazy_attr('fleasion.utils.anim_converter', 'detect_rig'),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _rbxm_to_rbxmx(data: bytes) -> bytes:
+    callback = cast(
+        'Callable[[bytes], bytes]',
+        _lazy_attr('fleasion.utils.anim_converter', 'rbxm_to_rbxmx'),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _curve_anim_to_keyframe_xml(data: bytes) -> bytes:
+    callback = cast(
+        'Callable[[bytes], bytes]',
+        _lazy_attr('fleasion.utils.r15_to_r6', 'curve_anim_to_keyframe_xml'),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _sanitize_xml(data: bytes) -> str:
+    callback = cast(
+        'Callable[[bytes], str]',
+        _lazy_attr('fleasion.utils.r15_to_r6', 'sanitize_xml'),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _defused_xml_fromstring(data: bytes | str) -> ET.Element:
+    callback = cast(
+        'Callable[[bytes | str], ET.Element]',
+        _lazy_attr('defusedxml.ElementTree', 'fromstring'),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _element_tree(root: ET.Element) -> _ElementTreeWriter:
+    factory = cast(
+        'Callable[[ET.Element], _ElementTreeWriter]',
+        _lazy_attr('xml.etree.ElementTree', 'ElementTree'),
+    )
+    return _call_dynamic(factory, root)
+
+
+def _rig_maps() -> tuple[PartMap, JointMap, PartMap, JointMap]:
+    module_name = 'fleasion.utils.rig_data'
+    return (
+        cast('PartMap', _lazy_attr(module_name, 'R6_PARTS')),
+        cast('JointMap', _lazy_attr(module_name, 'R6_JOINTS')),
+        cast('PartMap', _lazy_attr(module_name, 'R15_PARTS')),
+        cast('JointMap', _lazy_attr(module_name, 'R15_JOINTS')),
+    )
+
+
+def _convert_keyframe(
+    keyframe: ET.Element,
+    *,
+    target_rig: str,
+    r6_parts: PartMap,
+    r6_joints: JointMap,
+    r15_parts: PartMap,
+    r15_joints: JointMap,
+) -> None:
+    attr_name = 'convert_keyframe_r15_to_r6' if target_rig == 'R6' else 'convert_keyframe_r6_to_r15'
+    callback = cast(
+        'Callable[[ET.Element, PartMap, JointMap, PartMap, JointMap], None]',
+        _lazy_attr('fleasion.utils.r15_to_r6', attr_name),
+    )
+    _call_dynamic(callback, keyframe, r6_parts, r6_joints, r15_parts, r15_joints)
+
+
+def _keyframe_to_curve_anim(data: bytes) -> bytes:
+    callback = cast(
+        'Callable[[bytes], bytes]',
+        _lazy_attr('fleasion.utils.r15_to_r6', 'keyframe_to_curve_anim'),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _write_rig_converted_animation(data: bytes, out_path: Path, target_rig: str) -> None:
+    xml_data = _rbxm_to_rbxmx(data) if data[:8] == b'<roblox!' else data
+    if b'CurveAnimation' in xml_data:
+        xml_data = _curve_anim_to_keyframe_xml(xml_data)
+
+    root = _defused_xml_fromstring(_sanitize_xml(xml_data))
+    etree = _element_tree(root)
+    r6_parts, r6_joints, r15_parts, r15_joints = _rig_maps()
+    sequence = root.find("Item[@class='KeyframeSequence']")
+    if sequence is None:
+        msg = 'No KeyframeSequence found'
+        raise ValueError(msg)
+    keyframes = sequence.findall("Item[@class='Keyframe']")
+    if not keyframes:
+        msg = 'No Keyframes found'
+        raise ValueError(msg)
+
+    for keyframe in keyframes:
+        _convert_keyframe(
+            keyframe,
+            target_rig=target_rig,
+            r6_parts=r6_parts,
+            r6_joints=r6_joints,
+            r15_parts=r15_parts,
+            r15_joints=r15_joints,
         )
+    etree.write(str(out_path), encoding='utf-8', xml_declaration=True)
+
+
+def _write_curve_converted_animation(data: bytes, out_path: Path, target_rig: str) -> None:
+    xml_data = _rbxm_to_rbxmx(data) if data[:10].startswith(b'<roblox!\x89\xff') else data
+    if b'CurveAnimation' in xml_data:
+        xml_data = _curve_anim_to_keyframe_xml(xml_data)
+
+    src_rig = _detect_rig(xml_data)
+    if src_rig not in {'unknown', target_rig}:
+        root = _defused_xml_fromstring(_sanitize_xml(xml_data))
+        sequence = root.find("Item[@class='KeyframeSequence']")
+        if sequence is None:
+            msg = 'No KeyframeSequence found after curve conversion'
+            raise ValueError(msg)
+        keyframes = sequence.findall("Item[@class='Keyframe']")
+        if not keyframes:
+            msg = 'No Keyframes found after curve conversion'
+            raise ValueError(msg)
+        r6_parts, r6_joints, r15_parts, r15_joints = _rig_maps()
+        for keyframe in keyframes:
+            _convert_keyframe(
+                keyframe,
+                target_rig=target_rig,
+                r6_parts=r6_parts,
+                r6_joints=r6_joints,
+                r15_parts=r15_parts,
+                r15_joints=r15_joints,
+            )
+        buffer = io.BytesIO()
+        _element_tree(root).write(buffer, encoding='utf-8', xml_declaration=True)
+        xml_data = buffer.getvalue()
+
+    out_path.write_bytes(_keyframe_to_curve_anim(xml_data))
+
+
+def _get_or_create_ktx2_from_image(
+    path: Path,
+    *,
+    mipmap_mode: _MipmapMode = 'color',
+) -> Path:
+    callback = cast(
+        'Callable[..., Path]',
+        _lazy_attr(
+            'fleasion.cache.tools.image_to_ktx2.converter',
+            'get_or_create_ktx2_from_image',
+        ),
+    )
+    return _call_dynamic(callback, path, mipmap_mode=mipmap_mode)
+
+
+def _rgba8_ktx2_cache_version() -> bytes:
+    return cast(
+        'bytes',
+        _lazy_attr('fleasion.cache.tools.rgba_ktx2', 'RGBA8_KTX2_CACHE_VERSION'),
+    )
+
+
+def _read_rgba8_ktx2_levels(data: bytes) -> tuple[list[bytes], int, int] | None:
+    callback = cast(
+        'Callable[[bytes], tuple[list[bytes], int, int] | None]',
+        _lazy_attr('fleasion.cache.tools.rgba_ktx2', 'read_rgba8_ktx2_levels'),
+    )
+    return _call_dynamic(callback, data)
+
+
+def _write_rgba8_ktx2(
+    rgba: bytes,
+    width: int,
+    height: int,
+    out_path: Path,
+    *,
+    mipmap_mode: _MipmapMode,
+) -> None:
+    callback = cast(
+        'Callable[..., None]',
+        _lazy_attr('fleasion.cache.tools.rgba_ktx2', 'write_rgba8_ktx2'),
+    )
+    _call_dynamic(callback, rgba, width, height, out_path, mipmap_mode=mipmap_mode)
+
+
+def _normalized_rgba8_ktx2_path(path: Path, *, mipmap_mode: _MipmapMode) -> Path:
+    data = path.read_bytes()
+    parsed = _read_rgba8_ktx2_levels(data)
+    if parsed is None:
+        return path
+    levels, width, height = parsed
+    if len(levels) > 1:
+        return path
+
+    digest = hashlib.md5(
+        data + _rgba8_ktx2_cache_version() + mipmap_mode.encode('ascii'),
+        usedforsecurity=False,
+    ).hexdigest()[:16]
+    out_path = APP_CACHE_DIR / f'{path.stem}_rgba8_{digest}.ktx2'
+    if not out_path.exists():
+        _write_rgba8_ktx2(
+            levels[0],
+            width,
+            height,
+            out_path,
+            mipmap_mode=mipmap_mode,
+        )
+    return out_path
+
+
+def _composite_orm(
+    baseline: Path | None,
+    channels: dict[str, Path | None],
+    *,
+    cache_dir: Path,
+    normal_source: Path | None,
+    normal_baseline: Path | None,
+) -> str | None:
+    callback = cast(
+        'Callable[..., str | None]',
+        _lazy_attr('fleasion.cache.tools.orm_compositor', 'composite_orm'),
+    )
+    return _call_dynamic(
+        callback,
+        baseline,
+        channels,
+        cache_dir,
+        normal_source=normal_source,
+        normal_baseline=normal_baseline,
+    )
 
 
 def _is_object_list(value: object) -> TypeIs[list[object]]:
@@ -185,6 +605,52 @@ def _mipmap_mode(map_index: int | None) -> _MipmapMode:
     return _MIPMAP_MODES.get(map_index, 'color')
 
 
+def _read_replacement_bytes(path: Path) -> bytes | None:
+    try:
+        return strip_roblox_metadata(path, path.read_bytes())
+    except OSError:
+        return None
+
+
+def _decode_request_entries(body: bytes) -> tuple[_JsonList, list[str]]:
+    try:
+        loaded = _loads(body)
+    except TypeError, ValueError:
+        return [], []
+    if not isinstance(loaded, list):
+        return [], []
+    request_ids = [
+        str(entry.get('requestId', '')) if isinstance(entry, dict) else '' for entry in loaded
+    ]
+    return loaded, request_ids
+
+
+def _cdn_target_diagnostics(target: object) -> tuple[str, bool, int, str]:
+    path = Path(str(target))
+    exists = path.exists()
+    size = path.stat().st_size if exists else 0
+    return _file_value(str(target)), exists, size, path.suffix.lower()
+
+
+def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
+    body = chunk_type + data
+    return struct.pack('>I', len(data)) + body + struct.pack('>I', zlib.crc32(body) & 0xFFFFFFFF)
+
+
+def _ensure_blank_png(path: Path) -> bool:
+    try:
+        signature = b'\x89PNG\r\n\x1a\n'
+        ihdr = _png_chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0))
+        idat = _png_chunk(b'IDAT', zlib.compress(b'\x00\xff\xff\xff\xff', 9))
+        iend = _png_chunk(b'IEND', b'')
+        path.write_bytes(signature + ihdr + idat + iend)
+    except (OSError, struct.error, zlib.error) as exc:
+        log_buffer.log('TexPack', f'Failed to create blank placeholder PNG: {exc}')
+        return False
+    log_buffer.log('TexPack', 'Created blank 1×1 placeholder PNG')
+    return True
+
+
 # Use orjson when available (2-3x faster JSON parse)
 try:
     import orjson
@@ -237,18 +703,17 @@ def _file_value(value: object) -> str:
     text = str(value)
     if text.startswith(('http://', 'https://')):
         return _short_value(text)
-    try:
-        return Path(text).name or text
-    except Exception:  # ruff: ignore[blind-except]
-        return _short_value(text)
+    return Path(text).name or text
 
 
 def _b64decode_padded(value: object) -> bytes:
-    import base64 as _b64  # ruff: ignore[import-outside-top-level]
-
     raw = str(value).encode('ascii', errors='ignore')
     raw += b'=' * (-len(raw) % 4)
-    return _b64.urlsafe_b64decode(raw)
+    try:
+        return base64.urlsafe_b64decode(raw)
+    except ValueError as exc:
+        msg = 'invalid base64 payload'
+        raise ValueError(msg) from exc
 
 
 def _normalized_build_type(value: object) -> _BuildType:
@@ -277,14 +742,8 @@ def _texpack_slot_from_build_type(value: object) -> int | None:
         return 0
     if any(token in normalized for token in ('normal', 'bump')):
         return 1
-    if (
-        'metal' in normalized  # ruff: ignore[too-many-boolean-expressions]
-        or 'rough' in normalized
-        or 'emiss' in normalized
-        or 'height' in normalized
-        or 'displace' in normalized
-        or normalized == 'orm'
-    ):
+    orm_tokens = ('metal', 'rough', 'emiss', 'height', 'displace')
+    if normalized == 'orm' or any(token in normalized for token in orm_tokens):
         return 2
     return None
 
@@ -334,31 +793,42 @@ def _representation_matches_requested(representation: _JsonObject, requested: _B
     return False
 
 
-def _select_content_representation(e: _JsonObject) -> _JsonObject | None:  # ruff: ignore[too-many-return-statements]
+def _requested_content_representation(
+    decoded: _JsonList,
+    requested: _BuildType,
+) -> _JsonObject | None:
+    for representation in decoded:
+        if isinstance(representation, dict) and _representation_matches_requested(
+            representation,
+            requested,
+        ):
+            return representation
+    if isinstance(requested, int) and 0 <= requested < len(decoded):
+        representation = decoded[requested]
+        if isinstance(representation, dict):
+            return representation
+    return None
+
+
+def _select_content_representation(e: _JsonObject) -> _JsonObject | None:
     crpl = e.get('contentRepresentationPriorityList')
     if not crpl:
         return None
     try:
         decoded = _loads(_b64decode_padded(crpl))
-    except Exception:  # ruff: ignore[blind-except]
+    except TypeError, ValueError:
         return None
     if not isinstance(decoded, list) or not decoded:
         return None
 
     requested = _normalized_build_type(e.get('requestedBuildType'))
     if requested is not None:
-        for representation in decoded:
-            if isinstance(representation, dict) and _representation_matches_requested(
-                representation, requested
-            ):
-                return representation
-        if isinstance(requested, int) and 0 <= requested < len(decoded):
-            representation = decoded[requested]
-            return representation if isinstance(representation, dict) else None
+        selected = _requested_content_representation(decoded, requested)
+        if selected is not None:
+            return selected
 
-    if isinstance(decoded[0], dict):
-        return decoded[0]
-    return None
+    first = decoded[0]
+    return first if isinstance(first, dict) else None
 
 
 def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int] | None:
@@ -366,7 +836,7 @@ def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int
         return None
     try:
         fb = _b64decode_padded(fidelity_b64)
-    except Exception:  # ruff: ignore[blind-except]
+    except TypeError, ValueError:
         return None
     if len(fb) < 2:
         return None
@@ -400,9 +870,7 @@ if TYPE_CHECKING:
 
 def _decompress_cdn_response(data: bytes) -> bytes:
     if data[:4] == _ZSTD_MAGIC:
-        import zstandard  # ruff: ignore[import-outside-top-level]
-
-        data = zstandard.ZstdDecompressor().decompress(data, max_output_size=64 * 1024 * 1024)
+        data = _zstd_decompress(data)
         log_buffer.log('CDN', f'Decompressed zstd CDN payload: {len(data)} bytes')
     elif data[:2] == _GZIP_MAGIC:
         data = gzip.decompress(data)
@@ -411,31 +879,9 @@ def _decompress_cdn_response(data: bytes) -> bytes:
 
 
 def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool = False) -> bytes:
-    from fleasion.cache.tools.solidmodel_converter.converter import (  # ruff: ignore[import-outside-top-level]
-        deserialize_rbxm,
-    )
-
-    if TYPE_CHECKING:
-
-        def _detect_csgmdl_version(data: bytes) -> int | None: ...
-    else:
-        from fleasion.cache.tools.solidmodel_converter.csg_mesh import (  # ruff: ignore[import-outside-top-level]
-            _detect_csgmdl_version,
-        )
-    from fleasion.cache.tools.solidmodel_converter.obj_to_csg import (  # ruff: ignore[import-outside-top-level]
-        export_csg_mesh,
-    )
-    from fleasion.cache.tools.solidmodel_converter.rbxm.serializer import (  # ruff: ignore[import-outside-top-level]
-        write_rbxm,
-    )
-    from fleasion.cache.tools.solidmodel_converter.rbxm.types import (  # ruff: ignore[import-outside-top-level]
-        PropertyFormat,
-        RbxProperty,
-    )
-
     bin_data = _decompress_cdn_response(bin_data)
-    doc = deserialize_rbxm(bin_data)
-    INJECTABLE = frozenset(  # ruff: ignore[non-lowercase-variable-in-function]
+    doc = _deserialize_rbxm(bin_data)
+    injectable = frozenset(
         {'PartOperationAsset', 'UnionOperation', 'NegateOperation', 'PartOperation'}
     )
 
@@ -444,7 +890,7 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool
         log_buffer.log('SolidModel', 'Using forced CSGMDL v3 for direct OBJ replacement')
     else:
         for inst in doc.roots:
-            if inst.class_name in INJECTABLE:
+            if inst.class_name in injectable:
                 prop = inst.properties.get('MeshData')
                 if prop is not None and prop.value:
                     mesh_bytes = (
@@ -458,19 +904,19 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool
                         log_buffer.log('SolidModel', f'Detected original CSGMDL v{csg_version}')
                 break
 
-    csg_bytes = export_csg_mesh(obj_path, version=csg_version)
+    csg_bytes = _export_csg_mesh(obj_path, version=csg_version)
     injected = 0
     for inst in doc.roots:
-        if inst.class_name in INJECTABLE:
-            inst.properties['MeshData'] = RbxProperty(
-                name='MeshData',
-                fmt=PropertyFormat.STRING,
-                value=csg_bytes,
+        if inst.class_name in injectable:
+            inst.properties['MeshData'] = _make_rbx_property(
+                'MeshData',
+                'STRING',
+                csg_bytes,
             )
-            inst.properties['Color'] = RbxProperty(
-                name='Color',
-                fmt=PropertyFormat.COLOR3UINT8,
-                value={'R': 255, 'G': 255, 'B': 255},
+            inst.properties['Color'] = _make_rbx_property(
+                'Color',
+                'COLOR3UINT8',
+                {'R': 255, 'G': 255, 'B': 255},
             )
             injected += 1
 
@@ -478,103 +924,64 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool
         msg = f'No injectable root (roots: {[r.class_name for r in doc.roots]})'
         raise ValueError(msg)
     log_buffer.log('SolidModel', f'Injected CSGMDL into {format_count(injected, "root")}')
-    return write_rbxm(doc)
+    return _write_rbxm(doc)
 
 
 def _try_mesh_to_obj(path: Path, ctx: str) -> Path | None:
     try:
-        from fleasion.cache.tools.solidmodel_converter.mesh_intermediary import (  # ruff: ignore[import-outside-top-level]
-            mesh_file_to_cached_obj,
-        )
-
-        return mesh_file_to_cached_obj(path)
-    except Exception as exc:  # ruff: ignore[blind-except]
+        return _mesh_file_to_cached_obj(path)
+    except _BEST_EFFORT_ERRORS as exc:
         log_buffer.log('Intermediary', f'{ctx}: .mesh->OBJ failed: {exc}')
         return None
 
 
+def _decompress_bin_candidate(raw: bytes) -> bytes:
+    if raw[:4] == b'\x28\xb5\x2f\xfd':
+        return _zstd_decompress(raw)
+    if raw[:2] == b'\x1f\x8b':
+        return gzip.decompress(raw)
+    return raw
+
+
+def _contains_injectable_csgmdl(data: bytes) -> bool:
+    if not _is_binary_rbxm(data):
+        return False
+    doc = _deserialize_rbxm(data)
+    injectable = frozenset(
+        {'PartOperationAsset', 'UnionOperation', 'NegateOperation', 'PartOperation'}
+    )
+    for inst in doc.roots:
+        if inst.class_name not in injectable:
+            continue
+        prop = inst.properties.get('MeshData')
+        if prop is None or not prop.value:
+            continue
+        mesh_bytes = prop.value if isinstance(prop.value, bytes) else bytes(prop.value, 'latin-1')
+        if _detect_csgmdl_version(mesh_bytes) is not None:
+            return True
+    return False
+
+
 def _is_csgmdl_bin(path: Path) -> bool:
-    """Check if a .bin file is actually a CSGMDL by looking for RBXM header and MeshData.
-
-    Returns True only if:
-    1. The file is a valid binary RBXM
-    2. It contains an injectable root (PartOperationAsset, etc.)
-    3. That root has MeshData containing a CSGMDL blob
-    """
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        raw = path.read_bytes()
-        # Decompress if needed
-        data = raw
-        if raw[:4] == b'\x28\xb5\x2f\xfd':  # zstd
-            import zstandard  # ruff: ignore[import-outside-top-level]
-
-            data = zstandard.ZstdDecompressor().decompress(raw, max_output_size=64 * 1024 * 1024)
-        elif raw[:2] == b'\x1f\x8b':  # gzip
-            data = gzip.decompress(raw)
-
-        # Check if it's a valid binary RBXM
-        from fleasion.cache.tools.solidmodel_converter.mesh_intermediary import (  # ruff: ignore[import-outside-top-level]
-            is_binary_rbxm,
-        )
-
-        if not is_binary_rbxm(data):
-            return False
-
-        # Try to deserialize and find injectable roots with MeshData
-        from fleasion.cache.tools.solidmodel_converter.converter import (  # ruff: ignore[import-outside-top-level]
-            deserialize_rbxm,
-        )
-
-        doc = deserialize_rbxm(data)
-        INJECTABLE = frozenset(  # ruff: ignore[non-lowercase-variable-in-function]
-            {'PartOperationAsset', 'UnionOperation', 'NegateOperation', 'PartOperation'}
-        )
-
-        for inst in doc.roots:
-            if inst.class_name in INJECTABLE:
-                prop = inst.properties.get('MeshData')
-                if prop is not None and prop.value:
-                    # Check if MeshData looks like CSGMDL
-                    if TYPE_CHECKING:
-
-                        def _detect_csgmdl_version(data: bytes) -> int | None: ...
-                    else:
-                        from fleasion.cache.tools.solidmodel_converter.csg_mesh import (  # ruff: ignore[import-outside-top-level]
-                            _detect_csgmdl_version,
-                        )
-
-                    mesh_bytes = (
-                        prop.value
-                        if isinstance(prop.value, bytes)
-                        else bytes(prop.value, 'latin-1')
-                    )
-                    if _detect_csgmdl_version(mesh_bytes) is not None:
-                        return True
-        return False  # ruff: ignore[try-consider-else]
-    except Exception:  # ruff: ignore[blind-except]
+    """Return whether a .bin file contains an injectable CSGMDL payload."""
+    try:
+        return _contains_injectable_csgmdl(_decompress_bin_candidate(path.read_bytes()))
+    except _BEST_EFFORT_ERRORS:
         return False
 
 
 def _try_bin_to_obj(path: Path, ctx: str) -> Path | None:
     try:
-        from fleasion.cache.tools.solidmodel_converter.mesh_intermediary import (  # ruff: ignore[import-outside-top-level]
-            bin_file_to_cached_obj,
-        )
-
-        return bin_file_to_cached_obj(path)
-    except Exception as exc:  # ruff: ignore[blind-except]
+        return _bin_file_to_cached_obj(path)
+    except _BEST_EFFORT_ERRORS as exc:
         log_buffer.log('Intermediary', f'{ctx}: .bin->OBJ failed: {exc}')
         return None
 
 
 def _try_rbxmx_to_obj(path: Path, ctx: str) -> Path | None:
     try:
-        from fleasion.cache.tools.solidmodel_converter.mesh_intermediary import (  # ruff: ignore[import-outside-top-level]
-            rbxmx_file_to_cached_obj,
-        )
-
-        return rbxmx_file_to_cached_obj(path)
-    except Exception as exc:  # ruff: ignore[blind-except]
+        return _rbxmx_file_to_cached_obj(path)
+    except _BEST_EFFORT_ERRORS as exc:
         log_buffer.log('Intermediary', f'{ctx}: .rbxmx->OBJ failed: {exc}')
         return None
 
@@ -597,11 +1004,11 @@ def _download_remote_file(url: str, dest: Path, label: str) -> bool:
                 )
             },
         )
-        log_buffer.log('Downloader', f'Saved {label}: {dest.name}')
-        return True  # ruff: ignore[try-consider-else]
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, RuntimeError, ValueError) as exc:
         log_buffer.log('Downloader', f'Failed to download {label}: {exc}')
         return False
+    log_buffer.log('Downloader', f'Saved {label}: {dest.name}')
+    return True
 
 
 class TextureStripper:
@@ -609,26 +1016,18 @@ class TextureStripper:
 
     # ── Shared singleton state (class-level) ──────────────────────────────
     _lock: Lock = Lock()
-    _pending: dict[
-        str, tuple[str, str]
-    ] = {}  # requestId -> (kind, value)  # ruff: ignore[mutable-class-default]
-    _cdn_redirects: dict[
-        str, str
-    ] = {}  # base_cdn_url -> redirect_url  # ruff: ignore[mutable-class-default]
-    _local_redirects: dict[
-        str, str
-    ] = {}  # base_cdn_url -> local_path  # ruff: ignore[mutable-class-default]
-    _solidmodel_injections: dict[
-        str, str
-    ] = {}  # base_cdn_url -> obj_path  # ruff: ignore[mutable-class-default]
-    _solidmodel_force_v3: set[str] = set()  # ruff: ignore[mutable-class-default]  # base_cdn_url values that should force v3 CSG export
-    _batch_generations: dict[
-        str, int
-    ] = {}  # batch_id -> route generation  # ruff: ignore[mutable-class-default]
+    _pending: ClassVar[dict[str, tuple[str, str]]] = {}  # requestId -> (kind, value)
+    _cdn_redirects: ClassVar[dict[str, str]] = {}  # base_cdn_url -> redirect_url
+    _local_redirects: ClassVar[dict[str, str]] = {}  # base_cdn_url -> local_path
+    _solidmodel_injections: ClassVar[dict[str, str]] = {}  # base_cdn_url -> obj_path
+    _solidmodel_force_v3: ClassVar[set[str]] = (
+        set()
+    )  # base_cdn_url values that should force v3 CSG export
+    _batch_generations: ClassVar[dict[str, int]] = {}  # batch_id -> route generation
     _routes_generation: int = 0
     # ─────────────────────────────────────────────────────────────────────
 
-    ASSET_TYPES: dict[int, str] = {  # ruff: ignore[mutable-class-default]
+    ASSET_TYPES: ClassVar[dict[int, str]] = {
         1: 'Image',
         2: 'TShirt',
         3: 'Audio',
@@ -704,7 +1103,7 @@ class TextureStripper:
         79: 'DynamicHead',
         80: 'CodeSnippet',
     }
-    _REVERSE: dict[str, int] = {name.lower(): tid for tid, name in ASSET_TYPES.items()}  # ruff: ignore[mutable-class-default]
+    _REVERSE: ClassVar[dict[str, int]] = {name.lower(): tid for tid, name in ASSET_TYPES.items()}
 
     def __init__(self, config_manager: ConfigManager) -> None:
         self.config_manager = config_manager
@@ -786,11 +1185,11 @@ class TextureStripper:
 
     # Pre-downloaded private replacement assets: replacement_id -> local file path.
     # Populated eagerly at proxy startup by precheck_replacements().
-    _predownloaded: dict[int, str] = {}  # ruff: ignore[mutable-class-default]
+    _predownloaded: ClassVar[dict[int, str]] = {}
     # IDs confirmed publicly accessible (no pre-download needed).
-    _checked_public: set[int] = set()  # ruff: ignore[mutable-class-default]
+    _checked_public: ClassVar[set[int]] = set()
     # IDs currently being checked in a precheck thread (to avoid duplicate spawns).
-    _precheck_pending: set[int] = set()  # ruff: ignore[mutable-class-default]
+    _precheck_pending: ClassVar[set[int]] = set()
 
     _PREDOWNLOAD_DIR: Path = APP_CACHE_DIR / 'predownloaded'
     _PRECHECK_NETWORK_RETRY_BASE_SECONDS = 120.0
@@ -802,25 +1201,25 @@ class TextureStripper:
     _CONV_CACHE_DIR: Path = APP_CACHE_DIR / 'rig_converted'
 
     # Virtual rig-filter type keys -> required original rig ('R6', 'R15', 'unknown')
-    _VIRTUAL_ANIM_RIG: dict[str, str] = {  # ruff: ignore[mutable-class-default]
+    _VIRTUAL_ANIM_RIG: ClassVar[dict[str, str]] = {
         'R6Animation': 'R6',
         'R15Animation': 'R15',
         'NonPlayerAnimation': 'unknown',
     }
 
     # rig of replacement local file, keyed by normalised path string
-    _anim_repl_rig: dict[str, str] = {}  # ruff: ignore[mutable-class-default]
+    _anim_repl_rig: ClassVar[dict[str, str]] = {}
     # converted file path, keyed by f'{content_hash16}_{target_rig}'
-    _anim_conv_paths: dict[str, str] = {}  # ruff: ignore[mutable-class-default]
+    _anim_conv_paths: ClassVar[dict[str, str]] = {}
     # CDN URLs for animation replacements that need upstream rig detection before serving.
     # Populated by process_batch_response; checked by check_cdn_request.
     # These do NOT short-circuit - upstream response is read to detect original rig.
     # Value: (local_path, required_rig) where required_rig is 'R6'|'R15'|'unknown'|'any'
-    _anim_rig_local: dict[
-        str, _AnimPendingValue
-    ] = {}  # base_cdn_url -> (local_path, required_rig)  # ruff: ignore[mutable-class-default]
+    _anim_rig_local: ClassVar[
+        dict[str, _AnimPendingValue]
+    ] = {}  # base_cdn_url -> (local_path, required_rig)
     # pending_key -> (local_path, required_rig)
-    _anim_local_pending: dict[str, _AnimPendingValue] = {}  # ruff: ignore[mutable-class-default]
+    _anim_local_pending: ClassVar[dict[str, _AnimPendingValue]] = {}
     # separate lock for rig-conversion state (avoids holding _lock during file I/O)
     _anim_lock: Lock = Lock()
 
@@ -917,7 +1316,7 @@ class TextureStripper:
                             'Replacer',
                             f'Cached public animation {target_id} for rig conversion ({len(data_)} bytes)',
                         )
-                    except Exception:  # ruff: ignore[blind-except]
+                    except OSError:
                         self._checked_public.add(int(target_id))
                 else:
                     self._predownloaded.pop(int(target_id), None)
@@ -979,7 +1378,7 @@ class TextureStripper:
                         'Replacer',
                         f'Pre-downloaded private asset {target_id} ({len(data)} bytes)',
                     )
-                except Exception as exc:  # ruff: ignore[blind-except]
+                except OSError as exc:
                     log_buffer.log(
                         'Replacer',
                         f'Failed to save pre-download for {target_id}: {exc}',
@@ -1003,7 +1402,7 @@ class TextureStripper:
                     break
 
         with self._precheck_state_lock:
-            self._precheck_pending -= unique_targets
+            self._precheck_pending.difference_update(unique_targets)
             if network_deferred:
                 self._precheck_network_failure_count += 1
                 exponent = min(self._precheck_network_failure_count - 1, 3)
@@ -1039,7 +1438,7 @@ class TextureStripper:
         replacements = {
             key: value
             for key, value in replacements.items()
-            if self._normalize_asset_id(value) not in (0, 1)  # ruff: ignore[literal-membership]
+            if self._normalize_asset_id(value) not in {0, 1}
         }
         parent_ids: set[int] = set()
         for key in (
@@ -1070,7 +1469,7 @@ class TextureStripper:
         scraper = self._cache_scraper
         if scraper is None:
             return False
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        try:
             cookie = _scraper_get_roblosecurity(scraper)
             extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else {}
             data = _scraper_https_get(
@@ -1080,11 +1479,9 @@ class TextureStripper:
                 extra_headers=extra or None,
             )
             if data:
-                import json as _json  # ruff: ignore[import-outside-top-level]
-
-                info = _json.loads(data)
+                info = json.loads(data)
                 return int(info.get('AssetTypeId', -1)) in self._ANIM_TYPE_IDS
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except OSError, RuntimeError, TypeError, ValueError:
             pass
         return False
 
@@ -1092,10 +1489,10 @@ class TextureStripper:
         """Return True if this local-replacement key targets an animation asset."""
         # All animation-related string keys: virtual rig-filter types + every
         # named animation asset type from ASSET_TYPES
-        ANIM_STR_KEYS = frozenset(  # ruff: ignore[non-lowercase-variable-in-function]
+        anim_str_keys = frozenset(
             name for tid, name in self.ASSET_TYPES.items() if tid in self._ANIM_TYPE_IDS
         ) | frozenset(self._VIRTUAL_ANIM_RIG)
-        if isinstance(key, str) and key in ANIM_STR_KEYS:
+        if isinstance(key, str) and key in anim_str_keys:
             return True
         # TexturePack slot keys (e.g. "12345:2") are never animations
         if isinstance(key, str) and ':' in key:
@@ -1108,38 +1505,34 @@ class TextureStripper:
         return self._is_anim_asset_id(aid)
 
     def precheck_anim_rigs(self) -> None:
-        from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-            detect_rig,
-        )
-
         try:
             self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except OSError:
             pass
 
         replacements_tuple = self.config_manager.get_all_replacements()
         _, _, _, local_replacements = replacements_tuple
 
-        ANIM_EXTS = {'.rbxm', '.rbxmx'}  # ruff: ignore[non-lowercase-variable-in-function]
+        anim_exts = {'.rbxm', '.rbxmx'}
 
         # Collect local paths that are definitely animation replacements.
         # Check: animation key/type, .rbxm/.rbxmx extension, or asset type via API.
         paths_to_process: list[str] = []
 
-        for key, local_path in local_replacements.items():
-            local_path = str(local_path)  # ruff: ignore[redefined-loop-name]
+        for key, path_value in local_replacements.items():
+            local_path = str(path_value)
             if local_path in paths_to_process:
                 continue
-            if Path(local_path).suffix.lower() in ANIM_EXTS or self._is_anim_replacement_key(key):
+            if Path(local_path).suffix.lower() in anim_exts or self._is_anim_replacement_key(key):
                 paths_to_process.append(local_path)
 
         # Predownloaded ID-to-ID replacements: check replacement asset ID via API,
         # then fall back to extension and magic-byte sniffing.
-        for repl_id, local_path in self._predownloaded.items():
-            local_path = str(local_path)  # ruff: ignore[redefined-loop-name]
+        for repl_id, path_value in self._predownloaded.items():
+            local_path = str(path_value)
             if local_path in paths_to_process:
                 continue
-            if Path(local_path).suffix.lower() in ANIM_EXTS:
+            if Path(local_path).suffix.lower() in anim_exts:
                 paths_to_process.append(local_path)
                 continue
             # Check the replacement asset ID itself via economy API
@@ -1150,30 +1543,28 @@ class TextureStripper:
             except TypeError, ValueError:
                 pass
             # Last resort: peek at magic bytes for .dat / extensionless files
-            try:
-                path = Path(local_path)
-                head = strip_roblox_metadata(path, path.read_bytes())[:64]
+            path = Path(local_path)
+            data = _read_replacement_bytes(path)
+            if data is not None:
+                head = data[:64]
                 if (
                     head.startswith(b'<roblox!')
                     or b'KeyframeSequence' in head
                     or b'CurveAnimation' in head
                 ):
                     paths_to_process.append(local_path)
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
 
         converted = 0
         for local_path in paths_to_process:
             p = Path(local_path)
             if not p.exists():
                 continue
-            try:
-                data = strip_roblox_metadata(p, p.read_bytes())
-            except Exception:  # ruff: ignore[blind-except, try-except-continue]
+            data = _read_replacement_bytes(p)
+            if data is None:
                 continue
 
             # Only process animation files
-            rig = detect_rig(data)
+            rig = _detect_rig(data)
             if rig == 'unknown':
                 continue
 
@@ -1201,12 +1592,6 @@ class TextureStripper:
         self, local_path: str, target_rig: str, data: bytes | None = None
     ) -> str | None:
         """Return path to a rig-converted copy of local_path, creating it if needed."""
-        import xml.etree.ElementTree as ET  # ruff: ignore[import-outside-top-level]
-
-        from defusedxml import (  # ruff: ignore[import-outside-top-level]
-            ElementTree as safe_et,  # ruff: ignore[camelcase-imported-as-lowercase]
-        )
-
         p = Path(local_path)
         if not p.exists():
             return None
@@ -1215,7 +1600,7 @@ class TextureStripper:
             if data is None:
                 data = strip_roblox_metadata(p, p.read_bytes())
             content_key = hashlib.sha256(data).hexdigest()[:16]
-        except Exception:  # ruff: ignore[blind-except]
+        except OSError:
             return None
 
         cache_key = f'{content_key}_{target_rig}'
@@ -1233,89 +1618,17 @@ class TextureStripper:
                 self._anim_conv_paths[cache_key] = str(out_path)
             return str(out_path)
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        try:
             self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-            # Convert binary .rbxm to XML if needed
-            from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-                rbxm_to_rbxmx,
-            )
-
-            if data[:8] == b'<roblox!':  # ruff: ignore[if-else-block-instead-of-if-exp]
-                xml_data = rbxm_to_rbxmx(data)
-            else:
-                xml_data = data
-
-            # If it's a CurveAnimation, convert to KeyframeSequence first
-            if b'CurveAnimation' in xml_data:
-                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
-                    curve_anim_to_keyframe_xml,
-                )
-
-                xml_data = curve_anim_to_keyframe_xml(xml_data)
-
-            # Use the same conversion logic as the misc tab
-            if TYPE_CHECKING:
-
-                def convert_keyframe_r6_to_r15(
-                    keyframe: object,
-                    r6_parts: object,
-                    r6_joints: object,
-                    r15_parts: object,
-                    r15_joints: object,
-                ) -> None: ...
-
-                def convert_keyframe_r15_to_r6(
-                    keyframe: object,
-                    r6_parts: object,
-                    r6_joints: object,
-                    r15_parts: object,
-                    r15_joints: object,
-                ) -> None: ...
-
-                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
-                    sanitize_xml,
-                )
-            else:
-                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
-                    convert_keyframe_r6_to_r15,
-                    convert_keyframe_r15_to_r6,
-                    sanitize_xml,
-                )
-            from fleasion.utils.rig_data import (  # ruff: ignore[import-outside-top-level]
-                R6_JOINTS,
-                R6_PARTS,
-                R15_JOINTS,
-                R15_PARTS,
-            )
-
-            root = safe_et.fromstring(sanitize_xml(xml_data))
-            etree = ET.ElementTree(root)
-
-            ks = root.find("Item[@class='KeyframeSequence']")
-            if ks is None:
-                msg = 'No KeyframeSequence found'
-                raise ValueError(msg)
-            keyframes = ks.findall("Item[@class='Keyframe']")
-            if not keyframes:
-                msg = 'No Keyframes found'
-                raise ValueError(msg)
-
-            if target_rig == 'R6':
-                for kf in keyframes:
-                    convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
-            else:
-                for kf in keyframes:
-                    convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
-
-            etree.write(str(out_path), encoding='utf-8', xml_declaration=True)
-            with self._anim_lock:
-                self._anim_conv_paths[cache_key] = str(out_path)
-            log_buffer.log('AnimConv', f'Created {target_rig} version: {out_path.name}')
-            return str(out_path)
-        except Exception as exc:  # ruff: ignore[blind-except]
+            _write_rig_converted_animation(data, out_path, target_rig)
+        except _BEST_EFFORT_ERRORS as exc:
             log_buffer.log('AnimConv', f'Conversion failed for {p.name} -> {target_rig}: {exc}')
             return None
+
+        with self._anim_lock:
+            self._anim_conv_paths[cache_key] = str(out_path)
+        log_buffer.log('AnimConv', f'Created {target_rig} version: {out_path.name}')
+        return str(out_path)
 
     def _get_or_create_converted_curve(
         self, local_path: str, target_rig: str, data: bytes | None = None
@@ -1333,7 +1646,7 @@ class TextureStripper:
             if data is None:
                 data = strip_roblox_metadata(p, p.read_bytes())
             content_key = hashlib.sha256(data).hexdigest()[:16]
-        except Exception:  # ruff: ignore[blind-except]
+        except OSError:
             return None
 
         cache_key = f'{content_key}_{target_rig}_curve'
@@ -1350,108 +1663,23 @@ class TextureStripper:
                 self._anim_conv_paths[cache_key] = str(out_path)
             return str(out_path)
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        try:
             self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-            # Step 1: Convert binary .rbxm -> XML if needed
-            from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-                detect_rig,
-                rbxm_to_rbxmx,
-            )
-
-            xml_data = rbxm_to_rbxmx(data) if data[:10].startswith(b'<roblox!\x89\xff') else data
-
-            # Step 2: Convert CurveAnimation -> KeyframeSequence if needed
-            if b'CurveAnimation' in xml_data:
-                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
-                    curve_anim_to_keyframe_xml,
-                )
-
-                xml_data = curve_anim_to_keyframe_xml(xml_data)
-
-            # Step 3: Rig-convert if source rig differs from target rig
-            import xml.etree.ElementTree as ET  # ruff: ignore[import-outside-top-level]
-
-            from defusedxml import (  # ruff: ignore[import-outside-top-level]
-                ElementTree as safe_et,  # ruff: ignore[camelcase-imported-as-lowercase]
-            )
-
-            if TYPE_CHECKING:
-
-                def convert_keyframe_r6_to_r15(
-                    keyframe: object,
-                    r6_parts: object,
-                    r6_joints: object,
-                    r15_parts: object,
-                    r15_joints: object,
-                ) -> None: ...
-
-                def convert_keyframe_r15_to_r6(
-                    keyframe: object,
-                    r6_parts: object,
-                    r6_joints: object,
-                    r15_parts: object,
-                    r15_joints: object,
-                ) -> None: ...
-
-                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
-                    sanitize_xml,
-                )
-            else:
-                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
-                    convert_keyframe_r6_to_r15,
-                    convert_keyframe_r15_to_r6,
-                    sanitize_xml,
-                )
-            from fleasion.utils.rig_data import (  # ruff: ignore[import-outside-top-level]
-                R6_JOINTS,
-                R6_PARTS,
-                R15_JOINTS,
-                R15_PARTS,
-            )
-
-            src_rig = detect_rig(xml_data)
-            if src_rig != 'unknown' and src_rig != target_rig:  # ruff: ignore[repeated-equality-comparison]
-                root = safe_et.fromstring(sanitize_xml(xml_data))
-                ks = root.find("Item[@class='KeyframeSequence']")
-                if ks is None:
-                    msg = 'No KeyframeSequence found after curve conversion'
-                    raise ValueError(msg)
-                keyframes = ks.findall("Item[@class='Keyframe']")
-                if not keyframes:
-                    msg = 'No Keyframes found after curve conversion'
-                    raise ValueError(msg)
-                if target_rig == 'R6':
-                    for kf in keyframes:
-                        convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
-                else:
-                    for kf in keyframes:
-                        convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
-                buf = io.BytesIO()
-                ET.ElementTree(root).write(buf, encoding='utf-8', xml_declaration=True)
-                xml_data = buf.getvalue()
-
-            # Step 4: Convert KeyframeSequence -> CurveAnimation
-            from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
-                keyframe_to_curve_anim,
-            )
-
-            curve_data = keyframe_to_curve_anim(xml_data)
-
-            out_path.write_bytes(curve_data)
-            with self._anim_lock:
-                self._anim_conv_paths[cache_key] = str(out_path)
-            log_buffer.log(
-                'AnimConv',
-                f'Created {target_rig} CurveAnimation version: {out_path.name}',
-            )
-            return str(out_path)
-        except Exception as exc:  # ruff: ignore[blind-except]
+            _write_curve_converted_animation(data, out_path, target_rig)
+        except _BEST_EFFORT_ERRORS as exc:
             log_buffer.log(
                 'AnimConv',
                 f'CurveAnim conversion failed for {p.name} -> {target_rig}: {exc}',
             )
             return None
+
+        with self._anim_lock:
+            self._anim_conv_paths[cache_key] = str(out_path)
+        log_buffer.log(
+            'AnimConv',
+            f'Created {target_rig} CurveAnimation version: {out_path.name}',
+        )
+        return str(out_path)
 
     def _detect_repl_rig(self, local_path: str) -> str:
         """Detect and cache the rig type of a local replacement animation file."""
@@ -1459,13 +1687,9 @@ class TextureStripper:
             if local_path in self._anim_repl_rig:
                 return self._anim_repl_rig[local_path]
         try:
-            from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-                detect_rig,
-            )
-
             path = Path(local_path)
-            rig = detect_rig(strip_roblox_metadata(path, path.read_bytes()))
-        except Exception:  # ruff: ignore[blind-except]
+            rig = _detect_rig(strip_roblox_metadata(path, path.read_bytes()))
+        except _BEST_EFFORT_ERRORS:
             rig = 'unknown'
         with self._anim_lock:
             self._anim_repl_rig[local_path] = rig
@@ -1480,6 +1704,58 @@ class TextureStripper:
         mapped = self._REVERSE.get(at_name)
         return mapped in self._ANIM_TYPE_IDS
 
+    def _route_texpack_slot_id_replacement(
+        self,
+        *,
+        batch_id: str,
+        req_id: object,
+        aid: _ReplacementKey,
+        replacement_id: int,
+        source_key: _ReplacementKey,
+        map_index: int | None,
+        is_solidmodel: bool,
+    ) -> bool:
+        scraper = self._cache_scraper
+        if scraper is None:
+            return False
+
+        local_tgt = self._predownloaded.get(replacement_id)
+        if local_tgt is None:
+            dl_path = APP_CACHE_DIR / f'predownloaded/{replacement_id}.dat'
+            dl_path.parent.mkdir(parents=True, exist_ok=True)
+            if not dl_path.exists():
+                log_buffer.log(
+                    'Replacer',
+                    f'Downloading asset {replacement_id} for KTX2 conversion...',
+                )
+                extra_hdrs: dict[str, str] = {}
+                cookie = _scraper_get_roblosecurity(scraper)
+                if cookie:
+                    extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
+                scraped_data, _dl_status = _scraper_fetch_asset_with_place_id_retry(
+                    scraper,
+                    str(replacement_id),
+                    extra_headers=extra_hdrs or None,
+                )
+                if scraped_data:
+                    dl_path.write_bytes(scraped_data)
+            if dl_path.exists():
+                local_tgt = str(dl_path)
+
+        if local_tgt is None:
+            return False
+
+        self._route_local(
+            f'{batch_id}_{req_id}',
+            aid,
+            local_tgt,
+            is_solidmodel=is_solidmodel,
+            is_texpack=True,
+            source_key=source_key,
+            map_index=map_index,
+        )
+        return True
+
     # ------------------------------------------------------------------
     # Batch request (called from server MITM thread)
     # ------------------------------------------------------------------
@@ -1487,7 +1763,7 @@ class TextureStripper:
     def process_batch_request(
         self,
         body: bytes,
-        req_headers: dict[str, str],  # ruff: ignore[unused-method-argument]
+        req_headers: dict[str, str],
         replacements_tuple: ReplacementMaps,
         batch_id: str = '',
     ) -> tuple[bytes, bytes] | bytes:
@@ -1497,11 +1773,12 @@ class TextureStripper:
         the original asset IDs restored (index-aligned with the upstream
         response) so the cache scraper stores content under original IDs.
         """
+        del req_headers
         if not body:
             return body, body
         try:
             data = _loads(body)
-        except Exception:  # ruff: ignore[blind-except]
+        except TypeError, ValueError:
             return body
         if not isinstance(data, list):
             return body
@@ -1516,7 +1793,7 @@ class TextureStripper:
         replacements = {
             key: value
             for key, value in replacements.items()
-            if self._normalize_asset_id(value) not in (0, 1)  # ruff: ignore[literal-membership]
+            if self._normalize_asset_id(value) not in {0, 1}
         }
         # Move pre-downloaded private replacements into local_replacements so
         # they follow the exact same code path as user-configured local files
@@ -1599,7 +1876,7 @@ class TextureStripper:
 
         # Convert TexturePack slot removals to blank-placeholder local routes.
         # Dropping a slot from the batch breaks the entire TexturePack in Roblox;
-        # serving a 1×1 blank KTX2 keeps the pack intact for the other slots.  # ruff: ignore[ambiguous-unicode-character-comment]
+        # serving a 1x1 blank KTX2 keeps the pack intact for the other slots.
         # Matches "parentId:mapIndex" and wildcard "TexturePack:N" removal keys.
         synthetic_slot_removals: set[int | str] = set()
         if removals:
@@ -1660,7 +1937,7 @@ class TextureStripper:
                 + self._get_type_keys(e)
             )
             if self._is_anim_entry(e):
-                replacement_keys += [k for k in self._VIRTUAL_ANIM_RIG]  # ruff: ignore[unnecessary-comprehension]
+                replacement_keys += list(self._VIRTUAL_ANIM_RIG)
             has_replacement = any(
                 key in source
                 and not (source is local_replacements and key in synthetic_slot_removals)
@@ -1686,7 +1963,7 @@ class TextureStripper:
         # All route through the ORM compositor targeting Roblox fidelity slot 2
         # (the combined ORM CDN request).  The mapping is GLOBAL and FIXED —
         # it does NOT depend on the per-asset XML tag ordering.
-        GLOBAL_INDEX_CHANNEL = {  # ruff: ignore[non-lowercase-variable-in-function]
+        global_index_channel = {
             2: 'metalness',
             3: 'roughness',
             4: 'emissive',
@@ -1703,7 +1980,7 @@ class TextureStripper:
             if not isinstance(nk, str) or ':' not in nk:
                 continue
             npk, ngi = nk.split(':', 1)
-            if ngi != '1' or self._normalize_asset_id(nv) in (0, 1):  # ruff: ignore[literal-membership]
+            if ngi != '1' or self._normalize_asset_id(nv) in {0, 1}:
                 continue
             normal_overrides[int(npk) if npk.isdigit() else npk] = nv
         # Scan both cdn_replacements and local_replacements. Local replacements
@@ -1722,7 +1999,7 @@ class TextureStripper:
                 continue
             if gi < 2:
                 continue  # GI0 is the Color full-slot route.
-            ch = GLOBAL_INDEX_CHANNEL.get(gi)
+            ch = global_index_channel.get(gi)
             if not ch:
                 continue
             # KTX2/KTX paths (e.g. blank placeholder) are not valid scalar PNG
@@ -1734,7 +2011,7 @@ class TextureStripper:
                 else cv_value
             )
             orm_overrides.setdefault(pk_key, {})[ch] = cv_resolved
-        for idx, e in enumerate(data):  # ruff: ignore[too-many-nested-blocks]
+        for idx, e in enumerate(data):
             if not isinstance(e, dict):
                 continue
             aid_raw = e.get('assetId')
@@ -1796,49 +2073,25 @@ class TextureStripper:
                 # Roblox resolves every map from the replacement pack.  Treating
                 # a whole pack as an image downloads its XML and serves that XML
                 # for every slot, effectively removing all textures.
-                is_texpack_slot_match = matched in (slot_key, wildcard_key)  # ruff: ignore[literal-membership]
+                is_texpack_slot_match = matched in {slot_key, wildcard_key}
 
-                if is_texpack_slot_match and req_id and aid and str(replacement_id).isdigit():
-                    scraper = self._cache_scraper
-                    if scraper:
-                        local_tgt = None
-                        if int(replacement_id) in self._predownloaded:
-                            local_tgt = self._predownloaded[int(replacement_id)]
-                        else:
-                            dl_path = APP_CACHE_DIR / f'predownloaded/{replacement_id}.dat'
-                            dl_path.parent.mkdir(parents=True, exist_ok=True)
-                            if not dl_path.exists():
-                                log_buffer.log(
-                                    'Replacer',
-                                    f'Downloading asset {replacement_id} for KTX2 conversion...',
-                                )
-                                extra_hdrs: dict[str, str] = {}
-                                cookie = _scraper_get_roblosecurity(scraper)
-                                if cookie:
-                                    extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                                scraped_data, _dl_status = _scraper_fetch_asset_with_place_id_retry(
-                                    scraper,
-                                    str(replacement_id),
-                                    extra_headers=extra_hdrs or None,
-                                )
-                                if scraped_data:
-                                    dl_path.write_bytes(scraped_data)
-                            if dl_path.exists():
-                                local_tgt = str(dl_path)
-
-                        if local_tgt is not None:
-                            # Instead of pushing the ID to Roblox, we route it as a local file, prompting conversion
-                            self._route_local(
-                                f'{batch_id}_{req_id}',
-                                aid,
-                                local_tgt,
-                                is_solidmodel,
-                                is_texpack=True,
-                                source_key=matched,
-                                map_index=map_index,
-                            )
-                            modified = True
-                            continue  # Skip the usual e['assetId'] = replacement_id logic
+                if (
+                    is_texpack_slot_match
+                    and req_id
+                    and aid
+                    and str(replacement_id).isdigit()
+                    and self._route_texpack_slot_id_replacement(
+                        batch_id=batch_id,
+                        req_id=req_id,
+                        aid=aid,
+                        replacement_id=int(replacement_id),
+                        source_key=matched,
+                        map_index=map_index,
+                        is_solidmodel=is_solidmodel,
+                    )
+                ):
+                    modified = True
+                    continue  # Skip the usual e['assetId'] = replacement_id logic
 
                 e['assetId'] = replacement_id
                 id_swapped[idx] = aid_raw
@@ -1874,7 +2127,7 @@ class TextureStripper:
                                 f'{batch_id}_{req_id}',
                                 aid,
                                 comp,
-                                is_solidmodel,
+                                is_solidmodel=is_solidmodel,
                                 is_texpack=True,
                                 source_key=f'ORM[{", ".join(sorted(orm_chs))}]',
                                 map_index=map_index,
@@ -1890,7 +2143,7 @@ class TextureStripper:
                 all_keys = list(winning_keys)
                 # For animation entries, also check virtual rig-filter keys as fallback
                 if self._is_anim_entry(e):
-                    all_keys = all_keys + [k for k in self._VIRTUAL_ANIM_RIG]  # ruff: ignore[non-augmented-assignment, unnecessary-comprehension]
+                    all_keys += list(self._VIRTUAL_ANIM_RIG)
 
                 cdn_key = winning_cdn_key
                 # Prefer real local replacements over blank routes synthesized
@@ -1920,8 +2173,8 @@ class TextureStripper:
                         f'{batch_id}_{req_id}',
                         aid,
                         repl_local_path,
-                        is_solidmodel,
-                        is_texpack,
+                        is_solidmodel=is_solidmodel,
+                        is_texpack=is_texpack,
                         source_key=local_key,
                         map_index=map_index,
                     )
@@ -1953,8 +2206,8 @@ class TextureStripper:
                         f'{batch_id}_{req_id}',
                         aid,
                         cdn_replacements[cdn_key],
-                        is_solidmodel,
-                        is_texpack_cdn,
+                        is_solidmodel=is_solidmodel,
+                        is_texpack=is_texpack_cdn,
                         map_index=map_index,
                     )
 
@@ -1972,6 +2225,126 @@ class TextureStripper:
             return result, scraper_body
         return body, body
 
+    def _process_batch_response_entry_locked(
+        self,
+        *,
+        idx: int,
+        item: _JsonObject,
+        batch_id: str,
+        req_data: _JsonList,
+        req_ids_by_index: list[str],
+        texpack_request_slots: dict[int, int],
+        local_replacements: dict[_ReplacementKey, str],
+        cdn_replacements: dict[_ReplacementKey, str],
+        orm_overrides: dict[int | str, dict[str, str | None]],
+        normal_overrides: dict[int | str, str | int | None],
+    ) -> None:
+        req_id_raw = str(item.get('requestId', ''))
+        location = _preserve_location(item.get('location'))
+        base_loc = location.split('?')[0] if location else ''
+
+        pending_key = ''
+        if req_id_raw:
+            by_response_id = f'{batch_id}_{req_id_raw}'
+            if by_response_id in self._pending:
+                pending_key = by_response_id
+
+        # Fallback: map by response index to the outbound requestId.
+        # This handles batches where Roblox rewrites requestIds in the response.
+        mapped_req_id = req_ids_by_index[idx] if idx < len(req_ids_by_index) else ''
+        if not pending_key and mapped_req_id:
+            by_request_index = f'{batch_id}_{mapped_req_id}'
+            if by_request_index in self._pending:
+                pending_key = by_request_index
+
+        req_item: _JsonObject = (
+            _preserve_json_object(req_data[idx])
+            if idx < len(req_data) and isinstance(req_data[idx], dict)
+            else {}
+        )
+        aid = self._normalize_asset_id(req_item.get('assetId'))
+        map_index = texpack_request_slots.get(idx)
+
+        if location and not pending_key and aid is not None and map_index is not None:
+            if map_index == 2 and orm_overrides:
+                orm_chs: dict[str, str | None] = {}
+                orm_chs.update(orm_overrides.get('TexturePack', {}))
+                if aid in orm_overrides:
+                    orm_chs.update(orm_overrides[aid])
+                if orm_chs:
+                    normal_source = normal_overrides.get('TexturePack')
+                    if aid in normal_overrides:
+                        normal_source = normal_overrides[aid]
+                    comp = self._build_orm_composite(
+                        aid,
+                        orm_chs,
+                        normal_source=normal_source,
+                    )
+                    if comp:
+                        self._local_redirects[base_loc] = comp
+                        log_buffer.log(
+                            'Local',
+                            f'Will serve local for {base_loc[:60]}... '
+                            f'(key=ORM[{", ".join(sorted(orm_chs))}], slot={map_index}, file={Path(comp).name})',
+                        )
+                        return
+
+            slot_key = f'{aid}:{map_index}'
+            wildcard_key = f'TexturePack:{map_index}'
+            # Match the request-side specificity order so an exact
+            # asset override always beats a TexturePack wildcard or
+            # type fallback during response recovery as well.
+            all_keys = [slot_key, aid, wildcard_key, *self._get_type_keys(req_item)]
+            local_key = next((k for k in all_keys if k in local_replacements), None)
+            cdn_key = next((k for k in all_keys if k in cdn_replacements), None)
+            if local_key is not None:
+                local_path = self._convert_texpack_local(
+                    local_replacements[local_key],
+                    map_index=map_index,
+                )
+                self._local_redirects[base_loc] = local_path
+                log_buffer.log(
+                    'Local',
+                    f'Will serve local for {base_loc[:60]}... '
+                    f'(key={local_key}, slot={map_index}, file={Path(local_path).name})',
+                )
+                return
+            if cdn_key is not None:
+                self._cdn_redirects[base_loc] = cdn_replacements[cdn_key]
+                log_buffer.log(
+                    'CDN',
+                    f'Will redirect {base_loc[:60]}... (key={cdn_key}, slot={map_index})',
+                )
+                return
+
+        if not location or not pending_key:
+            return
+        url_type, url_value = self._pending.pop(pending_key)
+        if url_type == 'cdn':
+            self._cdn_redirects[base_loc] = url_value
+            log_buffer.log('CDN', f'Will redirect {base_loc[:60]}...')
+        elif url_type == 'local':
+            # Check if this is a tagged animation replacement — if so, put it in
+            # _anim_rig_local so server.py reads the upstream CDN response first
+            # to detect the original rig, rather than short-circuiting immediately.
+            with self._anim_lock:
+                anim_pending = self._anim_local_pending.pop(pending_key, None)
+            if anim_pending is not None:
+                anim_path, required_rig = anim_pending
+                self._anim_rig_local[base_loc] = (anim_path, required_rig)
+                log_buffer.log('AnimConv', f'Queued rig-detect for {base_loc[:60]}...')
+            else:
+                self._local_redirects[base_loc] = url_value
+                log_buffer.log('Local', f'Will serve local for {base_loc[:60]}...')
+        elif url_type == 'solid':
+            self._solidmodel_injections[base_loc] = url_value
+            self._solidmodel_force_v3.discard(base_loc)
+            log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
+        elif url_type == 'solid_obj':
+            self._solidmodel_injections[base_loc] = url_value
+            self._solidmodel_force_v3.add(base_loc)
+            log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
+
     # ------------------------------------------------------------------
     # Batch response (called from server MITM thread)
     # ------------------------------------------------------------------
@@ -1980,15 +2353,16 @@ class TextureStripper:
         self,
         req_body: bytes,
         resp_body: bytes,
-        req_headers: dict[str, str],  # ruff: ignore[unused-method-argument]
+        req_headers: dict[str, str],
         batch_id: str = '',
     ) -> None:
         """Commit CDN URL -> redirect/local/solid mappings from batch response."""
+        del req_headers
         if not resp_body:
             return
         try:
             resp_data = _loads(resp_body)
-        except Exception:  # ruff: ignore[blind-except]
+        except TypeError, ValueError:
             return
         if not isinstance(resp_data, list):
             return
@@ -2000,24 +2374,13 @@ class TextureStripper:
         req_data: _JsonList = []
         req_ids_by_index: list[str] = []
         if req_body:
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                loaded_req_data = _loads(req_body)
-                if isinstance(loaded_req_data, list):
-                    req_data = loaded_req_data
-                    for request_entry in req_data:
-                        if isinstance(request_entry, dict):
-                            req_ids_by_index.append(str(request_entry.get('requestId', '')))
-                        else:
-                            req_ids_by_index.append('')
-            except Exception:  # ruff: ignore[blind-except]
-                req_data = []
-                req_ids_by_index = []
+            req_data, req_ids_by_index = _decode_request_entries(req_body)
 
         self._sync_replacements_generation()
         replacements, _, cdn_replacements, local_replacements = (
             self.config_manager.get_all_replacements()
         )
-        GLOBAL_INDEX_CHANNEL = {  # ruff: ignore[non-lowercase-variable-in-function]
+        global_index_channel = {
             2: 'metalness',
             3: 'roughness',
             4: 'emissive',
@@ -2029,7 +2392,7 @@ class TextureStripper:
             if not isinstance(nk, str) or ':' not in nk:
                 continue
             npk, ngi = nk.split(':', 1)
-            if ngi != '1' or self._normalize_asset_id(nv) in (0, 1):  # ruff: ignore[literal-membership]
+            if ngi != '1' or self._normalize_asset_id(nv) in {0, 1}:
                 continue
             normal_overrides[int(npk) if npk.isdigit() else npk] = nv
         for ck, cv in {**cdn_replacements, **local_replacements}.items():
@@ -2043,7 +2406,7 @@ class TextureStripper:
             if gi == 1:
                 normal_overrides[pk_key] = cv
                 continue
-            ch = GLOBAL_INDEX_CHANNEL.get(gi)
+            ch = global_index_channel.get(gi)
             if not ch:
                 continue
             cv_value = _preserve_optional_str(cv)
@@ -2063,119 +2426,25 @@ class TextureStripper:
                     slot_target_ids.add(int(pk))
         texpack_request_slots = self._build_texpack_request_slot_map(req_data, slot_target_ids)
 
-        with self._lock:  # ruff: ignore[too-many-nested-blocks]
+        with self._lock:
             batch_generation = self._batch_generations.pop(batch_id, None)
             if batch_generation is None or batch_generation != self._routes_generation:
                 return
             for idx, item in enumerate(resp_data):
                 if not isinstance(item, dict):
                     continue
-                req_id_raw = str(item.get('requestId', ''))
-                location = _preserve_location(item.get('location'))
-                base_loc = location.split('?')[0] if location else ''
-
-                pending_key = ''
-                if req_id_raw:
-                    by_response_id = f'{batch_id}_{req_id_raw}'
-                    if by_response_id in self._pending:
-                        pending_key = by_response_id
-
-                # Fallback: map by response index to the outbound requestId.
-                # This handles batches where Roblox rewrites requestIds in the response.
-                mapped_req_id = req_ids_by_index[idx] if idx < len(req_ids_by_index) else ''
-                if not pending_key and mapped_req_id:
-                    by_request_index = f'{batch_id}_{mapped_req_id}'
-                    if by_request_index in self._pending:
-                        pending_key = by_request_index
-
-                req_item: _JsonObject = (
-                    _preserve_json_object(req_data[idx])
-                    if idx < len(req_data) and isinstance(req_data[idx], dict)
-                    else {}
+                self._process_batch_response_entry_locked(
+                    idx=idx,
+                    item=item,
+                    batch_id=batch_id,
+                    req_data=req_data,
+                    req_ids_by_index=req_ids_by_index,
+                    texpack_request_slots=texpack_request_slots,
+                    local_replacements=local_replacements,
+                    cdn_replacements=cdn_replacements,
+                    orm_overrides=orm_overrides,
+                    normal_overrides=normal_overrides,
                 )
-                aid = self._normalize_asset_id(req_item.get('assetId'))
-                map_index = texpack_request_slots.get(idx)
-
-                if location and not pending_key:  # ruff: ignore[collapsible-if]
-                    if aid is not None and map_index is not None:
-                        if map_index == 2 and orm_overrides:
-                            orm_chs: dict[str, str | None] = {}
-                            orm_chs.update(orm_overrides.get('TexturePack', {}))
-                            if aid in orm_overrides:
-                                orm_chs.update(orm_overrides[aid])
-                            if orm_chs:
-                                normal_source = normal_overrides.get('TexturePack')
-                                if aid in normal_overrides:
-                                    normal_source = normal_overrides[aid]
-                                comp = self._build_orm_composite(
-                                    aid,
-                                    orm_chs,
-                                    normal_source=normal_source,
-                                )
-                                if comp:
-                                    self._local_redirects[base_loc] = comp
-                                    log_buffer.log(
-                                        'Local',
-                                        f'Will serve local for {base_loc[:60]}... '
-                                        f'(key=ORM[{", ".join(sorted(orm_chs))}], slot={map_index}, file={Path(comp).name})',
-                                    )
-                                    continue
-
-                        slot_key = f'{aid}:{map_index}'
-                        wildcard_key = f'TexturePack:{map_index}'
-                        # Match the request-side specificity order so an exact
-                        # asset override always beats a TexturePack wildcard or
-                        # type fallback during response recovery as well.
-                        all_keys = [slot_key, aid, wildcard_key] + self._get_type_keys(req_item)  # ruff: ignore[collection-literal-concatenation]
-                        local_key = next((k for k in all_keys if k in local_replacements), None)
-                        cdn_key = next((k for k in all_keys if k in cdn_replacements), None)
-                        if local_key is not None:
-                            local_path = self._convert_texpack_local(
-                                local_replacements[local_key],
-                                map_index=map_index,
-                            )
-                            self._local_redirects[base_loc] = local_path
-                            log_buffer.log(
-                                'Local',
-                                f'Will serve local for {base_loc[:60]}... '
-                                f'(key={local_key}, slot={map_index}, file={Path(local_path).name})',
-                            )
-                            continue
-                        if cdn_key is not None:
-                            self._cdn_redirects[base_loc] = cdn_replacements[cdn_key]
-                            log_buffer.log(
-                                'CDN',
-                                f'Will redirect {base_loc[:60]}... (key={cdn_key}, slot={map_index})',
-                            )
-                            continue
-
-                if not location or not pending_key:
-                    continue
-                url_type, url_value = self._pending.pop(pending_key)
-                if url_type == 'cdn':
-                    self._cdn_redirects[base_loc] = url_value
-                    log_buffer.log('CDN', f'Will redirect {base_loc[:60]}...')
-                elif url_type == 'local':
-                    # Check if this is a tagged animation replacement — if so, put it in
-                    # _anim_rig_local so server.py reads the upstream CDN response first
-                    # to detect the original rig, rather than short-circuiting immediately.
-                    with self._anim_lock:
-                        anim_pending = self._anim_local_pending.pop(pending_key, None)
-                    if anim_pending is not None:
-                        anim_path, required_rig = anim_pending
-                        self._anim_rig_local[base_loc] = (anim_path, required_rig)
-                        log_buffer.log('AnimConv', f'Queued rig-detect for {base_loc[:60]}...')
-                    else:
-                        self._local_redirects[base_loc] = url_value
-                        log_buffer.log('Local', f'Will serve local for {base_loc[:60]}...')
-                elif url_type == 'solid':
-                    self._solidmodel_injections[base_loc] = url_value
-                    self._solidmodel_force_v3.discard(base_loc)
-                    log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
-                elif url_type == 'solid_obj':
-                    self._solidmodel_injections[base_loc] = url_value
-                    self._solidmodel_force_v3.add(base_loc)
-                    log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
 
     # ------------------------------------------------------------------
     # CDN request check (called from server MITM thread for Roblox CDN hosts)
@@ -2192,20 +2461,18 @@ class TextureStripper:
         base_url = f'https://{host}{path}'.split('?')[0]
 
         def _log_cdn_match(action: str, value: str | _AnimPendingValue) -> None:
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                target = value[0] if action == 'anim_rig' and isinstance(value, tuple) else value
-                p = Path(str(target))
-                exists = p.exists()
-                size = p.stat().st_size if exists else 0
-                ext = p.suffix.lower()
-                category = 'TexPackTrace' if ext in ('.ktx', '.ktx2') else 'CDN'  # ruff: ignore[literal-membership]
-                log_buffer.log(
-                    category,
-                    f'CDN short-circuit match: action={action} url={base_url[:120]} '
-                    f'target={_file_value(str(target))} exists={exists} bytes={size}',
-                )
-            except Exception as exc:  # ruff: ignore[blind-except]
+            target = value[0] if action == 'anim_rig' and isinstance(value, tuple) else value
+            try:
+                display, exists, size, ext = _cdn_target_diagnostics(target)
+            except OSError as exc:
                 log_buffer.log('CDN', f'CDN short-circuit log failed for {base_url[:80]}: {exc}')
+                return
+            category = 'TexPackTrace' if ext in {'.ktx', '.ktx2'} else 'CDN'
+            log_buffer.log(
+                category,
+                f'CDN short-circuit match: action={action} url={base_url[:120]} '
+                f'target={display} exists={exists} bytes={size}',
+            )
 
         # Check animation rig-detect entries first (separate dict, no _lock needed here
         # since _anim_lock guards it; checked before _local_redirects so these never
@@ -2272,11 +2539,11 @@ class TextureStripper:
                     self._solidmodel_force_v3.discard(k)
         try:
             modified = _inject_obj_into_solidmodel(resp_body, obj_path, prefer_v3=prefer_v3)
-            log_buffer.log('SolidModel', f'Injected OBJ ({len(modified)} bytes)')
-            return modified  # ruff: ignore[try-consider-else]
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except _BEST_EFFORT_ERRORS as exc:
             log_buffer.log('SolidModel', f'Injection failed: {exc}')
             return resp_body
+        log_buffer.log('SolidModel', f'Injected OBJ ({len(modified)} bytes)')
+        return modified
 
     # ------------------------------------------------------------------
     # Internal routing helpers
@@ -2303,16 +2570,12 @@ class TextureStripper:
         if ext == '.ktx':
             log_buffer.log('TexPackTrace', f'Local TexturePack map already KTX: file={path.name}')
             return local_path
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            from fleasion.cache.tools.image_to_ktx2.converter import (  # ruff: ignore[import-outside-top-level]
-                get_or_create_ktx2_from_image,
-            )
-
+        try:
             log_buffer.log(
                 'TexPackTrace',
                 f'Converting local TexturePack map to KTX2: input={path.name}',
             )
-            converted_path = get_or_create_ktx2_from_image(
+            converted_path = _get_or_create_ktx2_from_image(
                 path,
                 mipmap_mode=mipmap_mode,
             )
@@ -2326,7 +2589,7 @@ class TextureStripper:
                     f'Converted local TexturePack map: input={path.name} output={converted_path.name}',
                 )
                 return str(converted_path)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except _BEST_EFFORT_ERRORS as exc:
             log_buffer.log('Local', f'Failed to convert {path.name} to KTX2: {exc}')
             log_buffer.log(
                 'TexPackTrace',
@@ -2339,50 +2602,21 @@ class TextureStripper:
         path: Path, *, mipmap_mode: Literal['color', 'normal', 'linear'] = 'color'
     ) -> Path:
         """Normalize RGBA8 KTX2 while preserving authored mip chains."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            from fleasion.cache.tools.rgba_ktx2 import (  # ruff: ignore[import-outside-top-level]
-                RGBA8_KTX2_CACHE_VERSION,
-                read_rgba8_ktx2_levels,
-                write_rgba8_ktx2,
-            )
-
-            data = path.read_bytes()
-            parsed = read_rgba8_ktx2_levels(data)
-            if parsed is None:
-                return path
-            levels, width, height = parsed
-            # Multi-level RGBA8 input was already passed through untouched by
-            # the old single-level-only normalizer. Preserve authored mip data
-            # and metadata rather than rewriting a valid texture unnecessarily.
-            if len(levels) > 1:
-                return path
-
-            digest = hashlib.md5(
-                data + RGBA8_KTX2_CACHE_VERSION + mipmap_mode.encode('ascii'),
-                usedforsecurity=False,
-            ).hexdigest()[:16]
-            out_path = APP_CACHE_DIR / f'{path.stem}_rgba8_{digest}.ktx2'
-            if not out_path.exists():
-                write_rgba8_ktx2(
-                    levels[0],
-                    width,
-                    height,
-                    out_path,
-                    mipmap_mode=mipmap_mode,
-                )
-            return out_path  # ruff: ignore[try-consider-else]
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            return _normalized_rgba8_ktx2_path(path, mipmap_mode=mipmap_mode)
+        except _BEST_EFFORT_ERRORS as exc:
             log_buffer.log(
                 'TexPackTrace',
                 f'RGBA8 KTX2 normalization skipped for {path.name}: {exc}',
             )
             return path
 
-    def _route_cdn(  # ruff: ignore[too-many-positional-arguments, too-many-return-statements]
+    def _route_cdn(
         self,
         req_id: str,
         aid: object,
         cdn_url: str,
+        *,
         is_solidmodel: bool,
         is_texpack: bool = False,
         map_index: int | None = None,
@@ -2401,49 +2635,42 @@ class TextureStripper:
             if _download_remote_file(cdn_url, local_cache, '.obj'):
                 kind = 'solid_obj' if is_solidmodel else 'local'
                 self._queue_pending(req_id, (kind, str(local_cache)))
-                return
-            self._queue_pending(req_id, ('cdn', cdn_url))
-            return
-
-        if ext == '.mesh':
+            else:
+                self._queue_pending(req_id, ('cdn', cdn_url))
+        elif ext == '.mesh':
             if not is_solidmodel:
                 self._queue_pending(req_id, ('cdn', cdn_url))
                 log_buffer.log('CDN', f'Queued direct .mesh redirect for {aid}')
-                return
-            local_cache = APP_CACHE_DIR / f'{url_hash}.mesh'
-            if _download_remote_file(cdn_url, local_cache, '.mesh'):
-                obj = _try_mesh_to_obj(local_cache, f'SolidModel CDN {aid}')
+            else:
+                local_cache = APP_CACHE_DIR / f'{url_hash}.mesh'
+                obj = (
+                    _try_mesh_to_obj(local_cache, f'SolidModel CDN {aid}')
+                    if _download_remote_file(cdn_url, local_cache, '.mesh')
+                    else None
+                )
                 if obj:
                     self._queue_pending(req_id, ('solid', str(obj)))
-                    return
-            self._queue_pending(req_id, ('cdn', cdn_url))
-            return
-
-        if ext == '.bin':
-            local_cache = APP_CACHE_DIR / f'{url_hash}.bin'
-            if _download_remote_file(cdn_url, local_cache, '.bin'):
-                # Only attempt conversion if it's actually a CSGMDL
-                if _is_csgmdl_bin(local_cache):
-                    obj = _try_bin_to_obj(local_cache, f'CDN {aid}')
-                    if obj:
-                        kind = 'solid' if is_solidmodel else 'local'
-                        self._queue_pending(req_id, (kind, str(obj)))
-                        return
-                    # Conversion failed, fall back to CDN redirect
-                    log_buffer.log('CDN', f'{aid}: CSGMDL conversion failed, redirecting to CDN')
                 else:
-                    # Not a CSGMDL, serve the .bin directly
+                    self._queue_pending(req_id, ('cdn', cdn_url))
+        elif ext == '.bin':
+            local_cache = APP_CACHE_DIR / f'{url_hash}.bin'
+            downloaded = _download_remote_file(cdn_url, local_cache, '.bin')
+            if downloaded and _is_csgmdl_bin(local_cache):
+                obj = _try_bin_to_obj(local_cache, f'CDN {aid}')
+                if obj:
                     kind = 'solid' if is_solidmodel else 'local'
-                    self._queue_pending(req_id, (kind, str(local_cache)))
-                    return
-            self._queue_pending(req_id, ('cdn', cdn_url))
-            return
-
-        # Any other extension
-        if is_texpack and ext != '.ktx2':
+                    self._queue_pending(req_id, (kind, str(obj)))
+                else:
+                    log_buffer.log('CDN', f'{aid}: CSGMDL conversion failed, redirecting to CDN')
+                    self._queue_pending(req_id, ('cdn', cdn_url))
+            elif downloaded:
+                kind = 'solid' if is_solidmodel else 'local'
+                self._queue_pending(req_id, (kind, str(local_cache)))
+            else:
+                self._queue_pending(req_id, ('cdn', cdn_url))
+        elif is_texpack and ext != '.ktx2':
             local_cache = APP_CACHE_DIR / f'{url_hash}{ext}'
             if _download_remote_file(cdn_url, local_cache, 'CDN TexPack Map'):
-                # Divert back to local routing so it triggers KTX2 conversion!
                 log_buffer.log(
                     'TexPackTrace',
                     f'Downloaded CDN TexturePack map for local conversion aid={aid} file={local_cache.name}',
@@ -2452,24 +2679,27 @@ class TextureStripper:
                     req_id,
                     aid,
                     str(local_cache),
-                    is_solidmodel,
+                    is_solidmodel=is_solidmodel,
                     is_texpack=True,
                     map_index=map_index,
                 )
-                return
-            log_buffer.log(
-                'TexPackTrace',
-                f'CDN TexturePack map download failed for aid={aid}; falling back to CDN redirect',
-            )
+            else:
+                log_buffer.log(
+                    'TexPackTrace',
+                    f'CDN TexturePack map download failed for aid={aid}; falling back to CDN redirect',
+                )
+                self._queue_pending(req_id, ('cdn', cdn_url))
+                log_buffer.log('CDN', f'Queued CDN redirect for {aid}')
+        else:
+            self._queue_pending(req_id, ('cdn', cdn_url))
+            log_buffer.log('CDN', f'Queued CDN redirect for {aid}')
 
-        self._queue_pending(req_id, ('cdn', cdn_url))
-        log_buffer.log('CDN', f'Queued CDN redirect for {aid}')
-
-    def _route_local(  # ruff: ignore[too-many-positional-arguments]
+    def _route_local(
         self,
         req_id: str,
         aid: object,
         local_path: str,
+        *,
         is_solidmodel: bool,
         is_texpack: bool = False,
         source_key: object | None = None,
@@ -2487,34 +2717,30 @@ class TextureStripper:
             )
 
         # Isolate KTX2 explicit conversion only to TexturePack image replacements
-        if is_texpack and ext != '.ktx2' and ext != '.ktx':  # ruff: ignore[repeated-equality-comparison]
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                from fleasion.cache.tools.image_to_ktx2.converter import (  # ruff: ignore[import-outside-top-level]
-                    get_or_create_ktx2_from_image,
-                )
-
-                converted_path = get_or_create_ktx2_from_image(
+        if is_texpack and ext not in {'.ktx2', '.ktx'}:
+            try:
+                converted_path = _get_or_create_ktx2_from_image(
                     path,
                     mipmap_mode=mipmap_mode,
                 )
-                if converted_path:
-                    converted_path = self._normalize_rgba8_ktx2(
-                        converted_path,
-                        mipmap_mode=mipmap_mode,
-                    )
-                    local_path = str(converted_path)
-                    path = converted_path
-                    ext = path.suffix.lower()
-                    log_buffer.log(
-                        'TexPackTrace',
-                        f'Local TexturePack conversion selected output={path.name} '
-                        f'from={original_path.name} slot={_texpack_slot_label(map_index)}',
-                    )
-            except Exception as e:  # ruff: ignore[blind-except]
-                log_buffer.log('Local', f'Failed to convert {path.name} to KTX2: {e}')
+            except _BEST_EFFORT_ERRORS as exc:
+                log_buffer.log('Local', f'Failed to convert {path.name} to KTX2: {exc}')
                 log_buffer.log(
                     'TexPackTrace',
-                    f'Local TexturePack conversion failed for {path.name}: {e}',
+                    f'Local TexturePack conversion failed for {path.name}: {exc}',
+                )
+            else:
+                converted_path = self._normalize_rgba8_ktx2(
+                    converted_path,
+                    mipmap_mode=mipmap_mode,
+                )
+                local_path = str(converted_path)
+                path = converted_path
+                ext = path.suffix.lower()
+                log_buffer.log(
+                    'TexPackTrace',
+                    f'Local TexturePack conversion selected output={path.name} '
+                    f'from={original_path.name} slot={_texpack_slot_label(map_index)}',
                 )
         elif is_texpack and ext == '.ktx2':
             normalized = self._normalize_rgba8_ktx2(
@@ -2598,113 +2824,121 @@ class TextureStripper:
         TexturePack cache is used if available so unspecified channels retain
         their CDN values.
         """
-        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
-            from fleasion.cache.tools.orm_compositor import (  # ruff: ignore[import-outside-top-level]
-                composite_orm,
+        try:
+            return self._build_orm_composite_impl(
+                parent_id,
+                channel_pngs,
+                normal_source=normal_source,
             )
+        except _BEST_EFFORT_ERRORS as exc:
+            log_buffer.log('ORM', f'Composite failed for pack {parent_id}: {exc}')
+            return None
 
-            # Resolve CDN URLs to local cached files before compositing.
-            # On download failure the channel is omitted so the baseline KTX2
-            # value shows through, as if the user never replaced that channel.
-            resolved: dict[str, str | None] = {}
-            for ch, val in channel_pngs.items():
-                if val is not None and (
-                    str(val).startswith('http://') or str(val).startswith('https://')
-                ):
-                    url_hash = hashlib.md5(val.encode(), usedforsecurity=False).hexdigest()[:16]
-                    ext = Path(urlparse(val).path).suffix.lower() or '.png'
-                    cdn_cache = APP_CACHE_DIR / 'orm_cdn_cache' / f'{url_hash}{ext}'
-                    cdn_cache.parent.mkdir(parents=True, exist_ok=True)
-                    if not cdn_cache.exists():  # ruff: ignore[collapsible-if]
-                        if not _download_remote_file(val, cdn_cache, f'ORM channel {ch}'):
-                            log_buffer.log(
-                                'ORM',
-                                f'CDN download failed for channel {ch} — using original',
-                            )
-                            continue  # skip channel; baseline value preserved
-                    resolved[ch] = str(cdn_cache)
-                else:
-                    resolved[ch] = val
-            resolved_normal = normal_source
-            if resolved_normal is not None and (
-                isinstance(resolved_normal, int) or resolved_normal.isdigit()
+    def _build_orm_composite_impl(
+        self,
+        parent_id: int | str,
+        channel_pngs: dict[str, str | None],
+        *,
+        normal_source: str | int | None = None,
+    ) -> str | None:
+        # Resolve CDN URLs to local cached files before compositing.
+        # On download failure the channel is omitted so the baseline KTX2
+        # value shows through, as if the user never replaced that channel.
+        resolved: dict[str, str | None] = {}
+        for ch, val in channel_pngs.items():
+            if val is not None and (
+                str(val).startswith('http://') or str(val).startswith('https://')
             ):
-                normal_id = int(resolved_normal)
-                resolved_normal = self._predownloaded.get(normal_id)
-                if resolved_normal is None:
-                    normal_download = APP_CACHE_DIR / 'predownloaded' / f'{normal_id}.dat'
-                    normal_download.parent.mkdir(parents=True, exist_ok=True)
-                    if not normal_download.exists():
-                        scraper = self._cache_scraper
-                        if scraper is not None:
-                            extra_headers: dict[str, str] = {}
-                            cookie = _scraper_get_roblosecurity(scraper)
-                            if cookie:
-                                extra_headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                            normal_data, _status = _scraper_fetch_asset_with_place_id_retry(
-                                scraper,
-                                str(normal_id),
-                                extra_headers=extra_headers or None,
-                            )
-                            if normal_data:
-                                normal_download.write_bytes(normal_data)
-                    resolved_normal = str(normal_download) if normal_download.exists() else None
-                    if resolved_normal is None:
-                        log_buffer.log(
-                            'ORM',
-                            f'Normal asset {normal_id} could not be downloaded — using captured Normal baseline',
-                        )
-
-            if resolved_normal is not None and str(resolved_normal).startswith(
-                ('http://', 'https://')
-            ):
-                url_hash = hashlib.md5(
-                    str(resolved_normal).encode(), usedforsecurity=False
-                ).hexdigest()[:16]
-                ext = Path(urlparse(str(resolved_normal)).path).suffix.lower() or '.png'
-                normal_cache = APP_CACHE_DIR / 'orm_normal_cache' / f'{url_hash}{ext}'
-                normal_cache.parent.mkdir(parents=True, exist_ok=True)
-                if not normal_cache.exists() and not _download_remote_file(
-                    str(resolved_normal), normal_cache, 'TexturePack Normal map'
+                url_hash = hashlib.md5(val.encode(), usedforsecurity=False).hexdigest()[:16]
+                ext = Path(urlparse(val).path).suffix.lower() or '.png'
+                cdn_cache = APP_CACHE_DIR / 'orm_cdn_cache' / f'{url_hash}{ext}'
+                cdn_cache.parent.mkdir(parents=True, exist_ok=True)
+                if not cdn_cache.exists() and not _download_remote_file(
+                    val, cdn_cache, f'ORM channel {ch}'
                 ):
                     log_buffer.log(
                         'ORM',
-                        'Normal CDN download failed — using captured Normal baseline',
+                        f'CDN download failed for channel {ch} — using original',
                     )
-                    resolved_normal = None
-                elif normal_cache.exists():
-                    resolved_normal = str(normal_cache)
-
-            cache_manager = getattr(getattr(self, '_cache_scraper', None), 'cache_manager', None)
-            if cache_manager is not None:
-                baseline = cache_manager.get_texturepack_slot_path(parent_id, 2)
-                normal_baseline = cache_manager.get_texturepack_slot_path(parent_id, 1)
+                    continue  # skip channel; baseline value preserved
+                resolved[ch] = str(cdn_cache)
             else:
-                # Compatibility fallback for isolated tests/legacy callers that
-                # construct TextureStripper without wiring the CacheScraper.
-                baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot2.ktx2'
-                normal_baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot1.ktx2'
-            log_buffer.log(
-                'TexPackTrace',
-                f'ORM composite input pack={parent_id} baseline={baseline.name if baseline.exists() else "missing"} '
-                f'normal={_file_value(resolved_normal) if resolved_normal else (normal_baseline.name if normal_baseline.exists() else "missing")} '
-                f'channels={", ".join(f"{ch}={_file_value(val)}" for ch, val in sorted(resolved.items()))}',
-            )
-            result = composite_orm(
-                baseline=(baseline if baseline.exists() else None),
-                channels={k: (Path(v) if v is not None else None) for k, v in resolved.items()},
-                cache_dir=APP_CACHE_DIR,
-                normal_source=(Path(resolved_normal) if resolved_normal is not None else None),
-                normal_baseline=(normal_baseline if normal_baseline.exists() else None),
-            )
-            log_buffer.log(
-                'TexPackTrace',
-                f'ORM composite result pack={parent_id} output={_file_value(result)}',
-            )
-            return result  # ruff: ignore[try-consider-else]
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log('ORM', f'Composite failed for pack {parent_id}: {exc}')
-            return None
+                resolved[ch] = val
+        resolved_normal = normal_source
+        if resolved_normal is not None and (
+            isinstance(resolved_normal, int) or resolved_normal.isdigit()
+        ):
+            normal_id = int(resolved_normal)
+            resolved_normal = self._predownloaded.get(normal_id)
+            if resolved_normal is None:
+                normal_download = APP_CACHE_DIR / 'predownloaded' / f'{normal_id}.dat'
+                normal_download.parent.mkdir(parents=True, exist_ok=True)
+                if not normal_download.exists():
+                    scraper = self._cache_scraper
+                    if scraper is not None:
+                        extra_headers: dict[str, str] = {}
+                        cookie = _scraper_get_roblosecurity(scraper)
+                        if cookie:
+                            extra_headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+                        normal_data, _status = _scraper_fetch_asset_with_place_id_retry(
+                            scraper,
+                            str(normal_id),
+                            extra_headers=extra_headers or None,
+                        )
+                        if normal_data:
+                            normal_download.write_bytes(normal_data)
+                resolved_normal = str(normal_download) if normal_download.exists() else None
+                if resolved_normal is None:
+                    log_buffer.log(
+                        'ORM',
+                        f'Normal asset {normal_id} could not be downloaded — using captured Normal baseline',
+                    )
+
+        if resolved_normal is not None and str(resolved_normal).startswith(('http://', 'https://')):
+            url_hash = hashlib.md5(
+                str(resolved_normal).encode(), usedforsecurity=False
+            ).hexdigest()[:16]
+            ext = Path(urlparse(str(resolved_normal)).path).suffix.lower() or '.png'
+            normal_cache = APP_CACHE_DIR / 'orm_normal_cache' / f'{url_hash}{ext}'
+            normal_cache.parent.mkdir(parents=True, exist_ok=True)
+            if not normal_cache.exists() and not _download_remote_file(
+                str(resolved_normal), normal_cache, 'TexturePack Normal map'
+            ):
+                log_buffer.log(
+                    'ORM',
+                    'Normal CDN download failed — using captured Normal baseline',
+                )
+                resolved_normal = None
+            elif normal_cache.exists():
+                resolved_normal = str(normal_cache)
+
+        cache_manager = getattr(getattr(self, '_cache_scraper', None), 'cache_manager', None)
+        if cache_manager is not None:
+            baseline = cache_manager.get_texturepack_slot_path(parent_id, 2)
+            normal_baseline = cache_manager.get_texturepack_slot_path(parent_id, 1)
+        else:
+            # Compatibility fallback for isolated tests/legacy callers that
+            # construct TextureStripper without wiring the CacheScraper.
+            baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot2.ktx2'
+            normal_baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot1.ktx2'
+        log_buffer.log(
+            'TexPackTrace',
+            f'ORM composite input pack={parent_id} baseline={baseline.name if baseline.exists() else "missing"} '
+            f'normal={_file_value(resolved_normal) if resolved_normal else (normal_baseline.name if normal_baseline.exists() else "missing")} '
+            f'channels={", ".join(f"{ch}={_file_value(val)}" for ch, val in sorted(resolved.items()))}',
+        )
+        result = _composite_orm(
+            baseline=(baseline if baseline.exists() else None),
+            channels={k: (Path(v) if v is not None else None) for k, v in resolved.items()},
+            cache_dir=APP_CACHE_DIR,
+            normal_source=(Path(resolved_normal) if resolved_normal is not None else None),
+            normal_baseline=(normal_baseline if normal_baseline.exists() else None),
+        )
+        log_buffer.log(
+            'TexPackTrace',
+            f'ORM composite result pack={parent_id} output={_file_value(result)}',
+        )
+        return result
 
     def _build_texpack_request_slot_map(
         self,
@@ -2768,13 +3002,13 @@ class TextureStripper:
                     slots_for_asset = build_slots.setdefault(aid, {})
                     if build_key not in slots_for_asset:
                         raw_slot = next_slot.get(aid, 0)
-                        slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max]
+                        slots_for_asset[build_key] = min(2, raw_slot)
                         next_slot[aid] = raw_slot + 1
                     slot = slots_for_asset[build_key]
                 elif asset_counts.get(aid, 0) > 1:
                     raw_slot = occurrence_slot.get(aid, 0)
                     occurrence_slot[aid] = raw_slot + 1
-                    slot = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max]
+                    slot = min(2, raw_slot)
                 else:
                     continue
 
@@ -2782,74 +3016,45 @@ class TextureStripper:
 
         return result
 
-    def _should_remove(  # ruff: ignore[too-many-return-statements]
+    def _should_remove(
         self, e: _JsonObject, removals: set[_ReplacementKey], map_index: int | None = None
     ) -> bool:
         aid = self._normalize_asset_id(e.get('assetId'))
         if map_index is None:
             map_index = self._get_texpack_map_index(e)
-        if aid is not None and map_index is not None:
-            if f'{aid}:{map_index}' in removals:
-                return True
-            # Wildcard TexturePack:N removal
-            if f'TexturePack:{map_index}' in removals:
-                return True
-        if aid in removals:
-            return True
+        should_remove = bool(
+            aid is not None
+            and map_index is not None
+            and (f'{aid}:{map_index}' in removals or f'TexturePack:{map_index}' in removals)
+        )
+        if not should_remove:
+            should_remove = aid in removals
         at_id = e.get('assetTypeId')
-        if at_id is not None and at_id in removals:
-            return True
+        if not should_remove and at_id is not None:
+            should_remove = at_id in removals
         at_name = e.get('assetType')
-        if at_name:
-            if at_name in removals:
-                return True
-            if self._REVERSE.get(str(at_name).lower()) in removals:
-                return True
-        return False
+        if not should_remove and at_name:
+            should_remove = (
+                at_name in removals or self._REVERSE.get(str(at_name).lower()) in removals
+            )
+        return should_remove
 
     @staticmethod
     def _get_blank_ktx2_path() -> str | None:
-        """Return a path to a 1×1 white RGBA KTX2 placeholder texture.
+        """Return a path to a 1x1 white RGBA KTX2 placeholder texture.
 
         Created on first call and cached in APP_CACHE_DIR.  Used to fill
         TexturePack slots that the user has set to "Nothing" so the rest of
         the pack keeps loading normally.
         """
-        import struct as _struct  # ruff: ignore[import-outside-top-level]
-        import zlib as _zl  # ruff: ignore[import-outside-top-level]
-
         png_path = APP_CACHE_DIR / '_blank_texpack.png'
-        if not png_path.exists():
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-
-                def _chunk(ctype: bytes, data: bytes) -> bytes:
-                    body = ctype + data
-                    return (
-                        _struct.pack('>I', len(data))
-                        + body
-                        + _struct.pack('>I', _zl.crc32(body) & 0xFFFFFFFF)
-                    )
-
-                sig = b'\x89PNG\r\n\x1a\n'
-                ihdr = _chunk(
-                    b'IHDR', _struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0)
-                )  # 1×1 RGBA  # ruff: ignore[ambiguous-unicode-character-comment]
-                idat = _chunk(b'IDAT', _zl.compress(b'\x00\xff\xff\xff\xff', 9))  # white, opaque
-                iend = _chunk(b'IEND', b'')
-                png_path.write_bytes(sig + ihdr + idat + iend)
-                log_buffer.log('TexPack', 'Created blank 1×1 placeholder PNG')
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('TexPack', f'Failed to create blank placeholder PNG: {exc}')
-                return None
+        if not png_path.exists() and not _ensure_blank_png(png_path):
+            return None
         try:
-            from fleasion.cache.tools.image_to_ktx2.converter import (  # ruff: ignore[import-outside-top-level]
-                get_or_create_ktx2_from_image,
-            )
-
-            ktx_path = get_or_create_ktx2_from_image(png_path)
+            ktx_path = _get_or_create_ktx2_from_image(png_path)
             if ktx_path and ktx_path.exists():
                 return str(ktx_path)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except _BEST_EFFORT_ERRORS as exc:
             log_buffer.log('TexPack', f'Failed to convert blank placeholder to KTX2: {exc}')
         return None
 
@@ -2903,7 +3108,7 @@ class TextureStripper:
           5 = Height      (fidelity 2, ORM A channel)
 
         This method returns the RAW fidelity index (0, 1, or 2).
-        Global indices 2–5 are resolved via ``_GLOBAL_INDEX_CHANNEL``
+        Global indices 2-5 are resolved via ``_global_index_channel``
         in the ORM compositor path.
         """
         slot_quality = _decode_texpack_slot_quality(e)

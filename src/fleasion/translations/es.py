@@ -1,4 +1,5 @@
 """Spanish translations for Fleasion."""
+import string
 
 SPANISH: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': 'Agregar entradas de Fleasion lo convertiría en {value0:.1f} MiB, que excede el límite de seguridad KiB {value1:.0f} de Fleasion. No se agregaron asignaciones. Elimine las líneas de archivos de hosts obsoletas o cambie el nombre del archivo, luego reinicie Fleasion.\n\nRuta del archivo de hosts:\n{value2}',
@@ -510,13 +511,13 @@ SPANISH: dict[str, str] = {
     'count.server.other': '{count} servidores',
     'count.value.one': '{count} valor',
     'count.value.other': '{count} valores',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'Abcdefghijklmnopqrstuvwxyz',
     'font_viewer.sample.pack_my_box': 'Jovencillo emponzoñado de whisky: ¡qué figurota exhibe!',
     'font_viewer.sample.quick_brown_fox': 'El veloz murciélago hindú comía feliz cardillo y kiwi. La cigüeña tocaba el saxofón detrás del palenque de paja.',
     'font_viewer.sample.quick_zebras': 'Quiere la boca exhausta vid, kiwi, piña y fugaz jamón.',
     'font_viewer.sample.symbols': "!@#$%^&&*()_+-=[]{}|;:',.<>?/`~",
-    'font_viewer.sample.uppercase': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    'font_viewer.sample.uppercase': string.ascii_uppercase,
     'json.fetch.asset_not_found': 'Activo no encontrado (identificación eliminada o no válida)',
     'json.fetch.asset_private': 'El activo es privado (no se pudo omitir)',
     'json.fetch.cannot_fetch': 'No se puede recuperar: {value}',

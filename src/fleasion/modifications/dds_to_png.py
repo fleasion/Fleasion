@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import io
 
+from PIL import Image
+
 
 def tex_to_png_bytes(data: bytes) -> bytes | None:
     """Convert a Roblox .tex / .dds file to PNG bytes for preview.
@@ -19,15 +21,13 @@ def tex_to_png_bytes(data: bytes) -> bytes | None:
 
     Returns PNG bytes or ``None`` on failure.
     """
-    from PIL import Image  # ruff: ignore[import-outside-top-level]
-
     # DDS magic: b'DDS ' (0x44445320)
-    DDS_MAGIC = b'DDS '  # ruff: ignore[non-lowercase-variable-in-function]
+    dds_magic = b'DDS '
 
     working = data
 
     # Find the DDS magic and strip everything before it.
-    idx = working.find(DDS_MAGIC)
+    idx = working.find(dds_magic)
     if idx > 0:
         working = working[idx:]
     elif idx < 0:
@@ -39,5 +39,5 @@ def tex_to_png_bytes(data: bytes) -> bytes | None:
         buf = io.BytesIO()
         img.convert('RGBA').save(buf, format='PNG')
         return buf.getvalue()
-    except Exception:  # ruff: ignore[blind-except]
+    except (OSError, ValueError):
         return None

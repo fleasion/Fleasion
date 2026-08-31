@@ -30,12 +30,12 @@ def _cross_thread_socket_wakeup_failure(
 ) -> str | None:
     """Return why a socket wakeup failed, or ``None`` when it works."""
     receiver, sender = socketpair()
-    errors: list[BaseException] = []
+    errors: list[OSError] = []
 
     def wake() -> None:
         try:
             sender.sendall(b'\0')
-        except BaseException as exc:  # ruff: ignore[blind-except]
+        except OSError as exc:
             errors.append(exc)
 
     worker = thread_factory(target=wake, name='pytest-sandbox-wakeup-probe', daemon=True)

@@ -9,6 +9,7 @@ Reference: RbxmDeserializer in deserializer.py and
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Protocol
@@ -103,10 +104,13 @@ class RbxmSerializer:
         """Pre-scan SHARED_STRING properties and build the SSTR table."""
         for inst in self._all_instances:
             for prop in inst.properties.values():
-                if prop.fmt == PropertyFormat.SHARED_STRING and isinstance(prop.value, bytes):  # ruff: ignore[collapsible-if]
-                    if prop.value not in self._shared_string_index:
-                        self._shared_string_index[prop.value] = len(self._shared_strings)
-                        self._shared_strings.append(prop.value)
+                if (
+                    prop.fmt == PropertyFormat.SHARED_STRING
+                    and isinstance(prop.value, bytes)
+                    and prop.value not in self._shared_string_index
+                ):
+                    self._shared_string_index[prop.value] = len(self._shared_strings)
+                    self._shared_strings.append(prop.value)
 
     # ------------------------------------------------------------------
     # Top-level serialize
@@ -192,8 +196,6 @@ class RbxmSerializer:
     # ------------------------------------------------------------------
 
     def _build_sstr(self) -> bytes:
-        import hashlib  # ruff: ignore[import-outside-top-level]
-
         buf = bytearray()
         buf.extend(write_u32(0))  # version
         buf.extend(write_u32(len(self._shared_strings)))
@@ -274,39 +276,39 @@ class RbxmSerializer:
         return bytes(buf)
 
     @staticmethod
-    def _default_value(fmt: PropertyFormat) -> Any:  # ruff: ignore[too-many-return-statements]
+    def _default_value(fmt: PropertyFormat) -> Any:
         match fmt:
             case PropertyFormat.STRING:
-                return b''
+                result: Any = b''
             case PropertyFormat.BOOL:
-                return False
+                result = False
             case PropertyFormat.INT | PropertyFormat.ENUM | PropertyFormat.BRICK_COLOR:
-                return 0
+                result = 0
             case PropertyFormat.FLOAT | PropertyFormat.DOUBLE:
-                return 0.0
+                result = 0.0
             case PropertyFormat.UDIM:
-                return {'S': 0.0, 'O': 0}
+                result = {'S': 0.0, 'O': 0}
             case PropertyFormat.UDIM2:
-                return {'XS': 0.0, 'XO': 0, 'YS': 0.0, 'YO': 0}
+                result = {'XS': 0.0, 'XO': 0, 'YS': 0.0, 'YO': 0}
             case PropertyFormat.RAY:
-                return {
+                result = {
                     'origin': {'X': 0.0, 'Y': 0.0, 'Z': 0.0},
                     'direction': {'X': 0.0, 'Y': 0.0, 'Z': 0.0},
                 }
             case PropertyFormat.FACES | PropertyFormat.AXES:
-                return 0
+                result = 0
             case PropertyFormat.COLOR3:
-                return {'R': 0.0, 'G': 0.0, 'B': 0.0}
+                result = {'R': 0.0, 'G': 0.0, 'B': 0.0}
             case PropertyFormat.VECTOR2:
-                return {'X': 0.0, 'Y': 0.0}
+                result = {'X': 0.0, 'Y': 0.0}
             case PropertyFormat.VECTOR3:
-                return {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
+                result = {'X': 0.0, 'Y': 0.0, 'Z': 0.0}
             case PropertyFormat.VECTOR2INT16:
-                return {'X': 0, 'Y': 0}
+                result = {'X': 0, 'Y': 0}
             case PropertyFormat.VECTOR3INT16:
-                return {'X': 0, 'Y': 0, 'Z': 0}
+                result = {'X': 0, 'Y': 0, 'Z': 0}
             case PropertyFormat.CFRAME_MATRIX | PropertyFormat.CFRAME_QUAT:
-                return {
+                result = {
                     'X': 0.0,
                     'Y': 0.0,
                     'Z': 0.0,
@@ -320,58 +322,51 @@ class RbxmSerializer:
                     'R21': 0.0,
                     'R22': 1.0,
                 }
-            case PropertyFormat.OPTIONAL_CFRAME:
-                return None
-            case PropertyFormat.REF:
-                return None
-            case PropertyFormat.NUMBER_SEQUENCE:
-                return []
-            case PropertyFormat.COLOR_SEQUENCE:
-                return []
+            case PropertyFormat.OPTIONAL_CFRAME | PropertyFormat.REF:
+                result = None
+            case PropertyFormat.NUMBER_SEQUENCE | PropertyFormat.COLOR_SEQUENCE:
+                result = []
             case PropertyFormat.NUMBER_RANGE:
-                return {'Min': 0.0, 'Max': 1.0}
+                result = {'Min': 0.0, 'Max': 1.0}
             case PropertyFormat.RECT2D:
-                return {'min': {'X': 0.0, 'Y': 0.0}, 'max': {'X': 0.0, 'Y': 0.0}}
+                result = {'min': {'X': 0.0, 'Y': 0.0}, 'max': {'X': 0.0, 'Y': 0.0}}
             case PropertyFormat.PHYSICAL_PROPERTIES:
-                return None
+                result = None
             case PropertyFormat.COLOR3UINT8:
-                return {'R': 0, 'G': 0, 'B': 0}
-            case PropertyFormat.INT64:
-                return 0
-            case PropertyFormat.SHARED_STRING:
-                return b''
-            case PropertyFormat.BYTECODE:
-                return b''
+                result = {'R': 0, 'G': 0, 'B': 0}
+            case PropertyFormat.INT64 | PropertyFormat.SECURITY_CAPABILITIES:
+                result = 0
+            case PropertyFormat.SHARED_STRING | PropertyFormat.BYTECODE:
+                result = b''
             case PropertyFormat.UNIQUE_ID:
-                return {'Index': 0, 'Time': 0, 'Random': 0}
+                result = {'Index': 0, 'Time': 0, 'Random': 0}
             case PropertyFormat.FONT:
-                return {'Family': '', 'Weight': 400, 'Style': 0, 'CachedFaceId': ''}
-            case PropertyFormat.SECURITY_CAPABILITIES:
-                return 0
+                result = {'Family': '', 'Weight': 400, 'Style': 0, 'CachedFaceId': ''}
             case PropertyFormat.CONTENT:
-                return None
+                result = None
             case _:
-                return None
+                result = None
+        return result
 
-    def _encode_prop_values(self, fmt: PropertyFormat, values: list[Any]) -> bytes | None:  # ruff: ignore[too-many-return-statements]
+    def _encode_prop_values(self, fmt: PropertyFormat, values: list[Any]) -> bytes | None:
         """Encode a list of property values in the binary RBXM format."""
         match fmt:
             case PropertyFormat.STRING:
-                return self._enc_strings(values)
+                encoded = self._enc_strings(values)
             case PropertyFormat.BOOL:
-                return bytes([1 if v else 0 for v in values])
+                encoded = bytes([1 if v else 0 for v in values])
             case PropertyFormat.INT:
-                return interleave_i32([int(v) for v in values])
+                encoded = interleave_i32([int(v) for v in values])
             case PropertyFormat.FLOAT:
-                return interleave_f32([float(v) for v in values])
+                encoded = interleave_f32([float(v) for v in values])
             case PropertyFormat.DOUBLE:
-                return b''.join(write_f64(float(v)) for v in values)
+                encoded = b''.join(write_f64(float(v)) for v in values)
             case PropertyFormat.UDIM:
-                return interleave_f32([float(v['S']) for v in values]) + interleave_i32(
+                encoded = interleave_f32([float(v['S']) for v in values]) + interleave_i32(
                     [int(v['O']) for v in values]
                 )
             case PropertyFormat.UDIM2:
-                return (
+                encoded = (
                     interleave_f32([float(v['XS']) for v in values])
                     + interleave_f32([float(v['YS']) for v in values])
                     + interleave_i32([int(v['XO']) for v in values])
@@ -380,89 +375,90 @@ class RbxmSerializer:
             case PropertyFormat.RAY:
                 buf = bytearray()
                 for v in values:
-                    o, d = v['origin'], v['direction']
-                    buf.extend(write_f32(o['X']))
-                    buf.extend(write_f32(o['Y']))
-                    buf.extend(write_f32(o['Z']))
-                    buf.extend(write_f32(d['X']))
-                    buf.extend(write_f32(d['Y']))
-                    buf.extend(write_f32(d['Z']))
-                return bytes(buf)
+                    origin, direction = v['origin'], v['direction']
+                    buf.extend(write_f32(origin['X']))
+                    buf.extend(write_f32(origin['Y']))
+                    buf.extend(write_f32(origin['Z']))
+                    buf.extend(write_f32(direction['X']))
+                    buf.extend(write_f32(direction['Y']))
+                    buf.extend(write_f32(direction['Z']))
+                encoded = bytes(buf)
             case PropertyFormat.FACES | PropertyFormat.AXES:
-                return bytes([int(v) for v in values])
+                encoded = bytes([int(v) for v in values])
             case PropertyFormat.BRICK_COLOR:
-                return interleave_u32([int(v) for v in values])
+                encoded = interleave_u32([int(v) for v in values])
             case PropertyFormat.COLOR3:
-                return (
+                encoded = (
                     interleave_f32([float(v['R']) for v in values])
                     + interleave_f32([float(v['G']) for v in values])
                     + interleave_f32([float(v['B']) for v in values])
                 )
             case PropertyFormat.VECTOR2:
-                return interleave_f32([float(v['X']) for v in values]) + interleave_f32(
+                encoded = interleave_f32([float(v['X']) for v in values]) + interleave_f32(
                     [float(v['Y']) for v in values]
                 )
             case PropertyFormat.VECTOR3:
-                return (
+                encoded = (
                     interleave_f32([float(v['X']) for v in values])
                     + interleave_f32([float(v['Y']) for v in values])
                     + interleave_f32([float(v['Z']) for v in values])
                 )
             case PropertyFormat.VECTOR2INT16:
-                return b''.join(struct.pack('<hh', int(v['X']), int(v['Y'])) for v in values)
+                encoded = b''.join(struct.pack('<hh', int(v['X']), int(v['Y'])) for v in values)
             case PropertyFormat.VECTOR3INT16:
-                return b''.join(
+                encoded = b''.join(
                     struct.pack('<hhh', int(v['X']), int(v['Y']), int(v['Z'])) for v in values
                 )
             case PropertyFormat.CFRAME_MATRIX | PropertyFormat.CFRAME_QUAT:
-                return self._enc_cframes(values)
+                encoded = self._enc_cframes(values)
             case PropertyFormat.OPTIONAL_CFRAME:
-                return self._enc_optional_cframes(values)
+                encoded = self._enc_optional_cframes(values)
             case PropertyFormat.ENUM:
-                return interleave_u32([int(v) for v in values])
+                encoded = interleave_u32([int(v) for v in values])
             case PropertyFormat.REF:
-                return self._enc_refs(values)
+                encoded = self._enc_refs(values)
             case PropertyFormat.NUMBER_SEQUENCE:
-                return self._enc_number_sequences(values)
+                encoded = self._enc_number_sequences(values)
             case PropertyFormat.COLOR_SEQUENCE:
-                return self._enc_color_sequences(values)
+                encoded = self._enc_color_sequences(values)
             case PropertyFormat.NUMBER_RANGE:
                 buf = bytearray()
                 for v in values:
                     buf.extend(write_f32(float(v['Min'])))
                     buf.extend(write_f32(float(v['Max'])))
-                return bytes(buf)
+                encoded = bytes(buf)
             case PropertyFormat.RECT2D:
-                return (
+                encoded = (
                     interleave_f32([float(v['min']['X']) for v in values])
                     + interleave_f32([float(v['min']['Y']) for v in values])
                     + interleave_f32([float(v['max']['X']) for v in values])
                     + interleave_f32([float(v['max']['Y']) for v in values])
                 )
             case PropertyFormat.PHYSICAL_PROPERTIES:
-                return self._enc_physical_properties(values)
+                encoded = self._enc_physical_properties(values)
             case PropertyFormat.COLOR3UINT8:
-                return (
+                encoded = (
                     bytes([int(v['R']) for v in values])
                     + bytes([int(v['G']) for v in values])
                     + bytes([int(v['B']) for v in values])
                 )
             case PropertyFormat.INT64:
-                return interleave_i64([int(v) for v in values])
+                encoded = interleave_i64([int(v) for v in values])
             case PropertyFormat.SHARED_STRING:
-                return self._enc_shared_strings(values)
+                encoded = self._enc_shared_strings(values)
             case PropertyFormat.BYTECODE:
-                return self._enc_bytecodes(values)
+                encoded = self._enc_bytecodes(values)
             case PropertyFormat.UNIQUE_ID:
-                return self._enc_unique_ids(values)
+                encoded = self._enc_unique_ids(values)
             case PropertyFormat.FONT:
-                return self._enc_fonts(values)
+                encoded = self._enc_fonts(values)
             case PropertyFormat.SECURITY_CAPABILITIES:
-                return interleave_u64([int(v) for v in values])
+                encoded = interleave_u64([int(v) for v in values])
             case PropertyFormat.CONTENT:
-                return self._enc_contents(values)
+                encoded = self._enc_contents(values)
             case _:
-                return None
+                encoded = None
+        return encoded
 
     # ------------------------------------------------------------------
     # Property value encoders

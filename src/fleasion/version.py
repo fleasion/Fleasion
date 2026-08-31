@@ -7,7 +7,6 @@ import os
 import re
 import sys
 import tomllib
-from collections.abc import Mapping, Sequence  # ruff: ignore[typing-only-standard-library-import]
 from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,6 +20,7 @@ _GITHUB_SHA_PATTERN = re.compile(r'[0-9a-fA-F]{7,64}')
 
 if TYPE_CHECKING:
 
+    from collections.abc import Mapping, Sequence
     def _object_dict(value: object) -> dict[str, object] | None: ...
 else:
 

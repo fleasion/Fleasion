@@ -18,14 +18,14 @@ def _header_item(table: QtWidgets.QTableWidget, index: int) -> QtWidgets.QTableW
     return item
 
 
-class Ui_Dialog:  # ruff: ignore[invalid-class-name]
-    def setupUi(self, Dialog: QtWidgets.QDialog) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name]
-        Dialog.setObjectName('Dialog')
-        Dialog.resize(611, 300)
-        self.verticalLayout = QtWidgets.QVBoxLayout(Dialog)
+class UiDialog:
+    def setup_ui(self, dialog: QtWidgets.QDialog) -> None:
+        dialog.setObjectName('Dialog')
+        dialog.resize(611, 300)
+        self.verticalLayout = QtWidgets.QVBoxLayout(dialog)
         self.verticalLayout.setSpacing(8)
         self.verticalLayout.setObjectName('verticalLayout')
-        self.rulesTable = QtWidgets.QTableWidget(parent=Dialog)
+        self.rulesTable = QtWidgets.QTableWidget(parent=dialog)
         self.rulesTable.setColumnCount(7)
         self.rulesTable.setObjectName('rulesTable')
         self.rulesTable.setRowCount(0)
@@ -47,23 +47,23 @@ class Ui_Dialog:  # ruff: ignore[invalid-class-name]
         self.horizontalLayout = QtWidgets.QHBoxLayout()
         self.horizontalLayout.setSpacing(8)
         self.horizontalLayout.setObjectName('horizontalLayout')
-        self.addRuleButton = QtWidgets.QPushButton(parent=Dialog)
+        self.addRuleButton = QtWidgets.QPushButton(parent=dialog)
         self.addRuleButton.setMaximumSize(QtCore.QSize(16777215, 22))
         self.addRuleButton.setObjectName('addRuleButton')
         self.horizontalLayout.addWidget(self.addRuleButton)
-        self.duplicateRuleButton = QtWidgets.QPushButton(parent=Dialog)
+        self.duplicateRuleButton = QtWidgets.QPushButton(parent=dialog)
         self.duplicateRuleButton.setMaximumSize(QtCore.QSize(16777215, 22))
         self.duplicateRuleButton.setObjectName('duplicateRuleButton')
         self.horizontalLayout.addWidget(self.duplicateRuleButton)
-        self.deleteRuleButton = QtWidgets.QPushButton(parent=Dialog)
+        self.deleteRuleButton = QtWidgets.QPushButton(parent=dialog)
         self.deleteRuleButton.setMaximumSize(QtCore.QSize(16777215, 22))
         self.deleteRuleButton.setObjectName('deleteRuleButton')
         self.horizontalLayout.addWidget(self.deleteRuleButton)
-        self.importButton = QtWidgets.QPushButton(parent=Dialog)
+        self.importButton = QtWidgets.QPushButton(parent=dialog)
         self.importButton.setMaximumSize(QtCore.QSize(16777215, 22))
         self.importButton.setObjectName('importButton')
         self.horizontalLayout.addWidget(self.importButton)
-        self.exportButton = QtWidgets.QPushButton(parent=Dialog)
+        self.exportButton = QtWidgets.QPushButton(parent=dialog)
         self.exportButton.setMaximumSize(QtCore.QSize(16777215, 22))
         self.exportButton.setObjectName('exportButton')
         self.horizontalLayout.addWidget(self.exportButton)
@@ -74,11 +74,11 @@ class Ui_Dialog:  # ruff: ignore[invalid-class-name]
         self.horizontalLayout.setStretch(4, 1)
         self.verticalLayout.addLayout(self.horizontalLayout)
 
-        self.retranslateUi(Dialog)
-        QtCore.QMetaObject.connectSlotsByName(Dialog)
+        self.retranslate_ui(dialog)
+        QtCore.QMetaObject.connectSlotsByName(dialog)
 
-    def retranslateUi(self, Dialog: QtWidgets.QDialog) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name]
-        Dialog.setWindowTitle(tr('ui.gui.rules_dialog_ui.dialog'))
+    def retranslate_ui(self, dialog: QtWidgets.QDialog) -> None:
+        dialog.setWindowTitle(tr('ui.gui.rules_dialog_ui.dialog'))
         item = _header_item(self.rulesTable, 0)
         item.setText(tr('ui.gui.rules_dialog_ui.enabled'))
         item = _header_item(self.rulesTable, 1)

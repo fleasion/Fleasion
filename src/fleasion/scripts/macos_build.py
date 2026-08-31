@@ -53,7 +53,7 @@ def subprocess_run(
     if log_command:
         log.info('Running %s', shlex.join(command))
     return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
-        command, check=check, capture_output=capture_output, env=environment, text=True
+        command, check=check, capture_output=capture_output, env=environment, shell=False, text=True
     )
 
 

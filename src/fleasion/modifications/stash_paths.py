@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import re
 import shutil
 import sys
@@ -41,12 +42,9 @@ def _is_sober_resource_path(resource_dir: Path) -> bool:
     if 'org.vinegarhq.Sober' in resource_dir.parts:
         return True
     try:
-        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-            is_sober_resource_dir,
-        )
-
-        return is_sober_resource_dir(resource_dir)
-    except Exception:  # ruff: ignore[blind-except]
+        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+        return platform_linux.is_sober_resource_dir(resource_dir)
+    except (AttributeError, ImportError):
         return False
 
 

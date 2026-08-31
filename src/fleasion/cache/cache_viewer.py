@@ -4,27 +4,55 @@ from __future__ import annotations
 
 import contextlib
 import gzip as gzip_module
+import importlib
 import io
 import json
+import os
+import shutil
 import sys
+import tempfile
 import threading
+import time
+import webbrowser
+import zlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast, overload
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast, overload, override
+from xml.parsers.expat import ExpatError
 
+import requests
+from defusedxml import ElementTree as DefusedElementTree, minidom as safe_minidom
+from defusedxml.common import DefusedXmlException
 from PIL import Image
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QMimeData,
+    QObject,
+    QPoint,
+    QProcess,
+    QRect,
+    QSignalBlocker,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
     QColor,
     QCursor,
     QFontDatabase,
+    QIcon,
     QImage,
     QKeyEvent,
     QMouseEvent,
     QPalette,
     QPixmap,
     QResizeEvent,
+    QScreen,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -51,7 +79,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr, tr_count
-from fleasion.utils import format_count, log_buffer, open_folder
+from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 from fleasion.utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 
@@ -62,13 +90,14 @@ from .cache_json_viewer import CacheJsonViewer
 from .cache_manager import CacheManager
 from .font_viewer import FontViewerWidget
 from .rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
+from .roblox_document import export_roblox_document, get_roblox_document_export_formats
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator, Sequence
-
-    import requests
+    from types import TracebackType
 
     from fleasion.config.manager import ConfigManager
+    from fleasion.utils.r15_to_r6 import JointMap, PartMap
 
     from .animation_viewer import AnimationViewerPanel
     from .cache_manager import CacheIndex
@@ -85,6 +114,16 @@ type _SearchColumn = tuple[str, bool]
 type _ResolvedSearchColumn = tuple[str, str, bool]
 type _ExportPath = str | Path
 type _JsonValue = bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue] | None
+
+
+def _ui_boundary[T](
+    action: Callable[[], T], *, fallback: T, on_error: Callable[[Exception], object]
+) -> T:
+    try:
+        return action()
+    except Exception as exc:  # ruff: ignore[blind-except]
+        on_error(exc)
+        return fallback
 
 
 class _AssetRecord(TypedDict):
@@ -155,10 +194,11 @@ class _CacheScraper(Protocol):
 
     def clear_tracking(self) -> None: ...
 
-    def _https_get(  # ruff: ignore[too-many-positional-arguments]
+    def _https_get(
         self,
         hostname: str,
         path: str,
+        *,
         extra_headers: dict[str, str] | None = None,
         timeout: float = 8.0,
         max_redirects: int = 6,
@@ -179,10 +219,6 @@ class _ConfigManager(Protocol):
     def save(self) -> None: ...
 
 
-class _ScreenGeometryProvider(Protocol):
-    def availableGeometry(self) -> QRect: ...  # ruff: ignore[invalid-function-name]
-
-
 class _ConstrainablePopup(Protocol):
     def constrain_to_available_geometry(
         self, available_geometry: QRect, anchor_y: int | None = None
@@ -194,9 +230,9 @@ class _LockContext(Protocol):
 
     def __exit__(
         self,
-        exc_type: object | None,  # ruff: ignore[bad-exit-annotation]
-        exc_value: object | None,  # ruff: ignore[bad-exit-annotation]
-        traceback: object | None,  # ruff: ignore[bad-exit-annotation]
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
     ) -> bool | None: ...
 
 
@@ -217,6 +253,107 @@ class _FetchAssetRetryCallable(Protocol):
 
 class _ExportObjCallable(Protocol):
     def __call__(self, doc: object, output_path: Path, *, decompose: bool = False) -> None: ...
+
+
+def _set_tray_cache_scraper_enabled(tray: object, enabled: bool) -> bool:
+    """Use the tray's compatibility hook without exposing private-member access at call sites."""
+    setter = getattr(tray, '_set_cache_scraper_enabled', None)
+    if not callable(setter):
+        return False
+    cast('Callable[[bool], None]', setter)(enabled)
+    return True
+
+
+def _lazy_attr(module_name: str, attr_name: str) -> object:
+    """Load a deliberately lazy module attribute without importing it at startup."""
+    module = importlib.import_module(module_name, package=__package__)
+    return getattr(module, attr_name)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(cast('int | str', value))
+    except TypeError, ValueError:
+        return None
+
+
+def _asset_metadata_from_response(response_json: object) -> dict[str, _FetchedAssetMetadata]:
+    """Extract normalized asset metadata from a Roblox develop API response."""
+    if not isinstance(response_json, dict):
+        return {}
+    response_mapping = cast('dict[str, object]', response_json)
+    raw_entries = response_mapping.get('data', [])
+    if not isinstance(raw_entries, list):
+        return {}
+
+    result: dict[str, _FetchedAssetMetadata] = {}
+    for raw_entry in cast('list[object]', raw_entries):
+        if not isinstance(raw_entry, dict):
+            continue
+        item = cast('dict[str, object]', raw_entry)
+        aid = item.get('id')
+        if aid is None:
+            continue
+        creator_obj = item.get('creator')
+        creator_id: int | None = None
+        creator_type: int | None = None
+        if isinstance(creator_obj, dict) and creator_obj:
+            creator_data = cast('dict[str, object]', creator_obj)
+            creator_id = _optional_int(creator_data.get('targetId'))
+            creator_type = _optional_int(creator_data.get('typeId'))
+        if creator_id is None:
+            creator_id = _optional_int(item.get('creatorTargetId'))
+        if creator_type is None:
+            creator_type = _optional_int(item.get('creatorType'))
+        result[str(aid)] = {
+            'name': cast('str', item.get('name', 'Unknown')),
+            'type': cast('int', item.get('typeId') or item.get('assetTypeId') or 1),
+            'creator_id': creator_id,
+            'creator_type': creator_type,
+            'created_at': cast('str', item.get('created') or ''),
+            'updated_at': cast('str', item.get('updated') or ''),
+        }
+    return result
+
+
+def _creator_names_from_response(response_json: object) -> dict[int, str]:
+    """Extract valid creator IDs and names from a Roblox users response."""
+    if not isinstance(response_json, dict):
+        return {}
+    response_mapping = cast('dict[str, object]', response_json)
+    raw_entries = response_mapping.get('data', [])
+    if not isinstance(raw_entries, list):
+        return {}
+
+    result: dict[int, str] = {}
+    for raw_entry in cast('list[object]', raw_entries):
+        if not isinstance(raw_entry, dict):
+            continue
+        entry = cast('dict[str, object]', raw_entry)
+        uid = entry.get('id')
+        name = entry.get('name') or entry.get('displayName') or 'Unknown'
+        if isinstance(uid, int) and isinstance(name, str):
+            result[uid] = name
+    return result
+
+
+def _open_export_path(target: Path, *, select_file: bool, export_dir: Path) -> None:
+    """Open an export path, selecting a file in Explorer when available."""
+    if select_file:
+        if target.is_file():
+            explorer = shutil.which('explorer.exe')
+            if explorer is not None:
+                started, _pid = QProcess.startDetached(
+                    explorer,
+                    ['/select,', str(target.resolve())],
+                )
+                if started:
+                    return
+        open_folder(target.parent)
+        return
+    open_folder(target if target.is_dir() else export_dir)
 
 
 def _object_attribute(obj: object, name: str) -> object:
@@ -264,7 +401,7 @@ def _scraper_fetch_asset_with_place_id_retry(
     return fetcher(asset_id, extra_headers=extra_headers)
 
 
-def _set_rbxm_dirty(viewer: RbxmPreviewWidget, dirty: bool) -> None:
+def _set_rbxm_dirty(viewer: RbxmPreviewWidget, *, dirty: bool) -> None:
     setter = cast('Callable[[bool], None]', _object_attribute(viewer, '_set_dirty'))
     setter(dirty)
 
@@ -280,13 +417,14 @@ asset_type_display_name = cast(
 )
 
 
-def _localized_asset_type_name(asset_type: int | str | None, raw_name: str | None = None) -> str:  # ruff: ignore[too-many-return-statements]
-    if raw_name == 'Mesh':
-        return asset_type_display_name(4)
-    if raw_name == 'Audio':
-        return asset_type_display_name(3)
-    if raw_name == 'Json':
-        return asset_type_display_name('Json')
+def _localized_asset_type_name(asset_type: int | str | None, raw_name: str | None = None) -> str:
+    raw_overrides: dict[str, _AssetTypeFilter] = {
+        'Mesh': 4,
+        'Audio': 3,
+        'Json': 'Json',
+    }
+    if raw_name in raw_overrides:
+        return asset_type_display_name(raw_overrides[raw_name])
     if raw_name == 'RBXM/RBXMX':
         return tr('ui.cache.cache_viewer.rbxm_rbxmx')
     if isinstance(asset_type, int):
@@ -502,8 +640,8 @@ class TypeProbeWorker(QThread):
                 detected_type = self.cache_manager.detect_asset_type_from_header(
                     asset_id, asset_type
                 )
-            except Exception as e:  # ruff: ignore[blind-except]
-                log_buffer.log('Scraper', f'Failed to detect type for {asset_id}: {e}')
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                log_buffer.log('Scraper', f'Failed to detect type for {asset_id}: {exc}')
                 detected_type = None
 
             results.append((asset_id, asset_type, cache_hash, detected_type))
@@ -557,53 +695,54 @@ class ImageLoaderThread(QThread):
     def stop(self) -> None:
         self._stop_requested = True
 
+    def _load_pixmap(self) -> tuple[QPixmap, int, int] | None:
+        log_buffer.log('Preview', f'Loading image ({len(self.data)} bytes)')
+        data = self.data
+        ktx_convert = cast(
+            'Callable[[bytes], bytes | None]',
+            _lazy_attr('.tools.ktx_to_png', 'convert'),
+        )
+        strip_prefixed_ktx = cast(
+            'Callable[[bytes], bytes | None]',
+            _lazy_attr('.tools.ktx_to_png', 'strip_prefixed_ktx'),
+        )
+        ktx_payload = strip_prefixed_ktx(data)
+        if ktx_payload is not None:
+            log_buffer.log('Preview', 'KTX detected, converting to PNG...')
+            data = ktx_convert(ktx_payload)
+            if data is None:
+                if not self._stop_requested:
+                    self.error.emit(tr('cache.preview.ktx_conversion_failed'))
+                return None
+
+        image = Image.open(io.BytesIO(data))
+        if self._stop_requested:
+            return None
+        if image.mode not in {'RGB', 'RGBA'} or image.mode == 'RGB':
+            image = image.convert('RGBA')
+        if self._stop_requested:
+            return None
+
+        qimage = QImage(
+            image.tobytes(),
+            image.width,
+            image.height,
+            QImage.Format.Format_RGBA8888,
+        )
+        return QPixmap.fromImage(qimage), image.width, image.height
+
     def run(self) -> None:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            log_buffer.log('Preview', f'Loading image ({len(self.data)} bytes)')
-
-            data = self.data
-            from .tools.ktx_to_png import (  # ruff: ignore[import-outside-top-level]
-                convert as _ktx_convert,
-                strip_prefixed_ktx,
-            )
-
-            ktx_payload = strip_prefixed_ktx(data)
-            if ktx_payload is not None:
-                log_buffer.log('Preview', 'KTX detected, converting to PNG...')
-                data = _ktx_convert(ktx_payload)
-                if data is None:
-                    if not self._stop_requested:
-                        self.error.emit(tr('cache.preview.ktx_conversion_failed'))
-                    return
-
-            image = Image.open(io.BytesIO(data))
-
-            if self._stop_requested:
-                return
-
-            # Convert to RGBA
-            if image.mode not in ('RGB', 'RGBA') or image.mode == 'RGB':  # ruff: ignore[literal-membership]
-                image = image.convert('RGBA')
-
-            if self._stop_requested:
-                return
-
-            qimage = QImage(
-                image.tobytes(),
-                image.width,
-                image.height,
-                QImage.Format.Format_RGBA8888,
-            )
-            pixmap = QPixmap.fromImage(qimage)
-
+        try:
+            result = self._load_pixmap()
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
             if not self._stop_requested:
-                log_buffer.log('Preview', f'Image loaded: {image.width}x{image.height}')
-                self.image_ready.emit(pixmap)
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            if not self._stop_requested:
-                log_buffer.log('Preview', f'Image load error: {e}')
-                self.error.emit(str(e))
+                log_buffer.log('Preview', f'Image load error: {exc}')
+                self.error.emit(str(exc))
+            return
+        if result is not None and not self._stop_requested:
+            pixmap, width, height = result
+            log_buffer.log('Preview', f'Image loaded: {width}x{height}')
+            self.image_ready.emit(pixmap)
 
 
 class MeshLoaderThread(QThread):
@@ -621,35 +760,31 @@ class MeshLoaderThread(QThread):
     def stop(self) -> None:
         self._stop_requested = True
 
+    def _convert_mesh(self) -> str | None:
+        log_buffer.log('Preview', f'Loading mesh {self.asset_id} ({len(self.data)} bytes)')
+        decompressed = self.data
+        if self.data.startswith(b'\x1f\x8b'):
+            decompressed = gzip_module.decompress(self.data)
+            log_buffer.log('Preview', f'Decompressed mesh: {len(decompressed)} bytes')
+        if self._stop_requested:
+            return None
+        return mesh_processing.convert(decompressed)
+
     def run(self) -> None:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            log_buffer.log('Preview', f'Loading mesh {self.asset_id} ({len(self.data)} bytes)')
-
-            # Decompress if gzip
-            decompressed = self.data
-            if self.data.startswith(b'\x1f\x8b'):
-                decompressed = gzip_module.decompress(self.data)
-                log_buffer.log('Preview', f'Decompressed mesh: {len(decompressed)} bytes')
-
-            if self._stop_requested:
-                return
-
-            # Convert to OBJ
-            obj_content = mesh_processing.convert(decompressed)
-
-            if self._stop_requested:
-                return
-
-            if obj_content:
-                log_buffer.log('Preview', 'Mesh converted successfully')
-                self.mesh_ready.emit(obj_content)
-            else:
-                self.error.emit(tr('cache.preview.mesh_conversion_failed'))
-
-        except Exception as e:  # ruff: ignore[blind-except]
+        try:
+            obj_content = self._convert_mesh()
+        except (EOFError, OSError, RuntimeError, TypeError, ValueError, zlib.error) as exc:
             if not self._stop_requested:
-                log_buffer.log('Preview', f'Mesh conversion error: {e}')
-                self.error.emit(str(e))
+                log_buffer.log('Preview', f'Mesh conversion error: {exc}')
+                self.error.emit(str(exc))
+            return
+        if self._stop_requested:
+            return
+        if obj_content:
+            log_buffer.log('Preview', 'Mesh converted successfully')
+            self.mesh_ready.emit(obj_content)
+        else:
+            self.error.emit(tr('cache.preview.mesh_conversion_failed'))
 
 
 class SolidModelLoaderThread(QThread):
@@ -667,63 +802,52 @@ class SolidModelLoaderThread(QThread):
     def stop(self) -> None:
         self._stop_requested = True
 
+    def _convert_solid_model(self) -> str | None:
+        log_buffer.log(
+            'Preview',
+            f'Loading SolidModel {self.asset_id} ({len(self.data)} bytes)',
+        )
+        if self._stop_requested:
+            return None
+
+        deserialize_rbxm = cast(
+            'Callable[[bytes], object]',
+            _lazy_attr('.tools.solidmodel_converter.converter', 'deserialize_rbxm'),
+        )
+        export_obj_from_doc = cast(
+            '_ExportObjCallable',
+            _lazy_attr('.tools.solidmodel_converter.converter', 'export_obj_from_doc'),
+        )
+        decompressed = self.data
+        if self.data.startswith(b'\x1f\x8b'):
+            decompressed = gzip_module.decompress(self.data)
+            log_buffer.log('Preview', f'Decompressed SolidModel: {len(decompressed)} bytes')
+
+        doc = deserialize_rbxm(decompressed)
+        with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as f:
+            temp_obj_path = Path(f.name)
+        try:
+            export_obj_from_doc(doc, temp_obj_path, decompose=False)
+            return temp_obj_path.read_text(encoding='utf-8')
+        finally:
+            with contextlib.suppress(OSError):
+                temp_obj_path.unlink(missing_ok=True)
+
     def run(self) -> None:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            log_buffer.log(
-                'Preview',
-                f'Loading SolidModel {self.asset_id} ({len(self.data)} bytes)',
-            )
-
-            if self._stop_requested:
-                return
-
-            # Convert to OBJ using solidmodel_converter
-            import gzip as gzip_module  # ruff: ignore[import-outside-top-level]
-            import tempfile  # ruff: ignore[import-outside-top-level]
-            from pathlib import Path  # ruff: ignore[import-outside-top-level]
-
-            from .tools.solidmodel_converter import (  # ruff: ignore[import-outside-top-level]
-                converter as solidmodel_converter,
-            )
-
-            deserialize_rbxm = solidmodel_converter.deserialize_rbxm
-            export_obj_from_doc = cast(
-                '_ExportObjCallable',
-                solidmodel_converter.__dict__['_export_obj_from_doc'],
-            )
-
-            # Decompress if gzip
-            decompressed = self.data
-            if self.data.startswith(b'\x1f\x8b'):
-                decompressed = gzip_module.decompress(self.data)
-                log_buffer.log('Preview', f'Decompressed SolidModel: {len(decompressed)} bytes')
-
-            # Use memory directly and dump to temp file because the library forces Path based OBJ output currently
-            doc = deserialize_rbxm(decompressed)
-
-            with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as f:
-                temp_obj_path = Path(f.name)
-
-            try:
-                export_obj_from_doc(doc, temp_obj_path, decompose=False)
-                obj_content = temp_obj_path.read_text(encoding='utf-8')
-            finally:
-                if temp_obj_path.exists():
-                    temp_obj_path.unlink()
-
-            if self._stop_requested:
-                return
-
-            if obj_content:
-                log_buffer.log('Preview', 'SolidModel converted successfully')
-                self.mesh_ready.emit(obj_content)
-            else:
-                self.error.emit(tr('cache.preview.solidmodel_conversion_failed'))
-
-        except Exception as e:  # ruff: ignore[blind-except]
+        try:
+            obj_content = self._convert_solid_model()
+        except (EOFError, ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
             if not self._stop_requested:
-                log_buffer.log('Preview', f'SolidModel conversion error: {e}')
-                self.error.emit(str(e))
+                log_buffer.log('Preview', f'SolidModel conversion error: {exc}')
+                self.error.emit(str(exc))
+            return
+        if self._stop_requested:
+            return
+        if obj_content:
+            log_buffer.log('Preview', 'SolidModel converted successfully')
+            self.mesh_ready.emit(obj_content)
+        else:
+            self.error.emit(tr('cache.preview.solidmodel_conversion_failed'))
 
 
 class AnimationLoaderThread(QThread):
@@ -741,25 +865,24 @@ class AnimationLoaderThread(QThread):
     def stop(self) -> None:
         self._stop_requested = True
 
+    def _animation_data(self) -> bytes:
+        decompressed = self.data
+        if self.data.startswith(b'\x1f\x8b'):
+            decompressed = gzip_module.decompress(self.data)
+            log_buffer.log('Preview', f'Decompressed animation: {len(decompressed)} bytes')
+        return decompressed
+
     def run(self) -> None:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            # Decompress if gzip
-            decompressed = self.data
-            if self.data.startswith(b'\x1f\x8b'):
-                decompressed = gzip_module.decompress(self.data)
-                log_buffer.log('Preview', f'Decompressed animation: {len(decompressed)} bytes')
-
-            if self._stop_requested:
-                return
-
-            # Emit the data for the main thread to load into the viewer
-            # The actual animation loading must happen on main thread due to OpenGL context
-            self.animation_ready.emit(decompressed)
-
-        except Exception as e:  # ruff: ignore[blind-except]
+        try:
+            decompressed = self._animation_data()
+        except (EOFError, OSError, zlib.error) as e:
             if not self._stop_requested:
                 log_buffer.log('Preview', f'Animation load error: {e}')
                 self.error.emit(str(e))
+            return
+        if not self._stop_requested:
+            # The actual animation loading must happen on main thread due to OpenGL context.
+            self.animation_ready.emit(decompressed)
 
 
 class TexturePackLoaderThread(QThread):
@@ -784,71 +907,67 @@ class TexturePackLoaderThread(QThread):
     def stop(self) -> None:
         self._stop_requested = True
 
+    def _load_texture(self, map_name: str, map_id: str | int) -> tuple[bytes, str] | None:
+        data = self.cache_manager.get_asset(str(map_id), 1)
+        if data:
+            asset_info = cast(
+                '_AssetRecord | None', self.cache_manager.get_asset_info(str(map_id), 1)
+            )
+            hash_val = asset_info.get('hash', '') if asset_info else ''
+            log_buffer.log('Preview', f'Loaded {map_name} from cache')
+            return data, hash_val
+
+        if self._stop_requested:
+            return None
+        log_buffer.log('Preview', f'Fetching {map_name} from API')
+        if self._cache_scraper is not None:
+            cookie = _get_roblosecurity()
+            extra: dict[str, str] = {}
+            if cookie:
+                extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
+            data = _scraper_https_get(
+                self._cache_scraper,
+                'assetdelivery.roblox.com',
+                f'/v1/asset/?id={map_id}',
+                extra or None,
+            )
+            if not data:
+                self.texture_error.emit(map_name, tr('cache.texturepack.api_no_data'))
+                return None
+            return data, ''
+
+        api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        cookie = _get_roblosecurity()
+        if cookie:
+            headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+        response = requests.get(api_url, headers=headers, timeout=10)
+        if response.status_code == 200 and response.content:
+            return response.content, ''
+        self.texture_error.emit(
+            map_name,
+            tr('cache.texturepack.api_error', status_code=response.status_code),
+        )
+        return None
+
     def run(self) -> None:
         log_buffer.log('Preview', f'Loading texture pack with {len(self.maps)} maps')
-
         for map_name, map_id in self.maps.items():
             if self._stop_requested:
                 return
-
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                data = self.cache_manager.get_asset(str(map_id), 1)
-                hash_val = ''
-
-                if data:
-                    asset_info = cast(
-                        '_AssetRecord | None', self.cache_manager.get_asset_info(str(map_id), 1)
-                    )
-                    hash_val = asset_info.get('hash', '') if asset_info else ''
-                    log_buffer.log('Preview', f'Loaded {map_name} from cache')
-                else:
-                    if self._stop_requested:
-                        return
-
-                    log_buffer.log('Preview', f'Fetching {map_name} from API')
-                    # Use scraper's bypass fetch if available (bypasses hosts file redirect)
-                    if self._cache_scraper is not None:
-                        cookie = _get_roblosecurity()
-                        extra: dict[str, str] = {}
-                        if cookie:
-                            extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                        data = _scraper_https_get(
-                            self._cache_scraper,
-                            'assetdelivery.roblox.com',
-                            f'/v1/asset/?id={map_id}',
-                            extra or None,
-                        )
-                        if not data:
-                            self.texture_error.emit(map_name, tr('cache.texturepack.api_no_data'))
-                            continue
-                    else:
-                        # Fallback: direct requests (only works when proxy is not running)
-                        import requests as _requests  # ruff: ignore[import-outside-top-level]
-
-                        api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
-                        headers = {'User-Agent': 'Mozilla/5.0'}
-                        cookie = _get_roblosecurity()
-                        if cookie:
-                            headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                        response = _requests.get(api_url, headers=headers, timeout=10)
-                        if response.status_code == 200 and response.content:
-                            data = response.content
-                        else:
-                            self.texture_error.emit(
-                                map_name,
-                                tr('cache.texturepack.api_error', status_code=response.status_code),
-                            )
-                            continue
-
-                if self._stop_requested:
-                    return
-
-                self.texture_loaded.emit(map_name, str(map_id), hash_val, data)
-
-            except Exception as e:  # ruff: ignore[blind-except]
+            try:
+                loaded = self._load_texture(map_name, map_id)
+            except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
                 if not self._stop_requested:
-                    log_buffer.log('Preview', f'Texture {map_name} error: {e}')
-                    self.texture_error.emit(map_name, str(e))
+                    log_buffer.log('Preview', f'Texture {map_name} error: {exc}')
+                    self.texture_error.emit(map_name, str(exc))
+                continue
+            if loaded is None:
+                continue
+            if self._stop_requested:
+                return
+            data, hash_val = loaded
+            self.texture_loaded.emit(map_name, str(map_id), hash_val, data)
 
         if not self._stop_requested:
             log_buffer.log('Preview', 'Texture pack loading complete')
@@ -878,8 +997,131 @@ class AssetLoaderThread(QThread):
     def stop(self) -> None:
         self._stop_requested = True
 
+    @staticmethod
+    def _creator_place_ids(
+        sess: requests.Session,
+        creator_id: int,
+        creator_type: int,
+    ) -> Iterator[int]:
+        creator_game_max_scan = cast(
+            'int',
+            _lazy_attr('fleasion.proxy.addons.cache_scraper', 'CREATOR_GAME_MAX_SCAN'),
+        )
+        creator_game_page_limits = cast(
+            'tuple[int, ...]',
+            _lazy_attr('fleasion.proxy.addons.cache_scraper', 'CREATOR_GAME_PAGE_LIMITS'),
+        )
+        creator_game_base_paths = cast(
+            'Callable[[int, int, int], list[str]]',
+            _lazy_attr('fleasion.proxy.addons.cache_scraper', 'creator_game_base_paths'),
+        )
+
+        seen_pids: set[int] = set()
+        attempted_paths: set[str] = set()
+        for limit in creator_game_page_limits:
+            found_before_limit = len(seen_pids)
+            max_pages = max(1, (creator_game_max_scan + limit - 1) // limit)
+            for game_path in creator_game_base_paths(creator_id, creator_type, limit):
+                if game_path in attempted_paths:
+                    continue
+                attempted_paths.add(game_path)
+                cursor = ''
+                for _page in range(max_pages):
+                    path = game_path + (f'&cursor={cursor}' if cursor else '')
+                    response = sess.get(
+                        f'https://games.roblox.com{path}',
+                        headers={'Accept': 'application/json'},
+                        timeout=10,
+                    )
+                    if response.status_code != 200:
+                        break
+                    response_json = cast('dict[str, object]', response.json())
+                    games = cast('list[dict[str, object]]', response_json.get('data', []))
+                    for game in games:
+                        root_place = cast('dict[str, object] | None', game.get('rootPlace'))
+                        if not root_place or not root_place.get('id'):
+                            continue
+                        place_id = int(cast('int', root_place['id']))
+                        if place_id in seen_pids:
+                            continue
+                        seen_pids.add(place_id)
+                        yield place_id
+                    cursor = cast('str', response_json.get('nextPageCursor') or '')
+                    if not cursor:
+                        break
+            if len(seen_pids) > found_before_limit:
+                return
+
+    @classmethod
+    def _retry_asset_with_creator_places(
+        cls,
+        sess: requests.Session,
+        asset_id: str,
+        *,
+        api_url: str,
+        headers: dict[str, str],
+        creator_id: int,
+        creator_type: int,
+    ) -> bytes | None:
+        # Creator-game lookup is best-effort; any backend/schema failure falls back to a miss
+        with contextlib.suppress(Exception):
+            for place_id in cls._creator_place_ids(sess, creator_id, creator_type):
+                retry_headers = {**headers, 'Roblox-Place-Id': str(place_id)}
+                response = sess.get(
+                    api_url,
+                    headers=retry_headers,
+                    timeout=15,
+                    allow_redirects=True,
+                )
+                if response.status_code == 200 and response.content:
+                    log_buffer.log(
+                        'Scraper',
+                        f'[Load Asset] Place-ID bypass succeeded for {asset_id}',
+                    )
+                    return response.content
+        return None
+
+    def _download_asset_data(
+        self,
+        sess: requests.Session,
+        asset_id: str,
+        metadata: _FetchedAssetMetadata | None,
+        cookie: str | None,
+    ) -> bytes | None:
+        if self._cache_scraper is not None:
+            extra: dict[str, str] = {}
+            if cookie:
+                extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
+            data, _status = _scraper_fetch_asset_with_place_id_retry(
+                self._cache_scraper,
+                asset_id,
+                extra or None,
+            )
+            return data
+
+        api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={asset_id}'
+        headers = {'User-Agent': 'Roblox/WinInet'}
+        if cookie:
+            headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+        response = sess.get(api_url, headers=headers, timeout=15, allow_redirects=True)
+        data = response.content if response.status_code == 200 else None
+        if data is not None or response.status_code != 403 or metadata is None:
+            return data
+
+        creator_id = metadata.get('creator_id')
+        creator_type = metadata.get('creator_type')
+        if creator_id is None or creator_type is None:
+            return None
+        return self._retry_asset_with_creator_places(
+            sess,
+            asset_id,
+            api_url=api_url,
+            headers=headers,
+            creator_id=int(creator_id),
+            creator_type=int(creator_type),
+        )
+
     def run(self) -> None:
-        import requests  # ruff: ignore[import-outside-top-level]
 
         total = len(self.asset_ids)
         loaded_count = 0
@@ -908,7 +1150,7 @@ class AssetLoaderThread(QThread):
         if cookie:
             try:
                 sess.cookies.set('.ROBLOSECURITY', cookie)
-            except Exception:  # ruff: ignore[blind-except]
+            except TypeError, ValueError:
                 sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
 
         # Phase 1: Batch-fetch asset metadata (name, type, creator, timestamps) in groups of 50
@@ -928,51 +1170,16 @@ class AssetLoaderThread(QThread):
             query = ','.join(batch)
             url = f'https://develop.roblox.com/v1/assets?assetIds={query}'
 
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
+            try:
                 response = sess.get(url, timeout=10)
                 response.raise_for_status()
-                response_json = cast('dict[str, object]', response.json())
-                data = cast('list[dict[str, object]]', response_json.get('data', []))
-                for item in data:
-                    aid = item.get('id')
-                    if aid is None:
-                        continue
-                    creator_obj = cast('object', item.get('creator') or {})
-                    creator_id: int | None = None
-                    creator_type: int | None = None
-                    if isinstance(creator_obj, dict) and creator_obj:
-                        creator_data = cast('dict[str, object]', creator_obj)
-                        creator_id = cast('int | None', creator_data.get('targetId'))
-                        creator_type = cast('int | None', creator_data.get('typeId'))
-                    if creator_id is None:
-                        creator_id = cast('int | None', item.get('creatorTargetId'))
-                    if creator_type is None:
-                        creator_type = cast('int | None', item.get('creatorType'))
-                    try:
-                        if creator_type is not None:
-                            creator_type = int(creator_type)
-                    except Exception:  # ruff: ignore[blind-except]
-                        creator_type = None
-                    try:
-                        if creator_id is not None:
-                            creator_id = int(creator_id)
-                    except Exception:  # ruff: ignore[blind-except]
-                        creator_id = None
-
-                    asset_metadata[str(aid)] = {
-                        'name': cast('str', item.get('name', 'Unknown')),
-                        'type': cast('int', item.get('typeId') or item.get('assetTypeId') or 1),
-                        'creator_id': creator_id,
-                        'creator_type': creator_type,
-                        'created_at': cast('str', item.get('created') or ''),
-                        'updated_at': cast('str', item.get('updated') or ''),
-                    }
+                asset_metadata.update(_asset_metadata_from_response(response.json()))
                 log_buffer.log(
                     'Scraper',
                     f'[Load Asset] Fetched metadata for batch {i // batch_size + 1}',
                 )
-            except Exception as e:  # ruff: ignore[blind-except]
-                log_buffer.log('Scraper', f'[Load Asset] Failed to fetch metadata batch: {e}')
+            except (TypeError, ValueError, requests.RequestException) as exc:
+                log_buffer.log('Scraper', f'[Load Asset] Failed to fetch metadata batch: {exc}')
 
         # Phase 2: Resolve creator names
         creators_to_resolve: dict[int, int] = {}
@@ -995,22 +1202,16 @@ class AssetLoaderThread(QThread):
             group_ids = [cid for cid, ctype in creators_to_resolve.items() if ctype == 2]
 
             if user_ids:
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
+                try:
                     resp = sess.post(
                         'https://users.roblox.com/v1/users',
                         json={'userIds': user_ids, 'excludeBannedUsers': False},
                         timeout=10,
                     )
                     resp.raise_for_status()
-                    response_json = cast('dict[str, object]', resp.json())
-                    entries = cast('list[dict[str, object]]', response_json.get('data', []))
-                    for entry in entries:
-                        uid = entry.get('id')
-                        name = entry.get('name') or entry.get('displayName') or 'Unknown'
-                        if uid is not None:
-                            creator_names[cast('int', uid)] = cast('str', name)
-                except Exception as e:  # ruff: ignore[blind-except]
-                    log_buffer.log('Scraper', f'[Load Asset] Failed to fetch user names: {e}')
+                    creator_names.update(_creator_names_from_response(resp.json()))
+                except (TypeError, ValueError, requests.RequestException) as exc:
+                    log_buffer.log('Scraper', f'[Load Asset] Failed to fetch user names: {exc}')
 
             for gid in group_ids:
                 if self._stop_requested:
@@ -1023,8 +1224,8 @@ class AssetLoaderThread(QThread):
                     resp.raise_for_status()
                     response_json = cast('dict[str, object]', resp.json())
                     creator_names[gid] = cast('str', response_json.get('name', 'Unknown'))
-                except Exception as e:  # ruff: ignore[blind-except]
-                    log_buffer.log('Scraper', f'[Load Asset] Failed to fetch group {gid}: {e}')
+                except (TypeError, ValueError, requests.RequestException) as exc:
+                    log_buffer.log('Scraper', f'[Load Asset] Failed to fetch group {gid}: {exc}')
 
         # Store creator names back into asset_metadata
         for meta in asset_metadata.values():
@@ -1043,13 +1244,7 @@ class AssetLoaderThread(QThread):
             f'[Load Asset] Starting parallel download of {format_count(total, "asset")}',
         )
 
-        import threading as _threading  # ruff: ignore[import-outside-top-level]
-        from concurrent.futures import (  # ruff: ignore[import-outside-top-level]
-            ThreadPoolExecutor,
-            as_completed,
-        )
-
-        progress_lock = _threading.Lock()
+        progress_lock = threading.Lock()
         progress_count = [0]  # mutable counter for closure
 
         def _download_one(aid_str: str) -> tuple[str, bool]:
@@ -1061,102 +1256,8 @@ class AssetLoaderThread(QThread):
             asset_type = meta['type'] if meta else 1
             asset_name = meta['name'] if meta else 'Unknown'
 
-            try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
-                if self._cache_scraper is not None:
-                    extra: dict[str, str] = {}
-                    if cookie:
-                        extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                    data, _status = _scraper_fetch_asset_with_place_id_retry(
-                        self._cache_scraper,
-                        aid_str,
-                        extra or None,
-                    )
-                else:
-                    api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={aid_str}'
-                    dl_headers = {'User-Agent': 'Roblox/WinInet'}
-                    if cookie:
-                        dl_headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                    resp = sess.get(api_url, headers=dl_headers, timeout=15, allow_redirects=True)
-                    data = resp.content if resp.status_code == 200 else None
-
-                    # Attempt place-ID retry on 403 using pre-fetched creator metadata
-                    if data is None and resp.status_code == 403 and meta:
-                        cid = meta.get('creator_id')
-                        ctype = meta.get('creator_type')
-                        if cid is not None and ctype is not None:
-                            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                                from fleasion.proxy.addons.cache_scraper import (  # ruff: ignore[import-outside-top-level]
-                                    CREATOR_GAME_MAX_SCAN,
-                                    CREATOR_GAME_PAGE_LIMITS,
-                                    creator_game_base_paths,
-                                )
-
-                                seen_pids: set[int] = set()
-                                attempted_paths: set[str] = set()
-                                for limit in CREATOR_GAME_PAGE_LIMITS:
-                                    found_before_limit = len(seen_pids)
-                                    max_pages = max(1, (CREATOR_GAME_MAX_SCAN + limit - 1) // limit)
-                                    for g_path in creator_game_base_paths(
-                                        int(cid), int(ctype), limit
-                                    ):
-                                        if g_path in attempted_paths:
-                                            continue
-                                        attempted_paths.add(g_path)
-                                        cursor = ''
-                                        for _page in range(max_pages):
-                                            path = g_path + (f'&cursor={cursor}' if cursor else '')
-                                            g_r = sess.get(
-                                                f'https://games.roblox.com{path}',
-                                                headers={'Accept': 'application/json'},
-                                                timeout=10,
-                                            )
-                                            if g_r.status_code != 200:
-                                                break
-                                            resp_json = cast('dict[str, object]', g_r.json())
-                                            games = cast(
-                                                'list[dict[str, object]]', resp_json.get('data', [])
-                                            )
-                                            for game in games:
-                                                rp = cast(
-                                                    'dict[str, object] | None',
-                                                    game.get('rootPlace'),
-                                                )
-                                                if rp and rp.get('id'):
-                                                    pid = int(cast('int', rp['id']))
-                                                    if pid in seen_pids:
-                                                        continue
-                                                    seen_pids.add(pid)
-                                                    retry_h = {
-                                                        **dl_headers,
-                                                        'Roblox-Place-Id': str(pid),
-                                                    }
-                                                    r2 = sess.get(
-                                                        api_url,
-                                                        headers=retry_h,
-                                                        timeout=15,
-                                                        allow_redirects=True,
-                                                    )
-                                                    if r2.status_code == 200 and r2.content:
-                                                        data = r2.content
-                                                        log_buffer.log(
-                                                            'Scraper',
-                                                            f'[Load Asset] Place-ID bypass succeeded for {aid_str}',
-                                                        )
-                                                        break  # Found working place ID
-                                            if data:
-                                                break
-                                            cursor = cast(
-                                                'str', resp_json.get('nextPageCursor') or ''
-                                            )
-                                            if not cursor:
-                                                break
-                                        if data:
-                                            break
-                                    if data or len(seen_pids) > found_before_limit:
-                                        break
-                            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                                pass
-
+            try:
+                data = self._download_asset_data(sess, aid_str, meta, cookie)
                 if data:
                     self.cache_manager.store_asset(
                         aid_str,
@@ -1164,14 +1265,23 @@ class AssetLoaderThread(QThread):
                         data,
                         url=f'https://assetdelivery.roblox.com/v1/asset/?id={aid_str}',
                     )
-                    log_buffer.log('Scraper', f'[Load Asset] Stored asset {aid_str} ({asset_name})')
+                    log_buffer.log(
+                        'Scraper',
+                        f'[Load Asset] Stored asset {aid_str} ({asset_name})',
+                    )
                     return aid_str, True
                 log_buffer.log('Scraper', f'[Load Asset] No data returned for asset {aid_str}')
-                return aid_str, False  # ruff: ignore[try-consider-else]
 
-            except Exception as e:  # ruff: ignore[blind-except]
-                log_buffer.log('Scraper', f'[Load Asset] Failed to download asset {aid_str}: {e}')
-                return aid_str, False
+            except (
+                ImportError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+                requests.RequestException,
+            ) as exc:
+                log_buffer.log('Scraper', f'[Load Asset] Failed to download asset {aid_str}: {exc}')
+            return aid_str, False
 
         with ThreadPoolExecutor(max_workers=6) as pool:
             futures = {pool.submit(_download_one, aid_str): aid_str for aid_str in str_ids}
@@ -1204,9 +1314,8 @@ class AssetLoaderThread(QThread):
         # We assign monotonically increasing timestamps (1ms apart) so that:
         #   first ID in list  → earliest timestamp → bottom of descending sort
         #   last ID in list   → latest timestamp   → top of descending sort
-        from datetime import datetime, timedelta  # ruff: ignore[import-outside-top-level]
 
-        base_time = datetime.now()  # ruff: ignore[call-datetime-now-without-tzinfo]
+        base_time = datetime.now(UTC).astimezone().replace(tzinfo=None)
         assets_index = cast('dict[str, _AssetRecord]', self.cache_manager.index['assets'])
         with _cache_lock(self.cache_manager):
             for order_idx, aid_str in enumerate(str_ids):
@@ -1392,17 +1501,15 @@ class ColumnFilterPopup(QMenu):
     def _select_all(self) -> None:
         self.active_cols = set(_ALL_SEARCH_COL_KEYS)
         for cb in self.checkboxes.values():
-            cb.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
-            cb.setChecked(True)
-            cb.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            with QSignalBlocker(cb):
+                cb.setChecked(True)
         self.cols_changed.emit(set(self.active_cols))
 
     def _select_none(self) -> None:
         self.active_cols.clear()
         for cb in self.checkboxes.values():
-            cb.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
-            cb.setChecked(False)
-            cb.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            with QSignalBlocker(cb):
+                cb.setChecked(False)
         self.cols_changed.emit(set(self.active_cols))
 
 
@@ -1439,7 +1546,8 @@ class ColumnVisibilityMenu(QMenu):
     # Prevent the menu from closing when the user clicks a checkable item.
     # It will still close on Escape or clicking outside.
     # ------------------------------------------------------------------
-    def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:
         if a0 is None:
             return
         if a0.button() != Qt.MouseButton.LeftButton:
@@ -1564,11 +1672,11 @@ class CacheViewerTab(QWidget):
         # Track whether we've installed the global event filter for audio hotkeys
         self._audio_key_filter_installed = False
 
-        # Column visibility – loaded from config, validated, then applied  # ruff: ignore[ambiguous-unicode-character-comment]
+        # Column visibility - loaded from config, validated, then applied
         self._col_visibility: dict[str, bool] = self._load_col_visibility()
-        # Column widths (pixels) – None means "use default"  # ruff: ignore[ambiguous-unicode-character-comment]
+        # Column widths (pixels) - None means "use default"
         self._col_widths: dict[str, int | None] = self._load_col_widths()
-        # Toggle column (col 0) width – start with legacy constant, will be recalculated  # ruff: ignore[ambiguous-unicode-character-comment]
+        # Toggle column (col 0) width - start with legacy constant, will be recalculated
         self._col_toggle_width: int = COL_TOGGLE_WIDTH
         # Currently active sort column (logical index). Defaults to Cached At.
         self._sort_col_idx: int = _COL_KEY_TO_IDX['cached_at']
@@ -1612,7 +1720,8 @@ class CacheViewerTab(QWidget):
         # Start name resolver daemon thread
         threading.Thread(target=self._name_resolver_loop, daemon=True).start()
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Stop the lightweight type-probe worker before the tab is destroyed."""
         if hasattr(self, '_type_probe_debounce'):
             self._type_probe_debounce.stop()
@@ -1641,7 +1750,7 @@ class CacheViewerTab(QWidget):
         merged = {**defaults, **{k: bool(v) for k, v in saved.items() if k in defaults}}
         # Validate: at least one visible
         if not any(merged.values()):
-            # All off – fall back to Hash/Name only (per spec)  # ruff: ignore[ambiguous-unicode-character-comment]
+            # All off - fall back to Hash/Name only (per spec)
             merged = {key: False for key, *_ in _SCRAPER_COLUMN_META}
             merged['hash_name'] = True
 
@@ -1666,37 +1775,38 @@ class CacheViewerTab(QWidget):
         row counters never get truncated. Uses the table font metrics and
         applies a small padding for spacing.
         """
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if total_rows is None:
-                total_rows = self.table.rowCount()
-            # At least show '1' width if empty to leave room for header arrow
-            total_rows = max(1, int(total_rows))
-            fm = self.table.fontMetrics()
-            largest_text = str(total_rows)
-            text_w = fm.horizontalAdvance(largest_text)
-            arrow_w = fm.horizontalAdvance('▼')
-            padding = 10 if sys.platform == 'darwin' else 7
-            w = max(COL_TOGGLE_WIDTH, text_w + padding, arrow_w + padding)
-            self._col_toggle_width = int(w)
-            header = self.table.horizontalHeader()
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-            self.table.setColumnWidth(0, self._col_toggle_width)
-        except Exception:  # ruff: ignore[blind-except]
-            # Fall back silently to the legacy constant on any error
+        try:
+            self._apply_toggle_width(total_rows)
+        except RuntimeError, TypeError, ValueError:
+            # Fall back silently to the legacy constant on Qt/type errors.
             self._col_toggle_width = COL_TOGGLE_WIDTH
-            try:
+            with contextlib.suppress(RuntimeError):
                 self.table.setColumnWidth(0, COL_TOGGLE_WIDTH)
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
+
+    def _apply_toggle_width(self, total_rows: int | None) -> None:
+        if total_rows is None:
+            total_rows = self.table.rowCount()
+        total_rows = max(1, int(total_rows))
+        fm = self.table.fontMetrics()
+        padding = 10 if sys.platform == 'darwin' else 7
+        width = max(
+            COL_TOGGLE_WIDTH,
+            fm.horizontalAdvance(str(total_rows)) + padding,
+            fm.horizontalAdvance('▼') + padding,
+        )
+        self._col_toggle_width = int(width)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, self._col_toggle_width)
 
     def _renumber_counters(self) -> None:
         """Renumber the left-most counter column so it shows 1..N in the
         current visible order. This should be called after any sort or
         when the visible ordering changes.
         """
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            # Block signals to avoid spurious selection/changed events
-            self.table.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        # Block signals to avoid spurious selection/changed events
+        signal_blocker = QSignalBlocker(self.table)
+        with contextlib.suppress(Exception):
             row_count = self.table.rowCount()
             for r in range(row_count):
                 old = self.table.item(r, 0)
@@ -1706,10 +1816,7 @@ class CacheViewerTab(QWidget):
                 new.setFlags(flags)
                 new.setTextAlignment(align)
                 self.table.setItem(r, 0, new)
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
-        finally:
-            self.table.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+        del signal_blocker
 
         # OPTIMIZATION: Update row cache after sort completes so next sync uses fresh positions
         self._update_asset_row_cache()
@@ -1790,7 +1897,7 @@ class CacheViewerTab(QWidget):
             pos.setX(pos.x() + x)
             menu.exec(pos)
 
-    def _show_col_visibility_from_header(self, pos: QPoint) -> None:  # ruff: ignore[unused-method-argument]
+    def _show_col_visibility_from_header(self, _pos: QPoint) -> None:
         """Right-click on any header section: open menu at cursor."""
         menu = self._get_or_create_col_menu()
         menu.exec(QCursor.pos())
@@ -1895,16 +2002,18 @@ class CacheViewerTab(QWidget):
             self.splitter.setSizes([table_w, preview_w])
 
     # ------------------------------------------------------------------
-    # resizeEvent – update splitter continuously as main window resizes  # ruff: ignore[ambiguous-unicode-character-comment]
+    # resizeEvent - update splitter continuously as main window resizes
     # ------------------------------------------------------------------
 
-    def resizeEvent(self, event: QResizeEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         # Snap splitter in real-time if preview is open
         if not self.preview_panel.isHidden():
             self._auto_snap_splitter()
 
-    def changeEvent(self, event: QEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.PaletteChange:
             self._update_table_alt_palette()
@@ -1921,7 +2030,7 @@ class CacheViewerTab(QWidget):
             self.table.setPalette(QPalette())  # inherit from application
 
     def _sanitize_filename(self, name: str) -> str:
-        """Replace characters that are illegal in Windows filenames with Unicode look‑alikes."""  # ruff: ignore[ambiguous-unicode-character-docstring]
+        """Replace characters that are illegal in Windows filenames with Unicode look-alikes."""
         char_map = {
             '/': '∕',  # U+2215  (division slash)
             '\\': '⧵',  # U+29F5  (reverse solidus operator)
@@ -1929,8 +2038,8 @@ class CacheViewerTab(QWidget):
             '*': '∗',  # U+2217  (asterisk operator)
             '?': '？',  # U+FF1F  (fullwidth question mark)
             '"': '＂',  # U+FF02  (fullwidth quotation mark)
-            '<': '＜',  # U+FF1C  (fullwidth less‑than sign)  # ruff: ignore[ambiguous-unicode-character-comment]
-            '>': '＞',  # U+FF1E  (fullwidth greater‑than sign)  # ruff: ignore[ambiguous-unicode-character-comment]
+            '<': '＜',  # U+FF1C  (fullwidth less-than sign)
+            '>': '＞',  # U+FF1E  (fullwidth greater-than sign)
             '|': '｜',  # U+FF5C  (fullwidth vertical line)
         }
         return ''.join(char_map.get(c, c) for c in name)
@@ -2054,11 +2163,11 @@ class CacheViewerTab(QWidget):
         btn_bottom = self.filter_btn.mapToGlobal(btn_rect.bottomLeft())
         btn_top = self.filter_btn.mapToGlobal(btn_rect.topLeft())
 
-        screen = cast('_ScreenGeometryProvider | None', self.filter_btn.screen())
+        screen = cast('QScreen | None', self.filter_btn.screen())
         if screen is None:
             app = cast('QApplication | None', QApplication.instance())
             if app is not None:
-                screen = cast('_ScreenGeometryProvider | None', app.screenAt(btn_bottom))
+                screen = app.screenAt(btn_bottom)
 
         if screen is None:
             # No screen info — just show below and trust Qt
@@ -2128,7 +2237,10 @@ class CacheViewerTab(QWidget):
             self.search_col_btn.setText(tr('ui.cache.cache_viewer.search_columns_none'))
         elif len(cols) == 1:
             key = next(iter(cols))
-            label = next((l for k, l, _default in _search_columns() if k == key), key)  # ruff: ignore[ambiguous-variable-name]
+            label = next(
+                (label for column_key, label, _default in _search_columns() if column_key == key),
+                key,
+            )
             self.search_col_btn.setText(
                 tr('ui.cache.cache_viewer.search_columns_value', value0=label)
             )
@@ -2147,7 +2259,7 @@ class CacheViewerTab(QWidget):
         btn_bottom = btn.mapToGlobal(btn_rect.bottomLeft())
         btn_top = btn.mapToGlobal(btn_rect.topLeft())
 
-        screen = cast('_ScreenGeometryProvider | None', btn.screen())
+        screen = cast('QScreen | None', btn.screen())
         if screen is None:
             self._col_popup.exec(btn_bottom)
             return
@@ -2350,10 +2462,13 @@ class CacheViewerTab(QWidget):
     def _ensure_obj_viewer(self) -> ObjViewerPanel:
         """Create the mesh OpenGL widget only when a mesh is actually previewed."""
         if self.obj_viewer is None:
-            from .obj_viewer import ObjViewerPanel  # ruff: ignore[import-outside-top-level]
+            obj_viewer_panel = cast(
+                'type[ObjViewerPanel]',
+                _lazy_attr('.obj_viewer', 'ObjViewerPanel'),
+            )
 
             log_buffer.log('OpenGL', 'Creating OBJ preview widget on demand')
-            viewer = ObjViewerPanel(
+            viewer = obj_viewer_panel(
                 config_manager=cast('ConfigManager | None', self.config_manager)
             )
             viewer.clear_requested.connect(self._clear_preview)
@@ -2365,12 +2480,13 @@ class CacheViewerTab(QWidget):
     def _ensure_animation_viewer(self) -> AnimationViewerPanel:
         """Create the animation OpenGL widget only when an animation is previewed."""
         if self.animation_viewer is None:
-            from .animation_viewer import (  # ruff: ignore[import-outside-top-level]
-                AnimationViewerPanel,
+            animation_viewer_panel = cast(
+                'type[AnimationViewerPanel]',
+                _lazy_attr('.animation_viewer', 'AnimationViewerPanel'),
             )
 
             log_buffer.log('OpenGL', 'Creating animation preview widget on demand')
-            viewer = AnimationViewerPanel(
+            viewer = animation_viewer_panel(
                 config_manager=cast('ConfigManager | None', self.config_manager)
             )
             viewer.hide()
@@ -2426,7 +2542,7 @@ class CacheViewerTab(QWidget):
 
     def _check_for_updates(self) -> None:
         """Check if cache has new assets and update stats only."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        with contextlib.suppress(Exception):
             stats = cast('dict[str, int]', self.cache_manager.get_cache_stats())
             total_assets = stats['total_assets']
             total_size = self._format_size(stats['total_size'])
@@ -2439,8 +2555,6 @@ class CacheViewerTab(QWidget):
             if total_assets != self._last_asset_count:
                 self._last_asset_count = total_assets
                 self._refresh_assets()
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass  # Ignore errors during background refresh
 
     def _refresh_assets(self) -> None:
         """Refresh the asset list using search worker for all searches."""
@@ -2519,7 +2633,7 @@ class CacheViewerTab(QWidget):
                     anchor_asset_id = asset_data.get('id')
 
         # Disable updates while populating (major performance boost)
-        self.table.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        signal_blocker = QSignalBlocker(self.table)
         self.table.setUpdatesEnabled(False)
         self.table.setSortingEnabled(False)
 
@@ -2583,10 +2697,7 @@ class CacheViewerTab(QWidget):
                 # Column 1: Hash/Name — also carries the asset UserRole payload
                 info = self._asset_info[asset_id]
                 resolved_name = info.get('resolved_name')
-                if self._show_names and resolved_name:  # ruff: ignore[if-else-block-instead-of-if-exp]
-                    display_val = resolved_name
-                else:
-                    display_val = hash_val
+                display_val = resolved_name if self._show_names and resolved_name else hash_val
                 name_item = QTableWidgetItem(display_val)
                 name_item.setData(Qt.ItemDataRole.UserRole, asset)
                 self.table.setItem(row, 1, name_item)
@@ -2621,7 +2732,7 @@ class CacheViewerTab(QWidget):
                 # user sees the real texture data footprint, not the tiny XML size.
                 size = asset.get('raw_size', asset.get('size', 0))
                 if asset['type'] == 63:
-                    try:  # ruff: ignore[too-many-statements-in-try-clause]
+                    with contextlib.suppress(Exception):
                         pack_files = self.cache_manager.get_texturepack_slot_pack_paths(asset_id)
                         if pack_files:
                             tp_slot_size = sum(f.stat().st_size for f in pack_files)
@@ -2637,8 +2748,6 @@ class CacheViewerTab(QWidget):
                             )
                         if tp_slot_size > 0:
                             size = tp_slot_size
-                    except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                        pass
                 size_str = self._format_size(size)
                 size_item = NumericSortItem(size, size_str)
                 self.table.setItem(row, 5, size_item)
@@ -2669,7 +2778,7 @@ class CacheViewerTab(QWidget):
 
         finally:
             # Re-enable updates
-            self.table.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            del signal_blocker
             self.table.setUpdatesEnabled(True)
             self.table.setSortingEnabled(True)
 
@@ -2680,9 +2789,8 @@ class CacheViewerTab(QWidget):
 
         # Restore selection if the asset still exists
         if row_to_select is not None:
-            self.table.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
-            self.table.selectRow(row_to_select)
-            self.table.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            with QSignalBlocker(self.table):
+                self.table.selectRow(row_to_select)
 
         # ── Restore scroll anchor ─────────────────────────────────────────
         # Rules:
@@ -2716,7 +2824,7 @@ class CacheViewerTab(QWidget):
             # else: filter changed, anchor gone — leave at top (row 0)
 
         # Update stats
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        with contextlib.suppress(Exception):
             stats = cast('dict[str, int]', self.cache_manager.get_cache_stats())
             total_assets = stats['total_assets']
             total_size = self._format_size(stats['total_size'])
@@ -2727,8 +2835,6 @@ class CacheViewerTab(QWidget):
             self.stats_size_label.setText(tr('ui.cache.cache_viewer.size_value', value0=total_size))
 
             self._last_asset_count = total_assets
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
 
         # OPTIMIZATION: Update row cache after table populate so background thread can use cached lookups
         self._update_asset_row_cache()
@@ -2766,7 +2872,7 @@ class CacheViewerTab(QWidget):
             if not isinstance(asset, dict):
                 continue
             asset_record = cast('_AssetRecord', asset)
-            if asset_record.get('type') not in (1, 13):  # ruff: ignore[literal-membership]
+            if asset_record.get('type') not in {1, 13}:
                 continue
             if asset_record.get('detected_type'):
                 continue
@@ -2873,8 +2979,7 @@ class CacheViewerTab(QWidget):
         if owner is None:
             owner = self.window()
         tray = getattr(owner, '_system_tray', None)
-        if tray is not None and hasattr(tray, '_set_cache_scraper_enabled'):
-            tray._set_cache_scraper_enabled(enabled)  # ruff: ignore[private-member-access]
+        if tray is not None and _set_tray_cache_scraper_enabled(tray, enabled):
             return
         if self.cache_scraper:
             self.cache_scraper.set_enabled(enabled)
@@ -2897,9 +3002,8 @@ class CacheViewerTab(QWidget):
     def set_cache_scraper_enabled(self, enabled: bool) -> None:
         """Update the scraper toggle without re-emitting the toggle signal."""
         if hasattr(self, 'scraper_toggle'):
-            self.scraper_toggle.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
-            self.scraper_toggle.setChecked(enabled)
-            self.scraper_toggle.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            with QSignalBlocker(self.scraper_toggle):
+                self.scraper_toggle.setChecked(enabled)
 
     def _on_search_text_changed(self) -> None:
         """Handle search text change - debounce to avoid too many searches."""
@@ -3076,10 +3180,7 @@ class CacheViewerTab(QWidget):
                     continue
 
                 resolved_name = info.get('resolved_name')
-                if checked and resolved_name:  # ruff: ignore[if-else-block-instead-of-if-exp]
-                    display_val = resolved_name
-                else:
-                    display_val = info.get('hash', '')
+                display_val = resolved_name if checked and resolved_name else info.get('hash', '')
 
                 item = self.table.item(row, 1)  # Hash/Name is now col 1
                 if item:
@@ -3179,9 +3280,8 @@ class CacheViewerTab(QWidget):
 
                 # Update name column if resolved
                 resolved_name = info.get('resolved_name')
-                if self._show_names and resolved_name:  # ruff: ignore[collapsible-if]
-                    if item.text() != resolved_name:
-                        item.setText(resolved_name)
+                if self._show_names and resolved_name and item.text() != resolved_name:
+                    item.setText(resolved_name)
 
                 # Update creator column if resolved
                 if info.get('creator_name') is not None or info.get('creator_id') is not None:
@@ -3226,10 +3326,7 @@ class CacheViewerTab(QWidget):
                 self.table.viewport().update()
 
     def _update_row_creator(
-        self,
-        asset_id: str,
-        creator_id: int | None,  # ruff: ignore[unused-method-argument]
-        creator_name: str | None,  # ruff: ignore[unused-method-argument]
+        self, asset_id: str, _creator_id: int | None, _creator_name: str | None
     ) -> None:
         """Update a single row's creator cell (thread-safe via QTimer).
 
@@ -3298,11 +3395,7 @@ class CacheViewerTab(QWidget):
                 break
 
     def _get_roblosecurity(self) -> str | None:
-        from fleasion.utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
-            get_roblosecurity,
-        )
-
-        return get_roblosecurity()
+        return _get_roblosecurity()
 
     def _fetch_asset_names(
         self, asset_ids: list[str], cookie: str | None
@@ -3312,7 +3405,6 @@ class CacheViewerTab(QWidget):
         Returns a dict keyed by asset_id with values:
             {'name': str, 'creator_id': int|None, 'creator_type': int|None}
         """
-        import requests  # ruff: ignore[import-outside-top-level]
 
         if not asset_ids:
             return None
@@ -3334,7 +3426,7 @@ class CacheViewerTab(QWidget):
             try:
                 # Prefer setting cookie on the session so requests handles it properly
                 sess.cookies.set('.ROBLOSECURITY', cookie)
-            except Exception:  # ruff: ignore[blind-except]
+            except TypeError, ValueError:
                 # Fallback to header if cookie set fails
                 sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
 
@@ -3345,15 +3437,25 @@ class CacheViewerTab(QWidget):
         try:
             response = sess.get(url, timeout=10)
             response.raise_for_status()
-        except Exception as e:  # ruff: ignore[blind-except]
+            response_json = cast('object', response.json())
+        except requests.RequestException as e:
             log_buffer.log('Scraper', f'[Name Resolver] Failed to fetch names: {e}')
             return None
 
-        response_json = cast('dict[str, object]', response.json())
-        data = cast('list[dict[str, object]]', response_json.get('data', []))
+        if not isinstance(response_json, dict):
+            log_buffer.log('Scraper', '[Name Resolver] Asset response was not a JSON object')
+            return None
+        response_mapping = cast('dict[str, object]', response_json)
+        raw_data = response_mapping.get('data', [])
+        if not isinstance(raw_data, list):
+            log_buffer.log('Scraper', '[Name Resolver] Asset response data was not a list')
+            return None
 
         result: dict[str, _FetchedNameMetadata] = {}
-        for item in data:
+        for raw_item in cast('list[object]', raw_data):
+            if not isinstance(raw_item, dict):
+                continue
+            item = cast('dict[str, object]', raw_item)
             aid = item.get('id')
             if aid is None:
                 continue
@@ -3380,12 +3482,12 @@ class CacheViewerTab(QWidget):
             try:
                 if creator_type is not None:
                     creator_type = int(creator_type)
-            except Exception:  # ruff: ignore[blind-except]
+            except TypeError, ValueError:
                 creator_type = None
             try:
                 if creator_id is not None:
                     creator_id = int(creator_id)
-            except Exception:  # ruff: ignore[blind-except]
+            except TypeError, ValueError:
                 creator_id = None
 
             result[str(aid)] = {
@@ -3420,24 +3522,19 @@ class CacheViewerTab(QWidget):
 
         # Batch-resolve users via POST /v1/users
         if user_ids:
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
+            try:
                 resp = sess.post(
                     'https://users.roblox.com/v1/users',
                     json={'userIds': user_ids, 'excludeBannedUsers': False},
                     timeout=10,
                 )
                 resp.raise_for_status()
-                response_json = cast('dict[str, object]', resp.json())
-                entries = cast('list[dict[str, object]]', response_json.get('data', []))
-                for entry in entries:
-                    uid = entry.get('id')
-                    name = entry.get('name') or entry.get('displayName') or 'Unknown'
-                    if uid is not None:
-                        result[cast('int', uid)] = cast('str', name)
-
-            except Exception as e:  # ruff: ignore[blind-except]
+                response_json = cast('object', resp.json())
+            except requests.RequestException as e:
                 # If user batch lookup fails, continue without user names
                 log_buffer.log('Scraper', f'[Name Resolver] Failed to fetch user names: {e}')
+            else:
+                result.update(_creator_names_from_response(response_json))
 
         # Resolve groups one-by-one (no batch endpoint on v1)
         for gid in group_ids:
@@ -3447,20 +3544,22 @@ class CacheViewerTab(QWidget):
                     timeout=10,
                 )
                 resp.raise_for_status()
-                response_json = cast('dict[str, object]', resp.json())
-                result[gid] = cast('str', response_json.get('name', 'Unknown'))
-
-            except Exception as e:  # ruff: ignore[blind-except]
+                response_json = cast('object', resp.json())
+            except requests.RequestException as e:
                 # If a single group lookup fails, skip that group
                 log_buffer.log('Scraper', f'[Name Resolver] Failed to fetch group {gid}: {e}')
+                continue
+            if not isinstance(response_json, dict):
+                continue
+            response_mapping = cast('dict[str, object]', response_json)
+            name = response_mapping.get('name', 'Unknown')
+            if isinstance(name, str):
+                result[gid] = name
 
         return result
 
     def _name_resolver_loop(self) -> None:
         """Background thread to resolve asset names and creator names."""
-        import time  # ruff: ignore[import-outside-top-level]
-
-        import requests  # ruff: ignore[import-outside-top-level]
 
         while True:
             # Skip if Show Names is OFF
@@ -3511,8 +3610,8 @@ class CacheViewerTab(QWidget):
             # Fetch names + creator IDs
             try:
                 asset_data_map = self._fetch_asset_names(batch, cookie)
-            except Exception as e:  # ruff: ignore[blind-except]
-                log_buffer.log('Scraper', f'[Name Resolver] Fetch failed: {e}')
+            except (RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
+                log_buffer.log('Scraper', f'[Name Resolver] Fetch failed: {exc}')
                 time.sleep(delay)
                 continue
 
@@ -3537,7 +3636,7 @@ class CacheViewerTab(QWidget):
 
             # Collect creator IDs that need name resolution
             creators_to_resolve: dict[int, int] = {}  # creator_id → creator_type
-            for asset_id, data in asset_data_map.items():  # ruff: ignore[unused-loop-control-variable]
+            for data in asset_data_map.values():
                 cid = data.get('creator_id')
                 ctype = data.get('creator_type')
                 if cid is not None and ctype is not None and cid not in creators_to_resolve:
@@ -3553,8 +3652,8 @@ class CacheViewerTab(QWidget):
             if creators_to_resolve:
                 try:
                     creator_names = self._fetch_creator_names(creators_to_resolve, sess)
-                except Exception as e:  # ruff: ignore[blind-except]
-                    log_buffer.log('Scraper', f'[Name Resolver] Creator fetch failed: {e}')
+                except (RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
+                    log_buffer.log('Scraper', f'[Name Resolver] Creator fetch failed: {exc}')
 
             log_buffer.log(
                 'Scraper',
@@ -3591,8 +3690,8 @@ class CacheViewerTab(QWidget):
             # Save index after batch update (less frequent saves)
             try:
                 _save_cache_index(self.cache_manager)
-            except Exception as e:  # ruff: ignore[blind-except]
-                log_buffer.log('Scraper', f'[Name Resolver] Failed to save index: {e}')
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                log_buffer.log('Scraper', f'[Name Resolver] Failed to save index: {exc}')
 
             # CRITICAL: After resolving a batch, immediately sync all visible rows with the updated data
             # This ensures that the last asset (and all assets) show their resolved names/creators
@@ -3637,8 +3736,6 @@ class CacheViewerTab(QWidget):
         if not file_path:
             return
 
-        from pathlib import Path  # ruff: ignore[import-outside-top-level]
-
         # Sanitize resolved name if present (though the user's chosen filename already safe)
         asset_id = asset['id']
         resolved_name = None
@@ -3668,8 +3765,6 @@ class CacheViewerTab(QWidget):
         self, exported_paths: Sequence[_ExportPath | None]
     ) -> tuple[Path, bool]:
         """Return the Explorer target and whether it should be selected."""
-        import os  # ruff: ignore[import-outside-top-level]
-        from pathlib import Path  # ruff: ignore[import-outside-top-level]
 
         existing_paths: list[Path] = []
         for path in exported_paths:
@@ -3695,8 +3790,6 @@ class CacheViewerTab(QWidget):
 
     def _open_export_target(self, exported_paths: Sequence[_ExportPath | None]) -> None:
         """Open exported output in Explorer, selecting a single exported file when possible."""
-        import subprocess  # ruff: ignore[import-outside-top-level]
-        from pathlib import Path  # ruff: ignore[import-outside-top-level]
 
         target, select_file = self._get_export_open_target(exported_paths)
         target = Path(target)
@@ -3708,25 +3801,17 @@ class CacheViewerTab(QWidget):
                 return
             open_folder(target if target.is_dir() else self.cache_manager.export_dir)
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if select_file:
-                if target.is_file():
-                    subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
-                        ['explorer.exe', '/select,', str(target.resolve())],  # ruff: ignore[start-process-with-partial-path]
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-                    )
-                else:
-                    _fallback_open_folder()
-            else:
-                open_folder(target if target.is_dir() else self.cache_manager.export_dir)
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            _open_export_path(
+                target,
+                select_file=select_file,
+                export_dir=self.cache_manager.export_dir,
+            )
+        except (OSError, RuntimeError) as exc:
             log_buffer.log('Export', f'Could not open export target {target}: {exc}')
             try:
                 _fallback_open_folder()
-            except Exception as fallback_exc:  # ruff: ignore[blind-except]
+            except (OSError, RuntimeError) as fallback_exc:
                 log_buffer.log(
                     'Export',
                     f'Fallback open failed for export target {target}: {fallback_exc}',
@@ -3789,20 +3874,21 @@ class CacheViewerTab(QWidget):
                         info.get('updated_at') or updated_at
                     ).lower()
 
-                if (
-                    search_text in asset_id  # ruff: ignore[too-many-boolean-expressions]
-                    or search_text in type_name
-                    or search_text in url
-                    or search_text in hash_val
-                    or search_text in resolved_name
-                    or search_text in size_str
-                    or search_text in cached_at
-                    or search_text in cached_at_display
-                    or search_text in updated_at
-                    or search_text in updated_at_display
-                    or search_text in created_at
-                    or search_text in created_at_display
-                ):
+                searchable_fields = (
+                    asset_id,
+                    type_name,
+                    url,
+                    hash_val,
+                    resolved_name,
+                    size_str,
+                    cached_at,
+                    cached_at_display,
+                    updated_at,
+                    updated_at_display,
+                    created_at,
+                    created_at_display,
+                )
+                if any(search_text in field for field in searchable_fields):
                     filtered.append(a)
             assets = filtered
 
@@ -3903,6 +3989,38 @@ class CacheViewerTab(QWidget):
             self._delete_worker.finished.connect(self._on_deletion_finished)
             self._delete_worker.start()
 
+    def _reset_cache_database(self) -> None:
+        """Reset cached files, index state, and in-flight cache work."""
+        if hasattr(self, '_type_probe_debounce'):
+            self._type_probe_debounce.stop()
+        type_probe_worker = self._type_probe_worker
+        if type_probe_worker is not None:
+            type_probe_worker.stop()
+            type_probe_worker.wait()
+            self._type_probe_worker = None
+        self._type_probe_pending.clear()
+        self._type_probe_inflight.clear()
+        self._type_probe_checked.clear()
+
+        self.cache_manager.clear_memory_cache()
+        if self.cache_scraper:
+            reset_scraper = getattr(self.cache_scraper, 'reset_for_cache_clear', None)
+            if callable(reset_scraper):
+                reset_scraper()
+            else:
+                self.cache_scraper.clear_tracking()
+
+        cache_dir = self.cache_manager.cache_dir
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_manager.index = cast('CacheIndex', {'assets': {}})
+        _save_cache_index(self.cache_manager)
+        self._last_asset_count = 0
+        self._asset_info.clear()
+        self._refresh_assets()
+        log_buffer.log('Scraper', 'Database deleted and reset')
+
     def _clear_cache(self) -> None:
         """Delete the entire cache database and files (old Delete DB functionality)."""
         reply = QMessageBox.question(
@@ -3912,72 +4030,35 @@ class CacheViewerTab(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
 
-        if reply == QMessageBox.StandardButton.Yes:
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                import shutil  # ruff: ignore[import-outside-top-level]
-
-                # Stop any header probes before replacing the database.  A
-                # worker that finishes against the old index can otherwise
-                # repopulate the viewer while the reset is in progress.
-                if hasattr(self, '_type_probe_debounce'):
-                    self._type_probe_debounce.stop()
-                type_probe_worker = self._type_probe_worker
-                if type_probe_worker is not None:
-                    type_probe_worker.stop()
-                    type_probe_worker.wait()
-                    self._type_probe_worker = None
-                self._type_probe_pending.clear()
-                self._type_probe_inflight.clear()
-                self._type_probe_checked.clear()
-
-                # Delete DB is also a process-state reset: evict payloads
-                # retained by CacheManager and invalidate/cancel scraper work
-                # that was queued for the old database.
-                self.cache_manager.clear_memory_cache()
-                if self.cache_scraper:
-                    reset_scraper = getattr(self.cache_scraper, 'reset_for_cache_clear', None)
-                    if callable(reset_scraper):
-                        reset_scraper()
-                    else:
-                        self.cache_scraper.clear_tracking()
-
-                cache_dir = self.cache_manager.cache_dir
-                if cache_dir.exists():
-                    shutil.rmtree(cache_dir)
-                    cache_dir.mkdir(parents=True, exist_ok=True)
-                # Reset the index
-                self.cache_manager.index = cast('CacheIndex', {'assets': {}})
-                _save_cache_index(self.cache_manager)
-                self._last_asset_count = 0
-                self._asset_info.clear()
-                self._refresh_assets()
-                log_buffer.log('Scraper', 'Database deleted and reset')
-                QMessageBox.information(
-                    self,
-                    tr('ui.cache.cache_viewer.success'),
-                    tr('ui.cache.cache_viewer.database_deleted_successfully'),
-                )
-            except Exception as e:  # ruff: ignore[blind-except]
-                QMessageBox.critical(
-                    self,
-                    tr('ui.cache.cache_viewer.error'),
-                    tr('ui.cache.cache_viewer.failed_to_delete_database_value', value0=e),
-                )
+        try:
+            self._reset_cache_database()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            QMessageBox.critical(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.failed_to_delete_database_value', value0=exc),
+            )
+            return
+        QMessageBox.information(
+            self,
+            tr('ui.cache.cache_viewer.success'),
+            tr('ui.cache.cache_viewer.database_deleted_successfully'),
+        )
 
     def _delete_roblox_cache(self) -> None:
         """Delete Roblox cache using system tray method."""
-        from fleasion.gui import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
-
-        window = DeleteCacheWindow()
+        delete_cache_window = cast(
+            'Callable[[], QWidget]',
+            _lazy_attr('fleasion.gui', 'DeleteCacheWindow'),
+        )
+        window = delete_cache_window()
         window.show()
 
     def _redirect_counter_focus(
-        self,
-        current_row: int,
-        current_col: int,
-        previous_row: int,  # ruff: ignore[unused-method-argument]
-        previous_col: int,  # ruff: ignore[unused-method-argument]
+        self, current_row: int, current_col: int, _previous_row: int, _previous_col: int
     ) -> None:
         """If Qt moves focus onto column 0 (the counter), immediately redirect it
         to column 1 of the same row.  This ensures there is always exactly one
@@ -3985,9 +4066,75 @@ class CacheViewerTab(QWidget):
         during keyboard navigation when column 0 is non-selectable.
         """
         if current_col == 0 and current_row >= 0:
-            self.table.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
-            self.table.setCurrentCell(current_row, 1)
-            self.table.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            with QSignalBlocker(self.table):
+                self.table.setCurrentCell(current_row, 1)
+
+    def _set_preview_title(self, asset_id: str, asset: _AssetRecord) -> None:
+        info = self._asset_info.get(asset_id, {})
+        resolved = info.get('resolved_name') if info else None
+        display = resolved or asset.get('hash') or asset_id
+        if len(display) > 60:
+            display = display[:57] + '...'
+        self.preview_title_label.setText(tr('ui.cache.cache_viewer.preview_value', value0=display))
+
+    def _preview_selected_asset(
+        self,
+        asset: _AssetRecord,
+        asset_type: int,
+        asset_id: str,
+    ) -> None:
+        data = self.cache_manager.get_asset(asset_id, asset_type)
+        if not data:
+            self._show_text_preview(tr('cache.preview.failed_to_load_asset', asset_id=asset_id))
+            return
+        detected_type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset_type)
+        if detected_type_name != self.cache_manager.get_asset_type_name(asset_type):
+            asset['type_name'] = detected_type_name
+            type_item = self.table.item(self.table.currentRow(), 4)
+            if type_item is not None:
+                type_item.setText(_localized_asset_type_name(asset_type, detected_type_name))
+        if asset_type == 63:
+            self._show_loading()
+            self._preview_texturepack(data, asset_id)
+            return
+        is_rbx_document = is_rbx_model_data(data)
+        if asset_type in {24, 39} and is_rbx_document:
+            self.rbxm_view_btn.show()
+        elif is_rbx_document:
+            self._preview_rbxm(data, asset)
+            return
+        is_mesh_payload = mesh_processing.is_mesh_data(data)
+        if is_mesh_payload or asset_type in {4, 39, 1, 13, 63}:
+            self._show_loading()
+
+        if is_mesh_payload or asset_type == 4:
+            self._preview_mesh(data, asset_id)
+        elif asset_type == 39:
+            self._preview_solidmodel(data, asset_id)
+        elif detected_type_name == 'Audio':
+            self._preview_audio(data, asset_id)
+        elif asset_type in {1, 13}:
+            self._preview_image(data)
+        elif asset_type == 3:
+            self._preview_audio(data, asset_id)
+        elif asset_type == 24:
+            self._preview_animation(data, asset_id)
+        elif asset_type == 74:
+            self._preview_font(data)
+        elif asset_type == 73:
+            is_json, _ = self._is_json_data(data)
+            if is_json:
+                self._preview_json(data, asset)
+            else:
+                self._show_text_preview(tr('cache.preview.fontfamily_json_parse_failed'))
+        elif is_rbx_model_data(data):
+            self._preview_rbxm(data, asset)
+        else:
+            is_json, _ = self._is_json_data(data)
+            if is_json:
+                self._preview_json(data, asset)
+            else:
+                self._preview_hex(data, asset)
 
     def _on_selection_changed(self) -> None:
         """Handle table selection change to preview asset."""
@@ -4037,14 +4184,12 @@ class CacheViewerTab(QWidget):
             self.audio_player.deleteLater()
             self.audio_player = None
         # Remove global audio key event filter if installed
-        try:
+        with contextlib.suppress(Exception):
             if self._audio_key_filter_installed:
                 app = cast('QApplication | None', QApplication.instance())
                 if app is not None:
                     app.removeEventFilter(self)
                     self._audio_key_filter_installed = False
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
 
         # Stop animation playback
         if self.animation_viewer is not None:
@@ -4054,90 +4199,25 @@ class CacheViewerTab(QWidget):
         asset_id = asset['id']
 
         # Update preview group title to show resolved name or hash for clarity
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            info = self._asset_info.get(asset_id, {})
-            resolved = info.get('resolved_name') if info else None
-            display = resolved or asset.get('hash') or str(asset_id)
-            # Trim long names/hashes to keep the UI tidy
-            if len(display) > 60:
-                display = display[:57] + '...'
-            self.preview_title_label.setText(
-                tr('ui.cache.cache_viewer.preview_value', value0=display)
-            )
-        except Exception:  # ruff: ignore[blind-except]
-            try:
+        try:
+            self._set_preview_title(asset_id, asset)
+        except RuntimeError:
+            with contextlib.suppress(RuntimeError):
                 self.preview_title_label.setText(tr('ui.cache.cache_viewer.preview'))
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            # Get asset data
-            data = self.cache_manager.get_asset(asset_id, asset_type)
-            if not data:
-                self._show_text_preview(tr('cache.preview.failed_to_load_asset', asset_id=asset_id))
-                return
-            detected_type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset_type)
-            if detected_type_name != self.cache_manager.get_asset_type_name(asset_type):
-                asset['type_name'] = detected_type_name
-                type_item = self.table.item(self.table.currentRow(), 4)
-                if type_item is not None:
-                    type_item.setText(_localized_asset_type_name(asset_type, detected_type_name))
-            if asset_type == 63:  # TexturePack
-                self._show_loading()
-                self._preview_texturepack(data, asset_id)
-                return
-            is_rbx_document = is_rbx_model_data(data)
-            if asset_type in (24, 39) and is_rbx_document:  # ruff: ignore[literal-membership]
-                self.rbxm_view_btn.show()
-            elif is_rbx_document:
-                self._preview_rbxm(data, asset)
-                return
-            is_mesh_payload = mesh_processing.is_mesh_data(data)
-
-            # Show loading for async previews
-            if is_mesh_payload or asset_type in [  # ruff: ignore[literal-membership]
-                4,
-                39,
-                1,
-                13,
-                63,
-            ]:  # Mesh, SolidModel, Image, Decal, TexturePack
-                self._show_loading()
-
-            # Preview based on type
-            if is_mesh_payload or asset_type == 4:  # Mesh
-                self._preview_mesh(data, asset_id)
-            elif asset_type == 39:  # SolidModel
-                self._preview_solidmodel(data, asset_id)
-            elif detected_type_name == 'Audio':  # Payload is audio despite assetTypeId
-                self._preview_audio(data, asset_id)
-            elif asset_type in [1, 13]:  # Image, Decal  # ruff: ignore[literal-membership]
-                self._preview_image(data)
-            elif asset_type == 3:  # Audio
-                self._preview_audio(data, asset_id)
-            elif asset_type == 24:  # Animation
-                self._preview_animation(data, asset_id)
-            elif asset_type == 74:  # FontFace - actual font file
-                self._preview_font(data)
-            elif asset_type == 73:  # FontFamily - JSON metadata
-                is_json, _ = self._is_json_data(data)
-                if is_json:
-                    self._preview_json(data, asset)
-                else:
-                    self._show_text_preview(tr('cache.preview.fontfamily_json_parse_failed'))
-            # Check if unknown/model-like asset is actually RBXM/RBXMX before JSON/text fallbacks.
-            elif is_rbx_model_data(data):
-                self._preview_rbxm(data, asset)
-            else:
-                is_json, _ = self._is_json_data(data)
-                if is_json:
-                    self._preview_json(data, asset)
-                else:
-                    # Show as hex dump for other types
-                    self._preview_hex(data, asset)
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('cache.preview.asset_error', error=e))
+        try:
+            self._preview_selected_asset(asset, asset_type, asset_id)
+        except (
+            AttributeError,
+            EOFError,
+            ImportError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            zlib.error,
+        ) as exc:
+            self._show_text_preview(tr('cache.preview.asset_error', error=exc))
 
     def _show_context_menu(self, position: QPoint) -> None:
         """Show right-click context menu."""
@@ -4263,9 +4343,10 @@ class CacheViewerTab(QWidget):
                     '_AssetRecord | None', item.data(Qt.ItemDataRole.UserRole)
                 )
                 if convert_anim_asset:
-                    try:  # ruff: ignore[too-many-statements-in-try-clause]
-                        from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-                            detect_rig,
+                    with contextlib.suppress(Exception):
+                        detect_rig = cast(
+                            'Callable[[bytes], str]',
+                            _lazy_attr('fleasion.utils.anim_converter', 'detect_rig'),
                         )
 
                         anim_data = self.cache_manager.get_asset(
@@ -4283,8 +4364,6 @@ class CacheViewerTab(QWidget):
                                     value0=target_rig_label,
                                 )
                             )
-                    except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                        pass
 
         menu.addSeparator()
         delete_action = menu.addAction(tr('ui.cache.cache_viewer.delete_selected'))
@@ -4344,9 +4423,6 @@ class CacheViewerTab(QWidget):
 
     def _convert_animation_rig(self, asset: _AssetRecord, target: str) -> None:
         """Convert an animation between R6 and R15 and save to a user-chosen path."""
-        import threading  # ruff: ignore[import-outside-top-level]
-
-        from PySide6.QtWidgets import QFileDialog  # ruff: ignore[import-outside-top-level]
 
         asset_id = asset.get('id', 'animation')
         default_name = f'{asset_id}_{target.lower()}.rbxmx'
@@ -4360,27 +4436,20 @@ class CacheViewerTab(QWidget):
             return
 
         def _do_convert() -> None:
-            import xml.etree.ElementTree as _ET  # ruff: ignore[camelcase-imported-as-constant, import-outside-top-level, unconventional-import-alias]
-
-            from defusedxml import (  # ruff: ignore[import-outside-top-level]
-                ElementTree as safe_et,  # ruff: ignore[camelcase-imported-as-lowercase]
-            )
-
             try:
-                from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
-                    rbxm_to_rbxmx,
+                rbxm_to_rbxmx = cast(
+                    'Callable[[bytes], bytes]',
+                    _lazy_attr('fleasion.utils.anim_converter', 'rbxm_to_rbxmx'),
                 )
-                from fleasion.utils.rig_data import (  # ruff: ignore[import-outside-top-level]
-                    R6_JOINTS,
-                    R6_PARTS,
-                    R15_JOINTS,
-                    R15_PARTS,
-                )
-            except Exception as e:  # ruff: ignore[blind-except]
+                r6_joints = cast('JointMap', _lazy_attr('fleasion.utils.rig_data', 'R6_JOINTS'))
+                r6_parts = cast('PartMap', _lazy_attr('fleasion.utils.rig_data', 'R6_PARTS'))
+                r15_joints = cast('JointMap', _lazy_attr('fleasion.utils.rig_data', 'R15_JOINTS'))
+                r15_parts = cast('PartMap', _lazy_attr('fleasion.utils.rig_data', 'R15_PARTS'))
+            except (AttributeError, ImportError) as exc:
                 QMessageBox.warning(
                     self,
                     tr('ui.cache.cache_viewer.convert_error'),
-                    tr('ui.cache.cache_viewer.failed_to_load_converter_value', value0=e),
+                    tr('ui.cache.cache_viewer.failed_to_load_converter_value', value0=exc),
                 )
                 return
 
@@ -4396,24 +4465,36 @@ class CacheViewerTab(QWidget):
             if anim_data.startswith(b'<roblox!'):
                 try:
                     anim_data = rbxm_to_rbxmx(anim_data)
-                except Exception as e:  # ruff: ignore[blind-except]
+                except (
+                    EOFError,
+                    OSError,
+                    RuntimeError,
+                    SyntaxError,
+                    TypeError,
+                    ValueError,
+                    zlib.error,
+                ) as exc:
                     QMessageBox.warning(
                         self,
                         tr('ui.cache.cache_viewer.convert_error'),
-                        tr('ui.cache.cache_viewer.rbxm_conversion_failed_value', value0=e),
+                        tr('ui.cache.cache_viewer.rbxm_conversion_failed_value', value0=exc),
                     )
                     return
 
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
-                    convert_keyframe_r6_to_r15,
-                    convert_keyframe_r15_to_r6,
-                    sanitize_xml,
+            def _write_converted_xml() -> None:
+                convert_keyframe_r6_to_r15 = cast(
+                    'Callable[[object, PartMap, JointMap, PartMap, JointMap], None]',
+                    _lazy_attr('fleasion.utils.r15_to_r6', 'convert_keyframe_r6_to_r15'),
                 )
-
-                root = safe_et.fromstring(sanitize_xml(anim_data))
-                etree = _ET.ElementTree(root)
-
+                convert_keyframe_r15_to_r6 = cast(
+                    'Callable[[object, PartMap, JointMap, PartMap, JointMap], None]',
+                    _lazy_attr('fleasion.utils.r15_to_r6', 'convert_keyframe_r15_to_r6'),
+                )
+                sanitize_xml = cast(
+                    'Callable[[bytes], str]',
+                    _lazy_attr('fleasion.utils.r15_to_r6', 'sanitize_xml'),
+                )
+                root = DefusedElementTree.fromstring(sanitize_xml(anim_data))
                 ks = root.find("Item[@class='KeyframeSequence']")
                 if ks is None:
                     QMessageBox.warning(
@@ -4430,20 +4511,30 @@ class CacheViewerTab(QWidget):
                         tr('ui.cache.cache_viewer.no_keyframes_found'),
                     )
                     return
+                converter = (
+                    convert_keyframe_r15_to_r6 if target == 'R6' else convert_keyframe_r6_to_r15
+                )
+                for keyframe in keyframes:
+                    converter(keyframe, r6_parts, r6_joints, r15_parts, r15_joints)
+                Path(out_str).write_bytes(
+                    DefusedElementTree.tostring(root, encoding='utf-8', xml_declaration=True)
+                )
 
-                if target == 'R6':
-                    for kf in keyframes:
-                        convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
-                else:
-                    for kf in keyframes:
-                        convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
-
-                etree.write(out_str, encoding='utf-8', xml_declaration=True)
-            except Exception as e:  # ruff: ignore[blind-except]
+            try:
+                _write_converted_xml()
+            except (
+                AttributeError,
+                ImportError,
+                OSError,
+                RuntimeError,
+                SyntaxError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 QMessageBox.warning(
                     self,
                     tr('ui.cache.cache_viewer.convert_error'),
-                    tr('ui.cache.cache_viewer.conversion_failed_value', value0=e),
+                    tr('ui.cache.cache_viewer.conversion_failed_value', value0=exc),
                 )
 
         threading.Thread(target=_do_convert, daemon=True).start()
@@ -4495,7 +4586,6 @@ class CacheViewerTab(QWidget):
             return
 
         result = {t: by_type[t] for t in sorted(by_type)}
-        from PySide6.QtWidgets import QFileDialog  # ruff: ignore[import-outside-top-level]
 
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -4505,11 +4595,9 @@ class CacheViewerTab(QWidget):
         )
         if not path:
             return
-        with open(path, 'w', encoding='utf-8') as f:  # ruff: ignore[builtin-open, write-whole-file]
-            f.write(json.dumps(result, indent=2))
+        Path(path).write_text(json.dumps(result, indent=2), encoding='utf-8')
         total = sum(len(v) for v in result.values())
         log_buffer.log('Scraper', f'Exported game dump ({total} assets) to {path}')
-        from pathlib import Path  # ruff: ignore[import-outside-top-level]
 
         self._show_export_complete_message(
             tr('cache.export.complete_title'),
@@ -4537,8 +4625,6 @@ class CacheViewerTab(QWidget):
                 values.append(item.text())
 
         if values:
-            from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
-
             clipboard = QApplication.clipboard()
             clipboard.setText('\n'.join(values))
             log_buffer.log('Scraper', f'Copied {format_count(values, "value")} to clipboard')
@@ -4549,7 +4635,6 @@ class CacheViewerTab(QWidget):
         Args:
             mode: 'name' to copy creator display name, 'id' to copy creator ID.
         """
-        from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
 
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
@@ -4581,7 +4666,6 @@ class CacheViewerTab(QWidget):
 
     def _open_creator_in_browser(self) -> None:
         """Open the creator pages for the selected assets in the default browser."""
-        import webbrowser  # ruff: ignore[import-outside-top-level]
 
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
@@ -4602,280 +4686,282 @@ class CacheViewerTab(QWidget):
                 continue
             creator_id = info.get('creator_id')
             creator_type_val = info.get('creator_type')
-            # creator_type may be numeric (1=user, 2=group) or a string; normalise to a boolean
-            if isinstance(creator_type_val, int):
-                is_group = creator_type_val == 2
-            else:
-                try:
-                    is_group = (
-                        'group' in (str(creator_type_val) or '').lower()
-                        or 'community' in (str(creator_type_val) or '').lower()
-                    )
-                except Exception:  # ruff: ignore[blind-except]
-                    is_group = False
+            is_group = creator_type_val == 2
             if not creator_id:
                 continue
             key = (('group' if is_group else 'user'), str(creator_id))
             if key in seen:
                 continue
             seen.add(key)
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                if is_group:
-                    url = f'https://www.roblox.com/communities/{creator_id}'
-                else:
-                    url = f'https://www.roblox.com/users/{creator_id}'
+            url = (
+                f'https://www.roblox.com/communities/{creator_id}'
+                if is_group
+                else f'https://www.roblox.com/users/{creator_id}'
+            )
+            try:
                 webbrowser.open(url)
-                opened += 1
-            except Exception:  # ruff: ignore[blind-except]
+            except OSError, webbrowser.Error:
                 log_buffer.log('Scraper', f'Failed to open creator {creator_id} in browser')
+            else:
+                opened += 1
 
         if opened:
             log_buffer.log('Scraper', f'Opened {format_count(opened, "creator page")} in browser')
 
-    def _copy_converted(self) -> None:  # ruff: ignore[too-many-return-statements]
-        """Copy converted files to clipboard as Windows file objects."""
-        import tempfile  # ruff: ignore[import-outside-top-level]
-        from pathlib import Path  # ruff: ignore[import-outside-top-level]
-
-        from PySide6.QtCore import QMimeData, QUrl  # ruff: ignore[import-outside-top-level]
-        from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
-
+    def _selected_asset_for_copy(self) -> _AssetRecord | None:
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
-            return
-
-        # Only process first selected asset
-        row = selected_rows[0].row()
-        item = self.table.item(row, 1)
-        if not item:
-            return
-
+            return None
+        item = self.table.item(selected_rows[0].row(), 1)
+        if item is None:
+            return None
         asset = item.data(Qt.ItemDataRole.UserRole)
-        if not asset:
-            return
+        if not isinstance(asset, dict):
+            return None
+        return cast('_AssetRecord', asset)
 
-        asset_id = asset['id']
-        asset_type = asset['type']
-
-        # Get resolved name if available
-        resolved_name = None
-        if asset_id in self._asset_info:
-            resolved_name = self._asset_info[asset_id].get('resolved_name')
-
-        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
-            # Get asset data
-            data = self.cache_manager.get_asset(asset_id, asset_type)
-            if not data:
+    def _copy_mesh_temp(self, data: bytes, temp_dir: Path, safe_base: str) -> Path | None:
+        try:
+            obj_content = mesh_processing.convert(data)
+            if not obj_content:
                 QMessageBox.warning(
                     self,
                     tr('ui.cache.cache_viewer.error'),
-                    tr('ui.cache.cache_viewer.failed_to_load_asset_value', value0=asset_id),
+                    tr('ui.cache.cache_viewer.failed_to_convert_mesh_to_obj'),
                 )
-                return
-
-            # Create temp directory for converted files
-            temp_dir = Path(tempfile.gettempdir()) / 'fleasion_clipboard'
-            temp_dir.mkdir(exist_ok=True)
-
-            temp_file = None
-            base_name = resolved_name or asset_id
-            safe_base = self._sanitize_filename(base_name)
-
-            # Convert based on type and save to temp file
-            if mesh_processing.is_mesh_data(data):  # Mesh payload - save as OBJ file
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    obj_content = mesh_processing.convert(data)
-                    if obj_content:
-                        filename = f'{safe_base}.obj'
-                        temp_file = temp_dir / filename
-                        temp_file.write_text(obj_content, encoding='utf-8')
-                    else:
-                        QMessageBox.warning(
-                            self,
-                            tr('ui.cache.cache_viewer.error'),
-                            tr('ui.cache.cache_viewer.failed_to_convert_mesh_to_obj'),
-                        )
-                        return
-                except Exception as e:  # ruff: ignore[blind-except]
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.error'),
-                        tr('ui.cache.cache_viewer.mesh_conversion_error_value', value0=e),
-                    )
-                    return
-
-            elif asset_type in (  # ruff: ignore[literal-membership]
-                1,
-                13,
-            ):  # Image, Decal - save as PNG
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    KTX_MAGIC = (  # ruff: ignore[non-lowercase-variable-in-function]
-                        b'\xabKTX 11\xbb\r\n\x1a\n',
-                        b'\xabKTX 20\xbb\r\n\x1a\n',
-                    )
-                    export_data = data
-                    if data[:12] in KTX_MAGIC:
-                        from .tools.ktx_to_png import (  # ruff: ignore[import-outside-top-level]
-                            convert as _ktx_convert,
-                        )
-
-                        converted = _ktx_convert(data)
-                        if converted:
-                            export_data = converted
-                    filename = f'{safe_base}.png'
-                    temp_file = temp_dir / filename
-                    temp_file.write_bytes(export_data)
-                except Exception as e:  # ruff: ignore[blind-except]
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.error'),
-                        tr('ui.cache.cache_viewer.image_save_error_value', value0=e),
-                    )
-                    return
-
-            elif asset_type == 3:  # Audio - save as OGG/MP3
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    # Determine extension
-                    if data.startswith(b'OggS'):
-                        ext = 'ogg'
-                    elif data.startswith(b'ID3') or data.startswith(b'\xff\xfb'):  # ruff: ignore[multiple-starts-ends-with]
-                        ext = 'mp3'
-                    else:
-                        ext = 'ogg'
-
-                    filename = f'{safe_base}.{ext}'
-                    temp_file = temp_dir / filename
-                    temp_file.write_bytes(data)
-                except Exception as e:  # ruff: ignore[blind-except]
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.error'),
-                        tr('ui.cache.cache_viewer.audio_save_error_value', value0=e),
-                    )
-                    return
-
-            elif asset_type == 24:  # Animation - save as RBXMX
-                try:
-                    # Decompress if needed
-                    if data.startswith(b'\x1f\x8b'):
-                        data = gzip_module.decompress(data)
-
-                    filename = f'{safe_base}.rbxmx'
-                    temp_file = temp_dir / filename
-                    temp_file.write_bytes(data)
-                except Exception as e:  # ruff: ignore[blind-except]
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.error'),
-                        tr('ui.cache.cache_viewer.animation_save_error_value', value0=e),
-                    )
-                    return
-
-            elif asset_type == 63:  # TexturePack - save XML
-                try:
-                    filename = f'{safe_base}_texturepack.xml'
-                    temp_file = temp_dir / filename
-                    temp_file.write_bytes(data)
-                except Exception as e:  # ruff: ignore[blind-except]
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.error'),
-                        tr('ui.cache.cache_viewer.texturepack_save_error_value', value0=e),
-                    )
-                    return
-
-            elif asset_type == 39:  # SolidModel - convert to OBJ and save
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    from .tools.solidmodel_converter import (  # ruff: ignore[import-outside-top-level]
-                        converter as solidmodel_converter,
-                    )
-
-                    deserialize_rbxm = solidmodel_converter.deserialize_rbxm
-                    export_obj_from_doc = cast(
-                        '_ExportObjCallable',
-                        solidmodel_converter.__dict__['_export_obj_from_doc'],
-                    )
-
-                    decompressed = data
-                    if data.startswith(b'\x1f\x8b'):
-                        decompressed = gzip_module.decompress(data)
-
-                    # Deserialize and export to a temporary OBJ file then copy into our temp_dir
-                    doc = deserialize_rbxm(decompressed)
-                    with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as f:
-                        temp_obj_path = Path(f.name)
-
-                    try:
-                        export_obj_from_doc(doc, temp_obj_path, decompose=False)
-                        obj_content = temp_obj_path.read_text(encoding='utf-8')
-                        filename = f'{safe_base}.obj'
-                        temp_file = temp_dir / filename
-                        temp_file.write_text(obj_content, encoding='utf-8')
-                    finally:
-                        try:
-                            if temp_obj_path.exists():
-                                temp_obj_path.unlink()
-                        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                            pass
-                except Exception as e:  # ruff: ignore[blind-except]
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.error'),
-                        tr('ui.cache.cache_viewer.solidmodel_conversion_error_value', value0=e),
-                    )
-                    return
-
-            else:
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    from .roblox_document import (  # ruff: ignore[import-outside-top-level]
-                        export_roblox_document,
-                        get_roblox_document_export_formats,
-                    )
-
-                    document_formats = get_roblox_document_export_formats(
-                        data, asset_type=asset_type
-                    )
-                    if document_formats:
-                        export_format = (
-                            'converted_document_rbxl'
-                            if 'converted_document_rbxl' in document_formats
-                            else 'converted_document_rbxmx'
-                        )
-                        export_data, ext = export_roblox_document(
-                            data, export_format, asset_type=asset_type
-                        )
-                        filename = f'{safe_base}{ext}'
-                        temp_file = temp_dir / filename
-                        temp_file.write_bytes(export_data)
-                except Exception as e:  # ruff: ignore[blind-except]
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.error'),
-                        tr('ui.cache.cache_viewer.roblox_document_save_error_value', value0=e),
-                    )
-                    return
-
-            # Copy file to clipboard
-            if temp_file and temp_file.exists():
-                mime_data = QMimeData()
-                mime_data.setUrls([QUrl.fromLocalFile(str(temp_file))])
-                QApplication.clipboard().setMimeData(mime_data)
-                log_buffer.log('Scraper', f'Copied file to clipboard: {temp_file.name}')
-                QMessageBox.information(
-                    self,
-                    tr('ui.cache.cache_viewer.success'),
-                    tr(
-                        'ui.cache.cache_viewer.file_copied_to_clipboard_value_you_can',
-                        value0=temp_file.name,
-                    ),
-                )
-
-        except Exception as e:  # ruff: ignore[blind-except]
+                return None
+            temp_file = temp_dir / f'{safe_base}.obj'
+            temp_file.write_text(obj_content, encoding='utf-8')
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             QMessageBox.warning(
                 self,
                 tr('ui.cache.cache_viewer.error'),
-                tr('ui.cache.cache_viewer.copy_error_value', value0=e),
+                tr('ui.cache.cache_viewer.mesh_conversion_error_value', value0=exc),
             )
+            return None
+        return temp_file
+
+    @staticmethod
+    def _image_export_data(data: bytes) -> bytes:
+        if data[:12] not in {
+            b'\xabKTX 11\xbb\r\n\x1a\n',
+            b'\xabKTX 20\xbb\r\n\x1a\n',
+        }:
+            return data
+        ktx_convert = cast(
+            'Callable[[bytes], bytes | None]',
+            _lazy_attr('.tools.ktx_to_png', 'convert'),
+        )
+        return ktx_convert(data) or data
+
+    def _copy_image_temp(self, data: bytes, temp_dir: Path, safe_base: str) -> Path | None:
+        temp_file = temp_dir / f'{safe_base}.png'
+        try:
+            export_data = self._image_export_data(data)
+            temp_file.write_bytes(export_data)
+        except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.image_save_error_value', value0=exc),
+            )
+            return None
+        return temp_file
+
+    def _copy_audio_temp(self, data: bytes, temp_dir: Path, safe_base: str) -> Path | None:
+        ext = 'mp3' if data.startswith((b'ID3', b'\xff\xfb')) else 'ogg'
+        temp_file = temp_dir / f'{safe_base}.{ext}'
+        try:
+            temp_file.write_bytes(data)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.audio_save_error_value', value0=exc),
+            )
+            return None
+        return temp_file
+
+    def _copy_animation_temp(self, data: bytes, temp_dir: Path, safe_base: str) -> Path | None:
+        temp_file = temp_dir / f'{safe_base}.rbxmx'
+        try:
+            export_data = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
+            temp_file.write_bytes(export_data)
+        except (EOFError, OSError, zlib.error) as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.animation_save_error_value', value0=exc),
+            )
+            return None
+        return temp_file
+
+    def _copy_texturepack_temp(self, data: bytes, temp_dir: Path, safe_base: str) -> Path | None:
+        temp_file = temp_dir / f'{safe_base}_texturepack.xml'
+        try:
+            temp_file.write_bytes(data)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.texturepack_save_error_value', value0=exc),
+            )
+            return None
+        return temp_file
+
+    @staticmethod
+    def _solidmodel_obj_content(data: bytes) -> str:
+        deserialize_rbxm = cast(
+            'Callable[[bytes], object]',
+            _lazy_attr('.tools.solidmodel_converter.converter', 'deserialize_rbxm'),
+        )
+        export_obj_from_doc = cast(
+            '_ExportObjCallable',
+            _lazy_attr('.tools.solidmodel_converter.converter', 'export_obj_from_doc'),
+        )
+        decompressed = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
+        doc = deserialize_rbxm(decompressed)
+        with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as handle:
+            temp_obj_path = Path(handle.name)
+        try:
+            export_obj_from_doc(doc, temp_obj_path, decompose=False)
+            return temp_obj_path.read_text(encoding='utf-8')
+        finally:
+            with contextlib.suppress(OSError):
+                temp_obj_path.unlink(missing_ok=True)
+
+    def _copy_solidmodel_temp(self, data: bytes, temp_dir: Path, safe_base: str) -> Path | None:
+        temp_file = temp_dir / f'{safe_base}.obj'
+
+        def copy_temp() -> Path:
+            obj_content = self._solidmodel_obj_content(data)
+            temp_file.write_text(obj_content, encoding='utf-8')
+            return temp_file
+
+        return _ui_boundary(
+            copy_temp,
+            fallback=None,
+            on_error=lambda exc: QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.solidmodel_conversion_error_value', value0=exc),
+            ),
+        )
+
+    @staticmethod
+    def _document_export_payload(data: bytes, asset_type: int) -> tuple[bytes, str] | None:
+        formats = get_roblox_document_export_formats(data, asset_type=asset_type)
+        if not formats:
+            return None
+        export_format = (
+            'converted_document_rbxl'
+            if 'converted_document_rbxl' in formats
+            else 'converted_document_rbxmx'
+        )
+        return export_roblox_document(data, export_format, asset_type=asset_type)
+
+    def _copy_document_temp(
+        self,
+        data: bytes,
+        asset_type: int,
+        temp_dir: Path,
+        safe_base: str,
+    ) -> Path | None:
+        payload = _ui_boundary(
+            lambda: self._document_export_payload(data, asset_type),
+            fallback=None,
+            on_error=lambda exc: QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.roblox_document_save_error_value', value0=exc),
+            ),
+        )
+        if payload is None:
+            return None
+        export_data, ext = payload
+        temp_file = temp_dir / f'{safe_base}{ext}'
+        try:
+            temp_file.write_bytes(export_data)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.roblox_document_save_error_value', value0=exc),
+            )
+            return None
+        return temp_file
+
+    def _converted_temp_file(
+        self,
+        data: bytes,
+        asset_type: int,
+        temp_dir: Path,
+        safe_base: str,
+    ) -> Path | None:
+        if mesh_processing.is_mesh_data(data):
+            temp_file = self._copy_mesh_temp(data, temp_dir, safe_base)
+        elif asset_type in {1, 13}:
+            temp_file = self._copy_image_temp(data, temp_dir, safe_base)
+        elif asset_type == 3:
+            temp_file = self._copy_audio_temp(data, temp_dir, safe_base)
+        elif asset_type == 24:
+            temp_file = self._copy_animation_temp(data, temp_dir, safe_base)
+        elif asset_type == 63:
+            temp_file = self._copy_texturepack_temp(data, temp_dir, safe_base)
+        elif asset_type == 39:
+            temp_file = self._copy_solidmodel_temp(data, temp_dir, safe_base)
+        else:
+            temp_file = self._copy_document_temp(data, asset_type, temp_dir, safe_base)
+        return temp_file
+
+    def _copy_converted_impl(self, asset: _AssetRecord) -> Path | None:
+        asset_id = asset['id']
+        asset_type = asset['type']
+        data = self.cache_manager.get_asset(asset_id, asset_type)
+        if not data:
+            QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.failed_to_load_asset_value', value0=asset_id),
+            )
+            return None
+        temp_dir = Path(tempfile.gettempdir()) / 'fleasion_clipboard'
+        temp_dir.mkdir(exist_ok=True)
+        resolved_name = self._asset_info.get(asset_id, {}).get('resolved_name')
+        safe_base = self._sanitize_filename(resolved_name or asset_id)
+        temp_file = self._converted_temp_file(data, asset_type, temp_dir, safe_base)
+        if temp_file is None or not temp_file.exists():
+            return None
+        mime_data = QMimeData()
+        mime_data.setUrls([QUrl.fromLocalFile(str(temp_file))])
+        QApplication.clipboard().setMimeData(mime_data)
+        return temp_file
+
+    def _copy_converted(self) -> None:
+        """Copy the selected asset's converted file to the clipboard."""
+        asset = self._selected_asset_for_copy()
+        if asset is None:
+            return
+        try:
+            temp_file = self._copy_converted_impl(asset)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.error'),
+                tr('ui.cache.cache_viewer.copy_error_value', value0=exc),
+            )
+            return
+        if temp_file is None:
+            return
+        log_buffer.log('Scraper', f'Copied file to clipboard: {temp_file.name}')
+        QMessageBox.information(
+            self,
+            tr('ui.cache.cache_viewer.success'),
+            tr(
+                'ui.cache.cache_viewer.file_copied_to_clipboard_value_you_can',
+                value0=temp_file.name,
+            ),
+        )
 
     def _export_selected_multiple(self, export_format: str = 'converted') -> None:
         """Export multiple selected assets."""
@@ -4971,57 +5057,61 @@ class CacheViewerTab(QWidget):
             if key == getattr(self, '_rbxm_preview_asset_key', None):
                 self._rbxm_preview_asset_key = None
                 self._rbxm_preview_cached_at = ''
-                try:
-                    _set_rbxm_dirty(self.rbxm_viewer, False)  # ruff: ignore[boolean-positional-value-in-call]
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
+                with contextlib.suppress(Exception):
+                    _set_rbxm_dirty(self.rbxm_viewer, dirty=False)
             return None
         return draft.get('document')
 
-    def _export_modified_rbxm_asset(self, asset: _AssetRecord, export_format: str) -> Path | None:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            asset_id = str(asset.get('id', ''))
-            asset_type = cast('int | str | None', cast('object', asset.get('type')))
-            draft_document = self._get_modified_rbxm_draft(asset)
-            if draft_document is None:
-                QMessageBox.warning(
-                    self,
-                    tr('ui.cache.cache_viewer.no_changes'),
-                    tr('ui.cache.cache_viewer.the_selected_asset_has_no_in_memory'),
-                )
-                return None
-
-            type_name = (
-                self.cache_manager.get_asset_type_name(asset_type)
-                if isinstance(asset_type, int)
-                else 'RBXM'
+    def _export_modified_rbxm_asset_impl(
+        self,
+        asset: _AssetRecord,
+        export_format: str,
+    ) -> Path | None:
+        asset_id = str(asset.get('id', ''))
+        asset_type = cast('int | str | None', cast('object', asset.get('type')))
+        draft_document = self._get_modified_rbxm_draft(asset)
+        if draft_document is None:
+            QMessageBox.warning(
+                self,
+                tr('ui.cache.cache_viewer.no_changes'),
+                tr('ui.cache.cache_viewer.the_selected_asset_has_no_in_memory'),
             )
-            export_dir = self.cache_manager.export_dir / 'converted' / type_name
-            export_dir.mkdir(parents=True, exist_ok=True)
+            return None
 
-            resolved_name = None
-            if asset_id in self._asset_info:
-                resolved_name = self._asset_info[asset_id].get('resolved_name')
-            base_name = self._sanitize_filename(resolved_name) if resolved_name else asset_id
-            suffix = '_MODIFIED'
+        type_name = (
+            self.cache_manager.get_asset_type_name(asset_type)
+            if isinstance(asset_type, int)
+            else 'RBXM'
+        )
+        export_dir = self.cache_manager.export_dir / 'converted' / type_name
+        export_dir.mkdir(parents=True, exist_ok=True)
+        resolved_name = (
+            self._asset_info[asset_id].get('resolved_name')
+            if asset_id in self._asset_info
+            else None
+        )
+        base_name = self._sanitize_filename(resolved_name) if resolved_name else asset_id
+        suffix = '_MODIFIED'
+        if export_format == 'converted_modified_rbxm':
+            data = self.rbxm_viewer.export_rbxm_bytes(draft_document)
+            output_path = export_dir / f'{base_name}{suffix}.rbxm'
+        else:
+            data = self.rbxm_viewer.export_rbxmx_bytes(draft_document)
+            output_path = export_dir / f'{base_name}{suffix}.rbxmx'
+        output_path.write_bytes(data)
+        log_buffer.log('Scraper', f'Exported modified RBXM/RBXMX to {output_path}')
+        return output_path
 
-            if export_format == 'converted_modified_rbxm':
-                data = self.rbxm_viewer.export_rbxm_bytes(draft_document)
-                output_path = export_dir / f'{base_name}{suffix}.rbxm'
-            else:
-                data = self.rbxm_viewer.export_rbxmx_bytes(draft_document)
-                output_path = export_dir / f'{base_name}{suffix}.rbxmx'
-
-            output_path.write_bytes(data)
-            log_buffer.log('Scraper', f'Exported modified RBXM/RBXMX to {output_path}')
-            return output_path  # ruff: ignore[try-consider-else]
-        except Exception as e:  # ruff: ignore[blind-except]
+    def _export_modified_rbxm_asset(self, asset: _AssetRecord, export_format: str) -> Path | None:
+        try:
+            return self._export_modified_rbxm_asset_impl(asset, export_format)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             QMessageBox.warning(
                 self,
                 tr('ui.cache.cache_viewer.export_error'),
-                tr('ui.cache.cache_viewer.failed_to_export_modified_rbxm_rbxmx_value', value0=e),
+                tr('ui.cache.cache_viewer.failed_to_export_modified_rbxm_rbxmx_value', value0=exc),
             )
-            log_buffer.log('Scraper', f'Failed to export modified RBXM/RBXMX: {e}')
+            log_buffer.log('Scraper', f'Failed to export modified RBXM/RBXMX: {exc}')
             return None
 
     def _add_selected_to_replacer(self) -> None:
@@ -5064,7 +5154,6 @@ class CacheViewerTab(QWidget):
             )
         else:
             # Fallback: copy to clipboard if not in replacer window
-            from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
 
             clipboard = QApplication.clipboard()
             clipboard.setText(', '.join(asset_ids))
@@ -5102,8 +5191,6 @@ class CacheViewerTab(QWidget):
                 tr('ui.cache.cache_viewer.replace_with_set_to_asset_id_value', value0=asset_id),
             )
         else:
-            from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
-
             QApplication.clipboard().setText(asset_id)
             log_buffer.log(
                 'Scraper',
@@ -5142,11 +5229,9 @@ class CacheViewerTab(QWidget):
         # Completely hide the preview window as requested
         self.preview_panel.hide()
         # Reset preview group title back to default
-        try:
+        with contextlib.suppress(Exception):
             if hasattr(self, 'preview_group'):
                 self.preview_title_label.setText(tr('ui.cache.cache_viewer.preview'))
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
 
         # Deselect currently tracked asset in tree/internal state
         self._selected_asset_id = None
@@ -5201,9 +5286,10 @@ class CacheViewerTab(QWidget):
             self._texturepack_loader.wait()
             self._texturepack_loader = None
 
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # ruff: ignore[invalid-function-name]
+    @override
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         """Global event filter to catch space key and toggle audio play/pause."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        with contextlib.suppress(Exception):
             if event.type() == QEvent.Type.KeyPress:
                 # Space toggles play/pause when audio preview is active
                 key_event = cast('QKeyEvent', event)
@@ -5213,28 +5299,22 @@ class CacheViewerTab(QWidget):
                         return super().eventFilter(obj, event)
 
                     if self.audio_player and self.audio_wrapper.isVisible():
-                        try:
+                        with contextlib.suppress(Exception):
                             # Toggle play/pause on the audio widget
                             _toggle_audio_play_pause(self.audio_player)
-                        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                            pass
                         return True
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
         return super().eventFilter(obj, event)
 
     def _remove_audio_key_filter(self) -> None:
         """Remove global audio key event filter if installed."""
-        try:
+        with contextlib.suppress(Exception):
             if self._audio_key_filter_installed:
                 app = cast('QApplication | None', QApplication.instance())
                 if app is not None:
                     app.removeEventFilter(self)
                     self._audio_key_filter_installed = False
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
 
-    def _on_splitter_moved(self, pos: int, index: int) -> None:  # ruff: ignore[unused-method-argument]
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
         """Handle splitter resize to rescale image."""
         if self._current_pixmap is not None and self.image_label.isVisible():
             self._scale_and_show_image(self._current_pixmap)
@@ -5253,7 +5333,7 @@ class CacheViewerTab(QWidget):
         if not asset:
             return
         asset_type = asset.get('type')
-        if asset_type not in (24, 39):  # ruff: ignore[literal-membership]
+        if asset_type not in {24, 39}:
             return
         asset_id = asset.get('id')
         data = self.cache_manager.get_asset(asset_id, asset_type)
@@ -5297,12 +5377,10 @@ class CacheViewerTab(QWidget):
     def _on_mesh_ready(self, obj_content: str) -> None:
         """Handle mesh loaded from background thread."""
         # Ignore if selection has changed since loader started
-        try:
+        with contextlib.suppress(Exception):
             if getattr(self, '_mesh_loader_asset_id', None) != self._selected_asset_id:
                 log_buffer.log('Preview', 'Stale mesh result ignored')
                 return
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
 
         self._hide_loading()
         try:
@@ -5310,7 +5388,7 @@ class CacheViewerTab(QWidget):
             obj_viewer.load_obj(obj_content, '')
             obj_viewer.show()
             self.stop_preview_btn.show()
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             log_buffer.log(
                 'OpenGL',
                 f'Could not create/load OBJ preview: {type(exc).__name__}: {exc}',
@@ -5360,12 +5438,10 @@ class CacheViewerTab(QWidget):
     def _on_image_ready(self, pixmap: QPixmap) -> None:
         """Handle image loaded from background thread."""
         # Ignore if selection has changed since loader started
-        try:
+        with contextlib.suppress(Exception):
             if getattr(self, '_image_loader_asset_id', None) != self._selected_asset_id:
                 log_buffer.log('Preview', 'Stale image result ignored')
                 return
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
 
         self._hide_loading()
         self._current_pixmap = pixmap
@@ -5405,156 +5481,215 @@ class CacheViewerTab(QWidget):
         if action == copy_action:
             copy_pixmap_to_clipboard(self._current_pixmap)
 
+    def _preview_texturepack_impl(self, data: bytes, asset_id: str) -> None:
+        # Clean up previous texture pack if any
+        if self.texturepack_widget is not None:
+            self.texturepack_widget.deleteLater()
+            self.texturepack_widget = None
+        if self._texturepack_loader is not None:
+            self._texturepack_loader.stop()
+            self._texturepack_loader.quit()
+            self._texturepack_loader.wait()
+            self._texturepack_loader = None
+
+        # Parse XML to get texture map IDs
+        xml_text = data.decode('utf-8', errors='replace')
+        self._texturepack_xml = xml_text  # Store for context menu
+        root = DefusedElementTree.fromstring(xml_text)
+
+        # Extract texture map IDs using the GLOBAL fixed index system.
+        # The index for each map type is constant regardless of the asset's
+        # XML tag ordering:
+        #   0 = Color, 1 = Normal, 2 = Metalness, 3 = Roughness,
+        #   4 = Emissive, 5 = Height
+        # These global indices are what the user puts in replace_ids
+        # (e.g. "108049038086346:3" for roughness on ANY pack).
+        # GI ≥ 2 are routed through the ORM compositor on the backend.
+        tag_to_global_index = {
+            'color': 0,
+            'albedo': 0,
+            'diffuse': 0,
+            'basecolor': 0,
+            'normal': 1,
+            'normalmap': 1,
+            'bumpmap': 1,
+            'metalness': 2,
+            'orm': 2,
+            'roughness': 3,
+            'emissive': 4,
+            'emissivemap': 4,
+            'height': 5,
+            'heightmap': 5,
+            'displacement': 5,
+        }
+        map_display_names = {
+            'color': tr('cache.texture_map.color'),
+            'albedo': tr('cache.texture_map.albedo'),
+            'diffuse': tr('cache.texture_map.diffuse'),
+            'basecolor': tr('cache.texture_map.basecolor'),
+            'normal': tr('cache.texture_map.normal'),
+            'normalmap': tr('cache.texture_map.normalmap'),
+            'bumpmap': tr('cache.texture_map.bumpmap'),
+            'metalness': tr('cache.texture_map.metalness'),
+            'orm': tr('cache.texture_map.orm'),
+            'roughness': tr('cache.texture_map.roughness'),
+            'emissive': tr('cache.texture_map.emissive'),
+            'emissivemap': tr('cache.texture_map.emissivemap'),
+            'height': tr('cache.texture_map.height'),
+            'heightmap': tr('cache.texture_map.heightmap'),
+            'displacement': tr('cache.texture_map.displacement'),
+        }
+        maps: dict[str, str] = {}  # display_name -> map_id_str
+        maps_indices: dict[str, int] = {}  # display_name -> global_index (fixed, asset-independent)
+        for child in root:
+            tag_lower = child.tag.lower().lstrip('{').split('}')[-1]
+            global_idx = tag_to_global_index.get(tag_lower)
+            if global_idx is None:
+                continue
+            text = (child.text or '').strip()
+            if text.isdigit() and text != '0':
+                display_name = map_display_names[tag_lower]
+                maps[display_name] = text
+                maps_indices[display_name] = global_idx
+
+        if not maps:
+            self._show_text_preview(tr('cache.preview.texturepack_no_maps', asset_id=asset_id))
+            return
+
+        # Clear texture data storage
+        self._texturepack_data = {}
+
+        # Create container widget for texture pack preview
+        self.texturepack_widget = QWidget()
+        tp_layout = QVBoxLayout()
+        tp_layout.setContentsMargins(0, 0, 0, 0)
+        tp_layout.setSpacing(10)
+
+        # Store references for async loading
+        self._tp_image_labels: dict[str, QLabel] = {}
+        self._tp_pixmaps: dict[str, QPixmap] = {}  # Store pixmaps for copy
+
+        # Create placeholder for each texture map
+        for map_name, map_id in maps.items():
+            map_index = maps_indices.get(map_name, '?')
+            slot_key = f'{asset_id}:{map_index}'
+            # Header: Name  |  sub-asset ID  |  slot X  (slot X is what goes in replace_ids)
+            header = QLabel(
+                tr(
+                    'ui.cache.cache_viewer.value_value_value',
+                    value0=map_name,
+                    value1=asset_id,
+                    value2=map_index,
+                )
+            )
+            header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
+            header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            tp_layout.addWidget(header)
+
+            # Image placeholder with context menu
+            img_label = QLabel(tr('ui.cache.cache_viewer.loading'))
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            img_label.setStyleSheet(
+                'background-color: palette(base); padding: 10px; min-height: 100px;'
+            )
+            img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            img_label.setProperty('map_name', map_name)
+            img_label.setProperty('map_id', map_id)
+            img_label.setProperty('map_index', map_index)
+            img_label.setProperty('slot_key', slot_key)
+
+            def on_context_menu(pos: QPoint, label_: QLabel = img_label) -> None:
+                self._show_texturepack_context_menu(pos, label_)
+
+            img_label.customContextMenuRequested.connect(on_context_menu)
+            tp_layout.addWidget(img_label)
+            self._tp_image_labels[map_name] = img_label
+
+        tp_layout.addStretch()
+        self.texturepack_widget.setLayout(tp_layout)
+        self.preview_container_layout.addWidget(self.texturepack_widget)
+        self.texturepack_widget.show()
+        self.stop_preview_btn.show()
+
+        # Start async loading of textures
+        self._texturepack_loader = TexturePackLoaderThread(
+            cast('dict[str, str | int]', maps),
+            self.cache_manager,
+            self.cache_scraper,
+        )
+        self._texturepack_loader.texture_loaded.connect(self._on_texturepack_texture_loaded)
+        self._texturepack_loader.texture_error.connect(self._on_texturepack_texture_error)
+        self._texturepack_loader.start()
+
     def _preview_texturepack(self, data: bytes, asset_id: str) -> None:
         """Preview a texture pack by showing all texture maps."""
-        from defusedxml import (  # ruff: ignore[import-outside-top-level]
-            ElementTree as ET,  # ruff: ignore[camelcase-imported-as-acronym]
+        try:
+            self._preview_texturepack_impl(data, asset_id)
+        except (OSError, RuntimeError, SyntaxError, TypeError, ValueError) as exc:
+            self._show_text_preview(tr('cache.preview.texturepack_error', error=exc))
+
+    def _on_texturepack_texture_loaded_impl(
+        self, map_name: str, map_id: str, hash_val: str, data: bytes
+    ) -> None:
+        if map_name not in self._tp_image_labels:
+            return
+
+        img_label = self._tp_image_labels[map_name]
+
+        # Check if widget still exists
+        try:
+            _ = img_label.isVisible()
+        except RuntimeError:
+            return
+
+        # Store texture data for context menu
+        self._texturepack_data[map_name] = {
+            'id': map_id,
+            'hash': hash_val,
+            'data': data,
+        }
+        # Update label property with hash
+        img_label.setProperty('map_hash', hash_val)
+
+        # Load image
+        image = Image.open(io.BytesIO(data))
+        if image.mode not in {'RGB', 'RGBA'} or image.mode == 'RGB':
+            image = image.convert('RGBA')
+
+        # Scale up small images to 512x512 minimum
+        min_size = 512
+        if image.width < min_size or image.height < min_size:
+            # Scale to at least 512 on the smaller dimension
+            scale_factor = max(min_size / image.width, min_size / image.height)
+            new_width = int(image.width * scale_factor)
+            new_height = int(image.height * scale_factor)
+            image = image.resize((new_width, new_height), Image.Resampling.NEAREST)
+
+        qimage = QImage(
+            image.tobytes(),
+            image.width,
+            image.height,
+            QImage.Format.Format_RGBA8888,
         )
+        pixmap = QPixmap.fromImage(qimage)
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            # Clean up previous texture pack if any
-            if self.texturepack_widget is not None:
-                self.texturepack_widget.deleteLater()
-                self.texturepack_widget = None
-            if self._texturepack_loader is not None:
-                self._texturepack_loader.stop()
-                self._texturepack_loader.quit()
-                self._texturepack_loader.wait()
-                self._texturepack_loader = None
+        # Store original pixmap for copy
+        self._tp_pixmaps[map_name] = pixmap
 
-            # Parse XML to get texture map IDs
-            xml_text = data.decode('utf-8', errors='replace')
-            self._texturepack_xml = xml_text  # Store for context menu
-            root = ET.fromstring(xml_text)
+        # Scale to fit container
+        container_width = self.preview_scroll.viewport().width() - 30
+        if container_width < 100:
+            container_width = 400
 
-            # Extract texture map IDs using the GLOBAL fixed index system.
-            # The index for each map type is constant regardless of the asset's
-            # XML tag ordering:
-            #   0 = Color, 1 = Normal, 2 = Metalness, 3 = Roughness,
-            #   4 = Emissive, 5 = Height
-            # These global indices are what the user puts in replace_ids
-            # (e.g. "108049038086346:3" for roughness on ANY pack).
-            # GI ≥ 2 are routed through the ORM compositor on the backend.
-            TAG_TO_GLOBAL_INDEX = {  # ruff: ignore[non-lowercase-variable-in-function]
-                'color': 0,
-                'albedo': 0,
-                'diffuse': 0,
-                'basecolor': 0,
-                'normal': 1,
-                'normalmap': 1,
-                'bumpmap': 1,
-                'metalness': 2,
-                'orm': 2,
-                'roughness': 3,
-                'emissive': 4,
-                'emissivemap': 4,
-                'height': 5,
-                'heightmap': 5,
-                'displacement': 5,
-            }
-            map_display_names = {
-                'color': tr('cache.texture_map.color'),
-                'albedo': tr('cache.texture_map.albedo'),
-                'diffuse': tr('cache.texture_map.diffuse'),
-                'basecolor': tr('cache.texture_map.basecolor'),
-                'normal': tr('cache.texture_map.normal'),
-                'normalmap': tr('cache.texture_map.normalmap'),
-                'bumpmap': tr('cache.texture_map.bumpmap'),
-                'metalness': tr('cache.texture_map.metalness'),
-                'orm': tr('cache.texture_map.orm'),
-                'roughness': tr('cache.texture_map.roughness'),
-                'emissive': tr('cache.texture_map.emissive'),
-                'emissivemap': tr('cache.texture_map.emissivemap'),
-                'height': tr('cache.texture_map.height'),
-                'heightmap': tr('cache.texture_map.heightmap'),
-                'displacement': tr('cache.texture_map.displacement'),
-            }
-            maps: dict[str, str] = {}  # display_name -> map_id_str
-            maps_indices: dict[
-                str, int
-            ] = {}  # display_name -> global_index (fixed, asset-independent)
-            for child in root:
-                tag_lower = child.tag.lower().lstrip('{').split('}')[-1]
-                global_idx = TAG_TO_GLOBAL_INDEX.get(tag_lower)
-                if global_idx is None:
-                    continue
-                text = (child.text or '').strip()
-                if text.isdigit() and text != '0':
-                    display_name = map_display_names[tag_lower]
-                    maps[display_name] = text
-                    maps_indices[display_name] = global_idx
-
-            if not maps:
-                self._show_text_preview(tr('cache.preview.texturepack_no_maps', asset_id=asset_id))
-                return
-
-            # Clear texture data storage
-            self._texturepack_data = {}
-
-            # Create container widget for texture pack preview
-            self.texturepack_widget = QWidget()
-            tp_layout = QVBoxLayout()
-            tp_layout.setContentsMargins(0, 0, 0, 0)
-            tp_layout.setSpacing(10)
-
-            # Store references for async loading
-            self._tp_image_labels: dict[str, QLabel] = {}
-            self._tp_pixmaps: dict[str, QPixmap] = {}  # Store pixmaps for copy
-
-            # Create placeholder for each texture map
-            for map_name, map_id in maps.items():
-                map_index = maps_indices.get(map_name, '?')
-                slot_key = f'{asset_id}:{map_index}'
-                # Header: Name  |  sub-asset ID  |  slot X  (slot X is what goes in replace_ids)
-                header = QLabel(
-                    tr(
-                        'ui.cache.cache_viewer.value_value_value',
-                        value0=map_name,
-                        value1=asset_id,
-                        value2=map_index,
-                    )
-                )
-                header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
-                header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                tp_layout.addWidget(header)
-
-                # Image placeholder with context menu
-                img_label = QLabel(tr('ui.cache.cache_viewer.loading'))
-                img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                img_label.setStyleSheet(
-                    'background-color: palette(base); padding: 10px; min-height: 100px;'
-                )
-                img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                img_label.setProperty('map_name', map_name)
-                img_label.setProperty('map_id', map_id)
-                img_label.setProperty('map_index', map_index)
-                img_label.setProperty('slot_key', slot_key)
-
-                def on_context_menu(pos: QPoint, label_: QLabel = img_label) -> None:
-                    self._show_texturepack_context_menu(pos, label_)
-
-                img_label.customContextMenuRequested.connect(on_context_menu)
-                tp_layout.addWidget(img_label)
-                self._tp_image_labels[map_name] = img_label
-
-            tp_layout.addStretch()
-            self.texturepack_widget.setLayout(tp_layout)
-            self.preview_container_layout.addWidget(self.texturepack_widget)
-            self.texturepack_widget.show()
-            self.stop_preview_btn.show()
-
-            # Start async loading of textures
-            self._texturepack_loader = TexturePackLoaderThread(
-                cast('dict[str, str | int]', maps),
-                self.cache_manager,
-                self.cache_scraper,
+        if pixmap.width() > container_width:
+            scaled = pixmap.scaledToWidth(
+                container_width, Qt.TransformationMode.SmoothTransformation
             )
-            self._texturepack_loader.texture_loaded.connect(self._on_texturepack_texture_loaded)
-            self._texturepack_loader.texture_error.connect(self._on_texturepack_texture_error)
-            self._texturepack_loader.start()
+        else:
+            scaled = pixmap
 
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('cache.preview.texturepack_error', error=e))
+        img_label.setPixmap(scaled)
+        img_label.setStyleSheet('')
 
     def _on_texturepack_texture_loaded(
         self, map_name: str, map_id: str, hash_val: str, data: bytes
@@ -5563,73 +5698,14 @@ class CacheViewerTab(QWidget):
         # Hide loading on first texture
         self._hide_loading()
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if map_name not in self._tp_image_labels:
-                return
-
-            img_label = self._tp_image_labels[map_name]
-
-            # Check if widget still exists
-            try:
-                _ = img_label.isVisible()
-            except RuntimeError:
-                return
-
-            # Store texture data for context menu
-            self._texturepack_data[map_name] = {
-                'id': map_id,
-                'hash': hash_val,
-                'data': data,
-            }
-            # Update label property with hash
-            img_label.setProperty('map_hash', hash_val)
-
-            # Load image
-            image = Image.open(io.BytesIO(data))
-            if image.mode not in ('RGB', 'RGBA') or image.mode == 'RGB':  # ruff: ignore[literal-membership]
-                image = image.convert('RGBA')
-
-            # Scale up small images to 512x512 minimum
-            min_size = 512
-            if image.width < min_size or image.height < min_size:
-                # Scale to at least 512 on the smaller dimension
-                scale_factor = max(min_size / image.width, min_size / image.height)
-                new_width = int(image.width * scale_factor)
-                new_height = int(image.height * scale_factor)
-                image = image.resize((new_width, new_height), Image.Resampling.NEAREST)
-
-            qimage = QImage(
-                image.tobytes(),
-                image.width,
-                image.height,
-                QImage.Format.Format_RGBA8888,
-            )
-            pixmap = QPixmap.fromImage(qimage)
-
-            # Store original pixmap for copy
-            self._tp_pixmaps[map_name] = pixmap
-
-            # Scale to fit container
-            container_width = self.preview_scroll.viewport().width() - 30
-            if container_width < 100:
-                container_width = 400
-
-            if pixmap.width() > container_width:
-                scaled = pixmap.scaledToWidth(
-                    container_width, Qt.TransformationMode.SmoothTransformation
-                )
-            else:
-                scaled = pixmap
-
-            img_label.setPixmap(scaled)
-            img_label.setStyleSheet('')
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._on_texturepack_texture_error(map_name, str(e))
+        try:
+            self._on_texturepack_texture_loaded_impl(map_name, map_id, hash_val, data)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._on_texturepack_texture_error(map_name, str(exc))
 
     def _on_texturepack_texture_error(self, map_name: str, error: str) -> None:
         """Handle texture load error."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        with contextlib.suppress(Exception):
             if map_name not in self._tp_image_labels:
                 return
 
@@ -5642,12 +5718,9 @@ class CacheViewerTab(QWidget):
 
             img_label.setText(tr('ui.cache.cache_viewer.error_value', value0=error))
             img_label.setStyleSheet('color: #ff6b6b; padding: 10px;')
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
 
     def _show_texturepack_context_menu(self, pos: QPoint, label: QLabel) -> None:
         """Show context menu for texturepack image."""
-        from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
 
         map_name = label.property('map_name')
         map_id = label.property('map_id')
@@ -5712,12 +5785,11 @@ class CacheViewerTab(QWidget):
         """Export canonical per-slot KTX2s plus every captured Roblox mip pack."""
         if not asset_id:
             return
-        from PySide6.QtWidgets import QFileDialog  # ruff: ignore[import-outside-top-level]
 
         slot_dir = self.cache_manager.get_texturepack_slot_dir()
-        SLOT_NAMES = {0: 'Color', 1: 'Normal', 2: 'ORM'}  # ruff: ignore[non-lowercase-variable-in-function]
+        slot_names = {0: 'Color', 1: 'Normal', 2: 'ORM'}
         found: list[tuple[Path, str]] = []
-        for slot, name in SLOT_NAMES.items():
+        for slot, name in slot_names.items():
             src = slot_dir / f'{asset_id}_slot{slot}.ktx2'
             if src.exists():
                 found.append((src, f'{asset_id}_slot{slot}_{name}.ktx2'))
@@ -5726,8 +5798,6 @@ class CacheViewerTab(QWidget):
                 found.append((pack_src, f'{asset_id}_slot{slot}_{name}_{pack_suffix}'))
 
         if not found:
-            from PySide6.QtWidgets import QMessageBox  # ruff: ignore[import-outside-top-level]
-
             QMessageBox.information(
                 self,
                 tr('ui.cache.cache_viewer.no_slot_ktx2_files'),
@@ -5742,13 +5812,11 @@ class CacheViewerTab(QWidget):
         )
         if not dest_dir_str:
             return
-        from pathlib import Path as _Path  # ruff: ignore[import-outside-top-level]
 
-        dest_dir = _Path(dest_dir_str)
+        dest_dir = Path(dest_dir_str)
         exported: list[str] = []
         for src, dest_name in found:
             dst = dest_dir / dest_name
-            import shutil  # ruff: ignore[import-outside-top-level]
 
             shutil.copy2(str(src), str(dst))
             exported.append(dest_name)
@@ -5765,83 +5833,80 @@ class CacheViewerTab(QWidget):
             [dest_dir / name for name in exported],
         )
 
+    def _install_audio_key_filter(self) -> None:
+        app = cast('QApplication | None', QApplication.instance())
+        if app is None:
+            self._audio_key_filter_installed = False
+            return
+        app.installEventFilter(self)
+        self._audio_key_filter_installed = True
+
+    def _preview_audio_impl(self, data: bytes, asset_id: str) -> None:
+        # Track asset id for this audio preview to avoid stale UI updates
+        self._audio_preview_asset_id = asset_id
+
+        # If selection changed since request, abort
+        if getattr(self, '_selected_asset_id', None) != asset_id:
+            log_buffer.log('Preview', 'Ignored stale audio preview request')
+            return
+        # Create temporary file for audio
+        temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
+        temp_dir.mkdir(exist_ok=True)
+
+        # Determine file extension.
+        ext = _detect_cache_extension(self.cache_manager, data, 3)
+        if ext not in {'.ogg', '.mp3', '.wav', '.flac'}:
+            ext = '.mp3'
+        temp_file = temp_dir / f'{asset_id}{ext}'
+
+        # Write audio data to temp file
+        Path(temp_file).write_bytes(data)
+
+        # Create audio player with config manager for volume persistence
+        self.audio_player = AudioPlayerWidget(str(temp_file), self, self.config_manager)
+
+        # Clear previous audio widgets
+        while self.audio_container_layout.count():
+            child = self.audio_container_layout.takeAt(0)
+            if child is not None:
+                child_widget = child.widget()
+                if child_widget is not None:
+                    child_widget.deleteLater()
+
+        # Add new audio player
+        # Ensure selection is still the same asset before showing
+        if getattr(self, '_selected_asset_id', None) != asset_id:
+            with contextlib.suppress(Exception):
+                self.audio_player.deleteLater()
+            # Ensure we don't keep a dangling reference
+            with contextlib.suppress(Exception):
+                self.audio_player = None
+            log_buffer.log('Preview', 'Aborted adding audio widget for stale selection')
+            return
+
+        self.audio_container_layout.addWidget(self.audio_player)
+        self._hide_loading()
+        self.audio_wrapper.show()
+        self.stop_preview_btn.show()
+
+        # Install global event filter to catch Space for play/pause while audio preview is active.
+        try:
+            self._install_audio_key_filter()
+        except RuntimeError:
+            self._audio_key_filter_installed = False
+
+        # When audio stops or widget is deleted, remove the event filter
+        with contextlib.suppress(Exception):
+            self.audio_player.stopped.connect(self._remove_audio_key_filter)
+
     def _preview_audio(self, data: bytes, asset_id: str) -> None:
         """Preview an audio asset."""
-        import tempfile  # ruff: ignore[import-outside-top-level]
-        from pathlib import Path  # ruff: ignore[import-outside-top-level]
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            # Track asset id for this audio preview to avoid stale UI updates
-            self._audio_preview_asset_id = asset_id
-
-            # If selection changed since request, abort
-            if getattr(self, '_selected_asset_id', None) != asset_id:
-                log_buffer.log('Preview', 'Ignored stale audio preview request')
-                return
-            # Create temporary file for audio
-            temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
-            temp_dir.mkdir(exist_ok=True)
-
-            # Determine file extension.
-            ext = _detect_cache_extension(self.cache_manager, data, 3)
-            if ext not in ('.ogg', '.mp3', '.wav', '.flac'):  # ruff: ignore[literal-membership]
-                ext = '.mp3'
-            temp_file = temp_dir / f'{asset_id}{ext}'
-
-            # Write audio data to temp file
-            Path(temp_file).write_bytes(data)
-
-            # Create audio player with config manager for volume persistence
-            self.audio_player = AudioPlayerWidget(str(temp_file), self, self.config_manager)
-
-            # Clear previous audio widgets
-            while self.audio_container_layout.count():
-                child = self.audio_container_layout.takeAt(0)
-                if child is not None:
-                    child_widget = child.widget()
-                    if child_widget is not None:
-                        child_widget.deleteLater()
-
-            # Add new audio player
-            # Ensure selection is still the same asset before showing
-            if getattr(self, '_selected_asset_id', None) != asset_id:
-                try:
-                    self.audio_player.deleteLater()
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
-                # Ensure we don't keep a dangling reference
-                try:
-                    self.audio_player = None
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
-                log_buffer.log('Preview', 'Aborted adding audio widget for stale selection')
-                return
-
-            self.audio_container_layout.addWidget(self.audio_player)
-            self._hide_loading()
-            self.audio_wrapper.show()
-            self.stop_preview_btn.show()
-
-            # Install global event filter to catch Space for play/pause while audio preview is active
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                app = cast('QApplication | None', QApplication.instance())
-                if app is not None:
-                    app.installEventFilter(self)
-                    self._audio_key_filter_installed = True
-                else:
-                    self._audio_key_filter_installed = False
-            except Exception:  # ruff: ignore[blind-except]
-                self._audio_key_filter_installed = False
-
-            # When audio stops or widget is deleted, remove the event filter
-            try:
-                self.audio_player.stopped.connect(lambda: self._remove_audio_key_filter())  # ruff: ignore[unnecessary-lambda]
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('cache.preview.audio_error', error=e))
-            log_buffer.log('Scraper', f'Audio preview error: {e}')
+        try:
+            self._preview_audio_impl(data, asset_id)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._show_text_preview(tr('cache.preview.audio_error', error=exc))
+            log_buffer.log('Scraper', f'Audio preview error: {exc}')
 
     def _preview_animation(self, data: bytes, asset_id: str) -> None:
         """Preview an animation asset (RBXM XML format) using background thread."""
@@ -5857,97 +5922,103 @@ class CacheViewerTab(QWidget):
         self._animation_loader.error.connect(on_animation_error)
         self._animation_loader.start()
 
+    def _on_animation_ready_impl(self, data: bytes) -> None:
+        # Load in the animation viewer (must be on main thread for OpenGL)
+        animation_viewer = self._ensure_animation_viewer()
+        if animation_viewer.load_animation(data):
+            animation_viewer.show()
+            self.stop_preview_btn.show()
+            return
+
+        if is_rbx_model_data(data):
+            asset_id = getattr(self, '_animation_loader_asset_id', '') or ''
+            self._preview_rbxm(
+                data,
+                {'id': asset_id, 'type': 24, 'type_name': 'Animation'},
+                title_prefix=tr('cache.preview.animation_structure'),
+            )
+            return
+
+        # Fallback: try to decode as XML for text display
+        text = data.decode('utf-8', errors='replace')
+
+        # Check if it's XML
+        if text.strip().startswith('<'):
+            # Format XML for display
+            try:
+                DefusedElementTree.fromstring(data)
+                # Pretty print XML
+                dom = safe_minidom.parseString(cast('str', data))
+                pretty_xml = dom.toprettyxml(indent='  ')
+                # Remove extra blank lines
+                lines = [line for line in pretty_xml.split('\n') if line.strip()]
+                self._show_text_preview('\n'.join(lines[:500]))  # Limit lines
+            except DefusedXmlException, DefusedElementTree.ParseError, ExpatError, TypeError, ValueError:
+                # Fallback to raw text
+                self._show_text_preview(
+                    tr(
+                        'cache.preview.animation_data',
+                        size=self._format_size(len(data)),
+                        content=text[:5000],
+                    )
+                )
+        else:
+            # Binary format, show hex
+            reason = tr('cache.preview.animation_unsupported_format')
+            self._preview_hex(data, {'id': '', 'type_name': 'Animation'}, reason=reason)
+
     def _on_animation_ready(self, data: bytes) -> None:
         """Handle animation data ready from background thread."""
         # Ignore if selection changed since loader started
-        try:
+        with contextlib.suppress(Exception):
             if getattr(self, '_animation_loader_asset_id', None) != self._selected_asset_id:
                 log_buffer.log('Preview', 'Stale animation result ignored')
                 return
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
 
         self._hide_loading()
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            # Load in the animation viewer (must be on main thread for OpenGL)
-            animation_viewer = self._ensure_animation_viewer()
-            if animation_viewer.load_animation(data):
-                animation_viewer.show()
-                self.stop_preview_btn.show()
-                return
+        try:
+            self._on_animation_ready_impl(data)
+        except (
+            AttributeError,
+            DefusedXmlException,
+            EOFError,
+            DefusedElementTree.ParseError,
+            ExpatError,
+            ImportError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            zlib.error,
+        ) as exc:
+            self._show_text_preview(tr('cache.preview.animation_error', error=exc))
 
-            if is_rbx_model_data(data):
-                asset_id = getattr(self, '_animation_loader_asset_id', '') or ''
-                self._preview_rbxm(
-                    data,
-                    {'id': asset_id, 'type': 24, 'type_name': 'Animation'},
-                    title_prefix=tr('cache.preview.animation_structure'),
-                )
-                return
+    def _preview_font_impl(self, data: bytes) -> None:
+        log_buffer.log('Preview', f'Loading font ({len(data)} bytes)')
 
-            # Fallback: try to decode as XML for text display
-            text = data.decode('utf-8', errors='replace')
+        # Create font viewer widget
+        font_viewer = FontViewerWidget(data, self)
 
-            # Check if it's XML
-            if text.strip().startswith('<'):
-                # Format XML for display
-                from defusedxml import (  # ruff: ignore[import-outside-top-level]
-                    ElementTree as ET,  # ruff: ignore[camelcase-imported-as-acronym]
-                )
+        # Clear previous font widgets
+        while self.font_container_layout.count():
+            child = self.font_container_layout.takeAt(0)
+            if child is not None:
+                child_widget = child.widget()
+                if child_widget is not None:
+                    child_widget.deleteLater()
 
-                try:  # ruff: ignore[too-many-statements-in-try-clause]
-                    ET.fromstring(data)
-                    # Pretty print XML
-                    from defusedxml import (  # ruff: ignore[import-outside-top-level]
-                        minidom as safe_minidom,
-                    )
-
-                    dom = safe_minidom.parseString(cast('str', data))
-                    pretty_xml = dom.toprettyxml(indent='  ')
-                    # Remove extra blank lines
-                    lines = [line for line in pretty_xml.split('\n') if line.strip()]
-                    self._show_text_preview('\n'.join(lines[:500]))  # Limit lines
-                except Exception:  # ruff: ignore[blind-except]
-                    # Fallback to raw text
-                    self._show_text_preview(
-                        tr(
-                            'cache.preview.animation_data',
-                            size=self._format_size(len(data)),
-                            content=text[:5000],
-                        )
-                    )
-            else:
-                # Binary format, show hex
-                reason = tr('cache.preview.animation_unsupported_format')
-                self._preview_hex(data, {'id': '', 'type_name': 'Animation'}, reason=reason)
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('cache.preview.animation_error', error=e))
+        # Add new font viewer
+        self.font_container_layout.addWidget(font_viewer)
+        self.font_wrapper.show()
+        self.stop_preview_btn.show()
 
     def _preview_font(self, data: bytes) -> None:
         """Preview a font asset (TTF, OTF, TTC)."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            log_buffer.log('Preview', f'Loading font ({len(data)} bytes)')
-
-            # Create font viewer widget
-            font_viewer = FontViewerWidget(data, self)
-
-            # Clear previous font widgets
-            while self.font_container_layout.count():
-                child = self.font_container_layout.takeAt(0)
-                if child is not None:
-                    child_widget = child.widget()
-                    if child_widget is not None:
-                        child_widget.deleteLater()
-
-            # Add new font viewer
-            self.font_container_layout.addWidget(font_viewer)
-            self.font_wrapper.show()
-            self.stop_preview_btn.show()
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._show_text_preview(tr('cache.preview.font_error', error=e))
-            log_buffer.log('Preview', f'Font preview error: {e}')
+        try:
+            self._preview_font_impl(data)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._show_text_preview(tr('cache.preview.font_error', error=exc))
+            log_buffer.log('Preview', f'Font preview error: {exc}')
 
     def _is_json_data(self, data: bytes) -> tuple[bool, _JsonValue | None]:
         """
@@ -5963,7 +6034,7 @@ class CacheViewerTab(QWidget):
         if data[:2] == b'\x1f\x8b':
             try:
                 data = gzip_module.decompress(data)
-            except Exception:  # ruff: ignore[blind-except]
+            except EOFError, OSError, zlib.error:
                 return False, None
 
         # Try UTF-8 decoding first (most common)
@@ -5971,75 +6042,78 @@ class CacheViewerTab(QWidget):
             try:
                 text = data.decode(encoding)
                 parsed = cast('_JsonValue', json.loads(text))
-                return True, parsed  # ruff: ignore[try-consider-else]
             except UnicodeDecodeError, json.JSONDecodeError:
                 continue
+            else:
+                return True, parsed
 
         return False, None
+
+    def _preview_rbxm_impl(
+        self, data: bytes, asset: _AssetRecord, title_prefix: str | None = None
+    ) -> None:
+        if title_prefix is None:
+            title_prefix = tr('cache.preview.rbxm_structure')
+        asset_id = str(asset.get('id', ''))
+        asset_type = cast('int | str | None', cast('object', asset.get('type')))
+        raw_type_name = asset.get('type_name') or (
+            self.cache_manager.get_asset_type_name(asset_type)
+            if isinstance(asset_type, int)
+            else 'RBXM/RBXMX'
+        )
+        type_name = _localized_asset_type_name(asset_type, raw_type_name)
+        asset_label = f'{type_name} {asset_id}'.strip()
+        asset_key = self._rbxm_asset_key(asset)
+        cached_at = self._rbxm_asset_cached_at(asset)
+        if not cached_at:
+            selected_asset = self._get_selected_asset()
+            if selected_asset and self._rbxm_asset_key(selected_asset) == asset_key:
+                cached_at = self._rbxm_asset_cached_at(selected_asset)
+                asset = cast('_AssetRecord', dict(asset))
+                asset['cached_at'] = cached_at
+
+        draft_document = self._get_modified_rbxm_draft(asset)
+        if draft_document is not None:
+            self.rbxm_viewer.load_document(draft_document, asset_label=asset_label, dirty=True)
+        else:
+            self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
+        self._rbxm_preview_asset_key = asset_key
+        self._rbxm_preview_cached_at = cached_at
+
+        # Persist detected type only after a successful parse, matching JSON detection behavior.
+        with contextlib.suppress(Exception):
+            if isinstance(asset_type, int) and self.cache_manager.get_asset_type_name(
+                asset_type
+            ).startswith('Unknown'):
+                self.cache_manager.set_detected_type(asset_id, asset_type, 'RBXM/RBXMX')
+                current_row = self.table.currentRow()
+                if current_row >= 0:
+                    type_item = self.table.item(current_row, 4)
+                    if type_item:
+                        type_item.setText(tr('ui.cache.cache_viewer.rbxm_rbxmx'))
+
+        self._hide_loading()
+        self.rbxm_viewer.show()
+        self.stop_preview_btn.show()
+        with contextlib.suppress(Exception):
+            self.preview_title_label.setText(title_prefix)
 
     def _preview_rbxm(
         self, data: bytes, asset: _AssetRecord, title_prefix: str | None = None
     ) -> None:
         """Display an RBXM/RBXMX instance/property structure preview."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if title_prefix is None:
-                title_prefix = tr('cache.preview.rbxm_structure')
-            asset_id = str(asset.get('id', ''))
-            asset_type = cast('int | str | None', cast('object', asset.get('type')))
-            raw_type_name = asset.get('type_name') or (
-                self.cache_manager.get_asset_type_name(asset_type)
-                if isinstance(asset_type, int)
-                else 'RBXM/RBXMX'
-            )
-            type_name = _localized_asset_type_name(asset_type, raw_type_name)
-            asset_label = f'{type_name} {asset_id}'.strip()
-            asset_key = self._rbxm_asset_key(asset)
-            cached_at = self._rbxm_asset_cached_at(asset)
-            if not cached_at:
-                selected_asset = self._get_selected_asset()
-                if selected_asset and self._rbxm_asset_key(selected_asset) == asset_key:
-                    cached_at = self._rbxm_asset_cached_at(selected_asset)
-                    asset = cast('_AssetRecord', dict(asset))
-                    asset['cached_at'] = cached_at
-
-            draft_document = self._get_modified_rbxm_draft(asset)
-            if draft_document is not None:
-                self.rbxm_viewer.load_document(draft_document, asset_label=asset_label, dirty=True)
-            else:
-                self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
-            self._rbxm_preview_asset_key = asset_key
-            self._rbxm_preview_cached_at = cached_at
-
-            # Persist detected type only after a successful parse, matching JSON detection behavior.
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                if isinstance(asset_type, int) and self.cache_manager.get_asset_type_name(
-                    asset_type
-                ).startswith('Unknown'):
-                    self.cache_manager.set_detected_type(asset_id, asset_type, 'RBXM/RBXMX')
-                    current_row = self.table.currentRow()
-                    if current_row >= 0:
-                        type_item = self.table.item(current_row, 4)
-                        if type_item:
-                            type_item.setText(tr('ui.cache.cache_viewer.rbxm_rbxmx'))
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
-
-            self._hide_loading()
-            self.rbxm_viewer.show()
-            self.stop_preview_btn.show()
-            try:
-                self.preview_title_label.setText(title_prefix)
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
-        except Exception as e:  # ruff: ignore[blind-except]
-            self._preview_hex(
+        _ui_boundary(
+            lambda: self._preview_rbxm_impl(data, asset, title_prefix),
+            fallback=None,
+            on_error=lambda exc: self._preview_hex(
                 data,
                 {
                     'id': asset.get('id', ''),
                     'type_name': asset.get('type_name', 'RBXM/RBXMX'),
                 },
-                reason=tr('cache.preview.rbxm_parse_failed', error=e),
-            )
+                reason=tr('cache.preview.rbxm_parse_failed', error=exc),
+            ),
+        )
 
     def _preview_json(self, data: bytes, asset: _AssetRecord) -> None:
         """Display JSON data in the JSON viewer."""
@@ -6053,7 +6127,7 @@ class CacheViewerTab(QWidget):
         # Persist the detected JSON type to the cache index
         asset_id = asset['id']
         asset_type = asset['type']
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
+        with contextlib.suppress(Exception):
             self.cache_manager.set_detected_type(asset_id, asset_type, 'Json')
 
             # Update the table type display immediately to show "Json"
@@ -6063,8 +6137,6 @@ class CacheViewerTab(QWidget):
                 if type_item:
                     # Update to 'Json' (now persistent)
                     type_item.setText(tr('ui.cache.cache_viewer.json'))
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
 
         # Load and display in JSON viewer
         self.json_viewer.load_json(parsed_data)
@@ -6085,8 +6157,12 @@ class CacheViewerTab(QWidget):
 
         hex_lines.append(tr('cache.preview.hex.asset_id', asset_id=asset['id']))
         display_type_name = _localized_asset_type_name(asset.get('type'), asset.get('type_name'))
-        hex_lines.append(tr('cache.preview.hex.type', type_name=display_type_name))  # ruff: ignore[repeated-append]
-        hex_lines.append(tr('cache.preview.hex.size', size=self._format_size(len(data))))
+        hex_lines.extend(
+            (
+                tr('cache.preview.hex.type', type_name=display_type_name),
+                tr('cache.preview.hex.size', size=self._format_size(len(data))),
+            )
+        )
         if reason:
             hex_lines.append(tr('cache.preview.hex.reason', reason=reason))
         hex_lines.append(tr('cache.preview.hex.first_bytes', count=preview_size))
@@ -6119,14 +6195,11 @@ class CacheViewerTab(QWidget):
 
     def _show_blacklist_dialog(self) -> None:
         """Show a dialog for managing blacklisted asset IDs."""
-        from fleasion.utils import get_icon_path  # ruff: ignore[import-outside-top-level]
 
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.cache.cache_viewer.blacklist_ids_2'))
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
-
             dialog.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout()
@@ -6146,7 +6219,7 @@ class CacheViewerTab(QWidget):
 
         # Populate with current blacklist
         if self._blacklisted_ids:
-            text_edit.setPlainText(', '.join(sorted(self._blacklisted_ids, key=lambda x: int(x))))  # ruff: ignore[unnecessary-lambda]
+            text_edit.setPlainText(', '.join(sorted(self._blacklisted_ids, key=int)))
         layout.addWidget(text_edit)
 
         # Search row
@@ -6196,8 +6269,8 @@ class CacheViewerTab(QWidget):
             content = text_edit.toPlainText().strip()
             content = content.replace('\n', ',').replace(';', ',').replace(' ', ',')
             ids: list[str] = []
-            for part in content.split(','):
-                part = part.strip()  # ruff: ignore[redefined-loop-name]
+            for raw_part in content.split(','):
+                part = raw_part.strip()
                 if part:
                     with contextlib.suppress(ValueError):
                         ids.append(str(int(part)))
@@ -6237,14 +6310,11 @@ class CacheViewerTab(QWidget):
 
     def _show_load_asset_dialog(self) -> None:
         """Show a dialog for manually entering asset IDs to download from Roblox."""
-        from fleasion.utils import get_icon_path  # ruff: ignore[import-outside-top-level]
 
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.cache.cache_viewer.load_assets'))
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
-
             dialog.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout()
@@ -6284,8 +6354,8 @@ class CacheViewerTab(QWidget):
             # Parse IDs: support commas, spaces, newlines, semicolons as separators
             content = content.replace('\n', ',').replace(';', ',').replace(' ', ',')
             raw_ids: list[int] = []
-            for part in content.split(','):
-                part = part.strip()  # ruff: ignore[redefined-loop-name]
+            for raw_part in content.split(','):
+                part = raw_part.strip()
                 if part:
                     try:
                         raw_ids.append(int(part))
@@ -6360,11 +6430,11 @@ class CacheViewerTab(QWidget):
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.show()
 
-    def _on_load_assets_complete(  # ruff: ignore[too-many-positional-arguments]
+    def _on_load_assets_complete(
         self,
         loaded: int,
         failed: int,
-        dialog: QDialog,  # ruff: ignore[unused-method-argument]
+        _dialog: QDialog,
         load_btn: QPushButton,
         text_edit: QTextEdit,
         status_label: QLabel,
@@ -6413,10 +6483,8 @@ class CacheViewerTab(QWidget):
                 )
 
             # Save index once
-            try:
+            with contextlib.suppress(Exception):
                 _save_cache_index(self.cache_manager)
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
 
         # Re-enable UI
         load_btn.setEnabled(True)

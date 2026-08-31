@@ -19,13 +19,21 @@ import contextlib
 import hashlib
 import io
 import struct
-from pathlib import Path  # ruff: ignore[typing-only-standard-library-import]
+from typing import TYPE_CHECKING
 
 import numpy as np
+import zstandard
 from PIL import Image
 
 from fleasion.utils import log_buffer
 from fleasion.utils.paths import APP_CACHE_DIR
+
+from .ktx_to_png import convert
+from .ktx_to_png.ktx_to_png import KTX2_MAGIC, strip_prefixed_ktx
+from .rgba_ktx2 import write_rgba8_ktx2_levels
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _CHANNEL_MAP: dict[str, int] = {
     'metalness': 0,
@@ -55,6 +63,21 @@ _VK_BC3 = 137  # VK_FORMAT_BC3_UNORM_BLOCK       (DXT5, with alpha)
 # for sequential chain generation.
 _ROUGHNESS_NORMAL_VARIANCE_SCALE = 1.0
 _ORM_COMPOSITOR_CACHE_VERSION = b'orm-mips-v2-normal-variance'
+
+
+def _load_channel_array(png_path: Path, width: int, height: int) -> tuple[np.ndarray, bool]:
+    with Image.open(png_path) as image:
+        if image.mode == 'L':
+            channel = np.array(image, dtype=np.uint8)
+        else:
+            channel = np.array(image.getchannel('R'), dtype=np.uint8)
+    resized = channel.shape != (height, width)
+    if resized:
+        channel = np.array(
+            Image.fromarray(channel).resize((width, height), Image.Resampling.BILINEAR),
+            dtype=np.uint8,
+        )
+    return channel, resized
 
 
 def composite_orm(
@@ -132,7 +155,7 @@ def composite_orm(
             log_buffer.log('TexPackTrace', f'ORM compositor decoding baseline={baseline.name}')
             rgba, width, height = _decode_texture_rgba(baseline)
             log_buffer.log('TexPackTrace', f'ORM compositor baseline decoded: {width}x{height}')
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (OSError, ValueError, struct.error, zstandard.ZstdError) as exc:
             log_buffer.log('ORM', f'Baseline decode failed ({baseline.name}): {exc}')
             log_buffer.log(
                 'TexPackTrace',
@@ -173,34 +196,27 @@ def composite_orm(
                 f'ORM compositor channel {ch_name}: missing file={png_path}',
             )
             continue
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            img = Image.open(png_path)
-            # Extract R-channel.  For grayscale images, the only channel IS R.
-            if img.mode == 'L':
-                r_arr = np.array(img, dtype=np.uint8)
-            else:
-                r_arr = np.array(img.getchannel('R'), dtype=np.uint8)
-            if r_arr.shape != (height, width):
-                r_arr = np.array(
-                    Image.fromarray(r_arr).resize((width, height), Image.Resampling.BILINEAR),
-                    dtype=np.uint8,
-                )
-                log_buffer.log(
-                    'TexPackTrace',
-                    f'ORM compositor channel {ch_name}: resized source to {width}x{height} file={png_path.name}',
-                )
-            rgba[:, :, ch_idx] = r_arr
-            applied.append(ch_name)
-            log_buffer.log(
-                'TexPackTrace',
-                f'ORM compositor channel {ch_name}: applied file={png_path.name}',
-            )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            r_arr, resized = _load_channel_array(png_path, width, height)
+        except (OSError, ValueError) as exc:
             log_buffer.log('ORM', f'Failed to apply channel "{ch_name}": {exc}')
             log_buffer.log(
                 'TexPackTrace',
                 f'ORM compositor channel {ch_name}: failed file={png_path.name} error={exc}',
             )
+            continue
+        if resized:
+            log_buffer.log(
+                'TexPackTrace',
+                f'ORM compositor channel {ch_name}: resized source to {width}x{height} '
+                f'file={png_path.name}',
+            )
+        rgba[:, :, ch_idx] = r_arr
+        applied.append(ch_name)
+        log_buffer.log(
+            'TexPackTrace',
+            f'ORM compositor channel {ch_name}: applied file={png_path.name}',
+        )
 
     if not applied:
         log_buffer.log('ORM', 'No channels were applied — skipping composite')
@@ -226,7 +242,7 @@ def composite_orm(
                 'TexPackTrace',
                 f'ORM compositor roughness variance source={normal_path.name}',
             )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (OSError, ValueError, struct.error, zstandard.ZstdError) as exc:
             log_buffer.log('ORM', f'Normal decode failed ({normal_path.name}): {exc}')
             normal_rgba = None
 
@@ -238,7 +254,7 @@ def composite_orm(
             f'Composited [{", ".join(applied)}] → {out_path.name} ({width}×{height})',
         )
         return str(out_path)
-    except Exception as exc:  # ruff: ignore[blind-except]
+    except (OSError, ValueError, struct.error, zstandard.ZstdError) as exc:
         log_buffer.log('ORM', f'KTX2 write failed: {exc}')
         with contextlib.suppress(OSError):
             out_path.unlink(missing_ok=True)
@@ -275,8 +291,6 @@ def _decode_bc_ktx2(data: bytes) -> tuple[np.ndarray, int, int]:
     level_data = data[byte_offset : byte_offset + byte_length]
 
     if supercompression == 2:  # zstd
-        import zstandard  # ruff: ignore[import-outside-top-level]
-
         level_data = zstandard.ZstdDecompressor().decompress(
             level_data,
             max_output_size=64 * 1024 * 1024,
@@ -330,11 +344,6 @@ def _decode_texture_rgba(path: Path) -> tuple[np.ndarray, int, int]:
     """Decode a normal image or supported KTX/KTX2 base level to RGBA8."""
 
     data = path.read_bytes()
-    from .ktx_to_png import convert  # ruff: ignore[import-outside-top-level]
-    from .ktx_to_png.ktx_to_png import (  # ruff: ignore[import-outside-top-level]
-        KTX2_MAGIC,
-        strip_prefixed_ktx,
-    )
 
     stripped = strip_prefixed_ktx(data)
     if stripped is not None and stripped[:12] == KTX2_MAGIC:
@@ -535,7 +544,6 @@ def _write_ktx2(
     normal_rgba: np.ndarray | None = None,
 ) -> None:
     """Write packed material RGBA32 as a full-mip uncompressed KTX2."""
-    from .rgba_ktx2 import write_rgba8_ktx2_levels  # ruff: ignore[import-outside-top-level]
 
     expected_shape = (height, width, 4)
     if rgba.shape != expected_shape or rgba.dtype != np.uint8:

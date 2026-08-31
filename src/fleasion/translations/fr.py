@@ -1,4 +1,5 @@
 """French source strings for Fleasion."""
+import string
 
 FRENCH: dict[str, str] = {
     'app.adding_fleasion_entries_would_make_it_value': 'L’ajout d’entrées Fleasion porterait la taille à {value0:.1f} MiB, ce qui dépasse la limite de sécurité de Fleasion de {value1:.0f} KiB. Aucun mappage n’a été ajouté. Supprimez les lignes obsolètes du fichier hosts ou renommez le fichier, puis redémarrez Fleasion.\n\nChemin du fichier hosts :\n{value2}',
@@ -510,13 +511,13 @@ FRENCH: dict[str, str] = {
     'count.server.other': '{count} serveurs',
     'count.value.one': '{count} valeur',
     'count.value.other': '{count} valeurs',
-    'font_viewer.sample.digits': '0123456789',
+    'font_viewer.sample.digits': string.digits,
     'font_viewer.sample.lowercase': 'Abcdefghijklmnopqrstuvwxyz',
     'font_viewer.sample.pack_my_box': 'Portez ce vieux whisky au juge blond qui fume',
     'font_viewer.sample.quick_brown_fox': 'Voix ambiguë d’un cœur qui au zéphyr préfère les jattes de kiwis',
     'font_viewer.sample.quick_zebras': 'Buvez de ce whisky que le patron juge fameux',
     'font_viewer.sample.symbols': "!@#$%^&&*()_+-=[]{}|;:',.<>?/`~",
-    'font_viewer.sample.uppercase': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    'font_viewer.sample.uppercase': string.ascii_uppercase,
     'json.fetch.asset_not_found': 'Asset introuvable (supprimé ou ID non valide)',
     'json.fetch.asset_private': 'L’asset est privé (contournement impossible)',
     'json.fetch.cannot_fetch': 'Impossible de récupérer : {value}',

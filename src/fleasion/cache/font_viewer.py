@@ -41,40 +41,37 @@ class FontViewerWidget(QWidget):
 
     def _load_font(self) -> None:
         """Load font from bytes and register with Qt."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            log_buffer.log('FontViewer', f'Loading font ({len(self.font_data)} bytes)')
+        log_buffer.log('FontViewer', f'Loading font ({len(self.font_data)} bytes)')
 
-            # Write to temporary file so Qt can load it
-            temp_dir = Path(tempfile.gettempdir()) / 'fleasion_fonts'
+        # Determine extension based on magic bytes
+        ext = '.ttf'
+        if self.font_data.startswith(b'OTTO'):
+            ext = '.otf'
+        elif self.font_data.startswith(b'ttcf'):
+            ext = '.ttc'
+
+        # Write to temporary file so Qt can load it
+        temp_dir = Path(tempfile.gettempdir()) / 'fleasion_fonts'
+        temp_file = temp_dir / f'preview_font{ext}'
+        try:
             temp_dir.mkdir(exist_ok=True)
-
-            # Determine extension based on magic bytes
-            ext = '.ttf'
-            if self.font_data.startswith(b'\x00\x01\x00\x00'):
-                ext = '.ttf'
-            elif self.font_data.startswith(b'OTTO'):
-                ext = '.otf'
-            elif self.font_data.startswith(b'ttcf'):
-                ext = '.ttc'
-
-            temp_file = temp_dir / f'preview_font{ext}'
             temp_file.write_bytes(self.font_data)
+        except OSError as exc:
+            log_buffer.log('FontViewer', f'Font load error: {exc}')
+            return
 
-            # Register font with Qt
-            self.font_id = QFontDatabase.addApplicationFont(str(temp_file))
+        # Register font with Qt
+        self.font_id = QFontDatabase.addApplicationFont(str(temp_file))
 
-            if self.font_id >= 0:
-                families = QFontDatabase.applicationFontFamilies(self.font_id)
-                if families:
-                    self.font_family = families[0]
-                    log_buffer.log('FontViewer', f'Font loaded: {self.font_family}')
-                else:
-                    log_buffer.log('FontViewer', 'Font loaded but no family names found')
+        if self.font_id >= 0:
+            families = QFontDatabase.applicationFontFamilies(self.font_id)
+            if families:
+                self.font_family = families[0]
+                log_buffer.log('FontViewer', f'Font loaded: {self.font_family}')
             else:
-                log_buffer.log('FontViewer', 'Failed to load font')
-
-        except Exception as e:  # ruff: ignore[blind-except]
-            log_buffer.log('FontViewer', f'Font load error: {e}')
+                log_buffer.log('FontViewer', 'Font loaded but no family names found')
+        else:
+            log_buffer.log('FontViewer', 'Failed to load font')
 
     def _setup_ui(self) -> None:
         """Setup the UI."""

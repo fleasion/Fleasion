@@ -9,52 +9,52 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from fleasion.localization import tr
 
 
-class Ui_Form:  # ruff: ignore[invalid-class-name]
-    def setupUi(self, Form: QtWidgets.QWidget) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name]
-        Form.setObjectName('Form')
-        Form.resize(847, 561)
-        self.verticalLayout_3 = QtWidgets.QVBoxLayout(Form)
+class UiForm:
+    def setup_ui(self, form: QtWidgets.QWidget) -> None:
+        form.setObjectName('Form')
+        form.resize(847, 561)
+        self.verticalLayout_3 = QtWidgets.QVBoxLayout(form)
         self.verticalLayout_3.setObjectName('verticalLayout_3')
         self.horizontalLayout_2 = QtWidgets.QHBoxLayout()
         self.horizontalLayout_2.setObjectName('horizontalLayout_2')
-        self.filterEdit = QtWidgets.QLineEdit(parent=Form)
+        self.filterEdit = QtWidgets.QLineEdit(parent=form)
         self.filterEdit.setInputMask('')
         self.filterEdit.setReadOnly(False)
         self.filterEdit.setObjectName('filterEdit')
         self.horizontalLayout_2.addWidget(self.filterEdit)
-        self.interceptEdit = QtWidgets.QLineEdit(parent=Form)
+        self.interceptEdit = QtWidgets.QLineEdit(parent=form)
         self.interceptEdit.setObjectName('interceptEdit')
         self.horizontalLayout_2.addWidget(self.interceptEdit)
-        self.highlightEdit = QtWidgets.QLineEdit(parent=Form)
+        self.highlightEdit = QtWidgets.QLineEdit(parent=form)
         self.highlightEdit.setObjectName('highlightEdit')
         self.horizontalLayout_2.addWidget(self.highlightEdit)
         self.verticalLayout_3.addLayout(self.horizontalLayout_2)
         self.horizontalLayout_3 = QtWidgets.QHBoxLayout()
         self.horizontalLayout_3.setObjectName('horizontalLayout_3')
-        self.enableCheckBox = QtWidgets.QCheckBox(parent=Form)
+        self.enableCheckBox = QtWidgets.QCheckBox(parent=form)
         self.enableCheckBox.setObjectName('enableCheckBox')
         self.horizontalLayout_3.addWidget(self.enableCheckBox)
-        self.preserveCheckBox = QtWidgets.QCheckBox(parent=Form)
+        self.preserveCheckBox = QtWidgets.QCheckBox(parent=form)
         self.preserveCheckBox.setObjectName('preserveCheckBox')
         self.horizontalLayout_3.addWidget(self.preserveCheckBox)
-        spacerItem = QtWidgets.QSpacerItem(  # ruff: ignore[non-lowercase-variable-in-function]
+        spacer_item = QtWidgets.QSpacerItem(
             40, 20, QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Minimum
         )
-        self.horizontalLayout_3.addItem(spacerItem)
-        self.clearButton = QtWidgets.QPushButton(parent=Form)
+        self.horizontalLayout_3.addItem(spacer_item)
+        self.clearButton = QtWidgets.QPushButton(parent=form)
         self.clearButton.setObjectName('clearButton')
         self.horizontalLayout_3.addWidget(self.clearButton)
-        self.autoReplace = QtWidgets.QPushButton(parent=Form)
+        self.autoReplace = QtWidgets.QPushButton(parent=form)
         self.autoReplace.setObjectName('autoReplace')
         self.horizontalLayout_3.addWidget(self.autoReplace)
-        self.forwardButton = QtWidgets.QPushButton(parent=Form)
+        self.forwardButton = QtWidgets.QPushButton(parent=form)
         self.forwardButton.setObjectName('forwardButton')
         self.horizontalLayout_3.addWidget(self.forwardButton)
-        self.dropButton = QtWidgets.QPushButton(parent=Form)
+        self.dropButton = QtWidgets.QPushButton(parent=form)
         self.dropButton.setObjectName('dropButton')
         self.horizontalLayout_3.addWidget(self.dropButton)
         self.verticalLayout_3.addLayout(self.horizontalLayout_3)
-        self.tableGroupSplitter = QtWidgets.QSplitter(parent=Form)
+        self.tableGroupSplitter = QtWidgets.QSplitter(parent=form)
         self.tableGroupSplitter.setOrientation(QtCore.Qt.Orientation.Vertical)
         self.tableGroupSplitter.setObjectName('tableGroupSplitter')
         self.trafficTable = QtWidgets.QTableWidget(parent=self.tableGroupSplitter)
@@ -93,11 +93,11 @@ class Ui_Form:  # ruff: ignore[invalid-class-name]
         self.verticalLayout.addWidget(self.responseText)
         self.verticalLayout_3.addWidget(self.tableGroupSplitter)
 
-        self.retranslateUi(Form)
-        QtCore.QMetaObject.connectSlotsByName(Form)
+        self.retranslate_ui(form)
+        QtCore.QMetaObject.connectSlotsByName(form)
 
-    def retranslateUi(self, Form: QtWidgets.QWidget) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name]
-        Form.setWindowTitle(tr('ui.gui.proxy_tab_ui.form'))
+    def retranslate_ui(self, form: QtWidgets.QWidget) -> None:
+        form.setWindowTitle(tr('ui.gui.proxy_tab_ui.form'))
         self.filterEdit.setPlaceholderText(tr('ui.gui.proxy_tab_ui.filter_apis_method_status_etc'))
         self.interceptEdit.setPlaceholderText(tr('ui.gui.proxy_tab_ui.auto_intercept_by_api_url'))
         self.highlightEdit.setPlaceholderText(tr('ui.gui.proxy_tab_ui.highlight_stuff'))
@@ -109,3 +109,14 @@ class Ui_Form:  # ruff: ignore[invalid-class-name]
         self.dropButton.setText(tr('ui.gui.proxy_tab_ui.drop'))
         self.requestGroup.setTitle(tr('ui.gui.proxy_tab_ui.request'))
         self.responseGroup.setTitle(tr('ui.gui.proxy_tab_ui.response'))
+
+    def setupUi(self, form: QtWidgets.QWidget) -> None:
+        self.setup_ui(form)
+
+    def retranslateUi(self, form: QtWidgets.QWidget) -> None:
+        self.retranslate_ui(form)
+
+
+Ui_Form = UiForm
+Ui_Form.__name__ = 'Ui_Form'
+Ui_Form.__qualname__ = 'Ui_Form'

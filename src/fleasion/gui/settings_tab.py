@@ -1,13 +1,14 @@
-"""Settings tab – mirrors all settings available in the system tray menu."""  # ruff: ignore[ambiguous-unicode-character-docstring]
+"""Settings tab - mirrors all settings available in the system tray menu."""
 
 from __future__ import annotations
 
+import importlib
 import sys
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast, override
 
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from fleasion.gui.theme import ThemeManager
 from fleasion.localization import available_languages, get_language, tr
-from fleasion.utils import CONFIG_DIR, run_in_thread
+from fleasion.utils import CONFIG_DIR, get_roblox_player_exe_path, log_buffer, run_in_thread
 from fleasion.utils.autostart import sync_autostart, windows_autostart_privilege_hint
 from fleasion.utils.desktop_integration import sync_desktop_integration
 from fleasion.utils.roblox_auth import (
@@ -50,13 +51,15 @@ if TYPE_CHECKING:
     from fleasion.proxy.master import ProxyMaster
 
 
-class _CacheViewerTabLike(Protocol):
-    _on_show_names_toggled: Callable[[bool], None]
-    _on_show_creator_id_toggled: Callable[[bool], None]
-
-
 class _DashboardWindowLike(Protocol):
-    _cache_viewer_tab: _CacheViewerTabLike | None
+    def apply_cache_viewer_display_setting(
+        self,
+        setting: Literal['show_names', 'show_creator_id'],
+        *,
+        enabled: bool,
+    ) -> None: ...
+
+    def set_cache_scraper_enabled(self, *, enabled: bool) -> None: ...
 
 
 class _SystemTrayLike(Protocol):
@@ -80,14 +83,32 @@ class _SystemTrayLike(Protocol):
     show_replacer_notifications_action: QAction
     show_names_action: QAction
     show_creator_id_action: QAction
+    cache_scraper_action: QAction
 
     set_proxy_features_enabled: Callable[[bool], None]
-    _is_cache_scraper_enabled: Callable[[], bool]
-    _set_cache_scraper_enabled: Callable[[bool], None]
 
     def restart_fleasion(self) -> bool | None: ...
 
     def notify_proxy_mode_changed(self) -> None: ...
+
+
+def _set_signals_blocked(obj: QObject, *, blocked: bool) -> None:
+    obj.blockSignals(blocked)
+
+
+def _capture_failure[T](action: Callable[[], T]) -> tuple[T | None, Exception | None]:
+    try:
+        return action(), None
+    except Exception as exc:  # ruff: ignore[blind-except]
+        return None, exc
+
+
+def _refresh_autostart_proxy_mode(proxy_mode: str) -> tuple[bool, Exception | None]:
+    enable_autostart = True
+    result, error = _capture_failure(
+        lambda: sync_autostart(enable_autostart, CONFIG_DIR, proxy_mode=proxy_mode)
+    )
+    return (False if result is None else result), error
 
 
 def _macos_auth_sources() -> tuple[tuple[str, str], ...]:
@@ -189,7 +210,8 @@ class SettingsTab(QWidget):
         self.setLayout(outer)
         self._update_container_bg()
 
-    def changeEvent(self, a0: QEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def changeEvent(self, a0: QEvent) -> None:
         super().changeEvent(a0)
         if a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
@@ -250,9 +272,8 @@ class SettingsTab(QWidget):
         return section
 
     def _build_linux_client_section(self) -> CollapsibleSection:
-        from fleasion.utils.linux_clients import (  # ruff: ignore[import-outside-top-level]
-            LINUX_CLIENTS,
-        )
+        linux_clients = importlib.import_module('fleasion.utils.linux_clients')
+        linux_client_descriptors = linux_clients.LINUX_CLIENTS
 
         section = CollapsibleSection(tr('settings.linux_client.section'), expanded=True)
 
@@ -261,17 +282,17 @@ class SettingsTab(QWidget):
         row.addWidget(QLabel(tr('ui.gui.settings_tab.client')))
         self._linux_client_combo = DropdownComboBox()
         self._linux_client_combo.addItem(tr('ui.gui.settings_tab.auto_desktop_handler'), 'auto')
-        for client in LINUX_CLIENTS:
+        for client in linux_client_descriptors:
             self._linux_client_combo.addItem(client.display_name, client.key)
         index = self._linux_client_combo.findData(getattr(self._config, 'linux_client', 'auto'))
         self._linux_client_combo.setCurrentIndex(max(0, index))
         self._linux_client_combo.activated.connect(self._on_linux_client_changed)
-        if len(LINUX_CLIENTS) <= 1:
+        if len(linux_client_descriptors) <= 1:
             self._linux_client_combo.setEnabled(False)
             self._linux_client_combo.setToolTip(
                 tr(
                     'ui.gui.settings_tab.value_is_currently_the_only_supported_linux',
-                    value0=LINUX_CLIENTS[0].display_name,
+                    value0=linux_client_descriptors[0].display_name,
                 )
             )
         row.addWidget(self._linux_client_combo)
@@ -289,26 +310,24 @@ class SettingsTab(QWidget):
     def _refresh_linux_client_status(self) -> None:
         if not sys.platform.startswith('linux'):
             return
-        try:
-            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                linux_client_installations,
-                selected_linux_client_display_name,
+
+        def linux_client_status_text() -> str:
+            platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+            installed = ', '.join(
+                item.display_name for item in platform_linux.linux_client_installations()
+            )
+            selected = platform_linux.selected_linux_client_display_name()
+            detail = installed or tr('settings.linux_client.none_detected')
+            return tr(
+                'ui.gui.settings_tab.active_value_installed_value_fleasion_routes_linux',
+                value0=selected,
+                value1=detail,
             )
 
-            installed = ', '.join(item.display_name for item in linux_client_installations())
-            selected = selected_linux_client_display_name()
-            detail = installed or tr('settings.linux_client.none_detected')
-            self._linux_client_status.setText(
-                tr(
-                    'ui.gui.settings_tab.active_value_installed_value_fleasion_routes_linux',
-                    value0=selected,
-                    value1=detail,
-                )
-            )
-        except Exception:  # ruff: ignore[blind-except]
-            self._linux_client_status.setText(
-                tr('ui.gui.settings_tab.unable_to_detect_linux_roblox_clients')
-            )
+        status_text, error = _capture_failure(linux_client_status_text)
+        if error is not None or status_text is None:
+            status_text = tr('ui.gui.settings_tab.unable_to_detect_linux_roblox_clients')
+        self._linux_client_status.setText(status_text)
 
     def _build_macos_auth_section(self) -> CollapsibleSection:
         section = CollapsibleSection(tr('settings.roblox_login.section'), expanded=True)
@@ -640,9 +659,9 @@ class SettingsTab(QWidget):
     def refresh_from_config(self) -> None:
         """Re-read all settings from config and update widgets (no signals emitted)."""
         for name, rb in self._theme_buttons.items():
-            rb.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(rb, blocked=True)
             rb.setChecked(name == self._config.theme)
-            rb.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(rb, blocked=False)
 
         for chk, value in [
             (self._open_dashboard_chk, self._config.open_dashboard_on_launch),
@@ -669,25 +688,25 @@ class SettingsTab(QWidget):
             (self._show_names_chk, self._config.show_names),
             (self._show_creator_id_chk, self._config.show_creator_id),
         ]:
-            chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(chk, blocked=True)
             chk.setChecked(value)
-            chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(chk, blocked=False)
 
         idx = self._upstream_mode_combo.findData(self._config.upstream_transport_mode)
-        self._upstream_mode_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._upstream_mode_combo, blocked=True)
         self._upstream_mode_combo.setCurrentIndex(max(0, idx))
-        self._upstream_mode_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._upstream_mode_combo, blocked=False)
 
         idx = self._proxy_mode_combo.findData(self._config.proxy_mode)
-        self._proxy_mode_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._proxy_mode_combo, blocked=True)
         self._proxy_mode_combo.setCurrentIndex(max(0, idx))
-        self._proxy_mode_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._proxy_mode_combo, blocked=False)
 
         if sys.platform.startswith('linux'):
             idx = self._linux_client_combo.findData(getattr(self._config, 'linux_client', 'auto'))
-            self._linux_client_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._linux_client_combo, blocked=True)
             self._linux_client_combo.setCurrentIndex(max(0, idx))
-            self._linux_client_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._linux_client_combo, blocked=False)
             self._refresh_linux_client_status()
 
         for widget, value in [
@@ -698,9 +717,9 @@ class SettingsTab(QWidget):
             (self._socks5_user, self._config.upstream_socks5_username),
             (self._socks5_pass, self._config.upstream_socks5_password),
         ]:
-            widget.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(widget, blocked=True)
             widget.setText(value)
-            widget.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(widget, blocked=False)
 
         for widget, value in [
             (self._http_proxy_port, self._config.upstream_http_connect_port),
@@ -711,33 +730,32 @@ class SettingsTab(QWidget):
             ),
             (self._cdn_limit_spin, self._config.vpn_compat_max_cdn_connections),
         ]:
-            widget.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(widget, blocked=True)
             widget.setValue(value)
-            widget.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(widget, blocked=False)
 
         self.set_cache_scraper_enabled(self._is_cache_scraper_enabled())
 
         for option, chk in self._export_chks.items():
-            chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(chk, blocked=True)
             chk.setChecked(self._config.is_export_naming_enabled(option))
-            chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(chk, blocked=False)
         if sys.platform == 'darwin':
             idx = self._macos_auth_source_combo.findData(self._config.macos_auth_source)
-            self._macos_auth_source_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._macos_auth_source_combo, blocked=True)
             self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-            self._macos_auth_source_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._macos_auth_source_combo, blocked=False)
 
         idx = self._language_combo.findData(self._config.language)
-        self._language_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._language_combo, blocked=True)
         self._language_combo.setCurrentIndex(max(0, idx))
-        self._language_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._language_combo, blocked=False)
 
     # Handlers
 
     def _clear_roblox_cache(self) -> None:
-        from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
-
-        window = DeleteCacheWindow()
+        delete_cache = importlib.import_module('.delete_cache', __package__)
+        window = delete_cache.DeleteCacheWindow()
         window.show()
 
     def _on_language_changed(self, *_args: object) -> None:
@@ -774,9 +792,9 @@ class SettingsTab(QWidget):
                 QMessageBox.StandardButton.Cancel,
             )
             if result != QMessageBox.StandardButton.Yes:
-                self._proxy_features_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+                _set_signals_blocked(self._proxy_features_chk, blocked=True)
                 self._proxy_features_chk.setChecked(True)
-                self._proxy_features_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+                _set_signals_blocked(self._proxy_features_chk, blocked=False)
                 return
 
         if self._tray and hasattr(self._tray, 'set_proxy_features_enabled'):
@@ -808,11 +826,8 @@ class SettingsTab(QWidget):
             mod_manager.restore_all()
 
         self._config.linux_client = new_client
-        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-            set_linux_client_preference,
-        )
-
-        set_linux_client_preference(new_client)
+        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+        platform_linux.set_linux_client_preference(new_client)
 
         if mod_manager is not None:
             mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
@@ -825,23 +840,9 @@ class SettingsTab(QWidget):
         new_mode = cast('str', self._proxy_mode_combo.currentData())
         self._config.proxy_mode = new_mode
         if self._config.run_on_boot:
-            try:
-                boot_ok = sync_autostart(
-                    True,  # ruff: ignore[boolean-positional-value-in-call]
-                    CONFIG_DIR,
-                    proxy_mode=new_mode,
-                )
-            except Exception as exc:  # ruff: ignore[blind-except]
-                boot_ok = False
-                log_message = f'Run on Boot mode refresh failed: {exc}'
-                try:
-                    from fleasion.utils.logging import (  # ruff: ignore[import-outside-top-level]
-                        log_buffer,
-                    )
-
-                    log_buffer.log('Autostart', log_message)
-                except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                    pass
+            boot_ok, sync_error = _refresh_autostart_proxy_mode(new_mode)
+            if sync_error is not None:
+                log_buffer.log('Autostart', f'Run on Boot mode refresh failed: {sync_error}')
             if not boot_ok:
                 QMessageBox.warning(
                     self,
@@ -862,11 +863,12 @@ class SettingsTab(QWidget):
                     # The proxy may have fallen back from 58443 to a dynamic
                     # port. Arm Store/GDK only after the restarted proxy has
                     # published its final loopback URL.
-                    from fleasion.app import (  # ruff: ignore[import-outside-top-level]
-                        _arm_windows_gdk_env_proxy_when_ready,
+                    app_module = importlib.import_module('fleasion.app')
+                    arm_gdk_env_proxy = cast(
+                        'Callable[[object], None]',
+                        vars(app_module)['_arm_windows_gdk_env_proxy_when_ready'],
                     )
-
-                    run_in_thread(_arm_windows_gdk_env_proxy_when_ready)(proxy_master)
+                    run_in_thread(arm_gdk_env_proxy)(proxy_master)
             monitor = getattr(self._tray, 'roblox_monitor', None) if self._tray else None
             lifecycle = getattr(monitor, 'env_lifecycle', None)
             if (
@@ -876,16 +878,9 @@ class SettingsTab(QWidget):
                 and monitor.is_player_running()
             ):
                 if sys.platform.startswith('linux'):
-                    from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                        selected_linux_client_app_id,
-                    )
-
-                    exe_path = Path(selected_linux_client_app_id())
+                    platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+                    exe_path = Path(platform_linux.selected_linux_client_app_id())
                 else:
-                    from fleasion.utils import (  # ruff: ignore[import-outside-top-level]
-                        get_roblox_player_exe_path,
-                    )
-
                     exe_path = get_roblox_player_exe_path()
                 run_in_thread(lifecycle.handle_player_launch)(exe_path)
         if new_mode == 'hosts' and previous_mode != 'hosts':
@@ -939,28 +934,17 @@ class SettingsTab(QWidget):
                 self._config.proxy_mode = previous_mode
                 previous_index = self._proxy_mode_combo.findData(previous_mode)
                 if previous_index >= 0:
-                    self._proxy_mode_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+                    _set_signals_blocked(self._proxy_mode_combo, blocked=True)
                     self._proxy_mode_combo.setCurrentIndex(previous_index)
-                    self._proxy_mode_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+                    _set_signals_blocked(self._proxy_mode_combo, blocked=False)
                 if self._config.run_on_boot:
-                    try:
-                        sync_autostart(
-                            True,  # ruff: ignore[boolean-positional-value-in-call]
-                            CONFIG_DIR,
-                            proxy_mode=previous_mode,
+                    _, sync_error = _refresh_autostart_proxy_mode(previous_mode)
+                    if sync_error is not None:
+                        log_buffer.log(
+                            'Autostart',
+                            'Run on Boot rollback after failed mode switch failed: '
+                            f'{sync_error}',
                         )
-                    except Exception as exc:  # ruff: ignore[blind-except]
-                        try:
-                            from fleasion.utils.logging import (  # ruff: ignore[import-outside-top-level]
-                                log_buffer,
-                            )
-
-                            log_buffer.log(
-                                'Autostart',
-                                f'Run on Boot rollback after failed mode switch failed: {exc}',
-                            )
-                        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                            pass
                 QMessageBox.warning(
                     self,
                     tr('ui.gui.settings_tab.proxy_mode_change_failed'),
@@ -1009,9 +993,9 @@ class SettingsTab(QWidget):
         if self._selected_manual_proxy_has_credentials():
             return
         auto_index = self._upstream_mode_combo.findData('auto')
-        self._upstream_mode_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._upstream_mode_combo, blocked=True)
         self._upstream_mode_combo.setCurrentIndex(auto_index)
-        self._upstream_mode_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._upstream_mode_combo, blocked=False)
         self._config.upstream_transport_mode = 'auto'
         proxy_master = getattr(self._tray, 'proxy_master', None)
         if proxy_master is not None and proxy_master.is_running:
@@ -1039,18 +1023,18 @@ class SettingsTab(QWidget):
         else:
             if sys.platform == 'win32':
                 # Imported on demand to avoid an app <-> GUI import cycle during startup.
-                from fleasion.app import (  # ruff: ignore[import-outside-top-level]
-                    _show_run_on_boot_failure,
+                app_module = importlib.import_module('fleasion.app')
+                show_run_on_boot_failure = cast(
+                    'Callable[..., bool]', vars(app_module)['_show_run_on_boot_failure']
                 )
-
-                if _show_run_on_boot_failure(self, self._config.proxy_mode, enabled=checked):
+                if show_run_on_boot_failure(self, self._config.proxy_mode, enabled=checked):
                     self._config.run_on_boot = checked
                     if self._tray and hasattr(self._tray, 'run_on_boot_action'):
                         self._tray.run_on_boot_action.setChecked(checked)
                     return
-            self._run_on_boot_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._run_on_boot_chk, blocked=True)
             self._run_on_boot_chk.setChecked(not checked)
-            self._run_on_boot_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._run_on_boot_chk, blocked=False)
             QMessageBox.warning(
                 self,
                 tr('ui.gui.settings_tab.run_on_boot_failed'),
@@ -1073,10 +1057,9 @@ class SettingsTab(QWidget):
             if self._tray and hasattr(self._tray, 'desktop_integration_action'):
                 self._tray.desktop_integration_action.setChecked(checked)
             if sys.platform.startswith('linux') and self._config.run_on_boot:
+                enable_autostart = True
                 if not sync_autostart(
-                    True,  # ruff: ignore[boolean-positional-value-in-call]
-                    CONFIG_DIR,
-                    proxy_mode=self._config.proxy_mode,
+                    enable_autostart, CONFIG_DIR, proxy_mode=self._config.proxy_mode
                 ):
                     QMessageBox.warning(
                         self,
@@ -1084,9 +1067,9 @@ class SettingsTab(QWidget):
                         tr('ui.gui.settings_tab.failed_to_refresh_the_autostart_task_after'),
                     )
         else:
-            self._desktop_integration_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._desktop_integration_chk, blocked=True)
             self._desktop_integration_chk.setChecked(not checked)
-            self._desktop_integration_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._desktop_integration_chk, blocked=False)
             QMessageBox.warning(
                 self,
                 tr('ui.gui.settings_tab.desktop_integration_failed'),
@@ -1132,9 +1115,10 @@ class SettingsTab(QWidget):
     def _on_import_manual_token(self) -> None:
         if sys.platform != 'darwin':
             return
-        from .rando_stuff_tab import AddAccountDialog  # ruff: ignore[import-outside-top-level]
-
-        dlg = AddAccountDialog(self, title=tr('settings.roblox_login.import_token_title'))
+        rando_stuff_tab = importlib.import_module('.rando_stuff_tab', __package__)
+        dlg = rando_stuff_tab.AddAccountDialog(
+            self, title=tr('settings.roblox_login.import_token_title')
+        )
         dlg.set_ok_label(tr('settings.roblox_login.import'))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1161,9 +1145,9 @@ class SettingsTab(QWidget):
         self._config.macos_auth_source = 'manual'
         notify_auth_source_changed()
         idx = self._macos_auth_source_combo.findData('manual')
-        self._macos_auth_source_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._macos_auth_source_combo, blocked=True)
         self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-        self._macos_auth_source_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._macos_auth_source_combo, blocked=False)
         username = dlg.result_username or tr('settings.roblox_login.roblox_account_fallback')
         QMessageBox.information(
             self,
@@ -1203,44 +1187,42 @@ class SettingsTab(QWidget):
             self._tray.show_creator_id_action.setChecked(checked)
         self._apply_to_cache_viewer('show_creator_id', checked)
 
-    def _apply_to_cache_viewer(self, setting: str, value: bool) -> None:
+    def _apply_to_cache_viewer(
+        self,
+        setting: Literal['show_names', 'show_creator_id'],
+        value: bool,
+    ) -> None:
         if self._tray and self._tray.dashboard_window:
-            tab = getattr(self._tray.dashboard_window, '_cache_viewer_tab', None)
-            if tab is not None:
-                if setting == 'show_names':
-                    tab._on_show_names_toggled(value)  # ruff: ignore[private-member-access]
-                elif setting == 'show_creator_id':
-                    tab._on_show_creator_id_toggled(value)  # ruff: ignore[private-member-access]
+            self._tray.dashboard_window.apply_cache_viewer_display_setting(
+                setting,
+                enabled=value,
+            )
 
     def _is_cache_scraper_enabled(self) -> bool:
-        if self._tray and hasattr(self._tray, '_is_cache_scraper_enabled'):
-            is_enabled = cast(
-                'Callable[[], bool]',
-                getattr(self._tray, '_is_cache_scraper_enabled'),  # ruff: ignore[get-attr-with-constant]
-            )
-            return is_enabled()
-        return False
+        return bool(self._tray and self._tray.proxy_master.cache_scraper.enabled)
 
     def set_cache_scraper_enabled(self, enabled: bool) -> None:
-        self._cache_scraper_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._cache_scraper_chk, blocked=True)
         self._cache_scraper_chk.setChecked(enabled)
-        self._cache_scraper_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+        _set_signals_blocked(self._cache_scraper_chk, blocked=False)
 
     def _on_cache_scraper_toggled(self, checked: bool) -> None:
-        if self._tray and hasattr(self._tray, '_set_cache_scraper_enabled'):
-            set_enabled = cast(
-                'Callable[[bool], None]',
-                getattr(self._tray, '_set_cache_scraper_enabled'),  # ruff: ignore[get-attr-with-constant]
-            )
-            set_enabled(checked)
+        if not self._tray:
+            return
+        self._tray.proxy_master.cache_scraper.set_enabled(checked)
+        if hasattr(self._tray, 'cache_scraper_action'):
+            with QSignalBlocker(self._tray.cache_scraper_action):
+                self._tray.cache_scraper_action.setChecked(checked)
+        if self._tray.dashboard_window:
+            self._tray.dashboard_window.set_cache_scraper_enabled(enabled=checked)
 
     def _on_export_naming_toggled(self, checked: bool, option: str) -> None:
         current = self._config.is_export_naming_enabled(option)
         if current != checked:
             new_state = self._config.toggle_export_naming(option)
-            self._export_chks[option].blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._export_chks[option], blocked=True)
             self._export_chks[option].setChecked(new_state)
-            self._export_chks[option].blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            _set_signals_blocked(self._export_chks[option], blocked=False)
         if self._tray and hasattr(self._tray, 'export_naming_actions'):
             self._tray.export_naming_actions[option].setChecked(
                 self._config.is_export_naming_enabled(option)

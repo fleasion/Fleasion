@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast, override
 
-from PySide6.QtCore import QModelIndex, QPersistentModelIndex, QSize, Qt, QTimer
+from PySide6.QtCore import QModelIndex, QPersistentModelIndex, QSignalBlocker, QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -46,7 +46,8 @@ _DUPLICATE_COMBINE_LIMIT = 250
 class _WordWrapDelegate(QStyledItemDelegate):
     """Item delegate that enables word-wrapping for long text in tree rows."""
 
-    def sizeHint(  # ruff: ignore[invalid-function-name]
+    @override
+    def sizeHint(
         self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
     ) -> QSize:
         base = super().sizeHint(option, index)
@@ -181,7 +182,7 @@ class CacheJsonViewer(QWidget):
 
     def _populate_tree(self) -> None:
         """Populate the tree with JSON data."""
-        self.tree.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+        signal_blocker = QSignalBlocker(self.tree)
         self.tree.setUpdatesEnabled(False)
         try:
             self.tree.clear()
@@ -213,7 +214,7 @@ class CacheJsonViewer(QWidget):
                 self._add_node(self.tree, '', self.data)
         finally:
             self.tree.setUpdatesEnabled(True)
-            self.tree.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            del signal_blocker
 
     def _get_duplicate_values_in_dict(self, obj: dict[str, JsonValue]) -> dict[object, list[str]]:
         """Map values to list of keys that share that value. Only for hashable values."""
@@ -270,22 +271,24 @@ class CacheJsonViewer(QWidget):
 
         return False
 
-    def _get_preview_text(self, obj: JsonValue) -> str:  # ruff: ignore[too-many-return-statements]
+    @staticmethod
+    def _format_preview_value(key: str, value: JsonValue) -> str:
+        if isinstance(value, str):
+            # Normalize whitespace; let the tree column elide at the screen edge
+            preview = ' '.join(value.split())
+            return f'{key}: "{preview}"'
+        if isinstance(value, bool):
+            return f'{key}: {str(value).lower()}'
+        if isinstance(value, int | float):
+            return f'{key}: {value}'
+        return f'{key}: ...'
+
+    def _get_preview_text(self, obj: JsonValue) -> str:
         """Get preview text for a dict/list (first non-null field)."""
         if isinstance(obj, dict):
-            for k, v in obj.items():
-                if v is not None:
-                    if isinstance(v, str):
-                        # Normalize whitespace; let the tree column elide at the screen edge
-                        preview = ' '.join(v.split())
-                        return f'{k}: "{preview}"'
-                    if isinstance(v, bool):
-                        return f'{k}: {str(v).lower()}'
-                    if isinstance(v, (int, float)):
-                        return f'{k}: {v}'
-                    return f'{k}: ...'
-            return ''
-        if isinstance(obj, list) and len(obj) > 0 and isinstance(obj[0], dict):
+            first_value = next(((key, value) for key, value in obj.items() if value is not None), None)
+            return self._format_preview_value(*first_value) if first_value is not None else ''
+        if isinstance(obj, list) and obj and isinstance(obj[0], dict):
             return self._get_preview_text(obj[0])
         return ''
 
@@ -363,64 +366,62 @@ class CacheJsonViewer(QWidget):
             if isinstance(value, str) and len(value) > 60:
                 item.setToolTip(0, value)
             # Mark as a leaf scalar so the word-wrap delegate applies to it
-            item.setData(0, _WRAP_ROLE, True)  # ruff: ignore[boolean-positional-value-in-call]
+            is_wrappable = True
+            item.setData(0, _WRAP_ROLE, is_wrappable)
             self.node_values[id(item)] = value
             self.node_is_leaf[id(item)] = True
 
         return item
+
+    def _load_lazy_array(self, item: QTreeWidgetItem, array_info: _LazyArrayInfo) -> None:
+        if array_info['loaded']:
+            return
+        array_info['loaded'] = True
+        if item.childCount() > 0:
+            item.removeChild(_preserve_tree_item(item.child(0)))
+        for index, value in enumerate(array_info['array_data']):
+            self._add_node(item, f'[{index}]', value)
+
+    @staticmethod
+    def _remove_loading_placeholder(item: QTreeWidgetItem) -> bool:
+        if item.childCount() != 1:
+            return False
+        first_child = _preserve_tree_item(item.child(0))
+        if first_child.text(0) != tr('cache_json.loading'):
+            return False
+        item.removeChild(first_child)
+        return True
+
+    def _load_dict_children(self, item: QTreeWidgetItem, dict_obj: dict[str, JsonValue]) -> None:
+        if not self._remove_loading_placeholder(item):
+            return
+        if len(dict_obj) > _DUPLICATE_COMBINE_LIMIT:
+            for key, value in dict_obj.items():
+                self._add_node(item, key, value)
+            return
+
+        duplicate_map = self._get_duplicate_values_in_dict(dict_obj)
+        processed_keys: set[str] = set()
+        for key, value in dict_obj.items():
+            if key in processed_keys:
+                continue
+            matching_keys = self._find_keys_with_same_value(dict_obj, key, duplicate_map)
+            processed_keys.update(matching_keys)
+            self._add_node(item, '+'.join(matching_keys), value)
 
     def _on_item_expanded(self, item: QTreeWidgetItem) -> None:
         """Called when a tree item is expanded - load children for lazy-loaded arrays/dicts."""
         item_id = id(item)
         updates_enabled = self.tree.updatesEnabled()
         self.tree.setUpdatesEnabled(False)
-        try:  # ruff: ignore[too-many-nested-blocks]
-            # Check if this is a lazy-loaded array
-            if item_id in self._lazy_arrays:
-                array_info = self._lazy_arrays[item_id]
-
-                # Skip if already loaded
-                if array_info['loaded']:
-                    return
-
-                # Mark as loaded
-                array_info['loaded'] = True
-                array_data = array_info['array_data']
-
-                # Remove placeholder
-                if item.childCount() > 0:
-                    item.removeChild(_preserve_tree_item(item.child(0)))
-
-                # Add all array items
-                for idx, v in enumerate(array_data):
-                    self._add_node(item, f'[{idx}]', v)
-
-            # Check if this is a dict that needs children loaded
-            elif item_id in self.node_values and isinstance(self.node_values[item_id], dict):
-                # Remove placeholder if present
-                if item.childCount() == 1:
-                    first_child = _preserve_tree_item(item.child(0))
-                    child_text = first_child.text(0)
-                    if child_text == tr('cache_json.loading'):
-                        item.removeChild(first_child)
-
-                        # Add actual dict children with duplicate value combining
-                        dict_obj = cast('dict[str, JsonValue]', self.node_values[item_id])
-                        if len(dict_obj) <= _DUPLICATE_COMBINE_LIMIT:
-                            duplicate_map = self._get_duplicate_values_in_dict(dict_obj)
-                            processed_keys: set[str] = set()
-
-                            for k, v in dict_obj.items():
-                                if k not in processed_keys:
-                                    keys_with_same_value = self._find_keys_with_same_value(
-                                        dict_obj, k, duplicate_map
-                                    )
-                                    processed_keys.update(keys_with_same_value)
-                                    combined_key = '+'.join(keys_with_same_value)
-                                    self._add_node(item, combined_key, v)
-                        else:
-                            for k, v in dict_obj.items():
-                                self._add_node(item, k, v)
+        try:
+            array_info = self._lazy_arrays.get(item_id)
+            if array_info is not None:
+                self._load_lazy_array(item, array_info)
+                return
+            value = self.node_values.get(item_id)
+            if isinstance(value, dict):
+                self._load_dict_children(item, value)
         finally:
             self.tree.setUpdatesEnabled(updates_enabled)
 
@@ -455,7 +456,7 @@ class CacheJsonViewer(QWidget):
         finally:
             self.tree.setUpdatesEnabled(True)
 
-    def _on_search_text_changed(self, text: str) -> None:  # ruff: ignore[unused-method-argument]
+    def _on_search_text_changed(self, _text: str) -> None:
         """Handle search text change."""
         # Debounce the search
         if not hasattr(self, '_search_debounce'):
@@ -568,7 +569,7 @@ class CacheJsonViewer(QWidget):
                 for i in range(item.childCount()):
                     child = _preserve_tree_item(item.child(i))
                     key = child.text(0).split(':')[0].strip().strip('[]')
-                    walk(child, path + (key,))  # ruff: ignore[collection-literal-concatenation]
+                    walk(child, (*path, key))
 
         for i in range(self.tree.topLevelItemCount()):
             item = _preserve_tree_item(self.tree.topLevelItem(i))
@@ -587,7 +588,7 @@ class CacheJsonViewer(QWidget):
                 for i in range(item.childCount()):
                     child = _preserve_tree_item(item.child(i))
                     key = child.text(0).split(':')[0].strip().strip('[]')
-                    walk(child, path + (key,))  # ruff: ignore[collection-literal-concatenation]
+                    walk(child, (*path, key))
             # If path is not in saved set, leave collapsed (children are still dummy nodes)
 
         for i in range(self.tree.topLevelItemCount()):

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
+import importlib
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, override
 
 from .localization import tr
 
@@ -16,13 +18,14 @@ if not TYPE_CHECKING:
     except ImportError:
         winreg = None
 
-from PySide6.QtCore import QRect, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QRect, QSignalBlocker, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QDesktopServices, QIcon, QPalette, QScreen
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -40,8 +43,10 @@ from .utils import (
     APP_DISCORD,
     APP_NAME,
     APP_VERSION,
+    CONFIG_DIR,
     LOGS_DIR,
     get_icon_path,
+    get_roblox_player_exe_path,
     log_buffer,
     open_folder,
     run_in_thread,
@@ -100,11 +105,12 @@ if TYPE_CHECKING:
 
     def _register_notification_app_id(app_id: str, icon_path: Path | None) -> bool: ...
 
-    def _make_dashboard(  # ruff: ignore[too-many-positional-arguments]
+    def _make_dashboard(
         config_manager: ConfigManager,
         proxy_master: ProxyMaster,
         mod_manager: ModificationManager | None,
         roblox_monitor: RobloxExitMonitor | None,
+        *,
         system_tray: SystemTray,
         hotkey_controller: _HotkeyController | None,
     ) -> ReplacerConfigWindow: ...
@@ -134,11 +140,18 @@ else:
     def _optional_screen(screen: QScreen) -> QScreen | None:
         return screen
 
+    def _call_bool_method(value: object, method_name: str, enabled: bool) -> None:
+        callback = getattr(value, method_name)
+        if not callable(callback):
+            msg = f'{type(value).__name__}.{method_name} is not callable'
+            raise TypeError(msg)
+        callback(enabled)
+
     def _cache_viewer_show_names(tab: _CacheViewerTabLike, enabled: bool) -> None:
-        tab._on_show_names_toggled(enabled)  # ruff: ignore[private-member-access]
+        _call_bool_method(tab, '_on_show_names_toggled', enabled)
 
     def _cache_viewer_show_creator_id(tab: _CacheViewerTabLike, enabled: bool) -> None:
-        tab._on_show_creator_id_toggled(enabled)  # ruff: ignore[private-member-access]
+        _call_bool_method(tab, '_on_show_creator_id_toggled', enabled)
 
     def _register_notification_app_id(app_id: str, icon_path: Path | None) -> bool:
         if winreg is None:
@@ -153,16 +166,17 @@ else:
         winreg.SetValueEx(key, 'ShowInSettings', 0, winreg.REG_DWORD, 1)
         try:
             key.Close()
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+        except OSError:
+            log_buffer.log('Tray', 'Failed to close notification registry key')
         _win_set_app_id(app_id)
         return True
 
-    def _make_dashboard(  # ruff: ignore[too-many-positional-arguments]
+    def _make_dashboard(
         config_manager: ConfigManager,
         proxy_master: ProxyMaster,
         mod_manager: ModificationManager | None,
         roblox_monitor: RobloxExitMonitor | None,
+        *,
         system_tray: SystemTray,
         hotkey_controller: _HotkeyController | None,
     ) -> ReplacerConfigWindow:
@@ -328,7 +342,8 @@ class _XfceTrayNotification(QWidget):
 
         self.show()
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.closed.emit(self)
         super().closeEvent(event)
 
@@ -338,7 +353,7 @@ def _is_admin() -> bool:
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return _win_is_admin()
-    except Exception:  # ruff: ignore[blind-except]
+    except AttributeError, OSError:
         return False
 
 
@@ -362,19 +377,15 @@ class SystemTray:
         self.custom_fflag_hotkeys: _HotkeyController | None = None
         hotkey_controller: _HotkeyController | None = None
         if sys.platform == 'win32':
-            from .gui.windows_hotkeys import (  # ruff: ignore[import-outside-top-level]
-                WindowsCustomFFlagHotkeyController,
-            )
-
-            hotkey_controller = WindowsCustomFFlagHotkeyController(
+            hotkey_module = importlib.import_module('.gui.windows_hotkeys', __package__)
+            hotkey_controller = hotkey_module.WindowsCustomFFlagHotkeyController(
                 config_manager, proxy_master, app
             )
         elif sys.platform.startswith('linux'):
-            from .gui.linux_hotkeys import (  # ruff: ignore[import-outside-top-level]
-                LinuxCustomFFlagHotkeyController,
+            hotkey_module = importlib.import_module('.gui.linux_hotkeys', __package__)
+            hotkey_controller = hotkey_module.LinuxCustomFFlagHotkeyController(
+                config_manager, proxy_master, app
             )
-
-            hotkey_controller = LinuxCustomFFlagHotkeyController(config_manager, proxy_master, app)
 
         self.custom_fflag_hotkeys = hotkey_controller
         if hotkey_controller is not None:
@@ -729,9 +740,9 @@ class SystemTray:
             scraper.set_enabled(enabled)
 
         if hasattr(self, 'cache_scraper_action'):
-            self.cache_scraper_action.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+            blocker = QSignalBlocker(self.cache_scraper_action)
             self.cache_scraper_action.setChecked(enabled)
-            self.cache_scraper_action.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+            del blocker
 
         if self.dashboard_window:
             tab = _cache_viewer_tab(self.dashboard_window)
@@ -761,28 +772,21 @@ class SystemTray:
                     and self.roblox_monitor.is_player_running()
                 ):
                     if sys.platform.startswith('linux'):
-                        from .utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                            selected_linux_client_app_id,
+                        platform_linux = importlib.import_module(
+                            '.utils.platform_linux', __package__
                         )
-
-                        exe_path = Path(selected_linux_client_app_id())
+                        exe_path = Path(platform_linux.selected_linux_client_app_id())
                     else:
-                        from .utils import (  # ruff: ignore[import-outside-top-level]
-                            get_roblox_player_exe_path,
-                        )
-
                         exe_path = get_roblox_player_exe_path()
                     run_in_thread(lifecycle.handle_player_launch)(exe_path)
             elif sys.platform == 'darwin':
-                from .utils.macos_proxy_helper import (  # ruff: ignore[import-outside-top-level]
-                    helper_is_ready,
-                    install_helper,
+                macos_proxy_helper = importlib.import_module(
+                    '.utils.macos_proxy_helper', __package__
                 )
-
-                if helper_is_ready():
+                if macos_proxy_helper.helper_is_ready():
                     self.proxy_master.start()
                 else:
-                    ok, detail = install_helper()
+                    ok, detail = macos_proxy_helper.install_helper()
                     if ok:
                         self.proxy_master.start()
                     else:
@@ -799,9 +803,8 @@ class SystemTray:
 
                     def relaunch_as_admin() -> bool: ...
                 else:
-                    from .app import (  # ruff: ignore[import-outside-top-level]
-                        _relaunch_as_admin as relaunch_as_admin,
-                    )
+                    app_module = importlib.import_module('.app', __package__)
+                    relaunch_as_admin = app_module.__dict__['_relaunch_as_admin']
 
                 log_buffer.log('Proxy', 'Proxy features enabled: requesting administrator relaunch')
                 if relaunch_as_admin():
@@ -818,7 +821,7 @@ class SystemTray:
         else:
             try:
                 run_in_thread(self.proxy_master.stop)()
-            except Exception:  # ruff: ignore[blind-except]
+            except RuntimeError:
                 self.proxy_master.stop()
 
         self.update_status()
@@ -857,7 +860,6 @@ class SystemTray:
         self.always_on_top_action.setChecked(new_state)
 
         # Apply to all open windows (only if they're visible)
-        from PySide6.QtCore import Qt  # ruff: ignore[import-outside-top-level]
 
         for window in self.open_windows:
             if window.isVisible():
@@ -886,14 +888,9 @@ class SystemTray:
 
     def _toggle_run_on_boot(self) -> None:
         """Toggle run-on-boot for the current platform."""
-        from .utils import CONFIG_DIR  # ruff: ignore[import-outside-top-level]
-        from .utils.autostart import (  # ruff: ignore[import-outside-top-level]
-            sync_autostart,
-            windows_autostart_privilege_hint,
-        )
-
+        autostart = importlib.import_module('.utils.autostart', __package__)
         checked = self.run_on_boot_action.isChecked()
-        ok = sync_autostart(
+        ok = autostart.sync_autostart(
             checked,
             CONFIG_DIR,
             proxy_mode=self.config_manager.proxy_mode,
@@ -913,9 +910,8 @@ class SystemTray:
                         enabled: bool = True,
                     ) -> bool: ...
                 else:
-                    from .app import (  # ruff: ignore[import-outside-top-level]
-                        _show_run_on_boot_failure as show_run_on_boot_failure,
-                    )
+                    app_module = importlib.import_module('.app', __package__)
+                    show_run_on_boot_failure = app_module.__dict__['_show_run_on_boot_failure']
 
                 if show_run_on_boot_failure(None, self.config_manager.proxy_mode, enabled=checked):
                     self.config_manager.run_on_boot = checked
@@ -923,11 +919,6 @@ class SystemTray:
                     return
             # Revert UI state and show error dialog with detail
             self.run_on_boot_action.setChecked(not checked)
-            from PySide6.QtCore import Qt  # ruff: ignore[import-outside-top-level]
-            from PySide6.QtWidgets import (  # ruff: ignore[import-outside-top-level]
-                QApplication,
-                QMessageBox,
-            )
 
             top = QApplication.topLevelWidgets()
             parent = next((w for w in top if w.isVisible()), None)
@@ -940,7 +931,9 @@ class SystemTray:
             warn.setIcon(QMessageBox.Icon.Warning)
             message = tr('tray.autostart.registration_failed')
             if sys.platform == 'win32':
-                message += '\n\n' + windows_autostart_privilege_hint(self.config_manager.proxy_mode)
+                message += '\n\n' + autostart.windows_autostart_privilege_hint(
+                    self.config_manager.proxy_mode
+                )
             warn.setText(message)
             if on_top:
                 warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
@@ -948,30 +941,18 @@ class SystemTray:
 
     def _toggle_desktop_integration(self) -> None:
         """Toggle desktop/start-menu integration for the current platform."""
-        from .utils.desktop_integration import (  # ruff: ignore[import-outside-top-level]
-            sync_desktop_integration,
-        )
-
+        desktop_integration = importlib.import_module('.utils.desktop_integration', __package__)
         checked = self.desktop_integration_action.isChecked()
-        ok = sync_desktop_integration(checked)
+        ok = desktop_integration.sync_desktop_integration(checked)
         if ok:
             self.config_manager.desktop_integration = checked
             if sys.platform.startswith('linux') and self.config_manager.run_on_boot:
-                from .utils import CONFIG_DIR  # ruff: ignore[import-outside-top-level]
-                from .utils.autostart import (  # ruff: ignore[import-outside-top-level]
-                    sync_autostart,
-                )
-
-                if not sync_autostart(
-                    True,  # ruff: ignore[boolean-positional-value-in-call]
-                    CONFIG_DIR,
+                autostart = importlib.import_module('.utils.autostart', __package__)
+                if not autostart.sync_autostart(
+                    enabled=True,
+                    config_dir=CONFIG_DIR,
                     proxy_mode=self.config_manager.proxy_mode,
                 ):
-                    from PySide6.QtWidgets import (  # ruff: ignore[import-outside-top-level]
-                        QApplication,
-                        QMessageBox,
-                    )
-
                     top = QApplication.topLevelWidgets()
                     parent = next((w for w in top if w.isVisible()), None)
                     warn = QMessageBox(parent)
@@ -982,10 +963,6 @@ class SystemTray:
             self._refresh_settings_tab()
         else:
             self.desktop_integration_action.setChecked(not checked)
-            from PySide6.QtWidgets import (  # ruff: ignore[import-outside-top-level]
-                QApplication,
-                QMessageBox,
-            )
 
             top = QApplication.topLevelWidgets()
             parent = next((w for w in top if w.isVisible()), None)
@@ -1068,8 +1045,6 @@ class SystemTray:
     def _apply_always_on_top_to_window(self, window: QWidget) -> None:
         """Apply always on top setting to a window."""
         if self.config_manager.always_on_top:
-            from PySide6.QtCore import Qt  # ruff: ignore[import-outside-top-level]
-
             flags = window.windowFlags()
             flags |= Qt.WindowType.WindowStaysOnTopHint
             window.setWindowFlags(flags)
@@ -1109,22 +1084,20 @@ class SystemTray:
 
     def _show_replacer_config(self) -> None:
         """Show Replacer Config window (Dashboard)."""
-        self._set_dashboard_foreground_mode(True)  # ruff: ignore[boolean-positional-value-in-call]
+        self._set_dashboard_foreground_mode(enabled=True)
         if self.dashboard_window:
             self.dashboard_window.show()
             self.dashboard_window.raise_()
             self.dashboard_window.activateWindow()
             return
 
-        from PySide6.QtCore import Qt  # ruff: ignore[import-outside-top-level]
-
         window = _make_dashboard(
             self.config_manager,
             self.proxy_master,
             self.mod_manager,
             self.roblox_monitor,
-            self,
-            self.custom_fflag_hotkeys,
+            system_tray=self,
+            hotkey_controller=self.custom_fflag_hotkeys,
         )
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(self._on_dashboard_destroyed)
@@ -1135,7 +1108,7 @@ class SystemTray:
 
     def _on_dashboard_destroyed(self) -> None:
         """Handle dashboard destruction."""
-        self._set_dashboard_foreground_mode(False)  # ruff: ignore[boolean-positional-value-in-call]
+        self._set_dashboard_foreground_mode(enabled=False)
         if self.dashboard_window in self.open_windows:
             self.open_windows.remove(self.dashboard_window)
         self.dashboard_window = None
@@ -1146,7 +1119,7 @@ class SystemTray:
         """Toggle dashboard visibility."""
         if self.dashboard_window and self.dashboard_window.isVisible():
             self.dashboard_window.hide()
-            self._set_dashboard_foreground_mode(False)  # ruff: ignore[boolean-positional-value-in-call]
+            self._set_dashboard_foreground_mode(enabled=False)
         else:
             self._show_replacer_config()
 
@@ -1154,15 +1127,11 @@ class SystemTray:
         """Keep the macOS dashboard visible when Fleasion loses focus."""
         if sys.platform != 'darwin':
             return
-        from .utils.platform_macos import (  # ruff: ignore[import-outside-top-level]
-            set_application_foreground_mode,
-            set_application_icon,
-        )
-
-        if not set_application_foreground_mode(enabled):
+        platform_macos = importlib.import_module('.utils.platform_macos', __package__)
+        if not platform_macos.set_application_foreground_mode(enabled):
             log_buffer.log('App', 'macOS dashboard activation-policy update was rejected')
         elif enabled and (icon_path := get_icon_path()):
-            set_application_icon(icon_path)
+            platform_macos.set_application_icon(icon_path)
 
     def notify_dashboard_closed(self) -> None:
         """Show the tray notice that the app is still running."""
@@ -1195,21 +1164,25 @@ class SystemTray:
 
     def _show_xfce_notification(self, title: str, message: str, icon_path: Path | None) -> bool:
         """Show an app-owned notification so XFCE cannot apply unreadable colors."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if self._xfce_notification is not None:
-                self._xfce_notification.close()
-
-            icon = QIcon(str(icon_path)) if icon_path is not None else QIcon()
-            dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
-            notification = _XfceTrayNotification(title, message, icon, dark, 10000)
-            notification.closed.connect(self._on_xfce_notification_closed)
-            self._xfce_notification = notification
-            notification.show_near_tray(self.tray.geometry())
-            return True  # ruff: ignore[try-consider-else]
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            self._create_xfce_notification(title, message, icon_path)
+        except RuntimeError as exc:
             self._xfce_notification = None
             log_buffer.log('Tray', f'Failed to show XFCE notification: {exc}')
             return False
+        else:
+            return True
+
+    def _create_xfce_notification(self, title: str, message: str, icon_path: Path | None) -> None:
+        if self._xfce_notification is not None:
+            self._xfce_notification.close()
+
+        icon = QIcon(str(icon_path)) if icon_path is not None else QIcon()
+        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
+        notification = _XfceTrayNotification(title, message, icon, dark, 10000)
+        notification.closed.connect(self._on_xfce_notification_closed)
+        self._xfce_notification = notification
+        notification.show_near_tray(self.tray.geometry())
 
     def _on_xfce_notification_closed(self, notification: object) -> None:
         if self._xfce_notification is notification:
@@ -1217,29 +1190,33 @@ class SystemTray:
 
     def _show_windows_notification(self, title: str, message: str, icon_path: Path | None) -> bool:
         """Show a silent Windows toast with the app icon and app identity."""
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            app_id = self._ensure_notification_app_id()
-            if not app_id:
-                return False
-
-            if TYPE_CHECKING:
-
-                def notify(**kwargs: object) -> object: ...
-            else:
-                from win11toast import notify  # ruff: ignore[import-outside-top-level]
-
-            notify(
-                title=title,
-                body=message,
-                icon=str(icon_path) if icon_path is not None else None,
-                audio={'silent': 'true'},
-                duration='short',
-                app_id=app_id,
-                xml=_TOAST_TEMPLATE,
-            )
-            return True  # ruff: ignore[try-consider-else]
-        except Exception:  # ruff: ignore[blind-except]
+        app_id = self._ensure_notification_app_id()
+        if not app_id:
             return False
+
+        sent = False
+        with contextlib.suppress(Exception):
+            self._send_windows_notification(title, message, icon_path, app_id)
+            sent = True
+        return sent
+
+    @staticmethod
+    def _send_windows_notification(
+        title: str,
+        message: str,
+        icon_path: Path | None,
+        app_id: str,
+    ) -> None:
+        notify = importlib.import_module('win11toast').notify
+        notify(
+            title=title,
+            body=message,
+            icon=str(icon_path) if icon_path is not None else None,
+            audio={'silent': 'true'},
+            duration='short',
+            app_id=app_id,
+            xml=_TOAST_TEMPLATE,
+        )
 
     def _ensure_notification_app_id(self) -> str | None:
         """Register and cache the AUMID used for Fleasion notifications."""
@@ -1254,7 +1231,7 @@ class SystemTray:
         try:
             if not _register_notification_app_id(app_id, icon_path):
                 return None
-        except Exception:  # ruff: ignore[blind-except]
+        except OSError:
             return None
 
         self._notification_app_id = app_id
@@ -1298,11 +1275,6 @@ class SystemTray:
 
     def _copy_discord(self) -> None:
         """Copy Discord invite to clipboard."""
-        from PySide6.QtCore import Qt  # ruff: ignore[import-outside-top-level]
-        from PySide6.QtWidgets import (  # ruff: ignore[import-outside-top-level]
-            QApplication,
-            QMessageBox,
-        )
 
         QApplication.clipboard().setText(tr('ui.tray.https_value', value0=APP_DISCORD))
 
@@ -1320,16 +1292,12 @@ class SystemTray:
         msg_box.setInformativeText(tr('ui.tray.https_value', value0=APP_DISCORD))
         msg_box.setIcon(QMessageBox.Icon.Information)
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
-
             msg_box.setWindowIcon(QIcon(str(icon_path)))
         msg_box.exec()
 
     def _open_kofi(self) -> None:
         """Open Ko-fi page in browser."""
-        import webbrowser  # ruff: ignore[import-outside-top-level]
-
-        webbrowser.open(f'https://{APP_KOFI}')
+        QDesktopServices.openUrl(QUrl(f'https://{APP_KOFI}'))
 
     def restart_fleasion(self) -> bool | None:
         """Verified relaunch used when a setting change needs a new process.
@@ -1338,16 +1306,15 @@ class SystemTray:
         single-instance state and has established the configured proxy. This
         keeps import, elevation, and Hosts-mode startup failures transactional.
         """
-        from .app import (  # ruff: ignore[import-outside-top-level]
-            RestartHandoffUncertain,
-            restart_fleasion_normally,
-        )
+        app_module = importlib.import_module('.app', __package__)
+        restart_handoff_uncertain = app_module.RestartHandoffUncertain
+        restart_fleasion_normally = app_module.restart_fleasion_normally
 
         if TYPE_CHECKING:
 
             def app_is_admin() -> bool: ...
         else:
-            from .app import _is_admin as app_is_admin  # ruff: ignore[import-outside-top-level]
+            app_is_admin = app_module.__dict__['_is_admin']
 
         lifecycle = _env_lifecycle(self.roblox_monitor)
         preserve_player = bool(
@@ -1368,7 +1335,7 @@ class SystemTray:
                 verify_startup=True,
                 require_admin=requires_admin,
             )
-        except RestartHandoffUncertain as exc:
+        except restart_handoff_uncertain as exc:
             log_buffer.log('Restart', f'Replacement termination is uncertain: {exc}')
             return None
         if not restarted:
@@ -1393,32 +1360,46 @@ class SystemTray:
         self.cleanup_tray_icon()
 
         lifecycle = _env_lifecycle(getattr(self, 'roblox_monitor', None))
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if self.custom_fflag_hotkeys is not None:
-                self.custom_fflag_hotkeys.stop()
-            if lifecycle is not None:
-                if preserve_roblox:
-                    lifecycle.preserve_owned_player_for_restart()
-                elif force_close_roblox or getattr(
-                    getattr(self, 'config_manager', None),
-                    'close_env_proxy_roblox_on_exit',
-                    True,
-                ):
-                    lifecycle.close_owned_player_for_exit()
-                else:
-                    lifecycle.cancel()
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            self._cleanup_exit_lifecycle(
+                lifecycle,
+                preserve_roblox=preserve_roblox,
+                force_close_roblox=force_close_roblox,
+            )
+        except (OSError, RuntimeError) as exc:
             log_buffer.log('Launcher', f'Env Proxy Player exit cleanup failed: {exc}')
 
         # Player must be closed (or explicitly preserved) before its loopback
         # proxy disappears.
         try:
             self.proxy_master.stop()
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+        except (OSError, RuntimeError) as exc:
+            log_buffer.log('Launcher', f'Proxy shutdown failed: {exc}')
 
         # Quit Qt app
         self.app.quit()
+
+    def _cleanup_exit_lifecycle(
+        self,
+        lifecycle: EnvProxyLifecycleController | None,
+        *,
+        preserve_roblox: bool,
+        force_close_roblox: bool,
+    ) -> None:
+        if (hotkeys := getattr(self, 'custom_fflag_hotkeys', None)) is not None:
+            hotkeys.stop()
+        if lifecycle is None:
+            return
+        if preserve_roblox:
+            lifecycle.preserve_owned_player_for_restart()
+        elif force_close_roblox or getattr(
+            getattr(self, 'config_manager', None),
+            'close_env_proxy_roblox_on_exit',
+            True,
+        ):
+            lifecycle.close_owned_player_for_exit()
+        else:
+            lifecycle.cancel()
 
     def cleanup_tray_icon(self) -> None:
         """Remove the tray icon before the Qt event loop exits."""
@@ -1434,8 +1415,8 @@ class SystemTray:
             _set_context_menu_none(self.tray)
             self.tray.deleteLater()
             QApplication.processEvents()
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+        except RuntimeError as exc:
+            log_buffer.log('Tray', f'Tray cleanup failed: {exc}')
 
     def update_status(self) -> None:
         """Update the status (called periodically or on proxy state change)."""

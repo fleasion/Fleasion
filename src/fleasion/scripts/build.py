@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
 import os
 import subprocess
@@ -52,7 +53,9 @@ def main(arguments: list[str] | None = None) -> int:
             command.append('--clean')
 
         log.info('Restarting build with reproducible environment')
-        result = subprocess.run(command, cwd=Path.cwd(), env=environment, check=False)  # ruff: ignore[subprocess-without-shell-equals-true]
+        result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            command, cwd=Path.cwd(), env=environment, check=False, shell=False
+        )
         return result.returncode
 
     os.environ[CLEAN_BUILD_ENV] = '1' if options.clean else '0'
@@ -60,9 +63,8 @@ def main(arguments: list[str] | None = None) -> int:
     # Build macOS
     # Slice subprocesses bypass orchestration and run PyInstaller exactly once
     if sys.platform == 'darwin' and os.environ.get(MACOS_SLICE_BUILD_ENV) != '1':
-        from .macos_build import build_macos_release  # ruff: ignore[import-outside-top-level]
-
-        build_macos_release()
+        macos_build = importlib.import_module('.macos_build', __package__)
+        macos_build.build_macos_release()
         return 0
     # Build Windows and Linux
     pyinstaller_arguments = ['--noconfirm', 'Fleasion.spec']

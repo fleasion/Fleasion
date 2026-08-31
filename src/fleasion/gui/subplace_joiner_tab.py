@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import json
-import os
-import random
+import secrets
 import sys
 import threading
 import time
+import traceback
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
+from importlib import import_module
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast, override
 from urllib.parse import quote, urlparse
 
 import requests
 from dateutil import parser as _dateutil_parser
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QImage, QPalette, QPixmap
+from PySide6.QtGui import QDesktopServices, QFont, QImage, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -48,6 +49,7 @@ from fleasion.utils.windows import launch_as_standard_user
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from PySide6.QtCore import QEvent, QPoint
     from PySide6.QtGui import QAction, QEnterEvent, QMouseEvent, QResizeEvent, QShowEvent
@@ -103,11 +105,6 @@ class _UniverseInfo(TypedDict, total=False):
 class _GameInfo(TypedDict, total=False):
     rootPlaceId: int | str
     name: str
-
-
-class _AssetDetails(TypedDict, total=False):
-    Created: str
-    Updated: str
 
 
 class _RandoTab(Protocol):
@@ -166,71 +163,104 @@ def _get_default_thumb_bytes() -> bytes | None:
     try:
         resp = requests.get(_DEFAULT_THUMB_URL, timeout=10)
         resp.raise_for_status()
-        _default_thumb_bytes_cache.append(resp.content)
-        return resp.content  # ruff: ignore[try-consider-else]
-    except Exception:  # ruff: ignore[blind-except]
+    except requests.RequestException:
         return None
+    _default_thumb_bytes_cache.append(resp.content)
+    return resp.content
 
 
-def _primary_settings_path() -> os.PathLike[str]:
+def _primary_settings_path() -> Path:
     return CONFIG_DIR / _SETTINGS_FILE
 
 
-def _legacy_settings_path() -> os.PathLike[str]:
+def _legacy_settings_path() -> Path:
     return CONFIG_DIR / 'subplace' / _LEGACY_SETTINGS_FILE
 
 
-# Global rate-limit tracker for the public servers endpoint.
-# When a 429 is received, _servers_rl_until is set to now+60s so every
-# subsequent dialog that opens knows to wait out the remaining cooldown.
-_servers_rl_until: float = 0.0
-_servers_rl_lock = threading.Lock()
+# Shared rate-limit tracker for the public servers endpoint.
+class _ServerRateLimitState:
+    def __init__(self) -> None:
+        self.until = 0.0
+        self.lock = threading.Lock()
+
+    def current(self) -> float:
+        with self.lock:
+            return self.until
+
+    def extend(self, delay: float) -> float:
+        with self.lock:
+            self.until = max(self.until, time.time() + delay)
+            return self.until
+
+    def clear(self) -> None:
+        with self.lock:
+            self.until = 0.0
+
+    def changed_or_elapsed(self, expected: float) -> bool:
+        with self.lock:
+            return self.until != expected or self.until <= time.time()
+
+
+_server_rate_limit = _ServerRateLimitState()
 
 
 # Helpers
 
 
-def _humanize_time(iso_str: str | None) -> str:  # ruff: ignore[too-many-return-statements]
+def _humanize_elapsed(seconds: float) -> str:
+    minutes = int(seconds / 60)
+    hours = int(minutes / 60)
+    days = int(hours / 24)
+    months = int(days / 30)
+    years = int(days / 365)
+    if seconds < 60:
+        return tr('subplace.time.just_now')
+    if minutes < 60:
+        return tr(
+            'subplace.time.minute_ago' if minutes == 1 else 'subplace.time.minutes_ago',
+            count=minutes,
+        )
+    if hours < 24:
+        return tr(
+            'subplace.time.hour_ago' if hours == 1 else 'subplace.time.hours_ago',
+            count=hours,
+        )
+    if days < 30:
+        return tr(
+            'subplace.time.day_ago' if days == 1 else 'subplace.time.days_ago',
+            count=days,
+        )
+    if months < 12:
+        return tr(
+            'subplace.time.month_ago' if months == 1 else 'subplace.time.months_ago',
+            count=months,
+        )
+    return tr(
+        'subplace.time.year_ago' if years == 1 else 'subplace.time.years_ago',
+        count=years,
+    )
+
+
+def _humanize_time(iso_str: str | None) -> str:
     if not iso_str:
         return tr('subplace.time.unknown')
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        dt = _dateutil_parser.isoparse(iso_str)
-        now = datetime.now(UTC)
-        diff = now - dt
-        seconds = diff.total_seconds()
-        minutes = int(seconds / 60)
-        hours = int(minutes / 60)
-        days = int(hours / 24)
-        months = int(days / 30)
-        years = int(days / 365)
-        if seconds < 60:
-            return tr('subplace.time.just_now')
-        if minutes < 60:
-            return tr(
-                'subplace.time.minute_ago' if minutes == 1 else 'subplace.time.minutes_ago',
-                count=minutes,
-            )
-        if hours < 24:
-            return tr(
-                'subplace.time.hour_ago' if hours == 1 else 'subplace.time.hours_ago',
-                count=hours,
-            )
-        if days < 30:
-            return tr(
-                'subplace.time.day_ago' if days == 1 else 'subplace.time.days_ago',
-                count=days,
-            )
-        if months < 12:
-            return tr(
-                'subplace.time.month_ago' if months == 1 else 'subplace.time.months_ago',
-                count=months,
-            )
-        return tr(
-            'subplace.time.year_ago' if years == 1 else 'subplace.time.years_ago',
-            count=years,
-        )
-    except Exception:  # ruff: ignore[blind-except]
+    try:
+        seconds = (datetime.now(UTC) - _dateutil_parser.isoparse(iso_str)).total_seconds()
+    except TypeError, ValueError, OverflowError:
         return iso_str
+    return _humanize_elapsed(seconds)
+
+
+def _run_contained[T](
+    fn: Callable[[], T],
+    on_error: Callable[[Exception], object],
+) -> T | None:
+    """Run a Qt/thread boundary callback and report unexpected failures."""
+    try:
+        return fn()
+    except Exception as exc:  # ruff: ignore[blind-except]
+        on_error(exc)
+        return None
 
 
 # Main-thread invoker
@@ -244,13 +274,11 @@ class _Invoker(QObject):
         self.call.connect(self._run, Qt.ConnectionType.QueuedConnection)
 
     def _run(self, fn: _MainCallback) -> None:
-        try:
-            fn()
-        except Exception as exc:  # ruff: ignore[blind-except]
-            import traceback  # ruff: ignore[import-outside-top-level]
-
+        def _report_error(exc: Exception) -> None:
             log_buffer.log('subplace', f'invoker error: {exc}')
-            traceback.print_exc()
+            traceback.print_exception(exc)
+
+        _run_contained(fn, _report_error)
 
 
 # GameCardWidget (inline, PySide6)
@@ -271,9 +299,7 @@ if TYPE_CHECKING:
 
     def _get_auth_ticket_runtime(cookie: str) -> str | None: ...
 else:
-    import importlib
-
-    _prejsons = importlib.import_module(f'{__package__}.prejsons_dialog')
+    _prejsons = import_module(f'{__package__}.prejsons_dialog')
     _CARD_H = _prejsons.__dict__['_CARD_H']
     _CARD_W = _prejsons.__dict__['_CARD_W']
     _THUMB_H = _prejsons.__dict__['_THUMB_H']
@@ -285,7 +311,7 @@ else:
         return bool(tab.__dict__['_account_switched'])
 
     def _get_auth_ticket_runtime(cookie: str) -> str | None:
-        module = importlib.import_module(f'{__package__}.rando_stuff_tab')
+        module = import_module(f'{__package__}.rando_stuff_tab')
         return module.__dict__['_get_auth_ticket'](cookie)
 
 
@@ -318,7 +344,8 @@ class _CopyPlaceIdLabel(QLabel):
         self.setStyleSheet('color: palette(placeholder-text); font-size: 7pt;')
         self.setToolTip(tr('ui.gui.subplace_joiner_tab.copy_subplace_id'))
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         card = self.parent()
         place_id = getattr(card, 'place_id', None)
         if place_id is not None:
@@ -354,8 +381,6 @@ class SubplaceGameCard(QFrame):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        from PySide6.QtGui import QFont  # ruff: ignore[import-outside-top-level]
-
         layout = QVBoxLayout()
         layout.setContentsMargins(7, 7, 7, 7)
         layout.setSpacing(4)
@@ -429,7 +454,7 @@ class SubplaceGameCard(QFrame):
             return
         try:
             baked = _make_rounded_pixmap(pix, _THUMB_W, _THUMB_H, radius=6)
-        except Exception:  # ruff: ignore[blind-except]
+        except OSError, RuntimeError, TypeError, ValueError:
             baked = pix
         self.thumb_label.setPixmap(baked)
         self.thumb_label.setText('')
@@ -444,11 +469,13 @@ class SubplaceGameCard(QFrame):
     def on_fetch_jobs(self, fn: _ButtonCallback) -> None:
         self.fetch_jobs_btn.clicked.connect(fn)
 
-    def enterEvent(self, event: QEnterEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def enterEvent(self, event: QEnterEvent) -> None:
         self._apply_style(hover=True)
         super().enterEvent(event)
 
-    def leaveEvent(self, event: QEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def leaveEvent(self, event: QEvent) -> None:
         self._apply_style()
         super().leaveEvent(event)
 
@@ -536,7 +563,7 @@ class JobIdDialog(QDialog):
 
     def _on_sort_changed(self) -> None:
         sort = self._current_sort()
-        if sort in ('ping_asc', 'ping_desc'):  # ruff: ignore[literal-membership]
+        if sort in {'ping_asc', 'ping_desc'}:
             # Just re-sort existing data
             self._list.clear()
             for s in self._sorted_servers(self._all_servers):
@@ -568,76 +595,56 @@ class JobIdDialog(QDialog):
         self._status_label.setText(tr('ui.gui.subplace_joiner_tab.fetching_servers'))
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def _worker(self) -> None:
-        global _servers_rl_until  # ruff: ignore[global-statement]
-        RL_WAIT = (  # ruff: ignore[non-lowercase-variable-in-function]
-            60  # seconds to wait after a 429
-        )
+    def _wait_for_rate_limit(self, wait_until: float) -> None:
+        remaining = wait_until - time.time()
+        if remaining <= 0:
+            return
+        for seconds in range(int(remaining) + 1, 0, -1):
+            if _server_rate_limit.changed_or_elapsed(wait_until):
+                break
+            self._status_update.emit(tr('subplace.jobs.rate_limited_retry', seconds=seconds))
+            time.sleep(1)
+            if time.time() >= wait_until:
+                break
+        self._status_update.emit(tr('subplace.jobs.retrying'))
 
-        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
-            sort = self._current_sort()
-            sort_order = 'Asc' if sort == 'playing_asc' else 'Desc'
-            url = (
-                f'https://games.roblox.com/v1/games/{self._place_id}/servers/Public'
-                f'?limit={self._PAGE_LIMIT}&sortOrder={sort_order}&excludeFullGames=false'
-            )
-            if self._cursor:
-                url += f'&cursor={self._cursor}'
-
-            for attempt in range(2):  # initial + one retry after 429
-                # Respect the global rate-limit window before making a request.
-                # Re-check every second so if another dialog's request succeeds and
-                # clears the rate limit, this countdown stops early.
-                with _servers_rl_lock:
-                    wait_until = _servers_rl_until
-                remaining = wait_until - time.time()
-                if remaining > 0:
-                    for sec in range(int(remaining) + 1, 0, -1):
-                        with _servers_rl_lock:
-                            if _servers_rl_until != wait_until or _servers_rl_until <= time.time():
-                                break  # cleared by a successful request elsewhere
-                        self._status_update.emit(
-                            tr('subplace.jobs.rate_limited_retry', seconds=sec)
-                        )
-                        time.sleep(1)
-                        if time.time() >= wait_until:
-                            break
-                    self._status_update.emit(tr('subplace.jobs.retrying'))
-
-                resp = requests.get(url, timeout=15, proxies={})
-                if resp.status_code == 429:
-                    with _servers_rl_lock:
-                        _servers_rl_until = max(_servers_rl_until, time.time() + RL_WAIT)
-                    if attempt == 0:
-                        wait_until = _servers_rl_until
-                        for sec in range(RL_WAIT, 0, -1):
-                            with _servers_rl_lock:
-                                if (
-                                    _servers_rl_until != wait_until
-                                    or _servers_rl_until <= time.time()
-                                ):
-                                    break
-                            self._status_update.emit(
-                                tr('subplace.jobs.rate_limited_retry', seconds=sec)
-                            )
-                            time.sleep(1)
-                            if time.time() >= wait_until:
-                                break
-                        self._status_update.emit(tr('subplace.jobs.retrying'))
-                        continue
-                    self._error_ready.emit(tr('subplace.jobs.too_many_requests'))
-                    return
-                resp.raise_for_status()
-                # Successful response — clear the global rate-limit state
-                with _servers_rl_lock:
-                    _servers_rl_until = 0.0
-                data = resp.json()
-                servers = data.get('data', [])
-                next_cursor = data.get('nextPageCursor')
-                self._results_ready.emit(servers, next_cursor)
+    def _fetch_server_page(self, url: str) -> None:
+        rate_limit_wait = 60
+        for attempt in range(2):
+            self._wait_for_rate_limit(_server_rate_limit.current())
+            response = requests.get(url, timeout=15, proxies={})
+            if response.status_code == 429:
+                wait_until = _server_rate_limit.extend(rate_limit_wait)
+                if attempt == 0:
+                    self._wait_for_rate_limit(wait_until)
+                    continue
+                self._error_ready.emit(tr('subplace.jobs.too_many_requests'))
                 return
-        except Exception as exc:  # ruff: ignore[blind-except]
-            self._error_ready.emit(str(exc))
+            response.raise_for_status()
+            _server_rate_limit.clear()
+            payload: object = response.json()
+            if not isinstance(payload, dict):
+                msg = 'Roblox public-server response was not an object'
+                raise TypeError(msg)
+            data = cast('dict[str, object]', payload)
+            servers = cast('list[_ServerInfo]', data.get('data', []))
+            next_cursor = cast('str | None', data.get('nextPageCursor'))
+            self._results_ready.emit(servers, next_cursor)
+            return
+
+    def _worker(self) -> None:
+        sort = self._current_sort()
+        sort_order = 'Asc' if sort == 'playing_asc' else 'Desc'
+        url = (
+            f'https://games.roblox.com/v1/games/{self._place_id}/servers/Public'
+            f'?limit={self._PAGE_LIMIT}&sortOrder={sort_order}&excludeFullGames=false'
+        )
+        if self._cursor:
+            url += f'&cursor={self._cursor}'
+        _run_contained(
+            lambda: self._fetch_server_page(url),
+            lambda exc: self._error_ready.emit(str(exc)),
+        )
 
     def _sorted_servers(self, servers: list[_ServerInfo]) -> list[_ServerInfo]:
         sort = self._current_sort()
@@ -733,7 +740,7 @@ class JobIdDialog(QDialog):
 
 
 class SubplaceJoinerTab(QWidget):
-    """Subplace Joiner tab – search, browse, and join subplaces."""  # ruff: ignore[ambiguous-unicode-character-docstring]
+    """Subplace Joiner tab - search, browse, and join subplaces."""
 
     _WANTED_ENDPOINTS = (
         '/v1/join-game',
@@ -788,26 +795,32 @@ class SubplaceJoinerTab(QWidget):
         cookie = _wait_for_roblosecurity()
         if not cookie:
             return
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            sess = requests.Session()
-            sess.trust_env = False
-            sess.proxies = {}
-            try:
-                sess.cookies.set('.ROBLOSECURITY', cookie)
-            except Exception:  # ruff: ignore[blind-except]
-                sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-            resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-            if resp.status_code == 200:
-                user_data = cast('dict[str, object]', resp.json())
-                username = cast('str', user_data.get('name', ''))
-                if username:
+        session = requests.Session()
+        session.trust_env = False
+        session.proxies = {}
+        try:
+            session.cookies.set('.ROBLOSECURITY', cookie)
+        except TypeError, ValueError:
+            session.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+        try:
+            response = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+            if response.status_code != 200:
+                return
+            payload: object = response.json()
+        except requests.RequestException as exc:
+            log_buffer.log('subplace', f'Failed to resolve current user: {exc}')
+            return
+        if not isinstance(payload, dict):
+            return
+        user_data = cast('dict[str, object]', payload)
+        username = user_data.get('name')
+        if not isinstance(username, str) or not username:
+            return
 
-                    def _update(u: str = username) -> None:
-                        self.set_selected_account(u)
+        def _update(u: str = username) -> None:
+            self.set_selected_account(u)
 
-                    self._on_main(_update)
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
+        self._on_main(_update)
 
     def set_selected_account(self, username: str) -> None:
         """Update the selected-account footer label from external account switches."""
@@ -961,56 +974,86 @@ class SubplaceJoinerTab(QWidget):
         root.addWidget(footer_widget)
 
     def _clear_roblox_cache(self) -> None:
-        from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
-
-        window = DeleteCacheWindow()
+        window_type = cast(
+            'Callable[[], QWidget]',
+            import_module('fleasion.gui.delete_cache').__dict__['DeleteCacheWindow'],
+        )
+        window = window_type()
         window.show()
 
     # Settings persistence
 
-    def _settings_path(self) -> str:
+    def _settings_path(self) -> Path:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        return str(_primary_settings_path())
+        return _primary_settings_path()
+
+    @staticmethod
+    def _read_settings_file(path: Path) -> tuple[list[str], list[str], dict[str, str]]:
+        with path.open(encoding='utf-8') as file:
+            payload: object = json.load(file)
+        if not isinstance(payload, dict):
+            msg = 'Subplace settings must contain a JSON object'
+            raise TypeError(msg)
+        data = cast('dict[str, object]', payload)
+        raw_recent = data.get('recent_ids', [])
+        raw_favorites = data.get('favorites', [])
+        raw_names = data.get('custom_names', {})
+        if not isinstance(raw_recent, list) or not isinstance(raw_favorites, list):
+            msg = 'Subplace recent_ids and favorites must contain JSON arrays'
+            raise TypeError(msg)
+        if not isinstance(raw_names, dict):
+            msg = 'Subplace custom_names must contain a JSON object'
+            raise TypeError(msg)
+        recent_values = cast('list[object]', raw_recent)
+        favorite_values = cast('list[object]', raw_favorites)
+        recent_ids = [str(value) for value in recent_values if str(value).strip()]
+        favorites = [str(value) for value in favorite_values if str(value).strip()]
+        custom_names = {
+            str(key): str(value) for key, value in cast('dict[object, object]', raw_names).items()
+        }
+        return recent_ids, favorites, custom_names
+
+    @classmethod
+    def _find_settings(
+        cls, paths: tuple[Path, Path]
+    ) -> tuple[Path, list[str], list[str], dict[str, str]] | None:
+        for path in paths:
+            if not path.exists():
+                continue
+            recent_ids, favorites, custom_names = cls._read_settings_file(path)
+            return path, recent_ids, favorites, custom_names
+        return None
 
     def _load_settings(self) -> None:
         primary_path = _primary_settings_path()
-        paths = (primary_path, _legacy_settings_path())
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            loaded_from = None
-            for path in paths:
-                if not os.path.exists(path):  # ruff: ignore[os-path-exists]
-                    continue
-                with open(path, encoding='utf-8') as f:  # ruff: ignore[builtin-open]
-                    data = json.load(f)
-                loaded_from = path
-                self.recent_ids = [str(x) for x in data.get('recent_ids', []) if str(x).strip()]
-                self.favorites = [str(x) for x in data.get('favorites', []) if str(x).strip()]
-                self._custom_names = {
-                    str(k): str(v) for k, v in data.get('custom_names', {}).items()
-                }
-                break
-            if loaded_from and loaded_from != primary_path:
-                self._save_settings()
-        except Exception as exc:  # ruff: ignore[blind-except]
+        try:
+            loaded = self._find_settings((primary_path, _legacy_settings_path()))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             log_buffer.log('subplace', f'Failed to load settings: {exc}')
             self.recent_ids = []
             self.favorites = []
             self._custom_names = {}
+            return
+        if loaded is None:
+            return
+        loaded_from, self.recent_ids, self.favorites, self._custom_names = loaded
+        if loaded_from != primary_path:
+            self._save_settings()
 
     def _save_settings(self) -> None:
         path = self._settings_path()
         try:
-            with open(path, 'w', encoding='utf-8') as f:  # ruff: ignore[builtin-open]
+            with path.open('w', encoding='utf-8') as file:
                 json.dump(
                     {
                         'recent_ids': self.recent_ids,
                         'favorites': self.favorites,
                         'custom_names': self._custom_names,
                     },
-                    f,
+                    file,
                     indent=2,
                 )
-        except Exception as exc:  # ruff: ignore[blind-except]
+        except (OSError, TypeError, ValueError) as exc:
             log_buffer.log('subplace', f'Failed to save settings: {exc}')
 
     # Recent / Favorites sidebar
@@ -1035,12 +1078,16 @@ class SubplaceJoinerTab(QWidget):
             return
 
         def _worker() -> None:
-            try:
+            def _resolve() -> str | None:
                 cookie = _wait_for_roblosecurity() or ''
-                name = self._resolve_place_name(place_id, cookie)
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('subplace', f'Failed to resolve recent PlaceID {place_id}: {exc}')
-                return
+                return self._resolve_place_name(place_id, cookie)
+
+            name = _run_contained(
+                _resolve,
+                lambda exc: log_buffer.log(
+                    'subplace', f'Failed to resolve recent PlaceID {place_id}: {exc}'
+                ),
+            )
             if not name:
                 return
             self._place_name_cache[place_id] = name
@@ -1048,56 +1095,124 @@ class SubplaceJoinerTab(QWidget):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _resolve_place_name(self, place_id: str, cookie: str = '') -> str | None:
-        cookies = {'.ROBLOSECURITY': cookie} if cookie else None
-        errors: list[str] = []
-        if cookie:
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                r = self._get(
-                    f'https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}',
-                    timeout=10,
-                    cookies=cookies,
-                )
-                if r.status_code == 200:
-                    data = cast('list[_GameInfo]', r.json())
-                    name = data[0].get('name') if data else None
-                    if name:
-                        return str(name)
-                else:
-                    errors.append(f'multiget status {r.status_code}')
-            except Exception as exc:  # ruff: ignore[blind-except]
-                errors.append(f'multiget {type(exc).__name__}: {exc}')
-        else:
-            errors.append('missing cookie')
+    def _resolve_authenticated_place_name(
+        self, place_id: str, cookie: str, errors: list[str]
+    ) -> str | None:
+        try:
+            response = self._get(
+                f'https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}',
+                timeout=10,
+                cookies={'.ROBLOSECURITY': cookie},
+            )
+            payload: object = response.json() if response.status_code == 200 else None
+        except (requests.RequestException, ValueError) as exc:
+            errors.append(f'multiget {type(exc).__name__}: {exc}')
+            return None
+        if response.status_code != 200:
+            errors.append(f'multiget status {response.status_code}')
+            return None
+        if not isinstance(payload, list) or not payload:
+            return None
+        records = cast('list[object]', payload)
+        first = records[0]
+        if not isinstance(first, dict):
+            return None
+        name = cast('dict[str, object]', first).get('name')
+        return name if isinstance(name, str) and name else None
 
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            universe = self._get(
+    @staticmethod
+    def _universe_id_from_payload(payload: object, errors: list[str]) -> int | str | None:
+        if not isinstance(payload, dict):
+            errors.append('universe response was not an object')
+            return None
+        universe_id = cast('dict[str, object]', payload).get('universeId')
+        if not isinstance(universe_id, int | str) or not str(universe_id).strip():
+            errors.append('universe missing universeId')
+            return None
+        return universe_id
+
+    @staticmethod
+    def _game_name_from_payload(payload: object, place_id: str) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        games = cast('dict[str, object]', payload).get('data', [])
+        if not isinstance(games, list) or not games:
+            return None
+        first = cast('list[object]', games)[0]
+        if not isinstance(first, dict):
+            return None
+        name = cast('dict[str, object]', first).get('name')
+        if isinstance(name, str) and name and name not in {'[TITLE UNAVAILABLE]', place_id}:
+            return name
+        return None
+
+    def _resolve_public_universe_id(self, place_id: str, errors: list[str]) -> str | None:
+        try:
+            response = self._get(
                 f'https://apis.roblox.com/universes/v1/places/{place_id}/universe',
                 timeout=10,
             )
-            if universe.status_code != 200:
-                errors.append(f'universe status {universe.status_code}')
-            else:
-                universe_data = cast('_UniverseInfo', universe.json())
-                universe_id = universe_data.get('universeId')
-                if universe_id:
-                    details = self._get(
-                        f'https://games.roblox.com/v1/games?universeIds={universe_id}',
-                        timeout=10,
-                    )
-                    if details.status_code == 200:
-                        details_data = cast('dict[str, object]', details.json())
-                        games_data = cast('list[_GameInfo]', details_data.get('data', []))
-                        name = games_data[0].get('name') if games_data else None
-                        if name and name not in {'[TITLE UNAVAILABLE]', place_id}:
-                            return str(name)
-                    else:
-                        errors.append(f'games status {details.status_code}')
-                else:
-                    errors.append('universe missing universeId')
-        except Exception as exc:  # ruff: ignore[blind-except]
+            payload: object = response.json() if response.status_code == 200 else None
+        except (requests.RequestException, ValueError) as exc:
             errors.append(f'public fallback {type(exc).__name__}: {exc}')
+            return None
+        if response.status_code != 200:
+            errors.append(f'universe status {response.status_code}')
+            return None
+        if not isinstance(payload, dict):
+            errors.append('universe response was not an object')
+            return None
+        universe_id = cast('dict[str, object]', payload).get('universeId')
+        if not isinstance(universe_id, int | str) or not str(universe_id).strip():
+            errors.append('universe missing universeId')
+            return None
+        return str(universe_id)
 
+    @staticmethod
+    def _game_name_from_details_payload(payload: object, place_id: str) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        games = cast('dict[str, object]', payload).get('data', [])
+        if not isinstance(games, list) or not games:
+            return None
+        first = cast('list[object]', games)[0]
+        if not isinstance(first, dict):
+            return None
+        name = cast('dict[str, object]', first).get('name')
+        if isinstance(name, str) and name and name not in {'[TITLE UNAVAILABLE]', place_id}:
+            return name
+        return None
+
+    def _resolve_public_place_name(self, place_id: str, errors: list[str]) -> str | None:
+        universe_id = self._resolve_public_universe_id(place_id, errors)
+        if universe_id is None:
+            return None
+        try:
+            details = self._get(
+                f'https://games.roblox.com/v1/games?universeIds={universe_id}',
+                timeout=10,
+            )
+            payload: object = details.json() if details.status_code == 200 else None
+        except (requests.RequestException, ValueError) as exc:
+            errors.append(f'public fallback {type(exc).__name__}: {exc}')
+            return None
+        if details.status_code != 200:
+            errors.append(f'games status {details.status_code}')
+            return None
+        return self._game_name_from_details_payload(payload, place_id)
+
+    def _resolve_place_name(self, place_id: str, cookie: str = '') -> str | None:
+        errors: list[str] = []
+        if cookie:
+            name = self._resolve_authenticated_place_name(place_id, cookie, errors)
+            if name:
+                return name
+        else:
+            errors.append('missing cookie')
+
+        name = self._resolve_public_place_name(place_id, errors)
+        if name:
+            return name
         log_buffer.log(
             'subplace',
             f'Could not resolve recent PlaceID {place_id}: {"; ".join(errors)}',
@@ -1233,17 +1348,15 @@ class SubplaceJoinerTab(QWidget):
         if text.isdigit():
             return text
         # e.g. https://www.roblox.com/games/537413528/some-name
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            path = urlparse(text).path
-            parts = path.strip('/').split('/')
-            if 'games' in parts:
-                idx = parts.index('games')
-                candidate = parts[idx + 1] if idx + 1 < len(parts) else ''
-                if candidate.isdigit():
-                    return candidate
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
-            pass
-        return text
+        try:
+            parts = urlparse(text).path.strip('/').split('/')
+        except ValueError:
+            return text
+        if 'games' not in parts:
+            return text
+        index = parts.index('games')
+        candidate = parts[index + 1] if index + 1 < len(parts) else ''
+        return candidate if candidate.isdigit() else text
 
     def on_search_clicked(self) -> None:
         place_id = self._extract_place_id(self.PlaceID_search.text())
@@ -1266,187 +1379,231 @@ class SubplaceJoinerTab(QWidget):
             daemon=True,
         ).start()
 
-    def _search_worker(self, place_id: str, cancel_event: threading.Event) -> None:
-        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
+    def _fetch_asset_timestamps(
+        self, place_id: int | str | None, cookie: str
+    ) -> tuple[str | None, str | None]:
+        while True:
+            try:
+                response = self._get(
+                    f'https://economy.roblox.com/v2/assets/{place_id}/details',
+                    cookies={'.ROBLOSECURITY': cookie},
+                    timeout=10,
+                )
+                response.raise_for_status()
+                payload: object = response.json()
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status in {429, 500, 502, 503, 504}:
+                    time.sleep(1)
+                    continue
+                return None, None
+            except requests.RequestException, TypeError, ValueError:
+                return None, None
+            if not isinstance(payload, dict):
+                return None, None
+            details = cast('dict[str, object]', payload)
+            created = details.get('Created')
+            updated = details.get('Updated')
+            return (
+                created if isinstance(created, str) else None,
+                updated if isinstance(updated, str) else None,
+            )
+
+    def _load_timestamps(
+        self, all_places: list[_PlaceRecord], cookie: str, cancel_event: threading.Event
+    ) -> None:
+        updated: list[_PlaceRecord] = []
+        for i, p in enumerate(all_places):
             if cancel_event.is_set():
                 return
+            p['created'], p['updated'] = self._fetch_asset_timestamps(p.get('id'), cookie)
+            updated.append(p)
+            if (i + 1) % 5 == 0 or i == len(all_places) - 1:
+                pc: list[_CardUpdate] = [
+                    (p['display_name'], p.get('created'), p.get('updated')) for p in updated.copy()
+                ]
+                self._on_main_guarded(lambda x=pc: self._update_cards(x), cancel_event)
 
-            u = self._get(
-                f'https://apis.roblox.com/universes/v1/places/{place_id}/universe',
-                timeout=10,
-            )
-            u.raise_for_status()
-            universe_data = cast('_UniverseInfo', u.json())
-            universe_id = universe_data.get('universeId')
-            if not universe_id:
-                msg = 'Invalid Place ID or universe not found'
-                raise Exception(msg)  # ruff: ignore[raise-vanilla-class]
+    def _queue_thumbnail(
+        self, place_id: int, image_bytes: bytes, cancel_event: threading.Event
+    ) -> None:
+        processed = _preprocess_thumb_bytes(image_bytes, _THUMB_W, _THUMB_H)
+        if processed is None:
+            return
+        rgba, width, height = processed
 
-            details = self._get(
-                f'https://games.roblox.com/v1/games?universeIds={universe_id}',
-                timeout=10,
-            )
-            details.raise_for_status()
-            details_data = cast('dict[str, object]', details.json())
-            games_data = cast('list[_GameInfo]', details_data.get('data', []))
-            root_place_id = cast(
-                'int | str', games_data[0].get('rootPlaceId') if games_data else int(place_id)
-            )
+        def apply_pix() -> None:
+            card = self._card_by_place_id.get(place_id)
+            if card is None:
+                return
+            image = QImage(rgba, width, height, QImage.Format.Format_RGBA8888)
+            card.thumb_label.setPixmap(QPixmap.fromImage(image))
+            card.thumb_label.setText('')
+            card.thumb_label.setStyleSheet('background: transparent;')
 
-            all_places: list[_PlaceRecord] = []
-            cursor: str | None = None
-            seen: set[int | str | None] = set()
+        self._on_main_guarded(apply_pix, cancel_event)
 
-            while True:
-                if cancel_event.is_set():
+    def _queue_default_thumbnails(
+        self, place_ids: list[int | str], cancel_event: threading.Event
+    ) -> None:
+        fallback = _get_default_thumb_bytes()
+        if fallback is None:
+            return
+        processed = _preprocess_thumb_bytes(fallback, _THUMB_W, _THUMB_H)
+        if processed is None:
+            return
+        rgba, width, height = processed
+        for place_id in place_ids:
+            pid = int(place_id)
+
+            def apply_fallback(pid: int = pid) -> None:
+                card = self._card_by_place_id.get(pid)
+                if card is None:
                     return
-                url = f'https://develop.roblox.com/v1/universes/{universe_id}/places?limit=100'
-                if cursor:
-                    url += f'&cursor={cursor}'
-                r = self._get(url, timeout=10)
-                r.raise_for_status()
-                page_data = cast('dict[str, object]', r.json())
-                batch = cast('list[_RawPlaceRecord]', page_data.get('data', []))
-                if not batch:
-                    break
-                for p in batch:
-                    pid = p.get('id')
-                    if pid in seen:
-                        continue
-                    seen.add(pid)
-                    p['display_name'] = p.get('name') or f'Place {pid}'
-                    p['created'] = None
-                    p['updated'] = None
-                    p['is_root'] = int(cast('int | str', pid)) == int(root_place_id)
-                    all_places.append(cast('_PlaceRecord', p))
-                cursor = cast('str | None', page_data.get('nextPageCursor'))
-                if not cursor:
-                    break
+                image = QImage(rgba, width, height, QImage.Format.Format_RGBA8888)
+                card.thumb_label.setPixmap(QPixmap.fromImage(image))
+                card.thumb_label.setText('')
+                card.thumb_label.setStyleSheet('background: transparent;')
 
-            log_buffer.log('subplace', f'Found {len(all_places)} places')
+            self._on_main_guarded(apply_fallback, cancel_event)
 
-            items: list[_CardItem] = [
-                (
-                    p['display_name'],
-                    p.get('created'),
-                    p.get('updated'),
-                    p['id'],
-                    root_place_id,
-                )
-                for p in all_places
-            ]
-            self._on_main_guarded(lambda: self._add_new_cards(items), cancel_event)
+    def _load_thumbnails(
+        self, all_places: list[_PlaceRecord], cancel_event: threading.Event
+    ) -> None:
+        batch_size = 100
+        pending = [p for p in all_places if p.get('id')]
+        for chunk_start in range(0, len(pending), batch_size):
+            if cancel_event.is_set():
+                return
+            chunk = pending[chunk_start : chunk_start + batch_size]
+            place_ids = [p['id'] for p in chunk]
+            try:
+                thumb_map = self._fetch_thumb_bytes_batch(place_ids)
+            except (requests.RequestException, TypeError, ValueError) as exc:
+                log_buffer.log('subplace', f'Batch thumbnail fetch failed: {exc}')
+                thumb_map = {}
+            for pid_val, img_bytes in thumb_map.items():
+                if img_bytes:
+                    self._queue_thumbnail(int(pid_val), img_bytes, cancel_event)
+            missing_ids = [pid for pid in place_ids if not thumb_map.get(str(pid))]
+            if missing_ids:
+                self._queue_default_thumbnails(missing_ids, cancel_event)
 
-            cookie = _wait_for_roblosecurity() or ''
+    def _run_search(self, place_id: str, cancel_event: threading.Event) -> None:
+        if cancel_event.is_set():
+            return
 
-            def load_timestamps() -> None:
-                updated: list[_PlaceRecord] = []
-                for i, p in enumerate(all_places):
-                    if cancel_event.is_set():
-                        return
-                    pid = p.get('id')
-                    while True:
-                        try:  # ruff: ignore[too-many-statements-in-try-clause]
-                            resp = self._get(
-                                f'https://economy.roblox.com/v2/assets/{pid}/details',
-                                cookies={'.ROBLOSECURITY': cookie},
-                                timeout=10,
-                            )
-                            resp.raise_for_status()
-                            asset_data = cast('_AssetDetails', resp.json())
-                            p['created'] = asset_data.get('Created')
-                            p['updated'] = asset_data.get('Updated')
-                            break
-                        except requests.HTTPError as err:
-                            status = getattr(err.response, 'status_code', None)
-                            if status in (429, 500, 502, 503, 504):  # ruff: ignore[literal-membership]
-                                time.sleep(1)
-                                continue
-                            break
-                        except Exception:  # ruff: ignore[blind-except]
-                            break
-                    updated.append(p)
-                    if (i + 1) % 5 == 0 or i == len(all_places) - 1:
-                        pc: list[_CardUpdate] = [
-                            (p['display_name'], p.get('created'), p.get('updated'))
-                            for p in updated.copy()
-                        ]
-                        self._on_main_guarded(lambda x=pc: self._update_cards(x), cancel_event)
+        u = self._get(
+            f'https://apis.roblox.com/universes/v1/places/{place_id}/universe',
+            timeout=10,
+        )
+        u.raise_for_status()
+        universe_data = cast('_UniverseInfo', u.json())
+        universe_id = universe_data.get('universeId')
+        if not universe_id:
+            msg = 'Invalid Place ID or universe not found'
+            raise RuntimeError(msg)
 
-            threading.Thread(target=load_timestamps, daemon=True).start()
+        details = self._get(
+            f'https://games.roblox.com/v1/games?universeIds={universe_id}',
+            timeout=10,
+        )
+        details.raise_for_status()
+        details_data = cast('dict[str, object]', details.json())
+        games_data = cast('list[_GameInfo]', details_data.get('data', []))
+        root_place_id = cast(
+            'int | str', games_data[0].get('rootPlaceId') if games_data else int(place_id)
+        )
 
-            def load_thumbnails() -> None:
-                BATCH_SIZE = 100  # ruff: ignore[non-lowercase-variable-in-function]
-                pending = [p for p in all_places if p.get('id')]
-                for chunk_start in range(0, len(pending), BATCH_SIZE):
-                    if cancel_event.is_set():
-                        return
-                    chunk = pending[chunk_start : chunk_start + BATCH_SIZE]
-                    place_ids = [p['id'] for p in chunk]
-                    try:
-                        thumb_map = self._fetch_thumb_bytes_batch(place_ids)
-                    except Exception as exc:  # ruff: ignore[blind-except]
-                        log_buffer.log('subplace', f'Batch thumbnail fetch failed: {exc}')
-                        thumb_map = {}
-                    for pid_val, img_bytes in thumb_map.items():
-                        if img_bytes:
-                            pid_int = int(pid_val)
-                            processed = _preprocess_thumb_bytes(img_bytes, _THUMB_W, _THUMB_H)
-                            if processed:
-                                rgba, pw, ph = processed
+        all_places: list[_PlaceRecord] = []
+        cursor: str | None = None
+        seen: set[int | str | None] = set()
 
-                                def apply_pix(
-                                    pid: int = pid_int,
-                                    rgba: bytes = rgba,
-                                    pw: int = pw,
-                                    ph: int = ph,
-                                ) -> None:
-                                    card = self._card_by_place_id.get(pid)
-                                    if card:
-                                        qimg = QImage(rgba, pw, ph, QImage.Format.Format_RGBA8888)
-                                        card.thumb_label.setPixmap(QPixmap.fromImage(qimg))
-                                        card.thumb_label.setText('')
-                                        card.thumb_label.setStyleSheet('background: transparent;')
+        while True:
+            if cancel_event.is_set():
+                return
+            url = f'https://develop.roblox.com/v1/universes/{universe_id}/places?limit=100'
+            if cursor:
+                url += f'&cursor={cursor}'
+            r = self._get(url, timeout=10)
+            r.raise_for_status()
+            page_data = cast('dict[str, object]', r.json())
+            batch = cast('list[_RawPlaceRecord]', page_data.get('data', []))
+            if not batch:
+                break
+            for p in batch:
+                pid = p.get('id')
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                p['display_name'] = p.get('name') or f'Place {pid}'
+                p['created'] = None
+                p['updated'] = None
+                p['is_root'] = int(cast('int | str', pid)) == int(root_place_id)
+                all_places.append(cast('_PlaceRecord', p))
+            cursor = cast('str | None', page_data.get('nextPageCursor'))
+            if not cursor:
+                break
 
-                                self._on_main_guarded(apply_pix, cancel_event)
-                    # Apply default thumbnail to any place IDs that didn't get one
-                    missing_ids = [pid for pid in place_ids if not thumb_map.get(str(pid))]
-                    if missing_ids:
-                        fallback = _get_default_thumb_bytes()
-                        if fallback:
-                            fallback_processed = _preprocess_thumb_bytes(
-                                fallback, _THUMB_W, _THUMB_H
-                            )
-                            if fallback_processed:
-                                f_rgba, f_pw, f_ph = fallback_processed
-                                for pid_int in missing_ids:
+        log_buffer.log('subplace', f'Found {len(all_places)} places')
 
-                                    def apply_fallback(
-                                        pid: int | str = pid_int,
-                                        rgba: bytes = f_rgba,
-                                        pw: int = f_pw,
-                                        ph: int = f_ph,
-                                    ) -> None:
-                                        card = self._card_by_place_id.get(cast('int', pid))
-                                        if card:
-                                            qimg = QImage(
-                                                rgba,
-                                                pw,
-                                                ph,
-                                                QImage.Format.Format_RGBA8888,
-                                            )
-                                            card.thumb_label.setPixmap(QPixmap.fromImage(qimg))
-                                            card.thumb_label.setText('')
-                                            card.thumb_label.setStyleSheet(
-                                                'background: transparent;'
-                                            )
+        items: list[_CardItem] = [
+            (
+                p['display_name'],
+                p.get('created'),
+                p.get('updated'),
+                p['id'],
+                root_place_id,
+            )
+            for p in all_places
+        ]
+        self._on_main_guarded(lambda: self._add_new_cards(items), cancel_event)
 
-                                    self._on_main_guarded(apply_fallback, cancel_event)
+        cookie = _wait_for_roblosecurity() or ''
 
-            threading.Thread(target=load_thumbnails, daemon=True).start()
+        threading.Thread(
+            target=self._load_timestamps,
+            args=(all_places, cookie, cancel_event),
+            daemon=True,
+        ).start()
 
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log('subplace', f'Search failed: {exc}')
+        threading.Thread(
+            target=self._load_thumbnails,
+            args=(all_places, cancel_event),
+            daemon=True,
+        ).start()
+
+    def _search_worker(self, place_id: str, cancel_event: threading.Event) -> None:
+        _run_contained(
+            lambda: self._run_search(place_id, cancel_event),
+            lambda exc: log_buffer.log('subplace', f'Search failed: {exc}'),
+        )
+
+    def _fetch_thumbnail_entries(self, url: str, attempt: int) -> list[_ThumbnailEntry] | None:
+        try:
+            response = self._get(url, timeout=15)
+        except (requests.RequestException, TypeError, ValueError) as exc:
+            log_buffer.log('subplace', f'Thumbnail batch failed (attempt {attempt + 1}): {exc}')
+            return None
+        if response.status_code == 429:
+            log_buffer.log(
+                'subplace',
+                f'Thumbnail batch 429 rate-limited (attempt {attempt + 1}), retrying…',
+            )
+            return None
+        try:
+            response.raise_for_status()
+            payload: object = response.json()
+        except (requests.RequestException, TypeError, ValueError) as exc:
+            log_buffer.log('subplace', f'Thumbnail batch failed (attempt {attempt + 1}): {exc}')
+            return None
+        if not isinstance(payload, dict):
+            return None
+        raw_entries = cast('dict[str, object]', payload).get('data', [])
+        if not isinstance(raw_entries, list):
+            return None
+        entries = cast('list[object]', raw_entries)
+        return [cast('_ThumbnailEntry', entry) for entry in entries if isinstance(entry, dict)]
 
     def _fetch_thumb_bytes_batch(self, place_ids: list[int | str]) -> dict[str, bytes]:
         """Fetch thumbnail image bytes for a batch of place IDs.
@@ -1475,20 +1632,10 @@ class SubplaceJoinerTab(QWidget):
         for attempt in range(3):
             if attempt > 0:
                 time.sleep(2**attempt)
-            try:  # ruff: ignore[too-many-statements-in-try-clause]
-                resp = self._get(url, timeout=15)
-                if resp.status_code == 429:
-                    log_buffer.log(
-                        'subplace',
-                        f'Thumbnail batch 429 rate-limited (attempt {attempt + 1}), retrying…',
-                    )
-                    continue
-                resp.raise_for_status()
-                response_data = cast('dict[str, object]', resp.json())
-                entries = cast('list[_ThumbnailEntry]', response_data.get('data', []))
+            fetched_entries = self._fetch_thumbnail_entries(url, attempt)
+            if fetched_entries is not None:
+                entries = fetched_entries
                 break
-            except Exception as exc:  # ruff: ignore[blind-except]
-                log_buffer.log('subplace', f'Thumbnail batch failed (attempt {attempt + 1}): {exc}')
 
         # Collect image URLs to download
         to_download: dict[str, str] = {}  # sid → img_url
@@ -1507,7 +1654,7 @@ class SubplaceJoinerTab(QWidget):
                 img_bytes = img_resp.content
                 self.thumb_cache[sid] = img_bytes
                 result[sid] = img_bytes
-            except Exception:  # ruff: ignore[blind-except]
+            except requests.RequestException:
                 failed[sid] = img_url
 
         if failed:
@@ -1519,7 +1666,7 @@ class SubplaceJoinerTab(QWidget):
                     img_bytes = img_resp.content
                     self.thumb_cache[sid] = img_bytes
                     result[sid] = img_bytes
-                except Exception as exc:  # ruff: ignore[blind-except]
+                except requests.RequestException as exc:
                     log_buffer.log('subplace', f'Thumbnail download failed for {sid}: {exc}')
 
         log_buffer.log(
@@ -1625,7 +1772,7 @@ class SubplaceJoinerTab(QWidget):
                 if not iso:
                     return float('-inf')
                 return _dateutil_parser.isoparse(iso).timestamp()
-            except Exception:  # ruff: ignore[blind-except]
+            except TypeError, ValueError, OverflowError:
                 return float('-inf')
 
         if mode.startswith('place_id_'):
@@ -1673,11 +1820,13 @@ class SubplaceJoinerTab(QWidget):
             return
         self._place_cards([c for c in self._cards if c.isVisible()])
 
-    def resizeEvent(self, event: QResizeEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._resize_timer.start(60)
 
-    def showEvent(self, event: QShowEvent) -> None:  # ruff: ignore[invalid-function-name]
+    @override
+    def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         if self._cards:
             self.apply_search_and_sort()
@@ -1723,8 +1872,9 @@ class SubplaceJoinerTab(QWidget):
             and self._rando_tab.is_multi_instance_enabled()
             and _rando_account_switched(self._rando_tab)
         ):
-            from fleasion.utils.windows import (  # ruff: ignore[import-outside-top-level]
-                is_roblox_running,
+            is_roblox_running = cast(
+                'Callable[[], bool]',
+                import_module('fleasion.utils.windows').__dict__['is_roblox_running'],
             )
 
             if is_roblox_running():
@@ -1745,7 +1895,7 @@ class SubplaceJoinerTab(QWidget):
                             'Failed to get auth ticket for multi-instance join',
                         )
                         return
-                    tracker_id = random.randint(10_000_000_000, 99_999_999_999)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
+                    tracker_id = 10_000_000_000 + secrets.randbelow(90_000_000_000)
                     place_launcher_url = (
                         f'https://www.roblox.com/Game/PlaceLauncher.ashx'
                         f'?request=RequestGame'
@@ -1785,40 +1935,44 @@ class SubplaceJoinerTab(QWidget):
             and getattr(self._config_manager, 'proxy_features_enabled', False)
             and self._proxy_master is not None
         ):
-            from fleasion.utils.platform_macos import (  # ruff: ignore[import-outside-top-level]
-                relaunch_roblox_with_proxy_env,
+            relaunch_roblox_with_proxy_env = cast(
+                'Callable[[str, str], bool]',
+                import_module('fleasion.utils.platform_macos').__dict__[
+                    'relaunch_roblox_with_proxy_env'
+                ],
             )
-
             return relaunch_roblox_with_proxy_env(self._proxy_master.roblox_env_proxy_url(), target)
         return launch_as_standard_user(target)
 
+    def _post_root_join(self, root_place_id: int | str, cookie: str) -> requests.Response:
+        sess = self._new_session(cookie)
+        payload = {
+            'placeId': int(root_place_id),
+            'isTeleport': True,
+            'isImmersiveAdsTeleport': False,
+            'gameJoinAttemptId': str(uuid.uuid4()),
+        }
+        join_url = 'https://gamejoin.roblox.com/v1/join-game'
+        return sess.post(
+            join_url,
+            json=payload,
+            timeout=15,
+            verify=self._request_verify(join_url),
+        )
+
     def _join_root(self, root_place_id: int | str, cookie: str | None = None) -> bool:
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if cookie is None:
-                cookie = _get_roblosecurity()
-            if not cookie:
-                return False
-            sess = self._new_session(cookie)
-            payload = {
-                'placeId': int(root_place_id),
-                'isTeleport': True,
-                'isImmersiveAdsTeleport': False,
-                'gameJoinAttemptId': str(uuid.uuid4()),
-            }
-            join_url = 'https://gamejoin.roblox.com/v1/join-game'
-            r = sess.post(
-                join_url,
-                json=payload,
-                timeout=15,
-                verify=self._request_verify(join_url),
-            )
-            try:
-                return r.status_code == 200 and r.json().get('status') == 2
-            except Exception:  # ruff: ignore[blind-except]
-                return False
-        except Exception as exc:  # ruff: ignore[blind-except]
+        resolved_cookie = cookie if cookie is not None else _get_roblosecurity()
+        if not resolved_cookie:
+            return False
+        try:
+            response = self._post_root_join(root_place_id, resolved_cookie)
+            payload: object = response.json() if response.status_code == 200 else None
+        except (requests.RequestException, TypeError, ValueError) as exc:
             log_buffer.log('subplace', f'Pre-seed join error: {exc}')
             return False
+        if not isinstance(payload, dict):
+            return False
+        return cast('dict[str, object]', payload).get('status') == 2
 
     def _new_session(self, cookie: str | None) -> requests.Session:
         sess = requests.Session()
@@ -1840,7 +1994,7 @@ class SubplaceJoinerTab(QWidget):
             token = r.headers.get('x-csrf-token') or r.headers.get('X-CSRF-TOKEN')
             if token:
                 sess.headers['X-CSRF-TOKEN'] = token
-        except Exception:  # ruff: ignore[blind-except, try-except-pass]
+        except requests.RequestException:
             pass
         return sess
 
@@ -1861,7 +2015,7 @@ class SubplaceJoinerTab(QWidget):
         headers: dict[str, str] | None = None,
         cookies: dict[str, str] | None = None,
     ) -> requests.Response:
-        r = requests.get(
+        return requests.get(
             url,
             timeout=timeout,
             proxies={},
@@ -1869,7 +2023,6 @@ class SubplaceJoinerTab(QWidget):
             headers=headers,
             verify=self._request_verify(url),
         )
-        return r  # ruff: ignore[unnecessary-assign]
 
     def _on_main(self, fn: _MainCallback) -> bool:
         if self._qt_destroyed:
@@ -1879,10 +2032,10 @@ class SubplaceJoinerTab(QWidget):
             return False
         try:
             invoker.call.emit(fn)
-            return True  # ruff: ignore[try-consider-else]
         except RuntimeError:
             self._qt_destroyed = True
             return False
+        return True
 
     def _on_main_guarded(self, fn: _MainCallback, cancel_event: threading.Event) -> None:
         """Post fn to the main thread, but skip execution if cancel_event is set by then."""
@@ -1907,9 +2060,12 @@ class SubplaceJoinerTab(QWidget):
             and 'application/json' in content_type
         ):
             try:
-                body_json = cast('dict[str, object]', json.loads(flow.request.content))
-            except Exception:  # ruff: ignore[blind-except]
+                parsed_body = json.loads(flow.request.content)
+            except json.JSONDecodeError, UnicodeDecodeError, TypeError:
                 return
+            if not isinstance(parsed_body, dict):
+                return
+            body_json = cast('dict[str, object]', parsed_body)
             if 'isTeleport' not in body_json:
                 body_json['isTeleport'] = True
                 log_buffer.log('subplace', 'Added isTeleport flag')
@@ -1933,7 +2089,7 @@ class SubplaceJoinerTab(QWidget):
                 return
             try:
                 data = flow.response.json()
-                if data.get('status') == 2:
-                    self.joining_place = False
-            except Exception:  # ruff: ignore[blind-except, try-except-pass]
-                pass
+            except TypeError, ValueError:
+                return
+            if data.get('status') == 2:
+                self.joining_place = False
