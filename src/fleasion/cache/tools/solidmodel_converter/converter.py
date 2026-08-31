@@ -37,8 +37,8 @@ log = logging.getLogger(__name__)
 def _log_solidmodel_message(message: str) -> None:
     """Best-effort UI log mirroring the converter's existing logging behavior."""
     with suppress(ImportError, AttributeError):
-        log_buffer = importlib.import_module('fleasion.utils.log_buffer')
-        log_buffer.log('SolidModel', message)
+        logging_module = importlib.import_module('fleasion.utils.logging')
+        logging_module.log_buffer.log('SolidModel', message)
 
 
 def convert_file(

@@ -8,6 +8,7 @@ import gzip
 import importlib
 import re
 import struct
+import zlib
 from collections.abc import Buffer, Callable
 from typing import TYPE_CHECKING, Literal, SupportsFloat, SupportsIndex, cast
 
@@ -79,7 +80,7 @@ def classify_roblox_document(data: bytes) -> RobloxDocumentKind | None:
     """Classify bytes as rbxm, rbxmx, rbxl, or not a Roblox document."""
     try:
         data = decompress_if_needed(data)
-    except (EOFError, OSError):
+    except (EOFError, OSError, zlib.error):
         return None
 
     if data.startswith(RBXM_MAGIC):

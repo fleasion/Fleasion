@@ -1,4 +1,5 @@
 import importlib.util
+import socket
 import ssl
 import subprocess
 import urllib.error
@@ -21,7 +22,15 @@ class _HttpModule(Protocol):
     _certifi_tls12_context: _CachedContext
     _certifi_context: _CachedContext
     shutil: ModuleType
+    socket: ModuleType
     subprocess: ModuleType
+
+    def _create_connection_ipv4_first(
+        self,
+        address: tuple[str, int],
+        timeout: object,
+        source_address: tuple[str, int] | None,
+    ) -> socket.socket: ...
 
     def _open_verified(self, req: urllib.request.Request, url: str, timeout: int) -> object: ...
 
@@ -46,6 +55,19 @@ def _open_verified(module: object, req: urllib.request.Request, url: str, timeou
     return callback(req, url, timeout)
 
 
+def _create_connection_ipv4_first(
+    module: object,
+    address: tuple[str, int],
+    timeout: object,
+    source_address: tuple[str, int] | None,
+) -> socket.socket:
+    callback = cast(
+        'Callable[[tuple[str, int], object, tuple[str, int] | None], socket.socket]',
+        vars(module)['_create_connection_ipv4_first'],
+    )
+    return callback(address, timeout, source_address)
+
+
 def _load_http_module() -> _HttpModule:
     path = Path(__file__).resolve().parents[1] / 'src' / 'fleasion' / 'utils' / 'http.py'
     spec = importlib.util.spec_from_file_location('fleasion_http_test', path)
@@ -56,6 +78,98 @@ def _load_http_module() -> _HttpModule:
     return cast('_HttpModule', module)
 
 
+def test_create_connection_prefers_ipv4_and_retains_ipv6_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http = _load_http_module()
+    attempts: list[int] = []
+
+    class FakeSocket:
+        def __init__(self, family: int, _socktype: int, _proto: int) -> None:
+            self.family = family
+
+        def settimeout(self, _timeout: float | None) -> None:
+            return None
+
+        def bind(self, _source_address: tuple[str, int]) -> None:
+            return None
+
+        def connect(self, _sockaddr: object) -> None:
+            attempts.append(self.family)
+            if self.family == socket.AF_INET:
+                raise OSError('IPv4 unavailable')
+
+        def close(self) -> None:
+            return None
+
+    def fake_getaddrinfo(
+        _host: str,
+        _port: int,
+        _family: int,
+        _socktype: int,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('2001:db8::1', 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 443)),
+        ]
+
+    def fake_socket(family: int, socktype: int, proto: int) -> FakeSocket:
+        return FakeSocket(family, socktype, proto)
+
+    monkeypatch.setattr(http.socket, 'getaddrinfo', fake_getaddrinfo)
+    monkeypatch.setattr(http.socket, 'socket', fake_socket)
+
+    connected = _create_connection_ipv4_first(http, ('example.test', 443), 1.0, None)
+
+    assert attempts == [socket.AF_INET, socket.AF_INET6]
+    assert isinstance(connected, FakeSocket)
+    assert connected.family == socket.AF_INET6
+
+
+def test_create_connection_stops_after_working_ipv4(monkeypatch: pytest.MonkeyPatch) -> None:
+    http = _load_http_module()
+    attempts: list[int] = []
+
+    class FakeSocket:
+        def __init__(self, family: int, _socktype: int, _proto: int) -> None:
+            self.family = family
+
+        def settimeout(self, _timeout: float | None) -> None:
+            return None
+
+        def bind(self, _source_address: tuple[str, int]) -> None:
+            return None
+
+        def connect(self, _sockaddr: object) -> None:
+            attempts.append(self.family)
+
+        def close(self) -> None:
+            return None
+
+    def fake_getaddrinfo(
+        _host: str,
+        _port: int,
+        _family: int,
+        _socktype: int,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('2001:db8::1', 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 443)),
+        ]
+
+    def fake_socket(family: int, socktype: int, proto: int) -> FakeSocket:
+        return FakeSocket(family, socktype, proto)
+
+    monkeypatch.setattr(http.socket, 'getaddrinfo', fake_getaddrinfo)
+    monkeypatch.setattr(http.socket, 'socket', fake_socket)
+
+    connected = _create_connection_ipv4_first(http, ('example.test', 443), 1.0, None)
+
+    assert attempts == [socket.AF_INET]
+    assert isinstance(connected, FakeSocket)
+    assert connected.family == socket.AF_INET
+
+
 def test_https_record_layer_failure_retries_with_tls12(monkeypatch: pytest.MonkeyPatch) -> None:
     http = _load_http_module()
     _cached_context(http, '_tls12_context').cache_clear()
@@ -64,7 +178,10 @@ def test_https_record_layer_failure_retries_with_tls12(monkeypatch: pytest.Monke
     response = object()
 
     def fake_urlopen(
-        req: urllib.request.Request, timeout: float, context: ssl.SSLContext | None = None
+        req: urllib.request.Request,
+        *,
+        timeout: int,
+        context: ssl.SSLContext | None = None,
     ) -> object:
         del req, timeout
         calls.append(context)
@@ -74,7 +191,7 @@ def test_https_record_layer_failure_retries_with_tls12(monkeypatch: pytest.Monke
             )
         return response
 
-    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    monkeypatch.setattr(http, '_urlopen', fake_urlopen)
 
     def no_certifi_tls12() -> None:
         return None
@@ -98,12 +215,15 @@ def test_certificate_failure_without_certifi_reraises_original(
     original = urllib.error.URLError(ssl.SSLCertVerificationError('CERTIFICATE_VERIFY_FAILED'))
 
     def fake_urlopen(
-        req: urllib.request.Request, timeout: float, context: ssl.SSLContext | None = None
+        req: urllib.request.Request,
+        *,
+        timeout: int,
+        context: ssl.SSLContext | None = None,
     ) -> Never:
         del req, timeout, context
         raise original
 
-    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    monkeypatch.setattr(http, '_urlopen', fake_urlopen)
 
     def no_certifi_context() -> None:
         return None
@@ -129,7 +249,10 @@ def test_http_download_to_uses_curl_fallback_after_urllib_failure(
     calls: list[tuple[list[str], bool, bool, bool, int]] = []
 
     def fake_urlopen(
-        req: urllib.request.Request, timeout: float, context: ssl.SSLContext | None = None
+        req: urllib.request.Request,
+        *,
+        timeout: int,
+        context: ssl.SSLContext | None = None,
     ) -> Never:
         del req, timeout, context
         raise original
@@ -145,7 +268,7 @@ def test_http_download_to_uses_curl_fallback_after_urllib_failure(
         Path(cmd[cmd.index('--output') + 1]).write_bytes(b'from curl')
         return subprocess.CompletedProcess(cmd, 0, '', '')
 
-    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    monkeypatch.setattr(http, '_urlopen', fake_urlopen)
 
     def find_curl(name: str) -> str | None:
         return '/usr/bin/curl' if name == 'curl' else None

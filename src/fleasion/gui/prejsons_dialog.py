@@ -88,7 +88,6 @@ if TYPE_CHECKING:
 
     def _preserve_json(value: object) -> JsonValue: ...
 
-    def _qimage_bits_setsize(value: object, size: int) -> None: ...
 
     def _card_game_name(card: GameCard) -> str: ...
 
@@ -130,8 +129,6 @@ else:
     def _preserve_json(value: object) -> JsonValue:
         return value
 
-    def _qimage_bits_setsize(value: object, size: int) -> None:
-        value.setsize(size)
 
     def _card_game_name(card: GameCard) -> str:
         return card.game_name
@@ -211,7 +208,6 @@ def _make_rounded_pixmap(pix: QPixmap, w: int, h: int, radius: int = 6) -> QPixm
     """Scale-crop pixmap to (w x h) with rounded corners via PIL."""
     qimg = pix.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
     ptr = qimg.bits()
-    _qimage_bits_setsize(ptr, qimg.width() * qimg.height() * 4)
     img = Image.frombytes('RGBA', (qimg.width(), qimg.height()), bytes(ptr))
 
     src_w, src_h = img.size

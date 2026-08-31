@@ -58,6 +58,9 @@ if TYPE_CHECKING:
 else:
 
     def _object_dict(value: object) -> HelperObject:
+        if not isinstance(value, dict):
+            msg = 'macOS proxy helper response must be a JSON object'
+            raise TypeError(msg)
         return value
 
     def _iter_values(value: object) -> Iterable[object]:
@@ -112,7 +115,7 @@ def _request(
 def helper_status(timeout: float = 1.0) -> HelperObject | None:
     try:
         return _request('status', timeout=timeout)
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError):
         return None
 
 
@@ -151,7 +154,7 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
     """Return readiness plus the reason a newly-installed helper is not ready."""
     try:
         status = _request('status', timeout=1.0)
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         return False, f'Could not contact the helper control service: {type(exc).__name__}: {exc}'
 
     try:
@@ -177,7 +180,7 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
 def helper_apply_hosts(hosts: set[str]) -> bool:
     try:
         _request('apply', set(hosts), timeout=5.0)
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         log_buffer.log('ProxyHelper', f'Failed to apply macOS hosts entries: {exc}')
         return False
     return True
@@ -186,7 +189,7 @@ def helper_apply_hosts(hosts: set[str]) -> bool:
 def helper_clear_hosts() -> bool:
     try:
         _request('clear', timeout=5.0)
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         log_buffer.log('ProxyHelper', f'Failed to clear macOS hosts entries: {exc}')
         return False
     return True
@@ -195,7 +198,7 @@ def helper_clear_hosts() -> bool:
 def helper_heartbeat() -> bool:
     try:
         _request('heartbeat', timeout=2.0)
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError):
         return False
     return True
 
@@ -203,7 +206,7 @@ def helper_heartbeat() -> bool:
 def helper_probe_backend() -> HelperObject:
     try:
         return _request('probe_backend', timeout=3.0)
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         return {
             'ok': False,
             'reachable': False,
@@ -223,7 +226,7 @@ def helper_patch_ca(ca_pem: str, installs: list[HelperObject]) -> HelperObject |
             ca_pem=ca_pem,
             installs=installs,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         log_buffer.log('ProxyHelper', f'Failed to request macOS Roblox CA patch: {exc}')
         return None
 

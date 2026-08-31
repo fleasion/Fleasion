@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import http.client
 import importlib
 import shutil
+import socket
 import ssl
 import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -99,18 +101,84 @@ def _request(url: str, headers: dict[str, str], *, method: str | None = None) ->
     )
 
 
+def _configure_connection_socket(
+    sock: socket.socket,
+    timeout: object,
+    source_address: tuple[str, int] | None,
+) -> None:
+    if timeout is None:
+        sock.settimeout(None)
+    elif isinstance(timeout, int | float):
+        sock.settimeout(float(timeout))
+    if source_address:
+        sock.bind(source_address)
+
+
+def _create_connection_ipv4_first(
+    address: tuple[str, int],
+    timeout: object,
+    source_address: tuple[str, int] | None,
+) -> socket.socket:
+    """Connect using IPv4 candidates before IPv6 while retaining IPv6 fallback."""
+    host, port = address
+    addrinfos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    addrinfos.sort(key=lambda result: result[0] != socket.AF_INET)
+
+    last_exc: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in addrinfos:
+        sock: socket.socket | None = None
+        try:
+            sock = socket.socket(family, socktype, proto)
+            _configure_connection_socket(sock, timeout, source_address)
+            sock.connect(sockaddr)
+        except OSError as exc:
+            last_exc = exc
+            if sock is not None:
+                sock.close()
+        else:
+            return sock
+
+    if last_exc is not None:
+        raise last_exc
+    msg = 'getaddrinfo returned an empty list'
+    raise OSError(msg)
+
+
+class _IPv4FirstHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        self._create_connection = _create_connection_ipv4_first
+        super().connect()
+
+
+class _IPv4FirstHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        self._create_connection = _create_connection_ipv4_first
+        super().connect()
+
+
+class _IPv4FirstHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        return self.do_open(_IPv4FirstHTTPConnection, req)
+
+
+class _IPv4FirstHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        context = cast('ssl.SSLContext', vars(self)['_context'])
+        return self.do_open(_IPv4FirstHTTPSConnection, req, context=context)
+
+
 def _urlopen(
     req: urllib.request.Request,
     *,
     timeout: int,
     context: ssl.SSLContext | None = None,
-):
+) -> http.client.HTTPResponse:
     _validate_http_url(req.full_url)
-    return urllib.request.urlopen(  # ruff: ignore[suspicious-url-open-usage] - scheme validated above
-        req,
-        timeout=timeout,
-        context=context,
+    opener = urllib.request.build_opener(
+        _IPv4FirstHTTPHandler(),
+        _IPv4FirstHTTPSHandler(context=context),
     )
+    return opener.open(req, timeout=timeout)
 
 
 def _open_with_contexts(

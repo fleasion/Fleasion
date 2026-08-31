@@ -37,6 +37,7 @@ import struct
 import threading
 import time
 import uuid
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -383,7 +384,7 @@ def _decompress_body(body: bytes, headers: dict[bytes, bytes]) -> bytes:
     if ce == b'gzip' or body[:2] == _GZIP_MAGIC:
         try:
             return gzip.decompress(body)
-        except (EOFError, OSError):
+        except (EOFError, OSError, zlib.error):
             return body
     if ce == b'zstd' or body[:4] == _ZSTD_MAGIC:
         return _zstd_or(lambda zstandard: _decompress_zstd(zstandard, body), body)
@@ -1123,7 +1124,7 @@ async def _read_headers_raw(reader: asyncio.StreamReader) -> RawHeaders | None:
     while True:
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=15.0)
-        except (ConnectionError, OSError, RuntimeError, TimeoutError):
+        except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError):
             return None
         if not line:
             return None

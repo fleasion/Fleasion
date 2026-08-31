@@ -1266,7 +1266,7 @@ def _browser_auth_cache_cipher() -> _FernetCipher | None:
 def _read_browser_auth_cache_fields() -> tuple[str, str] | None:
     try:
         with _BROWSER_AUTH_CACHE_FILE.open('r', encoding='utf-8') as f:
-            payload = cast('JsonObject', json.load(f))
+            payload_value: object = json.load(f)
     except json.JSONDecodeError as exc:
         _log_auth_failure(
             f'browser-auth-cache-json:{type(exc).__name__}:{exc}',
@@ -1290,6 +1290,19 @@ def _read_browser_auth_cache_fields() -> tuple[str, str] | None:
         )
         return None
 
+    if not isinstance(payload_value, dict):
+        _log_auth_failure(
+            'browser-auth-cache-shape:invalid-root',
+            'Browser auth cache state: invalid root type; preserving cache',
+        )
+        _log_browser_auth_cache_state(
+            'malformed-json',
+            'encrypted browser login cache has an invalid root type; preserving cache and skipping automatic browser prompt',
+            block_automatic_import=True,
+        )
+        return None
+
+    payload = cast('JsonObject', payload_value)
     source = str(payload.get('source') or '')
     if source not in _PERSISTENT_BROWSER_AUTH_SOURCES:
         _log_browser_auth_cache_state(

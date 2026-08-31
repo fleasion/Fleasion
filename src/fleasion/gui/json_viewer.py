@@ -6,7 +6,9 @@ import gzip as gzip_module
 import importlib
 import io
 import json
+import struct
 import tempfile
+import zlib
 from collections.abc import Callable, Iterator
 from functools import partial
 from pathlib import Path
@@ -1179,7 +1181,7 @@ class JsonTreeViewer(QDialog):
         if data[:2] == b'\x1f\x8b':
             try:
                 working = gzip_module.decompress(data)
-            except EOFError, OSError:
+            except (EOFError, OSError, zlib.error):
                 pass
 
         image_signatures = (
@@ -1397,7 +1399,7 @@ class JsonTreeViewer(QDialog):
         """Preview raw RBXM/RBXMX structure in the shared RBXM viewer."""
         try:
             self._show_rbxm_preview(data, title_prefix)
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        except (OSError, RuntimeError, TypeError, ValueError, struct.error) as exc:
             self._preview_hex(data, reason=tr('json.preview.rbxm_parse_failed', error=exc))
 
     def _preview_hex(self, data: bytes, reason: str | None = None) -> None:
@@ -1540,7 +1542,7 @@ class JsonTreeViewer(QDialog):
         if data[:2] == b'\x1f\x8b':
             try:
                 working = gzip_module.decompress(data)
-            except EOFError, OSError:
+            except (EOFError, OSError, zlib.error):
                 pass
 
         image = Image.open(io.BytesIO(working))

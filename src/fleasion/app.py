@@ -1504,7 +1504,7 @@ def _relaunch_as_admin_windows(
     sei.lpVerb = 'runas'
     sei.lpFile = exe
     sei.lpParameters = params
-    sei.lpDirectory = Path(Path(exe).resolve()).parent or None
+    sei.lpDirectory = str(Path(exe).resolve().parent)
     # SW_HIDE (0) for dev/uv mode: hides the uv.exe console wrapper.
     # SW_SHOWNORMAL (1) for compiled .exe: the exe IS the app, we need windows to show.
     sei.nShow = 1 if frozen else 0
@@ -2860,7 +2860,7 @@ def _windows_ca_permission_denied_dirs(details: ErrorDetails) -> list[Path]:
 def _show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
     """Explain a failed privileged relay and return the requested recovery action."""
     lazy_module = importlib.import_module('.utils.macos_proxy_helper', __package__)
-    helper_log_dir = lazy_module.helper_log_dir
+    helper_log_dir = lazy_module.HELPER_LOG_DIR
 
     top = QApplication.topLevelWidgets()
     parent = next((w for w in top if w.isVisible()), None)
@@ -4443,6 +4443,26 @@ def _check_linux_gui_dependencies() -> bool:
     return False
 
 
+def _install_gui_sigint_handler(app: QApplication) -> QTimer:
+    """Exit the Qt event loop cleanly when the console receives Ctrl+C."""
+
+    def _handle_sigint(signum: int, _frame: object) -> None:
+        app.exit(128 + signum)
+
+    def _poll_python_signals() -> None:
+        # Enter Python periodically while Qt is otherwise idle so CPython can
+        # dispatch pending console signals instead of injecting KeyboardInterrupt
+        # into an arbitrary Qt callback.
+        return None
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+    timer = QTimer(app)
+    timer.setInterval(200)
+    timer.timeout.connect(_poll_python_signals)
+    timer.start()
+    return timer
+
+
 def main() -> None:
     """Main application entry point."""
     parser = argparse.ArgumentParser(add_help=False)
@@ -4582,6 +4602,7 @@ def main() -> None:
 
     # Create Qt application
     app = QApplication(sys.argv)
+    _sigint_timer = _install_gui_sigint_handler(app)
     _set_single_instance_app(app)
     roblox_url_event_filter = _RobloxUrlEventFilter(app)
     app.installEventFilter(roblox_url_event_filter)

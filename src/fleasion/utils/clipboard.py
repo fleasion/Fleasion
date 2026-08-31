@@ -37,7 +37,6 @@ if TYPE_CHECKING:
 
     def _qbytearray_bytes(value: QByteArray) -> bytes: ...
 
-    def _set_image_bits_size(value: object, size: int) -> None: ...
 
     def _save_qimage(image: QImage, buffer: QBuffer, format_name: str) -> bool: ...
 
@@ -47,8 +46,6 @@ else:
     def _qbytearray_bytes(value: QByteArray) -> bytes:
         return bytes(value)
 
-    def _set_image_bits_size(value: object, size: int) -> None:
-        value.setsize(size)
 
     def _save_qimage(image: QImage, buffer: QBuffer, format_name: str) -> bool:
         return image.save(buffer, format_name)
@@ -117,7 +114,6 @@ def _image_to_dibv5(image: QImage) -> bytes:
     )
 
     ptr = bgra_image.bits()
-    _set_image_bits_size(ptr, bgra_image.sizeInBytes())
     raw = bytes(ptr)
     bytes_per_line = bgra_image.bytesPerLine()
     pixels = bytearray(size_image)

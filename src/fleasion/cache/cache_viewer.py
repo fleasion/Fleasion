@@ -4686,7 +4686,11 @@ class CacheViewerTab(QWidget):
                 continue
             creator_id = info.get('creator_id')
             creator_type_val = info.get('creator_type')
-            is_group = creator_type_val == 2
+            if isinstance(creator_type_val, int):
+                is_group = creator_type_val == 2
+            else:
+                creator_type_text = str(creator_type_val).lower()
+                is_group = 'group' in creator_type_text or 'community' in creator_type_text
             if not creator_id:
                 continue
             key = (('group' if is_group else 'user'), str(creator_id))

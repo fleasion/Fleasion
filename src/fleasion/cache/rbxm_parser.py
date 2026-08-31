@@ -132,11 +132,11 @@ def decompress_chunk(data: bytes, compressed_size: int, uncompressed_size: int) 
 
     try:
         return lz4_block.decompress(data[:compressed_size], uncompressed_size=uncompressed_size)
-    except lz4_block.LZ4BlockError:
+    except (ValueError, lz4_block.LZ4BlockError):
         # Try without size hint
         try:
             return lz4_block.decompress(data[:compressed_size])
-        except lz4_block.LZ4BlockError:
+        except (ValueError, lz4_block.LZ4BlockError):
             # Return raw data if decompression fails
             return data[:compressed_size]
 

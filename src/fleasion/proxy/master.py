@@ -2788,6 +2788,8 @@ def _write_hosts_file(content: str) -> None:
                 time.sleep(_HOSTS_WRITE_DELAY)
         except OSError:
             raise  # non-permission errors are not retryable
+        else:
+            return
 
     # --- Strategy 2: temp-file + atomic rename ---
     log_buffer.log(

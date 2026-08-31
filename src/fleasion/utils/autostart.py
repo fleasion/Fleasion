@@ -274,7 +274,7 @@ def _windows_uv_executable() -> str:
         found = shutil.which(name)
         if found:
             if os.name == 'nt' and not Path(found).is_absolute():
-                found = Path(found).resolve()
+                found = str(Path(found).resolve())
             return found
 
     user_profile = os.environ.get('USERPROFILE') or str(Path.home())
