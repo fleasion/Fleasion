@@ -4941,8 +4941,8 @@ def main() -> None:
 
     app.commitDataRequest.connect(_on_commit_data)
 
-    # 2. Normal Python exit (sys.exit, end of main): last-resort fallback so
-    #    the hosts file is cleaned up even if the tray Exit path was bypassed.
+    # Normal Python exit (sys.exit, end of main): last-resort fallback so
+    # the hosts file is cleaned up even if the tray Exit path was bypassed.
     atexit.register(proxy_master.stop)
     atexit.register(mod_manager.clear_managed_file_read_only)
     atexit.register(mod_manager.restore_all)
