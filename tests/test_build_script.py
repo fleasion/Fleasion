@@ -37,6 +37,25 @@ def _slice_build_env() -> str:
     return cast('str', macos_build.__dict__['_SLICE_BUILD_ENV'])
 
 
+def test_qt_diagnostics_remains_statically_imported_for_frozen_startup() -> None:
+    root = Path(__file__).resolve().parents[1]
+    app_source = (root / 'src/fleasion/app.py').read_text(encoding='utf-8')
+
+    assert 'from .utils.qt_diagnostics import install_qt_message_logging' in app_source
+    assert "import_module('.utils.qt_diagnostics'" not in app_source
+
+
+def test_packaging_collects_all_fleasion_runtime_modules() -> None:
+    spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
+    spec_source = spec_path.read_text(encoding='utf-8')
+
+    assert 'def _runtime_fleasion_modules() -> list[str]:' in spec_source
+    assert "hiddenimports: list[str] = _runtime_fleasion_modules()" in spec_source
+    assert "source_root / 'scripts' in path.parents" in spec_source
+    assert "source_root / 'linux_proxy_helper_daemon.py'" in spec_source
+    assert "source_root / 'macos_proxy_helper_daemon.py'" in spec_source
+
+
 def test_windows_packaging_uses_no_custom_python_runtime_hook() -> None:
     spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
     spec_source = spec_path.read_text(encoding='utf-8')
@@ -80,6 +99,16 @@ def test_windows_archive_check_recurses_into_pyz_and_tracks_qopenglwindow() -> N
     assert 'pyi-archive_viewer -r -b -l' in workflow_source
     assert "'PySide6.QtOpenGL'," in spec_source
     assert "'PySide6.QtOpenGLWidgets'," not in spec_source
+
+
+def test_linux_runtime_archive_check_recurses_into_pyz() -> None:
+    workflow_source = (
+        Path(__file__).resolve().parents[1] / '.github/workflows/build.yml'
+    ).read_text(encoding='utf-8')
+    linux_check = workflow_source.split('Verify Linux compiled Python dependencies', 1)[1]
+
+    assert 'pyi-archive_viewer -r -b -l dist/Fleasion-v*-Linux' in linux_check
+    assert 'fleasion.utils.qt_diagnostics' in linux_check
 
 
 def test_packaging_collects_lz4_native_extensions() -> None:

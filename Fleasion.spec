@@ -190,6 +190,23 @@ def _collect_optional_package(package: str) -> None:
         _collect_package(package)
 
 
+def _runtime_fleasion_modules() -> list[str]:
+    modules: list[str] = []
+    source_root = Path('src/fleasion')
+    excluded_files = {
+        source_root / 'linux_proxy_helper_daemon.py',
+        source_root / 'macos_proxy_helper_daemon.py',
+    }
+    for path in source_root.rglob('*.py'):
+        if path in excluded_files or source_root / 'scripts' in path.parents:
+            continue
+        parts = list(path.relative_to('src').with_suffix('').parts)
+        if parts[-1] == '__init__':
+            parts.pop()
+        modules.append('.'.join(parts))
+    return sorted(set(modules))
+
+
 def _entry_name_matches(entry: TocEntry, names: set[str]) -> bool:
     return any(Path(str(part)).name in names for part in entry[:2])
 
@@ -286,7 +303,12 @@ datas.extend(copy_metadata('fleasion'))
 binaries: list[CollectionEntry] = []
 if sys.platform == 'win32':
     binaries.append(('src/fleasion/cache/tools/ktx_to_png/ktx.dll', '.'))
-hiddenimports: list[str] = []
+hiddenimports: list[str] = _runtime_fleasion_modules()
+
+# Ruff's import-outside-top-level cleanup converted many feature imports to
+# importlib.import_module(). PyInstaller cannot reliably infer all of those
+# lazy edges, so include every Fleasion runtime module explicitly. Build
+# orchestration and privileged-helper entry points are excluded above.
 
 # NumPy is imported from feature modules that are not all reached during the
 # launcher import walk.  Collecting the package explicitly also preserves its

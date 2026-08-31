@@ -75,6 +75,7 @@ from .utils import (
     wait_for_roblox_exit,
 )
 from .utils.microprofiler import start_microprofiler
+from .utils.qt_diagnostics import install_qt_message_logging
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QCloseEvent, QFileOpenEvent, QScreen, QSessionManager, QShowEvent
@@ -4558,8 +4559,7 @@ def main() -> None:
 
     # Frozen GUI builds do not have a useful console for Qt's native warnings.
     # Capture warnings/errors in the normal rotating log before Qt/OpenGL setup.
-    qt_diagnostics = importlib.import_module('.utils.qt_diagnostics', __package__)
-    qt_diagnostics.install_qt_message_logging()
+    install_qt_message_logging()
     log_buffer.log(
         'App',
         'Runtime '
