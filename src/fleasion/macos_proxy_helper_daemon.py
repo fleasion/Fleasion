@@ -18,6 +18,7 @@ import socketserver
 import ssl
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -463,6 +464,9 @@ def _status():
         'ok': True,
         'version': HELPER_VERSION,
         'capabilities': list(HELPER_CAPABILITIES),
+        'pid': os.getpid(),
+        'ppid': os.getppid(),
+        'executable': sys.executable,
         'active_hosts': active_hosts,
         'backend_port': _backend_port,
         'lease_remaining': lease_remaining,
@@ -617,7 +621,12 @@ def main():
     relay = None
     try:
         logger.info(
-            'helper starting: control 127.0.0.1:%d, relay 127.0.0.1:443 -> 127.0.0.1:%d',
+            'helper starting: version=%d pid=%d ppid=%d executable=%s; '
+            'control 127.0.0.1:%d, relay 127.0.0.1:443 -> 127.0.0.1:%d',
+            HELPER_VERSION,
+            os.getpid(),
+            os.getppid(),
+            sys.executable,
             args.control_port,
             _backend_port,
         )

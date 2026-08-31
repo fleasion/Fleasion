@@ -116,6 +116,9 @@ def test_helper_control_requires_token(tmp_path, monkeypatch):
     response = daemon._handle_request({"token": token_file.read_text(), "action": "status"})
     assert response["ok"] is True
     assert response["version"] == daemon.HELPER_VERSION
+    assert response["pid"] == os.getpid()
+    assert response["ppid"] == os.getppid()
+    assert response["executable"] == sys.executable
     assert "patch_ca" in response["capabilities"]
     assert "probe_backend" in response["capabilities"]
 
@@ -251,6 +254,12 @@ def test_helper_installer_stages_helper_before_privileged_install(tmp_path, monk
     assert f"launchctl print system/{macos_proxy_helper.HELPER_ID}" in script
     assert f"launchctl kill SIGKILL system/{macos_proxy_helper.HELPER_ID}" in script
     assert "could not unload existing helper service" in script
+    assert f"lsof -nP -iTCP:{macos_proxy_helper.MACOS_PROXY_HELPER_CONTROL_PORT} -sTCP:LISTEN" in script
+    assert f"shasum -a 256 {macos_proxy_helper.HELPER_INSTALL_PATH}" in script
+    assert f"file {macos_proxy_helper.HELPER_INSTALL_PATH}" in script
+    assert "helper install diagnostics: service state" in script
+    assert "helper install diagnostics: control-port listener" in script
+    assert "helper install diagnostics: installed executable" in script
     assert "exit 41" in script
     assert "exit 42" in script
     for log_path in (

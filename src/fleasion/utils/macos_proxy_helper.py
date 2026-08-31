@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -117,7 +118,9 @@ def helper_is_ready() -> bool:
         log_buffer.log(
             'ProxyHelper',
             'Installed macOS proxy helper identity does not match this app build; '
-            f'expected version {EXPECTED_HELPER_VERSION}, got {status.get("version")!r}',
+            f'expected version {EXPECTED_HELPER_VERSION}, got {status.get("version")!r}; '
+            f'pid={status.get("pid")!r}, ppid={status.get("ppid")!r}, '
+            f'executable={status.get("executable")!r}',
         )
         return False
     return True
@@ -145,7 +148,9 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
             False,
             'Helper identity does not match this app build: '
             f'version={status.get("version")!r} (expected {EXPECTED_HELPER_VERSION}), '
-            f'capabilities={status.get("capabilities")!r}',
+            f'capabilities={status.get("capabilities")!r}, '
+            f'pid={status.get("pid")!r}, ppid={status.get("ppid")!r}, '
+            f'executable={status.get("executable")!r}',
         )
     return True, ''
 
@@ -296,6 +301,16 @@ def install_helper() -> tuple[bool, str]:
         return False, f'Bundled helper executable is missing: {source}'
 
     try:
+        source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    except OSError as exc:
+        return False, f'Could not fingerprint the bundled macOS proxy helper: {exc}'
+
+    log_buffer.log(
+        'ProxyHelper',
+        f'Bundled macOS proxy helper: path={source}; sha256={source_sha256}',
+    )
+
+    try:
         staging_dir, staging_helper, staging_plist = _stage_installer_payload(source)
     except Exception as exc:
         return False, f'Could not stage the macOS proxy helper installer: {exc}'
@@ -371,6 +386,14 @@ def install_helper() -> tuple[bool, str]:
     kill_service = shlex.join(['/bin/launchctl', 'kill', 'SIGKILL', service_target])
     print_service = shlex.join(['/bin/launchctl', 'print', service_target])
     enable_cmd = shlex.join(['/bin/launchctl', 'enable', service_target])
+    lsof_listener = shlex.join([
+        '/usr/sbin/lsof',
+        '-nP',
+        f'-iTCP:{MACOS_PROXY_HELPER_CONTROL_PORT}',
+        '-sTCP:LISTEN',
+    ])
+    helper_hash = shlex.join(['/usr/bin/shasum', '-a', '256', str(HELPER_INSTALL_PATH)])
+    helper_file = shlex.join(['/usr/bin/file', str(HELPER_INSTALL_PATH)])
     install_cmds = ' && '.join(shlex.join(command) for command in commands)
     shell_cmd = f"""
 set -e
@@ -425,6 +448,13 @@ fi
 if [ "$load_status" -ne 0 ]; then
   /bin/echo "legacy load failed ($load_status): $load_output"
 fi
+/bin/echo "helper install diagnostics: service state"
+{print_service} 2>&1 || true
+/bin/echo "helper install diagnostics: control-port listener"
+{lsof_listener} 2>&1 || true
+/bin/echo "helper install diagnostics: installed executable"
+{helper_file} 2>&1 || true
+{helper_hash} 2>&1 || true
 if [ "$bootstrap_status" -ne 0 ] \
   && [ "$bootstrap_retry_status" -ne 0 ] \
   && [ "$load_status" -ne 0 ]; then
