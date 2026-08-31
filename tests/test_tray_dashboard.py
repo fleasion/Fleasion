@@ -23,8 +23,7 @@ def _toggle_dashboard(tray: SystemTray) -> None:
 
 
 def _show_replacer_config(tray: SystemTray) -> None:
-    callback = cast('Callable[[SystemTray], None]', SystemTray.__dict__['_show_replacer_config'])
-    callback(tray)
+    tray.show_replacer_config()
 
 
 def _set_dashboard_foreground_mode(tray: SystemTray, enabled: bool) -> None:
@@ -49,8 +48,7 @@ def _on_tray_activated(tray: SystemTray, reason: QSystemTrayIcon.ActivationReaso
 
 
 def _exit_app(tray: SystemTray) -> None:
-    callback = cast('Callable[[SystemTray], None]', SystemTray.__dict__['_exit_app'])
-    callback(tray)
+    tray.exit_app()
 
 
 def _ensure_exit_action_enabled(tray: SystemTray) -> None:
@@ -212,7 +210,7 @@ def test_dashboard_toggle_hides_visible_window() -> None:
     dashboard = _DashboardStub(visible=True)
     foreground_modes: list[bool] = []
     system_tray.__dict__['dashboard_window'] = dashboard
-    system_tray.__dict__['_show_replacer_config'] = _noop
+    system_tray.__dict__['show_replacer_config'] = _noop
     system_tray.__dict__['_set_dashboard_foreground_mode'] = _foreground_recorder(foreground_modes)
 
     _toggle_dashboard(system_tray)
@@ -281,7 +279,7 @@ def test_dashboard_toggle_shows_hidden_window() -> None:
     dashboard = _DashboardStub(visible=False)
     show_calls: list[bool] = []
     system_tray.__dict__['dashboard_window'] = dashboard
-    system_tray.__dict__['_show_replacer_config'] = _toggle_recorder(show_calls)
+    system_tray.__dict__['show_replacer_config'] = _toggle_recorder(show_calls)
 
     _toggle_dashboard(system_tray)
 

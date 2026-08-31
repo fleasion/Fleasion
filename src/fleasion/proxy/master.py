@@ -3044,6 +3044,21 @@ def _remove_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None =
         return True
 
 
+def cleanup_hosts_entries(
+    hosts: set[str], error_details: _ErrorDetails | None = None
+) -> bool:
+    """Remove owned hosts entries and finish the clean-exit bookkeeping."""
+    if hosts_file_is_oversized(error_details):
+        cleaned = repair_hosts_file(hosts, error_details=error_details)
+    else:
+        cleaned = _remove_hosts_entries(hosts, error_details=error_details)
+    if not cleaned:
+        return False
+    _flush_dns()
+    _cancel_hosts_cleanup_on_reboot()
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Roblox CA installation
 # ---------------------------------------------------------------------------

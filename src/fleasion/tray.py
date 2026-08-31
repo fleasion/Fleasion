@@ -508,7 +508,7 @@ class SystemTray:
         # Exit
         self.exit_action = QAction(tr('ui.tray.exit'), self.menu)
         self.exit_action.setEnabled(True)
-        self.exit_action.triggered.connect(self._exit_app)
+        self.exit_action.triggered.connect(self.exit_app)
         self.menu.addAction(self.exit_action)
 
     def _ensure_exit_action_enabled(self) -> None:
@@ -720,7 +720,7 @@ class SystemTray:
 
         self.menu.addMenu(settings_menu)
 
-    def _refresh_settings_tab(self) -> None:
+    def refresh_settings_tab(self) -> None:
         """Push current config state to the Settings tab if the dashboard is open."""
         if self.dashboard_window:
             settings_tab = _settings_tab(self.dashboard_window)
@@ -827,7 +827,7 @@ class SystemTray:
         self.update_status()
         if self.dashboard_window and hasattr(self.dashboard_window, 'set_proxy_features_enabled'):
             self.dashboard_window.set_proxy_features_enabled(enabled)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def notify_proxy_mode_changed(self) -> None:
         """Let the dashboard's Proxy tab know hosts/env mode was switched in Settings."""
@@ -845,13 +845,13 @@ class SystemTray:
 
         # Save to config
         self.config_manager.theme = theme
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_export_naming(self, option: str) -> None:
         """Toggle an export naming option."""
         new_state = self.config_manager.toggle_export_naming(option)
         self.export_naming_actions[option].setChecked(new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_always_on_top(self) -> None:
         """Toggle always on top setting."""
@@ -870,21 +870,21 @@ class SystemTray:
                     flags &= ~Qt.WindowType.WindowStaysOnTopHint
                 window.setWindowFlags(flags)
                 window.show()
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_open_dashboard_on_launch(self) -> None:
         """Toggle open dashboard on launch setting."""
         new_state = not self.config_manager.open_dashboard_on_launch
         self.config_manager.open_dashboard_on_launch = new_state
         self.open_dashboard_action.setChecked(new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_auto_delete_cache(self) -> None:
         """Toggle auto delete cache on Roblox exit setting."""
         new_state = not self.config_manager.auto_delete_cache_on_exit
         self.config_manager.auto_delete_cache_on_exit = new_state
         self.auto_delete_cache_action.setChecked(new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_run_on_boot(self) -> None:
         """Toggle run-on-boot for the current platform."""
@@ -897,7 +897,7 @@ class SystemTray:
         )
         if ok:
             self.config_manager.run_on_boot = checked
-            self._refresh_settings_tab()
+            self.refresh_settings_tab()
         else:
             if sys.platform == 'win32':
                 # Imported on demand to avoid an app <-> tray import cycle during startup.
@@ -915,7 +915,7 @@ class SystemTray:
 
                 if show_run_on_boot_failure(None, self.config_manager.proxy_mode, enabled=checked):
                     self.config_manager.run_on_boot = checked
-                    self._refresh_settings_tab()
+                    self.refresh_settings_tab()
                     return
             # Revert UI state and show error dialog with detail
             self.run_on_boot_action.setChecked(not checked)
@@ -960,7 +960,7 @@ class SystemTray:
                     warn.setIcon(QMessageBox.Icon.Warning)
                     warn.setText(tr('ui.tray.failed_to_refresh_autostart_after_changing_desktop'))
                     warn.exec()
-            self._refresh_settings_tab()
+            self.refresh_settings_tab()
         else:
             self.desktop_integration_action.setChecked(not checked)
 
@@ -983,42 +983,42 @@ class SystemTray:
         new_state = not self.config_manager.clear_cache_on_launch
         self.config_manager.clear_cache_on_launch = new_state
         self.clear_cache_action.setChecked(new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_close_scraped_games(self) -> None:
         """Toggle close Roblox on open setting."""
         new_state = not self.config_manager.close_scraped_games_on_open
         self.config_manager.close_scraped_games_on_open = new_state
         self.close_scraped_games_action.setChecked(new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_close_viewer_on_replace(self) -> None:
         """Toggle close viewer on replace setting."""
         new_state = not self.config_manager.close_viewer_on_replace
         self.config_manager.close_viewer_on_replace = new_state
         self.close_viewer_on_replace_action.setChecked(new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_close_scraped_games_menu_on_open(self) -> None:
         """Toggle close Scraped Games menu on JSON open setting."""
         new_state = not self.config_manager.close_scraped_games_menu_on_open
         self.config_manager.close_scraped_games_menu_on_open = new_state
         self.close_scraped_games_menu_on_open_action.setChecked(new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_show_replacer_notifications(self) -> None:
         """Toggle replacer notification popups."""
         new_state = not self.config_manager.show_replacer_notifications
         self.config_manager.show_replacer_notifications = new_state
         self.show_replacer_notifications_action.setChecked(new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_close_to_tray(self) -> None:
         """Toggle close to tray setting."""
         new_state = not self.config_manager.close_to_tray
         self.config_manager.close_to_tray = new_state
         self.close_to_tray_action.setChecked(new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_show_names(self) -> None:
         """Toggle Show Names setting."""
@@ -1029,7 +1029,7 @@ class SystemTray:
             tab = _cache_viewer_tab(self.dashboard_window)
             if tab is not None:
                 _cache_viewer_show_names(tab, new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _toggle_show_creator_id(self) -> None:
         """Toggle Show User ID setting."""
@@ -1040,7 +1040,7 @@ class SystemTray:
             tab = _cache_viewer_tab(self.dashboard_window)
             if tab is not None:
                 _cache_viewer_show_creator_id(tab, new_state)
-        self._refresh_settings_tab()
+        self.refresh_settings_tab()
 
     def _apply_always_on_top_to_window(self, window: QWidget) -> None:
         """Apply always on top setting to a window."""
@@ -1082,7 +1082,7 @@ class SystemTray:
         window.raise_()
         window.activateWindow()
 
-    def _show_replacer_config(self) -> None:
+    def show_replacer_config(self) -> None:
         """Show Replacer Config window (Dashboard)."""
         self._set_dashboard_foreground_mode(enabled=True)
         if self.dashboard_window:
@@ -1113,7 +1113,7 @@ class SystemTray:
             self.open_windows.remove(self.dashboard_window)
         self.dashboard_window = None
         if not self._exiting and not self.config_manager.close_to_tray:
-            self._exit_app()
+            self.exit_app()
 
     def _toggle_dashboard(self) -> None:
         """Toggle dashboard visibility."""
@@ -1121,7 +1121,7 @@ class SystemTray:
             self.dashboard_window.hide()
             self._set_dashboard_foreground_mode(enabled=False)
         else:
-            self._show_replacer_config()
+            self.show_replacer_config()
 
     def _set_dashboard_foreground_mode(self, enabled: bool) -> None:
         """Keep the macOS dashboard visible when Fleasion loses focus."""
@@ -1341,13 +1341,13 @@ class SystemTray:
         if not restarted:
             log_buffer.log('Restart', 'Could not verify replacement Fleasion startup')
             return False
-        self._exit_app(
+        self.exit_app(
             preserve_roblox=preserve_player,
             force_close_roblox=not preserve_player,
         )
         return True
 
-    def _exit_app(
+    def exit_app(
         self,
         *,
         preserve_roblox: bool = False,

@@ -9,7 +9,7 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PySide6.QtCore import QEvent, QSharedMemory, QUrl
+from PySide6.QtCore import QByteArray, QEvent, QSharedMemory, QUrl
 from PySide6.QtWidgets import QApplication
 
 from fleasion import __version__, app as app_module
@@ -75,6 +75,13 @@ class _ProxyErrorInvokerAdapter(Protocol):
     retry_proxy: _Signal0
 
     def handle_proxy_error(self, code: str, details: object) -> None: ...
+
+
+class _SingleInstanceStateAdapter(Protocol):
+    shared_memory: object | None
+    control_server: object | None
+    app: object | None
+    tray: object | None
 
 
 class _ShowRobloxPermissionFailure(Protocol):
@@ -290,10 +297,13 @@ _strip_restart_handoff_args = cast(
     'Callable[[list[str]], list[str]]', _private_attr(app_module, '_strip_restart_handoff_args')
 )
 _ROBLOX_EXIT_MONITOR_FACTORY = cast('_RobloxExitMonitorFactory', app_module.RobloxExitMonitor)
+_SINGLE_INSTANCE_STATE = cast(
+    '_SingleInstanceStateAdapter', _private_attr(app_module, '_single_instance_state')
+)
 
 
 def _single_instance_control_server() -> object | None:
-    return cast('object | None', _private_attr(app_module, '_single_instance_control_server'))
+    return _SINGLE_INSTANCE_STATE.control_server
 
 
 def _monitor_studio_signal(monitor: object) -> _Signal0:
@@ -521,14 +531,14 @@ def test_kill_other_instances_prefers_graceful_exit(monkeypatch: pytest.MonkeyPa
 
 def test_single_instance_quit_command_exits_tray() -> None:
     class _SocketStub:
-        def readAll(self) -> bytes:
-            return b'quit\n'
+        def readAll(self) -> QByteArray:
+            return QByteArray(b'quit\n')
 
     class _TrayStub:
         def __init__(self) -> None:
             self.exit_calls = 0
 
-        def _exit_app(self) -> None:
+        def exit_app(self) -> None:
             self.exit_calls += 1
 
     tray = _TrayStub()
@@ -540,14 +550,14 @@ def test_single_instance_quit_command_exits_tray() -> None:
 
 def test_single_instance_preserve_command_keeps_env_player() -> None:
     class _SocketStub:
-        def readAll(self) -> bytes:
-            return b'quit-preserve-env-player\n'
+        def readAll(self) -> QByteArray:
+            return QByteArray(b'quit-preserve-env-player\n')
 
     class _TrayStub:
         def __init__(self) -> None:
             self.exit_kwargs: list[dict[str, object]] = []
 
-        def _exit_app(self, **kwargs: object) -> None:
+        def exit_app(self, **kwargs: object) -> None:
             self.exit_kwargs.append(kwargs)
 
     tray = _TrayStub()
@@ -586,8 +596,8 @@ def test_single_instance_launch_command_preserves_uri(monkeypatch: pytest.Monkey
     )
 
     class _SocketStub:
-        def readAll(self) -> bytes:
-            return b'launch-roblox\nroblox://experiences/start?placeId=1\n'
+        def readAll(self) -> QByteArray:
+            return QByteArray(b'launch-roblox\nroblox://experiences/start?placeId=1\n')
 
     class _TrayStub:
         config_manager = type(
@@ -672,6 +682,12 @@ def test_linux_env_proxy_migration_adopts_running_sober_without_relaunch(
         was_running=False,
         _player_was_running=False,
     )
+
+    def _mark_player_running_at_startup() -> None:
+        monitor.was_running = True
+        monitor._player_was_running = True
+
+    monitor.mark_player_running_at_startup = _mark_player_running_at_startup
 
     class _MessageBox:
         class Icon:
@@ -760,6 +776,12 @@ def test_env_proxy_migration_does_not_relaunch_when_proxy_features_are_disabled(
         was_running=False,
         _player_was_running=False,
     )
+
+    def _mark_player_running_at_startup() -> None:
+        monitor.was_running = True
+        monitor._player_was_running = True
+
+    monitor.mark_player_running_at_startup = _mark_player_running_at_startup
 
     class _MessageBox:
         class Icon:
@@ -2152,10 +2174,10 @@ def test_resume_single_instance_fails_when_control_server_cannot_be_restored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shared_memory = SimpleNamespace(isAttached=lambda: True)
-    monkeypatch.setattr(app_module, '_single_instance_shared_memory', shared_memory)
-    monkeypatch.setattr(app_module, '_single_instance_app', object())
-    monkeypatch.setattr(app_module, '_single_instance_tray', object())
-    monkeypatch.setattr(app_module, '_single_instance_control_server', None)
+    monkeypatch.setattr(_SINGLE_INSTANCE_STATE, 'shared_memory', shared_memory)
+    monkeypatch.setattr(_SINGLE_INSTANCE_STATE, 'app', object())
+    monkeypatch.setattr(_SINGLE_INSTANCE_STATE, 'tray', object())
+    monkeypatch.setattr(_SINGLE_INSTANCE_STATE, 'control_server', None)
     monkeypatch.setattr(
         app_module, '_start_single_instance_control_server', _args_callback(lambda *_args: None)
     )
@@ -2492,8 +2514,8 @@ def test_windows_verified_hosts_restart_waits_for_final_elevated_child(
 
     monkeypatch.setattr(app_module, '_suspend_single_instance_for_handoff', suspend)
     monkeypatch.setattr(
-        app_module,
-        '_single_instance_shared_memory',
+        _SINGLE_INSTANCE_STATE,
+        'shared_memory',
         SimpleNamespace(isAttached=lambda: state['attached']),
     )
     monkeypatch.setattr(

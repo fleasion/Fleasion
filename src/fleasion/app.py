@@ -23,6 +23,7 @@ import threading
 import time
 import webbrowser
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Protocol, TypedDict, TypeIs, cast, override
 
@@ -30,7 +31,6 @@ from PySide6.QtCore import QEvent, QObject, QSharedMemory, Qt, QTimer, Signal, S
 from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
-    QAbstractButton,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -86,13 +86,6 @@ if TYPE_CHECKING:
 
 type ErrorDetails = dict[str, object]
 type VoidCallback = Callable[[], object]
-
-
-if TYPE_CHECKING:
-
-    def _qt_bytes(value: object) -> bytes: ...
-else:
-    _qt_bytes = bytes
 
 
 class _RelaunchCompletion(TypedDict, total=False):
@@ -177,113 +170,25 @@ _UNSPECIFIED_LOCAL_ADDRESS = str(ipaddress.IPv4Address(0))
 _AUTH_SKIP_SELECTION_KEY = 'continue_without_token'
 
 
-def _preserve_int_input(value: object) -> str | int | float:
-    if TYPE_CHECKING:
-        assert isinstance(value, str | int | float)
-    return value
+def _get_int_detail(details: ErrorDetails, key: str, default: int) -> int:
+    value = details.get(key) or default
+    if not isinstance(value, str | int | float):
+        return default
+    try:
+        return int(value)
+    except ValueError, OverflowError:
+        return default
 
 
 def _is_error_details(value: object) -> TypeIs[ErrorDetails]:
-    return isinstance(value, dict)
-
-
-def _preserve_details(value: object) -> ErrorDetails:
-    if TYPE_CHECKING:
-        assert _is_error_details(value)
-    return value
-
-
-def _is_object_iterable(value: object) -> TypeIs[Iterable[object]]:
-    return isinstance(value, Iterable)
-
-
-def _preserve_iterable(value: object) -> Iterable[object]:
-    if TYPE_CHECKING:
-        assert _is_object_iterable(value)
-    return value
+    if not isinstance(value, dict):
+        return False
+    details = cast('dict[object, object]', value)
+    return all(isinstance(key, str) for key in details)
 
 
 def _is_object_list(value: object) -> TypeIs[list[object]]:
     return isinstance(value, list)
-
-
-def _preserve_object_list(value: object) -> list[object]:
-    if TYPE_CHECKING:
-        assert _is_object_list(value)
-    return value
-
-
-def _is_file_open_event(event: QEvent) -> TypeIs[QFileOpenEvent]:
-    return event.type() == QEvent.Type.FileOpen
-
-
-def _optional_button[T: QAbstractButton](value: T) -> T | None:
-    return value
-
-
-def _optional_local_socket(value: QLocalSocket) -> QLocalSocket | None:
-    return value
-
-
-def _preserve_config_manager(value: object) -> ConfigManager:
-    if TYPE_CHECKING:
-        assert isinstance(value, ConfigManager)
-    return value
-
-
-def _preserve_proxy_master(value: object) -> ProxyMaster | None:
-    if TYPE_CHECKING:
-        assert value is None or isinstance(value, ProxyMaster)
-    return value
-
-
-def _preserve_env_lifecycle(value: object) -> EnvProxyLifecycleController | None:
-    if TYPE_CHECKING:
-        assert value is None or isinstance(value, EnvProxyLifecycleController)
-    return value
-
-
-def _get_required_attr(value: object, name: str) -> object:
-    return getattr(value, name)
-
-
-def _get_required_callable(value: object, name: str) -> Callable[..., object]:
-    callback = _get_required_attr(value, name)
-    if TYPE_CHECKING:
-        assert callable(callback)
-    return callback
-
-
-def _set_attr(value: object, name: str, new_value: object) -> None:
-    setattr(value, name, new_value)
-
-
-def _call_tray_exit(tray: object) -> None:
-    callback: object = _get_required_attr(tray, '_exit_app')
-    if TYPE_CHECKING:
-        assert callable(callback)
-    callback()
-
-
-def _call_tray_exit_preserving_player(tray: object) -> None:
-    callback: object = _get_required_attr(tray, '_exit_app')
-    if TYPE_CHECKING:
-        assert callable(callback)
-    callback(preserve_roblox=True)
-
-
-def _call_tray_refresh_settings(tray: object) -> None:
-    callback: object = _get_required_attr(tray, '_refresh_settings_tab')
-    if TYPE_CHECKING:
-        assert callable(callback)
-    callback()
-
-
-def _call_tray_show_replacer_config(tray: object) -> None:
-    callback: object = _get_required_attr(tray, '_show_replacer_config')
-    if TYPE_CHECKING:
-        assert callable(callback)
-    callback()
 
 
 class _ProcessHandle(Protocol):
@@ -312,26 +217,16 @@ _HOSTS_CLEANUP_WRITE_FAILED_EXIT = 11
 _HOSTS_CLEANUP_UNEXPECTED_EXIT = 12
 _MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS = 2.0
 
-_single_instance_shared_memory: QSharedMemory | None = None
-_single_instance_control_server: QLocalServer | None = None
-_single_instance_app: QApplication | None = None
-_single_instance_tray: SystemTray | None = None
+
+@dataclass(slots=True)
+class _SingleInstanceState:
+    shared_memory: QSharedMemory | None = None
+    control_server: QLocalServer | None = None
+    app: QApplication | None = None
+    tray: SystemTray | None = None
 
 
-def _set_single_instance_shared_memory(value: QSharedMemory | None) -> None:
-    globals()['_single_instance_shared_memory'] = value
-
-
-def _set_single_instance_control_server(value: QLocalServer | None) -> None:
-    globals()['_single_instance_control_server'] = value
-
-
-def _set_single_instance_app(value: QApplication | None) -> None:
-    globals()['_single_instance_app'] = value
-
-
-def _set_single_instance_tray(value: SystemTray | None) -> None:
-    globals()['_single_instance_tray'] = value
+_single_instance_state = _SingleInstanceState()
 
 
 class RestartHandoffUncertainError(RuntimeError):
@@ -472,8 +367,7 @@ def _show_env_proxy_migration(
     if player_running:
         # Do not let the process monitor interpret a Player that predates this
         # startup as a fresh launch and relaunch it without the user's choice.
-        roblox_monitor.was_running = True
-        _set_attr(roblox_monitor, '_player_was_running', new_value=True)
+        roblox_monitor.mark_player_running_at_startup()
 
     msg = QMessageBox(_visible_parent_widget())
     msg.setWindowTitle(tr('app.new_default_roblox_env_proxy'))
@@ -543,7 +437,7 @@ class _MacOSAuthSourceDialog(QDialog):
 
 def _quit_after_modal_closes(
     modal: _MacOSAuthSourceDialog | _ForcedAcknowledgeMessageBox,
-    tray: object | None = None,
+    tray: SystemTray | None = None,
     selected: dict[str, str] | None = None,
 ) -> None:
     """Close the active modal first, then run the normal quit path."""
@@ -561,8 +455,8 @@ def _quit_after_modal_closes(
         log_buffer.log('App', f'Could not close modal before quit: {exc}')
 
     def _quit() -> None:
-        if tray is not None and hasattr(tray, '_exit_app'):
-            _call_tray_exit(tray)
+        if tray is not None:
+            tray.exit_app()
         else:
             QApplication.quit()
 
@@ -599,30 +493,17 @@ def _cleanup_hosts_once() -> int:
 
     proxy_master = importlib.import_module('.proxy.master', __package__)
 
-    remove_hosts_entries = _get_required_callable(proxy_master, '_remove_hosts_entries')
-    flush_dns = _get_required_callable(proxy_master, '_flush_dns')
-    cancel_hosts_cleanup_on_reboot = _get_required_callable(
-        proxy_master, '_cancel_hosts_cleanup_on_reboot'
-    )
     error_details: ErrorDetails = {}
 
     def _perform_cleanup() -> int:
-        if proxy_master.hosts_file_is_oversized(error_details):
-            cleaned = proxy_master.repair_hosts_file(
-                set(proxy_master.INTERCEPT_HOSTS), error_details=error_details
-            )
-        else:
-            cleaned = remove_hosts_entries(
-                set(proxy_master.INTERCEPT_HOSTS), error_details=error_details
-            )
-        if not cleaned:
+        if not proxy_master.cleanup_hosts_entries(
+            set(proxy_master.INTERCEPT_HOSTS), error_details=error_details
+        ):
             detail = error_details.get('error') or tr('app.hosts.unknown_write_failure')
             log_buffer.log(
                 'Hosts', f'Elevated hosts cleanup child could not update the hosts file: {detail}'
             )
             return _HOSTS_CLEANUP_WRITE_FAILED_EXIT
-        flush_dns()
-        cancel_hosts_cleanup_on_reboot()
         return 0
 
     try:
@@ -690,8 +571,8 @@ def _show_oversized_hosts_file_dialog(
         or Path(hosts_path).parent
         or r'C:\Windows\System32\drivers\etc'
     )
-    size = int(_preserve_int_input(details.get('hosts_size_bytes') or 0))
-    limit = int(_preserve_int_input(details.get('hosts_size_limit_bytes') or 512 * 1024))
+    size = _get_int_detail(details, 'hosts_size_bytes', 0)
+    limit = _get_int_detail(details, 'hosts_size_limit_bytes', 512 * 1024)
     size_mib = size / (1024 * 1024)
     limit_kib = limit / 1024
     parent = _visible_parent_widget()
@@ -772,8 +653,8 @@ def _show_hosts_capacity_dialog(details: ErrorDetails) -> None:
         or Path(hosts_path).parent
         or r'C:\Windows\System32\drivers\etc'
     )
-    limit = int(_preserve_int_input(details.get('hosts_size_limit_bytes') or 512 * 1024))
-    candidate_size = int(_preserve_int_input(details.get('hosts_size_bytes') or 0))
+    limit = _get_int_detail(details, 'hosts_size_limit_bytes', 512 * 1024)
+    candidate_size = _get_int_detail(details, 'hosts_size_bytes', 0)
     msg = QMessageBox(_visible_parent_widget())
     msg.setWindowTitle(tr('app.fleasion_hosts_file_near_safety_limit'))
     msg.setIcon(QMessageBox.Icon.Warning)
@@ -802,8 +683,7 @@ def _show_env_proxy_stale_hosts_dialog() -> bool:
     """Offer a one-shot privileged repair for oversized or stale Env Proxy hosts entries."""
     proxy_master = importlib.import_module('.proxy.master', __package__)
 
-    other_proxy_owner_alive = _get_required_callable(proxy_master, '_other_proxy_owner_alive')
-    if other_proxy_owner_alive():
+    if proxy_master.other_proxy_owner_alive():
         log_buffer.log(
             'Hosts',
             'Skipped Env Proxy stale hosts prompt because another proxy owns the hosts file',
@@ -883,15 +763,15 @@ def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
 def _refresh_run_on_boot_ui(tray: SystemTray | None, enabled: bool) -> None:
     if tray is not None and hasattr(tray, 'run_on_boot_action'):
         tray.run_on_boot_action.setChecked(enabled)
-    if tray is not None and hasattr(tray, '_refresh_settings_tab'):
-        _call_tray_refresh_settings(tray)
+    if tray is not None:
+        tray.refresh_settings_tab()
 
 
 def _refresh_desktop_integration_ui(tray: SystemTray | None, enabled: bool) -> None:
     if tray is not None and hasattr(tray, 'desktop_integration_action'):
         tray.desktop_integration_action.setChecked(enabled)
-    if tray is not None and hasattr(tray, '_refresh_settings_tab'):
-        _call_tray_refresh_settings(tray)
+    if tray is not None:
+        tray.refresh_settings_tab()
 
 
 def _show_run_on_boot_failure(
@@ -1112,10 +992,11 @@ def _poll_roblox_permission_repair(
     clear_repair_result(CONFIG_DIR)
     clear_pending_repair(CONFIG_DIR)
     if result.get('ok'):
+        granted = result.get('granted')
+        granted_count = len(granted) if _is_object_list(granted) else 0
         log_buffer.log(
             'RobloxPermissions',
-            'Granted Modify access to '
-            f'{len(_preserve_object_list(result.get("granted", [])))} Roblox installation(s)',
+            f'Granted Modify access to {granted_count} Roblox installation(s)',
         )
         if mod_manager is not None:
             run_in_thread(mod_manager.reapply_all)()
@@ -1170,10 +1051,11 @@ def _poll_windows_firewall_repair(deadline: float) -> None:
     clear_repair_result(CONFIG_DIR)
     clear_pending_repair(CONFIG_DIR)
     if result.get('ok'):
+        rules = result.get('rules')
+        rule_count = len(rules) if _is_object_list(rules) else 0
         log_buffer.log(
             'WindowsFirewall',
-            f'Added {len(_preserve_object_list(result.get("rules", [])))} '
-            'Fleasion firewall rule(s)',
+            f'Added {rule_count} Fleasion firewall rule(s)',
         )
         QMessageBox.information(
             _visible_parent_widget(),
@@ -2057,18 +1939,18 @@ def _join_restart_handoff(token: str, parent_pid: int) -> bool:
 
 def _suspend_single_instance_for_handoff() -> bool:
     """Temporarily transfer the single-instance slot while keeping the proxy alive."""
-    shared_memory = _single_instance_shared_memory
+    shared_memory = _single_instance_state.shared_memory
     if shared_memory is None or not shared_memory.isAttached():
         log_buffer.log(
             'Restart', 'Cannot transfer restart ownership: single-instance lock is absent'
         )
         return False
 
-    server = _single_instance_control_server
+    server = _single_instance_state.control_server
     if server is not None:
         server.close()
         QLocalServer.removeServer(_SINGLE_INSTANCE_CONTROL_SERVER)
-        _set_single_instance_control_server(None)
+        _single_instance_state.control_server = None
 
     if shared_memory.detach():
         return True
@@ -2084,7 +1966,7 @@ def _suspend_single_instance_for_handoff() -> bool:
 
 def _resume_single_instance_after_handoff_failure() -> bool:
     """Reclaim both single-instance ownership surfaces after a failed restart."""
-    shared_memory = _single_instance_shared_memory
+    shared_memory = _single_instance_state.shared_memory
     if shared_memory is None or not shared_memory.isAttached():
         replacement_lock = QSharedMemory(_SINGLE_INSTANCE_KEY)
         if not replacement_lock.create(1):
@@ -2094,9 +1976,9 @@ def _resume_single_instance_after_handoff_failure() -> bool:
                 f'{replacement_lock.errorString()}',
             )
             return False
-        _set_single_instance_shared_memory(replacement_lock)
+        _single_instance_state.shared_memory = replacement_lock
 
-    if _single_instance_app is None or _single_instance_tray is None:
+    if _single_instance_state.app is None or _single_instance_state.tray is None:
         log_buffer.log(
             'Restart',
             'Could not restore single-instance control endpoint: application state is unavailable',
@@ -2104,8 +1986,8 @@ def _resume_single_instance_after_handoff_failure() -> bool:
         return False
 
     control_server = _start_single_instance_control_server(
-        _single_instance_app,
-        _single_instance_tray,
+        _single_instance_state.app,
+        _single_instance_state.tray,
     )
     if control_server is None:
         log_buffer.log(
@@ -2113,7 +1995,7 @@ def _resume_single_instance_after_handoff_failure() -> bool:
             'Could not restore single-instance control endpoint after failed restart',
         )
         return False
-    _set_single_instance_control_server(control_server)
+    _single_instance_state.control_server = control_server
     return True
 
 
@@ -2455,8 +2337,9 @@ def _show_admin_required_dialog(parent: QWidget | None = None) -> None:
 
 def _show_proxy_bind_error_dialog(details: ErrorDetails) -> None:
     """Show a user-facing popup when Fleasion cannot bind its proxy port."""
-    port = int(_preserve_int_input(details.get('port') or 443))
-    owners = _preserve_iterable(details.get('owners') or [])
+    port = _get_int_detail(details, 'port', 443)
+    owners_value = details.get('owners')
+    owners = owners_value if _is_object_list(owners_value) else []
     bind_reason = str(details.get('bind_reason') or '')
 
     top = QApplication.topLevelWidgets()
@@ -2474,24 +2357,27 @@ def _show_proxy_bind_error_dialog(details: ErrorDetails) -> None:
 
     if bind_reason == 'access_denied_or_reserved':
         owners_html = tr('app.proxy_bind.access_denied', port=port)
-    elif owners:
-        owner_lines = '<br>'.join(
+    else:
+        owner_lines = [
             tr(
                 'app.proxy_bind.owner_entry',
                 process_name=html.escape(
-                    str(_preserve_details(owner).get('process_name') or tr('app.common.unknown'))
+                    str(owner.get('process_name') or tr('app.common.unknown'))
                 ),
-                pid=int(_preserve_int_input(_preserve_details(owner).get('pid') or 0)),
+                pid=_get_int_detail(owner, 'pid', 0),
                 local_address=html.escape(
-                    str(_preserve_details(owner).get('local_address') or _UNSPECIFIED_LOCAL_ADDRESS)
+                    str(owner.get('local_address') or _UNSPECIFIED_LOCAL_ADDRESS)
                 ),
                 port=port,
             )
             for owner in owners
+            if _is_error_details(owner)
+        ]
+        owners_html = (
+            tr('app.proxy_bind.owners', port=port, owner_lines='<br>'.join(owner_lines))
+            if owner_lines
+            else tr('app.proxy_bind.other_owner', port=port)
         )
-        owners_html = tr('app.proxy_bind.owners', port=port, owner_lines=owner_lines)
-    else:
-        owners_html = tr('app.proxy_bind.other_owner', port=port)
 
     discord_url = APP_DISCORD
     if not discord_url.startswith(('http://', 'https://')):
@@ -2599,16 +2485,15 @@ def _show_hosts_write_exhausted_dialog(details: ErrorDetails) -> None:
 
 
 def _linux_hosts_nix_snippet(details: ErrorDetails) -> str:
-    raw_hosts = _preserve_iterable(
-        details.get('hosts')
-        or (
-            'apis.roblox.com',
-            'assetdelivery.roblox.com',
-            'contentdelivery.roblox.com',
-            'fts.rbxcdn.com',
-            'gamejoin.roblox.com',
-        )
+    default_hosts = (
+        'apis.roblox.com',
+        'assetdelivery.roblox.com',
+        'contentdelivery.roblox.com',
+        'fts.rbxcdn.com',
+        'gamejoin.roblox.com',
     )
+    hosts_value = details.get('hosts')
+    raw_hosts = hosts_value if _is_object_list(hosts_value) else default_hosts
     hosts = sorted({str(host).strip().lower() for host in raw_hosts if str(host).strip()})
     if not hosts:
         hosts = [
@@ -2684,49 +2569,37 @@ def _show_macos_ca_patch_failed_dialog(details: ErrorDetails) -> str | None:
         w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
-    failed: object = details.get('failed') or []
-    verified: object = details.get('verified') or []
-    failed_items = _preserve_object_list(failed)
-    verified_items = _preserve_object_list(verified)
+    failed = details.get('failed')
+    verified = details.get('verified')
+    failed_items = failed if _is_object_list(failed) else []
+    verified_items = verified if _is_object_list(verified) else []
     failed_lines: list[str] = []
-    if isinstance(failed, list):
-        for item in failed_items[:6]:
-            if _is_error_details(item):
-                item_details = item
-                path = (
-                    item_details.get('ca_file')
-                    or item_details.get('resource_dir')
-                    or tr('app.common.unknown_path')
+    for item in failed_items[:6]:
+        if _is_error_details(item):
+            path = item.get('ca_file') or item.get('resource_dir') or tr('app.common.unknown_path')
+            error = item.get('error') or item.get('status') or tr('app.common.unknown_error')
+            failed_lines.append(
+                tr(
+                    'app.common.bullet_path_error',
+                    path=html.escape(str(path)),
+                    error=html.escape(str(error)),
                 )
-                error = (
-                    item_details.get('error')
-                    or item_details.get('status')
-                    or tr('app.common.unknown_error')
-                )
-                failed_lines.append(
-                    tr(
-                        'app.common.bullet_path_error',
-                        path=html.escape(str(path)),
-                        error=html.escape(str(error)),
-                    )
-                )
+            )
 
     unhealthy_lines: list[str] = []
-    if isinstance(verified, list):
-        for item in verified_items[:6]:
-            if _is_error_details(item):
-                item_details = item
-                if item_details.get('healthy'):
-                    continue
-                path = item_details.get('path') or tr('app.common.unknown_path')
-                error = item_details.get('error') or tr('app.common.verification_failed')
-                unhealthy_lines.append(
-                    tr(
-                        'app.common.bullet_path_error',
-                        path=html.escape(str(path)),
-                        error=html.escape(str(error)),
-                    )
+    for item in verified_items[:6]:
+        if _is_error_details(item):
+            if item.get('healthy'):
+                continue
+            path = item.get('path') or tr('app.common.unknown_path')
+            error = item.get('error') or tr('app.common.verification_failed')
+            unhealthy_lines.append(
+                tr(
+                    'app.common.bullet_path_error',
+                    path=html.escape(str(path)),
+                    error=html.escape(str(error)),
                 )
+            )
 
     diagnostics_html = ''
     if failed_lines or unhealthy_lines:
@@ -2793,10 +2666,10 @@ def _show_macos_ca_trust_failed_dialog(details: ErrorDetails) -> None:
 
 
 def _show_roblox_ca_patch_failed_dialog(details: ErrorDetails) -> None:
-    failed: object = details.get('failed') or []
-    failed_items = _preserve_object_list(failed)
+    failed = details.get('failed')
+    failed_items = failed if _is_object_list(failed) else []
     lines: list[str] = []
-    for item in failed_items[:8] if isinstance(failed, list) else []:
+    for item in failed_items[:8]:
         if not _is_error_details(item):
             continue
         item_details = item
@@ -2827,23 +2700,22 @@ def _windows_ca_permission_denied_dirs(details: ErrorDetails) -> list[Path]:
         return []
 
     denied: set[Path] = set()
-    failed: object = details.get('failed') or []
-    failed_items = _preserve_object_list(failed)
-    for item in failed_items if isinstance(failed, list) else []:
-        if not isinstance(item, dict):
+    failed = details.get('failed')
+    failed_items = failed if _is_object_list(failed) else []
+    for item in failed_items:
+        if not _is_error_details(item):
             continue
-        item_details = _preserve_details(item)
-        error = str(item_details.get('error') or '').lower()
+        error = str(item.get('error') or '').lower()
         if not any(
             marker in error
             for marker in ('permission denied', 'access is denied', 'winerror 5', 'errno 13')
         ):
             continue
-        resource_dir = item_details.get('resource_dir')
+        resource_dir = item.get('resource_dir')
         if resource_dir:
             denied.add(Path(resource_dir))
             continue
-        ca_file = item_details.get('ca_file')
+        ca_file = item.get('ca_file')
         if ca_file:
             path = Path(ca_file)
             denied.add(path.parent.parent if path.parent.name.lower() == 'ssl' else path.parent)
@@ -2862,7 +2734,8 @@ def _show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
         w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
-    backend_probe = _preserve_details(details.get('backend_probe') or {})
+    backend_probe_value = details.get('backend_probe')
+    backend_probe = backend_probe_value if _is_error_details(backend_probe_value) else {}
     reachable = bool(backend_probe.get('reachable'))
     if reachable:
         probe_html = tr('app.macos_relay.reachable')
@@ -2875,12 +2748,12 @@ def _show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
         )
         probe_html = tr(
             'app.macos_relay.unreachable',
-            backend_port=int(_preserve_int_input(details.get('backend_port') or 58443)),
+            backend_port=_get_int_detail(details, 'backend_port', 58443),
             error_type=error_type,
             error_text=error_text,
         )
 
-    attempts = int(_preserve_int_input(details.get('attempts') or 1))
+    attempts = _get_int_detail(details, 'attempts', 1)
     while True:
         msg = QMessageBox(parent)
         if on_top:
@@ -3142,8 +3015,8 @@ def _choose_macos_auth_source_on_launch(
         config_manager.macos_auth_source = selected_browser
         roblox_auth = importlib.import_module('.utils.roblox_auth', __package__)
         roblox_auth.notify_auth_source_changed()
-        if tray is not None and hasattr(tray, '_refresh_settings_tab'):
-            _call_tray_refresh_settings(tray)
+        if tray is not None:
+            tray.refresh_settings_tab()
         return 'selected'
     if selected.get('continue_without_token'):
         return 'skipped'
@@ -3309,10 +3182,9 @@ def _show_auth_cookie_unavailable_dialog(
     countdown_buttons = [button for button in ack_buttons if button is not exit_button]
     for button in countdown_buttons:
         button.setEnabled(False)
-    ok_button = _optional_button(msg.button(QMessageBox.StandardButton.Ok))
+    ok_button = msg.button(QMessageBox.StandardButton.Ok)
     remaining_seconds = 5
-    if ok_button is not None:
-        ok_button.setText(tr('app.ok_value_s', value0=remaining_seconds))
+    ok_button.setText(tr('app.ok_value_s', value0=remaining_seconds))
 
     countdown_timer = QTimer(msg)
     countdown_timer.setInterval(1000)
@@ -3325,9 +3197,8 @@ def _show_auth_cookie_unavailable_dialog(
             msg.allow_close()
             for button in countdown_buttons:
                 button.setEnabled(True)
-            if ok_button is not None:
-                ok_button.setText(tr('app.ok'))
-        elif ok_button is not None:
+            ok_button.setText(tr('app.ok'))
+        else:
             ok_button.setText(tr('app.ok_value_s', value0=remaining_seconds))
 
     countdown_timer.timeout.connect(_update_auth_warning_countdown)
@@ -3451,7 +3322,8 @@ def _show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
 
 def _show_tls_self_test_failed_dialog(details: ErrorDetails) -> None:
     """Show a user-facing error when the proxy cannot pass startup TLS checks."""
-    hosts = _preserve_iterable(details.get('hosts') or [])
+    hosts_value = details.get('hosts')
+    hosts = hosts_value if _is_object_list(hosts_value) else []
     host_text = ', '.join(str(host) for host in hosts) or tr('app.tls_self_test.default_routes')
     QMessageBox.critical(
         _visible_parent_widget(),
@@ -3604,10 +3476,11 @@ class _RobloxUrlEventFilter(QObject):
 
     @staticmethod
     def _event_target(event: QEvent) -> str | None:
-        if not _is_file_open_event(event):
+        if event.type() != QEvent.Type.FileOpen:
             return None
+        file_open_event = cast('QFileOpenEvent', event)
         try:
-            url = event.url()
+            url = file_open_event.url()
             target = url.toString() if url.isValid() else ''
         except AttributeError:
             target = ''
@@ -3697,6 +3570,11 @@ class RobloxExitMonitor(QObject):
                     f'Could not start macOS Roblox URI watcher: {type(exc).__name__}: {exc}',
                 )
         self._studio_detected.connect(self._on_studio_detected)
+
+    def mark_player_running_at_startup(self) -> None:
+        """Record a Player that was already running before monitoring began."""
+        self.was_running = True
+        self._player_was_running = True
 
     def is_player_running(self) -> bool:
         """Return whether Roblox Player is currently running."""
@@ -4131,10 +4009,7 @@ def _parse_powershell_fleasion_pids(output: str, safe_pids: set[int]) -> list[in
     for record in records:
         if not _is_error_details(record):
             continue
-        try:
-            pid = int(_preserve_int_input(record.get('ProcessId', 0)))
-        except TypeError, ValueError:
-            continue
+        pid = _get_int_detail(record, 'ProcessId', 0)
         cmdline = str(record.get('CommandLine') or '').lower()
         if (
             pid not in safe_pids
@@ -4260,19 +4135,10 @@ def _launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
         # proxy is active; do not replace a one-time URI with a synthetic launch.
         return launch_as_standard_user(target)
 
-    config_value = _get_required_attr(tray, 'config_manager')
-    proxy_value = _get_required_attr(tray, 'proxy_master')
-    config = _preserve_config_manager(config_value)
-    proxy_master = _preserve_proxy_master(proxy_value)
-    if (
-        (sys.platform.startswith('linux') or sys.platform == 'darwin')
-        and getattr(config, 'proxy_mode', 'hosts') == 'env'
-        and getattr(config, 'proxy_features_enabled', False)
-        and proxy_master is not None
-    ):
-        monitor: object = getattr(tray, 'roblox_monitor', None)
-        lifecycle_value: object = getattr(monitor, 'env_lifecycle', None)
-        lifecycle = _preserve_env_lifecycle(lifecycle_value)
+    config = tray.config_manager
+    if sys.platform == 'darwin' and config.proxy_mode == 'env' and config.proxy_features_enabled:
+        monitor = tray.roblox_monitor
+        lifecycle = monitor.env_lifecycle if monitor is not None else None
         if lifecycle is not None:
             exe_path = (
                 _linux_client_launch_path()
@@ -4325,13 +4191,13 @@ def _request_other_fleasion_instances_exit(
 
 def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray) -> None:
     try:
-        command = _qt_bytes(socket.readAll()).decode('utf-8', errors='replace').strip()
+        command = bytes(socket.readAll().data()).decode('utf-8', errors='replace').strip()
     except RuntimeError:
         return
     if command.lower() == 'quit':
-        _call_tray_exit(tray)
+        tray.exit_app()
     elif command.lower() == 'quit-preserve-env-player':
-        _call_tray_exit_preserving_player(tray)
+        tray.exit_app(preserve_roblox=True)
     elif command.lower().startswith('launch-roblox\n'):
         target = command.split('\n', 1)[1].strip()
         if target.startswith(('roblox:', 'roblox-player:')):
@@ -4352,11 +4218,10 @@ def _start_single_instance_control_server(
 
     def _handle_connection() -> None:
         while server.hasPendingConnections():
-            socket = _optional_local_socket(server.nextPendingConnection())
-            if socket is not None:
-                socket.readyRead.connect(lambda s=socket: _handle_single_instance_command(s, tray))
-                if socket.bytesAvailable() > 0:
-                    _handle_single_instance_command(socket, tray)
+            socket = server.nextPendingConnection()
+            socket.readyRead.connect(lambda s=socket: _handle_single_instance_command(s, tray))
+            if socket.bytesAvailable() > 0:
+                _handle_single_instance_command(socket, tray)
 
     server.newConnection.connect(_handle_connection)
     return server
@@ -4596,7 +4461,7 @@ def main() -> None:
     # Create Qt application
     app = QApplication(sys.argv)
     _sigint_timer = _install_gui_sigint_handler(app)
-    _set_single_instance_app(app)
+    _single_instance_state.app = app
     roblox_url_event_filter = _RobloxUrlEventFilter(app)
     app.installEventFilter(roblox_url_event_filter)
     # Qt normally follows each desktop's dialog conventions (GNOME/KDE/Windows),
@@ -4683,7 +4548,7 @@ def main() -> None:
         shared_memory_created = shared_memory.create(1)
 
     if shared_memory_created:
-        _set_single_instance_shared_memory(shared_memory)
+        _single_instance_state.shared_memory = shared_memory
 
     another_instance_exists = (
         not shared_memory_created
@@ -5114,10 +4979,10 @@ def main() -> None:
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
     tray_ref['tray'] = tray
-    _set_single_instance_tray(tray)
+    _single_instance_state.tray = tray
     app.aboutToQuit.connect(tray.cleanup_tray_icon)
     single_instance_control_server = _start_single_instance_control_server(app, tray)
-    _set_single_instance_control_server(single_instance_control_server)
+    _single_instance_state.control_server = single_instance_control_server
 
     if env_proxy_migration_pending:
         _show_env_proxy_migration(config_manager, roblox_monitor)
@@ -5341,44 +5206,38 @@ def main() -> None:
             welcome_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         welcome_box.setWindowTitle(tr('onboarding.welcome.title'))
         welcome_box.set_text(tr('onboarding.welcome.body'))
-        ok_button = _optional_button(welcome_box.ok_button)
+        ok_button = welcome_box.ok_button
         wait_seconds = 15
         remaining_seconds = wait_seconds
-        if ok_button is not None:
-            countdown_ok_button = ok_button
-            countdown_ok_button.setEnabled(False)
-            countdown_ok_button.setText(
-                tr('onboarding.welcome.ok_countdown', seconds=remaining_seconds)
-            )
+        ok_button.setEnabled(False)
+        ok_button.setText(tr('onboarding.welcome.ok_countdown', seconds=remaining_seconds))
 
-            countdown_timer = QTimer(welcome_box)
-            countdown_timer.setInterval(1000)
+        countdown_timer = QTimer(welcome_box)
+        countdown_timer.setInterval(1000)
 
-            def _update_welcome_countdown() -> None:
-                nonlocal remaining_seconds
-                remaining_seconds -= 1
-                if remaining_seconds <= 0:
-                    countdown_timer.stop()
-                    welcome_box.allow_accept()
-                    countdown_ok_button.setText(tr('onboarding.welcome.ok'))
-                    countdown_ok_button.setEnabled(True)
-                else:
-                    countdown_ok_button.setText(
-                        tr('onboarding.welcome.ok_countdown', seconds=remaining_seconds)
-                    )
+        def _update_welcome_countdown() -> None:
+            nonlocal remaining_seconds
+            remaining_seconds -= 1
+            if remaining_seconds <= 0:
+                countdown_timer.stop()
+                welcome_box.allow_accept()
+                ok_button.setText(tr('onboarding.welcome.ok'))
+                ok_button.setEnabled(True)
+            else:
+                ok_button.setText(tr('onboarding.welcome.ok_countdown', seconds=remaining_seconds))
 
-            countdown_timer.timeout.connect(_update_welcome_countdown)
-            countdown_timer.start()
+        countdown_timer.timeout.connect(_update_welcome_countdown)
+        countdown_timer.start()
         if icon_path := get_icon_path():
             welcome_box.setWindowIcon(QIcon(str(icon_path)))
         welcome_box.exec()
         _prompt_first_time_startup_options(config_manager, tray)
         config_manager.env_proxy_migration_v1_complete = True
         config_manager.first_time_setup_complete = True
-        _call_tray_show_replacer_config(tray)
+        tray.show_replacer_config()
     elif not suppress_dashboard and config_manager.open_dashboard_on_launch:
         # Open dashboard on launch if enabled (suppressed when started by autostart task)
-        _call_tray_show_replacer_config(tray)
+        tray.show_replacer_config()
 
     auth_prompt_shown = False
     auth_check_invoker = _AuthCheckInvoker()
@@ -5431,7 +5290,7 @@ def main() -> None:
         def _load_skip_details() -> ErrorDetails:
             roblox_auth = importlib.import_module('.utils.roblox_auth', __package__)
             roblox_auth.get_roblosecurity(include_keychain_browsers=False)
-            return _preserve_details(roblox_auth.get_auth_failure_details())
+            return roblox_auth.get_auth_failure_details()
 
         try:
             skip_details = _call_compatibility_boundary(_load_skip_details)
@@ -5454,7 +5313,7 @@ def main() -> None:
                 include_keychain_browsers=sys.platform == 'darwin'
                 or sys.platform.startswith('linux')
             )
-            details = _preserve_details(roblox_auth.get_auth_failure_details())
+            details = roblox_auth.get_auth_failure_details()
             return cookie, details
 
         try:
