@@ -37,7 +37,11 @@ def test_terminate_roblox_requests_app_bundle_quit_before_signal(tmp_path, monke
 
     monkeypatch.setattr(platform_macos, "ROBLOX_APP_CANDIDATES", (app,))
     monkeypatch.setattr(platform_macos, "ROBLOX_PROCESS", "RobloxPlayer")
-    monkeypatch.setattr(platform_macos, "_process_pids", lambda _name: [321])
+    pid_snapshots = iter([[321], [], [], []])
+    monkeypatch.setattr(platform_macos, "_process_pids", lambda _name: next(pid_snapshots, []))
+    monkeypatch.setattr(platform_macos.time, "sleep", lambda _seconds: None)
+    ticks = iter([0.0, 0.0, 4.0, 4.0])
+    monkeypatch.setattr(platform_macos.time, "monotonic", lambda: next(ticks, 4.0))
     monkeypatch.setattr(
         platform_macos,
         "_signal_process",
@@ -52,19 +56,47 @@ def test_terminate_roblox_requests_app_bundle_quit_before_signal(tmp_path, monke
 
 
 def test_terminate_roblox_escalates_only_captured_pids(monkeypatch):
-    pid_snapshots = iter([[101, 202], [303]])
+    pid_snapshots = iter([[101, 202], [], [], []])
     signals = []
     waits = iter([{202}, set()])
-    logs = []
 
     monkeypatch.setattr(platform_macos, "ROBLOX_APP_CANDIDATES", ())
-    monkeypatch.setattr(platform_macos, "_process_pids", lambda _name: next(pid_snapshots))
+    monkeypatch.setattr(platform_macos, "_process_pids", lambda _name: next(pid_snapshots, []))
     monkeypatch.setattr(
         platform_macos,
         "_signal_process",
         lambda pid, sig: signals.append((pid, sig)) or True,
     )
     monkeypatch.setattr(platform_macos, "_wait_for_pids_exit", lambda _pids, _timeout: next(waits))
+    monkeypatch.setattr(platform_macos.time, "sleep", lambda _seconds: None)
+    ticks = iter([0.0, 0.0, 4.0, 4.0])
+    monkeypatch.setattr(platform_macos.time, "monotonic", lambda: next(ticks, 4.0))
+
+    assert platform_macos.terminate_roblox() is True
+    assert signals == [
+        (101, platform_macos.signal.SIGTERM),
+        (202, platform_macos.signal.SIGTERM),
+        (202, platform_macos.signal.SIGKILL),
+    ]
+
+
+def test_terminate_roblox_chases_background_replacement(monkeypatch):
+    pid_snapshots = iter([[101], [303], [], []])
+    signals = []
+    waits = iter([set(), set()])
+    logs = []
+
+    monkeypatch.setattr(platform_macos, "ROBLOX_APP_CANDIDATES", ())
+    monkeypatch.setattr(platform_macos, "_process_pids", lambda _name: next(pid_snapshots, []))
+    monkeypatch.setattr(
+        platform_macos,
+        "_signal_process",
+        lambda pid, sig: signals.append((pid, sig)) or True,
+    )
+    monkeypatch.setattr(platform_macos, "_wait_for_pids_exit", lambda _pids, _timeout: next(waits))
+    monkeypatch.setattr(platform_macos.time, "sleep", lambda _seconds: None)
+    ticks = iter([0.0, 0.0, 0.0, 0.1, 4.0, 4.0])
+    monkeypatch.setattr(platform_macos.time, "monotonic", lambda: next(ticks, 4.0))
     monkeypatch.setattr(
         platform_macos.log_buffer,
         "log",
@@ -74,10 +106,9 @@ def test_terminate_roblox_escalates_only_captured_pids(monkeypatch):
     assert platform_macos.terminate_roblox() is True
     assert signals == [
         (101, platform_macos.signal.SIGTERM),
-        (202, platform_macos.signal.SIGTERM),
-        (202, platform_macos.signal.SIGKILL),
+        (303, platform_macos.signal.SIGTERM),
     ]
-    assert any("new Player process(es) appeared immediately: 303" in message for _, message in logs)
+    assert any("replacement/background Player process(es)" in message for _, message in logs)
 
 
 def test_terminate_roblox_reports_pid_that_survives_sigkill(monkeypatch):

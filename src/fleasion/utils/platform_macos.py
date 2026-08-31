@@ -954,35 +954,66 @@ def terminate_roblox() -> bool:
         _signal_process(pid, signal.SIGTERM)
 
     remaining = _wait_for_pids_exit(pids, 2.0)
-    if not remaining:
-        return True
-
-    log_buffer.log(
-        'Cache',
-        'Roblox did not exit after SIGTERM; escalating captured process(es) to SIGKILL: '
-        + ', '.join(str(pid) for pid in sorted(remaining)),
-    )
-    for pid in sorted(remaining):
-        _signal_process(pid, signal.SIGKILL)
-
-    remaining = _wait_for_pids_exit(remaining, 3.0)
     if remaining:
         log_buffer.log(
             'Cache',
-            'Roblox process(es) remained alive after SIGKILL: '
+            'Roblox did not exit after SIGTERM; escalating captured process(es) to SIGKILL: '
             + ', '.join(str(pid) for pid in sorted(remaining)),
         )
-        return False
+        for pid in sorted(remaining):
+            _signal_process(pid, signal.SIGKILL)
 
-    # A launcher/updater may immediately spawn a replacement Player. Keep that
-    # distinct from a failure to terminate the process(es) we actually signaled.
-    replacement_pids = set(_process_pids(ROBLOX_PROCESS)) - pids
-    if replacement_pids:
+        remaining = _wait_for_pids_exit(remaining, 3.0)
+        if remaining:
+            log_buffer.log(
+                'Cache',
+                'Roblox process(es) remained alive after SIGKILL: '
+                + ', '.join(str(pid) for pid in sorted(remaining)),
+            )
+            return False
+
+    # Current macOS Roblox builds can remain resident in the menu bar and may
+    # spawn a replacement RobloxPlayer after the foreground instance exits.
+    # Treat that as part of termination rather than declaring success and
+    # leaving the caller to time out on the replacement process.
+    settle_deadline = time.monotonic() + 3.0
+    seen_pids = set(pids)
+    while time.monotonic() < settle_deadline:
+        replacement_pids = set(_process_pids(ROBLOX_PROCESS)) - seen_pids
+        if not replacement_pids:
+            time.sleep(0.1)
+            continue
+
         log_buffer.log(
             'Cache',
-            'Roblox terminated but new Player process(es) appeared immediately: '
+            'Roblox spawned replacement/background Player process(es); terminating: '
             + ', '.join(str(pid) for pid in sorted(replacement_pids)),
         )
+        seen_pids.update(replacement_pids)
+        for pid in sorted(replacement_pids):
+            _signal_process(pid, signal.SIGTERM)
+
+        remaining = _wait_for_pids_exit(replacement_pids, 0.75)
+        if remaining:
+            for pid in sorted(remaining):
+                _signal_process(pid, signal.SIGKILL)
+            remaining = _wait_for_pids_exit(remaining, 1.0)
+        if remaining:
+            log_buffer.log(
+                'Cache',
+                'Replacement/background Roblox process(es) remained alive after SIGKILL: '
+                + ', '.join(str(pid) for pid in sorted(remaining)),
+            )
+            return False
+
+    final_pids = set(_process_pids(ROBLOX_PROCESS))
+    if final_pids:
+        log_buffer.log(
+            'Cache',
+            'Roblox Player process(es) still present after termination settle period: '
+            + ', '.join(str(pid) for pid in sorted(final_pids)),
+        )
+        return False
     return True
 
 
