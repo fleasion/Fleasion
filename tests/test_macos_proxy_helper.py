@@ -255,6 +255,14 @@ def test_helper_installer_stages_helper_before_privileged_install(tmp_path, monk
     assert f"launchctl kill SIGKILL system/{macos_proxy_helper.HELPER_ID}" in script
     assert "could not unload existing helper service" in script
     assert f"lsof -nP -iTCP:{macos_proxy_helper.MACOS_PROXY_HELPER_CONTROL_PORT} -sTCP:LISTEN" in script
+    assert f"lsof -nP -t -iTCP:{macos_proxy_helper.MACOS_PROXY_HELPER_CONTROL_PORT} -sTCP:LISTEN" in script
+    assert f"lsof -a -p \\\"$listener_pid\\\" -d txt -Fn" in script
+    assert f"control port {macos_proxy_helper.MACOS_PROXY_HELPER_CONTROL_PORT} is owned by unexpected process" in script
+    assert str(macos_proxy_helper.HELPER_INSTALL_PATH) in script
+    assert 'terminating stale Fleasion proxy helper listener pid=$listener_pid' in script
+    assert '/bin/kill -KILL \\\"$listener_pid\\\"' in script
+    assert "exit 43" in script
+    assert "exit 44" in script
     assert f"shasum -a 256 {macos_proxy_helper.HELPER_INSTALL_PATH}" in script
     assert f"file {macos_proxy_helper.HELPER_INSTALL_PATH}" in script
     assert "helper install diagnostics: service state" in script

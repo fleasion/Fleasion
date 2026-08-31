@@ -392,6 +392,13 @@ def install_helper() -> tuple[bool, str]:
         f'-iTCP:{MACOS_PROXY_HELPER_CONTROL_PORT}',
         '-sTCP:LISTEN',
     ])
+    lsof_listener_pids = shlex.join([
+        '/usr/sbin/lsof',
+        '-nP',
+        '-t',
+        f'-iTCP:{MACOS_PROXY_HELPER_CONTROL_PORT}',
+        '-sTCP:LISTEN',
+    ])
     helper_hash = shlex.join(['/usr/bin/shasum', '-a', '256', str(HELPER_INSTALL_PATH)])
     helper_file = shlex.join(['/usr/bin/file', str(HELPER_INSTALL_PATH)])
     install_cmds = ' && '.join(shlex.join(command) for command in commands)
@@ -416,6 +423,38 @@ if {print_service} >/dev/null 2>&1; then
   /bin/echo "$service_state" >&2
   exit 41
 fi
+
+# launchctl can forget a previously-managed helper while the old root process
+# itself survives. If that stale process still owns the control port, a newly
+# bootstrapped helper cannot bind and will immediately crash/restart forever.
+listener_pids="$({lsof_listener_pids} 2>/dev/null || true)"
+if [ -n "$listener_pids" ]; then
+  for listener_pid in $listener_pids; do
+    listener_executable="$(/usr/sbin/lsof -a -p "$listener_pid" -d txt -Fn 2>/dev/null | /usr/bin/sed -n 's/^n//p' | /usr/bin/head -n 1)"
+    if [ "$listener_executable" != "{HELPER_INSTALL_PATH}" ]; then
+      /bin/echo "control port {MACOS_PROXY_HELPER_CONTROL_PORT} is owned by unexpected process pid=$listener_pid executable=$listener_executable" >&2
+      {lsof_listener} >&2 || true
+      exit 43
+    fi
+    /bin/echo "terminating stale Fleasion proxy helper listener pid=$listener_pid executable=$listener_executable"
+    /bin/kill -KILL "$listener_pid" >/dev/null 2>&1 || true
+  done
+
+  listener_deadline=30
+  while [ "$listener_deadline" -gt 0 ]; do
+    if ! {lsof_listener_pids} >/dev/null 2>&1; then
+      break
+    fi
+    /bin/sleep 0.1
+    listener_deadline=$((listener_deadline - 1))
+  done
+  if {lsof_listener_pids} >/dev/null 2>&1; then
+    /bin/echo "stale Fleasion proxy helper still owns control port {MACOS_PROXY_HELPER_CONTROL_PORT} after SIGKILL" >&2
+    {lsof_listener} >&2 || true
+    exit 44
+  fi
+fi
+
 {install_cmds}
 {xattr_cmd} >/dev/null 2>&1 || true
 set +e
