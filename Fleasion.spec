@@ -50,12 +50,29 @@ _COMPILED_HIDDEN_IMPORTS = [
     'zstandard',
 ]
 
+# These third-party modules are loaded through importlib at runtime. PyInstaller
+# cannot reliably infer those edges, so keep them explicit just like Fleasion's
+# own lazy feature modules.
+_LAZY_RUNTIME_HIDDEN_IMPORTS = [
+    'OpenGL.GL',
+    'OpenGL.error',
+    'cryptography.fernet',
+    'requests',
+    'sounddevice',
+    'soundfile',
+]
+
 _WINDOWS_HIDDEN_IMPORTS = [
-    'win32crypt',
-    'win32api',
-    'win32con',
-    'win32security',
+    'pythoncom',
     'pywintypes',
+    'win11toast',
+    'win32api',
+    'win32clipboard',
+    'win32com.client',
+    'win32con',
+    'win32crypt',
+    'win32file',
+    'win32security',
     'winreg',
 ]
 
@@ -328,6 +345,7 @@ _collect_package('lz4')
 # Designer, SQL drivers, multimedia, translations, and other modules that the
 # app does not use, which more than doubles the one-file executable size
 hiddenimports.extend(_QT_HIDDEN_IMPORTS)
+hiddenimports.extend(_LAZY_RUNTIME_HIDDEN_IMPORTS)
 
 # PyOpenGL resolves platform backends dynamically. The upstream PyInstaller
 # hook includes GLX on Linux, but Wayland sessions can select EGL instead
@@ -366,6 +384,7 @@ elif sys.platform == 'darwin':
     _collect_package('browser_cookie3')
     _collect_package('Cryptodome')
 elif sys.platform.startswith('linux'):
+    _collect_package('browser_cookie3')
     _build_linux_helper()
     if not _bundled_linux_helper.exists():
         msg = (

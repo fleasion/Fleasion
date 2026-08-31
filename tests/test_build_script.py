@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -105,10 +107,19 @@ def test_linux_runtime_archive_check_recurses_into_pyz() -> None:
     workflow_source = (
         Path(__file__).resolve().parents[1] / '.github/workflows/build.yml'
     ).read_text(encoding='utf-8')
-    linux_check = workflow_source.split('Verify Linux compiled Python dependencies', 1)[1]
+    linux_check = workflow_source.split('Verify Linux runtime Python dependencies', 1)[1]
 
     assert 'pyi-archive_viewer -r -b -l dist/Fleasion-v*-Linux' in linux_check
-    assert 'fleasion.utils.qt_diagnostics' in linux_check
+    for required_module in (
+        'fleasion.utils.qt_diagnostics',
+        'soundfile',
+        'sounddevice',
+        'cryptography.fernet',
+        'browser_cookie3',
+        'cryptography.x509',
+        'cryptography.x509.oid',
+    ):
+        assert required_module in linux_check
 
 
 def test_packaging_collects_lz4_native_extensions() -> None:
@@ -116,6 +127,111 @@ def test_packaging_collects_lz4_native_extensions() -> None:
     spec_source = spec_path.read_text(encoding='utf-8')
 
     assert "_collect_package('lz4')" in spec_source
+
+
+def test_packaging_collects_lazy_third_party_runtime_modules() -> None:
+    root = Path(__file__).resolve().parents[1]
+    spec_source = (root / 'Fleasion.spec').read_text(encoding='utf-8')
+
+    for required_module in (
+        "'soundfile'",
+        "'sounddevice'",
+        "'cryptography.fernet'",
+        "'requests'",
+        "'OpenGL.GL'",
+        "'OpenGL.error'",
+    ):
+        assert required_module in spec_source
+    assert "_collect_package('browser_cookie3')" in spec_source
+
+
+def test_windows_packaging_collects_lazy_win32_runtime_modules() -> None:
+    spec_source = (Path(__file__).resolve().parents[1] / 'Fleasion.spec').read_text(
+        encoding='utf-8'
+    )
+
+    for required_module in (
+        "'win11toast'",
+        "'win32clipboard'",
+        "'win32com.client'",
+        "'win32file'",
+        "'pythoncom'",
+    ):
+        assert required_module in spec_source
+
+
+def test_proxy_helper_specs_collect_dynamic_runtime_modules() -> None:
+    root = Path(__file__).resolve().parents[1]
+    linux_spec = (root / 'FleasionLinuxProxyHelper.spec').read_text(encoding='utf-8')
+    macos_spec = (root / 'FleasionDarwinProxyHelper.spec').read_text(encoding='utf-8')
+
+    assert "hiddenimports=['cryptography.x509', 'cryptography.x509.oid']" in linux_spec
+    assert "hiddenimports=['_ssl']" in macos_spec
+
+
+def test_literal_third_party_lazy_imports_are_declared_for_packaging() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source_root = root / 'src/fleasion'
+    spec_tree = ast.parse((root / 'Fleasion.spec').read_text(encoding='utf-8'))
+    declared: set[str] = set()
+
+    for node in ast.walk(spec_tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.List):
+            for element in node.value.elts:
+                if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                    declared.add(element.value)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {'_collect_package', '_collect_optional_package'}
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            declared.add(node.args[0].value)
+
+    lazy_targets: set[str] = set()
+    excluded_files = {
+        source_root / 'linux_proxy_helper_daemon.py',
+        source_root / 'macos_proxy_helper_daemon.py',
+    }
+    for path in source_root.rglob('*.py'):
+        if path in excluded_files or source_root / 'scripts' in path.parents:
+            continue
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        direct_import_names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == 'importlib':
+                for alias in node.names:
+                    if alias.name == 'import_module':
+                        direct_import_names.add(alias.asname or alias.name)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            func = node.func
+            is_import_module = (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == 'importlib'
+                and func.attr == 'import_module'
+            ) or (isinstance(func, ast.Name) and func.id in direct_import_names)
+            argument = node.args[0]
+            if not is_import_module or not isinstance(argument, ast.Constant):
+                continue
+            target = argument.value
+            if not isinstance(target, str) or target.startswith(('.', 'fleasion.')):
+                continue
+            if target.split('.', 1)[0] in sys.stdlib_module_names:
+                continue
+            lazy_targets.add(target)
+
+    missing = sorted(
+        target
+        for target in lazy_targets
+        if target not in declared and target.split('.', 1)[0] not in declared
+    )
+    assert missing == []
 
 
 def _set_reproducible_environment(monkeypatch: pytest.MonkeyPatch) -> None:

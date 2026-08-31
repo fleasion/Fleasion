@@ -156,7 +156,7 @@ jobs:
       - name: Build package
         run: uv run build
 
-      - name: Verify Windows lazy OpenGL payload
+      - name: Verify Windows runtime payload
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -165,15 +165,27 @@ jobs:
             throw 'Could not find the Windows executable in dist/.'
           }
           $listing = uv run pyi-archive_viewer -r -b -l $exe.FullName | Out-String
-          foreach ($required in @(
+          foreach ($requiredModule in @(
             'fleasion.utils.qt_diagnostics',
             'fleasion.cache.obj_viewer',
             'fleasion.cache.animation_viewer',
-            'QtOpenGL',
-            'opengl32sw.dll'
+            'soundfile',
+            'sounddevice',
+            'cryptography.fernet',
+            'win11toast',
+            'win32clipboard',
+            'win32com.client',
+            'win32file',
+            'pythoncom'
           )) {
-            if ($listing -notmatch [regex]::Escape($required)) {
-              throw "Windows package is missing required lazy OpenGL payload: $required"
+            $modulePattern = "(?m)(^|[\s'])$([regex]::Escape($requiredModule))([\s']|$)"
+            if ($listing -notmatch $modulePattern) {
+              throw "Windows package is missing required runtime module: $requiredModule"
+            }
+          }
+          foreach ($requiredPayload in @('QtOpenGL', 'opengl32sw.dll')) {
+            if ($listing -notmatch [regex]::Escape($requiredPayload)) {
+              throw "Windows package is missing required graphics payload: $requiredPayload"
             }
           }
 
@@ -199,18 +211,33 @@ jobs:
             exit 1
           fi
 
-      - name: Verify Linux compiled Python dependencies
+      - name: Verify Linux runtime Python dependencies
         if: runner.os == 'Linux'
         run: |
           archive_listing="$(uv run pyi-archive_viewer -r -b -l dist/Fleasion-v*-Linux)"
-          if ! grep -q 'fleasion.utils.qt_diagnostics' <<< "$archive_listing"; then
-            echo "Linux package is missing the startup Qt diagnostics module." >&2
-            exit 1
-          fi
+          for required_module in \
+            fleasion.utils.qt_diagnostics \
+            soundfile \
+            sounddevice \
+            cryptography.fernet \
+            browser_cookie3; do
+            if ! grep -Eq "(^|[[:space:]'])${required_module}([[:space:]']|$)" <<< "$archive_listing"; then
+              echo "Linux package is missing required runtime module: $required_module" >&2
+              exit 1
+            fi
+          done
           if ! grep -q 'DracoPy' <<< "$archive_listing"; then
             echo "Linux package is missing the bundled DracoPy extension." >&2
             exit 1
           fi
+
+          helper_listing="$(uv run pyi-archive_viewer -r -b -l dist/fleasion-linux-proxy-helper)"
+          for required_module in cryptography.x509 cryptography.x509.oid; do
+            if ! grep -Eq "(^|[[:space:]'])${required_module}([[:space:]']|$)" <<< "$helper_listing"; then
+              echo "Linux proxy helper is missing required runtime module: $required_module" >&2
+              exit 1
+            fi
+          done
 
       - name: Upload package
         uses: actions/upload-artifact@v7
