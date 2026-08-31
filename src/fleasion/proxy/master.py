@@ -50,7 +50,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, NotRequired, Protocol, Self, TypedDict, TypeIs, cast
+from typing import TYPE_CHECKING, Protocol, Self, TypedDict, TypeIs, cast
 
 if TYPE_CHECKING:
     winreg: _WinregLike
@@ -73,9 +73,18 @@ from fleasion.utils import (
     PROXY_PORT,
     ROBLOX_PROCESS,
     ROBLOX_STUDIO_PROCESS,
+    delete_cache,
     format_count,
+    get_roblox_player_exe_path,
+    get_roblox_studio_exe_path,
+    is_roblox_running,
+    launch_as_standard_user,
     log_buffer,
+    macos_proxy_helper,
     run_in_thread,
+    terminate_roblox,
+    wait_for_roblox_exit,
+    wait_for_roblox_window,
 )
 from fleasion.utils.certs import (
     generate_ca,
@@ -99,8 +108,10 @@ from .server import (
     INTERCEPT_HOSTS,
     PROXY_TLS_MAX_VERSION,
     USERNAME_SPOOFER_INTERCEPT_HOSTS,
+    AutoReplaceRule,
     FleasionProxy,
     ProxyFlow,
+    ProxyRequestLogEntry,
 )
 from .upstream import HttpProxyConfig, Socks5ProxyConfig, UpstreamEndpoint, UpstreamMode
 from .windows_proxy import WindowsProxyInfo, detect_windows_proxy, detected_http_proxy
@@ -218,25 +229,6 @@ class _CacertState(TypedDict):
     error: str
 
 
-class _ProxyRequestLogEntry(TypedDict):
-    id: int
-    time: float
-    host: str
-    port: int
-    method: str
-    path: str
-    intercepted: bool
-    status: int | None
-    size: int
-    ms: int | None
-    request_raw: bytes | bytearray | None
-    response_raw: bytes | bytearray | None
-    pending_stage: str | None
-    was_intercepted: bool
-    dropped_request: NotRequired[bool]
-    dropped_response: NotRequired[bool]
-
-
 class _ProxyCertificateState(TypedDict):
     proxy_ca_dir: Path
     ca_cert_path: Path
@@ -256,16 +248,6 @@ class _ProxyServerState(TypedDict):
     use_linux_helper: bool
     env_proxy_intercept_excluded_hosts: set[str]
     listen_port: int
-
-
-class _AutoReplaceRule(TypedDict, total=False):
-    enabled: bool
-    direction: str
-    host_filter: str
-    path_filter: str
-    type: str
-    match: str
-    replacement: str
 
 
 class _ModuleInterceptor(Protocol):
@@ -366,7 +348,6 @@ _windows_ctypes = cast('_WindowsCtypes', ctypes)
 type _ErrorDetails = dict[str, object]
 type _PeerCertificate = Mapping[str, object]
 type _CancelCheck = Callable[[], bool]
-type _HelperPatchCa = Callable[[str, list[_ErrorDetails]], _ErrorDetails | None]
 type _CacertInspection = _CacertState | _ErrorDetails
 
 
@@ -379,74 +360,11 @@ def _lazy_attr(module_name: str, attribute: str) -> object:
         raise ImportError(msg) from exc
 
 
-def delete_cache() -> list[str]:
-    operation = cast('Callable[[], list[str]]', _lazy_attr('fleasion.utils', 'delete_cache'))
-    return operation()
-
-
-def is_roblox_running() -> bool:
-    operation = cast('Callable[[], bool]', _lazy_attr('fleasion.utils', 'is_roblox_running'))
-    return operation()
-
-
-def terminate_roblox() -> bool:
-    operation = cast('Callable[[], bool]', _lazy_attr('fleasion.utils', 'terminate_roblox'))
-    return operation()
-
-
-def wait_for_roblox_exit(*, timeout: float = 10.0) -> bool:
-    operation = cast('Callable[..., bool]', _lazy_attr('fleasion.utils', 'wait_for_roblox_exit'))
-    return operation(timeout=timeout)
-
-
-def wait_for_roblox_window(*, timeout: float = 60.0) -> bool:
-    operation = cast('Callable[..., bool]', _lazy_attr('fleasion.utils', 'wait_for_roblox_window'))
-    return operation(timeout=timeout)
-
-
-def get_roblox_player_exe_path() -> Path | None:
-    operation = cast(
-        'Callable[[], Path | None]',
-        _lazy_attr('fleasion.utils.windows', 'get_roblox_player_exe_path'),
-    )
-    return operation()
-
-
-def get_roblox_studio_exe_path() -> Path | None:
-    operation = cast(
-        'Callable[[], Path | None]',
-        _lazy_attr('fleasion.utils.windows', 'get_roblox_studio_exe_path'),
-    )
-    return operation()
-
-
-def launch_as_standard_user(target: str | Path) -> bool:
-    operation = cast(
-        'Callable[[str | Path], bool]',
-        _lazy_attr('fleasion.utils.windows', 'launch_as_standard_user'),
-    )
-    return operation(target)
-
-
-def _error_detail_list(value: object) -> list[_ErrorDetails]:
-    return cast('list[_ErrorDetails]', value)
-
-
-def _cacert_state_list(value: object) -> list[_CacertState]:
-    return cast('list[_CacertState]', value)
-
-
 def _is_str_object_dict(value: object) -> TypeIs[dict[str, object]]:
     if not isinstance(value, dict):
         return False
     mapping = cast('dict[object, object]', value)
     return all(isinstance(key, str) for key in mapping)
-
-
-def _preserve_str(value: object) -> str:
-    if TYPE_CHECKING:
-        assert isinstance(value, str)
-    return value
 
 
 def _is_str_list(value: object) -> TypeIs[list[str]]:
@@ -456,70 +374,39 @@ def _is_str_list(value: object) -> TypeIs[list[str]]:
     return all(isinstance(item, str) for item in values)
 
 
-def _preserve_str_list(value: object) -> list[str]:
-    if TYPE_CHECKING:
-        assert _is_str_list(value)
-    return value
+def _object_dict_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in cast('list[object]', value) if _is_str_object_dict(item)]
 
 
-if TYPE_CHECKING:
+def _is_cacert_state(value: object) -> TypeIs[_CacertState]:
+    if not _is_str_object_dict(value):
+        return False
+    string_fields = ('path', 'install', 'sha256', 'health_reason', 'error')
+    int_fields = (
+        'size',
+        'mtime_ns',
+        'total_certs',
+        'fleasion_certs',
+        'current_fleasion_certs',
+    )
+    return (
+        all(isinstance(value.get(field), str) for field in string_fields)
+        and all(isinstance(value.get(field), int) for field in int_fields)
+        and isinstance(value.get('exists'), bool)
+        and isinstance(value.get('healthy'), bool)
+    )
 
-    def _error_details(value: Mapping[str, object]) -> _ErrorDetails: ...
 
-    def _failed_details(value: object) -> list[object]: ...
-
-    def _upstream_endpoint_map(
-        value: dict[str, list[UpstreamEndpoint]],
-    ) -> dict[str, Sequence[UpstreamEndpoint | str]]: ...
-
-    def _set_texture_scraper(texture: TextureStripper, scraper: CacheScraper) -> None: ...
-
-    def _loopback_ips(proxy: FleasionProxy) -> tuple[str, ...] | list[str] | set[str] | None: ...
-
-    def _maybe_proxy(value: FleasionProxy | None) -> FleasionProxy | None: ...
-
-    def _maybe_texture(value: TextureStripper | None) -> TextureStripper | None: ...
-
-    def _macos_helper_status() -> _ErrorDetails | None: ...
-
-    def _macos_helper_probe_backend() -> _ErrorDetails: ...
-else:
-
-    def _error_details(value: Mapping[str, object]) -> _ErrorDetails:
-        return value
-
-    def _failed_details(value: object) -> list[object]:
-        return value or []
-
-    def _upstream_endpoint_map(
-        value: dict[str, list[UpstreamEndpoint]],
-    ) -> dict[str, Sequence[UpstreamEndpoint | str]]:
-        return value
-
-    def _set_texture_scraper(texture: TextureStripper, scraper: CacheScraper) -> None:
-        texture.set_cache_scraper(scraper)
-
-    def _loopback_ips(proxy: FleasionProxy) -> tuple[str, ...] | list[str] | set[str] | None:
-        callback = getattr(proxy, 'loopback_ips_for_hosts', None)
-        return callback() if callable(callback) else None
-
-    def _maybe_proxy(value: FleasionProxy | None) -> FleasionProxy | None:
-        return value
-
-    def _maybe_texture(value: TextureStripper | None) -> TextureStripper | None:
-        return value
-
-    def _macos_helper_status() -> _ErrorDetails | None:
-        helper_status = cast('Callable[[], _ErrorDetails | None]', _lazy_attr(
-            'fleasion.utils.macos_proxy_helper', 'helper_status'
-        ))
-        return helper_status()
-
-    def _macos_helper_probe_backend() -> _ErrorDetails:
-        helper_probe_backend = cast('Callable[[], _ErrorDetails]', _lazy_attr(
-            'fleasion.utils.macos_proxy_helper', 'helper_probe_backend'
-        ))
-        return helper_probe_backend()
+def _is_auto_replace_rule(value: object) -> TypeIs[AutoReplaceRule]:
+    if not _is_str_object_dict(value):
+        return False
+    enabled = value.get('enabled')
+    if enabled is not None and not isinstance(enabled, bool):
+        return False
+    string_fields = ('direction', 'host_filter', 'path_filter', 'type', 'match', 'replacement')
+    return all(field not in value or isinstance(value[field], str) for field in string_fields)
 
 
 _ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
@@ -952,12 +839,6 @@ def _resolve_real_endpoints(
             )
 
     return real_endpoints
-
-
-def _resolve_real_ips(hosts: set[str]) -> dict[str, list[str]]:
-    """Compatibility wrapper for older code that expects string IP lists."""
-    endpoints = _resolve_real_endpoints(hosts)
-    return {host: [ep.ip for ep in eps if ep.ip] for host, eps in endpoints.items()}
 
 
 def _refresh_real_upstream_endpoints(host: str) -> list[UpstreamEndpoint]:
@@ -1769,10 +1650,12 @@ def _nt_path(p: Path) -> str:
 
 def _pending_rename_entries(key: _RegistryKey) -> list[str] | None:
     try:
-        existing, _ = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
+        existing, value_type = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
     except FileNotFoundError:
         return None
-    return list(_preserve_str_list(existing))
+    if value_type != winreg.REG_MULTI_SZ or not _is_str_list(existing):
+        return None
+    return list(existing)
 
 
 def _without_pending_rename_source(entries: list[str], source: str) -> list[str]:
@@ -2813,11 +2696,7 @@ def _add_hosts_entries_with_macos_helper(
     hosts: set[str],
     error_details: _ErrorDetails | None,
 ) -> bool:
-    helper_apply_hosts = cast(
-        'Callable[[set[str]], bool]',
-        _lazy_attr('fleasion.utils.macos_proxy_helper', 'helper_apply_hosts'),
-    )
-    if not helper_apply_hosts(set(hosts)):
+    if not macos_proxy_helper.helper_apply_hosts(set(hosts)):
         _record_hosts_error(error_details, 'macOS proxy helper failed to apply hosts entries')
         return False
     for host in sorted(hosts):
@@ -2977,12 +2856,7 @@ def _remove_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None =
     reboot guard in that case, so the next boot still cleans up automatically.
     """
     if IS_MACOS and not _is_admin():
-        helper_clear_hosts = cast(
-            'Callable[[], bool]',
-            _lazy_attr('fleasion.utils.macos_proxy_helper', 'helper_clear_hosts'),
-        )
-
-        if helper_clear_hosts():
+        if macos_proxy_helper.helper_clear_hosts():
             log_buffer.log('Hosts', 'Removed proxy hosts entries through macOS helper')
             return True
         _record_hosts_error(error_details, 'macOS proxy helper failed to clear hosts entries')
@@ -3223,9 +3097,9 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
                 command, value_type = registry.QueryValueEx(key, '')
         except (OSError, ValueError):
             return 0
-        if value_type != registry.REG_SZ or not command:
+        if value_type != registry.REG_SZ or not isinstance(command, str) or not command:
             return 0
-        exe_path = _extract_exe_from_command(_preserve_str(command))
+        exe_path = _extract_exe_from_command(command)
         if exe_path is None:
             return 0
         directories = _scan_for_exe(exe_path.parent, 2)
@@ -3248,9 +3122,9 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
                 val, rtype = registry.QueryValueEx(key, value_name)
             except OSError:
                 continue
-            if rtype != registry.REG_SZ or not val:
+            if rtype != registry.REG_SZ or not isinstance(val, str) or not val:
                 continue
-            val = _preserve_str(val).replace('\x00', '').strip()
+            val = val.replace('\x00', '').strip()
             if not val:
                 continue
             p = Path(val)
@@ -3574,11 +3448,6 @@ def _log_cacert_state(
     return state
 
 
-def _log_cacert_health(ca_file: Path, ca_pem: str) -> None:
-    """Compatibility wrapper for existing startup patch call sites."""
-    _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {ca_file.parent.parent.name}')
-
-
 def _cacert_needs_seed(state: _CacertState) -> bool:
     """Return True when the base trust bundle is missing or clearly truncated."""
     return (
@@ -3586,11 +3455,6 @@ def _cacert_needs_seed(state: _CacertState) -> bool:
         or int(state.get('size') or 0) < _CACERT_MIN_HEALTHY_SIZE_BYTES
         or int(state.get('total_certs') or 0) < _CACERT_MIN_HEALTHY_CERTS
     )
-
-
-def _linux_cacert_needs_seed(state: _CacertState) -> bool:
-    """Backward-compatible alias for Linux-specific callers/tests."""
-    return _cacert_needs_seed(state)
 
 
 def _clear_cacert_write_barriers(path: Path) -> None:
@@ -3674,11 +3538,6 @@ def _healthy_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -> Path
     return None
 
 
-def _healthy_linux_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -> Path | None:
-    """Backward-compatible alias for Linux-specific callers/tests."""
-    return _healthy_cacert_source(ca_file, ca_pem, dirs)
-
-
 def _seed_cacert_if_needed(
     ca_file: Path, state: _CacertState, install_name: str, ca_pem: str, dirs: list[Path]
 ) -> bool:
@@ -3732,15 +3591,6 @@ def _seed_cacert_if_needed(
     finally:
         if restore_read_only:
             _restore_cacert_read_only(ca_file)
-
-
-def _seed_linux_cacert_if_needed(
-    ca_file: Path, state: _CacertState, install_name: str, ca_pem: str, dirs: list[Path]
-) -> bool:
-    """Backward-compatible Linux wrapper for the shared Windows/Linux seeder."""
-    if not IS_LINUX:
-        return False
-    return _seed_cacert_if_needed(ca_file, state, install_name, ca_pem, dirs)
 
 
 def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int, int]:
@@ -3833,25 +3683,9 @@ def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[_ErrorDetail
     return ok, details
 
 
-def _cacert_has_only_current_fleasion_ca(cacert_text: str, current_ca_pem: str) -> bool:
-    """Return True when cacert contains exactly one Fleasion CA and it is current.
-
-    This intentionally remains a narrow PEM-content predicate for callers that
-    already own file-level health checks. Launch gating should use
-    _describe_cacert_state() so a one-cert or truncated bundle is not treated as
-    ready for Roblox.
-    """
-    _, fleasion_count, current_count = _analyze_and_strip_fleasion_cas(cacert_text, current_ca_pem)
-    return fleasion_count == 1 and current_count == 1
-
-
 def _install_ca_into_roblox_with_helper(
     ca_pem: str, dirs: list[Path]
 ) -> tuple[bool, _ErrorDetails]:
-    patch_ca = cast(
-        '_HelperPatchCa',
-        _lazy_attr('fleasion.utils.macos_proxy_helper', 'helper_patch_ca'),
-    )
     installs: list[_ErrorDetails] = []
     for roblox_dir in dirs:
         ca_file = roblox_dir / 'ssl' / 'cacert.pem'
@@ -3875,7 +3709,7 @@ def _install_ca_into_roblox_with_helper(
             }
         )
 
-    response = patch_ca(ca_pem, installs)
+    response = macos_proxy_helper.helper_patch_ca(ca_pem, installs)
     details: _ErrorDetails = response or {
         'patched': [],
         'skipped': [],
@@ -3887,7 +3721,7 @@ def _install_ca_into_roblox_with_helper(
         ('skipped', 'already current'),
         ('failed', 'failed'),
     ):
-        for item in _error_detail_list(details.get(key) or []):
+        for item in _object_dict_list(details.get(key)):
             path = item.get('ca_file') or item.get('resource_dir') or '(unknown)'
             if key == 'failed':
                 log_buffer.log(
@@ -3923,10 +3757,6 @@ def _patch_roblox_ca_with_macos_helper(
 
     Returns (request_ok, changed, response_details).
     """
-    patch_ca = cast(
-        '_HelperPatchCa',
-        _lazy_attr('fleasion.utils.macos_proxy_helper', 'helper_patch_ca'),
-    )
     ca_file = roblox_dir / 'ssl' / 'cacert.pem'
     strip_all_fleasion_ca = False
     try:
@@ -3939,7 +3769,7 @@ def _patch_roblox_ca_with_macos_helper(
         existing = ''
         strip_all_fleasion_ca = True
 
-    response = patch_ca(
+    response = macos_proxy_helper.helper_patch_ca(
         ca_pem,
         [
             {
@@ -3963,17 +3793,15 @@ def _patch_roblox_ca_with_macos_helper(
             },
         )
 
-    changed = any(
-        bool(item.get('changed')) for item in _error_detail_list(response.get('patched') or [])
-    )
-    for item in _error_detail_list(response.get('failed') or []):
+    changed = any(bool(item.get('changed')) for item in _object_dict_list(response.get('patched')))
+    for item in _object_dict_list(response.get('failed')):
         path = item.get('ca_file') or item.get('resource_dir') or str(ca_file)
         log_buffer.log(
             'Certificate',
             f'macOS helper CA patch failed for {path}: {item.get("error") or item.get("status") or "unknown error"}',
         )
     for key, label in (('patched', 'patched'), ('skipped', 'already current')):
-        for item in _error_detail_list(response.get(key) or []):
+        for item in _object_dict_list(response.get(key)):
             path = item.get('ca_file') or item.get('resource_dir') or str(ca_file)
             item_changed = 'changed' if item.get('changed') else 'unchanged'
             log_buffer.log(
@@ -4090,16 +3918,24 @@ def _install_ca_into_roblox(
         details['helper'] = helper_details
         details['helper_required'] = not helper_ok
         fallback_keys = {str(path.resolve()).lower() for path in helper_fallback_dirs}
-        failed = [
-            item
-            for item in failed
-            if str(Path(_preserve_str(item['resource_dir'])).resolve()).lower() not in fallback_keys
-        ]
+        retained_failures: list[_ErrorDetails] = []
+        for item in failed:
+            resource_dir = item.get('resource_dir')
+            if not isinstance(resource_dir, str):
+                retained_failures.append(item)
+                continue
+            if str(Path(resource_dir).resolve()).lower() not in fallback_keys:
+                retained_failures.append(item)
+        failed = retained_failures
         details['failed'] = failed
-        patched.extend(_error_detail_list(helper_details.get('patched') or []))
-        patched.extend(_error_detail_list(helper_details.get('skipped') or []))
-        failed.extend(_error_detail_list(helper_details.get('failed') or []))
-        verified.extend(_cacert_state_list(helper_details.get('verified') or []))
+        patched.extend(_object_dict_list(helper_details.get('patched')))
+        patched.extend(_object_dict_list(helper_details.get('skipped')))
+        failed.extend(_object_dict_list(helper_details.get('failed')))
+        verified.extend(
+            item
+            for item in _object_dict_list(helper_details.get('verified'))
+            if _is_cacert_state(item)
+        )
         ok = helper_ok and not failed
     backup_ok, backup_details = _patch_bootstrapper_ca_backups(ca_pem)
     details['bootstrapper_backups'] = backup_details
@@ -4294,68 +4130,6 @@ def _macos_delete_keychain_certificate(keychain: str, thumbprint: str) -> bool:
         f'Failed to remove stale macOS CA {thumbprint}: {err or result.returncode}',
     )
     return False
-
-
-def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> None:
-    """Trust Fleasion's CA in the macOS system keychain for local TLS clients."""
-    thumbprint = _ca_thumbprint_sha1(ca_pem).upper()
-    keychain = '/Library/Keychains/System.keychain'
-
-    stored_thumbprints = _macos_fleasion_keychain_thumbprints(keychain)
-    stale_thumbprints = [
-        stored_thumbprint
-        for stored_thumbprint in stored_thumbprints
-        if stored_thumbprint != thumbprint
-    ]
-    removed_count = sum(
-        1
-        for stored_thumbprint in stale_thumbprints
-        if _macos_delete_keychain_certificate(keychain, stored_thumbprint)
-    )
-
-    if thumbprint in stored_thumbprints:
-        if removed_count:
-            log_buffer.log(
-                'Certificate',
-                f'CA already trusted in macOS System keychain (removed {removed_count} stale Fleasion CA entr{"y" if removed_count == 1 else "ies"})',
-            )
-        else:
-            log_buffer.log('Certificate', 'CA already trusted in macOS System keychain')
-        return
-
-    try:
-        result = _run_text_command(
-            [
-                'security',
-                'add-trusted-cert',
-                '-d',
-                '-r',
-                'trustRoot',
-                '-k',
-                keychain,
-                str(ca_cert_path),
-            ],
-            timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_buffer.log('Certificate', f'Failed to install CA into macOS System keychain: {exc}')
-        return
-
-    if result.returncode == 0:
-        if removed_count:
-            log_buffer.log(
-                'Certificate',
-                f'Installed CA into macOS System keychain (removed {removed_count} stale Fleasion CA entr{"y" if removed_count == 1 else "ies"})',
-            )
-        else:
-            log_buffer.log('Certificate', 'Installed CA into macOS System keychain')
-        return
-
-    err = (result.stderr or result.stdout or '').strip()
-    log_buffer.log(
-        'Certificate',
-        f'Failed to install CA into macOS System keychain: {err or result.returncode}',
-    )
 
 
 def _install_ca_into_macos_login_keychain(
@@ -4611,18 +4385,6 @@ def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-if TYPE_CHECKING:
-    _ = (
-        _resolve_real_ips,
-        _log_cacert_health,
-        _linux_cacert_needs_seed,
-        _healthy_linux_cacert_source,
-        _seed_linux_cacert_if_needed,
-        _cacert_has_only_current_fleasion_ca,
-        _install_ca_into_macos_system_keychain,
-    )
-
-
 def _generate_proxy_certificate(
     failure_label: str,
     operation: Callable[[], tuple[Path, Path]],
@@ -4750,11 +4512,7 @@ class ProxyMaster:
         if IS_WINDOWS:
             return _is_admin()
         if IS_MACOS:
-            helper_is_ready = cast(
-                'Callable[[], bool]',
-                _lazy_attr('fleasion.utils.macos_proxy_helper', 'helper_is_ready'),
-            )
-            return helper_is_ready()
+            return macos_proxy_helper.helper_is_ready()
         # Linux hosts mutation and privileged port ownership are delegated to
         # the root helper, so the normal-user GUI never needs to restart.
         return IS_LINUX
@@ -4972,48 +4730,32 @@ class ProxyMaster:
             'state': last_state,
         }
 
-    def get_env_proxy_traffic(self) -> list[_ProxyRequestLogEntry]:
+    def get_env_proxy_traffic(self) -> list[ProxyRequestLogEntry]:
         """Every request/tunnel the explicit proxy has logged, intercepted or not."""
         if self._proxy is None:
             return []
-        get_log = cast(
-            'Callable[[], list[_ProxyRequestLogEntry]] | None',
-            getattr(self._proxy, 'get_request_log', None),
-        )
-        return get_log() if callable(get_log) else []
+        return self._proxy.get_request_log()
 
     def clear_env_proxy_traffic(self) -> None:
         if self._proxy is None:
             return
-        clear_log = getattr(self._proxy, 'clear_request_log', None)
-        if callable(clear_log):
-            clear_log()
+        self._proxy.clear_request_log()
 
-    def format_env_proxy_request_preview(self, entry: _ProxyRequestLogEntry) -> str:
+    def format_env_proxy_request_preview(self, entry: ProxyRequestLogEntry) -> str:
         if self._proxy is None:
             return ''
-        fmt = cast(
-            'Callable[[_ProxyRequestLogEntry], str] | None',
-            getattr(self._proxy, 'format_request_preview', None),
-        )
-        return fmt(entry) if callable(fmt) else ''
+        return self._proxy.format_request_preview(entry)
 
-    def format_env_proxy_response_preview(self, entry: _ProxyRequestLogEntry) -> str:
+    def format_env_proxy_response_preview(self, entry: ProxyRequestLogEntry) -> str:
         if self._proxy is None:
             return ''
-        fmt = cast(
-            'Callable[[_ProxyRequestLogEntry], str] | None',
-            getattr(self._proxy, 'format_response_preview', None),
-        )
-        return fmt(entry) if callable(fmt) else ''
+        return self._proxy.format_response_preview(entry)
 
     def set_env_proxy_intercept_match(self, text: str) -> None:
         """Interception is armed purely by this being non-empty text - nothing else gates it."""
         self._env_proxy_intercept_match = text
         if self._proxy is not None:
-            setter = getattr(self._proxy, 'set_intercept_match', None)
-            if callable(setter):
-                setter(text)
+            self._proxy.set_intercept_match(text)
 
     def set_env_proxy_intercept_all(self, enabled: bool) -> None:
         """Toggle whether hosts outside Fleasion's own feature set also get
@@ -5023,57 +4765,40 @@ class ProxyMaster:
         """
         self._env_proxy_intercept_all = bool(enabled)
         if self._proxy is not None:
-            setter = getattr(self._proxy, 'set_intercept_all_hosts', None)
-            if callable(setter):
-                setter(enabled)
+            self._proxy.set_intercept_all_hosts(enabled)
 
-    def get_auto_replace_rules(self) -> list[_AutoReplaceRule]:
+    def get_auto_replace_rules(self) -> list[AutoReplaceRule]:
         """Auto Replace rules, persisted to config (unlike the env-proxy
         toggles above) so they survive a restart without the dialog needing
         to have been opened.
         """
         stored = self.config_manager.settings.get('auto_replace_rules', [])
-        return list(cast('list[_AutoReplaceRule]', stored))
+        if not isinstance(stored, list):
+            return []
+        return [value for value in cast('list[object]', stored) if _is_auto_replace_rule(value)]
 
-    def set_auto_replace_rules(self, rules: list[_AutoReplaceRule]) -> None:
+    def set_auto_replace_rules(self, rules: list[AutoReplaceRule]) -> None:
         self.config_manager.settings['auto_replace_rules'] = cast('JsonValue', list(rules))
         self.config_manager.save()
         if self._proxy is not None:
-            setter = cast(
-                'Callable[[list[_AutoReplaceRule]], None] | None',
-                getattr(self._proxy, 'set_auto_replace_rules', None),
-            )
-            if callable(setter):
-                setter(rules)
+            self._proxy.set_auto_replace_rules(rules)
 
     def get_env_proxy_pending_intercepts(self) -> list[tuple[int, str]]:
         if self._proxy is None:
             return []
-        getter = cast(
-            'Callable[[], list[tuple[int, str]]] | None',
-            getattr(self._proxy, 'get_pending_intercepts', None),
-        )
-        return getter() if callable(getter) else []
+        return self._proxy.get_pending_intercepts()
 
     def get_env_proxy_pending_data(self, entry_id: int, stage: str) -> bytes | None:
         if self._proxy is None:
             return None
-        getter = cast(
-            'Callable[[int, str], bytes | None] | None',
-            getattr(self._proxy, 'get_pending_data', None),
-        )
-        return getter(entry_id, stage) if callable(getter) else None
+        return self._proxy.get_pending_data(entry_id, stage)
 
     def submit_env_proxy_pending(
         self, entry_id: int, stage: str, action: str, edited_text: str | None = None
     ) -> bool:
         if self._proxy is None:
             return False
-        submitter = cast(
-            'Callable[[int, str, str, str | None], bool] | None',
-            getattr(self._proxy, 'submit_pending', None),
-        )
-        return submitter(entry_id, stage, action, edited_text) if callable(submitter) else False
+        return self._proxy.submit_pending(entry_id, stage, action, edited_text)
 
     def replay_env_proxy_request(self, entry_id: int, edited_text: str | None = None) -> bool:
         """Resend a captured/edited request fresh, overwriting that SAME
@@ -5234,9 +4959,7 @@ class ProxyMaster:
         else:
             excluded_hosts.difference_update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
         self._env_proxy_intercept_excluded_hosts = excluded_hosts
-        setter = getattr(self._proxy, 'set_intercept_excluded_hosts', None)
-        if callable(setter):
-            setter(excluded_hosts)
+        self._proxy.set_intercept_excluded_hosts(excluded_hosts)
 
     def _start_linux_sober_custom_fflag_timer(self) -> None:
         """Arm Linux ClientSettings interception after Sober's bootstrap window."""
@@ -5462,11 +5185,11 @@ class ProxyMaster:
         with self._lock:
             if desired_hosts == self._active_intercept_hosts:
                 return
-            env_proxy = _maybe_proxy(self._proxy)
+            env_proxy = self._proxy
             if getattr(self, '_active_env_proxy_mode', False) and env_proxy is not None:
                 self._refresh_env_proxy_interception_locked(desired_hosts, env_proxy)
                 return
-            if not self._hosts_installed or _maybe_proxy(self._proxy) is None:
+            if not self._hosts_installed or self._proxy is None:
                 self._active_intercept_hosts = set(desired_hosts)
                 return
 
@@ -5482,8 +5205,9 @@ class ProxyMaster:
         with self._lock:
             if desired_hosts == self._active_intercept_hosts:
                 return
-            proxy = _maybe_proxy(self._proxy)
-            if not self._hosts_installed or proxy is None:
+            proxy = self._proxy
+            # Another thread can stop the proxy while system trust is updated
+            if not self._hosts_installed or proxy is None:  # pyright: ignore[reportUnnecessaryComparison]
                 self._active_intercept_hosts = set(desired_hosts)
                 return
 
@@ -5548,11 +5272,7 @@ class ProxyMaster:
         def _loop() -> None:
             while not stop_event.wait(_WATCHDOG_INTERVAL):
                 if IS_MACOS:
-                    helper_heartbeat = cast(
-                        'Callable[[], bool]',
-                        _lazy_attr('fleasion.utils.macos_proxy_helper', 'helper_heartbeat'),
-                    )
-                    if not helper_heartbeat():
+                    if not macos_proxy_helper.helper_heartbeat():
                         log_buffer.log('ProxyHelper', 'macOS proxy helper heartbeat failed')
                 else:
                     _upsert_watchdog_task()
@@ -5913,17 +5633,16 @@ class ProxyMaster:
             ]
             return ok
 
+        proxy = self._proxy
+        if proxy is None:
+            self._tls_startup_attempts = []
+            return False
+
         profiles: list[tuple[str, ssl.TLSVersion]] = [
             ('127.0.0.1', PROXY_TLS_MAX_VERSION),
             ('127.0.0.1', ssl.TLSVersion.MAXIMUM_SUPPORTED),
         ]
-        loopback_ips = cast(
-            'Callable[[], set[str]] | None',
-            getattr(self._proxy, 'loopback_ips_for_hosts', None),
-        )
-        available_loopbacks: set[str] = (
-            set(loopback_ips()) if callable(loopback_ips) else {'127.0.0.1', '::1'}
-        )
+        available_loopbacks = set(proxy.loopback_ips_for_hosts())
         if explicit_proxy and '::1' in available_loopbacks:
             profiles.extend(
                 [
@@ -5938,10 +5657,7 @@ class ProxyMaster:
 
         for index, (loopback_host, tls_max_version) in enumerate(profiles):
             if tls_max_version != current_tls_max:
-                set_tls_max = getattr(self._proxy, 'set_local_tls_max_version', None)
-                if not callable(set_tls_max):
-                    continue
-                set_tls_max(tls_max_version)
+                proxy.set_local_tls_max_version(tls_max_version)
                 current_tls_max = tls_max_version
 
             probe_hosts = representative_hosts if len(profiles) > 1 else hosts
@@ -6136,11 +5852,7 @@ class ProxyMaster:
 
     def _proxy_privilege_preflight(self, env_proxy_mode: bool) -> bool:
         if not env_proxy_mode and IS_MACOS:
-            helper_is_ready = cast(
-                'Callable[[], bool]',
-                _lazy_attr('fleasion.utils.macos_proxy_helper', 'helper_is_ready'),
-            )
-            if not helper_is_ready():
+            if not macos_proxy_helper.helper_is_ready():
                 log_buffer.log('Error', 'The macOS proxy helper is not installed or not running')
                 self._emit_proxy_start_error('macos_helper_unavailable', {})
                 self._running = False
@@ -6252,11 +5964,11 @@ class ProxyMaster:
             return None
         if env_proxy_mode and not ca_patch_ok:
             if not _env_proxy_global_ca_patch_failure_is_fatal():
-                failed = _failed_details(ca_patch_details.get('failed'))
+                failed_count = len(_object_dict_list(ca_patch_details.get('failed')))
                 log_buffer.log(
                     'Certificate',
                     'One or more discovered Roblox CA bundles were not launch-healthy during '
-                    f'Env Proxy startup ({len(failed)} failed); continuing because the actual '
+                    f'Env Proxy startup ({failed_count} failed); continuing because the actual '
                     'Player executable will be repaired and verified before relaunch',
                 )
             else:
@@ -6349,10 +6061,9 @@ class ProxyMaster:
                     f'lines from {HOSTS_FILE} and restart.',
                 )
                 if stale_hosts_error_details.get('notify_user'):
+                    error_code = stale_hosts_error_details.get('error_code')
                     self._emit_proxy_start_error(
-                        _preserve_str(
-                            stale_hosts_error_details.get('error_code', 'hosts_write_exhausted')
-                        ),
+                        error_code if isinstance(error_code, str) else 'hosts_write_exhausted',
                         stale_hosts_error_details,
                     )
                 self._running = False
@@ -6500,7 +6211,7 @@ class ProxyMaster:
         )
 
         self._texture_stripper = TextureStripper(self.config_manager)
-        _set_texture_scraper(self._texture_stripper, self.cache_scraper)
+        self._texture_stripper.set_cache_scraper(self.cache_scraper)
         scraper_ips = _endpoint_ip_candidates(real_endpoints)
         _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
 
@@ -6549,7 +6260,7 @@ class ProxyMaster:
             texture_stripper=self._texture_stripper,
             cache_scraper=self.cache_scraper,
             host_certs=startup['host_certs'],
-            upstream_endpoints=_upstream_endpoint_map(real_endpoints),
+            upstream_endpoints=real_endpoints,
             default_cert=startup['default_cert'],
             port=listen_port,
             upstream_mode=effective_upstream_mode,
@@ -6584,7 +6295,7 @@ class ProxyMaster:
         if env_proxy_mode:
             self._active_proxy_port = int(proxy.port)
             listen_port = self._active_proxy_port
-        _set_active_hosts_loopbacks(_loopback_ips(proxy) if IS_WINDOWS else None)
+        _set_active_hosts_loopbacks(proxy.loopback_ips_for_hosts() if IS_WINDOWS else None)
         return {
             'active_hosts': active_hosts,
             'use_linux_helper': use_linux_helper,
@@ -6772,7 +6483,7 @@ class ProxyMaster:
         log_buffer.log('Info', 'Launch Roblox through Fleasion or let Fleasion relaunch it')
         log_buffer.log('Info', '=' * 50)
 
-        texture_stripper = _maybe_texture(self._texture_stripper)
+        texture_stripper = self._texture_stripper
         if texture_stripper is not None:
             precheck_thread = threading.Thread(
                 target=texture_stripper.precheck_replacements,
@@ -6821,7 +6532,7 @@ class ProxyMaster:
             ):
                 await proxy.stop()
                 _set_active_hosts_loopbacks(None)
-                details = _error_details(last_start_error_details())
+                details = dict(last_start_error_details())
                 if details.get('code') == 'linux_hosts_read_only':
                     self._emit_proxy_start_error('linux_hosts_read_only', details)
                 else:
@@ -6861,8 +6572,8 @@ class ProxyMaster:
                 'tls_failures': relay_failures,
             }
             if IS_MACOS:
-                helper_state = _macos_helper_status()
-                backend_probe = _macos_helper_probe_backend()
+                helper_state = macos_proxy_helper.helper_status()
+                backend_probe = macos_proxy_helper.helper_probe_backend()
                 relay_details['helper_status'] = helper_state or {}
                 relay_details['backend_probe'] = backend_probe
                 reachable = bool(backend_probe.get('reachable'))
@@ -6896,8 +6607,9 @@ class ProxyMaster:
             self._hosts_installed = True
         elif not _add_hosts_entries(active_hosts, error_details=hosts_error_details):
             if hosts_error_details.get('notify_user'):
+                error_code = hosts_error_details.get('error_code')
                 self._emit_proxy_start_error(
-                    _preserve_str(hosts_error_details.get('error_code', 'hosts_write_exhausted')),
+                    error_code if isinstance(error_code, str) else 'hosts_write_exhausted',
                     hosts_error_details,
                 )
             await proxy.stop()
@@ -6947,7 +6659,7 @@ class ProxyMaster:
         log_buffer.log('Info', 'Launch Roblox')
         log_buffer.log('Info', '=' * 50)
 
-        texture_stripper = _maybe_texture(self._texture_stripper)
+        texture_stripper = self._texture_stripper
         if texture_stripper is not None:
             precheck_thread = threading.Thread(
                 target=texture_stripper.precheck_replacements,

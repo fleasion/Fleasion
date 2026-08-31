@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import ssl
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 
 class UpstreamMode(StrEnum):
@@ -98,7 +98,7 @@ def _string_value(value: object) -> str | None:
 
 
 def normalize_endpoints(
-    upstream_endpoints: dict[str, Sequence[UpstreamEndpoint | str]] | None,
+    upstream_endpoints: Mapping[str, Sequence[UpstreamEndpoint | str]] | None,
 ) -> dict[str, list[UpstreamEndpoint]]:
     normalized: dict[str, list[UpstreamEndpoint]] = {}
     for host, endpoints in (upstream_endpoints or {}).items():

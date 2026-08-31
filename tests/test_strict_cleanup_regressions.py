@@ -29,6 +29,53 @@ from fleasion.utils.logging import log_buffer
 _BAD_GZIP = b'\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xffnotdeflate' + b'\x00' * 8
 
 
+def test_pending_rename_entries_validate_registry_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = SimpleNamespace(REG_MULTI_SZ=7)
+    monkeypatch.setattr(proxy_master, 'winreg', registry)
+    pending_entries = cast(
+        'Callable[[object], list[str] | None]',
+        vars(proxy_master)['_pending_rename_entries'],
+    )
+
+    response: tuple[object, int] = (['source', 'target'], 7)
+
+    def query_value(_key: object, _name: str) -> tuple[object, int]:
+        return response
+
+    registry.QueryValueEx = query_value
+    assert pending_entries(object()) == ['source', 'target']
+
+    response = (['source', 3], 7)
+    assert pending_entries(object()) is None
+
+    response = (['source', 'target'], 1)
+    assert pending_entries(object()) is None
+
+
+def test_auto_replace_rules_drop_invalid_config_entries() -> None:
+    master = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    setattr(
+        master,
+        'config_manager',
+        SimpleNamespace(
+            settings={
+                'auto_replace_rules': [
+                    {'enabled': True, 'type': 'Plain text', 'match': 'old', 'replacement': 'new'},
+                    {'enabled': 'yes', 'match': 'invalid boolean'},
+                    {'match': 3},
+                    'not an object',
+                ]
+            }
+        ),
+    )
+
+    assert master.get_auto_replace_rules() == [
+        {'enabled': True, 'type': 'Plain text', 'match': 'old', 'replacement': 'new'}
+    ]
+
+
 def test_hosts_direct_write_does_not_run_atomic_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 
     from fleasion.utils.logging import LogBuffer
 
@@ -280,7 +280,7 @@ def _get_anim_converter() -> _AnimConverterModule:
     )
 
 
-class _AutoReplaceRule(TypedDict, total=False):
+class AutoReplaceRule(TypedDict, total=False):
     enabled: bool
     direction: str
     host_filter: str
@@ -290,7 +290,7 @@ class _AutoReplaceRule(TypedDict, total=False):
     replacement: str
 
 
-class _RequestLogEntry(TypedDict):
+class ProxyRequestLogEntry(TypedDict):
     id: int
     time: float
     host: str
@@ -596,9 +596,7 @@ def _auto_replace_filter_matches(value: str, filter_text: str) -> bool:
     return (not contains) if negate else contains
 
 
-def _auto_replace_rule_applies(
-    rule: _AutoReplaceRule, direction: str, host: str, path: str
-) -> bool:
+def _auto_replace_rule_applies(rule: AutoReplaceRule, direction: str, host: str, path: str) -> bool:
     if not rule.get('enabled', True):
         return False
     rule_direction = rule.get('direction') or 'both'
@@ -692,7 +690,7 @@ def _apply_auto_replace_body_rule(
 
 
 def apply_auto_replace_rules(
-    rules: Iterable[_AutoReplaceRule], direction: str, host: str, path: str, body: bytes
+    rules: Iterable[AutoReplaceRule], direction: str, host: str, path: str, body: bytes
 ) -> tuple[bytes, bool]:
     """Run the body-affecting Auto Replace rules (plain text / regex / JSON
     path) against a decompressed request/response body. Rules are applied in
@@ -730,7 +728,7 @@ def apply_auto_replace_rules(
 
 
 def apply_auto_replace_header_rules(
-    rules: Iterable[_AutoReplaceRule],
+    rules: Iterable[AutoReplaceRule],
     direction: str,
     host: str,
     path: str,
@@ -759,7 +757,7 @@ def apply_auto_replace_header_rules(
 
 
 def apply_auto_replace_query_rules(
-    rules: Iterable[_AutoReplaceRule], host: str, path: str
+    rules: Iterable[AutoReplaceRule], host: str, path: str
 ) -> tuple[str, bool]:
     """Run 'Query param' type Auto Replace rules: sets a query string
     parameter's value (matched by name) in a request's path - adds it
@@ -934,7 +932,7 @@ class _ResponseTrackingWriter:
     def __init__(self, writer: asyncio.StreamWriter, proxy: FleasionProxy) -> None:
         self._writer = writer
         self._proxy = proxy
-        self._entry: _RequestLogEntry | None = None
+        self._entry: ProxyRequestLogEntry | None = None
         self._start = 0.0
         self._status_captured = False
         self._hold = False
@@ -942,7 +940,7 @@ class _ResponseTrackingWriter:
         self._delivery_ack: Callable[[], None] | None = None
         self._delivery_ack_expected: bytes | None = None
 
-    def begin(self, entry: _RequestLogEntry | None, hold: bool = False) -> None:
+    def begin(self, entry: ProxyRequestLogEntry | None, hold: bool = False) -> None:
         self._entry = entry
         self._start = time.time()
         self._status_captured = False
@@ -1027,11 +1025,11 @@ class _ResponseTrackingWriter:
             _ack_if_unchanged(held)
             return
         create_pending = cast(
-            'Callable[[_RequestLogEntry, str, bytes], PendingIntercept]',
+            'Callable[[ProxyRequestLogEntry, str, bytes], PendingIntercept]',
             getattr(self._proxy, _CREATE_PENDING_ATTR),
         )
         resolve_pending = cast(
-            'Callable[[_RequestLogEntry, str], None]',
+            'Callable[[ProxyRequestLogEntry, str], None]',
             getattr(self._proxy, _RESOLVE_PENDING_ATTR),
         )
         pending = create_pending(entry, 'response', held)
@@ -1492,7 +1490,7 @@ async def _exchange_replay_request(
 async def _copy_tunnel_stream(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
-    log_entry: _RequestLogEntry | None,
+    log_entry: ProxyRequestLogEntry | None,
     started: float,
 ) -> None:
     while True:
@@ -1568,7 +1566,7 @@ class FleasionProxy:
         texture_stripper: TextureStripper,
         cache_scraper: CacheScraper,
         host_certs: dict[str, tuple[Path, Path]],
-        upstream_endpoints: dict[str, Sequence[UpstreamEndpoint | str]] | None = None,
+        upstream_endpoints: Mapping[str, Sequence[UpstreamEndpoint | str]] | None = None,
         default_cert: tuple[Path, Path] | None = None,
         port: int = 443,
         max_workers: int = 8,
@@ -1591,7 +1589,7 @@ class FleasionProxy:
         cert_cache_dir: Path | None = None,
         intercept_all_hosts: bool = False,
         intercept_excluded_hosts: Iterable[str] | None = None,
-        auto_replace_rules: Iterable[_AutoReplaceRule] | None = None,
+        auto_replace_rules: Iterable[AutoReplaceRule] | None = None,
     ) -> None:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
@@ -1623,14 +1621,14 @@ class FleasionProxy:
             for host in (intercept_excluded_hosts or ())
             if str(host).strip()
         )
-        self._auto_replace_rules: list[_AutoReplaceRule] = (
+        self._auto_replace_rules: list[AutoReplaceRule] = (
             list(auto_replace_rules) if auto_replace_rules else []
         )
         self._ca_cert_path = ca_cert_path
         self._ca_key_path = ca_key_path
         self._cert_cache_dir = cert_cache_dir
         self._request_log_lock = threading.Lock()
-        self._request_log: list[_RequestLogEntry] = []
+        self._request_log: list[ProxyRequestLogEntry] = []
         self._request_log_max = 4000
         self._next_entry_id = 0
         self._intercept_match_text = ''
@@ -1845,7 +1843,7 @@ class FleasionProxy:
         method: str,
         path: str,
         intercepted: bool,
-    ) -> _RequestLogEntry:
+    ) -> ProxyRequestLogEntry:
         """Append one row per request/tunnel seen through the explicit proxy.
 
         Intercepted (TLS-terminated) hosts get one entry per actual HTTP request.
@@ -1857,7 +1855,7 @@ class FleasionProxy:
         with self._request_log_lock:
             entry_id = self._next_entry_id
             self._next_entry_id += 1
-            entry: _RequestLogEntry = {
+            entry: ProxyRequestLogEntry = {
                 'id': entry_id,
                 'time': time.time(),
                 'host': host,
@@ -1879,7 +1877,7 @@ class FleasionProxy:
                 del self._request_log[:overflow]
         return entry
 
-    def get_request_log(self) -> list[_RequestLogEntry]:
+    def get_request_log(self) -> list[ProxyRequestLogEntry]:
         """Return a snapshot of every request/tunnel the explicit proxy has logged."""
         with self._request_log_lock:
             return [entry.copy() for entry in self._request_log]
@@ -1888,14 +1886,14 @@ class FleasionProxy:
         with self._request_log_lock:
             self._request_log.clear()
 
-    def format_request_preview(self, entry: _RequestLogEntry) -> str:
+    def format_request_preview(self, entry: ProxyRequestLogEntry) -> str:
         """Human-readable request text for a request-log entry, for the Proxy tab."""
         raw = entry.get('request_raw')
         if not raw:
             return ''
         return asyncio.run(_format_raw_http_message(bytes(raw)))
 
-    def format_response_preview(self, entry: _RequestLogEntry) -> str:
+    def format_response_preview(self, entry: ProxyRequestLogEntry) -> str:
         """Human-readable response text for a request-log entry, for the Proxy tab."""
         raw = entry.get('response_raw')
         if not raw:
@@ -1904,7 +1902,7 @@ class FleasionProxy:
 
     async def replay_request(
         self, entry_id: int, raw_request: bytes, host: str
-    ) -> _RequestLogEntry | None:
+    ) -> ProxyRequestLogEntry | None:
         """Resend a captured (or edited) request to *host* fresh, overwriting
         the SAME log entry's request/response fields in place - no new row.
         Must be scheduled onto this proxy's own event loop (e.g. via
@@ -2003,7 +2001,7 @@ class FleasionProxy:
             and (self._intercept_all_hosts or normalized_host in self._intercept_hosts)
         )
 
-    def set_auto_replace_rules(self, rules: Iterable[_AutoReplaceRule]) -> None:
+    def set_auto_replace_rules(self, rules: Iterable[AutoReplaceRule]) -> None:
         """Replace the live set of Auto Replace rules (see apply_auto_replace_rules)."""
         self._auto_replace_rules = list(rules) if rules else []
 
@@ -2013,7 +2011,9 @@ class FleasionProxy:
         text = self._intercept_match_text
         return text in host.lower() or text in path.lower()
 
-    def _create_pending(self, entry: _RequestLogEntry, stage: str, data: bytes) -> PendingIntercept:
+    def _create_pending(
+        self, entry: ProxyRequestLogEntry, stage: str, data: bytes
+    ) -> PendingIntercept:
         pending = PendingIntercept(entry['id'], stage, data)
         with self._pending_lock:
             self._pending[entry['id'], stage] = pending
@@ -2021,7 +2021,7 @@ class FleasionProxy:
         entry['was_intercepted'] = True
         return pending
 
-    def _resolve_pending(self, entry: _RequestLogEntry, stage: str) -> None:
+    def _resolve_pending(self, entry: ProxyRequestLogEntry, stage: str) -> None:
         with self._pending_lock:
             self._pending.pop((entry['id'], stage), None)
         if entry.get('pending_stage') == stage:
@@ -2535,7 +2535,7 @@ class FleasionProxy:
         client_writer: asyncio.StreamWriter,
         host: str,
         port: int,
-        log_entry: _RequestLogEntry | None = None,
+        log_entry: ProxyRequestLogEntry | None = None,
     ) -> None:
         log_buffer = _get_log_buffer()
 

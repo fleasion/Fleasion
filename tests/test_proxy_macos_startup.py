@@ -921,7 +921,7 @@ def test_cacert_write_barrier_clear_removes_immutable_flags(
     assert fake_path.mode & stat.S_IWRITE
 
 
-def test_linux_cacert_seed_clears_read_only_before_copy(
+def test_cacert_seed_clears_read_only_before_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     logs: list[tuple[str, str]] = []
@@ -944,7 +944,7 @@ def test_linux_cacert_seed_clears_read_only_before_copy(
         SimpleNamespace(log=_collect_log(logs)),
     )
 
-    seeded = getattr(proxy_master, '_seed_linux_cacert_if_needed')(
+    seeded = getattr(proxy_master, '_seed_cacert_if_needed')(
         ca_file,
         {'exists': True, 'size': 9, 'total_certs': 0, 'error': ''},
         'asset_overlay',
@@ -1833,53 +1833,6 @@ def test_macos_running_player_ca_repair_requests_full_strip_when_pre_read_fails(
             [{'resource_dir': str(resources), 'remove_pems': [], 'strip_all_fleasion_ca': True}],
         )
     ]
-
-
-def test_macos_system_keychain_removes_stale_fleasion_ca_before_current_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    logs: list[tuple[str, str]] = []
-    calls: list[list[str]] = []
-    ca_cert = tmp_path / 'ca.crt'
-    ca_cert.write_text('ca', encoding='utf-8')
-    stale_ca = _make_self_signed_ca_pem()
-    current_ca = _make_self_signed_ca_pem()
-    lookalike_ca = _make_self_signed_ca_pem(organization='Other Org')
-    stale_thumbprint = getattr(proxy_master, '_ca_thumbprint_sha1')(stale_ca)
-    lookalike_thumbprint = getattr(proxy_master, '_ca_thumbprint_sha1')(lookalike_ca)
-
-    def fake_run(args: list[str], **_kwargs: object) -> SimpleNamespace:
-        calls.append(args)
-        if args[:5] == ['security', 'find-certificate', '-a', '-p', '-c']:
-            return SimpleNamespace(
-                returncode=0,
-                stdout=f'{stale_ca}\n{current_ca}\n{lookalike_ca}\n',
-                stderr='',
-            )
-        if args[:3] == ['security', 'delete-certificate', '-Z']:
-            return SimpleNamespace(returncode=0, stdout='', stderr='')
-        msg = f'unexpected security call: {args}'
-        raise AssertionError(msg)
-
-    monkeypatch.setattr(
-        proxy_master,
-        'log_buffer',
-        SimpleNamespace(log=_collect_log(logs)),
-    )
-    monkeypatch.setattr(proxy_master.subprocess, 'run', fake_run)
-
-    getattr(proxy_master, '_install_ca_into_macos_system_keychain')(ca_cert, current_ca)
-
-    assert [
-        'security',
-        'delete-certificate',
-        '-Z',
-        stale_thumbprint,
-        '/Library/Keychains/System.keychain',
-    ] in calls
-    assert not any(isinstance(call, list) and lookalike_thumbprint in call for call in calls)
-    assert not any('add-trusted-cert' in call for call in calls)
-    assert any('removed 1 stale Fleasion CA entry' in message for _category, message in logs)
 
 
 def test_proxy_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scanning(

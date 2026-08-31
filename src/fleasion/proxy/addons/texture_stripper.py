@@ -58,7 +58,8 @@ class _CacheManagerLike(Protocol):
 
 
 class _CacheScraperLike(Protocol):
-    cache_manager: _CacheManagerLike
+    @property
+    def cache_manager(self) -> _CacheManagerLike: ...
 
     def prefetch_texpack_layout(self, parent_id: int) -> None: ...
     def get_roblosecurity(self, *, wait: bool = False) -> str | None: ...
