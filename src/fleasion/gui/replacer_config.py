@@ -90,7 +90,7 @@ from .proxy_gate import ProxyGate
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from types import TracebackType
-    from typing import TypeIs
+    from typing import TypeGuard
 
     from fleasion.app import RobloxExitMonitor
     from fleasion.cache.cache_viewer import CacheViewerTab
@@ -1638,11 +1638,11 @@ class ReplacerConfigWindow(QDialog):
         self._update_editing_button_style()
 
     @staticmethod
-    def _is_group(entry: _RuleEntry | None) -> TypeIs[_GroupRule]:
+    def _is_group(entry: _RuleEntry | None) -> TypeGuard[_GroupRule]:
         return isinstance(entry, dict) and entry.get('type') == _KIND_GROUP
 
     @staticmethod
-    def _is_profile(entry: _RuleEntry | None) -> TypeIs[_ProfileRule]:
+    def _is_profile(entry: _RuleEntry | None) -> TypeGuard[_ProfileRule]:
         return isinstance(entry, dict) and entry.get('type') != _KIND_GROUP
 
     def _iter_profiles(self, entries: _RuleList) -> Iterator[_ProfileRule]:
