@@ -4929,9 +4929,9 @@ def main() -> None:
     # Re-apply saved modifications on launch so the GUI state and Roblox files stay in sync.
     run_in_thread(mod_manager.reapply_all)()
 
-    # ── Shutdown guards ───────────────────────────────────────────────────
-    # 1. Graceful Windows shutdown / log-off: Qt fires commitDataRequest before
-    #    the session ends, giving us a chance to clean up the hosts file.
+    # Shutdown guards
+    # Graceful Windows shutdown / log-off: Qt fires commitDataRequest before
+    # the session ends, giving us a chance to clean up the hosts file.
     def _on_commit_data(_session: QSessionManager) -> None:
         with contextlib.suppress(NameError, AttributeError):
             env_lifecycle.cancel()
