@@ -365,15 +365,34 @@ def install_helper() -> tuple[bool, str]:
     )
     bootstrap_cmd = shlex.join(['/bin/launchctl', 'bootstrap', 'system', str(HELPER_PLIST_PATH)])
     load_cmd = shlex.join(['/bin/launchctl', 'load', '-w', str(HELPER_PLIST_PATH)])
-    bootout_label = shlex.join(['/bin/launchctl', 'bootout', f'system/{HELPER_ID}'])
+    service_target = f'system/{HELPER_ID}'
+    bootout_label = shlex.join(['/bin/launchctl', 'bootout', service_target])
     bootout_plist = shlex.join(['/bin/launchctl', 'bootout', 'system', str(HELPER_PLIST_PATH)])
-    enable_cmd = shlex.join(['/bin/launchctl', 'enable', f'system/{HELPER_ID}'])
+    kill_service = shlex.join(['/bin/launchctl', 'kill', 'SIGKILL', service_target])
+    print_service = shlex.join(['/bin/launchctl', 'print', service_target])
+    enable_cmd = shlex.join(['/bin/launchctl', 'enable', service_target])
     install_cmds = ' && '.join(shlex.join(command) for command in commands)
     shell_cmd = f"""
 set -e
-{bootout_label} >/dev/null 2>&1 || true
+bootout_output="$({bootout_label} 2>&1)" || true
 {bootout_plist} >/dev/null 2>&1 || true
 /bin/sleep 0.2
+if {print_service} >/dev/null 2>&1; then
+  # Some macOS/launchd states leave the old KeepAlive helper registered even
+  # after bootout. Kill the managed process, then retry the unregister before
+  # replacing its executable.
+  {kill_service} >/dev/null 2>&1 || true
+  /bin/sleep 0.2
+  {bootout_label} >/dev/null 2>&1 || true
+  {bootout_plist} >/dev/null 2>&1 || true
+  /bin/sleep 0.2
+fi
+if {print_service} >/dev/null 2>&1; then
+  service_state="$({print_service} 2>&1)"
+  /bin/echo "could not unload existing helper service: $bootout_output" >&2
+  /bin/echo "$service_state" >&2
+  exit 41
+fi
 {install_cmds}
 {xattr_cmd} >/dev/null 2>&1 || true
 set +e
@@ -405,6 +424,11 @@ if [ "$bootstrap_retry_status" -ne 0 ]; then
 fi
 if [ "$load_status" -ne 0 ]; then
   /bin/echo "legacy load failed ($load_status): $load_output"
+fi
+if [ "$bootstrap_status" -ne 0 ] \
+  && [ "$bootstrap_retry_status" -ne 0 ] \
+  && [ "$load_status" -ne 0 ]; then
+  exit 42
 fi
 exit 0
 """.strip()

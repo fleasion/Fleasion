@@ -24,7 +24,7 @@ def test_terminate_roblox_requests_app_bundle_quit_before_signal(tmp_path, monke
     app = tmp_path / "Roblox.app"
     app.mkdir()
     calls = []
-    states = iter([True, False])
+    signals = []
 
     class Result:
         returncode = 0
@@ -37,12 +37,71 @@ def test_terminate_roblox_requests_app_bundle_quit_before_signal(tmp_path, monke
 
     monkeypatch.setattr(platform_macos, "ROBLOX_APP_CANDIDATES", (app,))
     monkeypatch.setattr(platform_macos, "ROBLOX_PROCESS", "RobloxPlayer")
-    monkeypatch.setattr(platform_macos, "is_roblox_running", lambda: next(states))
+    monkeypatch.setattr(platform_macos, "_process_pids", lambda _name: [321])
+    monkeypatch.setattr(
+        platform_macos,
+        "_signal_process",
+        lambda pid, sig: signals.append((pid, sig)) or True,
+    )
+    monkeypatch.setattr(platform_macos, "_wait_for_pids_exit", lambda pids, _timeout: set())
     monkeypatch.setattr(platform_macos.subprocess, "run", fake_run)
 
     assert platform_macos.terminate_roblox() is True
     assert calls[0] == ["osascript", "-e", 'tell application "Roblox" to quit']
-    assert calls[1] == ["pkill", "-TERM", "-x", "RobloxPlayer"]
+    assert signals == [(321, platform_macos.signal.SIGTERM)]
+
+
+def test_terminate_roblox_escalates_only_captured_pids(monkeypatch):
+    pid_snapshots = iter([[101, 202], [303]])
+    signals = []
+    waits = iter([{202}, set()])
+    logs = []
+
+    monkeypatch.setattr(platform_macos, "ROBLOX_APP_CANDIDATES", ())
+    monkeypatch.setattr(platform_macos, "_process_pids", lambda _name: next(pid_snapshots))
+    monkeypatch.setattr(
+        platform_macos,
+        "_signal_process",
+        lambda pid, sig: signals.append((pid, sig)) or True,
+    )
+    monkeypatch.setattr(platform_macos, "_wait_for_pids_exit", lambda _pids, _timeout: next(waits))
+    monkeypatch.setattr(
+        platform_macos.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert platform_macos.terminate_roblox() is True
+    assert signals == [
+        (101, platform_macos.signal.SIGTERM),
+        (202, platform_macos.signal.SIGTERM),
+        (202, platform_macos.signal.SIGKILL),
+    ]
+    assert any("new Player process(es) appeared immediately: 303" in message for _, message in logs)
+
+
+def test_terminate_roblox_reports_pid_that_survives_sigkill(monkeypatch):
+    signals = []
+    waits = iter([{404}, {404}])
+    logs = []
+
+    monkeypatch.setattr(platform_macos, "ROBLOX_APP_CANDIDATES", ())
+    monkeypatch.setattr(platform_macos, "_process_pids", lambda _name: [404])
+    monkeypatch.setattr(
+        platform_macos,
+        "_signal_process",
+        lambda pid, sig: signals.append((pid, sig)) or True,
+    )
+    monkeypatch.setattr(platform_macos, "_wait_for_pids_exit", lambda _pids, _timeout: next(waits))
+    monkeypatch.setattr(
+        platform_macos.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert platform_macos.terminate_roblox() is False
+    assert signals[-1] == (404, platform_macos.signal.SIGKILL)
+    assert any("remained alive after SIGKILL: 404" in message for _, message in logs)
 
 
 def test_discovers_froststrap_versions_and_appleblox_custom_path(tmp_path, monkeypatch):

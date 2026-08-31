@@ -248,6 +248,11 @@ def test_helper_installer_stages_helper_before_privileged_install(tmp_path, monk
     assert script.index("/usr/bin/xattr -c") > script.index("/usr/bin/install")
     assert "launchctl bootstrap system" in script
     assert "launchctl load -w" in script
+    assert f"launchctl print system/{macos_proxy_helper.HELPER_ID}" in script
+    assert f"launchctl kill SIGKILL system/{macos_proxy_helper.HELPER_ID}" in script
+    assert "could not unload existing helper service" in script
+    assert "exit 41" in script
+    assert "exit 42" in script
     for log_path in (
         macos_proxy_helper.HELPER_LOG_PATH,
         macos_proxy_helper.HELPER_STDOUT_LOG_PATH,

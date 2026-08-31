@@ -904,9 +904,45 @@ def get_roblox_studio_exe_path() -> Optional[Path]:
     return _known_studio_executable()
 
 
+def _signal_process(pid: int, sig: signal.Signals) -> bool:
+    """Signal one known process and preserve useful macOS failure diagnostics."""
+    try:
+        os.kill(pid, sig)
+        return True
+    except ProcessLookupError:
+        # The process exited between discovery and signaling.
+        return True
+    except PermissionError as exc:
+        log_buffer.log(
+            'Cache',
+            f'Could not signal Roblox pid={pid} with {sig.name}: permission denied ({exc})',
+        )
+    except OSError as exc:
+        log_buffer.log(
+            'Cache',
+            f'Could not signal Roblox pid={pid} with {sig.name}: {type(exc).__name__}: {exc}',
+        )
+    return False
+
+
+def _wait_for_pids_exit(pids: set[int], timeout: float) -> set[int]:
+    """Wait for captured PIDs and return the subset that is still alive."""
+    remaining = set(pids)
+    deadline = time.monotonic() + max(0.0, timeout)
+    while remaining:
+        for pid in tuple(remaining):
+            if _wait_for_pid_exit(pid, timeout=0.0):
+                remaining.discard(pid)
+        if not remaining or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    return remaining
+
+
 def terminate_roblox() -> bool:
-    """Terminate Roblox if it is running. Returns True if it was running."""
-    if not is_roblox_running():
+    """Terminate the currently-running Roblox Player processes."""
+    pids = set(_process_pids(ROBLOX_PROCESS))
+    if not pids:
         return False
 
     for app_path in ROBLOX_APP_CANDIDATES:
@@ -914,31 +950,61 @@ def terminate_roblox() -> bool:
             _quit_app_bundle(app_path)
             break
 
-    try:
-        subprocess.run(['pkill', '-TERM', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)
-    except Exception:
-        pass
+    for pid in sorted(pids):
+        _signal_process(pid, signal.SIGTERM)
 
-    deadline = time.time() + 2.0
-    while time.time() < deadline:
-        if not is_roblox_running():
-            return True
-        time.sleep(0.1)
+    remaining = _wait_for_pids_exit(pids, 2.0)
+    if not remaining:
+        return True
 
-    try:
-        subprocess.run(['pkill', '-KILL', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)
-    except Exception:
-        pass
-    return not is_roblox_running()
+    log_buffer.log(
+        'Cache',
+        'Roblox did not exit after SIGTERM; escalating captured process(es) to SIGKILL: '
+        + ', '.join(str(pid) for pid in sorted(remaining)),
+    )
+    for pid in sorted(remaining):
+        _signal_process(pid, signal.SIGKILL)
+
+    remaining = _wait_for_pids_exit(remaining, 3.0)
+    if remaining:
+        log_buffer.log(
+            'Cache',
+            'Roblox process(es) remained alive after SIGKILL: '
+            + ', '.join(str(pid) for pid in sorted(remaining)),
+        )
+        return False
+
+    # A launcher/updater may immediately spawn a replacement Player. Keep that
+    # distinct from a failure to terminate the process(es) we actually signaled.
+    replacement_pids = set(_process_pids(ROBLOX_PROCESS)) - pids
+    if replacement_pids:
+        log_buffer.log(
+            'Cache',
+            'Roblox terminated but new Player process(es) appeared immediately: '
+            + ', '.join(str(pid) for pid in sorted(replacement_pids)),
+        )
+    return True
 
 
 def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
     """Wait for Roblox to exit. Returns True if it exited before timeout."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if not is_roblox_running():
             return True
         time.sleep(0.5)
+
+    remaining = _process_pids(ROBLOX_PROCESS)
+    if remaining:
+        details = []
+        for pid in remaining:
+            command = _process_command(pid)
+            details.append(f'{pid} ({command or "unknown executable"})')
+        log_buffer.log(
+            'Cache',
+            'Timed out waiting for Roblox exit; remaining Player process(es): '
+            + ', '.join(details),
+        )
     return False
 
 
