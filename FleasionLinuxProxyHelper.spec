@@ -1,5 +1,9 @@
-# -*- mode: python ; coding: utf-8 -*-
+from __future__ import annotations
+
 import sys
+
+from PyInstaller.building.api import EXE, PYZ
+from PyInstaller.building.build_main import Analysis
 
 _use_upx = sys.platform == 'win32'
 
