@@ -129,6 +129,15 @@ def test_packaging_collects_lz4_native_extensions() -> None:
     assert "_collect_package('lz4')" in spec_source
 
 
+def test_linux_package_uses_host_fontconfig_library() -> None:
+    spec_source = (Path(__file__).resolve().parents[1] / 'Fleasion.spec').read_text(
+        encoding='utf-8'
+    )
+
+    assert "_HOST_FONTCONFIG_LIB_PREFIXES = ('libfontconfig.so',)" in spec_source
+    assert '_entry_name_startswith(entry, _HOST_FONTCONFIG_LIB_PREFIXES)' in spec_source
+
+
 def test_packaging_collects_lazy_third_party_runtime_modules() -> None:
     root = Path(__file__).resolve().parents[1]
     spec_source = (root / 'Fleasion.spec').read_text(encoding='utf-8')
@@ -158,6 +167,23 @@ def test_windows_packaging_collects_lazy_win32_runtime_modules() -> None:
         "'pythoncom'",
     ):
         assert required_module in spec_source
+
+
+def test_windows_archive_check_distinguishes_pywin32_native_payloads() -> None:
+    workflow_source = (
+        Path(__file__).resolve().parents[1] / '.github/workflows/build.yml'
+    ).read_text(encoding='utf-8')
+    windows_check = workflow_source.split('Verify Windows runtime payload', 1)[1].split(
+        '- name: Prepare Linux executable', 1
+    )[0]
+
+    assert "'win32clipboard'" in windows_check
+    assert "'win32file'" in windows_check
+    assert 'required PyWin32 extension' in windows_check
+    assert '\\.pyd' in windows_check
+    assert "@('pythoncom', 'pywintypes')" in windows_check
+    assert 'required PyWin32 runtime DLL' in windows_check
+    assert '\\d+\\.dll' in windows_check
 
 
 def test_proxy_helper_specs_collect_dynamic_runtime_modules() -> None:

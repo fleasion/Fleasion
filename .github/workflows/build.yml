@@ -173,14 +173,30 @@ jobs:
             'sounddevice',
             'cryptography.fernet',
             'win11toast',
-            'win32clipboard',
             'win32com.client',
-            'win32file',
-            'pythoncom'
+            'win32con'
           )) {
             $modulePattern = "(?m)(^|[\s'])$([regex]::Escape($requiredModule))([\s']|$)"
             if ($listing -notmatch $modulePattern) {
               throw "Windows package is missing required runtime module: $requiredModule"
+            }
+          }
+          foreach ($requiredExtension in @(
+            'win32api',
+            'win32clipboard',
+            'win32crypt',
+            'win32file',
+            'win32security'
+          )) {
+            $extensionPattern = "(?im)(^|[\\/\s'])$([regex]::Escape($requiredExtension))(?:\.[^\\/\s']+)?\.pyd([\s']|$)"
+            if ($listing -notmatch $extensionPattern) {
+              throw "Windows package is missing required PyWin32 extension: $requiredExtension"
+            }
+          }
+          foreach ($requiredDllPrefix in @('pythoncom', 'pywintypes')) {
+            $dllPattern = "(?im)(^|[\\/\s'])$([regex]::Escape($requiredDllPrefix))\d+\.dll([\s']|$)"
+            if ($listing -notmatch $dllPattern) {
+              throw "Windows package is missing required PyWin32 runtime DLL: $requiredDllPrefix"
             }
           }
           foreach ($requiredPayload in @('QtOpenGL', 'opengl32sw.dll')) {
@@ -228,6 +244,10 @@ jobs:
           done
           if ! grep -q 'DracoPy' <<< "$archive_listing"; then
             echo "Linux package is missing the bundled DracoPy extension." >&2
+            exit 1
+          fi
+          if grep -Eq "(^|[[:space:]'])libfontconfig\.so" <<< "$archive_listing"; then
+            echo "Linux package must use the target system's Fontconfig library." >&2
             exit 1
           fi
 

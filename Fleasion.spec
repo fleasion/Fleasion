@@ -175,6 +175,8 @@ _HOST_AUDIO_LIB_PREFIXES = (
     'libpipewire-',
 )
 
+_HOST_FONTCONFIG_LIB_PREFIXES = ('libfontconfig.so',)
+
 
 def _run_pyinstaller_spec(spec_path: str, *, env: dict[str, str] | None = None) -> None:
     build_env = os.environ.copy()
@@ -415,10 +417,18 @@ a.datas = _drop_entries(a.datas, _is_unused_qt_runtime_entry)
 if sys.platform.startswith('linux'):
     # The sounddevice hook and dependency scan can collect the build machine's
     # audio backend stack. That can silence playback on other distros, so the
-    # GUI player uses host PortAudio and host audio backend libraries
+    # GUI player uses host PortAudio and host audio backend libraries.
     a.binaries = _drop_entries(
         a.binaries,
         lambda entry: _entry_name_startswith(entry, _HOST_AUDIO_LIB_PREFIXES),
+    )
+    # Fontconfig configuration files belong to the target Linux system. A
+    # libfontconfig frozen from the build distro can be older than the target's
+    # /etc/fonts syntax, producing a wall of parser warnings at startup. Keep
+    # Qt's other bundled libraries, but resolve Fontconfig from the host.
+    a.binaries = _drop_entries(
+        a.binaries,
+        lambda entry: _entry_name_startswith(entry, _HOST_FONTCONFIG_LIB_PREFIXES),
     )
 pyz = PYZ(a.pure)
 
