@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from .json_types import as_object_dict
 from .logging import log_buffer
 from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, MACOS_PROXY_HELPER_CONTROL_PORT
 
@@ -50,17 +51,6 @@ type HelperObject = dict[str, object]
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-
-
-def _object_dict(value: object) -> HelperObject:
-    if not isinstance(value, dict):
-        msg = 'macOS proxy helper response must be a JSON object'
-        raise TypeError(msg)
-    mapping = cast('dict[object, object]', value)
-    if not all(isinstance(key, str) for key in mapping):
-        msg = 'macOS proxy helper response keys must be strings'
-        raise TypeError(msg)
-    return cast('HelperObject', mapping)
 
 
 def _int_value(value: object) -> int:
@@ -106,7 +96,10 @@ def _request(
         sock_file = sock.makefile('rb')
         raw = sock_file.readline(1024 * 1024)
     response_value: object = json.loads(raw.decode('utf-8'))
-    response = _object_dict(response_value)
+    response = as_object_dict(response_value)
+    if response is None:
+        msg = 'macOS proxy helper response must be a JSON object'
+        raise TypeError(msg)
     if raise_on_error and not response.get('ok'):
         raise RuntimeError(str(response.get('error') or 'macOS proxy helper request failed'))
     return response

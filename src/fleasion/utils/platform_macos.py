@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 from urllib.parse import urlsplit
 
+from .json_types import as_json_object
 from .logging import log_buffer
 from .paths import (
     APP_CACHE_DIR,
@@ -67,11 +68,6 @@ _NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY = 1
 _CF_STRING_ENCODING_UTF8 = 0x08000100
 
 
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
-
-
 class _CFunction(Protocol):
     argtypes: list[object]
     restype: object
@@ -113,26 +109,6 @@ if TYPE_CHECKING:
 
 
 _macos_select = cast('_MacOSSelect', select)
-
-
-def _is_json_value(value: object) -> bool:
-    if value is None or isinstance(value, str | int | float | bool):
-        return True
-    if isinstance(value, list):
-        return all(_is_json_value(item) for item in cast('list[object]', value))
-    if not isinstance(value, dict):
-        return False
-    mapping = cast('dict[object, object]', value)
-    return all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items())
-
-
-def _json_object(value: object) -> JsonObject | None:
-    if not isinstance(value, dict):
-        return None
-    mapping = cast('dict[object, object]', value)
-    if not all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items()):
-        return None
-    return cast('JsonObject', mapping)
 
 
 def _c_function(library: ctypes.CDLL, name: str) -> _CFunction:
@@ -293,10 +269,10 @@ def _appleblox_custom_app_path() -> Path | None:
         payload: object = json.loads(APPLEBLOX_ROBLOX_CONFIG.read_text(encoding='utf-8'))
     except OSError, UnicodeError, json.JSONDecodeError:
         return None
-    payload_map = _json_object(payload)
+    payload_map = as_json_object(payload)
     if payload_map is None:
         return None
-    installation = _json_object(payload_map.get('installation'))
+    installation = as_json_object(payload_map.get('installation'))
     if installation is None:
         return None
     raw_path = installation.get('custom_path')

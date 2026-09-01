@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 
 from fleasion.localization import tr
 
+from .json_types import as_object_dict
 from .logging import log_buffer
 from .paths import USER_HOME
 
@@ -84,9 +85,9 @@ def _creation_flags() -> int:
 
 
 def _json_launch_info(value: object) -> LaunchInfo | None:
-    if not isinstance(value, dict):
+    mapping = as_object_dict(value)
+    if mapping is None:
         return None
-    mapping = cast('dict[object, object]', value)
     required_types = {'mode': str, 'path': str, '_fmt': int}
     optional_types = {'project': str, 'log': str, 'proxy_mode': str}
     if any(not isinstance(mapping.get(key), expected) for key, expected in required_types.items()):

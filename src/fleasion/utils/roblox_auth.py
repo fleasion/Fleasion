@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 import requests
 from cryptography.fernet import Fernet, InvalidToken
 
+from .json_types import JsonObject, as_json_object
 from .linux_clients import SOBER_CLIENT, LinuxClientInstallation
 from .logging import log_buffer
 from .paths import CONFIG_DIR, CONFIG_FILE, LOCAL_APPDATA, USER_HOME
@@ -55,11 +56,6 @@ if sys.platform == 'win32':
         pass
     else:
         win32crypt = cast('_Win32CryptLike', _win32crypt_module)
-
-
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
 
 
 class _BrowserLoader(Protocol):
@@ -97,26 +93,6 @@ class _FernetCipher(Protocol):
     def encrypt(self, data: bytes) -> bytes: ...
 
     def decrypt(self, token: bytes) -> bytes: ...
-
-
-def _is_json_value(value: object) -> bool:
-    if value is None or isinstance(value, str | int | float | bool):
-        return True
-    if isinstance(value, list):
-        return all(_is_json_value(item) for item in cast('list[object]', value))
-    if not isinstance(value, dict):
-        return False
-    mapping = cast('dict[object, object]', value)
-    return all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items())
-
-
-def _json_object(value: object) -> JsonObject | None:
-    if not isinstance(value, dict):
-        return None
-    mapping = cast('dict[object, object]', value)
-    if not all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items()):
-        return None
-    return cast('JsonObject', mapping)
 
 
 def _base64_source(value: object) -> str | bytes | None:
@@ -342,7 +318,7 @@ def _sober_use_libsecret(config_path: Path) -> bool:
             "Fleasion couldn't safely read Sober's configuration, so it did not switch "
             'the local account.',
         ) from exc
-    payload_map = _json_object(payload)
+    payload_map = as_json_object(payload)
     if payload_map is None:
         msg = 'sober_config_invalid'
         raise LinuxAuthWriteError(
@@ -943,7 +919,7 @@ def _read_cookie_json(path: Path) -> JsonObject | None:
             f'Failed to read RobloxCookies.dat at {path}: {type(exc).__name__}: {exc}',
         )
         return None
-    data = _json_object(data_value)
+    data = as_json_object(data_value)
     if data is None:
         _log_auth_failure(
             f'json:{path}:ValueError',
@@ -1222,7 +1198,7 @@ def get_manual_roblosecurity() -> str | None:
             f'Could not read manually imported Roblox token: {type(exc).__name__}: {exc}',
         )
         return None
-    payload = _json_object(payload_value)
+    payload = as_json_object(payload_value)
     if payload is None:
         return None
     token_payload = str(payload.get('token') or '')
@@ -1297,7 +1273,7 @@ def _read_browser_auth_cache_fields() -> tuple[str, str] | None:
         )
         return None
 
-    payload = _json_object(payload_value)
+    payload = as_json_object(payload_value)
     if payload is None:
         _log_auth_failure(
             'browser-auth-cache-shape:invalid-root',

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
+from .json_types import as_object_dict
 from .paths import CONFIG_DIR
 from .roblox_dirs import (
     _normalise_roblox_dir,  # pyright: ignore[reportPrivateUsage]
@@ -70,10 +71,7 @@ def _read_json_object(path: Path) -> ErrorDetails | None:
         payload: object = json.loads(path.read_text(encoding='utf-8'))
     except OSError, json.JSONDecodeError:
         return None
-    if not isinstance(payload, dict):
-        return None
-    # JSON object keys are always strings.
-    return cast('ErrorDetails', payload)
+    return as_object_dict(payload)
 
 
 def _serialise_paths(paths: Iterable[Path]) -> list[str]:

@@ -12,8 +12,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import BinaryIO, Literal, TypedDict, TypeIs, cast, overload
+from typing import BinaryIO, Literal, TypedDict, cast, overload
 
+from .json_types import JsonObject, JsonValue, as_json_object
 from .logging import log_buffer
 from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, PROXY_PORT
 from .plural import format_count
@@ -42,11 +43,6 @@ def _set_force_source_helper_for_session(*, value: bool) -> None:
     globals()['_force_source_helper_for_session'] = value
 
 
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
-
-
 class HelperMetadata(TypedDict):
     metadata_version: int
     source_sha256: str
@@ -56,26 +52,6 @@ class HelperMetadata(TypedDict):
 class InstallHelperKwargs(TypedDict, total=False):
     enable_promptless: bool
     ca_cert_path: Path
-
-
-def _is_json_value(value: object) -> TypeIs[JsonValue]:
-    if value is None or isinstance(value, str | int | float | bool):
-        return True
-    if isinstance(value, list):
-        return all(_is_json_value(item) for item in cast('list[object]', value))
-    if not isinstance(value, dict):
-        return False
-    mapping = cast('dict[object, object]', value)
-    return all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items())
-
-
-def _json_object(value: object) -> JsonObject | None:
-    if not isinstance(value, dict):
-        return None
-    mapping = cast('dict[object, object]', value)
-    if not all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items()):
-        return None
-    return cast('JsonObject', mapping)
 
 
 def _string_list(value: object) -> list[str]:
@@ -270,7 +246,7 @@ def _installed_helper_metadata(
     except json.JSONDecodeError as exc:
         log_buffer.log('ProxyHelper', f'Installed Linux helper metadata is invalid: {exc}')
         return None
-    return _json_object(payload)
+    return as_json_object(payload)
 
 
 def _installed_helper_metadata_is_current() -> bool:
@@ -317,7 +293,7 @@ def _source_helper_command() -> list[str]:
 def _read_ready() -> JsonObject | None:
     try:
         payload: object = json.loads(HELPER_READY_FILE.read_text(encoding='utf-8'))
-        return _json_object(payload)
+        return as_json_object(payload)
     except OSError, UnicodeError, json.JSONDecodeError:
         return None
 
@@ -406,7 +382,7 @@ def install_privileged_helper(
     details: JsonObject
     try:
         details_payload: object = json.loads(output) if output else {}
-        details = _json_object(details_payload) or {}
+        details = as_json_object(details_payload) or {}
     except json.JSONDecodeError:
         details = {'output': output}
     details.setdefault('ok', result.returncode == 0)
@@ -490,7 +466,7 @@ def ensure_privileged_helper_installed(
     if not _installed_helper_is_current_after_install():
         return False
 
-    system_ca = _json_object(details.get('system_ca'))
+    system_ca = as_json_object(details.get('system_ca'))
     if system_ca and system_ca.get('ok'):
         store_names = _string_list(system_ca.get('stores'))
         stores = ', '.join(store_names)
@@ -590,7 +566,7 @@ def _wait_for_helper_ready(
         ready = _read_ready()
         if ready:
             if ready.get('ok'):
-                ready_system_ca = _json_object(ready.get('system_ca'))
+                ready_system_ca = as_json_object(ready.get('system_ca'))
                 if enforce_system_ca and not (ready_system_ca or {}).get('ok'):
                     _set_last_start_error(ready, error='system CA trust was not confirmed')
                     log_buffer.log(
@@ -1018,7 +994,7 @@ def linux_system_ca_needs_install(ca_cert_path: Path) -> bool:
 
 
 def _system_ca_error_is_unsupported(error: object) -> bool:
-    error_details = _json_object(error)
+    error_details = as_json_object(error)
     if error_details is not None:
         return _system_ca_error_is_unsupported(error_details.get('error'))
     return 'no_supported_system_trust_store' in str(error or '')
@@ -1054,7 +1030,7 @@ def _install_ca_into_linux_system_store(ca_cert_path: Path) -> JsonObject:
     details: JsonObject
     try:
         details_payload: object = json.loads(output) if output else {}
-        details = _json_object(details_payload) or {}
+        details = as_json_object(details_payload) or {}
     except json.JSONDecodeError:
         details = {'output': output}
     details.setdefault('ok', result.returncode == 0)

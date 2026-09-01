@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, cast, overload
+from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, overload
 
 from fleasion.localization import tr
 
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 import contextlib
 
+from .json_types import as_json_object
 from .logging import log_buffer
 from .metadata import APP_NAME
 from .paths import (
@@ -45,10 +46,6 @@ from .paths import (
     USER_HOME,
     get_icon_path,
 )
-
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
 
 
 class DetachedPopenKwargs(TypedDict):
@@ -138,26 +135,6 @@ def _run_subprocess(
         check=False,
         **kwargs,
     )
-
-
-def _is_json_value(value: object) -> bool:
-    if value is None or isinstance(value, str | int | float | bool):
-        return True
-    if isinstance(value, list):
-        return all(_is_json_value(item) for item in cast('list[object]', value))
-    if not isinstance(value, dict):
-        return False
-    mapping = cast('dict[object, object]', value)
-    return all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items())
-
-
-def _json_object(value: object) -> JsonObject | None:
-    if not isinstance(value, dict):
-        return None
-    mapping = cast('dict[object, object]', value)
-    if not all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items()):
-        return None
-    return cast('JsonObject', mapping)
 
 
 SOBER_APP_ID = SOBER_CLIENT.app_id
@@ -313,7 +290,7 @@ def _configured_linux_client_preference() -> str:
         return _linux_client_preference
     try:
         payload: object = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
-        payload_map = _json_object(payload)
+        payload_map = as_json_object(payload)
         value = str(payload_map.get('linux_client', 'auto') if payload_map is not None else 'auto')
     except OSError, UnicodeDecodeError, json.JSONDecodeError:
         value = 'auto'
@@ -953,7 +930,7 @@ def _read_linux_proxy_override_state() -> str | None:
         payload: object = json.loads(LINUX_PROXY_OVERRIDE_STATE.read_text(encoding='utf-8'))
     except OSError, UnicodeError, json.JSONDecodeError:
         return None
-    payload_map = _json_object(payload)
+    payload_map = as_json_object(payload)
     client_value = payload_map.get('client') if payload_map is not None else None
     key = client_value if isinstance(client_value, str) else None
     return key if key in LINUX_CLIENTS_BY_KEY else None

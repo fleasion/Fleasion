@@ -26,17 +26,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from types import FrameType
 
+    from .json_types import JsonObject, JsonValue
+
 _SAMPLE_INTERVAL_SECONDS = 1.0
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _TH32CS_SNAPTHREAD = 0x00000004
 _THREAD_QUERY_LIMITED_INFORMATION = 0x0800
 _THREAD_QUERY_INFORMATION = 0x0040
 _INHERIT_THREAD_HANDLE = False
-
-
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
 
 
 class _PythonThreadDetails(TypedDict):

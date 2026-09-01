@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from .json_types import as_object_dict
 from .paths import CONFIG_DIR, ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS
 
 if sys.platform.startswith('linux'):
@@ -126,10 +127,8 @@ def load_saved_roblox_dirs() -> list[Path]:
     except json.JSONDecodeError, OSError:
         return []
 
-    if not isinstance(payload_value, dict):
-        return []
-    payload = cast('dict[object, object]', payload_value)
-    if not all(isinstance(key, str) for key in payload):
+    payload = as_object_dict(payload_value)
+    if payload is None:
         return []
     raw_dirs_value = payload.get('roblox_dirs', [])
     if not isinstance(raw_dirs_value, list):
