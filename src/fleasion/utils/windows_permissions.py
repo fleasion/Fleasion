@@ -41,13 +41,17 @@ class _Win32SecurityLike(Protocol):
     LookupAccountSid: Callable[[object | None, object], tuple[str, str, int]]
 
 
-
-def _win32api_module() -> _Win32ApiLike:
-    return cast('_Win32ApiLike', __import__('win32api'))
-
-
-def _win32security_module() -> _Win32SecurityLike:
-    return cast('_Win32SecurityLike', __import__('win32security'))
+win32api: _Win32ApiLike | None = None
+win32security: _Win32SecurityLike | None = None
+if sys.platform == 'win32':
+    try:
+        import win32api as _win32api_module  # pyright: ignore[reportMissingImports]
+        import win32security as _win32security_module  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        pass
+    else:
+        win32api = cast('_Win32ApiLike', _win32api_module)
+        win32security = cast('_Win32SecurityLike', _win32security_module)
 
 
 def _state_path(config_dir: Path | None, filename: str) -> Path:
@@ -179,27 +183,33 @@ def _validated_install_dirs(paths: Iterable[Path]) -> tuple[list[Path], list[Pat
 
 def current_windows_user_identity() -> tuple[str, str]:
     """Return the current process account as ``(SID, DOMAIN\\name)``."""
-    win32api = _win32api_module()
-    win32security = _win32security_module()
+    api = win32api
+    security = win32security
+    if api is None or security is None:
+        msg = 'Windows account APIs are unavailable'
+        raise ImportError(msg)
 
-    username = win32api.GetUserName()
-    sid, domain, _account_type = win32security.LookupAccountName(None, username)
-    sid_text = str(win32security.ConvertSidToStringSid(sid))
+    username = api.GetUserName()
+    sid, domain, _account_type = security.LookupAccountName(None, username)
+    sid_text = str(security.ConvertSidToStringSid(sid))
     account_name = f'{domain}\\{username}' if domain else username
     return sid_text, account_name
 
 
 def _validated_user_sid(requested_sid: str | None = None) -> str:
     """Validate an initiating user's SID or resolve the current process SID."""
-    win32security = _win32security_module()
+    security = win32security
+    if security is None:
+        msg = 'Windows security APIs are unavailable'
+        raise ImportError(msg)
 
     if not requested_sid:
         return current_windows_user_identity()[0]
 
-    sid = win32security.ConvertStringSidToSid(str(requested_sid))
-    canonical = str(win32security.ConvertSidToStringSid(sid))
-    _name, _domain, account_type = win32security.LookupAccountSid(None, sid)
-    if account_type != win32security.SidTypeUser:
+    sid = security.ConvertStringSidToSid(str(requested_sid))
+    canonical = str(security.ConvertSidToStringSid(sid))
+    _name, _domain, account_type = security.LookupAccountSid(None, sid)
+    if account_type != security.SidTypeUser:
         msg = 'The requested Windows identity is not a user account'
         raise ValueError(msg)
     return canonical
@@ -207,11 +217,14 @@ def _validated_user_sid(requested_sid: str | None = None) -> str:
 
 def windows_user_id_from_sid(requested_sid: str) -> str:
     """Return canonical ``DOMAIN\\name`` for a validated Windows user SID."""
-    win32security = _win32security_module()
+    security = win32security
+    if security is None:
+        msg = 'Windows security APIs are unavailable'
+        raise ImportError(msg)
 
     canonical = _validated_user_sid(requested_sid)
-    sid = win32security.ConvertStringSidToSid(canonical)
-    name, domain, _account_type = win32security.LookupAccountSid(None, sid)
+    sid = security.ConvertStringSidToSid(canonical)
+    name, domain, _account_type = security.LookupAccountSid(None, sid)
     return f'{domain}\\{name}' if domain else name
 
 

@@ -95,54 +95,81 @@ class _KqueueLike(Protocol):
     def close(self) -> None: ...
 
 
+class _MacOSSelect(Protocol):
+    KQ_FILTER_VNODE: int
+    KQ_EV_ADD: int
+    KQ_EV_ENABLE: int
+    KQ_EV_CLEAR: int
+    KQ_NOTE_WRITE: int
+    KQ_NOTE_EXTEND: int
+    KQ_NOTE_RENAME: int
+    KQ_NOTE_DELETE: int
+    kqueue: Callable[[], _KqueueLike]
+    kevent: Callable[..., object]
+
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    def _json_object(value: object) -> JsonObject | None: ...
 
-    def _c_function(library: ctypes.CDLL, name: str) -> _CFunction: ...
+_macos_select = cast('_MacOSSelect', select)
 
-    def _pointer_value(value: object) -> int | None: ...
 
-    def _int_value(value: object) -> int: ...
+def _is_json_value(value: object) -> bool:
+    if value is None or isinstance(value, str | int | float | bool):
+        return True
+    if isinstance(value, list):
+        return all(_is_json_value(item) for item in cast('list[object]', value))
+    if not isinstance(value, dict):
+        return False
+    mapping = cast('dict[object, object]', value)
+    return all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items())
 
-    def _new_kqueue() -> _KqueueLike: ...
 
-    def _new_vnode_event(fd: int) -> object: ...
+def _json_object(value: object) -> JsonObject | None:
+    if not isinstance(value, dict):
+        return None
+    mapping = cast('dict[object, object]', value)
+    if not all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items()):
+        return None
+    return cast('JsonObject', mapping)
 
-    def _kq_rename_delete_mask() -> int: ...
-else:
 
-    def _json_object(value: object) -> JsonObject | None:
-        return value if isinstance(value, dict) else None
+def _c_function(library: ctypes.CDLL, name: str) -> _CFunction:
+    return cast('_CFunction', getattr(library, name))
 
-    def _c_function(library: ctypes.CDLL, name: str) -> _CFunction:
-        return getattr(library, name)
 
-    def _pointer_value(value: object) -> int | None:
-        return value
+def _pointer_value(value: object) -> int | None:
+    return value if isinstance(value, int) else None
 
-    def _int_value(value: object) -> int:
-        return value
 
-    def _new_kqueue() -> _KqueueLike:
-        return select.kqueue()
+def _int_value(value: object) -> int:
+    if not isinstance(value, int):
+        msg = 'Native function did not return an integer'
+        raise TypeError(msg)
+    return value
 
-    def _new_vnode_event(fd: int) -> object:
-        return select.kevent(
-            fd,
-            filter=select.KQ_FILTER_VNODE,
-            flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
-            fflags=(
-                select.KQ_NOTE_WRITE
-                | select.KQ_NOTE_EXTEND
-                | select.KQ_NOTE_RENAME
-                | select.KQ_NOTE_DELETE
-            ),
-        )
 
-    def _kq_rename_delete_mask() -> int:
-        return select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE
+def _new_kqueue() -> _KqueueLike:
+    return _macos_select.kqueue()
+
+
+def _new_vnode_event(fd: int) -> object:
+    return _macos_select.kevent(
+        fd,
+        filter=_macos_select.KQ_FILTER_VNODE,
+        flags=(_macos_select.KQ_EV_ADD | _macos_select.KQ_EV_ENABLE | _macos_select.KQ_EV_CLEAR),
+        fflags=(
+            _macos_select.KQ_NOTE_WRITE
+            | _macos_select.KQ_NOTE_EXTEND
+            | _macos_select.KQ_NOTE_RENAME
+            | _macos_select.KQ_NOTE_DELETE
+        ),
+    )
+
+
+def _kq_rename_delete_mask() -> int:
+    return _macos_select.KQ_NOTE_RENAME | _macos_select.KQ_NOTE_DELETE
 
 
 def _launch_services_framework() -> ctypes.CDLL | None:

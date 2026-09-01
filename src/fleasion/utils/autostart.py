@@ -11,9 +11,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import html
-import importlib
 import json
-import logging
 import os
 import plistlib
 import shutil
@@ -27,9 +25,13 @@ from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 
 from fleasion.localization import tr
 
+from .logging import log_buffer
 from .paths import USER_HOME
 
-logger = logging.getLogger(__name__)
+if sys.platform.startswith('linux'):
+    from . import platform_linux as _platform_linux
+else:
+    _platform_linux = None
 
 
 class LaunchInfo(TypedDict):
@@ -41,82 +43,117 @@ class LaunchInfo(TypedDict):
     proxy_mode: NotRequired[str]
 
 
-class _LogBuffer(Protocol):
-    def log(self, category: str, message: str) -> None: ...
+class _RegistryKey(Protocol):
+    def __enter__(self) -> object: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> None: ...
+
+
+class _Winreg(Protocol):
+    HKEY_CURRENT_USER: object
+    KEY_QUERY_VALUE: int
+    KEY_SET_VALUE: int
+    REG_SZ: int
+    OpenKey: Callable[[object, str, int, int], _RegistryKey]
+    CreateKeyEx: Callable[[object, str, int, int], _RegistryKey]
+    QueryValueEx: Callable[[object, str], tuple[object, int]]
+    SetValueEx: Callable[[object, str, int, int, str], None]
+    DeleteValue: Callable[[object, str], None]
 
 
 if TYPE_CHECKING:
-
-    def _creation_flags() -> int: ...
-
-    def _json_launch_info(value: object) -> LaunchInfo | None: ...
-
-    def _required_project(info: LaunchInfo) -> str: ...
-
-    def _query_windows_run_value() -> tuple[object, int] | None: ...
-
-    def _write_windows_run_value(command: str) -> None: ...
-
-    def _delete_windows_run_value() -> None: ...
-else:
-
-    def _creation_flags() -> int:
-        return getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-
-    def _json_launch_info(value: object) -> LaunchInfo | None:
-        return value if isinstance(value, dict) else None
-
-    def _required_project(info: LaunchInfo) -> str:
-        project = info.get('project')
-        if project is None:
-            key = 'project'
-            raise KeyError(key)
-        return project
-
-    def _query_windows_run_value() -> tuple[object, int] | None:
-        winreg = importlib.import_module('winreg')
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            _WINDOWS_RUN_KEY,
-            0,
-            winreg.KEY_QUERY_VALUE,
-        ) as key:
-            return winreg.QueryValueEx(key, _WINDOWS_RUN_VALUE)
-
-    def _write_windows_run_value(command: str) -> None:
-        winreg = importlib.import_module('winreg')
-
-        with winreg.CreateKeyEx(
-            winreg.HKEY_CURRENT_USER,
-            _WINDOWS_RUN_KEY,
-            0,
-            winreg.KEY_SET_VALUE,
-        ) as key:
-            winreg.SetValueEx(key, _WINDOWS_RUN_VALUE, 0, winreg.REG_SZ, command)
-
-    def _delete_windows_run_value() -> None:
-        winreg = importlib.import_module('winreg')
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            _WINDOWS_RUN_KEY,
-            0,
-            winreg.KEY_SET_VALUE,
-        ) as key:
-            winreg.DeleteValue(key, _WINDOWS_RUN_VALUE)
+    from collections.abc import Callable
 
 
-# Use Fleasion's log_buffer when available, fall back to Python logger
-def _log(msg: str) -> None:
+winreg: _Winreg | None = None
+if sys.platform == 'win32':
     try:
-        log_buffer = cast(
-            '_LogBuffer',
-            importlib.import_module('fleasion.utils.logging').log_buffer,
-        )
-        log_buffer.log('Autostart', msg)
-    except ImportError, AttributeError, RuntimeError:
-        logger.info(msg)
+        import winreg as _winreg_module  # pyright: ignore[reportMissingModuleSource]
+    except ImportError:
+        pass
+    else:
+        winreg = cast('_Winreg', _winreg_module)
+
+
+def _creation_flags() -> int:
+    return int(getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
+
+def _json_launch_info(value: object) -> LaunchInfo | None:
+    if not isinstance(value, dict):
+        return None
+    mapping = cast('dict[object, object]', value)
+    required_types = {'mode': str, 'path': str, '_fmt': int}
+    optional_types = {'project': str, 'log': str, 'proxy_mode': str}
+    if any(not isinstance(mapping.get(key), expected) for key, expected in required_types.items()):
+        return None
+    if any(
+        key in mapping and not isinstance(mapping[key], expected)
+        for key, expected in optional_types.items()
+    ):
+        return None
+    return cast('LaunchInfo', mapping)
+
+
+def _required_project(info: LaunchInfo) -> str:
+    project = info.get('project')
+    if project is None:
+        key = 'project'
+        raise KeyError(key)
+    return project
+
+
+def _query_windows_run_value() -> tuple[object, int] | None:
+    registry = winreg
+    if registry is None:
+        msg = 'Windows registry support is unavailable'
+        raise ImportError(msg)
+
+    with registry.OpenKey(
+        registry.HKEY_CURRENT_USER,
+        _WINDOWS_RUN_KEY,
+        0,
+        registry.KEY_QUERY_VALUE,
+    ) as key:
+        return registry.QueryValueEx(key, _WINDOWS_RUN_VALUE)
+
+
+def _write_windows_run_value(command: str) -> None:
+    registry = winreg
+    if registry is None:
+        msg = 'Windows registry support is unavailable'
+        raise ImportError(msg)
+
+    with registry.CreateKeyEx(
+        registry.HKEY_CURRENT_USER,
+        _WINDOWS_RUN_KEY,
+        0,
+        registry.KEY_SET_VALUE,
+    ) as key:
+        registry.SetValueEx(key, _WINDOWS_RUN_VALUE, 0, registry.REG_SZ, command)
+
+
+def _delete_windows_run_value() -> None:
+    registry = winreg
+    if registry is None:
+        msg = 'Windows registry support is unavailable'
+        raise ImportError(msg)
+
+    with registry.OpenKey(
+        registry.HKEY_CURRENT_USER,
+        _WINDOWS_RUN_KEY,
+        0,
+        registry.KEY_SET_VALUE,
+    ) as key:
+        registry.DeleteValue(key, _WINDOWS_RUN_VALUE)
+
+
+def _log(msg: str) -> None:
+    log_buffer.log('Autostart', msg)
 
 
 def _command_output(
@@ -311,11 +348,9 @@ def _desktop_exec_join(parts: list[str]) -> str:
 
 
 def _linux_installed_launcher() -> Path | None:
-    try:
-        module = importlib.import_module('.platform_linux', package=__package__)
-        launcher_path = cast('Path', module.LINUX_LAUNCHER_PATH)
-    except ImportError, AttributeError:
+    if _platform_linux is None:
         return None
+    launcher_path = _platform_linux.LINUX_LAUNCHER_PATH
     try:
         if launcher_path.is_file():
             return launcher_path

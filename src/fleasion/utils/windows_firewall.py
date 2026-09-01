@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -21,13 +21,13 @@ RESULT_REPAIR_FILENAME = 'fleasion_firewall_repair_result.json'
 type ResultObject = dict[str, object]
 
 
-if TYPE_CHECKING:
-
-    def _object_dict(value: object) -> ResultObject | None: ...
-else:
-
-    def _object_dict(value: object) -> ResultObject | None:
-        return value if isinstance(value, dict) else None
+def _object_dict(value: object) -> ResultObject | None:
+    if not isinstance(value, dict):
+        return None
+    mapping = cast('dict[object, object]', value)
+    if not all(isinstance(key, str) for key in mapping):
+        return None
+    return cast('ResultObject', mapping)
 
 
 _RULES = (
@@ -100,9 +100,8 @@ def _is_admin() -> bool:
         return False
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return False
-
 
 
 def _netsh_executable() -> str:

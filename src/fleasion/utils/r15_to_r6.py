@@ -6,20 +6,17 @@ Conversion algorithms ported from:
 """
 
 import base64
-import importlib
 import math
 import re
 import struct
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from xml.etree.ElementTree import (  # ruff: ignore[suspicious-xml-etree-import] - Constructor only
+    Element,
+)
 
 from defusedxml import ElementTree
 
-if TYPE_CHECKING:
-    from xml.etree.ElementTree import Element
-else:
-    Element = type(ElementTree.fromstring('<_ />'))
-
+from .anim_converter import curve_anim_to_keyframe as _curve_anim_to_keyframe
 from .rig_data import CFrame, Joint
 
 # CFrame math
@@ -62,7 +59,8 @@ def write_cf(elem: Element, cf: Sequence[float]) -> None:
         elem.remove(c)
     for tag, v in zip(
         ['X', 'Y', 'Z', 'R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22'],
-        cf, strict=False,
+        cf,
+        strict=False,
     ):
         e = _sub_element(elem, tag)
         e.text = f'{v:.8g}'
@@ -704,5 +702,4 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
 
 def curve_anim_to_keyframe_xml(anim_data: bytes) -> bytes:
     """Convert a CurveAnimation (binary RBXM or XML) to a KeyframeSequence RBXMX."""
-    anim_converter = importlib.import_module('fleasion.utils.anim_converter')
-    return anim_converter.curve_anim_to_keyframe(anim_data)
+    return _curve_anim_to_keyframe(anim_data)

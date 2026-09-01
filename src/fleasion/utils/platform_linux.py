@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, overload
+from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, cast, overload
 
 from fleasion.localization import tr
 
@@ -25,33 +25,13 @@ from .linux_clients import (
     SOBER_CLIENT,
     LinuxClientDescriptor,
     LinuxClientInstallation,
+    detect_installed_clients,
     get_linux_client,
+    select_linux_client,
 )
 
 if TYPE_CHECKING:
-
     from collections.abc import Iterator
-    def _detect_installed_clients(*, home: str | Path) -> tuple[LinuxClientInstallation, ...]: ...
-
-    def _select_linux_client(
-        selection: str,
-        *,
-        installed: tuple[LinuxClientInstallation, ...],
-        home: str | Path,
-    ) -> LinuxClientInstallation | None: ...
-else:
-    from .linux_clients import detect_installed_clients, select_linux_client
-
-    def _detect_installed_clients(*, home: str | Path) -> tuple[LinuxClientInstallation, ...]:
-        return detect_installed_clients(home=home)
-
-    def _select_linux_client(
-        selection: str,
-        *,
-        installed: tuple[LinuxClientInstallation, ...],
-        home: str | Path,
-    ) -> LinuxClientInstallation | None:
-        return select_linux_client(selection, installed=installed, home=home)
 
 
 import contextlib
@@ -160,18 +140,24 @@ def _run_subprocess(
     )
 
 
-if TYPE_CHECKING:
+def _is_json_value(value: object) -> bool:
+    if value is None or isinstance(value, str | int | float | bool):
+        return True
+    if isinstance(value, list):
+        return all(_is_json_value(item) for item in cast('list[object]', value))
+    if not isinstance(value, dict):
+        return False
+    mapping = cast('dict[object, object]', value)
+    return all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items())
 
-    def _json_object(value: object) -> JsonObject | None: ...
 
-    def _client_key(value: object) -> str | None: ...
-else:
-
-    def _json_object(value: object) -> JsonObject | None:
-        return value if isinstance(value, dict) else None
-
-    def _client_key(value: object) -> str | None:
-        return value
+def _json_object(value: object) -> JsonObject | None:
+    if not isinstance(value, dict):
+        return None
+    mapping = cast('dict[object, object]', value)
+    if not all(isinstance(key, str) and _is_json_value(item) for key, item in mapping.items()):
+        return None
+    return cast('JsonObject', mapping)
 
 
 SOBER_APP_ID = SOBER_CLIENT.app_id
@@ -281,7 +267,7 @@ def missing_linux_gui_packages(
                 # package to this check.
                 env=_host_subprocess_env(),
             )
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             # A failed package query should not block an otherwise working
             # desktop when its package manager cannot be inspected.
             continue
@@ -336,14 +322,14 @@ def _configured_linux_client_preference() -> str:
 
 def linux_client_installations() -> tuple[LinuxClientInstallation, ...]:
     """Return installed clients using metadata-only discovery."""
-    return _detect_installed_clients(home=USER_HOME)
+    return detect_installed_clients(home=USER_HOME)
 
 
 def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve the configured/desktop-selected installed Linux Roblox client."""
     preference = _configured_linux_client_preference()
     installed = linux_client_installations()
-    return _select_linux_client(preference, installed=installed, home=USER_HOME)
+    return select_linux_client(preference, installed=installed, home=USER_HOME)
 
 
 def selected_linux_client_key() -> str:
@@ -386,7 +372,7 @@ def _process_pids(name: str) -> list[int]:
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return []
     pids: list[int] = []
     for raw in result.stdout.splitlines():
@@ -406,7 +392,7 @@ def _sober_process_start_ticks(pid: int) -> int | None:
         # fields begin at field 3, so starttime (field 22) is index 19 here.
         fields = stat_text.rsplit(')', 1)[1].split()
         return int(fields[19])
-    except (IndexError, OSError, ValueError):
+    except IndexError, OSError, ValueError:
         return None
 
 
@@ -419,7 +405,7 @@ def sober_main_process() -> tuple[int, float] | None:
     """
     try:
         ticks_per_second = float(os.sysconf('SC_CLK_TCK'))
-    except (AttributeError, OSError, ValueError):
+    except AttributeError, OSError, ValueError:
         return None
     if ticks_per_second <= 0:
         return None
@@ -468,27 +454,6 @@ def _first_client_pid(installation: LinuxClientInstallation | None = None) -> in
         return None
     pids = _client_pids(installation)
     return pids[0] if pids else None
-
-
-def _process_command(pid: int) -> Path | None:
-    ps = shutil.which('ps')
-    if ps is None:
-        return None
-    try:
-        result = _run_subprocess(
-            [ps, '-p', str(pid), '-o', 'comm='],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    value = result.stdout.strip()
-    return Path(value) if value else None
-
-
-if TYPE_CHECKING:
-    _ = _process_command
 
 
 def wait_for_roblox_window(timeout: float = 60.0) -> bool:
@@ -561,8 +526,10 @@ def terminate_roblox() -> bool:
             )
             if result.returncode == 0:
                 return True
-        except (OSError, subprocess.SubprocessError):
-            log_buffer.log('Launcher', f'Flatpak termination failed for {installation.display_name}')
+        except OSError, subprocess.SubprocessError:
+            log_buffer.log(
+                'Launcher', f'Flatpak termination failed for {installation.display_name}'
+            )
 
     signalled = False
     for pid in pids:
@@ -762,7 +729,7 @@ def _desktop_user_context() -> tuple[Path, int, int, str] | None:
     try:
         stat_result = user_home.stat()
         pw_entry = pwd.getpwuid(stat_result.st_uid)
-    except (KeyError, OSError):
+    except KeyError, OSError:
         return None
     return user_home, stat_result.st_uid, stat_result.st_gid, pw_entry.pw_name
 
@@ -987,7 +954,8 @@ def _read_linux_proxy_override_state() -> str | None:
     except OSError, UnicodeError, json.JSONDecodeError:
         return None
     payload_map = _json_object(payload)
-    key = _client_key(payload_map.get('client') if payload_map is not None else None)
+    client_value = payload_map.get('client') if payload_map is not None else None
+    key = client_value if isinstance(client_value, str) else None
     return key if key in LINUX_CLIENTS_BY_KEY else None
 
 
@@ -1403,5 +1371,5 @@ def show_message_box(title: str, message: str, icon: int = 0x40) -> None:
             [zenity, '--info', '--title', title, '--text', message],
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         log_buffer.log('UI', f'{title}: {message}')

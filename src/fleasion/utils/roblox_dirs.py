@@ -2,30 +2,25 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from .paths import CONFIG_DIR, ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS
+
+if sys.platform.startswith('linux'):
+    from .platform_linux import SOBER_ASSET_OVERLAY_DIR, SOBER_LEGACY_EXE_DIR
+
+    _sober_dir_candidates = (SOBER_ASSET_OVERLAY_DIR, SOBER_LEGACY_EXE_DIR)
+else:
+    _sober_dir_candidates = ()
 
 ROBLOX_DIRS_FILE = CONFIG_DIR / 'roblox_dirs.json'
 
 
 if TYPE_CHECKING:
-
     from collections.abc import Iterable
-    def _object_dict(value: object) -> dict[str, object] | None: ...
-
-    def _object_list(value: object) -> list[object] | None: ...
-else:
-
-    def _object_dict(value: object) -> dict[str, object] | None:
-        return value if isinstance(value, dict) else None
-
-    def _object_list(value: object) -> list[object] | None:
-        return value if isinstance(value, list) else None
 
 
 def _normalise_macos_roblox_dir(path: Path) -> Path | None:
@@ -48,15 +43,11 @@ def _normalise_macos_roblox_dir(path: Path) -> Path | None:
 
 def _matches_known_sober_dir(path: Path) -> bool:
     try:
-        platform_linux = importlib.import_module('.platform_linux', __package__)
         resolved = path.resolve()
-    except (ImportError, AttributeError, OSError):
+    except OSError:
         return False
 
-    for candidate in (
-        platform_linux.SOBER_ASSET_OVERLAY_DIR,
-        platform_linux.SOBER_LEGACY_EXE_DIR,
-    ):
+    for candidate in _sober_dir_candidates:
         try:
             if resolved == candidate.resolve() and path.is_dir():
                 return True
@@ -86,7 +77,7 @@ def _normalise_roblox_dir(value: str | Path) -> Path | None:
     """Return a valid Roblox install/resource directory, or None."""
     try:
         path = Path(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if '\x00' in str(path):
         return None
@@ -111,7 +102,7 @@ def is_roblox_studio_resource_dir(path: Path) -> bool:
         return False
     try:
         resolved = path.resolve()
-    except (OSError, ValueError):
+    except OSError, ValueError:
         resolved = path
 
     if sys.platform == 'darwin':
@@ -132,13 +123,18 @@ def load_saved_roblox_dirs() -> list[Path]:
     try:
         with ROBLOX_DIRS_FILE.open('r', encoding='utf-8') as f:
             payload_value: object = json.load(f)
-            payload = _object_dict(payload_value)
     except json.JSONDecodeError, OSError:
         return []
 
-    raw_dirs = _object_list(payload.get('roblox_dirs', [])) if payload is not None else []
-    if raw_dirs is None:
+    if not isinstance(payload_value, dict):
         return []
+    payload = cast('dict[object, object]', payload_value)
+    if not all(isinstance(key, str) for key in payload):
+        return []
+    raw_dirs_value = payload.get('roblox_dirs', [])
+    if not isinstance(raw_dirs_value, list):
+        return []
+    raw_dirs = cast('list[object]', raw_dirs_value)
 
     loaded: list[Path] = []
     seen: set[str] = set()

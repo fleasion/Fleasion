@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import importlib
 import os
 import sys
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
+
+from cryptography.fernet import Fernet
 
 from .logging import log_buffer
 
@@ -25,21 +26,19 @@ class _Win32Crypt(Protocol):
     ]
 
 
-class _FernetCipher(Protocol):
-    def encrypt(self, data: bytes) -> bytes: ...
-    def decrypt(self, token: bytes) -> bytes: ...
-
-
-if TYPE_CHECKING:
-    win32crypt: _Win32Crypt | None
-else:
+win32crypt: _Win32Crypt | None = None
+if sys.platform == 'win32':
     try:
-        win32crypt = importlib.import_module('win32crypt')
-    except (ImportError, OSError):
-        win32crypt = None
+        import win32crypt as _win32crypt_module  # pyright: ignore[reportMissingImports]
+    except ImportError, OSError:
+        pass
+    else:
+        win32crypt = cast('_Win32Crypt', _win32crypt_module)
 
 
-def _load_or_create_fernet_key(key_file: Path, generate_key: Callable[[], bytes], *, create: bool) -> bytes | None:
+def _load_or_create_fernet_key(
+    key_file: Path, generate_key: Callable[[], bytes], *, create: bool
+) -> bytes | None:
     if key_file.exists():
         return key_file.read_bytes().strip()
     if not create:
@@ -54,20 +53,14 @@ def _load_or_create_fernet_key(key_file: Path, generate_key: Callable[[], bytes]
     return key
 
 
-def _get_fernet_cipher(key_file: Path, *, create: bool = True) -> _FernetCipher | None:
+def _get_fernet_cipher(key_file: Path, *, create: bool = True) -> Fernet | None:
     try:
-        fernet_module = importlib.import_module('cryptography.fernet')
-    except (ImportError, OSError) as exc:
-        log_buffer.log('Auth', f'Token encryption unavailable: {type(exc).__name__}: {exc}')
-        return None
-
-    try:
-        key = _load_or_create_fernet_key(key_file, fernet_module.Fernet.generate_key, create=create)
+        key = _load_or_create_fernet_key(key_file, Fernet.generate_key, create=create)
         if key is None:
             return None
         with contextlib.suppress(OSError):
             key_file.chmod(0o600)
-        return fernet_module.Fernet(key)
+        return Fernet(key)
     except (OSError, ValueError) as exc:
         log_buffer.log('Auth', f'Token encryption key failed: {type(exc).__name__}: {exc}')
         return None

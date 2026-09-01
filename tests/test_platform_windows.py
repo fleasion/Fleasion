@@ -325,6 +325,7 @@ def _load_platform_windows(
     )
 
     paths = types.ModuleType('fleasion.utils.paths')
+    paths.__dict__['APP_CACHE_DIR'] = Path('/nonexistent/fleasion-test-cache')
     paths.__dict__['LOCAL_APPDATA'] = ''
     paths.__dict__['ROBLOX_PROCESS'] = 'RobloxPlayerBeta.exe'
     paths.__dict__['ROBLOX_STUDIO_PROCESS'] = 'RobloxStudioBeta.exe'
@@ -333,6 +334,9 @@ def _load_platform_windows(
 
     logging = types.ModuleType('fleasion.utils.logging')
     logging.__dict__['log_buffer'] = _NullLogBuffer()
+
+    roblox_dirs = types.ModuleType('fleasion.utils.roblox_dirs')
+    roblox_dirs.__dict__['load_saved_roblox_dirs'] = _returns([])
 
     winreg = types.ModuleType('winreg')
     winreg.__dict__['HKEY_CURRENT_USER'] = object()
@@ -360,6 +364,7 @@ def _load_platform_windows(
     monkeypatch.setitem(sys.modules, 'fleasion.utils', types.ModuleType('fleasion.utils'))
     monkeypatch.setitem(sys.modules, 'fleasion.utils.paths', paths)
     monkeypatch.setitem(sys.modules, 'fleasion.utils.logging', logging)
+    monkeypatch.setitem(sys.modules, 'fleasion.utils.roblox_dirs', roblox_dirs)
     monkeypatch.setitem(sys.modules, 'winreg', winreg)
 
     module_name = 'fleasion.utils.platform_windows_under_test'
@@ -540,7 +545,7 @@ def test_delete_cache_resets_live_replacement_routes(
     module.raw.__dict__['STORAGE_DB'] = db_path
     module.raw.__dict__['STORAGE_DB_GDK'] = db_path
     monkeypatch.setattr(module.raw, 'is_roblox_running', _returns(False))
-    sys.modules['fleasion.utils.paths'].__dict__['APP_CACHE_DIR'] = app_cache
+    monkeypatch.setattr(module.raw, 'APP_CACHE_DIR', app_cache)
 
     proxy_pkg = types.ModuleType('fleasion.proxy')
     proxy_pkg.__path__ = []
@@ -1458,11 +1463,8 @@ def test_roblox_launch_resolver_uses_valid_saved_custom_install_as_last_resort(
 ) -> None:
     saved_dir = tmp_path / 'SavedCustomInstall'
     player = _touch(saved_dir / 'RobloxPlayerBeta.exe', 3000)
-    roblox_dirs = types.ModuleType('fleasion.utils.roblox_dirs')
-    roblox_dirs.__dict__['load_saved_roblox_dirs'] = _returns([saved_dir])
-
     module = _load_platform_windows(monkeypatch, registry_command=None)
-    monkeypatch.setitem(sys.modules, 'fleasion.utils.roblox_dirs', roblox_dirs)
+    monkeypatch.setattr(module.raw, 'load_saved_roblox_dirs', _returns([saved_dir]))
     monkeypatch.setattr(module.raw, 'get_roblox_player_exe_path', _returns(None))
     monkeypatch.setattr(module.raw, 'LOCAL_APPDATA', tmp_path / 'EmptyLocalAppData')
     monkeypatch.setattr(module.raw, '_scan_for_player_exes', _no_paths)
