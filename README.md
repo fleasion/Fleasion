@@ -1,7 +1,5 @@
 > [!CAUTION]
-> The only official sources for Fleasion are this **GitHub repository** and our **65,000+ member Discord server**. We do not currently operate an official website. Any other website offering downloads or claiming to be Fleasion is **not owned by us**.
->
-> `fleasion.com` was not operated by us and is now offline.
+> Official Fleasion downloads are published only through this repository's [GitHub Releases](https://github.com/fleasion/Fleasion/releases). The official project website is [fleasion.github.io](https://fleasion.github.io/), and the official community is our [Discord server](https://discord.gg/hXyhKehEZF).
 
 # Fleasion
 
@@ -13,7 +11,7 @@ To request help or request content, join our community <a href="https://discord.
     <img src="https://invidget.switchblade.xyz/hXyhKehEZF" alt="Join our Discord server">
 </a>
 
-## Installation & Building
+## Installation
 
 ### Standalone Executable
 
@@ -29,56 +27,7 @@ Arch-based Linux systems also require Qt's native Widgets/runtime package:
 sudo pacman -S --needed qt6-base
 ```
 
-## Requirements for Building from Source
-
-- **Windows 10+, macOS 11+, or Linux with the Sober Flatpak**
-- [**uv**](https://docs.astral.sh/uv/) package manager
-- **Python 3.14+**
-- Linux desktop installs need `pkexec`/Polkit available (installed by default on Mint and most desktop distributions)
-
-### Building from Source
-
-```bash
-# Clone the repository
-git clone https://github.com/fleasion/Fleasion.git
-cd Fleasion
-
-# Run the application (auto-installs all dependencies)
-uv run fleasion
-
-# (OPTIONAL) Compile as a standalone application
-uv run build
-```
-
-`uv run build` is the build command on Windows, Linux, and macOS. Stable artifact filenames use the project version unchanged. Prerelease filenames add `+local` for local builds or `+g<short-sha>` on GitHub Actions; this provenance is not included in Fleasion's runtime version metadata. On macOS, the command builds a universal release app by default. The output is copied to `dist/Fleasion-v{ARTIFACT_VERSION}.app`, mirrored at `dist/Fleasion.app`, and zipped as `dist/Fleasion-v{ARTIFACT_VERSION}-MacOS-Universal.zip`.
-
-On Apple Silicon, the command builds the arm64 slice with the normal `uv` environment, bootstraps an ignored x86_64 build environment under `.tools/`, and resolves Python for both from the tracked `.python-version` pin. It builds the Intel slice under Rosetta, merges the app with `lipo`, signs it ad hoc, and verifies every Mach-O binary contains both `arm64` and `x86_64`. Rosetta must be installed for the Intel build:
-
-```bash
-softwareupdate --install-rosetta --agree-to-license
-```
-
-For local single-architecture builds, set `MACOS_TARGET_ARCH=arm64` or `MACOS_TARGET_ARCH=x86_64`.
-
-Use `uv version` to update the canonical version in `pyproject.toml` and `uv.lock`:
-
-```bash
-# Stable patch: 2.4.0 -> 2.4.1
-uv version --bump patch
-
-# First beta of the next minor: 2.4.0 -> 2.5.0b1
-uv version --bump minor --bump beta
-
-# Subsequent beta: 2.5.0b1 -> 2.5.0b2
-uv version --bump beta
-
-# Promote a prerelease: 2.5.0b2 -> 2.5.0
-uv version --bump stable
-```
-
-Source runs, packaged distribution metadata, and stable GitHub releases use the canonical version. PyInstaller and GitHub Actions derive only the artifact filename label when building a prerelease.
-
-The draft-release workflow accepts stable and prerelease project versions. Prereleases keep a clean version tag such as `v2.5.0b1`, publish artifacts containing their Git commit label, and are marked as GitHub prereleases. Stable installations check GitHub's latest stable release; prerelease installations follow newer published prereleases and automatically return to the stable channel after installing the final release. Draft releases are never offered by the updater.
+Want to run Fleasion from source, build it, or contribute code? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## System Tray
 
@@ -178,7 +127,7 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 **What gets cached:**
 
-Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (80+ types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp.
+Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (dozens of types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp.
 
 ### 3D Viewers & Preview
 
@@ -203,7 +152,7 @@ Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, 
 
 ### Cache Viewer
 
-- Browse all intercepted assets organized by type (80+ Roblox asset types)
+- Browse all intercepted assets organized by type (dozens of Roblox asset types)
 - Search and filter by ID, name, type, hash, or URL
 - **Live preview** for images, meshes (3D viewer), audio (playback), animations (3D rig), texture packs, and Jsons.
 - Asset name resolution via Roblox API
@@ -239,143 +188,6 @@ On first launch, Fleasion will:
 ### Run on Boot
 
 Fleasion can be configured to launch automatically via **Settings -> Run on Boot**. Windows creates a per-user Task Scheduler task with `InteractiveToken` and `LeastPrivilege`; macOS creates an unprivileged per-user LaunchAgent; Linux creates a per-user XDG autostart entry. Env Proxy boot launches do not elevate the GUI. If a user selects Hosts File mode, Fleasion can still request the platform-specific helper or administrator access after launch. **Settings -> Create desktop/start menu integration on boot** adds or refreshes the OS launcher entry on Windows, macOS, and Linux.
-
-## Project Structure
-
-<details>
-<summary>See here</summary>
-
-```text
-├── Fleasion.spec   # PyInstaller specification for the standalone build
-├── launcher.py     # Thin launcher used to start the packaged app
-├── pyproject.toml  # Project metadata and dependency configuration
-├── README.md       # Project overview, setup, and usage guide
-├── scripts/
-│   └── clear_first_time_setup.py  # Development utility for resetting initial setup
-├── src/
-│   └── fleasion/
-│       ├── __init__.py                   # Package marker
-│       ├── app.py                        # Application entrypoint, lifecycle, and startup wiring
-│       ├── macos_proxy_helper_daemon.py  # macOS helper daemon for the privileged proxy relay
-│       ├── tray.py                       # System tray / menu bar icon and menu wiring
-│       ├── cache/
-│       │   ├── __init__.py            # Cache package marker
-│       │   ├── animation_viewer.py    # 3D animation preview with R15/R6 rigs
-│       │   ├── audio_player.py        # Audio playback widget
-│       │   ├── cache_json_viewer.py   # JSON viewer for cached asset metadata
-│       │   ├── cache_manager.py       # Asset storage, indexing, and export logic
-│       │   ├── cache_viewer.py        # Cache browsing UI with search and preview
-│       │   ├── font_viewer.py         # Font file preview widget
-│       │   ├── mesh_processing.py     # Mesh format conversion helpers
-│       │   ├── obj_viewer.py          # OpenGL mesh viewer with orbit/FPS camera modes
-│       │   ├── rbxm_parser.py         # Roblox binary model file parser
-│       │   ├── rbxm_preview.py        # Roblox model preview helpers
-│       │   ├── roblox_class_names.py  # Roblox class name lookup table
-│       │   ├── roblox_document.py     # Roblox document helpers for cached content
-│       │   └── tools/
-│       │       ├── animpreview/
-│       │       │   └── animpreview.py  # Animation preview assets and helpers
-│       │       ├── image_to_ktx2/
-│       │       │   └── converter.py  # Image to KTX2 converter
-│       │       ├── ktx_to_png/
-│       │       │   └── ktx_to_png.py  # KTX2 to PNG converter
-│       │       ├── orm_compositor.py  # ORM texture channel compositor
-│       │       └── solidmodel_converter/
-│       │           ├── __init__.py           # Solid model converter package marker
-│       │           ├── converter.py          # Solid model conversion entrypoint
-│       │           ├── csg_mesh.py           # CSG mesh serialization helpers
-│       │           ├── mesh_intermediary.py  # Intermediary conversion for .mesh and .bin data
-│       │           ├── obj_to_csg.py         # OBJ to Roblox CSG converter
-│       │           ├── obj_to_mesh.py        # OBJ to Roblox mesh converter
-│       │           └── rbxm/
-│       │               ├── __init__.py       # RBXM subpackage marker
-│       │               ├── binary_reader.py  # RBXM binary reader
-│       │               ├── binary_writer.py  # RBXM binary writer
-│       │               ├── deserializer.py   # RBXM deserializer
-│       │               ├── serializer.py     # RBXM serializer
-│       │               ├── types.py          # RBXM type definitions
-│       │               └── xml_writer.py     # RBXM XML writer
-│       ├── config/
-│       │   ├── __init__.py  # Config package marker
-│       │   └── manager.py   # Settings persistence and config management
-│       ├── gui/
-│       │   ├── __init__.py             # GUI package marker
-│       │   ├── about.py                # About dialog
-│       │   ├── delete_cache.py         # Cache deletion window
-│       │   ├── json_viewer.py          # JSON tree viewer with search and preview
-│       │   ├── logs.py                 # Real-time log viewer
-│       │   ├── modifications_tab.py    # Client modifications tab
-│       │   ├── prejsons_dialog.py      # Community preset browser dialog
-│       │   ├── proxy_gate.py           # Proxy gate / connection flow UI
-│       │   ├── rando_stuff_tab.py      # Misc tab for extra tools and helpers
-│       │   ├── replacer_config.py      # Main Dashboard window with profile management
-│       │   ├── settings_tab.py         # Settings tab mirroring tray menu options
-│       │   ├── subplace_joiner_tab.py  # Subplace browser and joiner tab
-│       │   └── theme.py                # Theme management (System / Light / Dark)
-│       ├── modifications/
-│       │   ├── __init__.py                 # Modifications package marker
-│       │   ├── dds_to_png.py               # DDS texture to PNG conversion
-│       │   ├── fflag_manager.py            # Fast flag read/write helpers
-│       │   ├── font_utils.py               # Custom font installation helpers
-│       │   ├── global_settings_manager.py  # GlobalSettings.json management
-│       │   └── manager.py                  # Modification orchestration (apply / revert)
-│       ├── prejsons/
-│       │   ├── __init__.py       # PreJsons package marker
-│       │   └── downloader.py     # Community preset downloader
-│       ├── proxy/
-│       │   ├── __init__.py       # Proxy package marker
-│       │   ├── master.py         # Proxy orchestration, hosts file management, cert setup
-│       │   ├── server.py         # Asyncio TLS proxy server
-│       │   ├── upstream.py       # Upstream proxy and request forwarding helpers
-│       │   ├── windows_proxy.py  # Windows-specific proxy integration
-│       │   └── addons/
-│       │       ├── __init__.py          # Proxy addons package marker
-│       │       ├── cache_scraper.py     # Asset interception and caching addon
-│       │       ├── texture_stripper.py  # Asset replacement and texture removal addon
-│       │       └── username_spoofer.py  # Username spoofing addon
-│       ├── scripts/
-│       │   ├── build.py         # Cross-platform build command
-│       │   └── _macos_build.py  # Universal macOS build and packaging orchestration
-│       └── utils/
-│           ├── __init__.py            # Utilities package marker
-│           ├── anim_converter.py      # Animation format conversion helpers
-│           ├── autostart.py           # Windows Task Scheduler / macOS LaunchAgent run-on-boot helpers
-│           ├── certs.py               # Local CA and leaf certificate generation
-│           ├── clipboard.py           # Clipboard helper utilities
-│           ├── http.py                # HTTP helper utilities
-│           ├── logging.py             # Thread-safe log buffer
-│           ├── macos_proxy_helper.py  # macOS privileged helper management
-│           ├── paths.py               # Application paths and constants
-│           ├── platform_macos.py      # macOS-specific operations
-│           ├── platform_windows.py    # Windows-specific operations
-│           ├── plural.py              # Pluralization helpers
-│           ├── r15_to_r6.py           # R15 to R6 rig conversion helpers
-│           ├── rig_data.py            # Rig bone definitions and mappings
-│           ├── roblox_auth.py         # Roblox auth token helper for V1 APIs
-│           ├── roblox_dirs.py         # Roblox directory discovery helpers
-│           ├── threading.py           # Threading utilities
-│           ├── time_tracker.py        # Session time tracking
-│           ├── updater.py             # Update checker
-│           └── windows.py             # Windows compatibility wrapper
-├── tests/
-│   ├── test_account_cookie_storage.py  # Cookie storage tests
-│   ├── test_app_single_instance.py     # Single-instance app behavior tests
-│   ├── test_autostart.py               # Run-on-boot tests
-│   ├── test_build_script.py             # Cross-platform build dispatch tests
-│   ├── test_config_manager.py          # Config manager tests
-│   ├── test_macos_proxy_helper.py      # macOS helper tests
-│   ├── test_modifications_manager.py   # Modification manager tests
-│   ├── test_proxy_server.py            # Proxy server tests
-│   ├── test_rgba_ktx2.py               # KTX/RGBA conversion tests
-│   ├── test_roblox_browser_auth.py     # Roblox browser auth tests
-│   ├── test_roblox_document.py         # Roblox document tests
-│   ├── test_tray_dashboard.py          # Tray and dashboard integration tests
-│   ├── test_upstream.py                # Upstream proxy tests
-│   └── test_username_spoofer.py        # Username spoofer tests
-└── build/  # Generated PyInstaller output (not source)
-```
-
-</details>
 
 ## Configuration
 
