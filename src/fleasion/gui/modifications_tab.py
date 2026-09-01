@@ -779,7 +779,12 @@ class FastFlagValueDelegate(QStyledItemDelegate):
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
 
     def createEditor(self, parent, option, index):
-        name = str(index.sibling(index.row(), 0).data() or '')
+        name_index = index.sibling(index.row(), 0)
+        name = str(
+            name_index.data(_FFLAG_CANONICAL_NAME_ROLE)
+            or name_index.data(Qt.ItemDataRole.DisplayRole)
+            or ''
+        ).strip()
         if name.startswith(self._BOOLEAN_FLAG_PREFIXES):
             editor = CompactBooleanComboBox(parent)
             editor.addItem(tr('ui.gui.modifications_tab.true'), 'True')
@@ -2634,6 +2639,7 @@ class CustomFFlagEditor(QWidget):
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setMinimumHeight(180)
         self._table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._table))
+        self._table.clicked.connect(self._edit_value_cell)
         self._table.cellChanged.connect(self._on_cell_changed)
         if self._hotkeys_supported:
             self._table.cellDoubleClicked.connect(self._edit_keybind)
@@ -2897,8 +2903,6 @@ class CustomFFlagEditor(QWidget):
     def _save_hotkey_settings(self):
         if not self._hotkeys_supported or self._config is None or self._loading:
             return
-        names = set(self._flags_from_table())
-        folder_names = set(self._folders())
         disabled = set()
         disabled_folders = set()
         for row in range(self._table.rowCount()):
@@ -2909,40 +2913,47 @@ class CustomFFlagEditor(QWidget):
                 disabled_folders.add(name)
             else:
                 disabled.add(name)
-        bindings = {name: spec for name, spec in self._keybinds().items() if name in names}
-        folder_bindings = {
-            name: spec for name, spec in self._folder_keybinds().items() if name in folder_names
-        }
-        self._config.custom_fflag_disabled = sorted(disabled)
-        self._config.custom_fflag_disabled_folders = sorted(disabled_folders)
-        self._config.custom_fflag_keybinds = bindings
-        self._config.custom_fflag_folder_keybinds = folder_bindings
-        self._sync_hotkeys()
-        self._refresh_proxy_hosts()
+        disabled_names = sorted(disabled)
+        disabled_folder_names = sorted(disabled_folders)
+        if disabled_names != sorted(self._disabled_flag_names()):
+            self._config.custom_fflag_disabled = disabled_names
+        if disabled_folder_names != sorted(self._disabled_folder_names()):
+            self._config.custom_fflag_disabled_folders = disabled_folder_names
+        # Status toggles do not change interception routes or hotkey bindings.
+        # Runtime flag reads pick up the saved state directly.
         self._update_status()
 
-    def _prune_hotkey_settings(self, names: set[str]):
+    def _prune_hotkey_settings(self, names: set[str], *, sync_hotkeys: bool = True):
         if self._config is None:
             return
+        current_folders = self._folders()
         folders = {
             folder: [name for name in members if name in names]
-            for folder, members in self._folders().items()
+            for folder, members in current_folders.items()
         }
-        self._config.custom_fflag_folders = folders
+        if folders != current_folders:
+            self._config.custom_fflag_folders = folders
         if not self._hotkeys_supported:
             return
         folder_names = set(folders)
-        self._config.custom_fflag_disabled = sorted(self._disabled_flag_names() & names)
-        self._config.custom_fflag_disabled_folders = sorted(
-            self._disabled_folder_names() & folder_names
-        )
-        self._config.custom_fflag_keybinds = {
-            name: spec for name, spec in self._keybinds().items() if name in names
-        }
-        self._config.custom_fflag_folder_keybinds = {
+        disabled = sorted(self._disabled_flag_names() & names)
+        current_disabled = sorted(self._disabled_flag_names())
+        if disabled != current_disabled:
+            self._config.custom_fflag_disabled = disabled
+        disabled_folders = sorted(self._disabled_folder_names() & folder_names)
+        current_disabled_folders = sorted(self._disabled_folder_names())
+        if disabled_folders != current_disabled_folders:
+            self._config.custom_fflag_disabled_folders = disabled_folders
+        bindings = {name: spec for name, spec in self._keybinds().items() if name in names}
+        if bindings != self._keybinds():
+            self._config.custom_fflag_keybinds = bindings
+        folder_bindings = {
             name: spec for name, spec in self._folder_keybinds().items() if name in folder_names
         }
-        self._sync_hotkeys()
+        if folder_bindings != self._folder_keybinds():
+            self._config.custom_fflag_folder_keybinds = folder_bindings
+        if sync_hotkeys:
+            self._sync_hotkeys()
 
     def _sync_hotkeys(self):
         if self._hotkey_controller is not None:
@@ -3069,6 +3080,15 @@ class CustomFFlagEditor(QWidget):
             self._hotkey_controller.stop()
         super().closeEvent(event)
 
+    def _edit_value_cell(self, index):
+        """Open boolean value selectors explicitly instead of relying on Qt edit heuristics."""
+        if (
+            index.column() == 1
+            and self._row_kind(index.row()) == _FFLAG_ROW_FLAG
+            and self._is_boolean_flag(self._row_name(index.row()))
+        ):
+            self._table.edit(index)
+
     def _on_cell_changed(self, row: int, column: int):
         if self._loading:
             return
@@ -3089,7 +3109,6 @@ class CustomFFlagEditor(QWidget):
             return
         self._config.custom_fflags = self._flags_from_table()
         self._prune_hotkey_settings(set(self._config.custom_fflags))
-        self._refresh_proxy_hosts()
         self._update_status()
         self._filter_rows(self._search.text())
 
@@ -3207,8 +3226,9 @@ class CustomFFlagEditor(QWidget):
         if self._config is None:
             return
         self._config.custom_fflags = flags
-        self._prune_hotkey_settings(set(self._config.custom_fflags))
-        self._refresh_proxy_hosts()
+        self._prune_hotkey_settings(set(self._config.custom_fflags), sync_hotkeys=False)
+        # Flag values are consumed directly from settings; only the master
+        # enable toggle changes the interception route set.
         self._load_flags()
 
     def _import_mapping(self, payload):

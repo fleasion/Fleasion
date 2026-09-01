@@ -14,6 +14,7 @@ from fleasion.gui.modifications_tab import (
     CustomFFlagEditor,
     FFlagBrowserDialog,
     FastFlagValueDelegate,
+    CompactBooleanComboBox,
 )
 
 
@@ -199,6 +200,65 @@ def test_custom_fflag_editor_uses_an_edit_on_demand_boolean_selector():
     assert isinstance(editor._table.itemDelegateForColumn(1), FastFlagValueDelegate)
     assert app is not None
 
+
+
+def test_boolean_value_cell_click_opens_selector_even_after_row_selection():
+    app = _qapp()
+    config = SimpleNamespace(
+        custom_fflags={'DFFlagExample': 'False'},
+        custom_fflags_enabled=False,
+    )
+    editor = CustomFFlagEditor(
+        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    )
+    editor.show()
+    app.processEvents()
+    table = editor._table
+    table.selectRow(0)
+    index = table.model().index(0, 1)
+
+    editor._edit_value_cell(index)
+    app.processEvents()
+
+    assert any(combo.isVisible() for combo in table.findChildren(CompactBooleanComboBox))
+
+
+def test_grouped_boolean_flag_uses_canonical_name_for_delegate():
+    app = _qapp()
+    config = SimpleNamespace(
+        custom_fflags={'DFFlagExample': 'False'},
+        custom_fflags_enabled=False,
+        custom_fflag_folders={'Visual': ['DFFlagExample']},
+    )
+    editor = CustomFFlagEditor(
+        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    )
+    table = editor._table
+    index = table.model().index(1, 1)
+    delegate = table.itemDelegateForColumn(1)
+
+    combo = delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
+
+    assert isinstance(combo, CompactBooleanComboBox)
+    assert app is not None
+
+
+def test_flag_value_mutation_does_not_refresh_interception_routes():
+    app = _qapp()
+    config = SimpleNamespace(
+        custom_fflags={'DFFlagExample': 'False'},
+        custom_fflags_enabled=False,
+    )
+    proxy = SimpleNamespace(refresh_calls=0)
+    proxy.refresh_custom_fflag_interception = lambda: setattr(
+        proxy, 'refresh_calls', proxy.refresh_calls + 1
+    )
+    editor = CustomFFlagEditor(config, proxy)
+
+    editor._set_flags({'DFFlagExample': 'True', 'DFIntExample': '60'})
+
+    assert proxy.refresh_calls == 0
+    assert app is not None
 
 def test_boolean_fflag_picker_commits_and_closes_after_selection():
     app = _qapp()
