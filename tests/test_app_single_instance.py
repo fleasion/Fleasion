@@ -2632,6 +2632,101 @@ def test_env_to_hosts_live_switch_avoids_process_restart(monkeypatch: pytest.Mon
     assert events == ['restart_proxy', 'notify']
 
 
+def test_macos_env_to_hosts_installs_helper_before_live_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.gui import settings_tab
+
+    events: list[object] = []
+    proxy_master = SimpleNamespace(
+        can_live_switch_to_hosts=lambda: True,
+        restart_for_mode_switch=lambda: events.append('restart_proxy'),
+    )
+    tray = SimpleNamespace(
+        proxy_master=proxy_master,
+        restart_fleasion=lambda: (_ for _ in ()).throw(
+            AssertionError('ready macOS helper should allow in-process Hosts switch')
+        ),
+        notify_proxy_mode_changed=lambda: events.append('notify'),
+    )
+    config = SimpleNamespace(
+        proxy_mode='env',
+        proxy_features_enabled=True,
+        run_on_boot=False,
+    )
+    tab = SimpleNamespace(
+        _config=config,
+        _tray=tray,
+        _proxy_mode_combo=SimpleNamespace(currentData=lambda: 'hosts'),
+    )
+    def ensure_helper(_parent: object) -> bool:
+        events.append('ensure_helper')
+        return True
+
+    monkeypatch.setattr(settings_tab.sys, 'platform', 'darwin')
+    monkeypatch.setattr(settings_tab, '_ensure_macos_hosts_helper', ensure_helper)
+
+    cast(
+        'Callable[[object], None]',
+        _private_attr(settings_tab.SettingsTab, '_on_proxy_mode_changed'),
+    )(tab)
+
+    assert config.proxy_mode == 'hosts'
+    assert events == ['ensure_helper', 'restart_proxy', 'notify']
+
+
+def test_macos_env_to_hosts_cancelled_helper_install_never_enters_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.gui import settings_tab
+
+    events: list[object] = []
+    selected_indexes: list[int] = []
+    tray = SimpleNamespace(
+        proxy_master=SimpleNamespace(
+            can_live_switch_to_hosts=lambda: False,
+            restart_for_mode_switch=lambda: events.append('restart_proxy'),
+        ),
+        restart_fleasion=lambda: events.append('restart_app') or True,
+        notify_proxy_mode_changed=lambda: events.append('notify'),
+    )
+    config = SimpleNamespace(
+        proxy_mode='env',
+        proxy_features_enabled=True,
+        run_on_boot=False,
+    )
+    def find_mode(mode: object) -> int:
+        return 3 if mode == 'env' else -1
+
+    def block_signals(blocked: bool) -> None:
+        events.append(('blocked', blocked))
+
+    def set_current_index(index: int) -> None:
+        selected_indexes.append(index)
+
+    def ensure_helper(_parent: object) -> bool:
+        return False
+
+    combo = SimpleNamespace(
+        currentData=lambda: 'hosts',
+        findData=find_mode,
+        blockSignals=block_signals,
+        setCurrentIndex=set_current_index,
+    )
+    tab = SimpleNamespace(_config=config, _tray=tray, _proxy_mode_combo=combo)
+    monkeypatch.setattr(settings_tab.sys, 'platform', 'darwin')
+    monkeypatch.setattr(settings_tab, '_ensure_macos_hosts_helper', ensure_helper)
+
+    cast(
+        'Callable[[object], None]',
+        _private_attr(settings_tab.SettingsTab, '_on_proxy_mode_changed'),
+    )(tab)
+
+    assert config.proxy_mode == 'env'
+    assert selected_indexes == [3]
+    assert events == [('blocked', True), ('blocked', False)]
+
+
 def test_env_to_hosts_with_proxy_disabled_only_persists_mode() -> None:
     from fleasion.gui import settings_tab
 

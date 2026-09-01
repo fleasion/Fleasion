@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import platform
@@ -48,8 +49,8 @@ type HelperObject = dict[str, object]
 
 
 if TYPE_CHECKING:
-
     from collections.abc import Iterable, Mapping
+
     def _object_dict(value: object) -> HelperObject: ...
 
     def _iter_values(value: object) -> Iterable[object]: ...
@@ -115,7 +116,7 @@ def _request(
 def helper_status(timeout: float = 1.0) -> HelperObject | None:
     try:
         return _request('status', timeout=timeout)
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError):
+    except OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError:
         return None
 
 
@@ -144,7 +145,9 @@ def helper_is_ready() -> bool:
         log_buffer.log(
             'ProxyHelper',
             'Installed macOS proxy helper identity does not match this app build; '
-            f'expected version {EXPECTED_HELPER_VERSION}, got {status.get("version")!r}',
+            f'expected version {EXPECTED_HELPER_VERSION}, got {status.get("version")!r}; '
+            f'pid={status.get("pid")!r}, ppid={status.get("ppid")!r}, '
+            f'executable={status.get("executable")!r}',
         )
         return False
     return True
@@ -164,15 +167,21 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
     if not backend_ok:
         return (
             False,
-            ('Helper reported an unexpected backend port: '
-            f'{status.get("backend_port")!r} (expected {MACOS_PROXY_BACKEND_PORT})'),
+            (
+                'Helper reported an unexpected backend port: '
+                f'{status.get("backend_port")!r} (expected {MACOS_PROXY_BACKEND_PORT})'
+            ),
         )
     if not helper_has_expected_identity(status):
         return (
             False,
-            ('Helper identity does not match this app build: '
-            f'version={status.get("version")!r} (expected {EXPECTED_HELPER_VERSION}), '
-            f'capabilities={status.get("capabilities")!r}'),
+            (
+                'Helper identity does not match this app build: '
+                f'version={status.get("version")!r} (expected {EXPECTED_HELPER_VERSION}), '
+                f'capabilities={status.get("capabilities")!r}, '
+                f'pid={status.get("pid")!r}, ppid={status.get("ppid")!r}, '
+                f'executable={status.get("executable")!r}'
+            ),
         )
     return True, ''
 
@@ -198,7 +207,7 @@ def helper_clear_hosts() -> bool:
 def helper_heartbeat() -> bool:
     try:
         _request('heartbeat', timeout=2.0)
-    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError):
+    except OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError:
         return False
     return True
 
@@ -319,6 +328,15 @@ def _installer_source() -> tuple[Path | None, str]:
     source = _source_helper_path()
     if not source.exists():
         return None, f'Bundled helper executable is missing: {source}'
+    try:
+        source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    except OSError as exc:
+        return None, f'Could not fingerprint the bundled macOS proxy helper: {exc}'
+
+    log_buffer.log(
+        'ProxyHelper',
+        f'Bundled macOS proxy helper: path={source}; sha256={source_sha256}',
+    )
     return source, ''
 
 
@@ -398,15 +416,103 @@ def install_helper() -> tuple[bool, str]:
     )
     bootstrap_cmd = shlex.join(['/bin/launchctl', 'bootstrap', 'system', str(HELPER_PLIST_PATH)])
     load_cmd = shlex.join(['/bin/launchctl', 'load', '-w', str(HELPER_PLIST_PATH)])
-    bootout_label = shlex.join(['/bin/launchctl', 'bootout', f'system/{HELPER_ID}'])
+    service_target = f'system/{HELPER_ID}'
+    bootout_label = shlex.join(['/bin/launchctl', 'bootout', service_target])
     bootout_plist = shlex.join(['/bin/launchctl', 'bootout', 'system', str(HELPER_PLIST_PATH)])
-    enable_cmd = shlex.join(['/bin/launchctl', 'enable', f'system/{HELPER_ID}'])
+    kill_service = shlex.join(['/bin/launchctl', 'kill', 'SIGKILL', service_target])
+    print_service = shlex.join(['/bin/launchctl', 'print', service_target])
+    enable_cmd = shlex.join(['/bin/launchctl', 'enable', service_target])
+    lsof_listener = shlex.join(
+        [
+            '/usr/sbin/lsof',
+            '-nP',
+            f'-iTCP:{MACOS_PROXY_HELPER_CONTROL_PORT}',
+            '-sTCP:LISTEN',
+        ]
+    )
+    lsof_listener_pids = shlex.join(
+        [
+            '/usr/sbin/lsof',
+            '-nP',
+            '-t',
+            f'-iTCP:{MACOS_PROXY_HELPER_CONTROL_PORT}',
+            '-sTCP:LISTEN',
+        ]
+    )
+    helper_hash = shlex.join(['/usr/bin/shasum', '-a', '256', str(HELPER_INSTALL_PATH)])
+    helper_file = shlex.join(['/usr/bin/file', str(HELPER_INSTALL_PATH)])
     install_cmds = ' && '.join(shlex.join(command) for command in commands)
     shell_cmd = f"""
 set -e
-{bootout_label} >/dev/null 2>&1 || true
+bootout_output="$({bootout_label} 2>&1)" || true
 {bootout_plist} >/dev/null 2>&1 || true
 /bin/sleep 0.2
+if {print_service} >/dev/null 2>&1; then
+  # Some macOS/launchd states leave the old KeepAlive helper registered even
+  # after bootout. Kill the managed process, then retry the unregister before
+  # replacing its executable.
+  {kill_service} >/dev/null 2>&1 || true
+  /bin/sleep 0.2
+  {bootout_label} >/dev/null 2>&1 || true
+  {bootout_plist} >/dev/null 2>&1 || true
+  /bin/sleep 0.2
+fi
+if {print_service} >/dev/null 2>&1; then
+  service_state="$({print_service} 2>&1)"
+  /bin/echo "could not unload existing helper service: $bootout_output" >&2
+  /bin/echo "$service_state" >&2
+  exit 41
+fi
+
+# launchctl can forget a previously-managed helper while the old root process
+# itself survives. If that stale process still owns the control port, a newly
+# bootstrapped helper cannot bind and will immediately crash/restart forever.
+listener_pids="$({lsof_listener_pids} 2>/dev/null || true)"
+if [ -n "$listener_pids" ]; then
+  for listener_pid in $listener_pids; do
+    listener_executable="$(/usr/sbin/lsof -a -p "$listener_pid" -d txt -Fn 2>/dev/null | /usr/bin/sed -n 's/^n//p' | /usr/bin/head -n 1)"
+    listener_uid="$(/bin/ps -p "$listener_pid" -o uid= 2>/dev/null | /usr/bin/tr -d '[:space:]')"
+    listener_command="$(/bin/ps -ww -p "$listener_pid" -o command= 2>/dev/null || true)"
+    listener_is_helper=0
+    if [ "$listener_executable" = "{HELPER_INSTALL_PATH}" ]; then
+      listener_is_helper=1
+    elif [ "$listener_uid" = "0" ]; then
+      # Source-tree installs execute the installed helper script through Python,
+      # so lsof reports the interpreter as txt. Accept that form only when the
+      # root-owned listener is a Python process whose argv contains the exact
+      # installed helper path as a whitespace-delimited argument.
+      case "$listener_executable" in
+        */python|*/python[0-9]*|*/Python)
+          case " $listener_command " in
+            *" {HELPER_INSTALL_PATH} "*) listener_is_helper=1 ;;
+          esac
+          ;;
+      esac
+    fi
+    if [ "$listener_is_helper" != "1" ]; then
+      /bin/echo "control port {MACOS_PROXY_HELPER_CONTROL_PORT} is owned by unexpected process pid=$listener_pid uid=$listener_uid executable=$listener_executable command=$listener_command" >&2
+      {lsof_listener} >&2 || true
+      exit 43
+    fi
+    /bin/echo "terminating stale Fleasion proxy helper listener pid=$listener_pid uid=$listener_uid executable=$listener_executable command=$listener_command"
+    /bin/kill -KILL "$listener_pid" >/dev/null 2>&1 || true
+  done
+
+  listener_deadline=30
+  while [ "$listener_deadline" -gt 0 ]; do
+    if ! {lsof_listener_pids} >/dev/null 2>&1; then
+      break
+    fi
+    /bin/sleep 0.1
+    listener_deadline=$((listener_deadline - 1))
+  done
+  if {lsof_listener_pids} >/dev/null 2>&1; then
+    /bin/echo "stale Fleasion proxy helper still owns control port {MACOS_PROXY_HELPER_CONTROL_PORT} after SIGKILL" >&2
+    {lsof_listener} >&2 || true
+    exit 44
+  fi
+fi
+
 {install_cmds}
 {xattr_cmd} >/dev/null 2>&1 || true
 set +e
@@ -438,6 +544,18 @@ if [ "$bootstrap_retry_status" -ne 0 ]; then
 fi
 if [ "$load_status" -ne 0 ]; then
   /bin/echo "legacy load failed ($load_status): $load_output"
+fi
+/bin/echo "helper install diagnostics: service state"
+{print_service} 2>&1 || true
+/bin/echo "helper install diagnostics: control-port listener"
+{lsof_listener} 2>&1 || true
+/bin/echo "helper install diagnostics: installed executable"
+{helper_file} 2>&1 || true
+{helper_hash} 2>&1 || true
+if [ "$bootstrap_status" -ne 0 ] \
+  && [ "$bootstrap_retry_status" -ne 0 ] \
+  && [ "$load_status" -ne 0 ]; then
+  exit 42
 fi
 exit 0
 """.strip()

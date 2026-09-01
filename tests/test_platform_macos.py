@@ -1,7 +1,7 @@
 import json
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Never, Protocol, cast
 
@@ -99,6 +99,54 @@ def _running_failure() -> Never:
     raise AssertionError(msg)
 
 
+def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+def _pid_snapshot_callback(snapshots: Iterator[list[int]]) -> Callable[[str], list[int]]:
+    def callback(_name: str) -> list[int]:
+        return next(snapshots, list[int]())
+
+    return callback
+
+
+def _signal_callback(
+    signals: list[tuple[int, object]],
+) -> Callable[[int, object], bool]:
+    def callback(pid: int, sig: object) -> bool:
+        signals.append((pid, sig))
+        return True
+
+    return callback
+
+
+def _identity_callback(identities: dict[int, str | None]) -> Callable[[int], str | None]:
+    def callback(pid: int) -> str | None:
+        return identities.get(pid)
+
+    return callback
+
+
+def _wait_callback(
+    waits: Iterator[set[int]],
+) -> Callable[[set[int], float], set[int]]:
+    def callback(_pids: set[int], _timeout: float) -> set[int]:
+        return next(waits)
+
+    return callback
+
+
+def _wait_all_exit(_pids: set[int], _timeout: float) -> set[int]:
+    return set[int]()
+
+
+def _log_callback(logs: list[tuple[str, str]]) -> Callable[[str, str], None]:
+    def callback(category: str, message: str) -> None:
+        logs.append((category, message))
+
+    return callback
+
+
 def _make_player_app(path: Path) -> Path:
     resources = path / 'Contents' / 'Resources'
     macos = path / 'Contents' / 'MacOS'
@@ -114,7 +162,7 @@ def test_terminate_roblox_requests_app_bundle_quit_before_signal(
     app = tmp_path / 'Roblox.app'
     app.mkdir()
     calls: list[list[str]] = []
-    states = iter([True, False])
+    signals: list[tuple[int, object]] = []
 
     class Result:
         returncode = 0
@@ -127,12 +175,126 @@ def test_terminate_roblox_requests_app_bundle_quit_before_signal(
 
     monkeypatch.setattr(platform_macos, 'ROBLOX_APP_CANDIDATES', (app,))
     monkeypatch.setattr(platform_macos, 'ROBLOX_PROCESS', 'RobloxPlayer')
-    monkeypatch.setattr(platform_macos, 'is_roblox_running', lambda: next(states))
+    pid_snapshots = iter([[321], [], [], []])
+    monkeypatch.setattr(platform_macos, '_process_pids', _pid_snapshot_callback(pid_snapshots))
+    monkeypatch.setattr(platform_macos.time, 'sleep', _no_sleep)
+    ticks = iter([0.0, 0.0, 4.0, 4.0])
+    monkeypatch.setattr(platform_macos.time, 'monotonic', lambda: next(ticks, 4.0))
+    monkeypatch.setattr(platform_macos, '_process_identity', _identity_callback({321: 'start-a'}))
+    monkeypatch.setattr(platform_macos, '_signal_process', _signal_callback(signals))
+    monkeypatch.setattr(platform_macos, '_wait_for_pids_exit', _wait_all_exit)
     monkeypatch.setattr(platform_macos.subprocess, 'run', fake_run)
 
     assert platform_macos.terminate_roblox() is True
     assert calls[0] == ['osascript', '-e', 'tell application "Roblox" to quit']
-    assert calls[1] == ['pkill', '-TERM', '-x', 'RobloxPlayer']
+    assert signals == [(321, platform_macos.signal.SIGTERM)]
+
+
+def test_terminate_roblox_escalates_only_captured_pids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid_snapshots = iter([[101, 202], [], [], []])
+    signals: list[tuple[int, object]] = []
+    waits = iter([{202}, set[int]()])
+
+    monkeypatch.setattr(platform_macos, 'ROBLOX_APP_CANDIDATES', ())
+    monkeypatch.setattr(platform_macos, '_process_pids', _pid_snapshot_callback(pid_snapshots))
+    monkeypatch.setattr(
+        platform_macos,
+        '_process_identity',
+        _identity_callback({101: 'start-a', 202: 'start-b'}),
+    )
+    monkeypatch.setattr(platform_macos, '_signal_process', _signal_callback(signals))
+    monkeypatch.setattr(platform_macos, '_wait_for_pids_exit', _wait_callback(waits))
+    monkeypatch.setattr(platform_macos.time, 'sleep', _no_sleep)
+    ticks = iter([0.0, 0.0, 4.0, 4.0])
+    monkeypatch.setattr(platform_macos.time, 'monotonic', lambda: next(ticks, 4.0))
+
+    assert platform_macos.terminate_roblox() is True
+    assert signals == [
+        (101, platform_macos.signal.SIGTERM),
+        (202, platform_macos.signal.SIGTERM),
+        (202, platform_macos.signal.SIGKILL),
+    ]
+
+
+def test_terminate_roblox_chases_background_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid_snapshots = iter([[101], [303], [], []])
+    signals: list[tuple[int, object]] = []
+    waits = iter([set[int](), set[int]()])
+    logs: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(platform_macos, 'ROBLOX_APP_CANDIDATES', ())
+    monkeypatch.setattr(platform_macos, '_process_pids', _pid_snapshot_callback(pid_snapshots))
+    monkeypatch.setattr(
+        platform_macos,
+        '_process_identity',
+        _identity_callback({101: 'start-a', 303: 'start-c'}),
+    )
+    monkeypatch.setattr(platform_macos, '_signal_process', _signal_callback(signals))
+    monkeypatch.setattr(platform_macos, '_wait_for_pids_exit', _wait_callback(waits))
+    monkeypatch.setattr(platform_macos.time, 'sleep', _no_sleep)
+    ticks = iter([0.0, 0.0, 0.0, 0.1, 4.0, 4.0])
+    monkeypatch.setattr(platform_macos.time, 'monotonic', lambda: next(ticks, 4.0))
+    monkeypatch.setattr(platform_macos.log_buffer, 'log', _log_callback(logs))
+
+    assert platform_macos.terminate_roblox() is True
+    assert signals == [
+        (101, platform_macos.signal.SIGTERM),
+        (303, platform_macos.signal.SIGTERM),
+    ]
+    assert any('replacement/background Player process(es)' in message for _, message in logs)
+
+
+def test_terminate_roblox_skips_sigkill_when_pid_identity_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, object]] = []
+    logs: list[tuple[str, str]] = []
+    identity_reads = iter(['Mon Aug 31 17:00:00 2026 /Applications/Roblox.app/RobloxPlayer',
+                           'Mon Aug 31 17:00:02 2026 /usr/bin/unrelated'])
+
+    def changing_identity(_pid: int) -> str | None:
+        return next(identity_reads, 'Mon Aug 31 17:00:02 2026 /usr/bin/unrelated')
+
+    pid_snapshots = iter([[505], [], [], []])
+    monkeypatch.setattr(platform_macos, 'ROBLOX_APP_CANDIDATES', ())
+    monkeypatch.setattr(platform_macos, '_process_pids', _pid_snapshot_callback(pid_snapshots))
+    monkeypatch.setattr(platform_macos, '_process_identity', changing_identity)
+    def still_present(_pids: set[int], _timeout: float) -> set[int]:
+        return {505}
+
+    monkeypatch.setattr(platform_macos, '_signal_process', _signal_callback(signals))
+    monkeypatch.setattr(platform_macos, '_wait_for_pids_exit', still_present)
+    monkeypatch.setattr(platform_macos.time, 'sleep', _no_sleep)
+    ticks = iter([0.0, 0.0, 4.0, 4.0])
+    monkeypatch.setattr(platform_macos.time, 'monotonic', lambda: next(ticks, 4.0))
+    monkeypatch.setattr(platform_macos.log_buffer, 'log', _log_callback(logs))
+
+    assert platform_macos.terminate_roblox() is True
+    assert signals == [(505, platform_macos.signal.SIGTERM)]
+    assert any('numeric PID was reused by a different process' in message for _, message in logs)
+
+
+def test_terminate_roblox_reports_pid_that_survives_sigkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, object]] = []
+    waits = iter([{404}, {404}])
+    logs: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(platform_macos, 'ROBLOX_APP_CANDIDATES', ())
+    monkeypatch.setattr(platform_macos, '_process_pids', _pid_snapshot_callback(iter([[404]])))
+    monkeypatch.setattr(platform_macos, '_process_identity', _identity_callback({404: 'start-d'}))
+    monkeypatch.setattr(platform_macos, '_signal_process', _signal_callback(signals))
+    monkeypatch.setattr(platform_macos, '_wait_for_pids_exit', _wait_callback(waits))
+    monkeypatch.setattr(platform_macos.log_buffer, 'log', _log_callback(logs))
+
+    assert platform_macos.terminate_roblox() is False
+    assert signals[-1] == (404, platform_macos.signal.SIGKILL)
+    assert any('remained alive after SIGKILL: 404' in message for _, message in logs)
 
 
 def test_discovers_froststrap_versions_and_appleblox_custom_path(

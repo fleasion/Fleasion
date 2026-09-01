@@ -19,6 +19,7 @@ import socket
 import socketserver
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -595,6 +596,9 @@ def _status() -> JsonObject:
         'ok': True,
         'version': HELPER_VERSION,
         'capabilities': _json_list(HELPER_CAPABILITIES),
+        'pid': os.getpid(),
+        'ppid': os.getppid(),
+        'executable': sys.executable,
         'active_hosts': _json_list(active_hosts),
         'backend_port': _backend_port,
         'lease_remaining': lease_remaining,
@@ -804,6 +808,16 @@ def main() -> None:
 
     _set_runtime_config(args.token_file, args.backend_port)
     _configure_logging(args.log_path)
+    logger.info(
+        'helper starting: version=%d pid=%d ppid=%d executable=%s; '
+        'control 127.0.0.1:%d, relay 127.0.0.1:443 -> 127.0.0.1:%d',
+        HELPER_VERSION,
+        os.getpid(),
+        os.getppid(),
+        sys.executable,
+        args.control_port,
+        _backend_port,
+    )
 
     try:
         _run_servers(args.control_port)

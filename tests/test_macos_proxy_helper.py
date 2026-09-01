@@ -1,4 +1,5 @@
 import ast
+import json
 import os
 import subprocess
 import sys
@@ -228,6 +229,9 @@ def test_helper_control_requires_token(tmp_path: Path, monkeypatch: pytest.Monke
     response = _handle_request({'token': token_file.read_text(), 'action': 'status'})
     assert response['ok'] is True
     assert response['version'] == daemon.HELPER_VERSION
+    assert response['pid'] == os.getpid()
+    assert response['ppid'] == os.getppid()
+    assert response['executable'] == sys.executable
     capabilities = _response_capabilities(response)
     assert 'patch_ca' in capabilities
     assert 'probe_backend' in capabilities
@@ -362,7 +366,11 @@ def test_helper_installer_stages_helper_before_privileged_install(
     ok, detail = macos_proxy_helper.install_helper()
 
     assert ok is True, detail
-    script = cast('str', captured['script'])
+    apple_script = cast('str', captured['script'])
+    payload = apple_script.removeprefix('do shell script ').removesuffix(
+        ' with administrator privileges'
+    )
+    script = cast('str', json.loads(payload))
     assert str(source) not in script
     assert '/usr/bin/python3' not in script
     assert 'launchctl bootout' in script
@@ -371,6 +379,47 @@ def test_helper_installer_stages_helper_before_privileged_install(
     assert script.index('/usr/bin/xattr -c') > script.index('/usr/bin/install')
     assert 'launchctl bootstrap system' in script
     assert 'launchctl load -w' in script
+    assert f'launchctl print system/{macos_proxy_helper.HELPER_ID}' in script
+    assert f'launchctl kill SIGKILL system/{macos_proxy_helper.HELPER_ID}' in script
+    assert 'could not unload existing helper service' in script
+    assert (
+        f'lsof -nP -iTCP:{macos_proxy_helper.MACOS_PROXY_HELPER_CONTROL_PORT} '
+        '-sTCP:LISTEN'
+    ) in script
+    assert (
+        f'lsof -nP -t -iTCP:{macos_proxy_helper.MACOS_PROXY_HELPER_CONTROL_PORT} '
+        '-sTCP:LISTEN'
+    ) in script
+    assert 'lsof -a -p' in script
+    assert '$listener_pid' in script
+    assert '-d txt -Fn' in script
+    assert 'listener_uid=' in script
+    assert '/bin/ps -p' in script
+    assert '-o uid=' in script
+    assert 'listener_command=' in script
+    assert '/bin/ps -ww -p' in script
+    assert '-o command=' in script
+    assert 'listener_is_helper=0' in script
+    assert '*/python|*/python[0-9]*|*/Python)' in script
+    assert str(macos_proxy_helper.HELPER_INSTALL_PATH) in script
+    assert 'listener_is_helper=1' in script
+    assert '[ "$listener_uid" = "0" ]' in script
+    assert (
+        f'control port {macos_proxy_helper.MACOS_PROXY_HELPER_CONTROL_PORT} '
+        'is owned by unexpected process'
+    ) in script
+    assert str(macos_proxy_helper.HELPER_INSTALL_PATH) in script
+    assert 'terminating stale Fleasion proxy helper listener pid=$listener_pid' in script
+    assert '/bin/kill -KILL' in script
+    assert 'exit 43' in script
+    assert 'exit 44' in script
+    assert f'shasum -a 256 {macos_proxy_helper.HELPER_INSTALL_PATH}' in script
+    assert f'file {macos_proxy_helper.HELPER_INSTALL_PATH}' in script
+    assert 'helper install diagnostics: service state' in script
+    assert 'helper install diagnostics: control-port listener' in script
+    assert 'helper install diagnostics: installed executable' in script
+    assert 'exit 41' in script
+    assert 'exit 42' in script
     for log_path in (
         macos_proxy_helper.HELPER_LOG_PATH,
         macos_proxy_helper.HELPER_STDOUT_LOG_PATH,

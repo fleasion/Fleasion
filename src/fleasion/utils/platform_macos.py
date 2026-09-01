@@ -96,8 +96,8 @@ class _KqueueLike(Protocol):
 
 
 if TYPE_CHECKING:
-
     from collections.abc import Callable
+
     def _json_object(value: object) -> JsonObject | None: ...
 
     def _c_function(library: ctypes.CDLL, name: str) -> _CFunction: ...
@@ -207,7 +207,7 @@ def get_default_url_handler(scheme: str) -> str | None:
         return None
     try:
         handler = _default_url_handler_from_refs(launch_services, core_foundation, scheme_ref)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return None
     finally:
         _cf_release(core_foundation, scheme_ref)
@@ -264,7 +264,7 @@ def _appleblox_custom_app_path() -> Path | None:
     """Return AppleBlox's configured Roblox bundle, when present and valid."""
     try:
         payload: object = json.loads(APPLEBLOX_ROBLOX_CONFIG.read_text(encoding='utf-8'))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except OSError, UnicodeError, json.JSONDecodeError:
         return None
     payload_map = _json_object(payload)
     if payload_map is None:
@@ -277,7 +277,7 @@ def _appleblox_custom_app_path() -> Path | None:
         return None
     try:
         app_path = Path(raw_path).expanduser()
-    except (RuntimeError, TypeError, ValueError):
+    except RuntimeError, TypeError, ValueError:
         return None
     return app_path if app_path.suffix == '.app' else None
 
@@ -300,8 +300,7 @@ def _set_application_icon_impl(icon_path: Path) -> bool:
         return False
 
     appkit_path = (
-        ctypes.util.find_library('AppKit')
-        or '/System/Library/Frameworks/AppKit.framework/AppKit'
+        ctypes.util.find_library('AppKit') or '/System/Library/Frameworks/AppKit.framework/AppKit'
     )
     ctypes.CDLL(appkit_path)
 
@@ -483,7 +482,9 @@ def _run_binary_command(
     args: list[str], *, timeout: float | None = None
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a trusted macOS command without a shell and retain byte output."""
-    return cast('subprocess.CompletedProcess[bytes]', _run_command(args, text=False, timeout=timeout))
+    return cast(
+        'subprocess.CompletedProcess[bytes]', _run_command(args, text=False, timeout=timeout)
+    )
 
 
 def _call_contained_callback[T](callback: Callable[[], T]) -> tuple[T | None, Exception | None]:
@@ -501,7 +502,7 @@ def run_cmd(args: list[str]) -> str:
 def _process_pids(name: str) -> list[int]:
     try:
         result = _run_text_command(['pgrep', '-x', name], timeout=5)
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return []
     pids: list[int] = []
     for raw in result.stdout.splitlines():
@@ -555,10 +556,49 @@ def _known_studio_executable() -> Path | None:
 def _process_command(pid: int) -> Path | None:
     try:
         result = _run_text_command(['ps', '-p', str(pid), '-o', 'comm='], timeout=5)
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     value = result.stdout.strip()
     return Path(value) if value else None
+
+
+def _process_identity(pid: int) -> str | None:
+    """Return a PID identity that changes when macOS recycles the numeric PID."""
+    try:
+        result = _run_text_command(
+            ['ps', '-p', str(pid), '-o', 'lstart=', '-o', 'comm='],
+            timeout=5,
+        )
+    except OSError, subprocess.SubprocessError:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _verified_escalation_pids(
+    pids: set[int],
+    identities: dict[int, str | None],
+) -> set[int]:
+    """Return only PIDs whose process identity still matches the captured Roblox process."""
+    verified: set[int] = set()
+    for pid in sorted(pids):
+        expected = identities.get(pid)
+        current = _process_identity(pid)
+        if expected is not None and current == expected:
+            verified.add(pid)
+            continue
+
+        if current is None:
+            reason = 'process exited or its identity could no longer be read'
+        elif expected is None:
+            reason = 'original process identity was unavailable'
+        else:
+            reason = 'numeric PID was reused by a different process'
+        log_buffer.log(
+            'Cache',
+            f'Skipping Roblox SIGKILL for pid={pid}: {reason}',
+        )
+    return verified
 
 
 def _quit_app_bundle(app_path: Path) -> bool:
@@ -1004,37 +1044,145 @@ def get_roblox_studio_exe_path() -> Path | None:
     return _known_studio_executable()
 
 
+def _signal_process(pid: int, sig: signal.Signals) -> bool:
+    """Signal one known process and preserve useful macOS failure diagnostics."""
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        # The process exited between discovery and signaling
+        return True
+    except PermissionError as exc:
+        log_buffer.log(
+            'Cache',
+            f'Could not signal Roblox pid={pid} with {sig.name}: permission denied ({exc})',
+        )
+    except OSError as exc:
+        log_buffer.log(
+            'Cache',
+            f'Could not signal Roblox pid={pid} with {sig.name}: {type(exc).__name__}: {exc}',
+        )
+    else:
+        return True
+    return False
+
+
+def _wait_for_pids_exit(pids: set[int], timeout: float) -> set[int]:
+    """Wait for captured PIDs and return the subset that is still alive."""
+    remaining = set(pids)
+    deadline = time.monotonic() + max(0.0, timeout)
+    while remaining:
+        for pid in tuple(remaining):
+            if _wait_for_pid_exit(pid, timeout=0.0):
+                remaining.discard(pid)
+        if not remaining or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    return remaining
+
+
 def terminate_roblox() -> bool:
-    """Terminate Roblox if it is running. Returns True if it was running."""
-    if not is_roblox_running():
+    """Terminate the currently-running Roblox Player processes."""
+    pids = set(_process_pids(ROBLOX_PROCESS))
+    if not pids:
         return False
+    identities = {pid: _process_identity(pid) for pid in pids}
 
     for app_path in ROBLOX_APP_CANDIDATES:
         if app_path.exists():
             _quit_app_bundle(app_path)
             break
 
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        _run_binary_command(['pkill', '-TERM', '-x', ROBLOX_PROCESS], timeout=5)
+    for pid in sorted(pids):
+        _signal_process(pid, signal.SIGTERM)
 
-    deadline = time.time() + 2.0
-    while time.time() < deadline:
-        if not is_roblox_running():
-            return True
-        time.sleep(0.1)
+    remaining = _wait_for_pids_exit(pids, 2.0)
+    if remaining:
+        remaining = _verified_escalation_pids(remaining, identities)
+        if remaining:
+            log_buffer.log(
+                'Cache',
+                'Roblox did not exit after SIGTERM; escalating captured process(es) to SIGKILL: '
+                + ', '.join(str(pid) for pid in sorted(remaining)),
+            )
+            for pid in sorted(remaining):
+                _signal_process(pid, signal.SIGKILL)
 
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        _run_binary_command(['pkill', '-KILL', '-x', ROBLOX_PROCESS], timeout=5)
-    return not is_roblox_running()
+            remaining = _wait_for_pids_exit(remaining, 3.0)
+            if remaining:
+                log_buffer.log(
+                    'Cache',
+                    'Roblox process(es) remained alive after SIGKILL: '
+                    + ', '.join(str(pid) for pid in sorted(remaining)),
+                )
+                return False
+
+    # Current macOS Roblox builds can remain resident in the menu bar and may
+    # spawn a replacement RobloxPlayer after the foreground instance exits
+    # Treat that as part of termination rather than declaring success and
+    # leaving the caller to time out on the replacement process
+    settle_deadline = time.monotonic() + 3.0
+    seen_pids = set(pids)
+    while time.monotonic() < settle_deadline:
+        replacement_pids = set(_process_pids(ROBLOX_PROCESS)) - seen_pids
+        if not replacement_pids:
+            time.sleep(0.1)
+            continue
+
+        log_buffer.log(
+            'Cache',
+            'Roblox spawned replacement/background Player process(es); terminating: '
+            + ', '.join(str(pid) for pid in sorted(replacement_pids)),
+        )
+        seen_pids.update(replacement_pids)
+        replacement_identities = {pid: _process_identity(pid) for pid in replacement_pids}
+        for pid in sorted(replacement_pids):
+            _signal_process(pid, signal.SIGTERM)
+
+        remaining = _wait_for_pids_exit(replacement_pids, 0.75)
+        if remaining:
+            remaining = _verified_escalation_pids(remaining, replacement_identities)
+            for pid in sorted(remaining):
+                _signal_process(pid, signal.SIGKILL)
+            if remaining:
+                remaining = _wait_for_pids_exit(remaining, 1.0)
+        if remaining:
+            log_buffer.log(
+                'Cache',
+                'Replacement/background Roblox process(es) remained alive after SIGKILL: '
+                + ', '.join(str(pid) for pid in sorted(remaining)),
+            )
+            return False
+
+    final_pids = set(_process_pids(ROBLOX_PROCESS))
+    if final_pids:
+        log_buffer.log(
+            'Cache',
+            'Roblox Player process(es) still present after termination settle period: '
+            + ', '.join(str(pid) for pid in sorted(final_pids)),
+        )
+        return False
+    return True
 
 
 def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
     """Wait for Roblox to exit. Returns True if it exited before timeout."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if not is_roblox_running():
             return True
         time.sleep(0.5)
+
+    remaining = _process_pids(ROBLOX_PROCESS)
+    if remaining:
+        details: list[str] = []
+        for pid in remaining:
+            command = _process_command(pid)
+            details.append(f'{pid} ({command or "unknown executable"})')
+        log_buffer.log(
+            'Cache',
+            'Timed out waiting for Roblox exit; remaining Player process(es): '
+            + ', '.join(details),
+        )
     return False
 
 
@@ -1052,7 +1200,6 @@ def _delete_path(path: Path, messages: list[str], label: str) -> None:
         messages.append(f'Failed to delete {label.lower()}: permission denied')
     except OSError as exc:
         messages.append(f'Failed to delete {label.lower()}: {exc}')
-
 
 
 def _delete_app_cache_contents() -> None:
@@ -1283,9 +1430,7 @@ def _detached_popen(args: list[str]) -> subprocess.Popen[bytes]:
     )
 
 
-def _run_launch_preparation(
-    exe_path: Path, prepare_launch: Callable[[Path], bool] | None
-) -> bool:
+def _run_launch_preparation(exe_path: Path, prepare_launch: Callable[[Path], bool] | None) -> bool:
     if prepare_launch is None:
         return True
     prepared, callback_error = _call_contained_callback(lambda: prepare_launch(exe_path))
@@ -1342,9 +1487,7 @@ def _prepare_env_proxy_relaunch(
     return _run_launch_preparation(exe_path, prepare_launch)
 
 
-def _env_proxy_open_args(
-    app_path: Path, proxy_url: str, launch_target: str | None
-) -> list[str]:
+def _env_proxy_open_args(app_path: Path, proxy_url: str, launch_target: str | None) -> list[str]:
     proxy_env = {
         'ALL_PROXY': proxy_url,
         'HTTPS_PROXY': proxy_url,
@@ -1446,9 +1589,7 @@ def relaunch_roblox_with_proxy_env(
             player_already_stopped=player_already_stopped,
             prepare_launch=prepare_launch,
         ):
-            success = _open_env_proxy_relaunch(
-                app_path, proxy_url, launch_target, cancel_event
-            )
+            success = _open_env_proxy_relaunch(app_path, proxy_url, launch_target, cancel_event)
     except (OSError, subprocess.SubprocessError) as exc:
         log_buffer.log('Launcher', f'Roblox Env Proxy relaunch failed: {exc}')
     finally:
@@ -1504,5 +1645,5 @@ def show_message_box(title: str, message: str, icon: int = 0x40) -> None:
     script = 'display alert ' + json.dumps(title) + ' message ' + json.dumps(message)
     try:
         _run_binary_command(['osascript', '-e', script], timeout=10)
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         log_buffer.log('UI', f'{title}: {message}')
