@@ -21,7 +21,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, overload
+from typing import TYPE_CHECKING, Literal, Protocol, cast, overload
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -58,32 +58,12 @@ class _RuntimeArgs(Protocol):
 
 if TYPE_CHECKING:
 
-    def _json_object(value: object) -> JsonObject | None: ...
-
-    def _json_values(value: list[JsonObject]) -> list[JsonValue]: ...
-
-    def _json_strings(value: list[str]) -> list[JsonValue]: ...
-
-    def _object_list(value: object) -> list[object] | None: ...
-
     def _string_list(value: object) -> list[str]: ...
 
     def _pwd_entry(uid: int) -> _PasswdEntry: ...
 
     def _runtime_args(args: argparse.Namespace) -> _RuntimeArgs: ...
 else:
-
-    def _json_object(value: object) -> JsonObject | None:
-        return value if isinstance(value, dict) else None
-
-    def _json_values(value: list[JsonObject]) -> list[JsonValue]:
-        return value
-
-    def _json_strings(value: list[str]) -> list[JsonValue]:
-        return value
-
-    def _object_list(value: object) -> list[object] | None:
-        return value if isinstance(value, list) else None
 
     def _string_list(value: object) -> list[str]:
         if not isinstance(value, list):
@@ -384,10 +364,7 @@ def _install_privileged_helper(
         except (OSError, RuntimeError, ValueError) as exc:
             system_ca = {'ok': False, 'error': str(exc)}
         details['system_ca'] = system_ca
-        if (
-            not system_ca.get('ok')
-            and system_ca.get('error') != 'no_supported_system_trust_store'
-        ):
+        if not system_ca.get('ok') and system_ca.get('error') != 'no_supported_system_trust_store':
             details['ok'] = False
             details['error'] = system_ca.get('error') or system_ca
     return details
@@ -643,12 +620,15 @@ def _validate_hosts(hosts: set[str]) -> set[str]:
 def _read_hosts_update(path: Path) -> set[str]:
     _reject_symlink(path, 'hosts update file')
     payload: object = json.loads(path.read_text(encoding='utf-8'))
-    payload_map = _json_object(payload)
-    raw_hosts: object = payload_map.get('hosts') if payload_map is not None else payload
-    hosts = _object_list(raw_hosts)
-    if hosts is None:
+    if isinstance(payload, dict):
+        payload_map = cast('dict[object, object]', payload)
+        raw_hosts: object = payload_map.get('hosts')
+    else:
+        raw_hosts = payload
+    if not isinstance(raw_hosts, list):
         msg = 'hosts update must contain a hosts list'
-        raise RuntimeError(msg)
+        raise TypeError(msg)
+    hosts = cast('list[object]', raw_hosts)
     return _validate_hosts({str(host) for host in hosts})
 
 
@@ -738,7 +718,8 @@ def _host_failure_payload(args: _RuntimeArgs, exc: BaseException) -> JsonObject:
         hosts = sorted(
             host.strip().lower() for host in str(args.hosts or '').split(',') if host.strip()
         )
-        payload['hosts'] = _json_strings(hosts)
+        host_values: list[JsonValue] = [*hosts]
+        payload['hosts'] = host_values
     return payload
 
 
@@ -834,7 +815,7 @@ def _remove_boot_guard() -> bool:
         try:
             result = _run_systemctl(systemctl, 'disable', BOOT_GUARD_SERVICE)
             ok = ok and result.returncode == 0
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             ok = False
     try:
         BOOT_GUARD_PATH.unlink(missing_ok=True)
@@ -844,7 +825,7 @@ def _remove_boot_guard() -> bool:
         try:
             result = _run_systemctl(systemctl, 'daemon-reload')
             ok = ok and result.returncode == 0
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             ok = False
     if ok:
         _log('Linux hosts boot guard removed')
@@ -955,7 +936,7 @@ def _flush_dns() -> None:
     ):
         try:
             result = _run_host_command(cmd, capture_output=True, timeout=5)
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             continue
         if result.returncode == 0:
             _log(f'Flushed DNS with {cmd[0]}')
@@ -1042,15 +1023,18 @@ def _install_system_ca(ca_cert: Path) -> JsonObject:
             failures.append(failure)
 
     if stores:
+        store_values: list[JsonValue] = [*stores]
+        failure_values: list[JsonValue] = [*failures]
         return {
             'ok': True,
-            'stores': _json_strings(stores),
-            'failures': _json_values(failures),
+            'stores': store_values,
+            'failures': failure_values,
         }
     if failures:
+        failure_values = [*failures]
         return {
             'ok': False,
-            'failures': _json_values(failures),
+            'failures': failure_values,
             'error': failures[0].get('error'),
         }
     return {'ok': False, 'error': 'no_supported_system_trust_store'}
@@ -1077,7 +1061,8 @@ def _ensure_system_ca_for_hosts(
     if install:
         return _install_system_ca(ca_path)
     if _system_ca_is_current(ca_path):
-        return {'ok': True, 'stores': _json_strings(['system-ca:already-current'])}
+        stores: list[JsonValue] = ['system-ca:already-current']
+        return {'ok': True, 'stores': stores}
     return {'ok': False, 'error': 'system_ca_not_installed'}
 
 
@@ -1160,7 +1145,7 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
         while data := await reader.read(BUFFER_SIZE):
             writer.write(data)
             await writer.drain()
-    except (ConnectionError, OSError):
+    except ConnectionError, OSError:
         return
     finally:
         writer.close()
@@ -1208,15 +1193,9 @@ def _apply_live_hosts_update(
     if update_ca_details is not None and not update_ca_details.get('ok'):
         error = update_ca_details.get('error') or update_ca_details
         if require_system_ca:
-            _log(
-                'Skipped Linux hosts update because system trust-store '
-                f'install failed: {error}'
-            )
+            _log(f'Skipped Linux hosts update because system trust-store install failed: {error}')
             return None
-        _log(
-            'Continuing Linux hosts update without confirmed system trust-store '
-            f'install: {error}'
-        )
+        _log(f'Continuing Linux hosts update without confirmed system trust-store install: {error}')
     read_only_hosts_mode = _apply_hosts_delta_or_use_existing_read_only(
         current_hosts, updated_hosts
     )
@@ -1319,15 +1298,13 @@ async def _serve(args: _RuntimeArgs) -> int:
             and _parent_alive(args.parent_pid, getattr(args, 'parent_start_time', None))
         ):
             if hosts_file is not None:
-                hosts_file_mtime_ns, current_hosts, read_only_hosts_mode = (
-                    _poll_live_hosts_update(
-                        hosts_file,
-                        hosts_file_mtime_ns,
-                        current_hosts,
-                        read_only_hosts_mode,
-                        args.ca_cert,
-                        require_system_ca=args.require_system_ca,
-                    )
+                hosts_file_mtime_ns, current_hosts, read_only_hosts_mode = _poll_live_hosts_update(
+                    hosts_file,
+                    hosts_file_mtime_ns,
+                    current_hosts,
+                    read_only_hosts_mode,
+                    args.ca_cert,
+                    require_system_ca=args.require_system_ca,
                 )
             await asyncio.sleep(0.5)
     finally:

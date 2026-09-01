@@ -18,12 +18,19 @@ import time
 import zlib
 from pathlib import Path
 from threading import Lock, Thread
-from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, TypeIs, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast
 from urllib.parse import urlparse
 
 from fleasion.proxy.roblox_metadata import strip_roblox_metadata
 from fleasion.utils import APP_CACHE_DIR, format_count, log_buffer
 from fleasion.utils.http import http_download_to
+from fleasion.utils.json_types import (
+    JsonArray as _JsonList,
+    JsonObject as _JsonObject,
+    JsonValue as _JsonValue,
+    as_json_object,
+    require_json_value,
+)
 
 if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
@@ -33,10 +40,6 @@ if TYPE_CHECKING:
     from fleasion.config.manager import ConfigManager, ReplacementMaps
     from fleasion.utils.r15_to_r6 import JointMap, PartMap
 
-type _JsonScalar = str | int | float | bool | None
-type _JsonValue = _JsonScalar | list[_JsonValue] | dict[str, _JsonValue]
-type _JsonObject = dict[str, _JsonValue]
-type _JsonList = list[_JsonValue]
 type _BuildType = int | str | None
 type _ReplacementKey = int | str
 type _AnimRequiredRig = str | frozenset[str]
@@ -542,30 +545,6 @@ def _composite_orm(
     )
 
 
-def _is_object_list(value: object) -> TypeIs[list[object]]:
-    return isinstance(value, list)
-
-
-def _is_object_dict(value: object) -> TypeIs[dict[object, object]]:
-    return isinstance(value, dict)
-
-
-def _is_json_value(value: object) -> TypeIs[_JsonValue]:
-    if value is None or isinstance(value, str | int | float | bool):
-        return True
-    if _is_object_list(value):
-        return all(_is_json_value(item) for item in value)
-    if _is_object_dict(value):
-        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
-    return False
-
-
-def _preserve_json(value: object) -> _JsonValue:
-    if TYPE_CHECKING:
-        assert _is_json_value(value)
-    return value
-
-
 def _preserve_replacement_key(value: object) -> _ReplacementKey:
     if TYPE_CHECKING:
         assert isinstance(value, str | int)
@@ -581,18 +560,6 @@ def _preserve_asset_id(value: object) -> _ReplacementKey | None:
 def _preserve_location(value: object) -> str | None:
     if TYPE_CHECKING:
         assert value is None or isinstance(value, str)
-    return value
-
-
-def _is_json_object(value: object) -> TypeIs[_JsonObject]:
-    if not _is_object_dict(value):
-        return False
-    return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
-
-
-def _preserve_json_object(value: object) -> _JsonObject:
-    if TYPE_CHECKING:
-        assert _is_json_object(value)
     return value
 
 
@@ -657,14 +624,14 @@ try:
     import orjson
 
     def _loads(data: bytes) -> _JsonValue:
-        return _preserve_json(orjson.loads(data))
+        return require_json_value(orjson.loads(data))
 
     def _dumps(obj: _JsonValue) -> bytes:
         return orjson.dumps(obj)
 except ImportError:
 
     def _loads(data: bytes) -> _JsonValue:
-        return _preserve_json(json.loads(data))
+        return require_json_value(json.loads(data))
 
     def _dumps(obj: _JsonValue) -> bytes:
         return json.dumps(obj, separators=(',', ':')).encode()
@@ -2218,7 +2185,9 @@ class TextureStripper:
             # so the cache scraper stores content under the original asset IDs.
             if id_swapped:
                 for i, orig_aid in id_swapped.items():
-                    item = _preserve_json_object(data[i])
+                    item = as_json_object(data[i])
+                    if item is None:
+                        continue
                     item['assetId'] = orig_aid
                 scraper_body = _dumps(data)
             else:
@@ -2258,11 +2227,9 @@ class TextureStripper:
             if by_request_index in self._pending:
                 pending_key = by_request_index
 
-        req_item: _JsonObject = (
-            _preserve_json_object(req_data[idx])
-            if idx < len(req_data) and isinstance(req_data[idx], dict)
-            else {}
-        )
+        req_item = as_json_object(req_data[idx]) if idx < len(req_data) else None
+        if req_item is None:
+            req_item = {}
         aid = self._normalize_asset_id(req_item.get('assetId'))
         map_index = texpack_request_slots.get(idx)
 

@@ -34,6 +34,7 @@ def _load_username_spoofer():
             package.__path__ = []
 
         utils = types.ModuleType('fleasion.utils')
+        utils.__path__ = [str(root / 'src' / 'fleasion' / 'utils')]
         setattr(utils, 'log_buffer', types.SimpleNamespace(log=_noop_log))
         sys.modules['fleasion.utils'] = utils
 

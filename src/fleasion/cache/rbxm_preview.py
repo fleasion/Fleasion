@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr, verbatim
+from fleasion.utils.json_types import as_object_dict, as_object_list
 
 from .roblox_document import classify_roblox_document
 from .tools.solidmodel_converter.rbxm.types import (
@@ -63,9 +64,7 @@ type NumberCaster = type[int | float]
 
 
 def _rbxm_deserializer_type() -> type[RbxmDeserializer]:
-    module = importlib.import_module(
-        'fleasion.cache.tools.solidmodel_converter.rbxm.deserializer'
-    )
+    module = importlib.import_module('fleasion.cache.tools.solidmodel_converter.rbxm.deserializer')
     return cast('type[RbxmDeserializer]', vars(module)['RbxmDeserializer'])
 
 
@@ -93,10 +92,6 @@ if TYPE_CHECKING:
 
     def _table_item(value: QTableWidgetItem | None) -> QTableWidgetItem: ...
 
-    def _as_object_dict(value: object) -> dict[str, object] | None: ...
-
-    def _as_object_list(value: object) -> list[object] | None: ...
-
     def _float_value(value: object) -> float: ...
 else:
     from .roblox_class_names import ROBLOX_CLASS_NAME_SET, ROBLOX_CLASS_NAMES
@@ -118,12 +113,6 @@ else:
 
     def _table_item(value: QTableWidgetItem | None) -> QTableWidgetItem:
         return value
-
-    def _as_object_dict(value: object) -> dict[str, object] | None:
-        return value if isinstance(value, dict) else None
-
-    def _as_object_list(value: object) -> list[object] | None:
-        return value if isinstance(value, list) else None
 
     def _float_value(value: object) -> float:
         return float(value)
@@ -502,7 +491,7 @@ class RbxmPreviewWidget(QWidget):
                 if text:
                     try:
                         blob = base64.b64decode(text)
-                    except (binascii.Error, ValueError):
+                    except binascii.Error, ValueError:
                         blob = text.encode('utf-8', errors='replace')
                 md5 = shared.get('md5') or ''
                 if md5:
@@ -523,7 +512,7 @@ class RbxmPreviewWidget(QWidget):
                 if stripped:
                     try:
                         value = base64.b64decode(stripped)
-                    except (binascii.Error, ValueError):
+                    except binascii.Error, ValueError:
                         value = stripped
                 else:
                     value = b''
@@ -700,9 +689,7 @@ class RbxmPreviewWidget(QWidget):
         self._refresh_selected_properties_later()
         return True
 
-    def _handle_property_item_changed(
-        self, inst: PreviewInstance, item: QTableWidgetItem
-    ) -> None:
+    def _handle_property_item_changed(self, inst: PreviewInstance, item: QTableWidgetItem) -> None:
         if item.data(_ROW_KIND_ROLE) != 'property':
             return
         prop = item.data(_PROP_OBJECT_ROLE)
@@ -1111,7 +1098,7 @@ class RbxmPreviewWidget(QWidget):
     ) -> int | None:
         if value is None:
             return None
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             value = value_map.get('Ref') or value_map.get('referent') or value_map.get('id')
         text = str(value or '').strip()
@@ -1125,7 +1112,7 @@ class RbxmPreviewWidget(QWidget):
 
     @staticmethod
     def _unique_id_value_for_format(value: object) -> object:
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             return value_map
         if isinstance(value, bytes):
@@ -1149,7 +1136,7 @@ class RbxmPreviewWidget(QWidget):
         value: object,
         ref_mapper: Callable[[str], int] | None,
     ) -> object:
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is None:
             if value is None:
                 return value
@@ -1320,7 +1307,7 @@ class RbxmPreviewWidget(QWidget):
         return result
 
     def _parse_udim_value(self, value: object) -> dict[str, float | int]:
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             return {
                 'S': self._safe_float(value_map.get('S', 0.0)),
@@ -1339,7 +1326,7 @@ class RbxmPreviewWidget(QWidget):
         }
 
     def _parse_udim2_value(self, value: object) -> dict[str, float | int]:
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         pairs: dict[str, object] | dict[str, str]
         pairs = value_map if value_map is not None else self._parse_key_values(str(value))
         if pairs:
@@ -1360,7 +1347,7 @@ class RbxmPreviewWidget(QWidget):
     def _parse_vector_value(
         self, value: object, keys: tuple[str, ...], caster: NumberCaster
     ) -> dict[str, int | float]:
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         pairs: dict[str, object] | dict[str, str]
         pairs = value_map if value_map is not None else self._parse_key_values(str(value))
         if pairs:
@@ -1372,7 +1359,7 @@ class RbxmPreviewWidget(QWidget):
         }
 
     def _parse_ray_value(self, value: object) -> dict[str, dict[str, float]]:
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             origin = self._parse_vector_value(value_map.get('origin', {}), ('X', 'Y', 'Z'), float)
             direction = self._parse_vector_value(
@@ -1407,10 +1394,10 @@ class RbxmPreviewWidget(QWidget):
             'R21': 0.0,
             'R22': 1.0,
         }
-        old_map = _as_object_dict(old_value)
+        old_map = as_object_dict(old_value)
         if old_map is not None:
             result.update({key: self._safe_float(old_map.get(key, result[key])) for key in result})
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             result.update(
                 {key: self._safe_float(value_map.get(key, result[key])) for key in result}
@@ -1432,7 +1419,7 @@ class RbxmPreviewWidget(QWidget):
         return result
 
     def _parse_number_range_value(self, value: object) -> dict[str, float]:
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             return {
                 'Min': self._safe_float(value_map.get('Min', 0.0)),
@@ -1451,7 +1438,7 @@ class RbxmPreviewWidget(QWidget):
         }
 
     def _parse_rect2d_value(self, value: object) -> dict[str, dict[str, float]]:
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             return {
                 'min': self._parse_vector_value(value_map.get('min', {}), ('X', 'Y'), float),
@@ -1468,7 +1455,7 @@ class RbxmPreviewWidget(QWidget):
         text = str(value).strip()
         if value is None or text.lower() in {'', 'none', 'null', 'default'}:
             return None
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             return {
                 'CustomPhysics': self._safe_bool(value_map.get('CustomPhysics', True)),
@@ -1498,7 +1485,7 @@ class RbxmPreviewWidget(QWidget):
         return value_dict
 
     def _parse_font_value(self, value: object) -> dict[str, str | int]:
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             return {
                 'Family': str(value_map.get('Family', '')),
@@ -1584,7 +1571,7 @@ class RbxmPreviewWidget(QWidget):
                 hex_prefix = value[:32].hex(' ')
                 result = (f'<{size} bytes>{utf_preview} | base64: {b64}', f'hex: {hex_prefix}')
         else:
-            value_map = _as_object_dict(value)
+            value_map = as_object_dict(value)
             if value_map is not None:
                 target = self._resolve_ref(value_map) if type_name == 'Ref' else ''
                 compact_vector = _format_vector_like(value_map)
@@ -1599,7 +1586,7 @@ class RbxmPreviewWidget(QWidget):
                     )
                     result = (text, text)
             else:
-                value_list = _as_object_list(value)
+                value_list = as_object_list(value)
                 if value_list is not None:
                     text = '[' + ', '.join(_format_scalar(item) for item in value_list[:8])
                     if len(value_list) > 8:
@@ -1640,7 +1627,7 @@ class RbxmPreviewWidget(QWidget):
                 else:
                     result = base64.b64encode(value).decode('ascii')
         else:
-            value_map = _as_object_dict(value)
+            value_map = as_object_dict(value)
             if value_map is not None:
                 target = self._resolve_ref(value_map) if type_name == 'Ref' else ''
                 compact_vector = _format_vector_like(value_map)
@@ -1654,11 +1641,13 @@ class RbxmPreviewWidget(QWidget):
                         for key, item_value in value_map.items()
                     )
             else:
-                value_list = _as_object_list(value)
+                value_list = as_object_list(value)
                 if value_list is not None:
-                    result = '[' + ', '.join(
-                        self._copy_text_for_value(item, '') for item in value_list
-                    ) + ']'
+                    result = (
+                        '['
+                        + ', '.join(self._copy_text_for_value(item, '') for item in value_list)
+                        + ']'
+                    )
                 elif isinstance(value, (bool, int, float)) or type_name.lower() in {
                     'bool',
                     'int',
@@ -1685,7 +1674,7 @@ class RbxmPreviewWidget(QWidget):
         if self.document is None:
             return ''
         ref = ''
-        value_map = _as_object_dict(value)
+        value_map = as_object_dict(value)
         if value_map is not None:
             ref = str(
                 value_map.get('Ref') or value_map.get('referent') or value_map.get('id') or ''

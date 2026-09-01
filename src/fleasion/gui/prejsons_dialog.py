@@ -48,6 +48,14 @@ from PySide6.QtWidgets import (
 from fleasion.localization import tr
 from fleasion.utils import CLOG_URL, ORIGINALS_DIR, PREJSONS_DIR, REPLACEMENTS_DIR, get_icon_path
 from fleasion.utils.http import http_get
+from fleasion.utils.json_types import (
+    JsonValue,
+    as_object_dict,
+    as_object_list,
+    require_json_value,
+    require_object_dict,
+    require_object_list,
+)
 
 from .file_drop import FileDropLineEdit
 
@@ -57,8 +65,6 @@ if TYPE_CHECKING:
     from fleasion.config.manager import ConfigManager
 
 
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | dict[str, JsonValue] | list[JsonValue]
 type ImportValue = int | str
 
 
@@ -74,20 +80,9 @@ class GameEntry(TypedDict):
 
 if TYPE_CHECKING:
 
-    def _is_dict(value: object) -> bool: ...
-
-    def _is_list(value: object) -> bool: ...
-
-    def _preserve_object_dict(value: object) -> dict[str, object]: ...
-
-    def _preserve_object_list(value: object) -> list[object]: ...
-
     def _preserve_int_source(value: object) -> str | int | float: ...
 
     def _preserve_str(value: object) -> str: ...
-
-    def _preserve_json(value: object) -> JsonValue: ...
-
 
     def _card_game_name(card: GameCard) -> str: ...
 
@@ -108,27 +103,11 @@ if TYPE_CHECKING:
     ) -> None: ...
 else:
 
-    def _is_dict(value: object) -> bool:
-        return isinstance(value, dict)
-
-    def _is_list(value: object) -> bool:
-        return isinstance(value, list)
-
-    def _preserve_object_dict(value: object) -> dict[str, object]:
-        return value
-
-    def _preserve_object_list(value: object) -> list[object]:
-        return value
-
     def _preserve_int_source(value: object) -> str | int | float:
         return value
 
     def _preserve_str(value: object) -> str:
         return value
-
-    def _preserve_json(value: object) -> JsonValue:
-        return value
-
 
     def _card_game_name(card: GameCard) -> str:
         return card.game_name
@@ -274,7 +253,7 @@ def _preprocess_thumb_bytes(
     try:
         img = Image.open(io.BytesIO(raw)).convert('RGBA')
         return _process_thumb_image(img, w, h, radius)
-    except (OSError, TypeError, ValueError, Image.DecompressionBombError):
+    except OSError, TypeError, ValueError, Image.DecompressionBombError:
         return None
 
 
@@ -287,15 +266,14 @@ if TYPE_CHECKING:
 
 def _normalize_entry(e: object) -> GameEntry | None:
     """Normalize a single game entry dict. Returns None if unusable."""
-    entry_source: object = e
-    if not _is_dict(entry_source):
+    entry = as_object_dict(e)
+    if entry is None:
         return None
-    entry = _preserve_object_dict(entry_source)
     name = entry.get('name') or entry.get('game') or ''
     pid = entry.get('placeId') or entry.get('place_id') or entry.get('id')
     try:
         pid = int(_preserve_int_source(pid)) if pid is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         pid = None
     if not name and pid:
         name = f'Place {pid}'
@@ -323,28 +301,26 @@ def _normalize_entry(e: object) -> GameEntry | None:
 
 def _normalize_games(data: object) -> list[GameEntry]:
     """Convert CLOG.json into a flat list of normalized game dicts."""
-    data_source: object = data
-    if not _is_dict(data_source):
+    root = as_object_dict(data)
+    if root is None:
         return []
-    root = _preserve_object_dict(data_source)
     raw_source: object = root.get('games', {})
     entries: list[dict[str, object]] = []
-    if _is_dict(raw_source):
-        raw_dict = _preserve_object_dict(raw_source)
+    raw_dict = as_object_dict(raw_source)
+    if raw_dict is not None:
         for name, cfg in raw_dict.items():
-            cfg_source: object = cfg
-            if _is_dict(cfg_source):
-                entry = _preserve_object_dict(cfg_source).copy()
+            entry = as_object_dict(cfg)
+            if entry is not None:
+                entry = entry.copy()
                 entry.setdefault('name', name)
                 entries.append(entry)
             else:
                 entries.append({'name': str(name)})
-    elif _is_list(raw_source):
-        raw_list = _preserve_object_list(raw_source)
+    elif (raw_list := as_object_list(raw_source)) is not None:
         for raw_entry in raw_list:
-            entry_source: object = raw_entry
-            if _is_dict(entry_source):
-                entries.append(_preserve_object_dict(entry_source))
+            entry = as_object_dict(raw_entry)
+            if entry is not None:
+                entries.append(entry)
 
     return [g for entry in entries if (g := _normalize_entry(entry)) is not None]
 
@@ -357,13 +333,13 @@ def _custom_dump_paths() -> list[Path]:
 def _load_custom_dump_games(fp: Path) -> list[GameEntry]:
     data: object = json.loads(fp.read_text(encoding='utf-8', errors='ignore'))
     # Support both single-entry {"name":...} and {"games":{...}} wrappers
-    data_source: object = data
-    if _is_dict(data_source):
-        data_dict = _preserve_object_dict(data_source)
-        if 'games' not in data_dict and (
-            isinstance(data_dict.get('name'), str) or data_dict.get('placeId') is not None
-        ):
-            data = {'games': {'_': data_dict}}
+    data_dict = as_object_dict(data)
+    if (
+        data_dict is not None
+        and 'games' not in data_dict
+        and (isinstance(data_dict.get('name'), str) or data_dict.get('placeId') is not None)
+    ):
+        data = {'games': {'_': data_dict}}
     return _normalize_games(data)
 
 
@@ -424,7 +400,7 @@ def _fetch_card_metadata(
             timeout=10,
         )
     )
-    r1 = _preserve_object_dict(r1_payload)
+    r1 = require_object_dict(r1_payload)
     universe_id = r1.get('universeId')
     if not universe_id:
         return None
@@ -434,11 +410,11 @@ def _fetch_card_metadata(
             timeout=10,
         )
     )
-    r2 = _preserve_object_dict(r2_payload)
-    entries = _preserve_object_list(r2.get('data', []))
+    r2 = require_object_dict(r2_payload)
+    entries = require_object_list(r2.get('data', []))
     if not entries:
         return None
-    entry = _preserve_object_dict(entries[0])
+    entry = require_object_dict(entries[0])
     name = _preserve_str(entry.get('name') or '')
     if not name:
         return None
@@ -461,7 +437,7 @@ class _CardMetaWorker(QThread):
     def run(self) -> None:
         try:
             metadata = _fetch_card_metadata(self._pid, self._cr, self._up)
-        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+        except AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError:
             return
         if metadata is None:
             return
@@ -479,7 +455,7 @@ def _get_default_thumb_bytes() -> bytes | None:
         return _default_thumb_bytes_cache[0]
     try:
         data = _http_get(_DEFAULT_THUMB_URL, timeout=10)
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         return None
     _default_thumb_bytes_cache.append(data)
     return data
@@ -497,10 +473,10 @@ def _fetch_card_thumb_bytes(place_id: int) -> bytes | None:
             timeout=10,
         )
     )
-    meta = _preserve_object_dict(meta_payload)
+    meta = require_object_dict(meta_payload)
     thumb_data = meta.get('data')
-    thumb_entries: list[object] = _preserve_object_list(thumb_data) if thumb_data else [{}]
-    first_thumb = _preserve_object_dict(thumb_entries[0])
+    thumb_entries: list[object] = require_object_list(thumb_data) if thumb_data else [{}]
+    first_thumb = require_object_dict(thumb_entries[0])
     img_url = _preserve_str(first_thumb.get('imageUrl') or '')
     if not img_url:
         return None
@@ -519,7 +495,7 @@ class _CardThumbWorker(QThread):
     def run(self) -> None:
         try:
             img_bytes = _fetch_card_thumb_bytes(self._pid)
-        except (AttributeError, IndexError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+        except AttributeError, IndexError, KeyError, OSError, RuntimeError, TypeError, ValueError:
             img_bytes = None
 
         if img_bytes:
@@ -546,7 +522,7 @@ class _JsonFetchWorker(QThread):
     def run(self) -> None:
         try:
             raw = _http_get(self._url, timeout=15)
-            data = _preserve_json(json.loads(raw.decode('utf-8')))
+            data = require_json_value(json.loads(raw.decode('utf-8')))
             filename = self._url.rsplit('/', 1)[-1] or 'data.json'
             self.done.emit(data, filename)
         except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as e:
@@ -619,7 +595,7 @@ class GameCard(QFrame):
             if pix.loadFromData(default_bytes):
                 try:
                     pix = _make_rounded_pixmap(pix, _THUMB_W, _THUMB_H, radius=6)
-                except (OSError, RuntimeError, TypeError, ValueError):
+                except OSError, RuntimeError, TypeError, ValueError:
                     pass
                 self.thumb_label.setPixmap(pix)
                 self.thumb_label.setStyleSheet('background: transparent;')
@@ -681,7 +657,7 @@ class GameCard(QFrame):
             return
         try:
             baked = _make_rounded_pixmap(pix, _THUMB_W, _THUMB_H, radius=6)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             baked = pix
         self.thumb_label.setPixmap(baked)
         self.thumb_label.setText('')
@@ -1248,7 +1224,13 @@ class PreJsonsDialog(QDialog):
                     try:
                         raw = _http_get(url_text, timeout=15)
                         data = json.loads(raw.decode('utf-8'))
-                    except (OSError, TimeoutError, UnicodeDecodeError, ValueError, urllib.error.URLError) as e:
+                    except (
+                        OSError,
+                        TimeoutError,
+                        UnicodeDecodeError,
+                        ValueError,
+                        urllib.error.URLError,
+                    ) as e:
                         QMessageBox.warning(
                             dlg,
                             tr('ui.gui.prejsons_dialog.import_failed'),
@@ -1264,9 +1246,8 @@ class PreJsonsDialog(QDialog):
                     return
 
             # Wrap bare single-entry dicts so _normalize_games handles them
-            data_source: object = data
-            if _is_dict(data_source):
-                data_dict = _preserve_object_dict(data_source)
+            data_dict = as_object_dict(data)
+            if data_dict is not None:
                 if 'games' not in data_dict and (
                     isinstance(data_dict.get('name'), str) or data_dict.get('placeId') is not None
                 ):
@@ -1322,7 +1303,7 @@ class PreJsonsDialog(QDialog):
                         dest_path.write_bytes(content)
                         # Update the game entry to point to the copied file
                         _set_entry_url(g, url_key, str(dest_path))
-                    except (OSError, TimeoutError, ValueError, urllib.error.URLError):
+                    except OSError, TimeoutError, ValueError, urllib.error.URLError:
                         pass  # Non-fatal — keep original path if copy fails
 
             # Re-save the dump with updated paths so they survive dialog restarts
@@ -1336,7 +1317,7 @@ class PreJsonsDialog(QDialog):
                     ),
                     encoding='utf-8',
                 )
-            except (OSError, TypeError, ValueError):
+            except OSError, TypeError, ValueError:
                 pass
 
             for g in games:
@@ -1381,7 +1362,9 @@ class PreJsonsDialog(QDialog):
         p = Path(url)
         if p.is_file():
             try:
-                data = _preserve_json(json.loads(p.read_text(encoding='utf-8', errors='ignore')))
+                data = require_json_value(
+                    json.loads(p.read_text(encoding='utf-8', errors='ignore'))
+                )
                 self._open_viewer(data, p.name)
             except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
                 QMessageBox.warning(

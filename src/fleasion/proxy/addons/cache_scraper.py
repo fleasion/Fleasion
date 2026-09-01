@@ -30,7 +30,6 @@ from typing import (
     NotRequired,
     Protocol,
     TypedDict,
-    TypeIs,
     cast,
     overload,
 )
@@ -41,6 +40,13 @@ from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
 
 from fleasion.utils import format_count, log_buffer
+from fleasion.utils.json_types import (
+    ObjectDict,
+    is_object_dict,
+    is_object_list,
+    require_object_dict,
+    require_object_list,
+)
 
 try:
     import orjson
@@ -70,7 +76,6 @@ class CacheLogEntry(TypedDict):
 
 
 type AssetId = int | str
-type JsonObject = dict[str, object]
 type BuildType = int | str
 
 
@@ -144,26 +149,6 @@ def _roblox_auth_module() -> _RobloxAuthModule:
     return cast('_RobloxAuthModule', importlib.import_module('fleasion.utils.roblox_auth'))
 
 
-def _is_json_object(value: object) -> TypeIs[JsonObject]:
-    return isinstance(value, dict)
-
-
-def _is_object_list(value: object) -> TypeIs[list[object]]:
-    return isinstance(value, list)
-
-
-def _preserve_object_dict(value: object) -> JsonObject:
-    if TYPE_CHECKING:
-        assert isinstance(value, dict)
-    return cast('JsonObject', value)
-
-
-def _preserve_object_list(value: object) -> list[object]:
-    if TYPE_CHECKING:
-        assert isinstance(value, list)
-    return cast('list[object]', value)
-
-
 def _preserve_asset_id(value: object) -> AssetId:
     if TYPE_CHECKING:
         assert isinstance(value, (int, str))
@@ -226,10 +211,10 @@ _TEXPACK_CHANNEL_BY_TAG: dict[str, str | None] = {
 
 
 if TYPE_CHECKING:
-
     from fleasion.cache.cache_manager import (
         CacheManager,
     )
+
     def _int_value(value: object) -> int: ...
 else:
 
@@ -276,7 +261,7 @@ def _texpack_slot_from_build_type(value: object) -> int | None:
     return None
 
 
-def _texpack_slot_from_request(item: JsonObject) -> int | None:
+def _texpack_slot_from_request(item: ObjectDict) -> int | None:
     for key in (
         'requestedBuildType',
         'buildType',
@@ -291,7 +276,7 @@ def _texpack_slot_from_request(item: JsonObject) -> int | None:
     return None
 
 
-def _texpack_build_key(item: JsonObject) -> BuildType | None:
+def _texpack_build_key(item: ObjectDict) -> BuildType | None:
     for key in (
         'requestedBuildType',
         'buildType',
@@ -338,7 +323,7 @@ def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
     texpack_ids: set[int] = set()
     asset_counts: dict[int, int] = {}
     for item_value in req_json:
-        if not _is_json_object(item_value):
+        if not is_object_dict(item_value):
             continue
         item = item_value
         aid = _normalize_asset_id(item.get('assetId'))
@@ -351,7 +336,7 @@ def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
             texpack_ids.add(aid)
 
     for item_value in req_json:
-        if not _is_json_object(item_value):
+        if not is_object_dict(item_value):
             continue
         item = item_value
         aid = _normalize_asset_id(item.get('assetId'))
@@ -369,7 +354,7 @@ def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
     occurrence_slot: dict[int, int] = {}
 
     for idx, item_value in enumerate(req_json):
-        if not _is_json_object(item_value):
+        if not is_object_dict(item_value):
             continue
         item = item_value
         aid = _normalize_asset_id(item.get('assetId'))
@@ -397,7 +382,7 @@ def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
     return result
 
 
-def _representation_matches_requested(representation: JsonObject, requested: object) -> bool:
+def _representation_matches_requested(representation: ObjectDict, requested: object) -> bool:
     for key in (
         'requestedBuildType',
         'buildType',
@@ -412,15 +397,15 @@ def _representation_matches_requested(representation: JsonObject, requested: obj
     return False
 
 
-def _select_content_representation(item: JsonObject) -> JsonObject | None:
+def _select_content_representation(item: ObjectDict) -> ObjectDict | None:
     crpl = item.get('contentRepresentationPriorityList')
     if not crpl:
         return None
     try:
         decoded = _loads(_b64decode_padded(crpl))
-    except (ValueError, binascii.Error):
+    except ValueError, binascii.Error:
         return None
-    if not _is_object_list(decoded) or not decoded:
+    if not is_object_list(decoded) or not decoded:
         return None
 
     requested = _normalized_build_type(item.get('requestedBuildType'))
@@ -430,7 +415,7 @@ def _select_content_representation(item: JsonObject) -> JsonObject | None:
             (
                 representation
                 for representation in decoded
-                if _is_json_object(representation)
+                if is_object_dict(representation)
                 and _representation_matches_requested(representation, requested)
             ),
             None,
@@ -440,7 +425,7 @@ def _select_content_representation(item: JsonObject) -> JsonObject | None:
         elif isinstance(requested, int) and 0 <= requested < len(decoded):
             selected = decoded[requested]
 
-    return selected if _is_json_object(selected) else None
+    return selected if is_object_dict(selected) else None
 
 
 def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int] | None:
@@ -448,7 +433,7 @@ def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int
         return None
     try:
         fb = _b64decode_padded(fidelity_b64)
-    except (ValueError, binascii.Error):
+    except ValueError, binascii.Error:
         return None
     if len(fb) < 2:
         return None
@@ -459,7 +444,7 @@ def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int
     return slot, quality
 
 
-def _decode_texpack_slot_quality(item: JsonObject) -> tuple[int, int] | None:
+def _decode_texpack_slot_quality(item: ObjectDict) -> tuple[int, int] | None:
     request_slot = _texpack_slot_from_request(item)
     if request_slot is not None:
         return request_slot, 0
@@ -469,9 +454,9 @@ def _decode_texpack_slot_quality(item: JsonObject) -> tuple[int, int] | None:
     return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
-def _decode_selected_representation_slot_quality(item: JsonObject) -> tuple[int, int] | None:
+def _decode_selected_representation_slot_quality(item: ObjectDict) -> tuple[int, int] | None:
     representation_value = item.get('contentRepresentationSpecifier')
-    if not _is_json_object(representation_value):
+    if not is_object_dict(representation_value):
         return None
     representation = representation_value
     return _decode_fidelity_slot_quality(representation.get('fidelity'))
@@ -654,7 +639,7 @@ class CacheScraper:
         except ValueError:
             return
 
-        if not _is_object_list(req_json) or not _is_object_list(res_json):
+        if not is_object_list(req_json) or not is_object_list(res_json):
             return
         req_items = req_json
         res_items = res_json
@@ -669,7 +654,7 @@ class CacheScraper:
         with self._lock:
             generation = self._work_generation
             for idx, item_value in enumerate(req_items):
-                if not _is_json_object(item_value):
+                if not is_object_dict(item_value):
                     continue
                 item = item_value
                 if 'assetId' not in item:
@@ -678,7 +663,7 @@ class CacheScraper:
                 if idx >= len(res_items):
                     continue
                 res_item_value = res_items[idx]
-                if not _is_json_object(res_item_value):
+                if not is_object_dict(res_item_value):
                     continue
                 res_item = res_item_value
                 location_value = res_item.get('location')
@@ -828,7 +813,7 @@ class CacheScraper:
         if body[:2] == b'\x1f\x8b':
             try:
                 inner = gzip.decompress(body)
-            except (OSError, EOFError, zlib.error):
+            except OSError, EOFError, zlib.error:
                 inner = body
         elif body[:4] == b'\x28\xb5\x2f\xfd':
             try:
@@ -952,7 +937,7 @@ class CacheScraper:
         if content_encoding == 'gzip' and data:
             try:
                 return gzip.decompress(data)
-            except (OSError, EOFError, zlib.error):
+            except OSError, EOFError, zlib.error:
                 return data
         if data[:4] == b'\x28\xb5\x2f\xfd':
             try:
@@ -1147,12 +1132,12 @@ class CacheScraper:
 
     @staticmethod
     def _creator_info_from_payload(raw: bytes) -> tuple[int | None, int | None]:
-        response_obj = _preserve_object_dict(_loads(raw))
-        data = _preserve_object_list(response_obj.get('data', []))
+        response_obj = require_object_dict(_loads(raw))
+        data = require_object_list(response_obj.get('data', []))
         if not data:
             return None, None
-        item = _preserve_object_dict(data[0])
-        creator_obj = _preserve_object_dict(item.get('creator') or {})
+        item = require_object_dict(data[0])
+        creator_obj = require_object_dict(item.get('creator') or {})
         creator_id = creator_obj.get('targetId') or item.get('creatorTargetId')
         creator_type = creator_obj.get('typeId') or item.get('creatorType')
         return (
@@ -1185,15 +1170,15 @@ class CacheScraper:
 
     @staticmethod
     def _place_page_from_payload(raw: bytes) -> tuple[list[int], str]:
-        response = _preserve_object_dict(_loads(raw))
-        games = _preserve_object_list(response.get('data', []))
+        response = require_object_dict(_loads(raw))
+        games = require_object_list(response.get('data', []))
         place_ids: list[int] = []
         for game_value in games:
-            game = _preserve_object_dict(game_value)
+            game = require_object_dict(game_value)
             root_value = game.get('rootPlace')
             if not root_value:
                 continue
-            root_place = _preserve_object_dict(root_value)
+            root_place = require_object_dict(root_value)
             place_id = root_place.get('id')
             if place_id is not None:
                 place_ids.append(_int_value(place_id))
@@ -1358,9 +1343,7 @@ class CacheScraper:
         extra: dict[str, str] = {}
         if cookie:
             extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
-        data, _status = self._fetch_asset_with_place_id_retry(
-            asset_id, extra_headers=extra or None
-        )
+        data, _status = self._fetch_asset_with_place_id_retry(asset_id, extra_headers=extra or None)
         return data
 
     def _fetch_from_api(self, asset_id: str) -> bytes | None:
@@ -1390,7 +1373,7 @@ class CacheScraper:
             return False
         try:
             png_bytes = _ktx_converter_module().convert(request.inner_content)
-        except (ImportError, OSError, ValueError):
+        except ImportError, OSError, ValueError:
             return False
         if not png_bytes or png_bytes[:4] != b'\x89PNG':
             return False

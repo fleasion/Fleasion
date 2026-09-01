@@ -13,19 +13,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from fleasion.utils import log_buffer
+from fleasion.utils.json_types import (
+    JsonObject,
+    JsonValue,
+    as_json_array,
+    as_json_object,
+    as_object_dict,
+)
 from fleasion.utils.paths import CONFIG_FILE, LOCAL_APPDATA
-
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
-
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
-
-    def _json_object(value: object) -> JsonObject | None: ...
-
-    def _json_list(value: object) -> list[JsonValue] | None: ...
 
     def _config_enabled(config: object) -> bool: ...
 
@@ -35,12 +33,6 @@ if TYPE_CHECKING:
 
     def _disabled_values(value: object) -> Iterable[object]: ...
 else:
-
-    def _json_object(value: object) -> JsonObject | None:
-        return value if isinstance(value, dict) else None
-
-    def _json_list(value: object) -> list[JsonValue] | None:
-        return value if isinstance(value, list) else None
 
     def _config_enabled(config: object) -> bool:
         return bool(getattr(config, 'custom_fflags_enabled', False))
@@ -90,7 +82,7 @@ def normalize_flag_value(value: object) -> str:
 
 def normalize_custom_fflags(value: object) -> dict[str, str]:
     """Validate and normalize a custom FastFlag mapping."""
-    value_map = _json_object(value)
+    value_map = as_object_dict(value)
     if value_map is None:
         return {}
 
@@ -219,16 +211,16 @@ class CustomFFlagModifier:
             return
 
         self._settings_signature = signature
-        data = _json_object(data_value)
+        data = as_json_object(data_value)
         if data is not None:
             self._disk_enabled = bool(data.get('custom_fflags_enabled', False))
-            saved_flags = _json_object(data.get('custom_fflags', {}))
+            saved_flags = as_json_object(data.get('custom_fflags', {}))
             self._disk_flags = saved_flags or {}
-            disabled = _json_list(data.get('custom_fflag_disabled', []))
+            disabled = as_json_array(data.get('custom_fflag_disabled', []))
             self._disk_disabled = disabled or []
-            folders = _json_object(data.get('custom_fflag_folders', {}))
+            folders = as_json_object(data.get('custom_fflag_folders', {}))
             self._disk_folders = folders or {}
-            disabled_folders = _json_list(data.get('custom_fflag_disabled_folders', []))
+            disabled_folders = as_json_array(data.get('custom_fflag_disabled_folders', []))
             self._disk_disabled_folders = disabled_folders or []
 
     def is_enabled(self) -> bool:
@@ -277,7 +269,7 @@ class CustomFFlagModifier:
             if self._disk_disabled_folders is not None
             else getattr(self.config_manager, 'custom_fflag_disabled_folders', [])
         )
-        folder_mapping = _json_object(folders) or {}
+        folder_mapping = as_json_object(folders) or {}
         disabled_folder_names = {str(name).strip() for name in _disabled_values(disabled_folders)}
         for folder_name in disabled_folder_names:
             members = folder_mapping.get(folder_name, [])
@@ -333,10 +325,10 @@ class CustomFFlagModifier:
             return None
 
         payload_value: object = json.loads(raw[payload_offset:])
-        payload = _json_object(payload_value)
+        payload = as_json_object(payload_value)
         if payload is None:
             return None
-        application_settings = _json_object(payload.get('applicationSettings'))
+        application_settings = as_json_object(payload.get('applicationSettings'))
         if application_settings is None:
             return None
 
@@ -448,7 +440,7 @@ class CustomFFlagModifier:
                 f'Could not decode macOS ClientSettings file; left unchanged: {target}',
             )
             return None
-        loaded = _json_object(loaded_value)
+        loaded = as_json_object(loaded_value)
         if loaded is None:
             log_buffer.log(
                 'CustomFFlags',
@@ -557,10 +549,10 @@ class CustomFFlagModifier:
             payload_value: object = json.loads(body)
         except json.JSONDecodeError, UnicodeDecodeError:
             return False
-        payload = _json_object(payload_value)
+        payload = as_json_object(payload_value)
         if payload is None:
             return False
-        application_settings = _json_object(payload.get('applicationSettings'))
+        application_settings = as_json_object(payload.get('applicationSettings'))
         if application_settings is None:
             return False
         return all(application_settings.get(name) == value for name, value in delivered_signature)
@@ -593,7 +585,7 @@ class CustomFFlagModifier:
             )
             return body, None
 
-        payload = _json_object(payload_value)
+        payload = as_json_object(payload_value)
         if payload is None:
             self.log_response_failure(
                 'invalid-root',
@@ -601,7 +593,7 @@ class CustomFFlagModifier:
             )
             return body, None
 
-        application_settings = _json_object(payload.get('applicationSettings'))
+        application_settings = as_json_object(payload.get('applicationSettings'))
         if application_settings is None:
             self.log_response_failure(
                 'missing-application-settings',

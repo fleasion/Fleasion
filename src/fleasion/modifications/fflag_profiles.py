@@ -4,18 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from fleasion.proxy.addons.custom_fflags import normalize_custom_fflags
+from fleasion.utils.json_types import as_object_dict
 from fleasion.utils.paths import FASTFLAG_PROFILES_FOLDER
-
-if TYPE_CHECKING:
-
-    def _object_dict(value: object) -> dict[str, object] | None: ...
-else:
-
-    def _object_dict(value: object) -> dict[str, object] | None:
-        return value if isinstance(value, dict) else None
 
 
 class FastFlagProfileManager:
@@ -65,7 +57,7 @@ class FastFlagProfileManager:
         path = self._path_for(name)
         try:
             payload_value: object = json.loads(path.read_text(encoding='utf-8'))
-            payload = _object_dict(payload_value)
+            payload = as_object_dict(payload_value)
         except FileNotFoundError:
             msg = 'Profile no longer exists.'
             raise ValueError(msg) from None

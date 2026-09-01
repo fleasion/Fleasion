@@ -81,6 +81,7 @@ from PySide6.QtWidgets import (
 from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
+from fleasion.utils.json_types import JsonValue, require_json_value
 from fleasion.utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 
 from . import asset_type_filter as _asset_type_filter, mesh_processing
@@ -113,7 +114,6 @@ type _ResolvedScraperColumn = tuple[str, str, bool, int]
 type _SearchColumn = tuple[str, bool]
 type _ResolvedSearchColumn = tuple[str, str, bool]
 type _ExportPath = str | Path
-type _JsonValue = bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue] | None
 
 
 def _ui_boundary[T](
@@ -5957,7 +5957,13 @@ class CacheViewerTab(QWidget):
                 # Remove extra blank lines
                 lines = [line for line in pretty_xml.split('\n') if line.strip()]
                 self._show_text_preview('\n'.join(lines[:500]))  # Limit lines
-            except DefusedXmlException, DefusedElementTree.ParseError, ExpatError, TypeError, ValueError:
+            except (
+                DefusedXmlException,
+                DefusedElementTree.ParseError,
+                ExpatError,
+                TypeError,
+                ValueError,
+            ):
                 # Fallback to raw text
                 self._show_text_preview(
                     tr(
@@ -6024,7 +6030,7 @@ class CacheViewerTab(QWidget):
             self._show_text_preview(tr('cache.preview.font_error', error=exc))
             log_buffer.log('Preview', f'Font preview error: {exc}')
 
-    def _is_json_data(self, data: bytes) -> tuple[bool, _JsonValue | None]:
+    def _is_json_data(self, data: bytes) -> tuple[bool, JsonValue | None]:
         """
         Detect if binary data is valid JSON.
 
@@ -6045,7 +6051,7 @@ class CacheViewerTab(QWidget):
         for encoding in ['utf-8', 'utf-16', 'utf-16-le', 'utf-16-be']:
             try:
                 text = data.decode(encoding)
-                parsed = cast('_JsonValue', json.loads(text))
+                parsed = require_json_value(json.loads(text))
             except UnicodeDecodeError, json.JSONDecodeError:
                 continue
             else:
