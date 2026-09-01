@@ -112,3 +112,6 @@ The repository changes frequently; use the source tree itself as the authoritati
 - Add or update tests for behavior changes and regressions.
 - Keep generated build artifacts out of hand-edited source changes.
 - Keep user-facing documentation in `README.md`; keep contributor/development details here.
+## Contributors and Acknowledgements
+
+Project credits and acknowledgements are maintained in [CONTRIBUTORS.md](CONTRIBUTORS.md).

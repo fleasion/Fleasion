@@ -236,12 +236,6 @@ could match the same `/Folder/file` text, the file inside Configs takes priority
 - **Discord**: [discord.gg/hXyhKehEZF](https://discord.gg/hXyhKehEZF)
 - **Donate**: [ko-fi.com/fleasion](https://ko-fi.com/fleasion)
 
-## Credits
-
-- **@8ar__**, **@dis_spencer**, **@1_v** (Sky) &mdash; code
-- **@Blockce**, **@0100152000022000** (Sky 2), **@emk530**, **@yeha.** (Leah) &mdash; logic and contributions
-- Donators &mdash; for keeping the passion going
-
 ## License
 
 This project is provided as-is for educational and personal use.
