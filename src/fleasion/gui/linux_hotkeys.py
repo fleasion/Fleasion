@@ -416,12 +416,16 @@ class LinuxHotkeyService(QObject):
         self._stop.set()
 
     def set_bindings(self, bindings: Mapping[str, Mapping[str, object]]) -> bool:
-        """Replace active bindings, returning whether event devices were opened."""
+        """Replace active bindings without reopening unchanged evdev readers."""
         clean = {
             str(name): normalized
             for name, spec in bindings.items()
             if (normalized := normalize_binding(spec)) is not None
         }
+        if clean == self._bindings and (
+            not clean or (self._thread is not None and self._thread.is_alive())
+        ):
+            return True
         self.stop()
         self._bindings = clean
         if not clean or not sys.platform.startswith('linux'):

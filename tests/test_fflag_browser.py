@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from fleasion import localization
 from fleasion.gui import modifications_tab
 from fleasion.gui.modifications_tab import (
+    CompactBooleanComboBox,
     CustomFFlagEditor,
     FastFlagValueDelegate,
     FFlagBrowserDialog,
@@ -390,6 +391,74 @@ def test_custom_fflag_editor_uses_an_edit_on_demand_boolean_selector() -> None:
     assert isinstance(_editor_table(editor).itemDelegateForColumn(1), FastFlagValueDelegate)
     assert app is not None
 
+
+
+def test_boolean_value_cell_click_opens_selector_even_after_row_selection() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(custom_fflags={'DFFlagExample': 'False'}, custom_fflags_enabled=False),
+    )
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
+    )
+    editor = CustomFFlagEditor(config, proxy)
+    editor.show()
+    app.processEvents()
+    table = _editor_table(editor)
+    table.selectRow(0)
+    index = table.model().index(0, 1)
+
+    table.clicked.emit(index)
+    app.processEvents()
+
+    assert any(combo.isVisible() for combo in table.findChildren(CompactBooleanComboBox))
+
+
+def test_grouped_boolean_flag_uses_canonical_name_for_delegate() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'DFFlagExample': 'False'},
+            custom_fflags_enabled=False,
+            custom_fflag_folders={'Visual': ['DFFlagExample']},
+        ),
+    )
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
+    )
+    editor = CustomFFlagEditor(config, proxy)
+    table = _editor_table(editor)
+    index = table.model().index(1, 1)
+    delegate = table.itemDelegateForColumn(1)
+
+    combo = delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
+
+    assert isinstance(combo, CompactBooleanComboBox)
+    assert app is not None
+
+
+def test_flag_value_mutation_does_not_refresh_interception_routes() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(custom_fflags={'DFFlagExample': 'False'}, custom_fflags_enabled=False),
+    )
+    refresh_calls: list[None] = []
+
+    def refresh() -> None:
+        refresh_calls.append(None)
+
+    proxy = cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=refresh))
+    editor = CustomFFlagEditor(config, proxy)
+
+    editor._set_flags({'DFFlagExample': 'True', 'DFIntExample': '60'})  # pyright: ignore[reportPrivateUsage]
+
+    assert refresh_calls == []
+    assert app is not None
 
 def test_boolean_fflag_picker_commits_and_closes_after_selection() -> None:
     app = _qapp()

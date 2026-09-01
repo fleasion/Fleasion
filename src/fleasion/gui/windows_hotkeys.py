@@ -414,18 +414,22 @@ class WindowsHotkeyService(QObject):
         super().__init__(parent)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._bindings: dict[str, HotkeyBinding] = {}
 
     def set_bindings(self, bindings: Mapping[str, Mapping[str, object]]) -> None:
-        """Replace active bindings. Bare and modifier-only keys are supported."""
-        self.stop()
-        if sys.platform != 'win32':
-            return
+        """Replace active bindings without restarting an unchanged poller."""
         clean = {
             str(name): normalized
             for name, spec in bindings.items()
             if (normalized := normalize_binding(spec)) is not None
         }
-        if not clean:
+        if clean == self._bindings and (
+            not clean or (self._thread is not None and self._thread.is_alive())
+        ):
+            return
+        self.stop()
+        self._bindings = clean
+        if sys.platform != 'win32' or not clean:
             return
         self._stop.clear()
         self._thread = threading.Thread(
