@@ -26,17 +26,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from types import FrameType
 
+    from .json_types import JsonObject, JsonValue
+
 _SAMPLE_INTERVAL_SECONDS = 1.0
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _TH32CS_SNAPTHREAD = 0x00000004
 _THREAD_QUERY_LIMITED_INFORMATION = 0x0800
 _THREAD_QUERY_INFORMATION = 0x0040
 _INHERIT_THREAD_HANDLE = False
-
-
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
 
 
 class _PythonThreadDetails(TypedDict):
@@ -60,78 +57,85 @@ class _Psapi(Protocol):
     GetProcessMemoryInfo: Callable[[object, object, int], int]
 
 
-if TYPE_CHECKING:
+class _CFunction(Protocol):
+    argtypes: list[object]
+    restype: object
 
-    def _kernel32() -> _Kernel32: ...
+    def __call__(self, *args: object) -> object: ...
 
-    def _psapi() -> _Psapi: ...
 
-    def _python_frames() -> Mapping[int, FrameType]: ...
+class _Kernel32Library(Protocol):
+    CreateToolhelp32Snapshot: _CFunction
+    Thread32First: _CFunction
+    Thread32Next: _CFunction
+    OpenThread: _CFunction
+    GetThreadTimes: _CFunction
+    GetProcessTimes: _CFunction
+    CloseHandle: _CFunction
+    GetCurrentProcess: _CFunction
 
-    def _json_values(values: list[str]) -> list[JsonValue]: ...
 
-    def _memory_json(value: dict[str, int] | None) -> JsonObject | None: ...
+class _PsapiLibrary(Protocol):
+    GetProcessMemoryInfo: _CFunction
 
-    def _json_objects(values: list[JsonObject]) -> list[JsonValue]: ...
-else:
 
-    def _kernel32() -> _Kernel32:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-        kernel32.Thread32First.restype = wintypes.BOOL
-        kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]
-        kernel32.Thread32Next.restype = wintypes.BOOL
-        kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]
-        kernel32.OpenThread.restype = wintypes.HANDLE
-        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.GetThreadTimes.restype = wintypes.BOOL
-        kernel32.GetThreadTimes.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(_FileTime),
-            ctypes.POINTER(_FileTime),
-            ctypes.POINTER(_FileTime),
-            ctypes.POINTER(_FileTime),
-        ]
-        kernel32.GetProcessTimes.restype = wintypes.BOOL
-        kernel32.GetProcessTimes.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(_FileTime),
-            ctypes.POINTER(_FileTime),
-            ctypes.POINTER(_FileTime),
-            ctypes.POINTER(_FileTime),
-        ]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-        kernel32.GetCurrentProcess.argtypes = []
-        return kernel32
+class _WindowsDllLoader(Protocol):
+    kernel32: _Kernel32Library
+    psapi: _PsapiLibrary
 
-    def _psapi() -> _Psapi:
-        psapi = ctypes.windll.psapi
-        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
-        psapi.GetProcessMemoryInfo.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(_ProcessMemoryCountersEx),
-            wintypes.DWORD,
-        ]
-        return psapi
 
-    def _python_frames() -> Mapping[int, FrameType]:
-        current_frames = cast(
-            'Callable[[], Mapping[int, FrameType]]',
-            vars(sys)['_current_frames'],
-        )
-        return current_frames()
+def _kernel32() -> _Kernel32:
+    loader = cast('_WindowsDllLoader', vars(ctypes)['windll'])
+    kernel32 = loader.kernel32
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.Thread32First.restype = wintypes.BOOL
+    kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]
+    kernel32.Thread32Next.restype = wintypes.BOOL
+    kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.GetThreadTimes.restype = wintypes.BOOL
+    kernel32.GetThreadTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+    ]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+    ]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
+    return cast('_Kernel32', kernel32)
 
-    def _json_values(values: list[str]) -> list[JsonValue]:
-        return values
 
-    def _memory_json(value: dict[str, int] | None) -> JsonObject | None:
-        return value
+def _psapi() -> _Psapi:
+    loader = cast('_WindowsDllLoader', vars(ctypes)['windll'])
+    psapi = loader.psapi
+    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+    psapi.GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ProcessMemoryCountersEx),
+        wintypes.DWORD,
+    ]
+    return cast('_Psapi', psapi)
 
-    def _json_objects(values: list[JsonObject]) -> list[JsonValue]:
-        return values
+
+def _python_frames() -> Mapping[int, FrameType]:
+    current_frames = cast(
+        'Callable[[], Mapping[int, FrameType]]',
+        vars(sys)['_current_frames'],
+    )
+    return current_frames()
 
 
 class _FileTime(ctypes.Structure):
@@ -242,7 +246,7 @@ def _process_cpu_seconds(process_handle: int) -> float | None:
     return _filetime_seconds(kernel_time) + _filetime_seconds(user_time)
 
 
-def _process_memory(process_handle: int) -> dict[str, int] | None:
+def _process_memory(process_handle: int) -> JsonObject | None:
     """Read working-set/private-memory counters for the current process."""
     psapi = _psapi()
     counters = _ProcessMemoryCountersEx()
@@ -285,12 +289,6 @@ def _python_thread_details() -> dict[int, _PythonThreadDetails]:
     return result
 
 
-def _required_process_handle(value: int | None) -> int:
-    if TYPE_CHECKING:
-        assert value is not None
-    return value
-
-
 def _thread_cpu_percent(record: JsonObject) -> float:
     value = record.get('cpu_percent_one_core', 0.0)
     return float(value) if isinstance(value, int | float) else 0.0
@@ -318,13 +316,15 @@ class MicroProfiler:
     def start(self) -> None:
         """Write metadata and start sampling."""
         self._process_handle = _kernel32().GetCurrentProcess()
+        argv: list[JsonValue] = []
+        argv.extend(sys.argv)
         self._write(
             {
                 'record_type': 'header',
                 'timestamp': time.time(),
                 'pid': os.getpid(),
                 'executable': sys.executable,
-                'argv': _json_values(sys.argv),
+                'argv': argv,
                 'python': sys.version,
                 'platform': platform.platform(),
                 'interval_seconds': self.interval_seconds,
@@ -358,7 +358,7 @@ class MicroProfiler:
                             'error': f'{type(exc).__name__}: {exc}',
                         }
                     )
-                except (OSError, TypeError, ValueError):
+                except OSError, TypeError, ValueError:
                     return
 
     def _sample(self) -> JsonObject:
@@ -392,7 +392,10 @@ class MicroProfiler:
                     )
             thread_records.append(record)
 
-        process_handle = _required_process_handle(self._process_handle)
+        process_handle = self._process_handle
+        if process_handle is None:
+            msg = 'Microprofiler must be started before sampling'
+            raise RuntimeError(msg)
         process_cpu = _process_cpu_seconds(process_handle)
         process_cpu_percent = None
         if (
@@ -419,14 +422,16 @@ class MicroProfiler:
             memory = None
             memory_error = f'{type(exc).__name__}: {exc}'
 
+        threads: list[JsonValue] = []
+        threads.extend(thread_records)
         result: JsonObject = {
             'record_type': 'sample',
             'timestamp': time.time(),
             'monotonic_seconds': now,
             'process_cpu_percent_one_core': process_cpu_percent,
             'thread_count': len(thread_records),
-            'memory': _memory_json(memory),
-            'threads': _json_objects(thread_records),
+            'memory': memory,
+            'threads': threads,
         }
         if memory_error is not None:
             result['memory_error'] = memory_error
@@ -460,7 +465,7 @@ def start_microprofiler(
     try:
         profiler = MicroProfiler(_output_path(), interval_seconds)
         profiler.start()
-    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+    except AttributeError, OSError, RuntimeError, TypeError, ValueError:
         return None
     atexit.register(profiler.stop)
     return profiler

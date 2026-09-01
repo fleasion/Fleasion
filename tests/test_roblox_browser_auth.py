@@ -240,7 +240,7 @@ def test_prompt_capable_browser_list_includes_chrome_and_safari(
         vivaldi = object()
         firefox = object()
 
-    monkeypatch.setitem(__import__('sys').modules, 'browser_cookie3', _BrowserCookieStub())
+    monkeypatch.setattr(roblox_auth, '_browser_cookie3', _BrowserCookieStub())
 
     prompt_free = [name for name, _loader in _browser_cookie_loaders(False)]
     prompt_capable = [name for name, _loader in _browser_cookie_loaders(True)]

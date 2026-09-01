@@ -7,7 +7,6 @@ between packaged builds and ``uv run`` development sessions.
 
 from __future__ import annotations
 
-import importlib
 import os
 import plistlib
 import shlex
@@ -15,12 +14,18 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, cast
 
 from fleasion.version import macos_bundle_version
 
+from .logging import log_buffer
 from .metadata import APP_NAME, APP_VERSION
 from .paths import USER_HOME, get_icon_path
+
+if sys.platform.startswith('linux'):
+    from . import platform_linux as _platform_linux
+else:
+    _platform_linux = None
 
 WINDOWS_START_MENU_SHORTCUT_PATH = (
     Path(os.environ.get('APPDATA', USER_HOME / 'AppData' / 'Roaming'))
@@ -34,13 +39,48 @@ MACOS_APPLICATION_PATH = USER_HOME / 'Applications' / f'{APP_NAME}.app'
 _MACOS_MARKER_NAME = '.fleasion-managed-launcher'
 _DESCRIPTION = 'Roblox asset interceptor and replacer'
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+class _WindowsShortcut(Protocol):
+    Targetpath: str
+    Arguments: str
+    WorkingDirectory: str
+    Description: str
+    IconLocation: str
+
+    Save: Callable[[], None]
+
+
+class _WindowsShell(Protocol):
+    CreateShortCut: Callable[[str], _WindowsShortcut]
+
+
+class _PythonCom(Protocol):
+    com_error: type[Exception]
+    CoInitialize: Callable[[], None]
+
+
+class _Win32ComClient(Protocol):
+    Dispatch: Callable[[str], _WindowsShell]
+
+
+pythoncom: _PythonCom | None = None
+win32com_client: _Win32ComClient | None = None
+if sys.platform == 'win32':
+    try:
+        import pythoncom as _pythoncom_module  # pyright: ignore[reportMissingImports]
+        import win32com.client as _win32com_client_module  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        pass
+    else:
+        pythoncom = cast('_PythonCom', _pythoncom_module)
+        win32com_client = cast('_Win32ComClient', _win32com_client_module)
+
 
 def _log(message: str) -> None:
-    try:
-        logging_module = importlib.import_module('.logging', __package__)
-        logging_module.log_buffer.log('DesktopIntegration', message)
-    except (ImportError, AttributeError, OSError):
-        return
+    log_buffer.log('DesktopIntegration', message)
 
 
 def _find_project_root() -> Path | None:
@@ -88,8 +128,8 @@ def _remove_windows_shortcut() -> bool:
 
 
 def _write_windows_shortcut(
-    pythoncom: Any,
-    win32com_client: Any,
+    pythoncom: _PythonCom,
+    win32com_client: _Win32ComClient,
     command: list[str],
     working_dir: Path | None,
     icon_path: Path | None,
@@ -107,31 +147,24 @@ def _write_windows_shortcut(
     shortcut.Save()
 
 
-if TYPE_CHECKING:
-    from typing import Any
+def _create_windows_shortcut_runtime(
+    command: list[str], working_dir: Path | None, icon_path: Path | None
+) -> bool:
+    pythoncom_module = pythoncom
+    client_module = win32com_client
+    if pythoncom_module is None or client_module is None:
+        _log('Windows shortcut support is unavailable')
+        return False
 
-    def _create_windows_shortcut_runtime(
-        command: list[str], working_dir: Path | None, icon_path: Path | None
-    ) -> bool: ...
-else:
-
-    def _create_windows_shortcut_runtime(
-        command: list[str], working_dir: Path | None, icon_path: Path | None
-    ) -> bool:
-        try:
-            pythoncom = importlib.import_module('pythoncom')
-            win32com_client = importlib.import_module('win32com.client')
-        except ImportError as exc:
-            _log(f'Failed to load Windows shortcut support: {exc}')
-            return False
-
-        try:
-            _write_windows_shortcut(pythoncom, win32com_client, command, working_dir, icon_path)
-        except (AttributeError, OSError, pythoncom.com_error) as exc:
-            _log(f'Failed to create Windows start-menu shortcut: {exc}')
-            return False
-        _log(f'Windows start-menu shortcut updated: {WINDOWS_START_MENU_SHORTCUT_PATH}')
-        return True
+    try:
+        _write_windows_shortcut(
+            pythoncom_module, client_module, command, working_dir, icon_path
+        )
+    except (AttributeError, OSError, pythoncom_module.com_error) as exc:
+        _log(f'Failed to create Windows start-menu shortcut: {exc}')
+        return False
+    _log(f'Windows start-menu shortcut updated: {WINDOWS_START_MENU_SHORTCUT_PATH}')
+    return True
 
 
 def _create_windows_shortcut() -> bool:
@@ -255,29 +288,18 @@ def _create_macos_app() -> bool:
     return True
 
 
-if TYPE_CHECKING:
-
-    def _restore_linux_uri_handler_runtime() -> None: ...
-else:
-
-    def _restore_linux_uri_handler_runtime() -> None:
-        platform_linux = importlib.import_module('.platform_linux', __package__)
-        platform_linux.restore_linux_roblox_uri_handler()
-
-
 def _remove_linux_desktop_entries() -> bool:
+    platform_linux = _platform_linux
+    if platform_linux is None:
+        return False
     try:
-        platform_linux = importlib.import_module('.platform_linux', __package__)
         for path in (
             platform_linux.LINUX_DESKTOP_ENTRY_PATH,
             platform_linux.LINUX_LAUNCHER_PATH,
         ):
             path.unlink(missing_ok=True)
-        if (
-            platform_linux.LINUX_DESKTOP_ENTRY_PATH.parent
-            == platform_linux.LINUX_APPLICATIONS_DIR
-        ):
-            _restore_linux_uri_handler_runtime()
+        if platform_linux.LINUX_DESKTOP_ENTRY_PATH.parent == platform_linux.LINUX_APPLICATIONS_DIR:
+            platform_linux.restore_linux_roblox_uri_handler()
     except (ImportError, AttributeError, OSError) as exc:
         _log(f'Failed to remove Linux desktop integration: {exc}')
         return False
@@ -285,8 +307,10 @@ def _remove_linux_desktop_entries() -> bool:
 
 
 def _create_linux_desktop_entries() -> bool:
+    platform_linux = _platform_linux
+    if platform_linux is None:
+        return False
     try:
-        platform_linux = importlib.import_module('.platform_linux', __package__)
         platform_linux.install_desktop_entries()
     except (ImportError, AttributeError, OSError) as exc:
         _log(f'Failed to create Linux desktop integration: {exc}')

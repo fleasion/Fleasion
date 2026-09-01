@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 from urllib.parse import urlsplit
 
+from .json_types import as_json_object
 from .logging import log_buffer
 from .paths import (
     APP_CACHE_DIR,
@@ -67,11 +68,6 @@ _NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY = 1
 _CF_STRING_ENCODING_UTF8 = 0x08000100
 
 
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
-
-
 class _CFunction(Protocol):
     argtypes: list[object]
     restype: object
@@ -95,54 +91,61 @@ class _KqueueLike(Protocol):
     def close(self) -> None: ...
 
 
+class _MacOSSelect(Protocol):
+    KQ_FILTER_VNODE: int
+    KQ_EV_ADD: int
+    KQ_EV_ENABLE: int
+    KQ_EV_CLEAR: int
+    KQ_NOTE_WRITE: int
+    KQ_NOTE_EXTEND: int
+    KQ_NOTE_RENAME: int
+    KQ_NOTE_DELETE: int
+    kqueue: Callable[[], _KqueueLike]
+    kevent: Callable[..., object]
+
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    def _json_object(value: object) -> JsonObject | None: ...
 
-    def _c_function(library: ctypes.CDLL, name: str) -> _CFunction: ...
+_macos_select = cast('_MacOSSelect', select)
 
-    def _pointer_value(value: object) -> int | None: ...
 
-    def _int_value(value: object) -> int: ...
+def _c_function(library: ctypes.CDLL, name: str) -> _CFunction:
+    return cast('_CFunction', getattr(library, name))
 
-    def _new_kqueue() -> _KqueueLike: ...
 
-    def _new_vnode_event(fd: int) -> object: ...
+def _pointer_value(value: object) -> int | None:
+    return value if isinstance(value, int) else None
 
-    def _kq_rename_delete_mask() -> int: ...
-else:
 
-    def _json_object(value: object) -> JsonObject | None:
-        return value if isinstance(value, dict) else None
+def _int_value(value: object) -> int:
+    if not isinstance(value, int):
+        msg = 'Native function did not return an integer'
+        raise TypeError(msg)
+    return value
 
-    def _c_function(library: ctypes.CDLL, name: str) -> _CFunction:
-        return getattr(library, name)
 
-    def _pointer_value(value: object) -> int | None:
-        return value
+def _new_kqueue() -> _KqueueLike:
+    return _macos_select.kqueue()
 
-    def _int_value(value: object) -> int:
-        return value
 
-    def _new_kqueue() -> _KqueueLike:
-        return select.kqueue()
+def _new_vnode_event(fd: int) -> object:
+    return _macos_select.kevent(
+        fd,
+        filter=_macos_select.KQ_FILTER_VNODE,
+        flags=(_macos_select.KQ_EV_ADD | _macos_select.KQ_EV_ENABLE | _macos_select.KQ_EV_CLEAR),
+        fflags=(
+            _macos_select.KQ_NOTE_WRITE
+            | _macos_select.KQ_NOTE_EXTEND
+            | _macos_select.KQ_NOTE_RENAME
+            | _macos_select.KQ_NOTE_DELETE
+        ),
+    )
 
-    def _new_vnode_event(fd: int) -> object:
-        return select.kevent(
-            fd,
-            filter=select.KQ_FILTER_VNODE,
-            flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
-            fflags=(
-                select.KQ_NOTE_WRITE
-                | select.KQ_NOTE_EXTEND
-                | select.KQ_NOTE_RENAME
-                | select.KQ_NOTE_DELETE
-            ),
-        )
 
-    def _kq_rename_delete_mask() -> int:
-        return select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE
+def _kq_rename_delete_mask() -> int:
+    return _macos_select.KQ_NOTE_RENAME | _macos_select.KQ_NOTE_DELETE
 
 
 def _launch_services_framework() -> ctypes.CDLL | None:
@@ -266,10 +269,10 @@ def _appleblox_custom_app_path() -> Path | None:
         payload: object = json.loads(APPLEBLOX_ROBLOX_CONFIG.read_text(encoding='utf-8'))
     except OSError, UnicodeError, json.JSONDecodeError:
         return None
-    payload_map = _json_object(payload)
+    payload_map = as_json_object(payload)
     if payload_map is None:
         return None
-    installation = _json_object(payload_map.get('installation'))
+    installation = as_json_object(payload_map.get('installation'))
     if installation is None:
         return None
     raw_path = installation.get('custom_path')

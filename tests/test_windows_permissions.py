@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -114,7 +113,7 @@ def test_windows_user_id_is_derived_from_original_sid(monkeypatch: pytest.Monkey
         raising=False,
     )
     monkeypatch.setattr(fake_security, 'LookupAccountSid', _lookup_account_sid, raising=False)
-    monkeypatch.setitem(sys.modules, 'win32security', fake_security)
+    monkeypatch.setattr(windows_permissions, 'win32security', fake_security)
 
     assert (
         windows_permissions.windows_user_id_from_sid('S-1-5-21-1234')

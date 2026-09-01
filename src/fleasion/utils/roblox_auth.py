@@ -6,7 +6,6 @@ import base64
 import binascii
 import contextlib
 import errno
-import importlib
 import json
 import os
 import re
@@ -20,10 +19,19 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, cast
 
+import requests
+from cryptography.fernet import Fernet, InvalidToken
+
+from .json_types import JsonObject, as_json_object
 from .linux_clients import SOBER_CLIENT, LinuxClientInstallation
 from .logging import log_buffer
 from .paths import CONFIG_DIR, CONFIG_FILE, LOCAL_APPDATA, USER_HOME
 from .secure_tokens import decrypt_token, encrypt_token
+
+if sys.platform.startswith('linux'):
+    from . import platform_linux as _platform_linux
+else:
+    _platform_linux = None
 
 
 class _Win32CryptLike(Protocol):
@@ -38,17 +46,16 @@ if TYPE_CHECKING:
         Mapping,
     )
     from http.cookiejar import Cookie
-    win32crypt: _Win32CryptLike | None
-else:
+
+
+win32crypt: _Win32CryptLike | None = None
+if sys.platform == 'win32':
     try:
-        win32crypt = cast('_Win32CryptLike', importlib.import_module('win32crypt'))
-    except ImportError:
-        win32crypt = None
-
-
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
+        import win32crypt as _win32crypt_module  # pyright: ignore[reportMissingImports]
+    except ImportError, OSError:
+        pass
+    else:
+        win32crypt = cast('_Win32CryptLike', _win32crypt_module)
 
 
 class _BrowserLoader(Protocol):
@@ -72,35 +79,24 @@ class _BrowserCookieModule(Protocol):
     vivaldi: _BrowserLoader
 
 
+_browser_cookie3: _BrowserCookieModule | None = None
+if sys.platform == 'darwin' or sys.platform.startswith('linux'):
+    try:
+        import browser_cookie3 as _browser_cookie3_module  # pyright: ignore[reportMissingTypeStubs]
+    except ImportError:
+        pass
+    else:
+        _browser_cookie3 = cast('_BrowserCookieModule', _browser_cookie3_module)
+
+
 class _FernetCipher(Protocol):
     def encrypt(self, data: bytes) -> bytes: ...
 
     def decrypt(self, token: bytes) -> bytes: ...
 
 
-class _FernetFactory(Protocol):
-    def __call__(self, key: bytes) -> _FernetCipher: ...
-
-    def generate_key(self) -> bytes: ...
-
-
-if TYPE_CHECKING:
-
-    def _json_object(value: object) -> JsonObject | None: ...
-
-    def _base64_source(value: object) -> str | bytes: ...
-
-    def _browser_cookie_module() -> _BrowserCookieModule: ...
-else:
-
-    def _json_object(value: object) -> JsonObject | None:
-        return value if isinstance(value, dict) else None
-
-    def _base64_source(value: object) -> str | bytes:
-        return value
-
-    def _browser_cookie_module() -> _BrowserCookieModule:
-        return cast('_BrowserCookieModule', importlib.import_module('browser_cookie3'))
+def _base64_source(value: object) -> str | bytes | None:
+    return value if isinstance(value, str | bytes) else None
 
 
 def _set_module_state(name: str, *, value: object) -> None:
@@ -322,7 +318,7 @@ def _sober_use_libsecret(config_path: Path) -> bool:
             "Fleasion couldn't safely read Sober's configuration, so it did not switch "
             'the local account.',
         ) from exc
-    payload_map = _json_object(payload)
+    payload_map = as_json_object(payload)
     if payload_map is None:
         msg = 'sober_config_invalid'
         raise LinuxAuthWriteError(
@@ -478,7 +474,6 @@ def _rewrite_sober_cookie_header(cookie_text: str, cookie: str) -> str:
     return '; '.join(rewritten) + trailing_newline
 
 
-
 def _fsync_directory(path: Path) -> None:
     directory_flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0)
     directory_fd = os.open(path, directory_flags)
@@ -488,7 +483,9 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def _linux_cookie_write_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+def _linux_cookie_write_identity(
+    metadata: os.stat_result,
+) -> tuple[int, int, int, int, int, int, int]:
     return (
         metadata.st_dev,
         metadata.st_ino,
@@ -505,9 +502,7 @@ def _unlink_if_present(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def _write_linux_cookie_temp_file(
-    path: Path, payload: bytes, original: os.stat_result
-) -> Path:
+def _write_linux_cookie_temp_file(path: Path, payload: bytes, original: os.stat_result) -> Path:
     with contextlib.ExitStack() as stack:
         fd, temp_name = tempfile.mkstemp(prefix=f'.{path.name}.fleasion-', dir=str(path.parent))
         temp_path = Path(temp_name)
@@ -521,14 +516,11 @@ def _write_linux_cookie_temp_file(
     return temp_path
 
 
-def _replace_linux_cookie_temp_file(
-    path: Path, temp_path: Path, original: os.stat_result
-) -> None:
+def _replace_linux_cookie_temp_file(path: Path, temp_path: Path, original: os.stat_result) -> None:
     current = path.lstat()
-    if (
-        _linux_cookie_write_identity(current) != _linux_cookie_write_identity(original)
-        or not stat.S_ISREG(current.st_mode)
-    ):
+    if _linux_cookie_write_identity(current) != _linux_cookie_write_identity(
+        original
+    ) or not stat.S_ISREG(current.st_mode):
         msg = 'cookie_store_changed_during_write'
         raise LinuxAuthWriteError(
             msg,
@@ -814,12 +806,9 @@ def _path_exists(path: Path) -> bool:
 
 def _selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve only the configured Linux client; discovery reads no auth data."""
-    platform_linux = importlib.import_module('.platform_linux', package=__package__)
-    get_selected = cast(
-        'Callable[[], LinuxClientInstallation | None]',
-        platform_linux.get_selected_linux_client_installation,
-    )
-    return get_selected()
+    if _platform_linux is None:
+        return None
+    return _platform_linux.get_selected_linux_client_installation()
 
 
 def _selected_linux_local_auth_candidate() -> tuple[LinuxLocalAuthProvider, Path] | None:
@@ -849,7 +838,6 @@ def _add_candidate(
         return
     seen.add(key)
     candidates.append((source, path))
-
 
 
 def _scan_user_profile_cookie_candidates(
@@ -931,7 +919,7 @@ def _read_cookie_json(path: Path) -> JsonObject | None:
             f'Failed to read RobloxCookies.dat at {path}: {type(exc).__name__}: {exc}',
         )
         return None
-    data = _json_object(data_value)
+    data = as_json_object(data_value)
     if data is None:
         _log_auth_failure(
             f'json:{path}:ValueError',
@@ -949,7 +937,11 @@ def _decode_cookie_data(path: Path, data: JsonObject) -> bytes | None:
         )
         return None
     try:
-        return base64.b64decode(_base64_source(cookies_data))
+        source = _base64_source(cookies_data)
+        if source is None:
+            msg = 'CookiesData must be a base64 string'
+            raise TypeError(msg)
+        return base64.b64decode(source)
     except (binascii.Error, TypeError, ValueError) as exc:
         _log_auth_failure(
             f'base64:{path}:{type(exc).__name__}',
@@ -1068,23 +1060,14 @@ def _load_browser_auth_key(create: bool, generate_key: Callable[[], bytes]) -> b
 def _get_macos_browser_auth_cipher(create: bool = True) -> _FernetCipher | None:
     if sys.platform != 'darwin':
         return None
-    try:
-        fernet_module = importlib.import_module('cryptography.fernet')
-        fernet: _FernetFactory = fernet_module.Fernet
-    except ImportError as exc:
-        _log_auth_failure(
-            f'browser-auth-cache-crypto:{type(exc).__name__}',
-            f'macOS browser auth cache encryption is unavailable: {type(exc).__name__}: {exc}',
-        )
-        return None
 
     try:
-        key = _load_browser_auth_key(create, fernet.generate_key)
+        key = _load_browser_auth_key(create, Fernet.generate_key)
         if key is None:
             return None
         with contextlib.suppress(OSError):
             _BROWSER_AUTH_CACHE_KEY_FILE.chmod(0o600)
-        return fernet(key)
+        return Fernet(key)
     except (OSError, TypeError, ValueError) as exc:
         _log_auth_failure(
             f'browser-auth-cache-key:{type(exc).__name__}:{exc}',
@@ -1094,13 +1077,12 @@ def _get_macos_browser_auth_cipher(create: bool = True) -> _FernetCipher | None:
 
 
 def _roblox_authenticated_status(cookie: str) -> int:
-    requests = importlib.import_module('requests')
     session = requests.Session()
     session.trust_env = False
     session.proxies = {}
     try:
         session.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         session.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
     response = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
     return int(response.status_code)
@@ -1114,7 +1096,9 @@ def _validate_roblosecurity(cookie: str) -> bool | None:
     try:
         status_code = _roblox_authenticated_status(cookie)
     except (ImportError, OSError, TypeError, ValueError) as exc:
-        _set_module_state('_LAST_BROWSER_AUTH_VALIDATION_DETAIL', value=f'{type(exc).__name__}: {exc}')
+        _set_module_state(
+            '_LAST_BROWSER_AUTH_VALIDATION_DETAIL', value=f'{type(exc).__name__}: {exc}'
+        )
         _log_auth_failure(
             f'browser-auth-cache-validate:{type(exc).__name__}',
             f'Could not validate cached Roblox browser login: {type(exc).__name__}: {exc}',
@@ -1167,12 +1151,11 @@ def _get_configured_macos_auth_source() -> str:
         return ''
     try:
         settings = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except OSError, UnicodeError, json.JSONDecodeError:
         return ''
     source = str(settings.get('macos_auth_source') or '')
     valid = {'', 'manual', *_MACOS_AUTH_BROWSER_NAMES}
     return source if source in valid else ''
-
 
 
 def _write_manual_auth_token(cookie: str) -> None:
@@ -1215,7 +1198,7 @@ def get_manual_roblosecurity() -> str | None:
             f'Could not read manually imported Roblox token: {type(exc).__name__}: {exc}',
         )
         return None
-    payload = _json_object(payload_value)
+    payload = as_json_object(payload_value)
     if payload is None:
         return None
     token_payload = str(payload.get('token') or '')
@@ -1290,7 +1273,8 @@ def _read_browser_auth_cache_fields() -> tuple[str, str] | None:
         )
         return None
 
-    if not isinstance(payload_value, dict):
+    payload = as_json_object(payload_value)
+    if payload is None:
         _log_auth_failure(
             'browser-auth-cache-shape:invalid-root',
             'Browser auth cache state: invalid root type; preserving cache',
@@ -1302,7 +1286,6 @@ def _read_browser_auth_cache_fields() -> tuple[str, str] | None:
         )
         return None
 
-    payload = cast('JsonObject', payload_value)
     source = str(payload.get('source') or '')
     if source not in _PERSISTENT_BROWSER_AUTH_SOURCES:
         _log_browser_auth_cache_state(
@@ -1364,11 +1347,9 @@ def _read_cached_browser_roblosecurity(*, delete_invalid: bool = True) -> tuple[
         return None, ''
     source, encrypted = fields
 
-    fernet_module = importlib.import_module('cryptography.fernet')
-    invalid_token = cast('type[Exception]', fernet_module.InvalidToken)
     try:
         cookie = cipher.decrypt(encrypted.encode('ascii')).decode('utf-8').strip()
-    except (invalid_token, UnicodeError, ValueError) as exc:
+    except (InvalidToken, UnicodeError, ValueError) as exc:
         _log_auth_failure(
             f'browser-auth-cache-decrypt:{type(exc).__name__}:{exc}',
             f'Browser auth cache state: decrypt failed; preserving cache ({type(exc).__name__}: {exc})',
@@ -1530,7 +1511,9 @@ def _make_browser_cookie_loader(source: str, loader: _BrowserLoader) -> _Browser
 
 
 def _browser_cookie_loaders(include_keychain: bool) -> list[tuple[str, _BrowserLoader]]:
-    browser_cookie3 = _browser_cookie_module()
+    browser_cookie3 = _browser_cookie3
+    if browser_cookie3 is None:
+        return []
     loaders: list[tuple[str, _BrowserLoader]] = [('Firefox', browser_cookie3.firefox)]
     if include_keychain:
         # Check the most common macOS browser first so its Safe Storage prompt
@@ -1741,9 +1724,7 @@ def _discover_local_roblosecurity(attempted: list[str], existing: list[str]) -> 
     return None
 
 
-def _discover_platform_roblosecurity(
-    *, include_keychain_browsers: bool
-) -> tuple[str | None, str]:
+def _discover_platform_roblosecurity(*, include_keychain_browsers: bool) -> tuple[str | None, str]:
     cookie: str | None = None
     browser_source = ''
 

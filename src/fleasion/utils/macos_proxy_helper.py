@@ -17,8 +17,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from .json_types import as_object_dict
 from .logging import log_buffer
 from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, MACOS_PROXY_HELPER_CONTROL_PORT
 
@@ -49,26 +50,14 @@ type HelperObject = dict[str, object]
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Mapping
 
-    def _object_dict(value: object) -> HelperObject: ...
 
-    def _iter_values(value: object) -> Iterable[object]: ...
-
-    def _int_value(value: object) -> int: ...
-else:
-
-    def _object_dict(value: object) -> HelperObject:
-        if not isinstance(value, dict):
-            msg = 'macOS proxy helper response must be a JSON object'
-            raise TypeError(msg)
-        return value
-
-    def _iter_values(value: object) -> Iterable[object]:
-        return value or []
-
-    def _int_value(value: object) -> int:
-        return int(value)
+def _int_value(value: object) -> int:
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        msg = 'macOS proxy helper value must be numeric'
+        raise TypeError(msg)
+    return int(value)
 
 
 def _ensure_token() -> str:
@@ -107,7 +96,10 @@ def _request(
         sock_file = sock.makefile('rb')
         raw = sock_file.readline(1024 * 1024)
     response_value: object = json.loads(raw.decode('utf-8'))
-    response = _object_dict(response_value)
+    response = as_object_dict(response_value)
+    if response is None:
+        msg = 'macOS proxy helper response must be a JSON object'
+        raise TypeError(msg)
     if raise_on_error and not response.get('ok'):
         raise RuntimeError(str(response.get('error') or 'macOS proxy helper request failed'))
     return response
@@ -127,7 +119,10 @@ def helper_has_expected_identity(status: Mapping[str, object] | None) -> bool:
         version_ok = _int_value(status.get('version', 0)) == EXPECTED_HELPER_VERSION
     except TypeError, ValueError:
         version_ok = False
-    capabilities = {str(value) for value in _iter_values(status.get('capabilities'))}
+    raw_capabilities = status.get('capabilities')
+    capabilities: set[str] = set()
+    if isinstance(raw_capabilities, list):
+        capabilities.update(str(value) for value in cast('list[object]', raw_capabilities))
     return version_ok and REQUIRED_HELPER_CAPABILITIES.issubset(capabilities)
 
 

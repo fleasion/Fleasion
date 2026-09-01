@@ -23,6 +23,7 @@ from fleasion.gui import json_viewer, prejsons_dialog
 from fleasion.proxy import master as proxy_master
 from fleasion.proxy import server as proxy_server
 from fleasion.utils import autostart, macos_proxy_helper, roblox_auth
+from fleasion.utils.json_types import as_object_dict
 from fleasion.utils.logging import log_buffer
 
 
@@ -161,12 +162,7 @@ def test_invalid_lz4_chunk_returns_raw_compressed_slice() -> None:
 def test_macos_helper_rejects_non_object_response_as_recoverable_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    object_dict = cast(
-        'Callable[[object], dict[str, object]]',
-        vars(macos_proxy_helper)['_object_dict'],
-    )
-    with pytest.raises(TypeError, match='JSON object'):
-        object_dict([])
+    assert as_object_dict([]) is None
 
     def invalid_request(*_args: object, **_kwargs: object) -> Never:
         msg = 'macOS proxy helper response must be a JSON object'

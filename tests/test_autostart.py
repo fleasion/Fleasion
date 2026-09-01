@@ -101,7 +101,7 @@ def _fake_winreg(
             raise FileNotFoundError from exc
 
     module.__dict__['DeleteValue'] = delete_value
-    monkeypatch.setitem(sys.modules, 'winreg', module)
+    monkeypatch.setattr(autostart, 'winreg', module)
     return values, open_accesses
 
 

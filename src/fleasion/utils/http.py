@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import http.client
-import importlib
 import shutil
 import socket
 import ssl
@@ -13,6 +12,10 @@ import urllib.parse
 import urllib.request
 from functools import lru_cache
 from typing import TYPE_CHECKING, cast
+
+import certifi
+
+from fleasion.utils.logging import log_buffer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -28,19 +31,14 @@ def _validate_http_url(url: str) -> None:
 
 
 def _log_http(message: str) -> None:
-    try:
-        logging_module = importlib.import_module('fleasion.utils.logging')
-        logging_module.log_buffer.log('HTTP', message)
-    except (ImportError, AttributeError, OSError):
-        return
+    log_buffer.log('HTTP', message)
 
 
 @lru_cache(maxsize=1)
 def _certifi_context() -> ssl.SSLContext | None:
     try:
-        certifi = importlib.import_module('certifi')
         return ssl.create_default_context(cafile=certifi.where())
-    except (ImportError, AttributeError, OSError, ssl.SSLError):
+    except (OSError, ssl.SSLError):
         return None
 
 
@@ -55,9 +53,8 @@ def _tls12_context() -> ssl.SSLContext:
 @lru_cache(maxsize=1)
 def _certifi_tls12_context() -> ssl.SSLContext | None:
     try:
-        certifi = importlib.import_module('certifi')
         ctx = ssl.create_default_context(cafile=certifi.where())
-    except (ImportError, AttributeError, OSError, ssl.SSLError):
+    except (OSError, ssl.SSLError):
         return None
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.maximum_version = ssl.TLSVersion.TLSv1_2

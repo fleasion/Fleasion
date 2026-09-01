@@ -13,21 +13,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+from .json_types import as_object_dict
 from .paths import CONFIG_DIR
 
 PENDING_REPAIR_FILENAME = 'fleasion_firewall_repair.json'
 RESULT_REPAIR_FILENAME = 'fleasion_firewall_repair_result.json'
 
 type ResultObject = dict[str, object]
-
-
-if TYPE_CHECKING:
-
-    def _object_dict(value: object) -> ResultObject | None: ...
-else:
-
-    def _object_dict(value: object) -> ResultObject | None:
-        return value if isinstance(value, dict) else None
 
 
 _RULES = (
@@ -56,7 +48,7 @@ def read_pending_repair(config_dir: Path | None = None) -> bool:
     path = _state_path(config_dir, PENDING_REPAIR_FILENAME)
     try:
         payload_value: object = json.loads(path.read_text(encoding='utf-8'))
-        payload = _object_dict(payload_value)
+        payload = as_object_dict(payload_value)
     except OSError, json.JSONDecodeError:
         return False
     return payload is not None and payload.get('requested') is True
@@ -80,7 +72,7 @@ def read_repair_result(config_dir: Path | None = None) -> ResultObject | None:
     path = _state_path(config_dir, RESULT_REPAIR_FILENAME)
     try:
         payload_value: object = json.loads(path.read_text(encoding='utf-8'))
-        payload = _object_dict(payload_value)
+        payload = as_object_dict(payload_value)
     except OSError, json.JSONDecodeError:
         return None
     return payload
@@ -100,9 +92,8 @@ def _is_admin() -> bool:
         return False
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return False
-
 
 
 def _netsh_executable() -> str:

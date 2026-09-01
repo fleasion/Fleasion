@@ -26,12 +26,14 @@ from defusedxml.common import DefusedXmlException
 
 from .logging import log_buffer
 from .paths import (
+    APP_CACHE_DIR,
     LOCAL_APPDATA,
     ROBLOX_PROCESS,
     ROBLOX_STUDIO_PROCESS,
     STORAGE_DB,
     STORAGE_DB_GDK,
 )
+from .roblox_dirs import load_saved_roblox_dirs
 
 if TYPE_CHECKING:
     import threading
@@ -75,6 +77,38 @@ class _CFunctionType(Protocol):
 
 class _CFunctionTypeFactory(Protocol):
     def __call__(self, restype: object, *argtypes: object) -> _CFunctionType: ...
+
+
+class _PyWinTypes(Protocol):
+    error: type[Exception]
+
+
+class _Win32Con(Protocol):
+    GENERIC_READ: int
+    GENERIC_WRITE: int
+    FILE_SHARE_DELETE: int
+    OPEN_EXISTING: int
+
+
+class _Win32File(Protocol):
+    CreateFile: Callable[..., object]
+    CloseHandle: Callable[[object], None]
+
+
+pywintypes: _PyWinTypes | None = None
+win32con: _Win32Con | None = None
+win32file: _Win32File | None = None
+if sys.platform == 'win32':
+    try:
+        import pywintypes as _pywintypes_module  # pyright: ignore[reportMissingImports]
+        import win32con as _win32con_module  # pyright: ignore[reportMissingImports]
+        import win32file as _win32file_module  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        pass
+    else:
+        pywintypes = cast('_PyWinTypes', _pywintypes_module)
+        win32con = cast('_Win32Con', _win32con_module)
+        win32file = cast('_Win32File', _win32file_module)
 
 
 class _ProcessInfo(TypedDict, total=False):
@@ -1706,29 +1740,25 @@ def _rmtree_clear_readonly_retry(func: Callable[..., object], path: str, _exc_in
 
 
 def _unlock_db_file_with_pywin32(db_path: Path) -> None:
-    pywintypes = importlib.import_module('pywintypes')
-    win32con = importlib.import_module('win32con')
-    win32file = importlib.import_module('win32file')
-    create_file = cast('Callable[..., object]', vars(win32file)['CreateFile'])
-    close_handle = cast('Callable[[int], None]', vars(win32file)['CloseHandle'])
-    pywintypes_error = cast('type[Exception]', vars(pywintypes)['error'])
-    generic_read = cast('int', vars(win32con)['GENERIC_READ'])
-    generic_write = cast('int', vars(win32con)['GENERIC_WRITE'])
-    file_share_delete = cast('int', vars(win32con)['FILE_SHARE_DELETE'])
-    open_existing = cast('int', vars(win32con)['OPEN_EXISTING'])
+    errors = pywintypes
+    constants = win32con
+    files = win32file
+    if errors is None or constants is None or files is None:
+        msg = 'pywin32 file APIs are unavailable'
+        raise ImportError(msg)
 
     try:
-        handle = create_file(
+        handle = files.CreateFile(
             str(db_path),
-            generic_read | generic_write,
-            file_share_delete,
+            constants.GENERIC_READ | constants.GENERIC_WRITE,
+            constants.FILE_SHARE_DELETE,
             None,
-            open_existing,
+            constants.OPEN_EXISTING,
             0,
             None,
         )
-        close_handle(cast('int', handle))
-    except pywintypes_error:
+        files.CloseHandle(handle)
+    except errors.error:
         pass
 
     _clear_read_only(db_path)
@@ -1881,12 +1911,6 @@ def _summarize_cache_messages(messages: list[str]) -> list[str]:
 
 
 
-def _app_cache_dir() -> Path | None:
-    paths_module = importlib.import_module('fleasion.utils.paths')
-    value = getattr(paths_module, 'APP_CACHE_DIR', None)
-    return Path(value) if value is not None else None
-
-
 def _delete_app_cache_contents(app_cache_dir: Path) -> None:
     preserve = app_cache_dir / 'predownloaded'
     for child in app_cache_dir.iterdir():
@@ -1946,10 +1970,9 @@ def delete_cache() -> list[str]:
         _delete_storage_family(Path(STORAGE_DB_GDK), messages, 'GDK')
 
     # Delete Fleasion APP_CACHE_DIR (preserve predownloaded assets only)
-    app_cache_dir = _app_cache_dir()
-    if app_cache_dir is not None and app_cache_dir.exists():
+    if APP_CACHE_DIR.exists():
         try:
-            _delete_app_cache_contents(app_cache_dir)
+            _delete_app_cache_contents(APP_CACHE_DIR)
         except PermissionError:
             messages.append('Failed to delete obj cache: Permission denied')
         except OSError as e:
@@ -2191,20 +2214,10 @@ def _resolve_roblox_player_exe_for_launch() -> Path | None:
 
     # 5) Previously discovered install directories. These are validated when
     # loaded and are especially useful for non-standard/bootstrapper installs.
-    try:
-        roblox_dirs_module = importlib.import_module('.roblox_dirs', package=__package__)
-        load_saved_roblox_dirs = cast(
-            'Callable[[], list[Path]]',
-            roblox_dirs_module.load_saved_roblox_dirs,
-        )
-        saved_dirs = load_saved_roblox_dirs()
-    except ImportError as exc:
-        saved_dirs = []
-        diagnostics.append(f'saved Roblox directories: unavailable ({exc})')
-    else:
-        for saved_dir in saved_dirs:
-            _add(saved_dir / ROBLOX_PROCESS, 180, 'saved Roblox directory')
-        diagnostics.append(f'saved Roblox directories: loaded {len(saved_dirs)} valid path(s)')
+    saved_dirs = load_saved_roblox_dirs()
+    for saved_dir in saved_dirs:
+        _add(saved_dir / ROBLOX_PROCESS, 180, 'saved Roblox directory')
+    diagnostics.append(f'saved Roblox directories: loaded {len(saved_dirs)} valid path(s)')
 
     if not candidates_by_path:
         log_buffer.log('Launcher', 'Roblox executable resolution failed; resolver diagnostics:')
