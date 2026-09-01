@@ -64,3 +64,30 @@ def test_custom_fflag_hotkey_controller_toggles_without_dashboard() -> None:
     assert proxy.refresh_calls == 1
     assert toggled == ['FFlagExample']
     controller.stop()
+
+
+def test_custom_fflag_hotkey_controller_toggles_folder_without_dashboard() -> None:
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
+        custom_fflag_disabled=[],
+        custom_fflag_keybinds={},
+        custom_fflag_folders={'Visual': ['FFlagOne', 'FFlagTwo']},
+        custom_fflag_disabled_folders=[],
+        custom_fflag_folder_keybinds={},
+    )
+    proxy = SimpleNamespace(refresh_calls=0)
+    proxy.refresh_custom_fflag_interception = lambda: setattr(
+        proxy, 'refresh_calls', proxy.refresh_calls + 1
+    )
+    controller = WindowsCustomFFlagHotkeyController(config, proxy)
+    toggled: list[str] = []
+    controller.toggled.connect(_record_toggled(toggled))
+
+    controller.toggle_target('folder:Visual')
+
+    assert config.custom_fflag_disabled_folders == ['Visual']
+    assert config.custom_fflag_disabled == []
+    assert proxy.refresh_calls == 1
+    assert toggled == ['folder:Visual']
+    controller.stop()

@@ -203,6 +203,12 @@ type _HotkeyController = WindowsCustomFFlagHotkeyController | LinuxCustomFFlagHo
 type _HotkeyService = WindowsHotkeyService | LinuxHotkeyService
 
 
+_FFLAG_ROW_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
+_FFLAG_CANONICAL_NAME_ROLE = int(Qt.ItemDataRole.UserRole) + 21
+_FFLAG_ROW_FLAG = 'flag'
+_FFLAG_ROW_FOLDER = 'folder'
+
+
 def _style_or_none(widget: QWidget) -> QStyle | None:
     return widget.style()
 
@@ -219,6 +225,12 @@ def _standard_button_or_none(
 
 def _is_object_dict(value: object) -> TypeIs[dict[object, object]]:
     return isinstance(value, dict)
+
+
+def _is_object_collection(
+    value: object,
+) -> TypeIs[list[object] | tuple[object, ...] | set[object]]:
+    return isinstance(value, list | tuple | set)
 
 
 def _is_hotkey_bindings(value: object) -> TypeIs[_HotkeyBindings]:
@@ -2863,6 +2875,23 @@ class CustomFFlagEditor(QWidget):
         add_button.clicked.connect(self._add_flag)
         buttons.addWidget(add_button)
 
+        folder_button = QPushButton(tr('ui.gui.modifications_tab.fastflag_folders'))
+        folder_menu = QMenu(folder_button)
+        folder_menu.addAction(
+            tr('ui.gui.modifications_tab.create_fastflag_folder_from_selected'),
+            self._create_folder_from_selected,
+        )
+        folder_menu.addAction(
+            tr('ui.gui.modifications_tab.move_selected_fastflags_to_folder'),
+            self._move_selected_to_folder,
+        )
+        folder_menu.addAction(
+            tr('ui.gui.modifications_tab.remove_selected_fastflags_from_folder'),
+            self._remove_selected_from_folders,
+        )
+        folder_button.setMenu(folder_menu)
+        buttons.addWidget(folder_button)
+
         import_button = QPushButton(tr('ui.gui.modifications_tab.import_json'))
         import_menu = QMenu(import_button)
         import_menu.addAction(tr('ui.gui.modifications_tab.from_text'), self._import_json)
@@ -2903,30 +2932,83 @@ class CustomFFlagEditor(QWidget):
             self._sync_hotkeys()
 
     def _replace_table_rows(self, rows: list[tuple[str, str]]) -> None:
-        """Bulk-load rows without constructing a widget for every boolean value."""
+        """Bulk-load flag and folder rows without persistent cell widgets."""
         self._loading = True
         self._table.setUpdatesEnabled(False)
         blocker = QSignalBlocker(self._table)
         try:
-            self._table.setRowCount(len(rows))
-            for row, (name, value) in enumerate(rows):
-                name_item = QTableWidgetItem(name)
+            values = dict(rows)
+            order = {name: index for index, (name, _value) in enumerate(rows)}
+            folders = self._folders()
+            grouped_names = {
+                name for members in folders.values() for name in members if name in values
+            }
+            rendered: list[tuple[str, str, str | None]] = []
+            for folder_name in sorted(folders, key=str.casefold):
+                members = [name for name in folders[folder_name] if name in values]
+                rendered.append((_FFLAG_ROW_FOLDER, folder_name, None))
+                rendered.extend(
+                    (_FFLAG_ROW_FLAG, name, values[name])
+                    for name in sorted(members, key=lambda name: order.get(name, 0))
+                )
+            rendered.extend(
+                (_FFLAG_ROW_FLAG, name, value) for name, value in rows if name not in grouped_names
+            )
+
+            self._table.setRowCount(len(rendered))
+            disabled_flags = self._disabled_flag_names()
+            disabled_folders = self._disabled_folder_names()
+            flag_bindings = self._keybinds()
+            folder_bindings = self._folder_keybinds()
+            for row, (kind, name, value) in enumerate(rendered):
+                display_name = (
+                    name
+                    if kind == _FFLAG_ROW_FOLDER
+                    else f'    {name}'
+                    if name in grouped_names
+                    else name
+                )
+                name_item = QTableWidgetItem(display_name)
+                name_item.setData(_FFLAG_ROW_KIND_ROLE, kind)
+                name_item.setData(_FFLAG_CANONICAL_NAME_ROLE, name)
                 name_item.setToolTip(name)
+                if kind == _FFLAG_ROW_FOLDER:
+                    name_item.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+                    font = name_item.font()
+                    font.setBold(True)
+                    name_item.setFont(font)
+                    name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row, 0, name_item)
-                self._set_value_editor(row, name, str(value))
+
+                if kind == _FFLAG_ROW_FOLDER:
+                    member_count = sum(1 for member in folders.get(name, []) if member in values)
+                    value_item = QTableWidgetItem(
+                        tr_count(
+                            member_count,
+                            'ui.gui.modifications_tab.fastflag_folder_count_one',
+                            'ui.gui.modifications_tab.fastflag_folder_count_other',
+                        )
+                    )
+                    value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self._table.setItem(row, 1, value_item)
+                else:
+                    self._set_value_editor(row, name, str(value or ''))
+
                 if self._hotkeys_supported:
                     status_item = QTableWidgetItem(tr('ui.gui.modifications_tab.enabled'))
                     status_item.setFlags(
                         (status_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                         & ~Qt.ItemFlag.ItemIsEditable
                     )
+                    disabled = name in (
+                        disabled_folders if kind == _FFLAG_ROW_FOLDER else disabled_flags
+                    )
                     status_item.setCheckState(
-                        Qt.CheckState.Unchecked
-                        if name in self._disabled_flag_names()
-                        else Qt.CheckState.Checked
+                        Qt.CheckState.Unchecked if disabled else Qt.CheckState.Checked
                     )
                     self._table.setItem(row, 2, status_item)
-                    keybind_item = QTableWidgetItem(self._keybind_text(self._keybinds().get(name)))
+                    bindings = folder_bindings if kind == _FFLAG_ROW_FOLDER else flag_bindings
+                    keybind_item = QTableWidgetItem(self._keybind_text(bindings.get(name)))
                     keybind_item.setFlags(keybind_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     keybind_item.setToolTip(
                         tr('ui.gui.modifications_tab.double_click_to_assign_or_clear_this')
@@ -2937,11 +3019,24 @@ class CustomFFlagEditor(QWidget):
             self._table.setUpdatesEnabled(True)
             self._loading = False
 
+    def _row_kind(self, row: int) -> str:
+        item = self._table.item(row, 0)
+        value = item.data(_FFLAG_ROW_KIND_ROLE) if item is not None else None
+        return value if value in {_FFLAG_ROW_FLAG, _FFLAG_ROW_FOLDER} else _FFLAG_ROW_FLAG
+
+    def _row_name(self, row: int) -> str:
+        item = self._table.item(row, 0)
+        if item is None:
+            return ''
+        canonical = item.data(_FFLAG_CANONICAL_NAME_ROLE)
+        return str(canonical).strip() if canonical is not None else item.text().strip()
+
     def _flags_from_table(self) -> dict[str, str]:
         flags: dict[str, str] = {}
         for row in range(self._table.rowCount()):
-            name_item = self._table.item(row, 0)
-            name = name_item.text().strip() if name_item else ''
+            if self._row_kind(row) != _FFLAG_ROW_FLAG:
+                continue
+            name = self._row_name(row)
             if name:
                 flags[name] = self._value_from_row(row)
         return flags
@@ -2989,6 +3084,27 @@ class CustomFFlagEditor(QWidget):
     def _disabled_flag_names(self) -> set[str]:
         return set(getattr(self._config, 'custom_fflag_disabled', []) or [])
 
+    def _folders(self) -> dict[str, list[str]]:
+        raw = cast('object', getattr(self._config, 'custom_fflag_folders', {}))
+        if not _is_object_dict(raw):
+            return {}
+        folders: dict[str, list[str]] = {}
+        for raw_folder, raw_names in raw.items():
+            if not isinstance(raw_folder, str) or not _is_object_collection(raw_names):
+                continue
+            folders[raw_folder] = [str(name) for name in raw_names]
+        return folders
+
+    def _disabled_folder_names(self) -> set[str]:
+        raw = cast('object', getattr(self._config, 'custom_fflag_disabled_folders', []))
+        if not _is_object_collection(raw):
+            return set()
+        return {str(name) for name in raw}
+
+    def _folder_keybinds(self) -> _HotkeyBindings:
+        raw = cast('object', getattr(self._config, 'custom_fflag_folder_keybinds', {}))
+        return raw if _is_hotkey_bindings(raw) else {}
+
     def _keybinds(self) -> _HotkeyBindings:
         empty_bindings: _HotkeyBindings = {}
         bindings: object = (
@@ -3018,25 +3134,50 @@ class CustomFFlagEditor(QWidget):
         if not self._hotkeys_supported or self._config is None or self._loading:
             return
         names = set(self._flags_from_table())
+        folder_names = set(self._folders())
         disabled: set[str] = set()
+        disabled_folders: set[str] = set()
         for row in range(self._table.rowCount()):
-            item = self._table.item(row, 0)
-            if item is not None and not self._flag_is_enabled(row):
-                disabled.add(item.text())
+            if self._flag_is_enabled(row):
+                continue
+            name = self._row_name(row)
+            if self._row_kind(row) == _FFLAG_ROW_FOLDER:
+                disabled_folders.add(name)
+            else:
+                disabled.add(name)
         bindings = {name: spec for name, spec in self._keybinds().items() if name in names}
+        folder_bindings = {
+            name: spec for name, spec in self._folder_keybinds().items() if name in folder_names
+        }
         self._config.custom_fflag_disabled = sorted(disabled)
+        self._config.custom_fflag_disabled_folders = sorted(disabled_folders)
         self._config.custom_fflag_keybinds = bindings
+        self._config.custom_fflag_folder_keybinds = folder_bindings
         self._sync_hotkeys()
         self._refresh_proxy_hosts()
         self._update_status()
 
     def _prune_hotkey_settings(self, names: set[str]) -> None:
-        if not self._hotkeys_supported or self._config is None:
+        if self._config is None:
             return
+        folders = {
+            folder: [name for name in members if name in names]
+            for folder, members in self._folders().items()
+        }
+        self._config.custom_fflag_folders = folders
+        if not self._hotkeys_supported:
+            return
+        folder_names = set(folders)
         disabled = self._disabled_flag_names() & names
+        disabled_folders = self._disabled_folder_names() & folder_names
         bindings = {name: spec for name, spec in self._keybinds().items() if name in names}
+        folder_bindings = {
+            name: spec for name, spec in self._folder_keybinds().items() if name in folder_names
+        }
         self._config.custom_fflag_disabled = sorted(disabled)
+        self._config.custom_fflag_disabled_folders = sorted(disabled_folders)
         self._config.custom_fflag_keybinds = bindings
+        self._config.custom_fflag_folder_keybinds = folder_bindings
         self._sync_hotkeys()
 
     def _sync_hotkeys(self) -> None:
@@ -3046,7 +3187,11 @@ class CustomFFlagEditor(QWidget):
             feature_enabled = bool(
                 self._config and getattr(self._config, 'custom_fflags_enabled', False)
             )
-            self._hotkey_service.set_bindings(self._keybinds() if feature_enabled else {})
+            bindings = dict(self._keybinds())
+            bindings.update(
+                {f'folder:{name}': spec for name, spec in self._folder_keybinds().items()}
+            )
+            self._hotkey_service.set_bindings(bindings if feature_enabled else {})
 
     def _begin_linux_hotkey_capture(self) -> LinuxHotkeyService | None:
         """Open evdev only when a user first tries to set a Linux keybind."""
@@ -3118,10 +3263,10 @@ class CustomFFlagEditor(QWidget):
     def _edit_keybind(self, row: int, column: int) -> None:
         if column != 3:
             return
-        name_item = self._table.item(row, 0)
-        name = name_item.text() if name_item else ''
+        name = self._row_name(row)
         if not name:
             return
+        is_folder = self._row_kind(row) == _FFLAG_ROW_FOLDER
         if self._linux_keybinds:
             service = self._begin_linux_hotkey_capture()
             if service is None:
@@ -3131,17 +3276,23 @@ class CustomFFlagEditor(QWidget):
             dialog = WindowsHotkeyCaptureDialog(name, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        bindings = self._keybinds()
+        bindings = self._folder_keybinds() if is_folder else self._keybinds()
         config = _required_config(self._config)
         if dialog.clear_requested:
             bindings.pop(name, None)
-            config.custom_fflag_keybinds = bindings
+            if is_folder:
+                config.custom_fflag_folder_keybinds = bindings
+            else:
+                config.custom_fflag_keybinds = bindings
             self._load_flags()
             return
         if dialog.binding is None:
             return
         bindings[name] = dialog.binding
-        config.custom_fflag_keybinds = bindings
+        if is_folder:
+            config.custom_fflag_folder_keybinds = bindings
+        else:
+            config.custom_fflag_keybinds = bindings
         self._load_flags()
 
     def _toggle_flag_from_hotkey(self, name: str) -> None:
@@ -3164,13 +3315,15 @@ class CustomFFlagEditor(QWidget):
         if self._hotkeys_supported and column == 2:
             self._save_hotkey_settings()
             return
-        if column == 0:
+        if column == 0 and self._row_kind(row) == _FFLAG_ROW_FLAG:
             name_item = self._table.item(row, 0)
             if name_item is not None:
-                name_item.setToolTip(name_item.text())
+                name = name_item.text().strip()
+                name_item.setData(_FFLAG_CANONICAL_NAME_ROLE, name)
+                name_item.setToolTip(name)
             self._set_value_editor(
                 row,
-                name_item.text() if name_item else '',
+                self._row_name(row),
                 self._value_from_row(row),
             )
         self._save_table()
@@ -3187,12 +3340,12 @@ class CustomFFlagEditor(QWidget):
     def _update_status(self) -> None:
         if not hasattr(self, '_status'):
             return
-        count = len(self._flags_from_table()) if hasattr(self, '_table') else 0
-        active_count = (
-            sum(self._flag_is_enabled(row) for row in range(self._table.rowCount()))
-            if self._hotkeys_supported and hasattr(self, '_table')
-            else count
-        )
+        flags = self._flags_from_table() if hasattr(self, '_table') else {}
+        count = len(flags)
+        disabled = self._disabled_flag_names()
+        for folder in self._disabled_folder_names():
+            disabled.update(self._folders().get(folder, []))
+        active_count = len(set(flags) - disabled) if self._hotkeys_supported else count
         enabled = bool(self._config and getattr(self._config, 'custom_fflags_enabled', False))
         if enabled:
             self._status.setText(
@@ -3382,10 +3535,7 @@ class CustomFFlagEditor(QWidget):
             self._sort_column = column
             self._sort_ascending = True
 
-        rows: list[tuple[str, str]] = []
-        for row in range(self._table.rowCount()):
-            item = self._table.item(row, 0)
-            rows.append((item.text() if item is not None else '', self._value_from_row(row)))
+        rows = list(self._flags_from_table().items())
 
         def sort_value(entry: tuple[str, str]) -> str:
             if column == 0:
@@ -3404,9 +3554,7 @@ class CustomFFlagEditor(QWidget):
             ),
             reverse=not self._sort_ascending,
         )
-
         self._replace_table_rows(rows)
-
         self._table.horizontalHeader().setSortIndicator(
             column,
             Qt.SortOrder.AscendingOrder if self._sort_ascending else Qt.SortOrder.DescendingOrder,
@@ -3414,25 +3562,104 @@ class CustomFFlagEditor(QWidget):
         self._filter_rows(self._search.text())
 
     def _delete_selected(self) -> None:
-        rows = sorted({index.row() for index in self._table.selectedIndexes()}, reverse=True)
-        if not rows:
+        rows = sorted({index.row() for index in self._table.selectedIndexes()})
+        if not rows or self._config is None:
             return
-        remaining_rows: list[tuple[str, str]] = []
-        for row in range(self._table.rowCount()):
-            if row in rows:
-                continue
-            name_item = self._table.item(row, 0)
-            if name_item is not None:
-                remaining_rows.append((name_item.text(), self._value_from_row(row)))
-        self._replace_table_rows(remaining_rows)
-        self._save_table()
+        flags = self._flags_from_table()
+        folders = self._folders()
+        for row in rows:
+            name = self._row_name(row)
+            if self._row_kind(row) == _FFLAG_ROW_FOLDER:
+                folders.pop(name, None)
+            else:
+                flags.pop(name, None)
+                for members in folders.values():
+                    with contextlib.suppress(ValueError):
+                        members.remove(name)
+        self._config.custom_fflag_folders = folders
+        self._set_flags(flags)
+
+    def _selected_flag_names(self) -> list[str]:
+        return sorted(
+            {
+                self._row_name(index.row())
+                for index in self._table.selectedIndexes()
+                if self._row_kind(index.row()) == _FFLAG_ROW_FLAG and self._row_name(index.row())
+            },
+            key=str.casefold,
+        )
+
+    def _create_folder_from_selected(self) -> None:
+        if self._config is None:
+            return
+        selected = self._selected_flag_names()
+        if not selected:
+            QMessageBox.information(
+                self,
+                tr('ui.gui.modifications_tab.create_fastflag_folder'),
+                tr('ui.gui.modifications_tab.select_fastflags_for_folder'),
+            )
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            tr('ui.gui.modifications_tab.create_fastflag_folder'),
+            tr('ui.gui.modifications_tab.fastflag_folder_name'),
+        )
+        name = name.strip()
+        if not ok or not name:
+            return
+        folders = self._folders()
+        for members in folders.values():
+            members[:] = [member for member in members if member not in selected]
+        folders[name] = selected
+        self._config.custom_fflag_folders = folders
+        self._load_flags()
+
+    def _move_selected_to_folder(self) -> None:
+        if self._config is None:
+            return
+        selected = self._selected_flag_names()
+        folders = self._folders()
+        if not selected or not folders:
+            QMessageBox.information(
+                self,
+                tr('ui.gui.modifications_tab.move_fastflags_to_folder'),
+                tr('ui.gui.modifications_tab.select_fastflags_and_create_folder'),
+            )
+            return
+        folder, ok = QInputDialog.getItem(
+            self,
+            tr('ui.gui.modifications_tab.move_fastflags_to_folder'),
+            tr('ui.gui.modifications_tab.fastflag_folder'),
+            sorted(folders, key=str.casefold),
+            current=0,
+            editable=False,
+        )
+        if not ok or not folder:
+            return
+        for members in folders.values():
+            members[:] = [member for member in members if member not in selected]
+        folders[str(folder)] = sorted({*folders[str(folder)], *selected}, key=str.casefold)
+        self._config.custom_fflag_folders = folders
+        self._load_flags()
+
+    def _remove_selected_from_folders(self) -> None:
+        if self._config is None:
+            return
+        selected = set(self._selected_flag_names())
+        if not selected:
+            return
+        folders = self._folders()
+        for members in folders.values():
+            members[:] = [member for member in members if member not in selected]
+        self._config.custom_fflag_folders = folders
+        self._load_flags()
 
     def _filter_rows(self, text: str) -> None:
         query = str(text or '').strip().lower()
         visible_count = 0
         for row in range(self._table.rowCount()):
-            name = self._table.item(row, 0)
-            name_text = name.text() if name else ''
+            name_text = self._row_name(row)
             value_text = self._value_from_row(row)
             keybind_item = self._table.item(row, 3)
             keybind_text = (

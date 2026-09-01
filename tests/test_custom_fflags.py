@@ -1086,3 +1086,21 @@ def test_successful_client_settings_response_resets_failure_stall_timer(
 
     assert len(calls) == 2
     assert calls[1][1] == 'second failure'
+
+
+def test_runtime_flags_skip_members_of_disabled_fastflag_folders() -> None:
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={
+            'FFlagFolderMember': 'True',
+            'FFlagStillEnabled': 'False',
+        },
+        custom_fflag_disabled=[],
+        custom_fflag_folders={'Visual': ['FFlagFolderMember']},
+        custom_fflag_disabled_folders=['Visual'],
+    )
+
+    flags = CustomFFlagModifier(config).runtime_flags()
+
+    assert 'FFlagFolderMember' not in flags
+    assert flags['FFlagStillEnabled'] == 'False'

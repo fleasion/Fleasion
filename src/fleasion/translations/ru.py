@@ -1,4 +1,5 @@
 """Russian translations for Fleasion."""
+
 import string
 
 RUSSIAN: dict[str, str] = {
@@ -1840,4 +1841,16 @@ RUSSIAN: dict[str, str] = {
     'ui.utils.updater.cancel': 'Отмена',
     'ui.utils.updater.open': 'Открыть',
     'ui.utils.updater.update_available': 'Доступно обновление',
+    'ui.gui.modifications_tab.fastflag_folders': 'Folders',
+    'ui.gui.modifications_tab.create_fastflag_folder_from_selected': 'Create folder from selected',
+    'ui.gui.modifications_tab.move_selected_fastflags_to_folder': 'Move selected to folder',
+    'ui.gui.modifications_tab.remove_selected_fastflags_from_folder': 'Remove selected from folder',
+    'ui.gui.modifications_tab.fastflag_folder_count_one': '{count} FastFlag',
+    'ui.gui.modifications_tab.fastflag_folder_count_other': '{count} FastFlags',
+    'ui.gui.modifications_tab.create_fastflag_folder': 'Create FastFlag Folder',
+    'ui.gui.modifications_tab.select_fastflags_for_folder': 'Select one or more FastFlags first.',
+    'ui.gui.modifications_tab.fastflag_folder_name': 'Folder name:',
+    'ui.gui.modifications_tab.move_fastflags_to_folder': 'Move FastFlags to Folder',
+    'ui.gui.modifications_tab.select_fastflags_and_create_folder': 'Select one or more FastFlags and create a folder first.',
+    'ui.gui.modifications_tab.fastflag_folder': 'Folder:',
 }

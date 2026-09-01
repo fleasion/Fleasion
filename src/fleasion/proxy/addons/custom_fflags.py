@@ -21,7 +21,6 @@ type JsonObject = dict[str, JsonValue]
 
 
 if TYPE_CHECKING:
-
     from collections.abc import Callable, Iterable
 
     def _json_object(value: object) -> JsonObject | None: ...
@@ -133,6 +132,8 @@ class CustomFFlagModifier:
         self._disk_enabled: bool | None = None
         self._disk_flags: JsonObject | None = None
         self._disk_disabled: list[JsonValue] | None = None
+        self._disk_folders: JsonObject | None = None
+        self._disk_disabled_folders: list[JsonValue] | None = None
         self._last_response_success_at: float | None = None
         self._first_response_failure_at: float | None = None
         self._last_failure_log_at: dict[str, float] = {}
@@ -225,6 +226,10 @@ class CustomFFlagModifier:
             self._disk_flags = saved_flags or {}
             disabled = _json_list(data.get('custom_fflag_disabled', []))
             self._disk_disabled = disabled or []
+            folders = _json_object(data.get('custom_fflag_folders', {}))
+            self._disk_folders = folders or {}
+            disabled_folders = _json_list(data.get('custom_fflag_disabled_folders', []))
+            self._disk_disabled_folders = disabled_folders or []
 
     def is_enabled(self) -> bool:
         self._refresh_settings_from_disk()
@@ -262,6 +267,21 @@ class CustomFFlagModifier:
             else _config_disabled(self.config_manager)
         )
         disabled_names = {str(name).strip() for name in _disabled_values(disabled)}
+        folders = (
+            self._disk_folders
+            if self._disk_folders is not None
+            else getattr(self.config_manager, 'custom_fflag_folders', {})
+        )
+        disabled_folders = (
+            self._disk_disabled_folders
+            if self._disk_disabled_folders is not None
+            else getattr(self.config_manager, 'custom_fflag_disabled_folders', [])
+        )
+        folder_mapping = _json_object(folders) or {}
+        disabled_folder_names = {str(name).strip() for name in _disabled_values(disabled_folders)}
+        for folder_name in disabled_folder_names:
+            members = folder_mapping.get(folder_name, [])
+            disabled_names.update(str(name).strip() for name in _disabled_values(members))
         flags = {name: value for name, value in flags.items() if name not in disabled_names}
         # Roblox/Sober reads the reloader interval before applying the response
         # it has just fetched. Therefore, when this companion flag first
@@ -324,15 +344,11 @@ class CustomFFlagModifier:
         flags = self.runtime_flags() if enabled else {}
         self._refresh_settings_from_disk()
         saved_flags = (
-            self._disk_flags
-            if self._disk_flags is not None
-            else _config_flags(self.config_manager)
+            self._disk_flags if self._disk_flags is not None else _config_flags(self.config_manager)
         )
         saved_names = set(normalize_custom_fflags(saved_flags))
         stale_names = (
-            self._windows_seeded_flag_names
-            | saved_names
-            | {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG}
+            self._windows_seeded_flag_names | saved_names | {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG}
         ) - set(flags)
         removed_names = {
             name for name in stale_names if application_settings.pop(name, None) is not None
@@ -396,7 +412,7 @@ class CustomFFlagModifier:
                 return []
             try:
                 resource_dirs = _find_macos_resource_dirs()
-            except (ImportError, OSError):
+            except ImportError, OSError:
                 return []
 
         paths: list[Path] = []
@@ -511,8 +527,7 @@ class CustomFFlagModifier:
             saved_names.add(DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG)
         stale_names = (self._macos_seeded_flag_names | saved_names) - desired_names
         updated_paths = sum(
-            self._prime_macos_client_settings_path(target, flags, stale_names)
-            for target in paths
+            self._prime_macos_client_settings_path(target, flags, stale_names) for target in paths
         )
 
         self._macos_seeded_flag_names = desired_names

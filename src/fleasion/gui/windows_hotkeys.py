@@ -26,6 +26,7 @@ type HotkeyBinding = dict[str, int | bool | str]
 
 class _DisabledConfigLike(Protocol):
     custom_fflag_disabled: list[str]
+    custom_fflag_disabled_folders: list[str]
 
 
 class _RefreshProxyLike(Protocol):
@@ -73,9 +74,17 @@ if TYPE_CHECKING:
 
     def _config_flags(config: object) -> Mapping[str, object]: ...
 
+    def _config_folders(config: object) -> Mapping[str, object]: ...
+
+    def _config_folder_bindings(config: object) -> Mapping[str, Mapping[str, object]]: ...
+
     def _config_disabled(config: object) -> list[str]: ...
 
     def _set_config_disabled(config: object, values: list[str]) -> None: ...
+
+    def _config_disabled_folders(config: object) -> list[str]: ...
+
+    def _set_config_disabled_folders(config: object, values: list[str]) -> None: ...
 
     def _refresh_proxy(proxy: object) -> None: ...
 else:
@@ -134,12 +143,27 @@ else:
         flags = getattr(config, 'custom_fflags', {}) or {}
         return flags if isinstance(flags, Mapping) else {}
 
+    def _config_folders(config: object) -> Mapping[str, object]:
+        folders = getattr(config, 'custom_fflag_folders', {}) or {}
+        return folders if isinstance(folders, Mapping) else {}
+
+    def _config_folder_bindings(config: object) -> Mapping[str, Mapping[str, object]]:
+        bindings = getattr(config, 'custom_fflag_folder_keybinds', {}) or {}
+        return bindings if isinstance(bindings, Mapping) else {}
+
     def _config_disabled(config: object) -> list[str]:
         disabled = getattr(config, 'custom_fflag_disabled', []) or []
         return [str(value) for value in disabled]
 
     def _set_config_disabled(config: _DisabledConfigLike, values: list[str]) -> None:
         config.custom_fflag_disabled = values
+
+    def _config_disabled_folders(config: object) -> list[str]:
+        disabled = getattr(config, 'custom_fflag_disabled_folders', []) or []
+        return [str(value) for value in disabled]
+
+    def _set_config_disabled_folders(config: _DisabledConfigLike, values: list[str]) -> None:
+        config.custom_fflag_disabled_folders = values
 
     def _refresh_proxy(proxy: _RefreshProxyLike) -> None:
         proxy.refresh_custom_fflag_interception()
@@ -208,9 +232,7 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
     scan_code = binding_map.get('scan_code')
     invalid_kind = kind not in {'key', 'mouse_button'}
     invalid_scan_code = (
-        not isinstance(scan_code, int)
-        or isinstance(scan_code, bool)
-        or not 0 < scan_code <= 0xFF
+        not isinstance(scan_code, int) or isinstance(scan_code, bool) or not 0 < scan_code <= 0xFF
     )
     invalid_extended = not isinstance(extended, bool)
     invalid_mouse_button = kind == 'mouse_button' and scan_code not in {1, 2, 4, 5, 6}
@@ -441,7 +463,14 @@ class WindowsHotkeyService(QObject):
         user32.MapVirtualKeyW.restype = wintypes.UINT
         try:
             translated, wheel_bindings = self._translate_bindings(user32, bindings)
-        except (AttributeError, KeyError, TypeError, ValueError, OverflowError, ctypes.ArgumentError) as exc:
+        except (
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            ctypes.ArgumentError,
+        ) as exc:
             log_buffer.log('CustomFFlags', f'Could not start Windows FastFlag key polling: {exc}')
             return
 
@@ -532,7 +561,7 @@ class WindowsCustomFFlagHotkeyController(QObject):
         self._config = config_manager
         self._proxy_master = proxy_master
         self._service = WindowsHotkeyService(self)
-        self._service.activated.connect(self.toggle_flag)
+        self._service.activated.connect(self.toggle_target)
 
     @property
     def service(self) -> WindowsHotkeyService:
@@ -542,7 +571,20 @@ class WindowsCustomFFlagHotkeyController(QObject):
         if self._config is None or not _config_enabled(self._config):
             self._service.set_bindings({})
             return
-        self._service.set_bindings(_config_bindings(self._config))
+        bindings = dict(_config_bindings(self._config))
+        bindings.update(
+            {
+                f'folder:{name}': binding
+                for name, binding in _config_folder_bindings(self._config).items()
+            }
+        )
+        self._service.set_bindings(bindings)
+
+    def toggle_target(self, target: str) -> None:
+        if target.startswith('folder:'):
+            self.toggle_folder(target.removeprefix('folder:'))
+            return
+        self.toggle_flag(target)
 
     def toggle_flag(self, name: str) -> None:
         if (
@@ -568,6 +610,31 @@ class WindowsCustomFFlagHotkeyController(QObject):
             f'Windows keybind turned {name} {"on" if is_enabled else "off"}',
         )
         self.toggled.emit(name)
+
+    def toggle_folder(self, name: str) -> None:
+        if (
+            self._config is None
+            or not _config_enabled(self._config)
+            or name not in _config_folders(self._config)
+        ):
+            return
+        disabled = set(_config_disabled_folders(self._config))
+        is_enabled = name in disabled
+        if is_enabled:
+            disabled.remove(name)
+        else:
+            disabled.add(name)
+        _set_config_disabled_folders(self._config, sorted(disabled))
+        if self._proxy_master is not None:
+            try:
+                _refresh_proxy(self._proxy_master)
+            except Exception as exc:  # ruff: ignore[blind-except]
+                log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
+        log_buffer.log(
+            'CustomFFlags',
+            f'Windows keybind turned folder {name} {"on" if is_enabled else "off"}',
+        )
+        self.toggled.emit(f'folder:{name}')
 
     def stop(self) -> None:
         self._service.stop()
