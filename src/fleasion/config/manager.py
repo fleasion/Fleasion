@@ -14,6 +14,7 @@ from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeIs
 
+from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object, is_json_value
 from fleasion.utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
 
 if TYPE_CHECKING:
@@ -35,9 +36,6 @@ _MOUSE_WHEEL_DIRECTIONS = ('up', 'down')
 _LINUX_MOUSE_BUTTON_CODES = frozenset({0x110, 0x111, 0x112, 0x113, 0x114})
 _WINDOWS_MOUSE_BUTTON_CODES = frozenset({1, 2, 4, 5, 6})
 _WINDOWS_HOTKEY_PLATFORMS = (None, 'windows')
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
 type ReplacementRules = list[JsonValue]
 type ReplacementKey = int | str
 type ReplacementMaps = tuple[
@@ -82,32 +80,8 @@ def _preserve_path_value(value: object) -> str | Path:
     return value
 
 
-def _preserve_json_object(value: JsonValue) -> JsonObject:
-    if TYPE_CHECKING:
-        assert isinstance(value, dict)
-    return value
-
-
-def _preserve_replacement_rules(value: JsonValue) -> ReplacementRules:
-    if TYPE_CHECKING:
-        assert isinstance(value, list)
-    return value
-
-
-def _is_json_value(value: object) -> TypeIs[JsonValue]:
-    if value is None or isinstance(value, str | int | float | bool):
-        return True
-    if _is_object_list(value):
-        return all(_is_json_value(item) for item in value)
-    if _is_object_dict(value):
-        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
-    return False
-
-
-def _preserve_json_value(value: object) -> JsonValue:
-    if TYPE_CHECKING:
-        assert _is_json_value(value)
-    return value
+def _replacement_rules(value: JsonValue) -> ReplacementRules:
+    return value if isinstance(value, list) else []
 
 
 def _is_str_list(value: object) -> TypeIs[list[str]]:
@@ -346,7 +320,7 @@ def _replacement_mode(rule: JsonObject) -> JsonValue:
 
 def _apply_replacement_rule(rule: JsonObject, targets: ReplacementMaps) -> None:
     replacements, removals, cdn_replacements, local_replacements = targets
-    parsed_ids = _parse_replacement_keys(_preserve_replacement_rules(rule.get('replace_ids', [])))
+    parsed_ids = _parse_replacement_keys(_replacement_rules(rule.get('replace_ids', [])))
     mode = _replacement_mode(rule)
 
     if mode == 'remove':
@@ -522,7 +496,11 @@ DEFAULT_SETTINGS: JsonObject = {
 
 
 def _json_loads(raw: bytes | str) -> JsonValue:
-    return json.loads(raw)
+    value: object = json.loads(raw)
+    if not is_json_value(value):
+        msg = 'Decoded value is not valid JSON'
+        raise TypeError(msg)
+    return value
 
 
 def _write_json(path: Path, data: JsonValue) -> None:
@@ -741,12 +719,13 @@ class ConfigManager:
         CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
         if CONFIG_FILE.exists():
             try:
-                loaded = _preserve_json_object(self._load_json_file(Path(CONFIG_FILE)))
-                settings = self._settings_from_loaded(loaded)
+                loaded_value = self._load_json_file(Path(CONFIG_FILE))
             except json.JSONDecodeError, OSError, UnicodeDecodeError:
                 pass
             else:
-                return settings
+                loaded = as_json_object(loaded_value)
+                if loaded is not None:
+                    return self._settings_from_loaded(loaded)
         return deepcopy(DEFAULT_SETTINGS)
 
     def _settings_from_loaded(self, loaded: JsonObject) -> JsonObject:
@@ -768,7 +747,7 @@ class ConfigManager:
     @staticmethod
     def _migrate_old_format(old_config: JsonObject) -> None:
         """Migrate old config format to new format."""
-        configs = _preserve_json_object(old_config.get('configs', {}))
+        configs = as_json_object(old_config.get('configs', {})) or {}
         for name, data in configs.items():
             config_path = CONFIGS_FOLDER / f'{name}.json'
             if not config_path.exists():
@@ -1153,7 +1132,9 @@ class ConfigManager:
 
     @custom_fflags.setter
     def custom_fflags(self, value: object) -> None:
-        self.settings['custom_fflags'] = _preserve_json_value(_normalize_custom_fflags(value))
+        normalized: JsonObject = {}
+        normalized.update(_normalize_custom_fflags(value))
+        self.settings['custom_fflags'] = normalized
         self._save_settings()
 
     @property
@@ -1163,9 +1144,8 @@ class ConfigManager:
 
     @custom_fflag_disabled.setter
     def custom_fflag_disabled(self, value: object) -> None:
-        self.settings['custom_fflag_disabled'] = _preserve_json_value(
-            _normalize_custom_fflag_disabled(value)
-        )
+        disabled: list[JsonValue] = [*_normalize_custom_fflag_disabled(value)]
+        self.settings['custom_fflag_disabled'] = disabled
         self._save_settings()
 
     @property
@@ -1175,9 +1155,12 @@ class ConfigManager:
 
     @custom_fflag_keybinds.setter
     def custom_fflag_keybinds(self, value: object) -> None:
-        self.settings['custom_fflag_keybinds'] = _preserve_json_value(
-            _normalize_custom_fflag_keybinds(value)
-        )
+        keybinds: JsonObject = {}
+        for name, binding in _normalize_custom_fflag_keybinds(value).items():
+            json_binding: JsonObject = {}
+            json_binding.update(binding)
+            keybinds[name] = json_binding
+        self.settings['custom_fflag_keybinds'] = keybinds
         self._save_settings()
 
     @property
@@ -1187,9 +1170,11 @@ class ConfigManager:
 
     @custom_fflag_folders.setter
     def custom_fflag_folders(self, value: object) -> None:
-        self.settings['custom_fflag_folders'] = _preserve_json_value(
-            _normalize_custom_fflag_folders(value)
-        )
+        folders: JsonObject = {}
+        for name, members in _normalize_custom_fflag_folders(value).items():
+            json_members: list[JsonValue] = [*members]
+            folders[name] = json_members
+        self.settings['custom_fflag_folders'] = folders
         self._save_settings()
 
     @property
@@ -1201,9 +1186,8 @@ class ConfigManager:
 
     @custom_fflag_disabled_folders.setter
     def custom_fflag_disabled_folders(self, value: object) -> None:
-        self.settings['custom_fflag_disabled_folders'] = _preserve_json_value(
-            _normalize_custom_fflag_disabled(value)
-        )
+        disabled: list[JsonValue] = [*_normalize_custom_fflag_disabled(value)]
+        self.settings['custom_fflag_disabled_folders'] = disabled
         self._save_settings()
 
     @property
@@ -1215,9 +1199,12 @@ class ConfigManager:
 
     @custom_fflag_folder_keybinds.setter
     def custom_fflag_folder_keybinds(self, value: object) -> None:
-        self.settings['custom_fflag_folder_keybinds'] = _preserve_json_value(
-            _normalize_custom_fflag_keybinds(value)
-        )
+        keybinds: JsonObject = {}
+        for name, binding in _normalize_custom_fflag_keybinds(value).items():
+            json_binding: JsonObject = {}
+            json_binding.update(binding)
+            keybinds[name] = json_binding
+        self.settings['custom_fflag_folder_keybinds'] = keybinds
         self._save_settings()
 
     @property
@@ -1552,7 +1539,8 @@ class ConfigManager:
 
     @scraper_blacklist.setter
     def scraper_blacklist(self, value: list[str]) -> None:
-        self.settings['scraper_blacklist'] = _preserve_json_value(value)
+        values: list[JsonValue] = [*value]
+        self.settings['scraper_blacklist'] = values
         self._save_settings()
 
     @property
@@ -1561,7 +1549,8 @@ class ConfigManager:
 
     @subplace_blacklist.setter
     def subplace_blacklist(self, value: list[str]) -> None:
-        self.settings['subplace_blacklist'] = _preserve_json_value(value)
+        values: list[JsonValue] = [*value]
+        self.settings['subplace_blacklist'] = values
         self._save_settings()
 
     @property
@@ -1576,7 +1565,7 @@ class ConfigManager:
 
     @property
     def username_spoofer(self) -> JsonObject:
-        default = _preserve_json_object(deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {})))
+        default = as_json_object(deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))) or {}
         saved = self.settings.get('username_spoofer', {})
         if isinstance(saved, dict):
             default.update(saved)
@@ -1584,7 +1573,7 @@ class ConfigManager:
 
     @username_spoofer.setter
     def username_spoofer(self, value: object) -> None:
-        base = _preserve_json_object(deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {})))
+        base = as_json_object(deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))) or {}
         if _is_object_dict(value):
             base.update(
                 {
@@ -1642,7 +1631,8 @@ class ConfigManager:
     @export_naming.setter
     def export_naming(self, value: list[str]) -> None:
         """Set export naming options."""
-        self.settings['export_naming'] = _preserve_json_value(value)
+        values: list[JsonValue] = [*value]
+        self.settings['export_naming'] = values
         self._save_settings()
 
     def is_export_naming_enabled(self, option: str) -> bool:
@@ -1674,7 +1664,8 @@ class ConfigManager:
     @enabled_configs.setter
     def enabled_configs(self, value: list[str]) -> None:
         """Set list of enabled configs."""
-        self.settings['enabled_configs'] = _preserve_json_value(value)
+        values: list[JsonValue] = [*value]
+        self.settings['enabled_configs'] = values
         self._mark_replacements_dirty()
         self._save_settings()
 
@@ -1728,7 +1719,8 @@ class ConfigManager:
         enabled = _preserve_str_list(self.settings.get('enabled_configs', []))
         cleaned_enabled = [name for name in enabled if name in current_configs]
         if cleaned_enabled != enabled:
-            self.settings['enabled_configs'] = _preserve_json_value(cleaned_enabled)
+            values: list[JsonValue] = [*cleaned_enabled]
+            self.settings['enabled_configs'] = values
             changed = True
 
         last_config = _preserve_runtime_type(self.settings.get('last_config', 'Default'), str)
@@ -1769,9 +1761,7 @@ class ConfigManager:
 
     def get_replacement_rules(self, config_name: str) -> ReplacementRules:
         """Get rules for a specific config."""
-        return _preserve_replacement_rules(
-            self._load_config(config_name).get('replacement_rules', [])
-        )
+        return _replacement_rules(self._load_config(config_name).get('replacement_rules', []))
 
     def set_replacement_rules(self, config_name: str, rules: ReplacementRules) -> None:
         """Set rules for a specific config."""
@@ -1897,7 +1887,7 @@ class ConfigManager:
         for entry in entries:
             if isinstance(entry, dict) and entry.get('type') == 'group':
                 yield from ConfigManager._iter_replacement_rules(
-                    _preserve_replacement_rules(entry.get('children', []))
+                    _replacement_rules(entry.get('children', []))
                 )
             else:
                 yield entry

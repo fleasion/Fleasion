@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fleasion.utils import format_count, log_buffer
+from fleasion.utils.json_types import JsonObject, as_json_object
 
 from .stash_paths import resource_stash_dir
 
@@ -56,22 +57,17 @@ APPLEBLOX_CLIENT_SETTINGS_REL = Path('MacOS') / 'ClientSettings' / 'ClientAppSet
 LOD_LEVELS = ('L0', 'L12', 'L23', 'L34')
 
 
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type JsonObject = dict[str, JsonValue]
 type FlagValue = str | bool | int
 
 
 if TYPE_CHECKING:
-
     from collections.abc import Mapping
+
     def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str: ...
 
     def _setting_int_source(settings: Mapping[str, object], key: str, default: int) -> object: ...
 
     def _setting_value(settings: Mapping[str, object], key: str) -> object: ...
-
-    def _json_object(value: object) -> JsonObject | None: ...
 
     def _int_value(value: object) -> int: ...
 else:
@@ -84,9 +80,6 @@ else:
 
     def _setting_value(settings: Mapping[str, object], key: str) -> object:
         return settings.get(key)
-
-    def _json_object(value: object) -> JsonObject | None:
-        return value if isinstance(value, dict) else None
 
     def _int_value(value: object) -> int:
         return int(value)
@@ -127,7 +120,7 @@ def _sober_config_path_for_resource_dir(roblox_dir: Path) -> Path | None:
             if platform_linux.is_sober_resource_dir(roblox_dir)
             else None
         )
-    except (ImportError, AttributeError, OSError):
+    except ImportError, AttributeError, OSError:
         return None
 
 
@@ -184,7 +177,7 @@ def _write_sober_config(sober_config: Path, stash_config: Path, flags: dict[str,
             shutil.copy2(sober_config, stash_config)
         try:
             loaded_value: object = json.loads(sober_config.read_text(encoding='utf-8'))
-            loaded = _json_object(loaded_value)
+            loaded = as_json_object(loaded_value)
             if loaded is not None:
                 config_payload = loaded
         except json.JSONDecodeError:
@@ -203,8 +196,8 @@ def _write_sober_config(sober_config: Path, stash_config: Path, flags: dict[str,
 def _merge_bootstrapper_flag_file(target: Path, flags: dict[str, str]) -> bool:
     try:
         existing_value: object = json.loads(target.read_text(encoding='utf-8'))
-        existing = _json_object(existing_value) or {}
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        existing = as_json_object(existing_value) or {}
+    except UnicodeDecodeError, json.JSONDecodeError:
         existing = {}
     merged = {**existing, **flags}
     if merged == existing:
@@ -250,7 +243,7 @@ def _restore_sober_config(sober_config: Path, stash_config: Path) -> None:
     restore_read_only = _is_read_only(sober_config)
     try:
         payload_value: object = json.loads(sober_config.read_text(encoding='utf-8'))
-        payload = _json_object(payload_value) or {}
+        payload = as_json_object(payload_value) or {}
     except json.JSONDecodeError:
         payload = {}
     if 'fflags' not in payload:

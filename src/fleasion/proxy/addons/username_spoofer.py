@@ -5,16 +5,16 @@ from __future__ import annotations
 import importlib
 import json
 import threading
-from typing import TYPE_CHECKING, Protocol, TypedDict, TypeIs, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 import requests
 
 from fleasion.utils import log_buffer
+from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from fleasion.config.manager import JsonObject, JsonValue
     from fleasion.proxy.server import ProxyFlow
 
 PROFILE_ENDPOINT_FRAGMENT = '/v1/user/profiles/get-profiles'
@@ -51,7 +51,7 @@ def _authenticated_user_id(cookie: str) -> int | None:
     session.proxies = {}
     try:
         session.cookies.set('.ROBLOSECURITY', cookie)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         session.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
     response = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
     if response.status_code != 200:
@@ -74,37 +74,6 @@ class _SpooferState(TypedDict):
 class _ConfigSource(Protocol):
     @property
     def username_spoofer(self) -> JsonObject: ...
-
-
-def _is_object_list(value: object) -> TypeIs[list[object]]:
-    return isinstance(value, list)
-
-
-def _is_object_dict(value: object) -> TypeIs[dict[object, object]]:
-    return isinstance(value, dict)
-
-
-def _is_json_value(value: object) -> TypeIs[JsonValue]:
-    if value is None or isinstance(value, str | int | float | bool):
-        return True
-    if _is_object_list(value):
-        return all(_is_json_value(item) for item in value)
-    if _is_object_dict(value):
-        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
-    return False
-
-
-def _load_json(data: str) -> JsonValue:
-    value: object = json.loads(data)
-    if TYPE_CHECKING:
-        assert _is_json_value(value)
-    return value
-
-
-def _json_object(value: JsonValue) -> JsonObject:
-    if TYPE_CHECKING:
-        assert isinstance(value, dict)
-    return value
 
 
 class UsernameSpoofer:
@@ -299,7 +268,10 @@ class UsernameSpoofer:
         return changed
 
     def _gamejoin_replacement_content(self, content: bytes) -> bytes | None:
-        payload_object = _json_object(_load_json(content.decode('utf-8')))
+        payload_value: object = json.loads(content.decode('utf-8'))
+        payload_object = as_json_object(payload_value)
+        if payload_object is None:
+            return None
         user_id = self._fetch_authenticated_user_id()
         if user_id is None:
             return None
@@ -323,7 +295,13 @@ class UsernameSpoofer:
             return False
         try:
             replacement = self._gamejoin_replacement_content(response.content)
-        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            AttributeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             log_buffer.log('username-spoofer', f'Failed to modify gamejoin response: {exc}')
             return False
         if replacement is None:
@@ -338,7 +316,10 @@ class UsernameSpoofer:
         current_user_id: str | None,
         current_username: str,
     ) -> bytes | None:
-        payload = _json_object(_load_json(content.decode('utf-8')))
+        payload_value: object = json.loads(content.decode('utf-8'))
+        payload = as_json_object(payload_value)
+        if payload is None:
+            return None
         profile_details = payload.get('profileDetails', [])
         if not isinstance(profile_details, list):
             return None
@@ -393,7 +374,13 @@ class UsernameSpoofer:
                 current_user_id,
                 current_username,
             )
-        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            AttributeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             log_buffer.log('username-spoofer', f'Failed to modify profile response: {exc}')
             return
         if replacement is not None:

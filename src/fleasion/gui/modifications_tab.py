@@ -97,6 +97,7 @@ from fleasion.modifications.platform_targets import (
 from fleasion.modifications.stash_paths import resource_stash_dir
 from fleasion.utils import APP_CACHE_DIR, log_buffer, open_folder
 from fleasion.utils.http import http_get
+from fleasion.utils.json_types import JsonValue, require_json_value
 from fleasion.utils.threading import run_in_thread
 
 from .file_drop import FileDropLineEdit, local_file_path_example
@@ -154,10 +155,6 @@ class _FastFlagSettings(TypedDict, total=False):
     grass_max: int | None
     grass_min: int | None
     grass_motion: int | None
-
-
-type _JsonScalar = str | int | float | bool | None
-type _JsonValue = _JsonScalar | list[_JsonValue] | dict[str, _JsonValue]
 
 
 class _FastFlagProfileManagerLike(Protocol):
@@ -2096,7 +2093,7 @@ class FFlagBrowserDialog(QDialog):
         return value if value is not None else tr('modifications.fastflags.no_value')
 
     @staticmethod
-    def _extract_flags(payload: _JsonValue) -> dict[str, str]:
+    def _extract_flags(payload: JsonValue) -> dict[str, str]:
         """Validate the public ClientSettings response without accepting arbitrary JSON."""
         if type(payload) is not dict:
             msg = 'Roblox returned an invalid FastFlag response.'
@@ -2159,7 +2156,7 @@ class FFlagBrowserDialog(QDialog):
     def _read_cache(cls, *, now: float | None = None) -> dict[str, str | None] | None:
         """Return the recent merged result, ignoring malformed or expired cache files."""
         try:
-            cached: _JsonValue = json.loads(cls._CACHE_PATH.read_text(encoding='utf-8'))
+            cached = require_json_value(json.loads(cls._CACHE_PATH.read_text(encoding='utf-8')))
         except OSError, ValueError, json.JSONDecodeError:
             return None
         if not isinstance(cached, dict) or cached.get('version') != cls._CACHE_VERSION:

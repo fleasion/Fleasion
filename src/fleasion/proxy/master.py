@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Protocol, Self, TypedDict, TypeIs, cast
 if TYPE_CHECKING:
     winreg: _WinregLike
 
-    from fleasion.config.manager import ConfigManager, JsonValue
+    from fleasion.config.manager import ConfigManager
     from fleasion.utils.linux_clients import LinuxClientDescriptor, LinuxClientInstallation
 else:
     try:
@@ -92,6 +92,7 @@ from fleasion.utils.certs import (
     generate_multi_host_cert,
     get_ca_pem,
 )
+from fleasion.utils.json_types import JsonObject, JsonValue, is_object_dict
 from fleasion.utils.roblox_dirs import (
     is_roblox_studio_resource_dir,
     load_saved_roblox_dirs,
@@ -360,13 +361,6 @@ def _lazy_attr(module_name: str, attribute: str) -> object:
         raise ImportError(msg) from exc
 
 
-def _is_str_object_dict(value: object) -> TypeIs[dict[str, object]]:
-    if not isinstance(value, dict):
-        return False
-    mapping = cast('dict[object, object]', value)
-    return all(isinstance(key, str) for key in mapping)
-
-
 def _is_str_list(value: object) -> TypeIs[list[str]]:
     if not isinstance(value, list):
         return False
@@ -377,11 +371,11 @@ def _is_str_list(value: object) -> TypeIs[list[str]]:
 def _object_dict_list(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         return []
-    return [item for item in cast('list[object]', value) if _is_str_object_dict(item)]
+    return [item for item in cast('list[object]', value) if is_object_dict(item)]
 
 
 def _is_cacert_state(value: object) -> TypeIs[_CacertState]:
-    if not _is_str_object_dict(value):
+    if not is_object_dict(value):
         return False
     string_fields = ('path', 'install', 'sha256', 'health_reason', 'error')
     int_fields = (
@@ -400,7 +394,7 @@ def _is_cacert_state(value: object) -> TypeIs[_CacertState]:
 
 
 def _is_auto_replace_rule(value: object) -> TypeIs[AutoReplaceRule]:
-    if not _is_str_object_dict(value):
+    if not is_object_dict(value):
         return False
     enabled = value.get('enabled')
     if enabled is not None and not isinstance(enabled, bool):
@@ -460,8 +454,12 @@ _WATCHDOG_LOOKAHEAD = 30  # seconds ahead the task is scheduled
 _WATCHDOG_INTERVAL = 10  # seconds between watchdog refreshes
 _WATCHDOG_SCHTASKS_TIMEOUT = 20
 _WATCHDOG_TASK_XML = _PLATFORM_TEMP_DIR / 'fleasion_watchdog_task.xml'
-_SCHTASKS_EXE = str(Path(os.environ.get(_SYSTEM_ROOT_ENV_KEY, r'C:\Windows')) / 'System32' / 'schtasks.exe')
-_CERTUTIL_EXE = str(Path(os.environ.get(_SYSTEM_ROOT_ENV_KEY, r'C:\Windows')) / 'System32' / 'certutil.exe')
+_SCHTASKS_EXE = str(
+    Path(os.environ.get(_SYSTEM_ROOT_ENV_KEY, r'C:\Windows')) / 'System32' / 'schtasks.exe'
+)
+_CERTUTIL_EXE = str(
+    Path(os.environ.get(_SYSTEM_ROOT_ENV_KEY, r'C:\Windows')) / 'System32' / 'certutil.exe'
+)
 
 # PowerShell command that strips Fleasion entries from the hosts file and
 # flushes DNS.  Encoded as UTF-16-LE base64 to avoid XML/shell-escaping pain.
@@ -1270,8 +1268,10 @@ def _run_raw_tls_loopback_probe_sync(
         alive = 'yes' if server_thread.is_alive() else 'no'
         return (
             False,
-            (f'client={client_error}; server={server_error}; accepted={accepted}; '
-            f'sni={sni}; server_thread_alive={alive}'),
+            (
+                f'client={client_error}; server={server_error}; accepted={accepted}; '
+                f'sni={sni}; server_thread_alive={alive}'
+            ),
         )
     if server_thread.is_alive():
         return False, 'server thread did not finish after client handshake'
@@ -1647,7 +1647,6 @@ def _nt_path(p: Path) -> str:
     return f'\\??\\{p}'
 
 
-
 def _pending_rename_entries(key: _RegistryKey) -> list[str] | None:
     try:
         existing, value_type = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
@@ -1760,7 +1759,7 @@ def _is_admin() -> bool:
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return bool(_windows_ctypes.windll.shell32.IsUserAnAdmin())
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return False
 
 
@@ -1843,7 +1842,7 @@ def _get_process_name_from_pid(pid: int) -> str:
             creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return 'Unknown'
 
     for raw_line in result.stdout.splitlines():
@@ -1879,7 +1878,7 @@ def _list_port_listeners_powershell(port: int) -> list[_PortListener]:
             creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=6,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return []
 
     if result.returncode != 0:
@@ -1897,18 +1896,20 @@ def _list_port_listeners_powershell(port: int) -> list[_PortListener]:
     rows: list[object] = cast('list[object]', parsed) if isinstance(parsed, list) else [parsed]
     listeners: list[_PortListener] = []
     for row_value in rows:
-        if not _is_str_object_dict(row_value):
+        if not is_object_dict(row_value):
             continue
         row = row_value
         try:
             pid = int(cast('int | str | bytes', row.get('PID', 0)))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pid = 0
         if pid <= 0:
             continue
 
         process_name = str(row.get('ProcessName') or 'Unknown').strip() or 'Unknown'
-        local_address = str(row.get('LocalAddress') or _UNSPECIFIED_IPV4).strip() or _UNSPECIFIED_IPV4
+        local_address = (
+            str(row.get('LocalAddress') or _UNSPECIFIED_IPV4).strip() or _UNSPECIFIED_IPV4
+        )
         listeners.append(
             {
                 'pid': pid,
@@ -1927,7 +1928,7 @@ def _list_port_listeners_netstat(port: int) -> list[_PortListener]:
             creationflags=_windows_subprocess.CREATE_NO_WINDOW,
             timeout=6,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return []
 
     listeners: list[_PortListener] = []
@@ -1978,7 +1979,7 @@ def _list_port_listeners(port: int) -> list[_PortListener]:
                 ['lsof', '-nP', f'-iTCP:{port}', '-sTCP:LISTEN'],
                 timeout=6,
             )
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             result = None
 
         listeners: list[_PortListener] = []
@@ -2011,7 +2012,9 @@ def _list_port_listeners(port: int) -> list[_PortListener]:
     for entry in listeners:
         pid = int(entry.get('pid', 0) or 0)
         process_name = str(entry.get('process_name') or 'Unknown').strip() or 'Unknown'
-        local_address = str(entry.get('local_address') or _UNSPECIFIED_IPV4).strip() or _UNSPECIFIED_IPV4
+        local_address = (
+            str(entry.get('local_address') or _UNSPECIFIED_IPV4).strip() or _UNSPECIFIED_IPV4
+        )
         key = (pid, process_name.lower(), local_address)
         if key in seen:
             continue
@@ -2060,7 +2063,9 @@ def _set_active_hosts_loopbacks(
     if not loopbacks:
         globals()['_HOSTS_ACTIVE_LOOPBACK_IPS'] = None
         return
-    ordered: list[str] = [ip for ip in (_HOSTS_IPV4_LOOPBACK, _HOSTS_IPV6_LOOPBACK) if ip in loopbacks]
+    ordered: list[str] = [
+        ip for ip in (_HOSTS_IPV4_LOOPBACK, _HOSTS_IPV6_LOOPBACK) if ip in loopbacks
+    ]
     globals()['_HOSTS_ACTIVE_LOOPBACK_IPS'] = tuple(ordered) or None
 
 
@@ -2098,7 +2103,11 @@ def _hosts_conflicts(
 ) -> list[tuple[str, _HostsEntry]]:
     conflicts: list[tuple[str, _HostsEntry]] = []
     for host in sorted(hosts):
-        conflicts.extend((host, entry) for entry in entries.get(host.lower(), []) if not _is_hosts_loopback_ip(entry.get('ip', '')))
+        conflicts.extend(
+            (host, entry)
+            for entry in entries.get(host.lower(), [])
+            if not _is_hosts_loopback_ip(entry.get('ip', ''))
+        )
     return conflicts
 
 
@@ -2188,7 +2197,11 @@ def _verify_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None =
     required_ips = _required_hosts_loopbacks()
     for host in sorted(hosts):
         host_entries = entries.get(host.lower(), [])
-        missing.extend(f'{host}->{ip}' for ip in required_ips if not any(str(entry.get('ip', '')).lower() == ip for entry in host_entries))
+        missing.extend(
+            f'{host}->{ip}'
+            for ip in required_ips
+            if not any(str(entry.get('ip', '')).lower() == ip for entry in host_entries)
+        )
 
     if missing:
         log_buffer.log(
@@ -2449,7 +2462,9 @@ def _repair_hosts_file_with_temp(
                     if len(pending) + len(chunk) <= 1024 * 1024:
                         pending += chunk
                     else:
-                        pending_spill = spill_stack.enter_context(tempfile.TemporaryFile(mode='w+b'))
+                        pending_spill = spill_stack.enter_context(
+                            tempfile.TemporaryFile(mode='w+b')
+                        )
                         pending_spill.write(pending)
                         pending_spill.write(chunk)
                         pending = b''
@@ -2918,9 +2933,7 @@ def _remove_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None =
         return True
 
 
-def cleanup_hosts_entries(
-    hosts: set[str], error_details: _ErrorDetails | None = None
-) -> bool:
+def cleanup_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None = None) -> bool:
     """Remove owned hosts entries and finish the clean-exit bookkeeping."""
     if hosts_file_is_oversized(error_details):
         cleaned = repair_hosts_file(hosts, error_details=error_details)
@@ -3041,7 +3054,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
             try:
                 with os.scandir(path) as entries:
                     return [Path(entry.path) for entry in entries if entry.is_dir()]
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 return []
 
         def _recurse(path: Path, depth: int) -> None:
@@ -3070,14 +3083,14 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
     def _scan_registry_key_and_children(parent: object, name: str) -> None:
         try:
             key_context = registry.OpenKey(parent, name)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return
         with key_context as key:
             _check_player_path_key(key)
             for child_name in _registry_subkey_names(key):
                 try:
                     child_context = registry.OpenKey(key, child_name)
-                except (OSError, ValueError):
+                except OSError, ValueError:
                     continue
                 with child_context as child_key:
                     _check_player_path_key(child_key)
@@ -3088,14 +3101,14 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
                 names = _registry_subkey_names(software_key)
                 for name in names:
                     _scan_registry_key_and_children(software_key, name)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return
 
     def _scan_protocol_install(protocol_key: str, source: str) -> int:
         try:
             with registry.OpenKey(registry.HKEY_CURRENT_USER, protocol_key) as key:
                 command, value_type = registry.QueryValueEx(key, '')
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return 0
         if value_type != registry.REG_SZ or not isinstance(command, str) or not command:
             return 0
@@ -3290,7 +3303,7 @@ def _is_fleasion_ca_cert_block(pem_block: str) -> bool:
     """Return True if *pem_block* is a Fleasion self-signed CA cert."""
     try:
         cert, cn, org = _fleasion_ca_identity(pem_block)
-    except (ImportError, TypeError, ValueError):
+    except ImportError, TypeError, ValueError:
         return False
     return cert.subject == cert.issuer and cn == 'Fleasion Proxy CA' and org == 'Fleasion'
 
@@ -3620,7 +3633,9 @@ def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int
             _restore_cacert_read_only(ca_file)
 
 
-def _normalize_bootstrapper_ca_backup(resource_dir: Path, ca_pem: str) -> tuple[bool, _ErrorDetails]:
+def _normalize_bootstrapper_ca_backup(
+    resource_dir: Path, ca_pem: str
+) -> tuple[bool, _ErrorDetails]:
     ca_file = resource_dir / 'ssl' / 'cacert.pem'
     bootstrapper = 'AppleBlox' if 'AppleBlox' in resource_dir.parts else 'Froststrap'
     changed, _fleasion_count, _current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
@@ -3651,9 +3666,7 @@ def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[_ErrorDetail
 
     find_bootstrapper_restore_resource_dirs = cast(
         'Callable[[], list[Path]]',
-        _lazy_attr(
-            'fleasion.utils.platform_macos', 'find_bootstrapper_restore_resource_dirs'
-        ),
+        _lazy_attr('fleasion.utils.platform_macos', 'find_bootstrapper_restore_resource_dirs'),
     )
 
     details: list[_ErrorDetails] = []
@@ -4206,9 +4219,7 @@ def _selected_linux_client_installation() -> LinuxClientInstallation | None:
     try:
         get_selected = cast(
             'Callable[[], LinuxClientInstallation | None]',
-            _lazy_attr(
-                'fleasion.utils.platform_linux', 'get_selected_linux_client_installation'
-            ),
+            _lazy_attr('fleasion.utils.platform_linux', 'get_selected_linux_client_installation'),
         )
         return get_selected()
     except OSError, RuntimeError, ValueError:
@@ -4230,11 +4241,7 @@ def _patch_running_roblox_ca_file(
     )
     pre_state_readable = bool(pre_state.get('exists')) and not bool(pre_state.get('error'))
     seeded = False
-    if (
-        (IS_WINDOWS or IS_LINUX)
-        and _cacert_needs_seed(pre_state)
-        and not pre_state.get('error')
-    ):
+    if (IS_WINDOWS or IS_LINUX) and _cacert_needs_seed(pre_state) and not pre_state.get('error'):
         seed_dirs = _find_roblox_dirs(include_studio=False)
         if roblox_dir not in seed_dirs:
             seed_dirs.insert(0, roblox_dir)
@@ -4778,7 +4785,14 @@ class ProxyMaster:
         return [value for value in cast('list[object]', stored) if _is_auto_replace_rule(value)]
 
     def set_auto_replace_rules(self, rules: list[AutoReplaceRule]) -> None:
-        self.config_manager.settings['auto_replace_rules'] = cast('JsonValue', list(rules))
+        stored_rules: list[JsonValue] = []
+        for rule in rules:
+            stored_rule: JsonObject = {}
+            for key, value in rule.items():
+                if isinstance(value, str | bool):
+                    stored_rule[key] = value
+            stored_rules.append(stored_rule)
+        self.config_manager.settings['auto_replace_rules'] = stored_rules
         self.config_manager.save()
         if self._proxy is not None:
             self._proxy.set_auto_replace_rules(rules)
@@ -5117,9 +5131,7 @@ class ProxyMaster:
         # Resolve only routes that are about to be added, and do so before
         # the hosts update. Re-resolving retained hosts here is unsafe because
         # they already point at the loopback proxy.
-        real_endpoints = proxy.upstream_endpoints_for_hosts(
-            cast('Sequence[str]', retained_hosts)
-        )
+        real_endpoints = proxy.upstream_endpoints_for_hosts(cast('Sequence[str]', retained_hosts))
         missing_retained_hosts = retained_hosts - set(real_endpoints)
         if missing_retained_hosts:
             log_buffer.log(
@@ -6216,9 +6228,7 @@ class ProxyMaster:
         _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
 
         with contextlib.suppress(Exception):
-            asset_fetcher_thread = _lazy_attr(
-                'fleasion.gui.json_viewer', 'AssetFetcherThread'
-            )
+            asset_fetcher_thread = _lazy_attr('fleasion.gui.json_viewer', 'AssetFetcherThread')
             setter_name = 'set_scraper'
             set_scraper = cast(
                 'Callable[[CacheScraper], None]',

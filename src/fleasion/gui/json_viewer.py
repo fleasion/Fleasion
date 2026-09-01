@@ -44,6 +44,7 @@ from fleasion.cache.rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from fleasion.localization import tr, tr_count
 from fleasion.utils import get_icon_path
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
+from fleasion.utils.json_types import JsonValue, require_object_dict, require_object_list
 
 if TYPE_CHECKING:
     from fleasion.cache.animation_viewer import AnimationViewerPanel
@@ -54,8 +55,6 @@ if TYPE_CHECKING:
     from fleasion.config.manager import ConfigManager
 
 
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | dict[str, JsonValue] | list[JsonValue]
 type ImportValue = int | str
 type ImportIdsCallback = Callable[[list[ImportValue]], object]
 type ImportReplacementCallback = Callable[[ImportValue], object]
@@ -168,10 +167,6 @@ if TYPE_CHECKING:
         extra_headers: dict[str, str] | None,
     ) -> bytes | None: ...
 
-    def _preserve_object_dict(value: object) -> dict[str, object]: ...
-
-    def _preserve_object_list(value: object) -> list[object]: ...
-
     def _preserve_int_source(value: object) -> str | int | float: ...
 
     def _preserve_str(value: object) -> str: ...
@@ -206,12 +201,6 @@ else:
         extra_headers: dict[str, str] | None,
     ) -> bytes | None:
         return scraper.https_get(hostname, path, extra_headers=extra_headers)
-
-    def _preserve_object_dict(value: object) -> dict[str, object]:
-        return value
-
-    def _preserve_object_list(value: object) -> list[object]:
-        return value
 
     def _preserve_int_source(value: object) -> str | int | float:
         return value
@@ -374,12 +363,12 @@ class AssetFetcherThread(QThread):
             if response.status_code != 200:
                 break
             response_payload: object = response.json()
-            response_json = _preserve_object_dict(response_payload)
-            games = _preserve_object_list(response_json.get('data', []))
+            response_json = require_object_dict(response_payload)
+            games = require_object_list(response_json.get('data', []))
             for game_value in games:
-                game = _preserve_object_dict(game_value)
+                game = require_object_dict(game_value)
                 root_place_value = game.get('rootPlace')
-                root_place = _preserve_object_dict(root_place_value) if root_place_value else {}
+                root_place = require_object_dict(root_place_value) if root_place_value else {}
                 if root_place.get('id'):
                     place_id = int(_preserve_int_source(root_place['id']))
                     if place_id not in seen_pids:
@@ -421,12 +410,12 @@ class AssetFetcherThread(QThread):
         if info_response.status_code != 200:
             return None, None
         info_payload: object = info_response.json()
-        info = _preserve_object_dict(info_payload)
-        items = _preserve_object_list(info.get('data', []))
+        info = require_object_dict(info_payload)
+        items = require_object_list(info.get('data', []))
         if not items:
             return None, None
-        first_item = _preserve_object_dict(items[0])
-        creator = _preserve_object_dict(first_item.get('creator') or {})
+        first_item = require_object_dict(items[0])
+        creator = require_object_dict(first_item.get('creator') or {})
         creator_id = creator.get('targetId') or first_item.get('creatorTargetId')
         creator_type = creator.get('typeId') or first_item.get('creatorType')
         if creator_id is None or creator_type is None:
@@ -1181,7 +1170,7 @@ class JsonTreeViewer(QDialog):
         if data[:2] == b'\x1f\x8b':
             try:
                 working = gzip_module.decompress(data)
-            except (EOFError, OSError, zlib.error):
+            except EOFError, OSError, zlib.error:
                 pass
 
         image_signatures = (
@@ -1542,7 +1531,7 @@ class JsonTreeViewer(QDialog):
         if data[:2] == b'\x1f\x8b':
             try:
                 working = gzip_module.decompress(data)
-            except (EOFError, OSError, zlib.error):
+            except EOFError, OSError, zlib.error:
                 pass
 
         image = Image.open(io.BytesIO(working))

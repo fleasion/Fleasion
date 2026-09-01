@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 
 from fleasion.localization import tr, tr_count
 from fleasion.utils import get_icon_path, windows as _platform_windows
+from fleasion.utils.json_types import require_object_dict
 from fleasion.utils.logging import log_buffer
 from fleasion.utils.paths import CONFIG_DIR
 from fleasion.utils.plural import format_count
@@ -175,19 +176,11 @@ def _authenticated_user_response(cookie: str) -> _requests.Response:
 
 
 def _json_object(raw: bytes | str) -> dict[str, object]:
-    payload: object = json.loads(raw)
-    if not isinstance(payload, dict):
-        msg = 'Expected a JSON object'
-        raise TypeError(msg)
-    return cast('dict[str, object]', payload)
+    return require_object_dict(json.loads(raw))
 
 
 def _response_json_object(response: _requests.Response) -> dict[str, object]:
-    payload: object = response.json()
-    if not isinstance(payload, dict):
-        msg = 'Expected a JSON object response'
-        raise TypeError(msg)
-    return cast('dict[str, object]', payload)
+    return require_object_dict(response.json())
 
 
 def _run_contained_action(
@@ -1671,9 +1664,7 @@ class RandoStuffTab(QWidget):
 
             if not _run_contained_action(
                 _scan,
-                lambda exc: log_buffer.log(
-                    'multiinstance', f'Error scanning PID {pid}: {exc}'
-                ),
+                lambda exc: log_buffer.log('multiinstance', f'Error scanning PID {pid}: {exc}'),
             ):
                 return
             if closed:

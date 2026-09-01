@@ -22,8 +22,9 @@ from PySide6.QtWidgets import (
 
 from fleasion.localization import tr, tr_count
 
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | dict[str, JsonValue] | list[JsonValue]
+if TYPE_CHECKING:
+    from fleasion.utils.json_types import JsonValue
+
 type ItemPath = tuple[str, ...]
 
 
@@ -286,7 +287,9 @@ class CacheJsonViewer(QWidget):
     def _get_preview_text(self, obj: JsonValue) -> str:
         """Get preview text for a dict/list (first non-null field)."""
         if isinstance(obj, dict):
-            first_value = next(((key, value) for key, value in obj.items() if value is not None), None)
+            first_value = next(
+                ((key, value) for key, value in obj.items() if value is not None), None
+            )
             return self._format_preview_value(*first_value) if first_value is not None else ''
         if isinstance(obj, list) and obj and isinstance(obj[0], dict):
             return self._get_preview_text(obj[0])

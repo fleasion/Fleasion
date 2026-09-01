@@ -44,6 +44,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
+from fleasion.utils.json_types import JsonValue, require_json_value
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 
@@ -100,9 +102,7 @@ _GZIP_MAGIC = b'\x1f\x8b'
 _DCZ_DICTIONARY_PATH_RE = re.compile(r'/([0-9a-f]{64})\.dcz(?:$|[?])', re.IGNORECASE)
 
 
-type _JsonScalar = str | int | float | bool | None
-type _JsonValue = _JsonScalar | list[_JsonValue] | dict[str, _JsonValue]
-type _JsonPathTarget = tuple[list[_JsonValue], int] | tuple[dict[str, _JsonValue], str]
+type _JsonPathTarget = tuple[list[JsonValue], int] | tuple[dict[str, JsonValue], str]
 type _AnimRequiredRig = str | frozenset[str]
 type _AnimPendingValue = tuple[str, _AnimRequiredRig]
 type _ReplacementKey = int | str
@@ -133,7 +133,7 @@ def _get_log_buffer() -> LogBuffer:
 def _best_effort_log(category: str, message: str) -> None:
     try:
         _get_log_buffer().log(category, message)
-    except (AttributeError, ImportError, OSError, RuntimeError):
+    except AttributeError, ImportError, OSError, RuntimeError:
         logger.debug('%s', message)
 
 
@@ -205,7 +205,7 @@ def _zstd_or[T](operation: Callable[[_ZstdModule], T], fallback: T) -> T:
         return fallback
     try:
         return operation(zstandard)
-    except (AttributeError, TypeError, ValueError, zstandard.ZstdError):
+    except AttributeError, TypeError, ValueError, zstandard.ZstdError:
         return fallback
 
 
@@ -235,9 +235,7 @@ def _compress_zstd(zstandard: _ZstdModule, body: bytes, dictionary: bytes) -> by
 
 
 def _convert_obj_to_mesh(path: Path) -> Path:
-    module = importlib.import_module(
-        'fleasion.cache.tools.solidmodel_converter.obj_to_mesh'
-    )
+    module = importlib.import_module('fleasion.cache.tools.solidmodel_converter.obj_to_mesh')
     converter = cast(
         'Callable[[str | Path], Path]',
         getattr(module, _OBJ_CONVERTER_ATTR),
@@ -384,7 +382,7 @@ def _decompress_body(body: bytes, headers: dict[bytes, bytes]) -> bytes:
     if ce == b'gzip' or body[:2] == _GZIP_MAGIC:
         try:
             return gzip.decompress(body)
-        except (EOFError, OSError, zlib.error):
+        except EOFError, OSError, zlib.error:
             return body
     if ce == b'zstd' or body[:4] == _ZSTD_MAGIC:
         return _zstd_or(lambda zstandard: _decompress_zstd(zstandard, body), body)
@@ -438,7 +436,7 @@ async def _format_raw_http_message(raw: bytes) -> str:
     header_text = parsed.raw_header_block.decode('ascii', errors='replace').rstrip('\r\n')
     try:
         body_wire = await _read_body_wire(reader, parsed.headers)
-    except (ConnectionError, OSError, RuntimeError, ValueError):
+    except ConnectionError, OSError, RuntimeError, ValueError:
         return header_text + '\r\n'
     body = _decompress_body(body_wire.payload, parsed.headers)
     body_text = _pretty_body_text(body)
@@ -495,7 +493,7 @@ async def _reparse_request_bytes(raw: bytes) -> tuple[RawHeaders, RawBody] | Non
         return None
     try:
         body = await _read_body_wire(reader, parsed.headers)
-    except (ConnectionError, OSError, RuntimeError, ValueError):
+    except ConnectionError, OSError, RuntimeError, ValueError:
         body = RawBody(wire=b'', payload=b'', was_chunked=False)
     return parsed, body
 
@@ -609,7 +607,7 @@ def _auto_replace_rule_applies(rule: AutoReplaceRule, direction: str, host: str,
     return bool(rule.get('match'))
 
 
-def _json_path_child(container: _JsonValue, token: str) -> _JsonValue | None:
+def _json_path_child(container: JsonValue, token: str) -> JsonValue | None:
     if token.startswith('['):
         index = int(token[1:-1])
         if isinstance(container, list) and index < len(container):
@@ -620,7 +618,7 @@ def _json_path_child(container: _JsonValue, token: str) -> _JsonValue | None:
     return None
 
 
-def _json_path_target(container: _JsonValue, token: str) -> _JsonPathTarget | None:
+def _json_path_target(container: JsonValue, token: str) -> _JsonPathTarget | None:
     if token.startswith('['):
         index = int(token[1:-1])
         if isinstance(container, list) and index < len(container):
@@ -631,7 +629,7 @@ def _json_path_target(container: _JsonValue, token: str) -> _JsonPathTarget | No
     return None
 
 
-def _resolve_json_path(data: _JsonValue, path_expr: str) -> _JsonPathTarget | None:
+def _resolve_json_path(data: JsonValue, path_expr: str) -> _JsonPathTarget | None:
     """Navigate a dot/bracket path expression to its writable target."""
     tokens = re.findall(r'[^.\[\]]+|\[\d+\]', path_expr)
     if not tokens:
@@ -645,7 +643,7 @@ def _resolve_json_path(data: _JsonValue, path_expr: str) -> _JsonPathTarget | No
     return _json_path_target(container, tokens[-1])
 
 
-def _coerce_replacement_value(replacement: str) -> _JsonValue:
+def _coerce_replacement_value(replacement: str) -> JsonValue:
     """A JSON path replacement is typed as plain text in the GUI - coerce it
     back to a JSON-native type so the rewritten body stays valid JSON with
     the field's original *kind* preserved (e.g. a numeric id stays a number,
@@ -672,7 +670,7 @@ def _apply_auto_replace_body_rule(
     if rule_type == 'regex':
         return re.sub(match, replacement, body.decode('utf-8', errors='replace')).encode('utf-8')
     if rule_type == 'json_path':
-        data = cast('_JsonValue', json.loads(body))
+        data = require_json_value(json.loads(body))
         resolved = _resolve_json_path(data, match)
         if resolved is None:
             return None
@@ -919,7 +917,7 @@ async def _open_explicit_proxy_tunnel(
 def _parse_status_code(status_line: bytes) -> int:
     try:
         return int(status_line.split(b' ', 2)[1])
-    except (IndexError, ValueError):
+    except IndexError, ValueError:
         return 0
 
 
@@ -1122,7 +1120,7 @@ async def _read_headers_raw(reader: asyncio.StreamReader) -> RawHeaders | None:
     while True:
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=15.0)
-        except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError):
+        except ConnectionError, OSError, RuntimeError, TimeoutError, ValueError:
             return None
         if not line:
             return None
@@ -1175,7 +1173,7 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
         while True:
             try:
                 size_line = await reader.readline()
-            except (ConnectionError, OSError, RuntimeError):
+            except ConnectionError, OSError, RuntimeError:
                 break
             if not size_line:
                 break
@@ -1312,7 +1310,15 @@ def _serve_local_file(local_path: str) -> bytes:
     if path.suffix.lower() == '.obj':
         try:
             path = _convert_obj_to_mesh(path)
-        except (AttributeError, ImportError, IndexError, OSError, OverflowError, ValueError, struct.error) as exc:
+        except (
+            AttributeError,
+            ImportError,
+            IndexError,
+            OSError,
+            OverflowError,
+            ValueError,
+            struct.error,
+        ) as exc:
             logger.debug('OBJ->mesh conversion failed: %s', exc)
     if not path.exists():
         return b'HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n'
@@ -1452,8 +1458,8 @@ class _FlowResponse:
             self.status_code = 200
         self.content: bytes = body
 
-    def json(self) -> _JsonValue:
-        return cast('_JsonValue', json.loads(self.content))
+    def json(self) -> JsonValue:
+        return require_json_value(json.loads(self.content))
 
 
 class ProxyFlow:
@@ -2741,8 +2747,8 @@ class FleasionProxy:
                 )
                 return resp_body_raw, False, None, None
 
-            modified_settings, delivered_signature = custom_fflag_modifier.modify_response_with_delivery(
-                path, resp_body_plain
+            modified_settings, delivered_signature = (
+                custom_fflag_modifier.modify_response_with_delivery(path, resp_body_plain)
             )
             if delivered_signature is None or modified_settings == resp_body_plain:
                 return resp_body_raw, False, None, delivered_signature
@@ -2860,7 +2866,9 @@ class FleasionProxy:
                 drop_body = gamejoin_flow.drop_body
                 if isinstance(drop_body, str):
                     drop_body = drop_body.encode('utf-8', errors='replace')
-                response_writer.write(_make_local_response(gamejoin_flow.drop_status_code, drop_body))
+                response_writer.write(
+                    _make_local_response(gamejoin_flow.drop_status_code, drop_body)
+                )
                 await response_writer.drain()
                 action = 'continue' if _keep_alive(req_first, req_headers) else 'break'
                 return gamejoin_flow, action
@@ -2924,9 +2932,7 @@ class FleasionProxy:
 
             final_path = repl_path
             conv_rig = (
-                orig_rig
-                if orig_rig != 'unknown'
-                else anim_converter.detect_player_rig(orig_bytes)
+                orig_rig if orig_rig != 'unknown' else anim_converter.detect_player_rig(orig_bytes)
             )
             if conv_rig != 'unknown':
                 repl_rig = _texture_detect_repl_rig(self.texture_stripper, repl_path)
@@ -2940,7 +2946,9 @@ class FleasionProxy:
                     if conv:
                         final_path = conv
             final = Path(final_path)
-            return strip_roblox_metadata(final, final.read_bytes()) if final.exists() else orig_bytes
+            return (
+                strip_roblox_metadata(final, final.read_bytes()) if final.exists() else orig_bytes
+            )
 
         async def modify_cdn_response(
             path: str,
@@ -3152,9 +3160,11 @@ class FleasionProxy:
                     self._note_asset_traffic()
 
                 # ── TextureStripper: CDN short-circuit (replace before upstream) ──
-                short_circuit, short_circuit_handled, short_circuit_keep_alive = (
-                    await handle_cdn_short_circuit(path, req_first, req_headers)
-                )
+                (
+                    short_circuit,
+                    short_circuit_handled,
+                    short_circuit_keep_alive,
+                ) = await handle_cdn_short_circuit(path, req_first, req_headers)
                 if short_circuit_handled:
                     if not short_circuit_keep_alive:
                         break
