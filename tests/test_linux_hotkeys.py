@@ -167,3 +167,30 @@ def test_linux_hotkey_reader_does_not_spin_after_all_devices_disconnect(monkeypa
     service._run()
 
     assert len(select_calls) == 1
+
+
+def test_linux_hotkey_controller_toggles_fastflag_folder():
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
+        custom_fflag_disabled=[],
+        custom_fflag_keybinds={},
+        custom_fflag_folders={'Visual': ['FFlagOne', 'FFlagTwo']},
+        custom_fflag_disabled_folders=[],
+        custom_fflag_folder_keybinds={},
+    )
+    proxy = SimpleNamespace(refresh_calls=0)
+    proxy.refresh_custom_fflag_interception = lambda: setattr(
+        proxy, 'refresh_calls', proxy.refresh_calls + 1
+    )
+    controller = LinuxCustomFFlagHotkeyController(config, proxy)
+    toggled = []
+    controller.toggled.connect(toggled.append)
+
+    controller.service.activated.emit('folder:Visual')
+
+    assert config.custom_fflag_disabled_folders == ['Visual']
+    assert config.custom_fflag_disabled == []
+    assert proxy.refresh_calls == 1
+    assert toggled == ['folder:Visual']
+    controller.stop()

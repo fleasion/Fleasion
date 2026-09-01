@@ -323,6 +323,31 @@ class ConfigManagerEncodingTests(unittest.TestCase):
                 },
             )
 
+    def test_custom_fflag_folders_are_normalized_and_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+
+            manager.custom_fflag_folders = {
+                ' Visual ': [' FFlagOne ', 'FFlagTwo', 'FFlagOne'],
+                'Second': ['FFlagTwo', 'FFlagThree'],
+            }
+            manager.custom_fflag_disabled_folders = [' Visual ', 'Visual']
+            manager.custom_fflag_folder_keybinds = {
+                ' Visual ': {'scan_code': 0x1E, 'extended': False, 'modifiers': 0}
+            }
+
+            reloaded = config_manager_module.ConfigManager()
+            self.assertEqual(
+                reloaded.custom_fflag_folders,
+                {'Visual': ['FFlagOne', 'FFlagTwo'], 'Second': ['FFlagThree']},
+            )
+            self.assertEqual(reloaded.custom_fflag_disabled_folders, ['Visual'])
+            self.assertEqual(
+                reloaded.custom_fflag_folder_keybinds,
+                {'Visual': {'scan_code': 0x1E, 'extended': False, 'modifiers': 0}},
+            )
+
     def test_custom_fflag_mouse_bindings_are_preserved_per_platform(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

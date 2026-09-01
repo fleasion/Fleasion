@@ -242,3 +242,34 @@ def test_add_custom_boolean_fflag_uses_combo_item_data_not_translated_text():
     source = inspect.getsource(CustomFFlagEditor._add_flag)
     assert 'value_combo.currentData()' in source
     assert 'value_combo.currentText()' not in source
+
+
+def test_custom_fflag_editor_renders_and_toggles_folder_rows():
+    app = _qapp()
+    config = SimpleNamespace(
+        custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
+        custom_fflags_enabled=True,
+        custom_fflag_disabled=[],
+        custom_fflag_keybinds={},
+        custom_fflag_folders={'Visual': ['FFlagOne', 'FFlagTwo']},
+        custom_fflag_disabled_folders=[],
+        custom_fflag_folder_keybinds={},
+        custom_fflags_warning_accepted=True,
+    )
+    proxy = SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+
+    editor = CustomFFlagEditor(config, proxy)
+    table = editor._table
+
+    assert table.rowCount() == 3
+    assert table.item(0, 0).text() == 'Visual'
+    assert table.item(0, 1).text() == '2 FastFlags'
+    assert table.item(1, 0).text().strip() == 'FFlagOne'
+    assert table.item(2, 0).text().strip() == 'FFlagTwo'
+
+    table.item(0, 2).setCheckState(Qt.CheckState.Unchecked)
+    app.processEvents()
+
+    assert config.custom_fflag_disabled_folders == ['Visual']
+    assert config.custom_fflag_disabled == []
+    assert app is not None

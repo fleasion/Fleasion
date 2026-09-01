@@ -80,6 +80,8 @@ class CustomFFlagModifier:
         self._disk_enabled: bool | None = None
         self._disk_flags: dict | None = None
         self._disk_disabled: list | None = None
+        self._disk_folders: dict | None = None
+        self._disk_disabled_folders: list | None = None
         self._last_response_success_at: float | None = None
         self._first_response_failure_at: float | None = None
         self._last_failure_log_at: dict[str, float] = {}
@@ -171,6 +173,12 @@ class CustomFFlagModifier:
             self._disk_flags = saved_flags if isinstance(saved_flags, dict) else {}
             disabled = data.get('custom_fflag_disabled', [])
             self._disk_disabled = disabled if isinstance(disabled, list) else []
+            folders = data.get('custom_fflag_folders', {})
+            self._disk_folders = folders if isinstance(folders, dict) else {}
+            disabled_folders = data.get('custom_fflag_disabled_folders', [])
+            self._disk_disabled_folders = (
+                disabled_folders if isinstance(disabled_folders, list) else []
+            )
 
     def is_enabled(self) -> bool:
         self._refresh_settings_from_disk()
@@ -213,6 +221,21 @@ class CustomFFlagModifier:
             else getattr(self.config_manager, 'custom_fflag_disabled', [])
         )
         disabled_names = {str(name).strip() for name in disabled}
+        folders = (
+            self._disk_folders
+            if self._disk_folders is not None
+            else getattr(self.config_manager, 'custom_fflag_folders', {})
+        )
+        disabled_folders = (
+            self._disk_disabled_folders
+            if self._disk_disabled_folders is not None
+            else getattr(self.config_manager, 'custom_fflag_disabled_folders', [])
+        )
+        folder_mapping = folders if isinstance(folders, dict) else {}
+        for folder_name in {str(name).strip() for name in disabled_folders}:
+            members = folder_mapping.get(folder_name, [])
+            if isinstance(members, list | tuple | set):
+                disabled_names.update(str(name).strip() for name in members)
         flags = {name: value for name, value in flags.items() if name not in disabled_names}
         # Roblox/Sober reads the reloader interval before applying the response
         # it has just fetched. Therefore, when this companion flag first

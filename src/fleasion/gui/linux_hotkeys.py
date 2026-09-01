@@ -535,7 +535,7 @@ class LinuxCustomFFlagHotkeyController(QObject):
         self._config = config_manager
         self._proxy_master = proxy_master
         self._service = LinuxHotkeyService(self)
-        self._service.activated.connect(self.toggle_flag)
+        self._service.activated.connect(self.toggle_target)
 
     @property
     def service(self) -> LinuxHotkeyService:
@@ -546,7 +546,17 @@ class LinuxCustomFFlagHotkeyController(QObject):
             self._service.set_bindings({})
             return
         bindings = getattr(self._config, 'custom_fflag_keybinds', {}) or {}
-        self._service.set_bindings(bindings if isinstance(bindings, Mapping) else {})
+        merged = dict(bindings) if isinstance(bindings, Mapping) else {}
+        folder_bindings = getattr(self._config, 'custom_fflag_folder_keybinds', {}) or {}
+        if isinstance(folder_bindings, Mapping):
+            merged.update({f'folder:{name}': spec for name, spec in folder_bindings.items()})
+        self._service.set_bindings(merged)
+
+    def toggle_target(self, target: str) -> None:
+        if target.startswith('folder:'):
+            self.toggle_folder(target.removeprefix('folder:'))
+            return
+        self.toggle_flag(target)
 
     def toggle_flag(self, name: str) -> None:
         if (
@@ -572,6 +582,33 @@ class LinuxCustomFFlagHotkeyController(QObject):
             f'Linux keybind turned {name} {"on" if is_enabled else "off"}',
         )
         self.toggled.emit(name)
+
+    def toggle_folder(self, name: str) -> None:
+        folders = getattr(self._config, 'custom_fflag_folders', {}) or {}
+        if (
+            self._config is None
+            or not getattr(self._config, 'custom_fflags_enabled', False)
+            or not isinstance(folders, Mapping)
+            or name not in folders
+        ):
+            return
+        disabled = set(getattr(self._config, 'custom_fflag_disabled_folders', []) or [])
+        is_enabled = name in disabled
+        if is_enabled:
+            disabled.remove(name)
+        else:
+            disabled.add(name)
+        self._config.custom_fflag_disabled_folders = sorted(disabled)
+        if self._proxy_master is not None:
+            try:
+                self._proxy_master.refresh_custom_fflag_interception()
+            except Exception as exc:
+                log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
+        log_buffer.log(
+            'CustomFFlags',
+            f'Linux keybind turned folder {name} {"on" if is_enabled else "off"}',
+        )
+        self.toggled.emit(f'folder:{name}')
 
     def stop(self) -> None:
         self._service.stop()

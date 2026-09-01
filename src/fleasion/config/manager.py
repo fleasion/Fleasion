@@ -278,6 +278,9 @@ DEFAULT_SETTINGS = {
     # disabled flag retains its chosen value and can be restored by a hotkey.
     'custom_fflag_disabled': [],
     'custom_fflag_keybinds': {},
+    'custom_fflag_folders': {},
+    'custom_fflag_disabled_folders': [],
+    'custom_fflag_folder_keybinds': {},
     'linux_fflag_keybind_setup_prompted': False,
     'macos_auth_source': '',
     'upstream_transport_mode': 'auto',
@@ -364,6 +367,25 @@ def _normalize_custom_fflag_disabled(value: Any) -> list[str]:
     if not isinstance(value, list | tuple | set):
         return []
     return sorted({str(name).strip() for name in value if str(name).strip()}, key=str.casefold)
+
+
+def _normalize_custom_fflag_folders(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    assigned: set[str] = set()
+    for raw_folder, raw_names in value.items():
+        folder = str(raw_folder).strip()
+        if not folder or not isinstance(raw_names, list | tuple | set):
+            continue
+        names: list[str] = []
+        for raw_name in raw_names:
+            name = str(raw_name).strip()
+            if name and name not in assigned:
+                names.append(name)
+                assigned.add(name)
+        normalized[folder] = sorted(set(names), key=str.casefold)
+    return normalized
 
 
 def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bool | str]]:
@@ -945,6 +967,40 @@ class ConfigManager:
     @custom_fflag_keybinds.setter
     def custom_fflag_keybinds(self, value):
         self.settings['custom_fflag_keybinds'] = _normalize_custom_fflag_keybinds(value)
+        self._save_settings()
+
+    @property
+    def custom_fflag_folders(self) -> dict[str, list[str]]:
+        """Return FastFlag folder membership keyed by folder name."""
+        return _normalize_custom_fflag_folders(self.settings.get('custom_fflag_folders', {}))
+
+    @custom_fflag_folders.setter
+    def custom_fflag_folders(self, value):
+        self.settings['custom_fflag_folders'] = _normalize_custom_fflag_folders(value)
+        self._save_settings()
+
+    @property
+    def custom_fflag_disabled_folders(self) -> list[str]:
+        """Names of FastFlag folders whose members are temporarily disabled."""
+        return _normalize_custom_fflag_disabled(
+            self.settings.get('custom_fflag_disabled_folders', [])
+        )
+
+    @custom_fflag_disabled_folders.setter
+    def custom_fflag_disabled_folders(self, value):
+        self.settings['custom_fflag_disabled_folders'] = _normalize_custom_fflag_disabled(value)
+        self._save_settings()
+
+    @property
+    def custom_fflag_folder_keybinds(self) -> dict[str, dict[str, int | bool | str]]:
+        """Platform global hotkeys keyed by FastFlag folder name."""
+        return _normalize_custom_fflag_keybinds(
+            self.settings.get('custom_fflag_folder_keybinds', {})
+        )
+
+    @custom_fflag_folder_keybinds.setter
+    def custom_fflag_folder_keybinds(self, value):
+        self.settings['custom_fflag_folder_keybinds'] = _normalize_custom_fflag_keybinds(value)
         self._save_settings()
 
     @property
