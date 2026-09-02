@@ -4,6 +4,7 @@ from ..localization import tr
 
 import threading
 import time
+from typing import ClassVar
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
@@ -15,12 +16,17 @@ class DeleteCacheWindow(QDialog):
     """Delete cache result window."""
 
     _CLOSE_AFTER_DONE_MS = 500
+    _live_windows: ClassVar[set[QDialog]] = set()
 
     log_signal = pyqtSignal(str)
     done_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
+        self._worker_done = False
+        self._dialog_finished = False
+        self._live_windows.add(self)
+        self.finished.connect(self._on_finished)
         self.setWindowTitle(tr('ui.gui.delete_cache.clear_cache'))
         self.setFixedSize(400, 200)
 
@@ -79,21 +85,37 @@ class DeleteCacheWindow(QDialog):
 
     def _on_done(self):
         """Called when deletion is complete."""
+        self._worker_done = True
         self.status_text.append('\nDone.')
+        if self._dialog_finished:
+            self._release_if_finished()
+            return
         # Keep the completion message visible briefly, then dismiss the
         # transient progress window.  This window is normally modeless, so
         # merely appending "Done." otherwise leaves it open indefinitely.
         QTimer.singleShot(self._CLOSE_AFTER_DONE_MS, self.accept)
 
+    def _on_finished(self, _result: int) -> None:
+        """Track dialog closure without releasing it before the worker exits."""
+        self._dialog_finished = True
+        self._release_if_finished()
+
+    def _release_if_finished(self) -> None:
+        """Release the process-wide keepalive once no worker can own this dialog."""
+        if self._worker_done and self._dialog_finished:
+            self._live_windows.discard(self)
+
     def _start_deletion(self):
         """Start the cache deletion in a background thread."""
 
         def perform():
-            for msg in delete_cache():
-                log_buffer.log('Cache', msg)
-                self.log_signal.emit(msg)
-                time.sleep(0.25)
-            self.done_signal.emit()
+            try:
+                for msg in delete_cache():
+                    log_buffer.log('Cache', msg)
+                    self.log_signal.emit(msg)
+                    time.sleep(0.25)
+            finally:
+                self.done_signal.emit()
 
         thread = threading.Thread(target=perform, daemon=True)
         thread.start()
