@@ -364,6 +364,8 @@ def _package_environment_block(
 _TH32CS_SNAPPROCESS = 0x00000002
 _PROCESS_TERMINATE = 0x0001
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_SYNCHRONIZE = 0x00100000
+_WAIT_OBJECT_0 = 0x00000000
 _INHERIT_HANDLE = False
 _INVALID_HANDLE_VALUE = ctypes.wintypes.HANDLE(-1).value
 
@@ -580,7 +582,42 @@ def _request_process_window_close(pid: int) -> bool:
 
 def _pid_is_running(pid: int, exe_name: str) -> bool:
     target = exe_name.casefold()
-    return any(process_pid == pid and name == target for process_pid, name in _iter_processes())
+    if not any(process_pid == pid and name == target for process_pid, name in _iter_processes()):
+        return False
+
+    # Toolhelp snapshots can still expose a process object after its threads
+    # have terminated; confirm liveness through the process object's signaled
+    # state so an already-dead Player is not mistaken for a running one
+    try:
+        kernel32 = _windll().kernel32
+    except AttributeError:
+        return True
+    kernel32.OpenProcess.argtypes = [
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.BOOL,
+        ctypes.wintypes.DWORD,
+    ]
+    kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = ctypes.wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
+    handle = kernel32.OpenProcess(_SYNCHRONIZE, _INHERIT_HANDLE, pid)
+    if not handle:
+        # Preserve the Toolhelp result when process security prevents the
+        # synchronization handle from being opened
+        return True
+    try:
+        wait_result = int(kernel32.WaitForSingleObject(handle, 0))
+        return wait_result != _WAIT_OBJECT_0
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _find_running_pids(exe_name: str) -> list[int]:
+    """Return matching PIDs whose process objects are not yet signaled."""
+    return [pid for pid in _find_pids(exe_name) if _pid_is_running(pid, exe_name)]
 
 
 def _env_proxy_owned_pid_if_running() -> int | None:
@@ -721,7 +758,7 @@ def wait_for_roblox_window(
 
 def is_roblox_running() -> bool:
     """Check if Roblox is currently running."""
-    return _find_pid(ROBLOX_PROCESS) is not None
+    return bool(_find_running_pids(ROBLOX_PROCESS))
 
 
 def is_roblox_gdk_exe_path(exe_path: Path | str | None) -> bool:
@@ -1363,6 +1400,40 @@ def _extract_roblox_deeplink(command_line: str, marker: str = 'roblox-player:') 
     return command_line[min(offsets) :].strip().strip('"')
 
 
+def _process_info_pid(process: _ProcessInfo) -> int:
+    try:
+        return int(process.get('ProcessId') or 0)
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def _wait_for_successor_processes(
+    query_processes: _ProcessQuery,
+    attempted_pids: set[int],
+    *,
+    cancel_event: threading.Event | None,
+    attempts: int = 16,
+    interval: float = 0.05,
+) -> list[_ProcessInfo]:
+    """Briefly poll for a Player that replaced an already-exited launch process."""
+    for attempt in range(max(1, attempts)):
+        if cancel_event is not None and cancel_event.is_set():
+            return []
+        processes = list(query_processes())
+        if any(
+            (pid := _process_info_pid(process)) > 0 and pid not in attempted_pids
+            for process in processes
+        ):
+            return processes
+        if attempt + 1 >= attempts:
+            break
+        if cancel_event is None:
+            time.sleep(interval)
+        elif cancel_event.wait(interval):
+            return []
+    return []
+
+
 def _relaunch_roblox_exe_with_proxy_env(
     proxy_url: str,
     *,
@@ -1388,10 +1459,7 @@ def _relaunch_roblox_exe_with_proxy_env(
     relaunch_result: bool | None = None
     while pending_processes:
         proc = pending_processes.pop(0)
-        try:
-            pid = int(proc.get('ProcessId') or 0)
-        except (TypeError, ValueError):
-            pid = 0
+        pid = _process_info_pid(proc)
         command_line = str(proc.get('CommandLine') or '')
         launch_arg = extract_launch_arg(command_line)
         exe_text = str(proc.get('ExecutablePath') or '')
@@ -1479,21 +1547,42 @@ def _relaunch_roblox_exe_with_proxy_env(
             timeout=8.0,
             cancel_event=cancel_event,
         ):
-            # Roblox can replace a just-observed Player process itself.  Its
-            # original URI may be one-time data, so never blindly replay that
-            # stale command after the PID is gone.  Instead, take one fresh
-            # snapshot and only retry against the successor's own command
-            # line.  This is immediate discovery, not a launch-settling delay.
-            if not retried_after_pid_replacement and not _pid_is_running(pid, wait_pid_exe_name):
-                successor_processes = list(query_processes())
-                successor_pids: list[int] = []
-                for successor in successor_processes:
-                    try:
-                        successor_pid = int(successor.get('ProcessId') or 0)
-                    except AttributeError, TypeError, ValueError:
-                        continue
-                    if successor_pid > 0 and successor_pid not in attempted_pids:
-                        successor_pids.append(successor_pid)
+            if _pid_is_running(pid, wait_pid_exe_name):
+                log_buffer.log(
+                    'Launcher',
+                    f'{label} Env Proxy relaunch stopped because Player PID {pid} is still running',
+                )
+                relaunch_result = False
+                break
+
+            # A plain executable launch has no one-time URI to lose; if the
+            # observed Player won the race and exited before taskkill, the safe
+            # action is to continue with the same executable under our proxy
+            if not launch_arg:
+                log_buffer.log(
+                    'Launcher',
+                    f'{label} Player PID {pid} exited before taskkill completed; '
+                    'continuing plain executable Env Proxy relaunch',
+                )
+            else:
+                # Deeplink targets can contain one-time credentials; briefly
+                # poll for Roblox's own successor and use only that process's
+                # current command line instead of replaying the stale target
+                successor_processes = (
+                    _wait_for_successor_processes(
+                        query_processes,
+                        attempted_pids,
+                        cancel_event=cancel_event,
+                    )
+                    if not retried_after_pid_replacement
+                    else []
+                )
+                successor_pids = [
+                    successor_pid
+                    for successor in successor_processes
+                    if (successor_pid := _process_info_pid(successor)) > 0
+                    and successor_pid not in attempted_pids
+                ]
                 if successor_pids:
                     retried_after_pid_replacement = True
                     log_buffer.log(
@@ -1503,13 +1592,13 @@ def _relaunch_roblox_exe_with_proxy_env(
                     )
                     pending_processes = successor_processes
                     continue
-            log_buffer.log(
-                'Launcher',
-                f'{label} Env Proxy relaunch stopped after Player PID {pid} changed; '
-                'not replaying a potentially consumed launch URI',
-            )
-            relaunch_result = False
-            break
+                log_buffer.log(
+                    'Launcher',
+                    f'{label} Env Proxy relaunch stopped after Player PID {pid} changed; '
+                    'not replaying a potentially consumed launch URI',
+                )
+                relaunch_result = False
+                break
 
         # Fishstrap can finish replacing the active version after the first
         # Player process appears. Repair the bundle only now, after that
@@ -1573,7 +1662,7 @@ def get_roblox_studio_exe_path() -> Path | None:
 
 def terminate_roblox() -> bool:
     """Terminate Roblox if it is running. Return True when that termination completes."""
-    pids = _find_pids(ROBLOX_PROCESS)
+    pids = _find_running_pids(ROBLOX_PROCESS)
     if not pids:
         return False
 
@@ -1658,7 +1747,7 @@ def terminate_roblox() -> bool:
                 f'Roblox PID {pid} has no top-level window available for WM_CLOSE fallback',
             )
 
-    remaining_pids = _find_pids(ROBLOX_PROCESS)
+    remaining_pids = _find_running_pids(ROBLOX_PROCESS)
     if remaining_pids:
         log_buffer.log(
             'Launcher',
@@ -1709,10 +1798,10 @@ def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
     """Wait for Roblox to exit. Returns True if it exited before timeout."""
     deadline = time.monotonic() + max(0.0, timeout)
     while time.monotonic() < deadline:
-        if not _find_pids(ROBLOX_PROCESS):
+        if not _find_running_pids(ROBLOX_PROCESS):
             return True
         time.sleep(0.5)
-    remaining_pids = _find_pids(ROBLOX_PROCESS)
+    remaining_pids = _find_running_pids(ROBLOX_PROCESS)
     if remaining_pids:
         log_buffer.log(
             'Launcher',

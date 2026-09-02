@@ -52,6 +52,10 @@ class _PlatformWindowsAdapter:
         return cast('int', self.raw.__dict__['_PROCESS_TERMINATE'])
 
     @property
+    def synchronize(self) -> int:
+        return cast('int', self.raw.__dict__['_SYNCHRONIZE'])
+
+    @property
     def status_info_length_mismatch(self) -> int:
         return cast('int', self.raw.__dict__['_STATUS_INFO_LENGTH_MISMATCH'])
 
@@ -157,6 +161,10 @@ class _PlatformWindowsAdapter:
             self.raw.__dict__['_package_environment_block'],
         )
         return function(environment)
+
+    def pid_is_running(self, pid: int, exe_name: str) -> bool:
+        function = cast('Callable[[int, str], bool]', self.raw.__dict__['_pid_is_running'])
+        return function(pid, exe_name)
 
     def query_process_command_line(self, pid: int) -> str:
         function = cast('Callable[[int], str]', self.raw.__dict__['_query_process_command_line'])
@@ -433,6 +441,52 @@ def test_direct_terminate_requests_only_process_terminate_right(
     )
     assert open_calls == [(module.process_terminate, False, 4242)]
     assert terminate_calls == [(123, 1)]
+    assert close_calls == [123]
+
+
+def test_pid_is_running_rejects_terminated_process_object_still_in_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    open_calls: list[tuple[int, bool, int]] = []
+    close_calls: list[int] = []
+
+    class _Function:
+        def __init__(self, callback: Callable[..., int]) -> None:
+            self.callback = callback
+            self.argtypes: object | None = None
+            self.restype: object | None = None
+
+        def __call__(self, *args: object) -> int:
+            return self.callback(*args)
+
+    def open_process(access: int, inherit: bool, pid: int) -> int:
+        open_calls.append((access, inherit, pid))
+        return 123
+
+    def close_handle(handle: int) -> int:
+        close_calls.append(handle)
+        return 1
+
+    kernel32 = SimpleNamespace(
+        OpenProcess=_Function(open_process),
+        WaitForSingleObject=_Function(_returns(0)),
+        CloseHandle=_Function(close_handle),
+    )
+    monkeypatch.setattr(
+        ctypes,
+        'windll',
+        SimpleNamespace(kernel32=kernel32),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module.raw,
+        '_iter_processes',
+        _returns(iter(((4242, 'robloxplayerbeta.exe'),))),
+    )
+
+    assert not module.pid_is_running(4242, 'RobloxPlayerBeta.exe')
+    assert open_calls == [(module.synchronize, False, 4242)]
     assert close_calls == [123]
 
 
@@ -1317,6 +1371,40 @@ def test_env_proxy_relaunch_allows_new_process_after_crash(
     )
 
 
+def test_env_proxy_relaunch_continues_plain_executable_after_pid_race(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(tmp_path / 'Content' / 'RobloxPlayerBeta.exe', 3000)
+    popen_calls: list[list[str]] = []
+    logs: list[tuple[str, str]] = []
+
+    def fake_popen(args: list[str], **_kwargs: object) -> SimpleNamespace:
+        popen_calls.append(args)
+        return SimpleNamespace(pid=300)
+
+    monkeypatch.setattr(module.raw, '_pid_is_running', _returns(False))
+    monkeypatch.setattr(module.raw, '_force_close_process_immediately', _returns(False))
+    monkeypatch.setattr(module.raw, '_proxy_environment', _returns(dict[str, str]()))
+    monkeypatch.setattr(subprocess, 'Popen', fake_popen)
+    monkeypatch.setattr(
+        module.log_buffer,
+        'log',
+        _LogRecorder(logs),
+    )
+
+    assert module.relaunch_roblox_exe_with_proxy_env(
+        'http://127.0.0.1:58443',
+        label='Roblox',
+        query_processes=_returns([_process_info(100, exe)]),
+        extract_launch_arg=_returns(''),
+        wait_pid_exe_name='RobloxPlayerBeta.exe',
+        fallback_exe_path=_returns(exe),
+    )
+    assert popen_calls == [[str(exe)]]
+    assert any('continuing plain executable Env Proxy relaunch' in message for _, message in logs)
+
+
 def test_env_proxy_relaunch_rechecks_a_replacement_player_pid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1325,6 +1413,7 @@ def test_env_proxy_relaunch_rechecks_a_replacement_player_pid(
     snapshots: Iterator[list[_ProcessInfo]] = iter(
         (
             [_process_info(100, exe, 'RobloxPlayerBeta.exe roblox-player:stale-uri')],
+            list[_ProcessInfo](),
             [_process_info(200, exe, 'RobloxPlayerBeta.exe roblox-player:successor-uri')],
         )
     )
@@ -1393,7 +1482,7 @@ def test_env_proxy_relaunch_does_not_replay_uri_when_no_successor_is_found(
     assert not module.relaunch_roblox_exe_with_proxy_env(
         'http://127.0.0.1:58443',
         label='Roblox',
-        query_processes=_NextResult(snapshots),
+        query_processes=lambda: next(snapshots, list[_ProcessInfo]()),
         extract_launch_arg=_last_argument,
         wait_pid_exe_name='RobloxPlayerBeta.exe',
         fallback_exe_path=_returns(exe),
