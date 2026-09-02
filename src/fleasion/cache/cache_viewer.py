@@ -4122,12 +4122,13 @@ class CacheViewerTab(QWidget):
             self._show_text_preview(tr('cache.preview.failed_to_load_asset', asset_id=asset_id))
             return
         detected_type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset_type)
-        if detected_type_name != self.cache_manager.get_asset_type_name(asset_type):
+        declared_type_name = self.cache_manager.get_asset_type_name(asset_type)
+        if detected_type_name != declared_type_name:
             asset['type_name'] = detected_type_name
             type_item = self.table.item(self.table.currentRow(), 4)
             if type_item is not None:
                 type_item.setText(_localized_asset_type_name(asset_type, detected_type_name))
-        if asset_type == 63:
+        if asset_type == 63 and detected_type_name == declared_type_name:
             self._show_loading()
             self._preview_texturepack(data, asset_id)
             return
@@ -4138,19 +4139,19 @@ class CacheViewerTab(QWidget):
             self._preview_rbxm(data, asset)
             return
         is_mesh_payload = mesh_processing.is_mesh_data(data)
-        if is_mesh_payload or asset_type in {4, 39, 1, 13, 63}:
+        if detected_type_name in {'Image', 'Mesh'} or is_mesh_payload or asset_type in {13, 39, 63}:
             self._show_loading()
 
-        if is_mesh_payload or asset_type == 4:
+        if detected_type_name == 'Mesh' or is_mesh_payload:
             self._preview_mesh(data, asset_id)
+        elif detected_type_name == 'Image':
+            self._preview_image(data)
         elif asset_type == 39:
             self._preview_solidmodel(data, asset_id)
         elif detected_type_name == 'Audio':
             self._preview_audio(data, asset_id)
         elif asset_type in {1, 13}:
             self._preview_image(data)
-        elif asset_type == 3:
-            self._preview_audio(data, asset_id)
         elif asset_type == 24:
             self._preview_animation(data, asset_id)
         elif asset_type == 74:
@@ -4930,12 +4931,14 @@ class CacheViewerTab(QWidget):
         asset_type: int,
         temp_dir: Path,
         safe_base: str,
+        *,
+        detected_type_name: str | None = None,
     ) -> Path | None:
-        if mesh_processing.is_mesh_data(data):
+        if detected_type_name == 'Mesh' or mesh_processing.is_mesh_data(data):
             temp_file = self._copy_mesh_temp(data, temp_dir, safe_base)
-        elif asset_type in {1, 13}:
+        elif detected_type_name == 'Image' or asset_type in {1, 13}:
             temp_file = self._copy_image_temp(data, temp_dir, safe_base)
-        elif asset_type == 3:
+        elif detected_type_name == 'Audio' or asset_type == 3:
             temp_file = self._copy_audio_temp(data, temp_dir, safe_base)
         elif asset_type == 24:
             temp_file = self._copy_animation_temp(data, temp_dir, safe_base)
@@ -4962,7 +4965,14 @@ class CacheViewerTab(QWidget):
         temp_dir.mkdir(exist_ok=True)
         resolved_name = self._asset_info.get(asset_id, {}).get('resolved_name')
         safe_base = self._sanitize_filename(resolved_name or asset_id)
-        temp_file = self._converted_temp_file(data, asset_type, temp_dir, safe_base)
+        detected_type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset_type)
+        temp_file = self._converted_temp_file(
+            data,
+            asset_type,
+            temp_dir,
+            safe_base,
+            detected_type_name=detected_type_name,
+        )
         if temp_file is None or not temp_file.exists():
             return None
         mime_data = QMimeData()

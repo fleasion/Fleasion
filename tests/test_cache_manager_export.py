@@ -19,6 +19,14 @@ MESH_PAYLOAD = b'version 1.00\n0\n[0,0,0][0,1,0][0,0,0][1,0,0][0,1,0][1,0,0][0,1
 
 AUDIO_PAYLOAD = b'OggS\x00\x02' + (b'\x00' * 32)
 
+IMAGE_PAYLOADS = [
+    pytest.param(b'\x89PNG\r\n\x1a\n' + (b'\x00' * 24), '.png', id='png'),
+    pytest.param(b'\xff\xd8\xff\xe0' + (b'\x00' * 28), '.jpg', id='jpeg'),
+    pytest.param(b'RIFF\x18\x00\x00\x00WEBP' + (b'\x00' * 20), '.webp', id='webp'),
+    pytest.param(b'\xabKTX 11\xbb\r\n\x1a\n' + (b'\x00' * 20), '.ktx', id='ktx1'),
+    pytest.param(b'\xabKTX 20\xbb\r\n\x1a\n' + (b'\x00' * 20), '.ktx', id='ktx2'),
+]
+
 
 def _asset_info(manager: CacheManager, asset_id: str, asset_type: int) -> AssetEntry:
     info = manager.get_asset_info(asset_id, asset_type)
@@ -87,6 +95,10 @@ def test_image_typed_mesh_payload_is_displayed_as_mesh(
     assert _detected_type(info) == 'Mesh'
     assert info['type_name'] == 'Mesh'
 
+    formats = manager.get_available_export_formats_for_asset('456', 1)
+    assert 'converted_obj' in formats
+    assert 'converted_png' not in formats
+
 
 def test_old_image_typed_mesh_payload_is_healed_lazily(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -138,6 +150,52 @@ def test_image_typed_audio_payload_is_displayed_as_audio(
     assert _detected_type(info) == 'Audio'
     assert info['type_name'] == 'Audio'
     assert _detect_extension(manager, AUDIO_PAYLOAD, 3) == '.ogg'
+
+
+@pytest.mark.parametrize(('payload', 'expected_extension'), IMAGE_PAYLOADS)
+def test_mesh_typed_image_payload_is_displayed_and_exported_as_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    expected_extension: str,
+) -> None:
+    monkeypatch.setattr(cache_manager_module, 'CONFIG_DIR', tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+
+    assert manager.store_asset('81504106', 4, payload)
+
+    assert manager.get_type_name_for_asset('81504106', 4) == 'Image'
+    info = _asset_info(manager, '81504106', 4)
+    assert _detected_type(info) == 'Image'
+    assert info['type_name'] == 'Image'
+
+    formats = manager.get_available_export_formats_for_asset('81504106', 4)
+    assert 'converted_png' in formats
+    assert 'converted_obj' not in formats
+    assert _detect_extension(manager, payload, 4) == expected_extension
+
+
+def test_old_mesh_typed_image_payload_is_healed_lazily_from_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cache_manager_module, 'CONFIG_DIR', tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    payload = b'\x89PNG\r\n\x1a\n' + (b'x' * 20_000)
+    assert manager.store_asset('81504106', 4, payload)
+
+    info = _asset_info(manager, '81504106', 4)
+    info.pop('detected_type', None)
+    info['type_name'] = 'Mesh'
+
+    def fail_full_asset_read(*_args: object, **_kwargs: object) -> Never:
+        msg = 'type detection must not read the full payload'
+        raise AssertionError(msg)
+
+    manager.get_asset = fail_full_asset_read
+
+    assert manager.get_type_name_for_asset('81504106', 4) == 'Image'
+    assert _detected_type(info) == 'Image'
+    assert info['type_name'] == 'Image'
 
 
 def test_clear_memory_cache_evicts_loaded_asset_payloads(
