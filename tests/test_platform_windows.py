@@ -105,6 +105,44 @@ def test_direct_terminate_requests_only_process_terminate_right(monkeypatch):
     assert close_calls == [123]
 
 
+def test_pid_is_running_rejects_terminated_process_object_still_in_snapshot(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    open_calls = []
+    close_calls = []
+
+    class _Function:
+        def __init__(self, callback):
+            self.callback = callback
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    kernel32 = SimpleNamespace(
+        OpenProcess=_Function(
+            lambda access, inherit, pid: open_calls.append((access, inherit, pid)) or 123
+        ),
+        WaitForSingleObject=_Function(lambda *_args: 0),
+        CloseHandle=_Function(lambda handle: close_calls.append(handle) or 1),
+    )
+    monkeypatch.setattr(
+        module.ctypes,
+        "windll",
+        SimpleNamespace(kernel32=kernel32),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module,
+        "_iter_processes",
+        lambda: iter(((4242, "robloxplayerbeta.exe"),)),
+    )
+
+    assert not module._pid_is_running(4242, "RobloxPlayerBeta.exe")
+    assert open_calls == [(module._SYNCHRONIZE, False, 4242)]
+    assert close_calls == [123]
+
+
 def test_run_cmd_decodes_localized_console_output_with_windows_oem_page(monkeypatch):
     module = _load_platform_windows(monkeypatch)
     calls = []
@@ -918,6 +956,40 @@ def test_env_proxy_relaunch_allows_new_process_after_crash(monkeypatch, tmp_path
     )
 
 
+def test_env_proxy_relaunch_continues_plain_executable_after_pid_race(monkeypatch, tmp_path):
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(tmp_path / "Content" / "RobloxPlayerBeta.exe", 3000)
+    popen_calls = []
+    logs = []
+
+    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: False)
+    monkeypatch.setattr(module, "_force_close_process_immediately", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(module, "_proxy_environment", lambda _url: {})
+    monkeypatch.setattr(
+        module.subprocess,
+        "Popen",
+        lambda args, **_kwargs: popen_calls.append(args) or SimpleNamespace(pid=300),
+    )
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert module._relaunch_roblox_exe_with_proxy_env(
+        "http://127.0.0.1:58443",
+        label="Roblox",
+        query_processes=lambda: [
+            {"ProcessId": 100, "ExecutablePath": str(exe), "CommandLine": ""}
+        ],
+        extract_launch_arg=lambda _command: "",
+        wait_pid_exe_name="RobloxPlayerBeta.exe",
+        fallback_exe_path=lambda: exe,
+    )
+    assert popen_calls == [[str(exe)]]
+    assert any("continuing plain executable Env Proxy relaunch" in message for _, message in logs)
+
+
 def test_env_proxy_relaunch_rechecks_a_replacement_player_pid(monkeypatch, tmp_path):
     module = _load_platform_windows(monkeypatch)
     exe = _touch(tmp_path / "Content" / "RobloxPlayerBeta.exe", 3000)
@@ -930,6 +1002,7 @@ def test_env_proxy_relaunch_rechecks_a_replacement_player_pid(monkeypatch, tmp_p
                     "CommandLine": "RobloxPlayerBeta.exe roblox-player:stale-uri",
                 }
             ],
+            [],
             [
                 {
                     "ProcessId": 200,
@@ -964,7 +1037,7 @@ def test_env_proxy_relaunch_rechecks_a_replacement_player_pid(monkeypatch, tmp_p
     assert module._relaunch_roblox_exe_with_proxy_env(
         "http://127.0.0.1:58443",
         label="Roblox",
-        query_processes=lambda: next(snapshots),
+        query_processes=lambda: next(snapshots, []),
         extract_launch_arg=lambda command: command.split()[-1],
         wait_pid_exe_name="RobloxPlayerBeta.exe",
         fallback_exe_path=lambda: exe,
@@ -1008,7 +1081,7 @@ def test_env_proxy_relaunch_does_not_replay_uri_when_no_successor_is_found(monke
     assert not module._relaunch_roblox_exe_with_proxy_env(
         "http://127.0.0.1:58443",
         label="Roblox",
-        query_processes=lambda: next(snapshots),
+        query_processes=lambda: next(snapshots, []),
         extract_launch_arg=lambda command: command.split()[-1],
         wait_pid_exe_name="RobloxPlayerBeta.exe",
         fallback_exe_path=lambda: exe,
