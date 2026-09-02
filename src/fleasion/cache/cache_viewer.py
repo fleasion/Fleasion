@@ -3778,12 +3778,13 @@ class CacheViewerTab(QWidget):
                 self._show_text_preview(tr('cache.preview.failed_to_load_asset', asset_id=asset_id))
                 return
             detected_type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset_type)
-            if detected_type_name != self.cache_manager.get_asset_type_name(asset_type):
+            declared_type_name = self.cache_manager.get_asset_type_name(asset_type)
+            if detected_type_name != declared_type_name:
                 asset['type_name'] = detected_type_name
                 type_item = self.table.item(self.table.currentRow(), 4)
                 if type_item is not None:
                     type_item.setText(_localized_asset_type_name(asset_type, detected_type_name))
-            if asset_type == 63:  # TexturePack
+            if asset_type == 63 and detected_type_name == declared_type_name:  # TexturePack
                 self._show_loading()
                 self._preview_texturepack(data, asset_id)
                 return
@@ -3796,18 +3797,23 @@ class CacheViewerTab(QWidget):
             is_mesh_payload = mesh_processing.is_mesh_data(data)
 
             # Show loading for async previews
-            if is_mesh_payload or asset_type in [
-                4,
-                39,
-                1,
-                13,
-                63,
-            ]:  # Mesh, SolidModel, Image, Decal, TexturePack
+            if (
+                detected_type_name in {'Image', 'Mesh'}
+                or is_mesh_payload
+                or asset_type
+                in [
+                    13,
+                    39,
+                    63,
+                ]
+            ):
                 self._show_loading()
 
-            # Preview based on type
-            if is_mesh_payload or asset_type == 4:  # Mesh
+            # Prefer recognizable payload signatures over Roblox's declared asset type.
+            if detected_type_name == 'Mesh' or is_mesh_payload:
                 self._preview_mesh(data, asset_id)
+            elif detected_type_name == 'Image':
+                self._preview_image(data)
             elif asset_type == 39:  # SolidModel
                 self._preview_solidmodel(data, asset_id)
             elif detected_type_name == 'Audio':  # Payload is audio despite assetTypeId
@@ -4356,9 +4362,10 @@ class CacheViewerTab(QWidget):
             temp_file = None
             base_name = resolved_name if resolved_name else asset_id
             safe_base = self._sanitize_filename(base_name)
+            detected_type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset_type)
 
-            # Convert based on type and save to temp file
-            if mesh_processing.is_mesh_data(data):  # Mesh payload - save as OBJ file
+            # Convert based on detected payload type and save to temp file.
+            if detected_type_name == 'Mesh' or mesh_processing.is_mesh_data(data):
                 try:
                     obj_content = mesh_processing.convert(data)
                     if obj_content:
@@ -4380,7 +4387,7 @@ class CacheViewerTab(QWidget):
                     )
                     return
 
-            elif asset_type in (1, 13):  # Image, Decal - save as PNG
+            elif detected_type_name == 'Image' or asset_type in (1, 13):  # Image, Decal
                 try:
                     _KTX_MAGIC = (
                         b'\xabKTX 11\xbb\r\n\x1a\n',
@@ -4404,7 +4411,7 @@ class CacheViewerTab(QWidget):
                     )
                     return
 
-            elif asset_type == 3:  # Audio - save as OGG/MP3
+            elif detected_type_name == 'Audio' or asset_type == 3:  # Audio
                 try:
                     # Determine extension
                     if data.startswith(b'OggS'):

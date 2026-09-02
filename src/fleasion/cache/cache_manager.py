@@ -338,6 +338,9 @@ class CacheManager:
 
     def _detect_payload_type(self, data: bytes, asset_type: int) -> str | None:
         """Return a display type override when the cached bytes identify better."""
+        if asset_type not in (1, 13) and self._is_image_data(data):
+            return 'Image'
+
         try:
             from . import mesh_processing
 
@@ -354,6 +357,22 @@ class CacheManager:
             return 'Json'
 
         return None
+
+    @staticmethod
+    def _is_image_data(data: bytes) -> bool:
+        """Return True when bytes look like an image payload supported by preview."""
+        if not data:
+            return False
+        if len(data) >= 12 and data.startswith(b'RIFF') and data[8:12] == b'WEBP':
+            return True
+        return data.startswith(
+            (
+                b'\x89PNG\r\n\x1a\n',
+                b'\xff\xd8\xff',
+                b'\xabKTX 11\xbb\r\n\x1a\n',
+                b'\xabKTX 20\xbb\r\n\x1a\n',
+            )
+        )
 
     @staticmethod
     def _is_audio_data(data: bytes) -> bool:
@@ -530,7 +549,7 @@ class CacheManager:
 
     def detect_asset_type_from_header(self, asset_id: str, asset_type: int) -> str | None:
         """Detect a corrected display type using only cached payload headers."""
-        if asset_type not in (1, 13):
+        if asset_type not in (1, 4, 13):
             return None
 
         data = self.peek_asset_bytes(asset_id, asset_type, max_bytes=16)
@@ -574,10 +593,10 @@ class CacheManager:
         if 'detected_type' in asset_info:
             return asset_info['detected_type']
 
-        # Some Roblox batch responses report RenderMesh CDN payloads as Image.
-        # Heal those persisted entries lazily so old cache indexes display
-        # correctly after a restart without requiring a re-download.
-        if probe_payload and asset_type in (1, 13):
+        # Roblox metadata can disagree with the CDN payload type (for example,
+        # RenderMesh bytes reported as Image and legacy PNG textures reported
+        # as Mesh). Heal persisted entries lazily without requiring a re-download.
+        if probe_payload and asset_type in (1, 4, 13):
             detected_type = self.detect_asset_type_from_header(asset_id, asset_type)
             if detected_type:
                 self.set_detected_type(asset_id, asset_type, detected_type)
@@ -662,15 +681,18 @@ class CacheManager:
 
     def get_available_export_formats_for_asset(self, asset_id: str, asset_type: int) -> list[str]:
         """Get export formats for an asset, including payload-detected document formats."""
-        formats = self.get_available_export_formats(asset_type)
+        detected_type = self.get_type_name_for_asset(asset_id, asset_type)
+        effective_type = {'Audio': 3, 'Image': 1, 'Mesh': 4}.get(detected_type, asset_type)
+        formats = self.get_available_export_formats(effective_type)
         data = self.get_asset(asset_id, asset_type)
         if not data:
             return formats
 
-        from .mesh_rig import has_embedded_rig
+        if effective_type == 4:
+            from .mesh_rig import has_embedded_rig
 
-        if has_embedded_rig(data) and 'converted_rigged_glb' not in formats:
-            formats.insert(0, 'converted_rigged_glb')
+            if has_embedded_rig(data) and 'converted_rigged_glb' not in formats:
+                formats.insert(0, 'converted_rigged_glb')
 
         document_formats = get_roblox_document_export_formats(data, asset_type=asset_type)
         for fmt in reversed(document_formats):
@@ -704,8 +726,10 @@ class CacheManager:
             if not data:
                 return None
 
+            detected_type_name = self.get_type_name_for_asset(asset_id, asset_type)
+
             if output_path is None:
-                type_name = self.get_asset_type_name(asset_type)
+                type_name = detected_type_name
 
                 # Determine subfolder based on format
                 if export_format.startswith('converted'):
@@ -794,7 +818,7 @@ class CacheManager:
                     output_path.write_bytes(glb_data)
                     return output_path
 
-                if export_format == 'converted_obj' and asset_type == 4:  # Mesh - convert to OBJ
+                if export_format == 'converted_obj' and detected_type_name == 'Mesh':
                     from . import mesh_processing
 
                     try:
@@ -1008,6 +1032,10 @@ class CacheManager:
             return self._detect_font_extension(data)
         if data.startswith(b'\x89PNG'):
             return '.png'
+        elif data.startswith(b'\xff\xd8\xff'):
+            return '.jpg'
+        elif len(data) >= 12 and data.startswith(b'RIFF') and data[8:12] == b'WEBP':
+            return '.webp'
         elif data.startswith(b'OggS'):
             return '.ogg'
         elif (

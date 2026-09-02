@@ -1,3 +1,5 @@
+import pytest
+
 from fleasion.cache import cache_manager as cache_manager_module
 from fleasion.cache import mesh_rig
 
@@ -19,6 +21,14 @@ MESH_PAYLOAD = (
 )
 
 AUDIO_PAYLOAD = b"OggS\x00\x02" + (b"\x00" * 32)
+
+IMAGE_PAYLOADS = [
+    pytest.param(b"\x89PNG\r\n\x1a\n" + (b"\x00" * 24), ".png", id="png"),
+    pytest.param(b"\xff\xd8\xff\xe0" + (b"\x00" * 28), ".jpg", id="jpeg"),
+    pytest.param(b"RIFF\x18\x00\x00\x00WEBP" + (b"\x00" * 20), ".webp", id="webp"),
+    pytest.param(b"\xabKTX 11\xbb\r\n\x1a\n" + (b"\x00" * 20), ".ktx", id="ktx1"),
+    pytest.param(b"\xabKTX 20\xbb\r\n\x1a\n" + (b"\x00" * 20), ".ktx", id="ktx2"),
+]
 
 
 class _Config:
@@ -51,6 +61,10 @@ def test_image_typed_mesh_payload_is_displayed_as_mesh(tmp_path, monkeypatch):
     info = manager.get_asset_info("456", 1)
     assert info["detected_type"] == "Mesh"
     assert info["type_name"] == "Mesh"
+
+    formats = manager.get_available_export_formats_for_asset("456", 1)
+    assert "converted_obj" in formats
+    assert "converted_png" not in formats
 
 
 def test_old_image_typed_mesh_payload_is_healed_lazily(tmp_path, monkeypatch):
@@ -96,6 +110,46 @@ def test_image_typed_audio_payload_is_displayed_as_audio(tmp_path, monkeypatch):
     assert info["detected_type"] == "Audio"
     assert info["type_name"] == "Audio"
     assert manager._detect_extension(AUDIO_PAYLOAD, 3) == ".ogg"
+
+
+@pytest.mark.parametrize(("payload", "expected_extension"), IMAGE_PAYLOADS)
+def test_mesh_typed_image_payload_is_displayed_and_exported_as_image(
+    tmp_path, monkeypatch, payload, expected_extension
+):
+    monkeypatch.setattr(cache_manager_module, "CONFIG_DIR", tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+
+    assert manager.store_asset("81504106", 4, payload)
+
+    assert manager.get_type_name_for_asset("81504106", 4) == "Image"
+    info = manager.get_asset_info("81504106", 4)
+    assert info["detected_type"] == "Image"
+    assert info["type_name"] == "Image"
+
+    formats = manager.get_available_export_formats_for_asset("81504106", 4)
+    assert "converted_png" in formats
+    assert "converted_obj" not in formats
+    assert manager._detect_extension(payload, 4) == expected_extension
+
+
+def test_old_mesh_typed_image_payload_is_healed_lazily_from_header(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, "CONFIG_DIR", tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    payload = b"\x89PNG\r\n\x1a\n" + (b"x" * 20_000)
+    assert manager.store_asset("81504106", 4, payload)
+
+    info = manager.get_asset_info("81504106", 4)
+    info.pop("detected_type", None)
+    info["type_name"] = "Mesh"
+
+    def fail_full_asset_read(*_args, **_kwargs):
+        raise AssertionError("type detection must not read the full payload")
+
+    manager.get_asset = fail_full_asset_read
+
+    assert manager.get_type_name_for_asset("81504106", 4) == "Image"
+    assert info["detected_type"] == "Image"
+    assert info["type_name"] == "Image"
 
 
 def test_clear_memory_cache_evicts_loaded_asset_payloads(tmp_path, monkeypatch):
