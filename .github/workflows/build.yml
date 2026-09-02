@@ -103,32 +103,9 @@ jobs:
 
       - name: Install UPX
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $maxRetries = 5
-          $maxAttempts = $maxRetries + 1
-          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            Write-Host "Installing UPX (attempt $attempt/$maxAttempts)..."
-            choco install upx -y --no-progress
-            $installExitCode = $LASTEXITCODE
-
-            if ($installExitCode -eq 0) {
-              if (Get-Command upx -ErrorAction SilentlyContinue) {
-                upx --version
-                if ($LASTEXITCODE -eq 0) {
-                  break
-                }
-              }
-            }
-
-            if ($attempt -eq $maxAttempts) {
-              throw "UPX installation failed after $maxAttempts attempts."
-            }
-
-            $delaySeconds = [int][Math]::Min(60, [Math]::Pow(2, $attempt) * 5)
-            Write-Host "Retrying UPX installation in $delaySeconds seconds..."
-            Start-Sleep -Seconds $delaySeconds
-          }
+        uses: crazy-max/ghaction-upx@c83f378efc804f828e988debb88ed6116feb2368 # v4.0.0
+        with:
+          install-only: true
 
       - name: Test Windows Qt startup path
         if: runner.os == 'Windows'
