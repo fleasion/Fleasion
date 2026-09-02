@@ -359,6 +359,36 @@ class ConfigManagerEncodingTests(unittest.TestCase):
                 {'Visual': {'scan_code': 0x1E, 'extended': False, 'modifiers': 0}},
             )
 
+    def test_custom_fflag_actions_preserve_overlapping_value_switchers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+            manager.custom_fflag_actions = {
+                ' 90 FPS ': {
+                    'flags': {' DFIntTaskSchedulerTargetFps ': 90},
+                    'keybind': {'scan_code': 0x10, 'extended': False, 'modifiers': 0},
+                },
+                '144 FPS': {
+                    'flags': {'DFIntTaskSchedulerTargetFps': 144},
+                    'keybind': {'scan_code': 0x12, 'extended': False, 'modifiers': 0},
+                },
+            }
+
+            reloaded = config_manager_module.ConfigManager()
+            self.assertEqual(
+                reloaded.custom_fflag_actions,
+                {
+                    '90 FPS': {
+                        'flags': {'DFIntTaskSchedulerTargetFps': '90'},
+                        'keybind': {'scan_code': 0x10, 'extended': False, 'modifiers': 0},
+                    },
+                    '144 FPS': {
+                        'flags': {'DFIntTaskSchedulerTargetFps': '144'},
+                        'keybind': {'scan_code': 0x12, 'extended': False, 'modifiers': 0},
+                    },
+                },
+            )
+
     def test_custom_fflag_mouse_bindings_are_preserved_per_platform(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

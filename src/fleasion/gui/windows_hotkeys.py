@@ -29,6 +29,10 @@ class _DisabledConfigLike(Protocol):
     custom_fflag_disabled_folders: list[str]
 
 
+class _FlagConfigLike(Protocol):
+    custom_fflags: dict[str, str]
+
+
 class _RefreshProxyLike(Protocol):
     def refresh_custom_fflag_interception(self) -> None: ...
 
@@ -77,6 +81,10 @@ if TYPE_CHECKING:
     def _config_folders(config: object) -> Mapping[str, object]: ...
 
     def _config_folder_bindings(config: object) -> Mapping[str, Mapping[str, object]]: ...
+
+    def _config_actions(config: object) -> Mapping[str, object]: ...
+
+    def _set_config_flags(config: object, values: dict[str, str]) -> None: ...
 
     def _config_disabled(config: object) -> list[str]: ...
 
@@ -150,6 +158,13 @@ else:
     def _config_folder_bindings(config: object) -> Mapping[str, Mapping[str, object]]:
         bindings = getattr(config, 'custom_fflag_folder_keybinds', {}) or {}
         return bindings if isinstance(bindings, Mapping) else {}
+
+    def _config_actions(config: object) -> Mapping[str, object]:
+        actions = getattr(config, 'custom_fflag_actions', {}) or {}
+        return actions if isinstance(actions, Mapping) else {}
+
+    def _set_config_flags(config: _FlagConfigLike, values: dict[str, str]) -> None:
+        config.custom_fflags = values
 
     def _config_disabled(config: object) -> list[str]:
         disabled = getattr(config, 'custom_fflag_disabled', []) or []
@@ -582,13 +597,38 @@ class WindowsCustomFFlagHotkeyController(QObject):
                 for name, binding in _config_folder_bindings(self._config).items()
             }
         )
+        for name, action_value in _config_actions(self._config).items():
+            action = _binding_mapping(action_value)
+            if action is None:
+                continue
+            keybind = _binding_mapping(action.get('keybind'))
+            if keybind is not None:
+                bindings[f'action:{name}'] = keybind
         self._service.set_bindings(bindings)
 
     def toggle_target(self, target: str) -> None:
         if target.startswith('folder:'):
             self.toggle_folder(target.removeprefix('folder:'))
             return
+        if target.startswith('action:'):
+            self.apply_action(target.removeprefix('action:'))
+            return
         self.toggle_flag(target)
+
+    def apply_action(self, name: str) -> None:
+        if self._config is None or not _config_enabled(self._config):
+            return
+        action = _binding_mapping(_config_actions(self._config).get(name))
+        if action is None:
+            return
+        action_flags = _binding_mapping(action.get('flags'))
+        if not action_flags:
+            return
+        updated = {str(flag): str(value) for flag, value in _config_flags(self._config).items()}
+        updated.update({str(flag): str(value) for flag, value in action_flags.items()})
+        _set_config_flags(self._config, updated)
+        log_buffer.log('CustomFFlags', f'Windows keybind applied action {name}')
+        self.toggled.emit(f'action:{name}')
 
     def toggle_flag(self, name: str) -> None:
         if (

@@ -439,6 +439,7 @@ DEFAULT_SETTINGS: JsonObject = {
     'custom_fflag_folders': {},
     'custom_fflag_disabled_folders': [],
     'custom_fflag_folder_keybinds': {},
+    'custom_fflag_actions': {},
     'linux_fflag_keybind_setup_prompted': False,
     'macos_auth_source': '',
     'upstream_transport_mode': 'auto',
@@ -642,6 +643,32 @@ def _normalize_custom_fflag_keybinds(
             binding = _normalize_windows_binding(scan_code, kind, extended, modifiers, platform)
         if binding is not None:
             normalized[name] = binding
+    return normalized
+
+
+def _normalize_custom_fflag_actions(value: object) -> dict[str, JsonObject]:
+    """Normalize named FastFlag actions with optional hotkey bindings."""
+    if not _is_object_dict(value):
+        return {}
+    normalized: dict[str, JsonObject] = {}
+    for raw_name, raw_action in value.items():
+        name = str(raw_name).strip()
+        if not name or not _is_object_dict(raw_action):
+            continue
+        flags = _normalize_custom_fflags(raw_action.get('flags', {}))
+        if not flags:
+            continue
+        json_flags: JsonObject = {}
+        json_flags.update(flags)
+        action: JsonObject = {'flags': json_flags}
+        binding = _normalize_custom_fflag_keybinds(
+            {name: raw_action.get('keybind')}
+        ).get(name)
+        if binding is not None:
+            json_binding: JsonObject = {}
+            json_binding.update(binding)
+            action['keybind'] = json_binding
+        normalized[name] = action
     return normalized
 
 
@@ -1205,6 +1232,18 @@ class ConfigManager:
             json_binding.update(binding)
             keybinds[name] = json_binding
         self.settings['custom_fflag_folder_keybinds'] = keybinds
+        self._save_settings()
+
+    @property
+    def custom_fflag_actions(self) -> dict[str, JsonObject]:
+        """Named FastFlag value actions, each with an optional global hotkey."""
+        return _normalize_custom_fflag_actions(self.settings.get('custom_fflag_actions', {}))
+
+    @custom_fflag_actions.setter
+    def custom_fflag_actions(self, value: object) -> None:
+        actions: JsonObject = {}
+        actions.update(_normalize_custom_fflag_actions(value))
+        self.settings['custom_fflag_actions'] = actions
         self._save_settings()
 
     @property

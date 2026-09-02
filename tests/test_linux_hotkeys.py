@@ -265,3 +265,35 @@ def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:
     assert proxy.refresh_calls == 1
     assert toggled == ['folder:Visual']
     controller.stop()
+
+
+def test_linux_custom_fflag_actions_can_switch_same_flag_between_values() -> None:
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'DFIntTaskSchedulerTargetFps': '60'},
+        custom_fflag_disabled=[],
+        custom_fflag_keybinds={},
+        custom_fflag_folders={},
+        custom_fflag_disabled_folders=[],
+        custom_fflag_folder_keybinds={},
+        custom_fflag_actions={
+            '90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}},
+            '144 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '144'}},
+        },
+    )
+    proxy = SimpleNamespace(refresh_calls=0)
+    proxy.refresh_custom_fflag_interception = lambda: setattr(
+        proxy, 'refresh_calls', proxy.refresh_calls + 1
+    )
+    controller = LinuxCustomFFlagHotkeyController(config, proxy)
+    toggled: list[str] = []
+    controller.toggled.connect(_record_toggled(toggled))
+
+    controller.toggle_target('action:90 FPS')
+    assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '90'
+    controller.toggle_target('action:144 FPS')
+
+    assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '144'
+    assert proxy.refresh_calls == 0
+    assert toggled == ['action:90 FPS', 'action:144 FPS']
+    controller.stop()

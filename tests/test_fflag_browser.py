@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
     QLineEdit,
+    QPushButton,
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
@@ -560,4 +561,35 @@ def test_custom_fflag_editor_renders_and_toggles_folder_rows() -> None:
 
     assert config.custom_fflag_disabled_folders == ['Visual']
     assert config.custom_fflag_disabled == []
+    assert app is not None
+
+
+
+def test_custom_fflag_toolbar_uses_compact_json_menu_and_custom_actions_button() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={},
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
+    )
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
+    )
+    editor = CustomFFlagEditor(config, proxy)
+
+    button_texts = {button.text() for button in editor.findChildren(QPushButton)}
+
+    assert 'JSON' in button_texts
+    assert 'Custom Actions' in button_texts
+    assert 'Import JSON…' not in button_texts
+    assert 'Export JSON…' not in button_texts
     assert app is not None

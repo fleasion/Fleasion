@@ -196,6 +196,15 @@ class _ModificationManagerLike(Protocol):
 
 type _HotkeyBinding = dict[str, int | bool | str]
 type _HotkeyBindings = dict[str, _HotkeyBinding]
+
+
+class _FastFlagAction(TypedDict, total=False):
+    flags: dict[str, str]
+    keybind: _HotkeyBinding
+
+
+type _FastFlagActions = dict[str, _FastFlagAction]
+type _HotkeyCapture = Callable[[str], tuple[bool, _HotkeyBinding | None]]
 type _HotkeyController = WindowsCustomFFlagHotkeyController | LinuxCustomFFlagHotkeyController
 type _HotkeyService = WindowsHotkeyService | LinuxHotkeyService
 
@@ -232,6 +241,29 @@ def _is_object_collection(
 
 def _is_hotkey_bindings(value: object) -> TypeIs[_HotkeyBindings]:
     return isinstance(value, dict)
+
+
+def _fastflag_actions(value: object) -> _FastFlagActions:
+    if not _is_object_dict(value):
+        return {}
+    actions: _FastFlagActions = {}
+    for raw_name, raw_action in value.items():
+        name = str(raw_name).strip()
+        if not name or not _is_object_dict(raw_action):
+            continue
+        raw_flags = raw_action.get('flags')
+        if not _is_object_dict(raw_flags):
+            continue
+        flags = {str(flag): str(flag_value) for flag, flag_value in raw_flags.items()}
+        if not flags:
+            continue
+        action: _FastFlagAction = {'flags': flags}
+        raw_binding = raw_action.get('keybind')
+        binding_container: object = {'binding': raw_binding}
+        if _is_hotkey_bindings(binding_container):
+            action['keybind'] = dict(binding_container['binding'])
+        actions[name] = action
+    return actions
 
 
 def _linux_hotkey_service(service: _HotkeyService) -> LinuxHotkeyService:
@@ -2718,6 +2750,304 @@ class LinuxHotkeyCaptureDialog(QDialog):
         return super().eventFilter(watched, event)
 
 
+def _format_hotkey_binding(binding: _HotkeyBinding | None) -> str:
+    if sys.platform.startswith('linux'):
+        binding_text = cast(
+            'Callable[[_HotkeyBinding | None], str]',
+            _lazy_attr('fleasion.gui.linux_hotkeys', 'binding_text'),
+        )
+    else:
+        binding_text = cast(
+            'Callable[[_HotkeyBinding | None], str]',
+            _lazy_attr('fleasion.gui.windows_hotkeys', 'binding_text'),
+        )
+    return binding_text(binding)
+
+
+class FastFlagActionEditorDialog(QDialog):
+    """Edit one named Custom Action and its FastFlag value patch."""
+
+    def __init__(
+        self,
+        name: str = '',
+        flags: dict[str, str] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr('ui.gui.modifications_tab.edit_custom_action'))
+        self.setMinimumSize(560, 360)
+        self.action_name = ''
+        self.flags: dict[str, str] = {}
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._name = QLineEdit(name)
+        self._name.setPlaceholderText(tr('ui.gui.modifications_tab.custom_action_name'))
+        form.addRow(tr('ui.gui.modifications_tab.name'), self._name)
+        layout.addLayout(form)
+
+        description = QLabel(tr('ui.gui.modifications_tab.custom_action_flags_description'))
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self._table = QTableWidget(0, 2)
+        self._table.setHorizontalHeaderLabels(
+            [tr('modifications.table.name'), tr('modifications.table.value')]
+        )
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        layout.addWidget(self._table)
+
+        row_buttons = QHBoxLayout()
+        add_button = QPushButton(tr('ui.gui.modifications_tab.add_fastflag'))
+        add_button.clicked.connect(self._append_empty_row)
+        row_buttons.addWidget(add_button)
+        delete_button = QPushButton(tr('ui.gui.modifications_tab.delete_selected'))
+        delete_button.clicked.connect(self._delete_selected)
+        row_buttons.addWidget(delete_button)
+        row_buttons.addStretch()
+        layout.addLayout(row_buttons)
+
+        for flag_name, value in (flags or {}).items():
+            self._append_row(flag_name, value)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _append_empty_row(self) -> None:
+        self._append_row('', '')
+
+    def _append_row(self, name: str, value: str) -> None:
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        self._table.setItem(row, 0, QTableWidgetItem(name))
+        self._table.setItem(row, 1, QTableWidgetItem(value))
+        if not name:
+            item = self._table.item(row, 0)
+            if item is not None:
+                self._table.setCurrentCell(row, 0)
+                self._table.editItem(item)
+
+    def _delete_selected(self) -> None:
+        for row in sorted({index.row() for index in self._table.selectedIndexes()}, reverse=True):
+            self._table.removeRow(row)
+
+    def _save(self) -> None:
+        name = self._name.text().strip()
+        if not name:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.custom_actions'),
+                tr('ui.gui.modifications_tab.custom_action_name_required'),
+            )
+            return
+        flags: dict[str, str] = {}
+        for row in range(self._table.rowCount()):
+            name_item = self._table.item(row, 0)
+            value_item = self._table.item(row, 1)
+            flag_name = name_item.text().strip() if name_item is not None else ''
+            value = value_item.text().strip() if value_item is not None else ''
+            if not flag_name:
+                continue
+            if flag_name in flags:
+                QMessageBox.warning(
+                    self,
+                    tr('ui.gui.modifications_tab.custom_actions'),
+                    tr(
+                        'ui.gui.modifications_tab.custom_action_duplicate_fastflag',
+                        value0=flag_name,
+                    ),
+                )
+                return
+            flags[flag_name] = value
+        if not flags:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.custom_actions'),
+                tr('ui.gui.modifications_tab.custom_action_requires_fastflag'),
+            )
+            return
+        self.action_name = name
+        self.flags = flags
+        self.accept()
+
+
+class FastFlagActionsDialog(QDialog):
+    """Manage named FastFlag value patches and their global hotkeys."""
+
+    def __init__(
+        self,
+        actions: _FastFlagActions,
+        seed_flags: dict[str, str],
+        capture_binding: _HotkeyCapture,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr('ui.gui.modifications_tab.custom_actions'))
+        self.setMinimumSize(760, 430)
+        self.action_definitions: _FastFlagActions = {}
+        for name, action in actions.items():
+            copied: _FastFlagAction = {'flags': dict(action.get('flags', {}))}
+            if keybind := action.get('keybind'):
+                copied['keybind'] = dict(keybind)
+            self.action_definitions[name] = copied
+        self._seed_flags = dict(seed_flags)
+        self._capture_binding = capture_binding
+
+        layout = QVBoxLayout(self)
+        description = QLabel(tr('ui.gui.modifications_tab.custom_actions_description'))
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self._table = QTableWidget(0, 3)
+        self._table.setHorizontalHeaderLabels(
+            [
+                tr('ui.gui.modifications_tab.action'),
+                tr('ui.gui.modifications_tab.changes'),
+                tr('modifications.table.keybind'),
+            ]
+        )
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.cellDoubleClicked.connect(self._edit_action)
+        layout.addWidget(self._table)
+
+        controls = QHBoxLayout()
+        new_button = QPushButton(tr('ui.gui.modifications_tab.new_action'))
+        new_button.clicked.connect(self._new_action)
+        controls.addWidget(new_button)
+        edit_button = QPushButton(tr('ui.gui.modifications_tab.edit'))
+        edit_button.clicked.connect(self._edit_action)
+        controls.addWidget(edit_button)
+        delete_button = QPushButton(tr('ui.gui.modifications_tab.delete'))
+        delete_button.clicked.connect(self._delete_action)
+        controls.addWidget(delete_button)
+        controls.addStretch()
+        assign_button = QPushButton(tr('ui.gui.modifications_tab.assign_hotkey'))
+        assign_button.clicked.connect(self._assign_hotkey)
+        controls.addWidget(assign_button)
+        clear_button = QPushButton(tr('ui.gui.modifications_tab.clear_keybind'))
+        clear_button.clicked.connect(self._clear_hotkey)
+        controls.addWidget(clear_button)
+        layout.addLayout(controls)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._refresh()
+
+    def _selected_name(self) -> str | None:
+        row = self._table.currentRow()
+        if row < 0:
+            return None
+        item = self._table.item(row, 0)
+        return item.text() if item is not None else None
+
+    @staticmethod
+    def _changes_text(action: _FastFlagAction) -> str:
+        flags = action.get('flags', {})
+        if len(flags) == 1:
+            name, value = next(iter(flags.items()))
+            return f'{name} = {value}'
+        return tr_count(
+            len(flags),
+            'ui.gui.modifications_tab.fastflag_folder_count_one',
+            'ui.gui.modifications_tab.fastflag_folder_count_other',
+        )
+
+    def _refresh(self, selected: str | None = None) -> None:
+        selected = selected or self._selected_name()
+        self._table.setRowCount(0)
+        for name in sorted(self.action_definitions, key=str.casefold):
+            action = self.action_definitions[name]
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            self._table.setItem(row, 0, QTableWidgetItem(name))
+            self._table.setItem(row, 1, QTableWidgetItem(self._changes_text(action)))
+            self._table.setItem(
+                row,
+                2,
+                QTableWidgetItem(_format_hotkey_binding(action.get('keybind'))),
+            )
+            if name == selected:
+                self._table.selectRow(row)
+
+    def _new_action(self) -> None:
+        dialog = FastFlagActionEditorDialog(flags=self._seed_flags, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.action_name in self.action_definitions:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.custom_actions'),
+                tr('ui.gui.modifications_tab.custom_action_name_exists', value0=dialog.action_name),
+            )
+            return
+        self.action_definitions[dialog.action_name] = {'flags': dialog.flags}
+        self._refresh(dialog.action_name)
+
+    def _edit_action(self, _row: int | None = None, _column: int | None = None) -> None:
+        name = self._selected_name()
+        if not name:
+            return
+        action = self.action_definitions[name]
+        dialog = FastFlagActionEditorDialog(name, action.get('flags', {}), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.action_name != name and dialog.action_name in self.action_definitions:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.custom_actions'),
+                tr('ui.gui.modifications_tab.custom_action_name_exists', value0=dialog.action_name),
+            )
+            return
+        updated: _FastFlagAction = {'flags': dialog.flags}
+        if keybind := action.get('keybind'):
+            updated['keybind'] = keybind
+        if dialog.action_name != name:
+            self.action_definitions.pop(name)
+        self.action_definitions[dialog.action_name] = updated
+        self._refresh(dialog.action_name)
+
+    def _delete_action(self) -> None:
+        name = self._selected_name()
+        if name:
+            self.action_definitions.pop(name, None)
+            self._refresh()
+
+    def _assign_hotkey(self) -> None:
+        name = self._selected_name()
+        if not name:
+            return
+        accepted, binding = self._capture_binding(name)
+        if not accepted:
+            return
+        if binding is None:
+            self.action_definitions[name].pop('keybind', None)
+        else:
+            self.action_definitions[name]['keybind'] = binding
+        self._refresh(name)
+
+    def _clear_hotkey(self) -> None:
+        name = self._selected_name()
+        if name:
+            self.action_definitions[name].pop('keybind', None)
+            self._refresh(name)
+
+
 class CustomFFlagEditor(QWidget):
     """Fishstrap-style name/value editor backed by Fleasion's proxy settings."""
 
@@ -2895,23 +3225,23 @@ class CustomFFlagEditor(QWidget):
         folder_button.setMenu(folder_menu)
         buttons.addWidget(folder_button)
 
-        import_button = QPushButton(tr('ui.gui.modifications_tab.import_json'))
-        import_menu = QMenu(import_button)
-        import_menu.addAction(tr('ui.gui.modifications_tab.from_text'), self._import_json)
-        import_menu.addAction(tr('ui.gui.modifications_tab.from_file'), self._import_file)
-        import_button.setMenu(import_menu)
-        buttons.addWidget(import_button)
-
-        export_button = QPushButton(tr('ui.gui.modifications_tab.export_json'))
-        export_menu = QMenu(export_button)
-        export_menu.addAction(tr('ui.gui.modifications_tab.copy_to_clipboard'), self._copy_json)
-        export_menu.addAction(tr('ui.gui.modifications_tab.export_as_file'), self._export_json)
-        export_button.setMenu(export_menu)
-        buttons.addWidget(export_button)
+        json_button = QPushButton(tr('ui.gui.modifications_tab.json'))
+        json_menu = QMenu(json_button)
+        json_menu.addAction(tr('ui.gui.modifications_tab.import_from_text'), self._import_json)
+        json_menu.addAction(tr('ui.gui.modifications_tab.import_from_file'), self._import_file)
+        json_menu.addSeparator()
+        json_menu.addAction(tr('ui.gui.modifications_tab.copy_to_clipboard'), self._copy_json)
+        json_menu.addAction(tr('ui.gui.modifications_tab.export_as_file'), self._export_json)
+        json_button.setMenu(json_menu)
+        buttons.addWidget(json_button)
 
         profiles_button = QPushButton(tr('ui.gui.modifications_tab.profiles'))
         profiles_button.clicked.connect(self._show_profiles)
         buttons.addWidget(profiles_button)
+
+        actions_button = QPushButton(tr('ui.gui.modifications_tab.custom_actions'))
+        actions_button.clicked.connect(self._show_custom_actions)
+        buttons.addWidget(actions_button)
 
         delete_button = QPushButton(tr('ui.gui.modifications_tab.delete_selected'))
         delete_button.clicked.connect(self._delete_selected)
@@ -3115,19 +3445,13 @@ class CustomFFlagEditor(QWidget):
         )
         return bindings if _is_hotkey_bindings(bindings) else empty_bindings
 
+    def _custom_actions(self) -> _FastFlagActions:
+        raw = cast('object', getattr(self._config, 'custom_fflag_actions', {}))
+        return _fastflag_actions(raw)
+
     @staticmethod
     def _keybind_text(binding: _HotkeyBinding | None) -> str:
-        binding_text: Callable[[_HotkeyBinding | None], str]
-        module_name = (
-            'fleasion.gui.linux_hotkeys'
-            if sys.platform.startswith('linux')
-            else 'fleasion.gui.windows_hotkeys'
-        )
-        binding_text = cast(
-            'Callable[[_HotkeyBinding | None], str]',
-            _lazy_attr(module_name, 'binding_text'),
-        )
-        return binding_text(binding)
+        return _format_hotkey_binding(binding)
 
     def _flag_is_enabled(self, row: int) -> bool:
         item = self._table.item(row, 2)
@@ -3199,6 +3523,13 @@ class CustomFFlagEditor(QWidget):
             bindings.update(
                 {f'folder:{name}': spec for name, spec in self._folder_keybinds().items()}
             )
+            bindings.update(
+                {
+                    f'action:{name}': keybind
+                    for name, action in self._custom_actions().items()
+                    if (keybind := action.get('keybind')) is not None
+                }
+            )
             self._hotkey_service.set_bindings(bindings if feature_enabled else {})
 
     def _begin_linux_hotkey_capture(self) -> LinuxHotkeyService | None:
@@ -3268,6 +3599,23 @@ class CustomFFlagEditor(QWidget):
         )
         return None
 
+    def _capture_hotkey_binding(self, name: str) -> tuple[bool, _HotkeyBinding | None]:
+        if not self._hotkeys_supported:
+            return False, None
+        if self._linux_keybinds:
+            service = self._begin_linux_hotkey_capture()
+            if service is None:
+                return False, None
+            dialog = LinuxHotkeyCaptureDialog(name, service, self)
+        else:
+            dialog = WindowsHotkeyCaptureDialog(name, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False, None
+        if dialog.clear_requested:
+            return True, None
+        binding = dialog.binding
+        return (binding is not None), binding
+
     def _edit_keybind(self, row: int, column: int) -> None:
         if column != 3:
             return
@@ -3275,18 +3623,12 @@ class CustomFFlagEditor(QWidget):
         if not name:
             return
         is_folder = self._row_kind(row) == _FFLAG_ROW_FOLDER
-        if self._linux_keybinds:
-            service = self._begin_linux_hotkey_capture()
-            if service is None:
-                return
-            dialog = LinuxHotkeyCaptureDialog(name, service, self)
-        else:
-            dialog = WindowsHotkeyCaptureDialog(name, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        accepted, binding = self._capture_hotkey_binding(name)
+        if not accepted:
             return
         bindings = self._folder_keybinds() if is_folder else self._keybinds()
         config = _required_config(self._config)
-        if dialog.clear_requested:
+        if binding is None:
             bindings.pop(name, None)
             if is_folder:
                 config.custom_fflag_folder_keybinds = bindings
@@ -3294,9 +3636,7 @@ class CustomFFlagEditor(QWidget):
                 config.custom_fflag_keybinds = bindings
             self._load_flags()
             return
-        if dialog.binding is None:
-            return
-        bindings[name] = dialog.binding
+        bindings[name] = binding
         if is_folder:
             config.custom_fflag_folder_keybinds = bindings
         else:
@@ -3544,6 +3884,22 @@ class CustomFFlagEditor(QWidget):
         dialog = FastFlagProfilesDialog(self._flags_from_table(), self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.loaded_flags is not None:
             self._set_flags(dialog.loaded_flags)
+
+    def _show_custom_actions(self) -> None:
+        if self._config is None:
+            return
+        flags = self._flags_from_table()
+        seed_flags = {name: flags[name] for name in self._selected_flag_names() if name in flags}
+        dialog = FastFlagActionsDialog(
+            self._custom_actions(),
+            seed_flags,
+            self._capture_hotkey_binding,
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._config.custom_fflag_actions = dialog.action_definitions
+        self._sync_hotkeys()
 
     def _sort_rows(self, column: int) -> None:
         if self._sort_column == column:
