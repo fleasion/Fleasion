@@ -417,3 +417,30 @@ def test_collapsible_header_does_not_absorb_transient_collapse_space() -> None:
     section.close()
     section.deleteLater()
     app.processEvents()
+
+
+def test_collapsed_sections_do_not_absorb_parent_spare_height() -> None:
+    app = _qapp()
+    host = QWidget()
+    host.resize(900, 700)
+    host_layout = QVBoxLayout(host)
+    sections: list[CollapsibleSection] = []
+    for index in range(5):
+        section = CollapsibleSection(f'Section {index}', expanded=False)
+        section.add_widget(QLabel('body'))
+        host_layout.addWidget(section)
+        sections.append(section)
+    # Deliberately use the zero-stretch form that previously let Qt
+    # redistribute spare height back into Preferred section widgets.
+    host_layout.addStretch()
+
+    host.show()
+    app.processEvents()
+
+    for section in sections:
+        assert section.height() == section.sizeHint().height()
+        assert section.height() < 50
+
+    host.close()
+    host.deleteLater()
+    app.processEvents()

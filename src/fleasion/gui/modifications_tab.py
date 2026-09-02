@@ -745,6 +745,12 @@ class CollapsibleSection(QWidget):
         header_widgets: list[QWidget] | None = None,
     ) -> None:
         super().__init__(parent)
+        # A section should never absorb spare vertical space from its parent.
+        # Its height is determined by the header plus the currently visible
+        # content; any remaining viewport height belongs outside the card.
+        policy = self.sizePolicy()
+        policy.setVerticalPolicy(QSizePolicy.Policy.Maximum)
+        self.setSizePolicy(policy)
 
         self._expanded = expanded
         self._animation: QPropertyAnimation | None = None
@@ -880,6 +886,13 @@ class CollapsibleSection(QWidget):
     def _finish_collapse(self) -> None:
         self._content_layout.setEnabled(True)
         self._content_layout.activate()
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None:
+            parent_layout = parent.layout()
+            if parent_layout is not None:
+                parent_layout.invalidate()
+                parent_layout.activate()
 
 
 # NoWheelSpinBox — QSpinBox that ignores mouse wheel events

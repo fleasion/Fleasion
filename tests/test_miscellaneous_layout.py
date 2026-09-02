@@ -5,7 +5,7 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PySide6.QtCore import QEventLoop, QPoint, QTimer
+from PySide6.QtCore import QPoint, QPropertyAnimation
 from PySide6.QtWidgets import QApplication, QGroupBox, QLabel, QLineEdit, QListWidget, QWidget
 
 import fleasion.gui.rando_stuff_tab as rando
@@ -42,6 +42,12 @@ def _section(tab: rando.RandoStuffTab, name: str) -> CollapsibleSection:
 
 def _section_content(section: CollapsibleSection) -> QWidget:
     return cast('QWidget', section.__dict__['_content'])
+
+
+def _section_animation(section: CollapsibleSection) -> QPropertyAnimation:
+    animation = cast('QPropertyAnimation | None', section.__dict__['_animation'])
+    assert animation is not None
+    return animation
 
 
 def _gate_content(tab: rando.RandoStuffTab, name: str) -> QWidget:
@@ -140,9 +146,9 @@ def test_collapsed_misc_sections_shrink_to_header_height(monkeypatch: pytest.Mon
     for section in sections:
         section.toggle()
 
-    wait = QEventLoop()
-    QTimer.singleShot(260, wait.quit)
-    wait.exec()
+    for section in sections:
+        animation = _section_animation(section)
+        animation.setCurrentTime(animation.duration())
     app.processEvents()
 
     # A collapsed card must occupy only its header/outline size.  In the buggy
