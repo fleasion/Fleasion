@@ -259,9 +259,13 @@ def _fastflag_actions(value: object) -> _FastFlagActions:
             continue
         action: _FastFlagAction = {'flags': flags}
         raw_binding = raw_action.get('keybind')
-        binding_container: object = {'binding': raw_binding}
-        if _is_hotkey_bindings(binding_container):
-            action['keybind'] = dict(binding_container['binding'])
+        if _is_object_dict(raw_binding):
+            binding: _HotkeyBinding = {}
+            for raw_key, raw_value in raw_binding.items():
+                if isinstance(raw_value, int | bool | str):
+                    binding[str(raw_key)] = raw_value
+            if binding:
+                action['keybind'] = binding
         actions[name] = action
     return actions
 
@@ -2517,7 +2521,11 @@ class WindowsHotkeyCaptureDialog(QDialog):
             0x28,
             0x5B,
             0x5C,
-        }
+            0x6F,  # VK_DIVIDE is the extended E0 35 slash key.
+        } or (
+            event.key() == Qt.Key.Key_Enter
+            and bool(event.modifiers() & Qt.KeyboardModifier.KeypadModifier)
+        )
         return {
             'scan_code': scan_code,
             'extended': extended,
@@ -3259,7 +3267,7 @@ class CustomFFlagEditor(QWidget):
 
     def _load_flags(self, sync_hotkeys: bool = True) -> None:
         flags = dict(getattr(self._config, 'custom_fflags', {}) or {}) if self._config else {}
-        self._replace_table_rows(sorted(flags.items(), key=lambda item: item[0].lower()))
+        self._replace_table_rows(self._ordered_flag_rows(flags))
         self._filter_rows(self._search.text())
         self._update_status()
         if sync_hotkeys:
@@ -3676,7 +3684,35 @@ class CustomFFlagEditor(QWidget):
         if column == 0 and self._row_kind(row) == _FFLAG_ROW_FLAG:
             name_item = self._table.item(row, 0)
             if name_item is not None:
+                previous_name = str(name_item.data(_FFLAG_CANONICAL_NAME_ROLE) or '').strip()
                 name = name_item.text().strip()
+                other_names = {
+                    self._row_name(other_row)
+                    for other_row in range(self._table.rowCount())
+                    if other_row != row and self._row_kind(other_row) == _FFLAG_ROW_FLAG
+                }
+                error_message: str | None = None
+                if not name:
+                    error_message = tr('ui.gui.modifications_tab.fastflag_name_cannot_be_empty')
+                elif name in other_names:
+                    error_message = tr(
+                        'ui.gui.modifications_tab.fastflag_name_already_exists', value0=name
+                    )
+                if error_message is not None:
+                    blocker = QSignalBlocker(self._table)
+                    try:
+                        name_item.setText(previous_name)
+                        name_item.setData(_FFLAG_CANONICAL_NAME_ROLE, previous_name)
+                        name_item.setToolTip(previous_name)
+                    finally:
+                        del blocker
+                    QMessageBox.warning(
+                        self,
+                        tr('ui.gui.modifications_tab.invalid_fastflag_name'),
+                        error_message,
+                    )
+                    return
+                name_item.setText(name)
                 name_item.setData(_FFLAG_CANONICAL_NAME_ROLE, name)
                 name_item.setToolTip(name)
             self._set_value_editor(
@@ -3902,6 +3938,28 @@ class CustomFFlagEditor(QWidget):
         self._config.custom_fflag_actions = dialog.action_definitions
         self._sync_hotkeys()
 
+    def _sort_value(self, entry: tuple[str, str], column: int) -> str:
+        if column == 0:
+            return entry[0]
+        if column == 1:
+            return entry[1]
+        if column == 2:
+            return 'disabled' if entry[0] in self._disabled_flag_names() else 'enabled'
+        return self._keybind_text(self._keybinds().get(entry[0]))
+
+    def _ordered_flag_rows(self, flags: dict[str, str]) -> list[tuple[str, str]]:
+        column = self._sort_column if self._sort_column is not None else 0
+        rows = list(flags.items())
+        rows.sort(
+            key=lambda entry: (
+                self._sort_value(entry, column).casefold(),
+                entry[0].casefold(),
+                entry[1].casefold(),
+            ),
+            reverse=not self._sort_ascending,
+        )
+        return rows
+
     def _sort_rows(self, column: int) -> None:
         if self._sort_column == column:
             self._sort_ascending = not self._sort_ascending
@@ -3909,26 +3967,7 @@ class CustomFFlagEditor(QWidget):
             self._sort_column = column
             self._sort_ascending = True
 
-        rows = list(self._flags_from_table().items())
-
-        def sort_value(entry: tuple[str, str]) -> str:
-            if column == 0:
-                return entry[0]
-            if column == 1:
-                return entry[1]
-            if column == 2:
-                return 'disabled' if entry[0] in self._disabled_flag_names() else 'enabled'
-            return self._keybind_text(self._keybinds().get(entry[0]))
-
-        rows.sort(
-            key=lambda entry: (
-                sort_value(entry).casefold(),
-                entry[0].casefold(),
-                entry[1].casefold(),
-            ),
-            reverse=not self._sort_ascending,
-        )
-        self._replace_table_rows(rows)
+        self._replace_table_rows(self._ordered_flag_rows(self._flags_from_table()))
         self._table.horizontalHeader().setSortIndicator(
             column,
             Qt.SortOrder.AscendingOrder if self._sort_ascending else Qt.SortOrder.DescendingOrder,
@@ -3983,6 +4022,13 @@ class CustomFFlagEditor(QWidget):
         if not ok or not name:
             return
         folders = self._folders()
+        if name in folders:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.create_fastflag_folder'),
+                tr('ui.gui.modifications_tab.fastflag_folder_already_exists', value0=name),
+            )
+            return
         for members in folders.values():
             members[:] = [member for member in members if member not in selected]
         folders[name] = selected

@@ -644,3 +644,155 @@ def test_custom_actions_non_keybind_double_click_edits_action(
     app.processEvents()
 
     assert edited == [None]
+
+
+def test_custom_actions_without_hotkey_are_parsed_without_crashing() -> None:
+    parsed = modifications_tab._fastflag_actions(  # pyright: ignore[reportPrivateUsage]
+        {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}}
+    )
+
+    assert parsed == {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}}
+
+
+def test_create_folder_rejects_existing_name_without_changing_membership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'FFlagOne': '1', 'FFlagTwo': '2'},
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={'Visual': ['FFlagOne']},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    table = _editor_table(editor)
+    # Visual folder, FFlagOne, then ungrouped FFlagTwo.
+    table.selectRow(2)
+    def fake_get_text(*_args: object, **_kwargs: object) -> tuple[str, bool]:
+        return 'Visual', True
+
+    warnings: list[tuple[object, ...]] = []
+
+    def record_warning(*args: object, **_kwargs: object) -> None:
+        warnings.append(args)
+
+    monkeypatch.setattr(modifications_tab.QInputDialog, 'getText', fake_get_text)
+    monkeypatch.setattr(modifications_tab.QMessageBox, 'warning', record_warning)
+
+    editor._create_folder_from_selected()  # pyright: ignore[reportPrivateUsage]
+
+    assert config.custom_fflag_folders == {'Visual': ['FFlagOne']}
+    assert warnings
+    assert app is not None
+
+
+def test_inline_duplicate_fastflag_rename_is_reverted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'FFlagOne': '1', 'FFlagTwo': '2'},
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    table = _editor_table(editor)
+    warnings: list[tuple[object, ...]] = []
+
+    def record_warning(*args: object, **_kwargs: object) -> None:
+        warnings.append(args)
+
+    monkeypatch.setattr(modifications_tab.QMessageBox, 'warning', record_warning)
+    first_name = table.item(0, 0)
+    assert first_name is not None
+
+    first_name.setText('FFlagTwo')
+    app.processEvents()
+
+    assert first_name.text() == 'FFlagOne'
+    assert config.custom_fflags == {'FFlagOne': '1', 'FFlagTwo': '2'}
+    assert warnings
+
+
+def test_hotkey_refresh_preserves_active_value_sort() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'FFlagOne': '2', 'FFlagTwo': '1'},
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    editor._sort_rows(1)  # pyright: ignore[reportPrivateUsage]
+    config.custom_fflags = {'FFlagOne': '0', 'FFlagTwo': '3'}
+
+    editor._on_hotkey_toggled('action:test')  # pyright: ignore[reportPrivateUsage]
+
+    table = _editor_table(editor)
+    names: list[str] = []
+    for row in range(table.rowCount()):
+        item = table.item(row, 0)
+        if item is not None:
+            names.append(item.text().strip())
+    assert names == ['FFlagOne', 'FFlagTwo']
+    assert app is not None
+
+
+def test_windows_hotkey_capture_marks_numpad_divide_and_enter_extended() -> None:
+    divide_event = modifications_tab.QKeyEvent(
+        modifications_tab.QEvent.Type.KeyPress,
+        int(Qt.Key.Key_Slash),
+        Qt.KeyboardModifier.KeypadModifier,
+        0x35,
+        0x6F,
+        0,
+    )
+    enter_event = modifications_tab.QKeyEvent(
+        modifications_tab.QEvent.Type.KeyPress,
+        int(Qt.Key.Key_Enter),
+        Qt.KeyboardModifier.KeypadModifier,
+        0x1C,
+        0x0D,
+        0,
+    )
+
+    divide = modifications_tab.WindowsHotkeyCaptureDialog._event_binding(  # pyright: ignore[reportPrivateUsage]
+        divide_event, 0
+    )
+    enter = modifications_tab.WindowsHotkeyCaptureDialog._event_binding(  # pyright: ignore[reportPrivateUsage]
+        enter_event, 0
+    )
+
+    assert divide is not None and divide['extended'] is True
+    assert enter is not None and enter['extended'] is True

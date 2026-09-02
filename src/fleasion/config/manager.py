@@ -541,7 +541,7 @@ def _normalize_custom_fflag_folders(value: object) -> dict[str, list[str]]:
         folder = str(raw_folder).strip()
         if not folder or not _is_object_collection(raw_names):
             continue
-        names: list[str] = []
+        names = list(normalized.get(folder, []))
         for raw_name in raw_names:
             name = str(raw_name).strip()
             if name and name not in assigned:
@@ -661,9 +661,7 @@ def _normalize_custom_fflag_actions(value: object) -> dict[str, JsonObject]:
         json_flags: JsonObject = {}
         json_flags.update(flags)
         action: JsonObject = {'flags': json_flags}
-        binding = _normalize_custom_fflag_keybinds(
-            {name: raw_action.get('keybind')}
-        ).get(name)
+        binding = _normalize_custom_fflag_keybinds({name: raw_action.get('keybind')}).get(name)
         if binding is not None:
             json_binding: JsonObject = {}
             json_binding.update(binding)
