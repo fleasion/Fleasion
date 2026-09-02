@@ -43,15 +43,19 @@ def _coerce_import_value(value) -> int | str | None:
     return None
 
 
-class JsonSearchWorker(QThread):
-    """Worker thread for searching JSON tree without blocking UI."""
+TreeItemPath = tuple[int, ...]
+TreeSearchSnapshot = list[tuple[TreeItemPath, str]]
 
-    results_ready = pyqtSignal(list)  # List of matching items
+
+class JsonSearchWorker(QThread):
+    """Worker thread for searching a plain-data tree snapshot."""
+
+    results_ready = pyqtSignal(list)  # List[TreeItemPath]
     progress = pyqtSignal(int, int)  # Current, total
 
-    def __init__(self, root_items: list, query: str):
+    def __init__(self, snapshot: TreeSearchSnapshot, query: str):
         super().__init__()
-        self.root_items = root_items
+        self.snapshot = snapshot
         self.query = query.lower().strip()
         self._stop_requested = False
 
@@ -59,55 +63,22 @@ class JsonSearchWorker(QThread):
         self._stop_requested = True
 
     def run(self):
-        """Search tree items in background."""
+        """Search snapshot text without touching live Qt tree items."""
         if not self.query or self._stop_requested:
             return
 
-        matches = []
-        total_items = 0
+        matches: list[TreeItemPath] = []
+        total_items = len(self.snapshot)
+        batch_size = 50
 
-        # First, count total items for progress
-        def count_items(item):
-            count = 1
-            for i in range(item.childCount()):
-                count += count_items(item.child(i))
-            return count
-
-        for root_item in self.root_items:
-            total_items += count_items(root_item)
-
-        # Now search with progress reporting
-        processed = 0
-        batch_size = 50  # Report progress every 50 items
-
-        def search_item(item):
-            nonlocal processed
+        for processed, (path, text) in enumerate(self.snapshot, start=1):
             if self._stop_requested:
-                return False
-
-            processed += 1
-
-            # Report progress in batches
+                return
+            if self.query in text:
+                matches.append(path)
             if processed % batch_size == 0:
                 self.progress.emit(processed, total_items)
 
-            # Check if this item matches
-            if self.query in item.text(0).lower():
-                matches.append(item)
-
-            # Search children
-            for i in range(item.childCount()):
-                if not search_item(item.child(i)):
-                    return False
-
-            return True
-
-        # Search all root items
-        for root_item in self.root_items:
-            if not search_item(root_item):
-                break
-
-        # Emit final results if not stopped
         if not self._stop_requested:
             self.progress.emit(total_items, total_items)
             self.results_ready.emit(matches)
@@ -306,9 +277,9 @@ class AssetFetcherThread(QThread):
 
 
 class ImageLoaderThread(QThread):
-    """Load image bytes into a QPixmap in a background thread."""
+    """Decode image bytes in a background thread."""
 
-    image_ready = pyqtSignal(QPixmap)
+    image_ready = pyqtSignal(bytes, int, int)
     error = pyqtSignal(str)
 
     def __init__(self, data: bytes):
@@ -330,15 +301,9 @@ class ImageLoaderThread(QThread):
                 image = image.convert('RGBA')
             if self._stop_requested:
                 return
-            qimage = QImage(
-                image.tobytes(),
-                image.width,
-                image.height,
-                QImage.Format.Format_RGBA8888,
-            )
-            pixmap = QPixmap.fromImage(qimage)
+            rgba = image.tobytes()
             if not self._stop_requested:
-                self.image_ready.emit(pixmap)
+                self.image_ready.emit(rgba, image.width, image.height)
         except Exception as e:
             if not self._stop_requested:
                 self.error.emit(str(e))
@@ -507,7 +472,7 @@ class JsonTreeViewer(QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
 
         # Search debounce timer
-        self._search_debounce = QTimer()
+        self._search_debounce = QTimer(self)
         self._search_debounce.setSingleShot(True)
         self._search_debounce.timeout.connect(self._do_search)
 
@@ -1010,7 +975,9 @@ class JsonTreeViewer(QDialog):
         )
         self._image_loader.start()
 
-    def _on_image_ready(self, pixmap: QPixmap):
+    def _on_image_ready(self, rgba: bytes, width: int, height: int):
+        qimage = QImage(rgba, width, height, QImage.Format.Format_RGBA8888).copy()
+        pixmap = QPixmap.fromImage(qimage)
         self._hide_loading()
         self._current_pixmap = pixmap
         self._scale_and_show_image(pixmap)
@@ -1586,20 +1553,26 @@ class JsonTreeViewer(QDialog):
         if self._current_pixmap is not None and self.image_label.isVisible():
             self._scale_and_show_image(self._current_pixmap)
 
+    def _stop_search_worker(self) -> None:
+        worker = self._search_worker
+        if worker is None:
+            return
+        worker.stop()
+        worker.wait()
+        worker.deleteLater()
+        self._search_worker = None
+
     def closeEvent(self, event):
         """Handle dialog close - cleanup all resources including audio."""
+        self._search_debounce.stop()
+        self._stop_search_worker()
         self._clear_preview()
         self._stop_all_loaders()
         super().closeEvent(event)
 
     def _on_search_text_changed(self):
         """Handle search text change with debounce."""
-        # Stop any existing search
-        if self._search_worker is not None:
-            self._search_worker.stop()
-            self._search_worker.quit()
-            self._search_worker.wait()
-            self._search_worker = None
+        self._stop_search_worker()
 
         # Reset matches when search text changes
         self._search_matches = []
@@ -1610,6 +1583,38 @@ class JsonTreeViewer(QDialog):
         self.next_match_btn.setEnabled(False)
         self._search_debounce.stop()
         self._search_debounce.start(400)  # 400ms debounce
+
+    def _tree_search_snapshot(self) -> TreeSearchSnapshot:
+        """Snapshot searchable tree text on the GUI thread for worker use."""
+        snapshot: TreeSearchSnapshot = []
+
+        def walk(item: QTreeWidgetItem, path: TreeItemPath) -> None:
+            snapshot.append((path, item.text(0).lower()))
+            for child_index in range(item.childCount()):
+                child = item.child(child_index)
+                if child is not None:
+                    walk(child, (*path, child_index))
+
+        for root_index in range(self.tree.topLevelItemCount()):
+            root = self.tree.topLevelItem(root_index)
+            if root is not None:
+                walk(root, (root_index,))
+        return snapshot
+
+    def _tree_item_from_path(self, path: TreeItemPath) -> QTreeWidgetItem | None:
+        """Resolve a worker result path against the current live tree."""
+        if not path or path[0] >= self.tree.topLevelItemCount():
+            return None
+        item = self.tree.topLevelItem(path[0])
+        if item is None:
+            return None
+        for child_index in path[1:]:
+            if child_index >= item.childCount():
+                return None
+            item = item.child(child_index)
+            if item is None:
+                return None
+        return item
 
     def _do_search(self):
         """Execute the actual search after debounce using worker thread."""
@@ -1624,24 +1629,18 @@ class JsonTreeViewer(QDialog):
             self._current_match_index = 0
             return
 
-        # Stop any existing search
-        if self._search_worker is not None:
-            self._search_worker.stop()
-            self._search_worker.quit()
-            self._search_worker.wait()
-            self._search_worker = None
+        self._stop_search_worker()
 
-        # Get all root items
-        root_items = []
-        for i in range(self.tree.topLevelItemCount()):
-            root_items.append(self.tree.topLevelItem(i))
+        # Snapshot live Qt items on the GUI thread; the worker only receives
+        # plain paths/text and never touches QTreeWidgetItem off-thread.
+        snapshot = self._tree_search_snapshot()
 
         # Always use worker thread to prevent UI freezing
         self._is_searching = True
         self.search_progress_label.setText(tr('ui.gui.json_viewer.searching'))
         self.search_progress_label.show()
 
-        self._search_worker = JsonSearchWorker(root_items, query)
+        self._search_worker = JsonSearchWorker(snapshot, query)
         self._search_worker.results_ready.connect(self._on_search_complete)
         self._search_worker.progress.connect(self._on_search_progress)
         self._search_worker.finished.connect(self._on_search_finished)
@@ -1660,8 +1659,13 @@ class JsonTreeViewer(QDialog):
                 )
             )
 
-    def _on_search_complete(self, matches: list):
-        """Handle search results from worker thread."""
+    def _on_search_complete(self, paths: list[TreeItemPath]):
+        """Resolve worker result paths back to live tree items on the GUI thread."""
+        matches = [
+            item
+            for path in paths
+            if (item := self._tree_item_from_path(path)) is not None
+        ]
         # Store matches for cycling
         self._search_matches = matches
         self._current_match_index = 0
@@ -1708,6 +1712,10 @@ class JsonTreeViewer(QDialog):
     def _on_search_finished(self):
         """Handle search worker finished."""
         self._is_searching = False
+        worker = self._search_worker
+        if worker is not None and not worker.isRunning():
+            worker.deleteLater()
+            self._search_worker = None
 
     def _cycle_to_next_match(self):
         """Cycle to next search match."""

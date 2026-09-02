@@ -884,7 +884,7 @@ class ModRowWidget(QWidget):
         layout.addWidget(self._source_edit)
 
         # Debounce timer: apply 1 s after the user stops typing
-        self._debounce = QTimer()
+        self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(1000)
         self._debounce.timeout.connect(self._apply_from_text)
@@ -892,7 +892,7 @@ class ModRowWidget(QWidget):
         self._source_edit.editingFinished.connect(self._on_editing_finished)
 
         # Pending-visibility timer: show 'Applying...' only if apply takes > 500 ms
-        self._pending_timer = QTimer()
+        self._pending_timer = QTimer(self)
         self._pending_timer.setSingleShot(True)
         self._pending_timer.setInterval(500)
         self._pending_timer.timeout.connect(lambda: self._update_status('pending'))
@@ -3798,12 +3798,12 @@ class FFlagSection(QWidget):
         self._proxy_master = proxy_master
         self._hotkey_controller = hotkey_controller
 
-        self._debounce_timer = QTimer()
+        self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.setInterval(500)
         self._debounce_timer.timeout.connect(self._write_flags)
 
-        self._framerate_debounce_timer = QTimer()
+        self._framerate_debounce_timer = QTimer(self)
         self._framerate_debounce_timer.setSingleShot(True)
         self._framerate_debounce_timer.setInterval(500)
         self._framerate_debounce_timer.timeout.connect(self._write_framerate_cap)

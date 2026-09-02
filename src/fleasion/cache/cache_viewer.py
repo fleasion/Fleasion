@@ -21,6 +21,7 @@ from PyQt6.QtGui import (
     QPixmap,
 )
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -316,9 +317,9 @@ class DeleteWorkerThread(QThread):
 
 
 class ImageLoaderThread(QThread):
-    """Worker thread for loading and processing images."""
+    """Worker thread for loading and decoding image bytes."""
 
-    image_ready = pyqtSignal(QPixmap)
+    image_ready = pyqtSignal(bytes, int, int)
     error = pyqtSignal(str)
 
     def __init__(self, data: bytes):
@@ -359,17 +360,11 @@ class ImageLoaderThread(QThread):
             if self._stop_requested:
                 return
 
-            qimage = QImage(
-                image.tobytes(),
-                image.width,
-                image.height,
-                QImage.Format.Format_RGBA8888,
-            )
-            pixmap = QPixmap.fromImage(qimage)
+            rgba = image.tobytes()
 
             if not self._stop_requested:
                 log_buffer.log('Preview', f'Image loaded: {image.width}x{image.height}')
-                self.image_ready.emit(pixmap)
+                self.image_ready.emit(rgba, image.width, image.height)
 
         except Exception as e:
             if not self._stop_requested:
@@ -1199,8 +1194,9 @@ class ColumnVisibilityMenu(QMenu):
 class CacheViewerTab(QWidget):
     """Tab for viewing and managing cached Roblox assets."""
 
-    # Signal to request table sync from background threads (thread-safe)
+    # Signals used to marshal background work back onto the GUI thread.
     _sync_table_requested = pyqtSignal()
+    _conversion_warning_requested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -1222,6 +1218,12 @@ class CacheViewerTab(QWidget):
             config_manager.show_creator_id if config_manager is not None else False
         )
         self._asset_info: dict[str, dict] = {}  # asset_id -> resolved metadata, hash, row
+        self._resolver_row_count = 0
+        self._name_resolver_stop = threading.Event()
+        self._name_resolver_thread: threading.Thread | None = None
+        self._shutting_down = False
+        stop_event = self._name_resolver_stop
+        self.destroyed.connect(lambda *_args: stop_event.set())
         self._current_pixmap = None  # Store current image for resize
         # OpenGL preview surfaces are intentionally created only for a 3D
         # preview. Rendering stays offscreen and is copied into raster widgets
@@ -1297,45 +1299,80 @@ class CacheViewerTab(QWidget):
 
         self._setup_ui()
         self.set_proxy_features_enabled(self._proxy_features_enabled())
-        self._refresh_timer = QTimer()
+        self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._check_for_updates)
         self._refresh_timer.start(3000)  # Check every 3 seconds
 
         # Search debounce timer (longer delay to batch rapid keystrokes)
-        self._search_debounce = QTimer()
+        self._search_debounce = QTimer(self)
         self._search_debounce.setSingleShot(True)
         self._search_debounce.timeout.connect(self._do_search)
 
         # Filter debounce timer
-        self._filter_debounce = QTimer()
+        self._filter_debounce = QTimer(self)
         self._filter_debounce.setSingleShot(True)
         self._filter_debounce.timeout.connect(self._refresh_assets)
 
-        self._type_probe_debounce = QTimer()
+        self._type_probe_debounce = QTimer(self)
         self._type_probe_debounce.setSingleShot(True)
         self._type_probe_debounce.timeout.connect(self._queue_visible_type_probes)
 
         # Load persisted resolved names from index
         self._load_persisted_names()
 
-        # Connect the table sync signal (thread-safe way to update from background threads)
+        # Connect background-thread signals to GUI-thread slots.
         self._sync_table_requested.connect(self._sync_visible_rows_with_asset_info)
+        self._conversion_warning_requested.connect(self._show_conversion_warning)
 
         # Refresh to show persisted names
         QTimer.singleShot(0, self._refresh_assets)
 
-        # Start name resolver daemon thread
-        threading.Thread(target=self._name_resolver_loop, daemon=True).start()
+        # Start name resolver daemon thread and retain its handle for shutdown.
+        self._name_resolver_thread = threading.Thread(
+            target=self._name_resolver_loop,
+            daemon=True,
+            name='fleasion-cache-name-resolver',
+        )
+        self._name_resolver_thread.start()
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.shutdown)
+
+    def shutdown(self) -> None:
+        """Stop owned background workers before Qt destroys this tab."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self._name_resolver_stop.set()
+        for timer in (
+            self._refresh_timer,
+            self._search_debounce,
+            self._filter_debounce,
+            self._type_probe_debounce,
+        ):
+            timer.stop()
+
+        self._stop_all_loaders()
+        for attr in ('_search_worker', '_delete_worker', '_asset_loader', '_type_probe_worker'):
+            worker = getattr(self, attr, None)
+            if worker is None:
+                continue
+            stop = getattr(worker, 'stop', None)
+            if callable(stop):
+                stop()
+            worker.wait()
+            worker.deleteLater()
+            setattr(self, attr, None)
+
+        resolver = self._name_resolver_thread
+        if resolver is not None and resolver is not threading.current_thread():
+            resolver.join(timeout=1.0)
+        if resolver is None or not resolver.is_alive():
+            self._name_resolver_thread = None
 
     def closeEvent(self, event):
-        """Stop the lightweight type-probe worker before the tab is destroyed."""
-        if hasattr(self, '_type_probe_debounce'):
-            self._type_probe_debounce.stop()
-        worker = getattr(self, '_type_probe_worker', None)
-        if worker is not None:
-            worker.stop()
-            worker.wait()
-            self._type_probe_worker = None
+        """Stop background workers before the tab is destroyed."""
+        self.shutdown()
         super().closeEvent(event)
 
     # Column visibility / width helpers
@@ -2227,8 +2264,10 @@ class CacheViewerTab(QWidget):
             self.table.clearContents()
             self.table.setRowCount(0)
 
-            # Update table
+            # Update table and publish a plain-Python row-count snapshot for the
+            # background name resolver; it must not query QTableWidget off-thread.
             self.table.setRowCount(len(assets))
+            self._resolver_row_count = len(assets)
 
             # Recalculate toggle column width to fit the largest row number
             # without truncation.
@@ -2627,6 +2666,10 @@ class CacheViewerTab(QWidget):
     def _on_search_finished(self):
         """Handle search worker thread finished."""
         self._is_searching = False
+        worker = self._search_worker
+        if worker is not None and not worker.isRunning():
+            worker.deleteLater()
+            self._search_worker = None
 
     def _on_deletion_complete(self, deleted_count: int, failed_count: int):
         """Handle deletion completion from worker thread."""
@@ -2662,6 +2705,10 @@ class CacheViewerTab(QWidget):
     def _on_deletion_finished(self):
         """Handle deletion worker thread finished."""
         self._is_deleting = False
+        worker = self._delete_worker
+        if worker is not None and not worker.isRunning():
+            worker.deleteLater()
+            self._delete_worker = None
 
     def _load_persisted_names(self):
         """Load persisted resolved names from index.json."""
@@ -3123,32 +3170,27 @@ class CacheViewerTab(QWidget):
 
     def _name_resolver_loop(self):
         """Background thread to resolve asset names and creator names."""
-        import time
-
         import requests
 
-        while True:
+        while not self._name_resolver_stop.is_set():
             # Skip if Show Names is OFF
             if not self._show_names:
-                time.sleep(0.2)
+                self._name_resolver_stop.wait(0.2)
                 continue
 
             # Get authentication cookie
             cookie = self._get_roblosecurity()
             if not cookie:
                 # No cookie - wait longer to avoid spam
-                time.sleep(5)
+                self._name_resolver_stop.wait(5)
                 continue
 
-            try:
-                # Build pending list - assets without resolved names
-                # Build pending list - assets without resolved names.
-                # Prioritise assets in visible rows, then resolve the rest so that
-                # search-by-name works even for assets not currently displayed.
-                _row_count = self.table.rowCount()
-            except RuntimeError:
-                # Widget has been deleted (app shutting down)
-                break
+            # Build pending list - assets without resolved names. Prioritise
+            # assets in visible rows, then resolve the rest so search-by-name
+            # works even for assets not currently displayed. The row count is a
+            # main-thread snapshot; querying QTableWidget here would violate Qt
+            # thread affinity.
+            _row_count = self._resolver_row_count
 
             visible = []
             hidden = []
@@ -3163,7 +3205,7 @@ class CacheViewerTab(QWidget):
             pending = visible + hidden
 
             if not pending:
-                time.sleep(0.2)
+                self._name_resolver_stop.wait(0.2)
                 continue
 
             # Batch size and delay
@@ -3178,11 +3220,13 @@ class CacheViewerTab(QWidget):
                 asset_data_map = self._fetch_asset_names(batch, cookie)
             except Exception as e:
                 log_buffer.log('Scraper', f'[Name Resolver] Fetch failed: {e}')
-                time.sleep(delay)
+                self._name_resolver_stop.wait(delay)
                 continue
 
+            if self._name_resolver_stop.is_set():
+                return
             if not asset_data_map:
-                time.sleep(delay)
+                self._name_resolver_stop.wait(delay)
                 continue
 
             # Build a reusable session for creator lookups (same auth headers)
@@ -3220,6 +3264,9 @@ class CacheViewerTab(QWidget):
                     creator_names = self._fetch_creator_names(creators_to_resolve, sess)
                 except Exception as e:
                     log_buffer.log('Scraper', f'[Name Resolver] Creator fetch failed: {e}')
+
+            if self._name_resolver_stop.is_set():
+                return
 
             log_buffer.log(
                 'Scraper',
@@ -3259,13 +3306,13 @@ class CacheViewerTab(QWidget):
             except Exception as e:
                 log_buffer.log('Scraper', f'[Name Resolver] Failed to save index: {e}')
 
-            # CRITICAL: After resolving a batch, immediately sync all visible rows with the updated data
-            # This ensures that the last asset (and all assets) show their resolved names/creators
-            # without waiting for the next _populate_table call
-            # Emit signal which is thread-safe and connected to the sync slot
+            if self._name_resolver_stop.is_set():
+                return
+
+            # After resolving a batch, sync visible rows through a queued Qt signal.
             self._sync_table_requested.emit()
 
-            time.sleep(delay)
+            self._name_resolver_stop.wait(delay)
 
     def _get_selected_asset(self) -> dict | None:
         """Get the currently selected asset."""
@@ -3988,6 +4035,13 @@ class CacheViewerTab(QWidget):
         elif action is not None and action == convert_anim_action and _convert_anim_asset:
             self._convert_animation_rig(_convert_anim_asset, _target_rig)
 
+    def _show_conversion_warning(self, message: str) -> None:
+        QMessageBox.warning(
+            self,
+            tr('ui.cache.cache_viewer.convert_error'),
+            message,
+        )
+
     def _convert_animation_rig(self, asset: dict, target: str):
         """Convert an animation between R6 and R15 and save to a user-chosen path."""
         import threading
@@ -4015,19 +4069,15 @@ class CacheViewerTab(QWidget):
                 from ..utils.anim_converter import rbxm_to_rbxmx
                 from ..utils.rig_data import R6_JOINTS, R6_PARTS, R15_JOINTS, R15_PARTS
             except Exception as e:
-                QMessageBox.warning(
-                    self,
-                    tr('ui.cache.cache_viewer.convert_error'),
-                    tr('ui.cache.cache_viewer.failed_to_load_converter_value', value0=e),
+                self._conversion_warning_requested.emit(
+                    tr('ui.cache.cache_viewer.failed_to_load_converter_value', value0=e)
                 )
                 return
 
             anim_data = self.cache_manager.get_asset(asset['id'], asset['type'])
             if not anim_data:
-                QMessageBox.warning(
-                    self,
-                    tr('ui.cache.cache_viewer.convert_error'),
-                    tr('ui.cache.cache_viewer.could_not_load_asset_data'),
+                self._conversion_warning_requested.emit(
+                    tr('ui.cache.cache_viewer.could_not_load_asset_data')
                 )
                 return
 
@@ -4035,10 +4085,8 @@ class CacheViewerTab(QWidget):
                 try:
                     anim_data = rbxm_to_rbxmx(anim_data)
                 except Exception as e:
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.convert_error'),
-                        tr('ui.cache.cache_viewer.rbxm_conversion_failed_value', value0=e),
+                    self._conversion_warning_requested.emit(
+                        tr('ui.cache.cache_viewer.rbxm_conversion_failed_value', value0=e)
                     )
                     return
 
@@ -4054,18 +4102,14 @@ class CacheViewerTab(QWidget):
 
                 ks = root.find("Item[@class='KeyframeSequence']")
                 if ks is None:
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.convert_error'),
-                        tr('ui.cache.cache_viewer.no_keyframesequence_found'),
+                    self._conversion_warning_requested.emit(
+                        tr('ui.cache.cache_viewer.no_keyframesequence_found')
                     )
                     return
                 keyframes = ks.findall("Item[@class='Keyframe']")
                 if not keyframes:
-                    QMessageBox.warning(
-                        self,
-                        tr('ui.cache.cache_viewer.convert_error'),
-                        tr('ui.cache.cache_viewer.no_keyframes_found'),
+                    self._conversion_warning_requested.emit(
+                        tr('ui.cache.cache_viewer.no_keyframes_found')
                     )
                     return
 
@@ -4078,10 +4122,8 @@ class CacheViewerTab(QWidget):
 
                 etree.write(out_str, encoding='utf-8', xml_declaration=True)
             except Exception as e:
-                QMessageBox.warning(
-                    self,
-                    tr('ui.cache.cache_viewer.convert_error'),
-                    tr('ui.cache.cache_viewer.conversion_failed_value', value0=e),
+                self._conversion_warning_requested.emit(
+                    tr('ui.cache.cache_viewer.conversion_failed_value', value0=e)
                 )
 
         threading.Thread(target=_do_convert, daemon=True).start()
@@ -4978,8 +5020,8 @@ class CacheViewerTab(QWidget):
         )
         self._image_loader.start()
 
-    def _on_image_ready(self, pixmap: QPixmap):
-        """Handle image loaded from background thread."""
+    def _on_image_ready(self, rgba: bytes, width: int, height: int):
+        """Create the GUI pixmap on the main thread after background decoding."""
         # Ignore if selection has changed since loader started
         try:
             if getattr(self, '_image_loader_asset_id', None) != self._selected_asset_id:
@@ -4988,6 +5030,8 @@ class CacheViewerTab(QWidget):
         except Exception:
             pass
 
+        qimage = QImage(rgba, width, height, QImage.Format.Format_RGBA8888).copy()
+        pixmap = QPixmap.fromImage(qimage)
         self._hide_loading()
         self._current_pixmap = pixmap
         self._scale_and_show_image(pixmap)

@@ -421,7 +421,7 @@ class CacheJsonViewer(QWidget):
         """Handle search text change."""
         # Debounce the search
         if not hasattr(self, '_search_debounce'):
-            self._search_debounce = QTimer()
+            self._search_debounce = QTimer(self)
             self._search_debounce.setSingleShot(True)
             self._search_debounce.timeout.connect(self._do_search)
 

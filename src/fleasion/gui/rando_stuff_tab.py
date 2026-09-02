@@ -2079,14 +2079,15 @@ class RandoStuffTab(QWidget):
         exe = _find_roblox_exe()
         if not exe:
             log_buffer.log('accounts', 'Roblox executable resolution failed before launch')
-            QTimer.singleShot(
-                0,
-                lambda: QMessageBox.warning(
+
+            def _warn_roblox_not_found():
+                QMessageBox.warning(
                     self,
                     tr('ui.gui.rando_stuff_tab.roblox_not_found'),
                     tr('ui.gui.rando_stuff_tab.could_not_locate_roblox_player_is_roblox'),
-                ),
-            )
+                )
+
+            self._on_main(_warn_roblox_not_found)
             return
         log_buffer.log('accounts', f'Resolved Roblox executable: {exe}')
 

@@ -143,6 +143,7 @@ class AudioPlayerWidget(QWidget):
     """Audio player widget with play/pause, volume, and seek controls."""
 
     stopped = pyqtSignal()
+    _playback_ui_update = pyqtSignal(str)
 
     def __init__(self, audio_file_path: str, parent=None, config_manager=None):
         """
@@ -154,6 +155,7 @@ class AudioPlayerWidget(QWidget):
             config_manager: ConfigManager for persisting volume
         """
         super().__init__(parent)
+        self._playback_ui_update.connect(self._safe_set_play_pause_text)
         self.audio_file_path = audio_file_path
         self.config_manager = config_manager
 
@@ -194,7 +196,7 @@ class AudioPlayerWidget(QWidget):
         self._setup_ui()
 
         # Update timer
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_ui)
         self.timer.start(50)  # 20 FPS
 
@@ -432,7 +434,7 @@ class AudioPlayerWidget(QWidget):
                 # Qt widgets from this worker thread (which can cause
                 # "wrapped C/C++ object ... has been deleted" errors).
                 try:
-                    QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
+                    self._playback_ui_update.emit('▶')
                 except Exception:
                     # If scheduling fails for any reason, ignore silently.
                     pass

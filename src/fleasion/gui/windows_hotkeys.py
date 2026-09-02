@@ -167,7 +167,13 @@ class WindowsHotkeyService(QObject):
         super().__init__(parent)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._qt_deleted = threading.Event()
         self._bindings: dict[str, dict[str, int | bool | str]] = {}
+        self.destroyed.connect(self._on_qt_destroyed)
+
+    def _on_qt_destroyed(self, *_args: object) -> None:
+        self._qt_deleted.set()
+        self._stop.set()
 
     def set_bindings(self, bindings: Mapping[str, Mapping[str, object]]) -> None:
         """Replace active bindings without restarting an unchanged poller."""
@@ -181,6 +187,12 @@ class WindowsHotkeyService(QObject):
         self.stop()
         self._bindings = clean
         if sys.platform != 'win32' or not clean:
+            return
+        if self._thread is not None and self._thread.is_alive():
+            log_buffer.log(
+                'CustomFFlags',
+                'Previous Windows FastFlag poller did not stop in time; skipping restart.',
+            )
             return
         self._stop.clear()
         self._thread = threading.Thread(
@@ -258,16 +270,26 @@ class WindowsHotkeyService(QObject):
                     modifiers = active_modifiers()
                     for name, (required_direction, required_modifiers) in wheel_bindings.items():
                         if direction == required_direction and modifiers == required_modifiers:
-                            self.activated.emit(name)
+                            self._emit_activation(name)
                 modifiers = active_modifiers()
                 for name, (virtual_key, required_modifiers) in translated.items():
                     active = binding_is_active(virtual_key, required_modifiers, modifiers)
                     if active and not was_active[name]:
-                        self.activated.emit(name)
+                        self._emit_activation(name)
                     was_active[name] = active
         finally:
             if mouse_hook is not None:
                 ctypes.windll.user32.UnhookWindowsHookEx(mouse_hook[0])
+
+    def _emit_activation(self, name: str) -> None:
+        """Emit only while the Qt signal owner is still alive."""
+        if self._qt_deleted.is_set():
+            return
+        try:
+            self.activated.emit(name)
+        except RuntimeError:
+            self._qt_deleted.set()
+            self._stop.set()
 
     @staticmethod
     def _pump_windows_messages() -> None:
@@ -311,9 +333,11 @@ class WindowsHotkeyService(QObject):
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread and self._thread is not threading.current_thread():
-            self._thread.join(timeout=1.0)
-        self._thread = None
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        if thread is None or not thread.is_alive():
+            self._thread = None
 
 
 class WindowsCustomFFlagHotkeyController(QObject):
