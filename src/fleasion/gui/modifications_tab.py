@@ -2645,7 +2645,7 @@ class FastFlagActionsDialog(QDialog):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self._table.cellDoubleClicked.connect(lambda _row, _column: self._edit_action())
+        self._table.cellDoubleClicked.connect(self._handle_double_click)
         layout.addWidget(self._table)
 
         controls = QHBoxLayout()
@@ -2659,12 +2659,6 @@ class FastFlagActionsDialog(QDialog):
         delete_button.clicked.connect(self._delete_action)
         controls.addWidget(delete_button)
         controls.addStretch()
-        assign_button = QPushButton(tr('ui.gui.modifications_tab.assign_hotkey'))
-        assign_button.clicked.connect(self._assign_hotkey)
-        controls.addWidget(assign_button)
-        clear_button = QPushButton(tr('ui.gui.modifications_tab.clear_keybind'))
-        clear_button.clicked.connect(self._clear_hotkey)
-        controls.addWidget(clear_button)
         layout.addLayout(controls)
 
         buttons = QDialogButtonBox(
@@ -2753,6 +2747,13 @@ class FastFlagActionsDialog(QDialog):
         if name:
             self.actions.pop(name, None)
             self._refresh()
+
+    def _handle_double_click(self, row: int, column: int):
+        self._table.selectRow(row)
+        if column == 2:
+            self._assign_hotkey()
+            return
+        self._edit_action()
 
     def _assign_hotkey(self):
         name = self._selected_name()

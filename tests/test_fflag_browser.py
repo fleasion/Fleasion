@@ -376,3 +376,52 @@ def test_custom_actions_manager_preserves_multiple_actions_for_same_fastflag():
     assert dialog.actions['90 FPS']['flags']['DFIntTaskSchedulerTargetFps'] == '90'
     assert dialog.actions['144 FPS']['flags']['DFIntTaskSchedulerTargetFps'] == '144'
     assert app is not None
+
+
+def test_custom_actions_keybind_column_double_click_assigns_hotkey():
+    app = _qapp()
+    captured = []
+    binding = {'scan_code': 0x10, 'extended': False, 'modifiers': 0}
+
+    def capture(name):
+        captured.append(name)
+        return True, binding
+
+    dialog = modifications_tab.FastFlagActionsDialog(
+        {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}},
+        {},
+        capture,
+        lambda _binding: 'Not assigned',
+    )
+
+    dialog._table.cellDoubleClicked.emit(0, 2)
+    app.processEvents()
+
+    assert captured == ['90 FPS']
+    assert dialog.actions['90 FPS']['keybind'] == binding
+    button_texts = {
+        button.text() for button in dialog.findChildren(modifications_tab.QPushButton)
+    }
+    assert 'Assign Hotkey…' not in button_texts
+    assert 'Clear Keybind' not in button_texts
+
+
+def test_custom_actions_non_keybind_double_click_edits_action(monkeypatch):
+    app = _qapp()
+    dialog = modifications_tab.FastFlagActionsDialog(
+        {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}},
+        {},
+        lambda _name: (False, None),
+        lambda _binding: 'Not assigned',
+    )
+    edited = []
+
+    def edit_action():
+        edited.append(None)
+
+    monkeypatch.setattr(dialog, '_edit_action', edit_action)
+
+    dialog._table.cellDoubleClicked.emit(0, 1)
+    app.processEvents()
+
+    assert edited == [None]
