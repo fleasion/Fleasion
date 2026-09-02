@@ -58,21 +58,47 @@ def test_packaging_collects_all_fleasion_runtime_modules() -> None:
     assert "source_root / 'macos_proxy_helper_daemon.py'" in spec_source
 
 
-def test_windows_packaging_uses_no_custom_python_runtime_hook() -> None:
+def test_packaging_uses_numpy_hook_without_collecting_development_modules() -> None:
     spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
     spec_source = spec_path.read_text(encoding='utf-8')
 
-    assert 'runtime_hooks=[]' in spec_source
-    assert 'rthook_harden_dll_search' not in spec_source
-
-
-def test_packaging_collects_numpy_extensions_without_upx() -> None:
-    spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
-    spec_source = spec_path.read_text(encoding='utf-8')
-
-    assert "_collect_package('numpy')" in spec_source
+    assert "'numpy'," in spec_source
+    assert "_collect_package('numpy')" not in spec_source
+    assert "'setuptools'," in spec_source
     assert "'numpy/*/*.pyd'" in spec_source
     assert "'numpy.libs/*.dll'" in spec_source
+
+
+def test_linux_packaging_strips_native_binaries() -> None:
+    root = Path(__file__).resolve().parents[1]
+    app_spec = (root / 'Fleasion.spec').read_text(encoding='utf-8')
+    helper_spec = (root / 'FleasionLinuxProxyHelper.spec').read_text(encoding='utf-8')
+
+    assert "strip=sys.platform.startswith('linux')" in app_spec
+    assert "strip=sys.platform.startswith('linux')" in helper_spec
+
+
+def test_packaging_drops_only_linux_gtk_platform_theme_from_qt_gui_hook() -> None:
+    root = Path(__file__).resolve().parents[1]
+    qt_gui_hook = (root / 'pyinstaller_hooks/hook-PySide6.QtGui.py').read_text(
+        encoding='utf-8'
+    )
+
+    assert "'libqgtk3.so'" in qt_gui_hook
+    assert 'QtQml' not in qt_gui_hook
+    assert 'QtQuick' not in qt_gui_hook
+
+
+def test_packaging_uses_only_zstandard_c_extension() -> None:
+    root = Path(__file__).resolve().parents[1]
+    spec_source = (root / 'Fleasion.spec').read_text(encoding='utf-8')
+    runtime_hook = (root / 'pyinstaller_hooks/rthook_zstandard_cext.py').read_text(
+        encoding='utf-8'
+    )
+
+    assert "'zstandard._cffi'," in spec_source
+    assert "'zstandard.backend_cffi'," in spec_source
+    assert "os.environ['PYTHON_ZSTANDARD_IMPORT_POLICY'] = 'cext'" in runtime_hook
 
 
 def test_windows_packaging_uses_upx_but_excludes_graphics_runtime() -> None:

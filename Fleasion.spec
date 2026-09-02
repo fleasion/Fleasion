@@ -46,6 +46,7 @@ _OPENGL_HIDDEN_IMPORTS = [
 _COMPILED_HIDDEN_IMPORTS = [
     'DracoPy',
     'certifi',
+    'numpy',
     'orjson',
     'zstandard',
 ]
@@ -80,6 +81,7 @@ _BASE_EXCLUDES = [
     'PyQt5',
     'mitmproxy',  # removed - replaced by proxy/server.py
     'mitmproxy_rs',  # removed
+    'setuptools',
     'wsproto',  # mitmproxy dep, no longer needed
     'h2',  # mitmproxy dep, no longer needed
     'hyperframe',  # mitmproxy dep, no longer needed
@@ -89,6 +91,11 @@ _NUMPY_EXCLUDES = [
     'numpy._pyinstaller.tests',
     'numpy.conftest',
     'numpy.f2py',
+]
+
+_ZSTANDARD_EXCLUDES = [
+    'zstandard._cffi',
+    'zstandard.backend_cffi',
 ]
 
 # NumPy's native extensions are sensitive to binary rewriting.  Keep them
@@ -330,10 +337,8 @@ hiddenimports: list[str] = _runtime_fleasion_modules()
 # orchestration and privileged-helper entry points are excluded above.
 
 # NumPy is imported from feature modules that are not all reached during the
-# launcher import walk.  Collecting the package explicitly also preserves its
-# native extensions and the external ``numpy.libs`` runtime directory on
-# Windows.  The excludes above remove NumPy's test/build-only modules again.
-_collect_package('numpy')
+# launcher import walk. Its hidden import invokes PyInstaller's NumPy hook,
+# which collects the native runtime without pulling in tests and build tools.
 
 # lz4.__init__ imports the platform-specific lz4._version extension during
 # package initialization. Some Windows PyInstaller analyses have omitted that
@@ -404,10 +409,10 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=['pyinstaller_hooks'],
     hooksconfig={},
-    runtime_hooks=[],
-    excludes=[*_BASE_EXCLUDES, *_NUMPY_EXCLUDES, *_QT_EXCLUDES],
+    runtime_hooks=['pyinstaller_hooks/rthook_zstandard_cext.py'],
+    excludes=[*_BASE_EXCLUDES, *_NUMPY_EXCLUDES, *_QT_EXCLUDES, *_ZSTANDARD_EXCLUDES],
     noarchive=False,
     optimize=0,
 )
@@ -441,7 +446,7 @@ exe = EXE(
     name=_exe_name,
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=sys.platform.startswith('linux'),
     upx=_use_upx,
     upx_exclude=[
         *_NUMPY_UPX_EXCLUDES,
