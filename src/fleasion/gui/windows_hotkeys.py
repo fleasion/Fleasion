@@ -231,8 +231,9 @@ class WindowsHotkeyService(QObject):
                 result |= MOD_WIN
             return result
 
-        def binding_is_active(virtual_key: int, required_modifiers: int) -> bool:
-            modifiers = active_modifiers()
+        def binding_is_active(
+            virtual_key: int, required_modifiers: int, modifiers: int
+        ) -> bool:
             main_modifier = modifier_mask_for_virtual_key(virtual_key)
             return is_pressed(virtual_key) and (
                 modifiers & ~main_modifier
@@ -244,8 +245,9 @@ class WindowsHotkeyService(QObject):
         # A newly started poller must treat keys that are already held as its
         # baseline, not as a new press.  This prevents a settings refresh from
         # retriggering the same hotkey until the user releases it first.
+        initial_modifiers = active_modifiers()
         was_active = {
-            name: binding_is_active(virtual_key, required_modifiers)
+            name: binding_is_active(virtual_key, required_modifiers, initial_modifiers)
             for name, (virtual_key, required_modifiers) in translated.items()
         }
         try:
@@ -257,8 +259,9 @@ class WindowsHotkeyService(QObject):
                     for name, (required_direction, required_modifiers) in wheel_bindings.items():
                         if direction == required_direction and modifiers == required_modifiers:
                             self.activated.emit(name)
+                modifiers = active_modifiers()
                 for name, (virtual_key, required_modifiers) in translated.items():
-                    active = binding_is_active(virtual_key, required_modifiers)
+                    active = binding_is_active(virtual_key, required_modifiers, modifiers)
                     if active and not was_active[name]:
                         self.activated.emit(name)
                     was_active[name] = active

@@ -1869,4 +1869,7 @@ GERMAN: dict[str, str] = {
     'ui.gui.modifications_tab.edit': 'Edit…',
     'ui.gui.modifications_tab.assign_hotkey': 'Assign Hotkey…',
     'ui.gui.modifications_tab.custom_action_name_exists': 'A Custom Action named “{value0}” already exists.',
+    'ui.gui.modifications_tab.fastflag_name_already_exists': 'A FastFlag named “{value0}” already exists.',
+    'ui.gui.modifications_tab.invalid_fastflag_name': 'Invalid FastFlag Name',
+    'ui.gui.modifications_tab.fastflag_folder_already_exists': 'A FastFlag folder named “{value0}” already exists. Use “Move selected to folder” instead.',
 }

@@ -330,6 +330,7 @@ class ConfigManagerEncodingTests(unittest.TestCase):
 
             manager.custom_fflag_folders = {
                 ' Visual ': [' FFlagOne ', 'FFlagTwo', 'FFlagOne'],
+                'Visual': ['FFlagFour'],
                 'Second': ['FFlagTwo', 'FFlagThree'],
             }
             manager.custom_fflag_disabled_folders = [' Visual ', 'Visual']
@@ -340,7 +341,10 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             reloaded = config_manager_module.ConfigManager()
             self.assertEqual(
                 reloaded.custom_fflag_folders,
-                {'Visual': ['FFlagOne', 'FFlagTwo'], 'Second': ['FFlagThree']},
+                {
+                    'Visual': ['FFlagFour', 'FFlagOne', 'FFlagTwo'],
+                    'Second': ['FFlagThree'],
+                },
             )
             self.assertEqual(reloaded.custom_fflag_disabled_folders, ['Visual'])
             self.assertEqual(

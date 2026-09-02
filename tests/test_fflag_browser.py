@@ -6,6 +6,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import QApplication, QStyleOptionViewItem, QTableWidget, QTableWidgetItem
 
 from fleasion import localization
@@ -425,3 +426,123 @@ def test_custom_actions_non_keybind_double_click_edits_action(monkeypatch):
     app.processEvents()
 
     assert edited == [None]
+
+
+def test_create_folder_rejects_existing_name_without_changing_membership(monkeypatch):
+    app = _qapp()
+    config = SimpleNamespace(
+        custom_fflags={'FFlagOne': '1', 'FFlagTwo': '2'},
+        custom_fflags_enabled=False,
+        custom_fflag_disabled=[],
+        custom_fflag_keybinds={},
+        custom_fflag_folders={'Visual': ['FFlagOne']},
+        custom_fflag_disabled_folders=[],
+        custom_fflag_folder_keybinds={},
+        custom_fflag_actions={},
+    )
+    editor = CustomFFlagEditor(
+        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    )
+    table = editor._table
+    table.selectRow(2)
+    monkeypatch.setattr(
+        modifications_tab.QInputDialog, 'getText', lambda *_a, **_k: ('Visual', True)
+    )
+    warnings = []
+    monkeypatch.setattr(
+        modifications_tab.QMessageBox,
+        'warning',
+        lambda *args, **_kwargs: warnings.append(args),
+    )
+
+    editor._create_folder_from_selected()
+
+    assert config.custom_fflag_folders == {'Visual': ['FFlagOne']}
+    assert warnings
+    assert app is not None
+
+
+def test_inline_duplicate_fastflag_rename_is_reverted(monkeypatch):
+    app = _qapp()
+    config = SimpleNamespace(
+        custom_fflags={'FFlagOne': '1', 'FFlagTwo': '2'},
+        custom_fflags_enabled=False,
+        custom_fflag_disabled=[],
+        custom_fflag_keybinds={},
+        custom_fflag_folders={},
+        custom_fflag_disabled_folders=[],
+        custom_fflag_folder_keybinds={},
+        custom_fflag_actions={},
+    )
+    editor = CustomFFlagEditor(
+        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    )
+    warnings = []
+    monkeypatch.setattr(
+        modifications_tab.QMessageBox,
+        'warning',
+        lambda *args, **_kwargs: warnings.append(args),
+    )
+    first_name = editor._table.item(0, 0)
+    assert first_name is not None
+
+    first_name.setText('FFlagTwo')
+    app.processEvents()
+
+    assert first_name.text() == 'FFlagOne'
+    assert config.custom_fflags == {'FFlagOne': '1', 'FFlagTwo': '2'}
+    assert warnings
+
+
+def test_hotkey_refresh_preserves_active_value_sort():
+    app = _qapp()
+    config = SimpleNamespace(
+        custom_fflags={'FFlagOne': '2', 'FFlagTwo': '1'},
+        custom_fflags_enabled=False,
+        custom_fflag_disabled=[],
+        custom_fflag_keybinds={},
+        custom_fflag_folders={},
+        custom_fflag_disabled_folders=[],
+        custom_fflag_folder_keybinds={},
+        custom_fflag_actions={},
+    )
+    editor = CustomFFlagEditor(
+        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    )
+    editor._sort_rows(1)
+    config.custom_fflags = {'FFlagOne': '0', 'FFlagTwo': '3'}
+
+    editor._on_hotkey_toggled('action:test')
+
+    names = []
+    for row in range(editor._table.rowCount()):
+        item = editor._table.item(row, 0)
+        if item is not None:
+            names.append(item.text().strip())
+    assert names == ['FFlagOne', 'FFlagTwo']
+    assert app is not None
+
+
+def test_windows_hotkey_capture_marks_numpad_divide_and_enter_extended():
+    divide_event = QKeyEvent(
+        modifications_tab.QEvent.Type.KeyPress,
+        int(Qt.Key.Key_Slash),
+        Qt.KeyboardModifier.KeypadModifier,
+        0x35,
+        0x6F,
+        0,
+    )
+    enter_event = QKeyEvent(
+        modifications_tab.QEvent.Type.KeyPress,
+        int(Qt.Key.Key_Enter),
+        Qt.KeyboardModifier.KeypadModifier,
+        0x1C,
+        0x0D,
+        0,
+    )
+
+    divide = modifications_tab.WindowsHotkeyCaptureDialog._event_binding(divide_event, 0)
+    enter = modifications_tab.WindowsHotkeyCaptureDialog._event_binding(enter_event, 0)
+
+    assert divide is not None and divide['extended'] is True
+    assert enter is not None and enter['extended'] is True

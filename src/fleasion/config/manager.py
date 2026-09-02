@@ -379,7 +379,7 @@ def _normalize_custom_fflag_folders(value: Any) -> dict[str, list[str]]:
         folder = str(raw_folder).strip()
         if not folder or not isinstance(raw_names, list | tuple | set):
             continue
-        names: list[str] = []
+        names = list(normalized.get(folder, []))
         for raw_name in raw_names:
             name = str(raw_name).strip()
             if name and name not in assigned:
