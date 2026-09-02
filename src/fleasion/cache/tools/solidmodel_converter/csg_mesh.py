@@ -42,9 +42,7 @@ def _encode_quantized_f32_component(value: float) -> int:
     return (scaled + 0x7FFF) & 0xFFFF
 
 
-# ---------------------------------------------------------------------------
 # LcmRand — deterministic PRNG used for XOR obfuscation
-# ---------------------------------------------------------------------------
 
 
 class LcmRand:
@@ -64,9 +62,7 @@ class LcmRand:
         return (self._seed >> 16) & 0x7FFF
 
 
-# ---------------------------------------------------------------------------
 # XOR buffer encryption/decryption (symmetric)
-# ---------------------------------------------------------------------------
 
 
 def xor_buffer(data: bytes) -> bytes:
@@ -84,9 +80,7 @@ def xor_buffer(data: bytes) -> bytes:
     return bytes(buf)
 
 
-# ---------------------------------------------------------------------------
 # CSGVertex data class
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -195,9 +189,7 @@ class CSGVertex:
         )
 
 
-# ---------------------------------------------------------------------------
 # CSGMDL parser
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -327,12 +319,12 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     if len(body) < 22:
         raise ValueError(f'CSGMDL v{version}: body too short ({len(body)} bytes)')
 
-    # ── N: unique attribute entry count ────────────────────────────────────
+    # N: unique attribute entry count
     N = struct.unpack_from('<H', body, 0)[0]
     if N == 0 or N > 100_000:
         raise ValueError(f'CSGMDL v{version}: implausible entry count {N}')
 
-    # ── Positions: N × float32×3 ────────────────────────────────────────────
+    # Positions: N × float32×3
     pos_end = 2 + N * 12
     if pos_end > len(body):
         raise ValueError(f'CSGMDL v{version}: position block overflows body')
@@ -377,7 +369,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
         )
     cursor += normal_data_size
 
-    # ── Colors: [uint16=count] count × uint8×4 ──────────────────────────────
+    # Colors: [uint16=count] count × uint8×4
     _require(2, 'color section header')
     cs_count = struct.unpack_from('<H', body, cursor)[0]
     cursor += 2
@@ -389,7 +381,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
         colors.append((r, g, b, a))
     cursor += color_data_size
 
-    # ── NormalId / UV-gen type: [uint16=count] count × uint8 ────────────────
+    # NormalId / UV-gen type: [uint16=count] count × uint8
     # Stores a NormalId value (1-6) encoding the dominant face axis for UV gen.
     _require(2, 'normal-id section header')
     es_count = struct.unpack_from('<H', body, cursor)[0]
@@ -399,7 +391,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     extra_gen = list(body[cursor : cursor + es_count])
     cursor += es_count
 
-    # ── UV coordinates: [uint16=count] count × float32×2 ────────────────────
+    # UV coordinates: [uint16=count] count × float32×2
     _require(2, 'uv section header')
     us_count = struct.unpack_from('<H', body, cursor)[0]
     cursor += 2
@@ -437,7 +429,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
         )
     cursor += tangent_data_size
 
-    # ── Faces5 block ────────────────────────────────────────────────────────
+    # Faces5 block
     # Immediately follows the tangents section; NO separate trailer.
     faces_start = cursor
     if faces_start + 9 > len(body):
@@ -476,7 +468,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
         range_markers,
     )
 
-    # ── Decode delta-encoded indices via Faces5 state machine ───────────────
+    # Decode delta-encoded indices via Faces5 state machine
     all_indices = _decode_faces5_state_machine(vertex_data, vertex_count_f)
 
     if len(range_markers) < 2:
@@ -503,7 +495,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     marker_visual = range_markers[1] if len(range_markers) > 1 else len(all_indices)
     visual_indices = all_indices[marker_start:marker_visual]
 
-    # ── Build CSGVertex list and index list from visual indices ─────────────
+    # Build CSGVertex list and index list from visual indices
     # Each decoded value is a DIRECT index into the N attribute arrays
     # (positions, normals, colors, tex, tangents).  No modulo, no XOR needed.
     vertices: list[CSGVertex] = []
@@ -752,9 +744,7 @@ def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:
     )
 
 
-# ---------------------------------------------------------------------------
 # CSGMDL serializer  (inverse of parse_csg_mesh_full)
-# ---------------------------------------------------------------------------
 
 
 def serialize_csg_mesh(
@@ -807,13 +797,13 @@ def serialize_csg_mesh(
 
     buf = bytearray()
 
-    # ── Header ──────────────────────────────────────────────────────────────
+    # Header
     buf.extend(HEADER_TAG)  # b'CSGMDL'  6 B
     buf.extend(struct.pack('<i', version))  # version    4 B
     buf.extend(bytes(HASH_SIZE + SALT_SIZE))  # hash+salt 32 B (zeros; engine ignores on load)
     buf.extend(struct.pack('<II', num_vertices, CSGVERTEX_SIZE))  # vtx_cnt + stride  8 B
 
-    # ── Vertices (84 bytes each) ─────────────────────────────────────────────
+    # Vertices (84 bytes each)
     # Layout mirrors CSGVertex.from_bytes exactly:
     #   0..12  position  (3 × float32)
     #  12..24  normal    (3 × float32)
@@ -846,12 +836,12 @@ def serialize_csg_mesh(
 
     assert len(buf) == 6 + 4 + 32 + 8 + num_vertices * CSGVERTEX_SIZE, 'vertex block size mismatch'
 
-    # ── Indices ──────────────────────────────────────────────────────────────
+    # Indices
     buf.extend(struct.pack('<I', num_indices))
     for idx in indices:
         buf.extend(struct.pack('<I', idx))
 
-    # ── v3/v4 submesh trailer (20 bytes) ─────────────────────────────────────
+    # v3/v4 submesh trailer (20 bytes)
     # Five uint32s: brep_version, padding, b1, b2, b3.
     # Setting b1 = b2 = b3 = num_indices means a single visual sub-mesh
     # covering all triangles, with no separate collision or auxiliary meshes.
@@ -872,9 +862,7 @@ def serialize_csg_mesh(
     return xor_buffer(bytes(buf))
 
 
-# ---------------------------------------------------------------------------
 # CSGMDL V5 serializer
-# ---------------------------------------------------------------------------
 
 
 def _compute_normal_id(nx: float, ny: float, nz: float) -> int:
@@ -984,14 +972,14 @@ def serialize_csg_mesh_v5(
 
     body = bytearray()
 
-    # ── N (unique attribute count) ───────────────────────────────────────────
+    # N (unique attribute count)
     body += struct.pack('<H', N)
 
-    # ── Positions: N × float32×3 ─────────────────────────────────────────────
+    # Positions: N × float32×3
     for v in vertices:
         body += struct.pack('<3f', v.px, v.py, v.pz)
 
-    # ── Normals: [uint16=N][uint32=N*6] N × int16×3 ──────────────────────────
+    # Normals: [uint16=N][uint32=N*6] N × int16×3
     body += struct.pack('<H', N)  # count
     body += struct.pack('<I', N * 6)  # byte length
     for v in vertices:
@@ -1002,12 +990,12 @@ def serialize_csg_mesh_v5(
             _encode_quantized_f32_component(v.nz),
         )
 
-    # ── Colors: [uint16=N] N × uint8×4 ───────────────────────────────────────
+    # Colors: [uint16=N] N × uint8×4
     body += struct.pack('<H', N)  # count
     for v in vertices:
         body += struct.pack('<4B', v.cr, v.cg, v.cb, v.ca)
 
-    # ── NormalIds: [uint16=N] N × uint8 ──────────────────────────────────────
+    # NormalIds: [uint16=N] N × uint8
     # Each value is 1-6 (from extra_r if it was parsed from V5, else computed).
     body += struct.pack('<H', N)  # count
     for v in vertices:
@@ -1016,12 +1004,12 @@ def serialize_csg_mesh_v5(
         nid = v.extra_r if 1 <= v.extra_r <= 6 else _compute_normal_id(v.nx, v.ny, v.nz)
         body += struct.pack('<B', nid)
 
-    # ── UV coords: [uint16=N] N × float32×2 ──────────────────────────────────
+    # UV coords: [uint16=N] N × float32×2
     body += struct.pack('<H', N)  # count
     for v in vertices:
         body += struct.pack('<2f', v.u, v.v)
 
-    # ── Tangents: [uint16=N][uint32=N*6] N × int16×3 ─────────────────────────
+    # Tangents: [uint16=N][uint32=N*6] N × int16×3
     body += struct.pack('<H', N)  # count
     body += struct.pack('<I', N * 6)  # byte length
     for v in vertices:
@@ -1032,7 +1020,7 @@ def serialize_csg_mesh_v5(
             _encode_quantized_f32_component(v.tz),
         )
 
-    # ── Faces5 block ─────────────────────────────────────────────────────────
+    # Faces5 block
     encoded_faces = _encode_faces5(indices)
     body += struct.pack('<I', num_indices)  # vertex_count
     body += struct.pack('<I', len(encoded_faces))  # vertex_data_len
@@ -1044,7 +1032,7 @@ def serialize_csg_mesh_v5(
     body += struct.pack('<I', 0)  # range_markers[0] = start
     body += struct.pack('<I', num_indices)  # range_markers[1] = end
 
-    # ── Header (XOR-encrypted) ────────────────────────────────────────────────
+    # Header (XOR-encrypted)
     # V5 uses the same 31-byte LcmRand XOR key as V2/V4, but only the
     # 10-byte header (magic + version) is encrypted; the body is plaintext.
     header_plain = HEADER_TAG + struct.pack('<i', 5)  # b'CSGMDL' + int32(5)
@@ -1079,9 +1067,7 @@ def _detect_csgmdl_version(data: bytes) -> int | None:
     return version if MIN_VERSION <= version <= MAX_VERSION else None
 
 
-# ---------------------------------------------------------------------------
 # OBJ exporter
-# ---------------------------------------------------------------------------
 
 
 def export_obj(

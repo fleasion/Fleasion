@@ -419,9 +419,7 @@ class CacheScraper:
         self.cache_manager.clear_memory_cache()
         log_buffer.log('Cache', 'Reset in-memory cache state and cancelled stale work')
 
-    # ------------------------------------------------------------------
     # Called from server MITM thread for assetdelivery batch responses
-    # ------------------------------------------------------------------
 
     def process_batch_response(self, req_body: bytes, resp_body: bytes) -> None:
         """Stage 1: extract asset IDs and CDN locations from batch response."""
@@ -532,9 +530,7 @@ class CacheScraper:
         if tracked > 0:
             log_buffer.log('Cache', f'Tracking {format_count(tracked, "asset")} for caching')
 
-    # ------------------------------------------------------------------
     # Called from server MITM thread for Roblox CDN responses
-    # ------------------------------------------------------------------
 
     def process_cdn_response(
         self, full_url: str, path: str, body: bytes, content_type: str
@@ -656,9 +652,7 @@ class CacheScraper:
                     generation=generation,
                 )
 
-    # ------------------------------------------------------------------
     # Background workers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _normalize_real_ips(real_ips: dict[str, object]) -> dict[str, tuple[str, ...]]:
@@ -833,9 +827,7 @@ class CacheScraper:
 
         return (None, None) if return_status else None  # too many redirects
 
-    # ------------------------------------------------------------------
     # Creator place-ID cache (class-level, shared across threads)
-    # ------------------------------------------------------------------
     _creator_place_cache: dict[int, list[int]] = {}
     # Fast-path: creator_id -> last place_id that successfully downloaded an asset.
     # Avoids re-iterating the full games list for the same creator.
@@ -1473,9 +1465,7 @@ class CacheScraper:
             self.cache_manager.store_raw_asset(asset_id, asset_type, data)
             return True
 
-    # ------------------------------------------------------------------
     # DEBUG: Direct /v1/asset/ response hook (non-batch blind spot)
-    # ------------------------------------------------------------------
 
     def process_direct_asset_response(
         self,
@@ -1537,9 +1527,7 @@ class CacheScraper:
                 f'[DIRECT ASSET BYTES] asset_id={asset_id!r} body_head={body_snippet}',
             )
 
-    # ------------------------------------------------------------------
     # GUI-callable interface (same as before - no change needed in GUI code)
-    # ------------------------------------------------------------------
 
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = enabled
@@ -1551,9 +1539,7 @@ class CacheScraper:
             self._url_to_asset.clear()
         log_buffer.log('Cache', 'Cleared asset tracking log')
 
-    # ------------------------------------------------------------------
     # Helpers
-    # ------------------------------------------------------------------
 
     def _get_roblosecurity(self, *, wait: bool = False) -> str | None:
         from ...utils.roblox_auth import get_roblosecurity, wait_for_roblosecurity

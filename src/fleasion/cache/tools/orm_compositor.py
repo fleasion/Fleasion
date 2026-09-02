@@ -93,7 +93,7 @@ def composite_orm(
         Absolute path to the output ``.ktx2`` file, or ``None`` on failure.
     """
 
-    # ── Cache key: inputs + compositor algorithm version ────────────────────
+    # Cache key: inputs + compositor algorithm version
     h = hashlib.md5()
     h.update(_ORM_COMPOSITOR_CACHE_VERSION)
     if baseline and baseline.exists():
@@ -129,7 +129,7 @@ def composite_orm(
         log_buffer.log('TexPackTrace', f'ORM compositor cache hit: output={out_path.name}')
         return str(out_path)
 
-    # ── Decode baseline or synthesise defaults ───────────────────────────────
+    # Decode baseline or synthesise defaults
     width = height = 512
     rgba = None
 
@@ -156,7 +156,7 @@ def composite_orm(
             f'ORM compositor using synthesized default baseline: {width}x{height}',
         )
 
-    # ── Apply per-channel PNG overrides ─────────────────────────────────────
+    # Apply per-channel PNG overrides
     applied: list[str] = []
     for ch_name, png_path in channels.items():
         ch_idx = _CHANNEL_MAP.get(ch_name.lower())
@@ -236,7 +236,7 @@ def composite_orm(
             log_buffer.log('ORM', f'Normal decode failed ({normal_path.name}): {exc}')
             normal_rgba = None
 
-    # ── Write uncompressed RGBA32 KTX2 ──────────────────────────────────────
+    # Write uncompressed RGBA32 KTX2
     try:
         _write_ktx2(rgba, width, height, out_path, normal_rgba=normal_rgba)
         log_buffer.log(
@@ -253,7 +253,7 @@ def composite_orm(
         return None
 
 
-# ── Internal helpers ─────────────────────────────────────────────────────────
+# Internal helpers
 
 
 def _decode_bc_ktx2(data: bytes) -> tuple[np.ndarray, int, int]:

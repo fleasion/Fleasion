@@ -44,10 +44,8 @@ def write_binary_string(value: bytes) -> bytes:
     return write_u32(len(value)) + value
 
 
-# ---------------------------------------------------------------------------
 # Zigzag encoding (encode_zigzag already in binary_reader; duplicated here
 # so binary_writer is self-contained)
-# ---------------------------------------------------------------------------
 
 
 def encode_zigzag32(value: int) -> int:
@@ -60,9 +58,7 @@ def encode_zigzag64(value: int) -> int:
     return ((value << 1) ^ (value >> 63)) & 0xFFFF_FFFF_FFFF_FFFF
 
 
-# ---------------------------------------------------------------------------
 # Byte interleaving — inverse of deinterleave_*
-# ---------------------------------------------------------------------------
 
 
 def interleave_u32(values: list[int]) -> bytes:

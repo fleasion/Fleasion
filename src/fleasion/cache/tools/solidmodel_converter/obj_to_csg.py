@@ -26,11 +26,9 @@ from .csg_mesh import CSGVertex, serialize_csg_mesh
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
 # OBJ parser  (produces CSGVertex objects instead of the flat tuple layout
 # used by obj_to_mesh.py — that module targets V2.00 .mesh files which have
 # a different vertex structure than CSGMDL)
-# ---------------------------------------------------------------------------
 
 
 def _parse_float3(parts: list[str], start: int = 1) -> tuple[float, float, float]:
@@ -125,7 +123,7 @@ def parse_obj_to_csg_vertices(
     # Accumulate tangents per output vertex index for later averaging
     tangent_accum: list[list[float]] = []  # [[tx, ty, tz], ...]
 
-    # ── Pass 1: geometry data lines ─────────────────────────────────────────
+    # Pass 1: geometry data lines
     for raw_line in obj_content.splitlines():
         line = raw_line.strip()
         if not line or line.startswith('#'):
@@ -230,7 +228,7 @@ def parse_obj_to_csg_vertices(
                 if len(tri_out) == 3:
                     indices_out.extend(tri_out)
 
-    # ── Pass 2: compute and accumulate tangents ──────────────────────────────
+    # Pass 2: compute and accumulate tangents
     # Walk over every triangle and add its tangent contribution to each
     # of the three corner vertices.
     for i in range(0, len(indices_out), 3):
@@ -251,7 +249,7 @@ def parse_obj_to_csg_vertices(
             tangent_accum[vi][1] += ty
             tangent_accum[vi][2] += tz
 
-    # ── Pass 3: normalise accumulated tangents and write back ────────────────
+    # Pass 3: normalise accumulated tangents and write back
     for vi, acc in enumerate(tangent_accum):
         ax, ay, az = acc
         mag = math.sqrt(ax * ax + ay * ay + az * az)
@@ -302,9 +300,7 @@ def parse_obj_to_csg_vertices(
     return vertices_out, indices_out
 
 
-# ---------------------------------------------------------------------------
 # Public API
-# ---------------------------------------------------------------------------
 
 
 def export_csg_mesh(obj_path: Path, version: int = 2) -> bytes:

@@ -56,9 +56,7 @@ from .platform_targets import (
 )
 from .stash_paths import resource_stash_dir
 
-# ---------------------------------------------------------------------------
 # Paths
-# ---------------------------------------------------------------------------
 
 MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
 MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
@@ -143,9 +141,7 @@ def _instance_attr(obj, name: str, default=None):
         return default
 
 
-# ---------------------------------------------------------------------------
 # Roblox directory discovery  (mirrors proxy/master.py::_find_roblox_dirs)
-# ---------------------------------------------------------------------------
 
 
 def _find_roblox_dirs() -> list[Path]:
@@ -352,9 +348,7 @@ def _find_roblox_dirs() -> list[Path]:
     return found
 
 
-# ---------------------------------------------------------------------------
 # Bundled asset resolver
-# ---------------------------------------------------------------------------
 
 
 def _bundled_path(name: str) -> Path:
@@ -370,9 +364,7 @@ def _bundled_path(name: str) -> Path:
     return base / name
 
 
-# ---------------------------------------------------------------------------
 # PendingModificationsQueue
-# ---------------------------------------------------------------------------
 
 
 class PendingModificationsQueue:
@@ -418,9 +410,7 @@ class PendingModificationsQueue:
             self._pending_framerate_cap = None
 
 
-# ---------------------------------------------------------------------------
 # ModificationManager
-# ---------------------------------------------------------------------------
 
 
 class ModificationManager(QObject):
@@ -782,9 +772,7 @@ class ModificationManager(QObject):
                 f'Cleared read-only guard for {format_count(cleared, "managed Roblox file")}',
             )
 
-    # ------------------------------------------------------------------
     # Persistence
-    # ------------------------------------------------------------------
 
     def _load_json(self) -> dict:
         if MODIFICATIONS_JSON.exists():
@@ -840,9 +828,7 @@ class ModificationManager(QObject):
                 changed = True
         return changed
 
-    # ------------------------------------------------------------------
     # Entry CRUD
-    # ------------------------------------------------------------------
 
     @property
     def entries(self) -> list[dict]:
@@ -984,9 +970,7 @@ class ModificationManager(QObject):
             f'Restore failed for {entry.get("display_name", "?")}: {exc}',
         )
 
-    # ------------------------------------------------------------------
     # Processing & applying
-    # ------------------------------------------------------------------
 
     def _process_and_apply_entry(self, entry: dict) -> None:
         """Resolve source, convert if needed, stash & write."""
@@ -1230,9 +1214,7 @@ class ModificationManager(QObject):
             log_buffer.log('Modifications', f'KTX2 conversion skipped for {target_path}: {exc}')
             return data
 
-    # ------------------------------------------------------------------
     # Stash & write / restore
-    # ------------------------------------------------------------------
 
     # Sentinel suffix written alongside the stash directory when the
     # target file did NOT exist before a mod was applied.  _restore_entry
@@ -1361,9 +1343,7 @@ class ModificationManager(QObject):
                     restored = True
             return restored
 
-    # ------------------------------------------------------------------
     # Bulk operations
-    # ------------------------------------------------------------------
 
     def restore_all(self) -> None:
         """Restore every applied modification and fast-flags."""
@@ -1418,9 +1398,7 @@ class ModificationManager(QObject):
 
         log_buffer.log('Modifications', 'Re-applied all modifications (crash recovery)')
 
-    # ------------------------------------------------------------------
     # Fast-flag helpers (delegated to FastFlagManager)
-    # ------------------------------------------------------------------
 
     @property
     def fast_flags_enabled(self) -> bool:

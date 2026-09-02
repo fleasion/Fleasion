@@ -554,7 +554,7 @@ def load_curve_animation_data(anim_data: bytes) -> List[Keyframe]:
     def _empty_bc():
         return {'px': [], 'py': [], 'pz': [], 'rx': [], 'ry': [], 'rz': []}
 
-    # ── Binary RBXM path ──────────────────────────────────────────────────────
+    # Binary RBXM path
     if anim_data.startswith(b'<roblox!'):
         try:
             from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer

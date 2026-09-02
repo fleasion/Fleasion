@@ -511,7 +511,7 @@ class JsonTreeViewer(QDialog):
         self._search_debounce.setSingleShot(True)
         self._search_debounce.timeout.connect(self._do_search)
 
-        # ── Splitter: left (search + tree) | right (preview) ──────────────
+        # Splitter: left (search + tree) | right (preview)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # ---- Left panel ----
@@ -730,9 +730,7 @@ class JsonTreeViewer(QDialog):
         else:
             self._clear_preview()
 
-    # ──────────────────────────────────────────────────────────────────────
     # Preview panel creation
-    # ──────────────────────────────────────────────────────────────────────
 
     def _create_preview_panel(self) -> QWidget:
         """Create the right-side preview panel (mirrors cache_viewer's panel)."""
@@ -872,9 +870,7 @@ class JsonTreeViewer(QDialog):
         preview_widget.setLayout(preview_layout)
         return preview_widget
 
-    # ──────────────────────────────────────────────────────────────────────
     # Preview orchestration
-    # ──────────────────────────────────────────────────────────────────────
 
     def _preview_value(self, val):
         """Start preview for a selected asset ID (int) or URL (str)."""
@@ -1004,9 +1000,7 @@ class JsonTreeViewer(QDialog):
 
         return 'unknown'
 
-    # ──────────────────────────────────────────────────────────────────────
     # Per-type preview handlers
-    # ──────────────────────────────────────────────────────────────────────
 
     def _preview_image(self, data: bytes):
         self._image_loader = ImageLoaderThread(data)
@@ -1421,9 +1415,7 @@ class JsonTreeViewer(QDialog):
         self._tp_image_labels = {}
         self._tp_pixmaps = {}
 
-    # ──────────────────────────────────────────────────────────────────────
     # Context menus
-    # ──────────────────────────────────────────────────────────────────────
 
     def _show_image_context_menu(self, pos):
         """Show context menu for image preview."""
@@ -1466,9 +1458,7 @@ class JsonTreeViewer(QDialog):
         elif action == copy_xml_action:
             QApplication.clipboard().setText(self._texturepack_xml)
 
-    # ──────────────────────────────────────────────────────────────────────
     # Preview utilities
-    # ──────────────────────────────────────────────────────────────────────
 
     def _show_text_preview(self, text: str):
         self._hide_loading()

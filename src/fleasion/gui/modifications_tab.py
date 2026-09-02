@@ -75,9 +75,7 @@ from ..utils.threading import run_in_thread
 from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
 
-# ---------------------------------------------------------------------------
 # Built-in entry definitions
-# ---------------------------------------------------------------------------
 
 AVATAR_MESHES = [
     (
@@ -391,9 +389,7 @@ _STATUS_STYLES = {
     'orphaned_stash': 'color: #c90; font-weight: bold;',
 }
 
-# ═══════════════════════════════════════════════════════════════════
 # _RichTextButton — QPushButton-like label that renders HTML/rich text
-# ═══════════════════════════════════════════════════════════════════
 
 
 class _RichTextButton(QPushButton):
@@ -518,9 +514,7 @@ class _RichTextButton(QPushButton):
         painter.end()
 
 
-# ═══════════════════════════════════════════════════════════════════
 # CollapsibleSection
-# ═══════════════════════════════════════════════════════════════════
 
 
 class CollapsibleSection(QWidget):
@@ -680,9 +674,7 @@ class CollapsibleSection(QWidget):
         self._content_layout.activate()
 
 
-# ═══════════════════════════════════════════════════════════════════
 # NoWheelSpinBox — QSpinBox that ignores mouse wheel events
-# ═══════════════════════════════════════════════════════════════════
 
 
 class NoWheelSpinBox(QSpinBox):
@@ -699,9 +691,7 @@ class NoWheelSlider(QSlider):
         e.ignore()
 
 
-# ═══════════════════════════════════════════════════════════════════
 # DropdownComboBox — QComboBox with ▼ indicator instead of OS arrow
-# ═══════════════════════════════════════════════════════════════════
 
 
 class DropdownComboBox(QComboBox):
@@ -827,9 +817,7 @@ class FastFlagValueDelegate(QStyledItemDelegate):
         super().setModelData(editor, model, index)
 
 
-# ═══════════════════════════════════════════════════════════════════
 # ModRowWidget — the reusable row for each modifiable file
-# ═══════════════════════════════════════════════════════════════════
 
 
 class ModRowWidget(QWidget):
@@ -947,9 +935,7 @@ class ModRowWidget(QWidget):
 
         self.setLayout(layout)
 
-    # ------------------------------------------------------------------
     # Sync with manager
-    # ------------------------------------------------------------------
 
     def _sync_from_manager(self):
         """Find our entry in the manager (by target_path) and update UI."""
@@ -1018,9 +1004,7 @@ class ModRowWidget(QWidget):
 
         self._reset_btn.setVisible(status in ('applied', 'error', 'orphaned_stash'))
 
-    # ------------------------------------------------------------------
     # Actions
-    # ------------------------------------------------------------------
 
     def _apply_source(self, source_type: str, source_value: str):
         entry_data = {
@@ -1076,9 +1060,7 @@ class ModRowWidget(QWidget):
         )
         dlg.exec()
 
-    # ------------------------------------------------------------------
     # External helpers
-    # ------------------------------------------------------------------
 
     def apply_source_external(self, source_type: str, source_value: str):
         """Called externally (e.g. by ‘Apply to All Sky Faces’)."""
@@ -1086,9 +1068,7 @@ class ModRowWidget(QWidget):
         display = source_value if source_type in ('local_file', 'asset_id', 'bundled') else ''
         self._set_source_text_silent(display)
 
-    # ------------------------------------------------------------------
     # Inline source editing
-    # ------------------------------------------------------------------
 
     def _get_source_display_text(self) -> str:
         """Return the textbox display string for the current entry’s source."""
@@ -1222,9 +1202,7 @@ class ModRowWidget(QWidget):
         self._apply_source('bundled', self._mute_bundled)
 
 
-# ═══════════════════════════════════════════════════════════════════
 # ModPreviewDialog
-# ═══════════════════════════════════════════════════════════════════
 
 
 class ModPreviewDialog(QDialog):
@@ -1540,9 +1518,7 @@ class ModPreviewDialog(QDialog):
                 log_buffer.log('Export', f'Could not open exported file location: {exc}')
 
 
-# ═══════════════════════════════════════════════════════════════════
 # Fast Flags section widgets
-# ═══════════════════════════════════════════════════════════════════
 
 
 class CustomFFlagWarningDialog(QDialog):
@@ -4217,9 +4193,7 @@ class FFlagSection(QWidget):
         self._manager.fast_flags_enabled = False
 
 
-# ═══════════════════════════════════════════════════════════════════
 # ModificationsTab — the top-level tab widget
-# ═══════════════════════════════════════════════════════════════════
 
 
 class ModificationsTab(QWidget):
@@ -4274,7 +4248,7 @@ class ModificationsTab(QWidget):
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
 
-        # ── Fast Flags ───────────────────────────────────────────
+        # Fast Flags
         self._fflag_toggle = QCheckBox(
             tr('ui.gui.modifications_tab.enable_allowlisted_fastflag_presets')
         )
@@ -4298,7 +4272,7 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(fflag_section)
 
-        # ── Default Skyboxes ─────────────────────────────────────
+        # Default Skyboxes
         sky_section = CollapsibleSection(
             tr('modifications.section.default_skyboxes'), expanded=True
         )
@@ -4336,7 +4310,7 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(sky_section)
 
-        # ── Textures ─────────────────────────────────────────────
+        # Textures
         tex_section = CollapsibleSection(tr('modifications.section.textures'), expanded=True)
         for name, path, filt in TEXTURES:
             row = ModRowWidget(self._manager, _builtin_label(name), path, file_filter=filt)
@@ -4344,7 +4318,7 @@ class ModificationsTab(QWidget):
             self._row_widgets[path] = row
         self._container_layout.addWidget(tex_section)
 
-        # ── R6 Default Avatar Meshes ─────────────────────────────
+        # R6 Default Avatar Meshes
         self._mesh_section = CollapsibleSection(
             tr('modifications.section.r6_avatar_meshes'), expanded=True
         )
@@ -4375,7 +4349,7 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(self._mesh_section)
 
-        # ── Sounds ───────────────────────────────────────────────
+        # Sounds
         sounds_section = CollapsibleSection(tr('modifications.section.sounds'), expanded=True)
         for name, path, bundled in SOUNDS:
             row = ModRowWidget(
@@ -4390,7 +4364,7 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(sounds_section)
 
-        # ── Custom Font ──────────────────────────────────────────
+        # Custom Font
         font_section = CollapsibleSection(tr('modifications.section.custom_font'), expanded=True)
         font_row = ModRowWidget(
             self._manager,
@@ -4429,7 +4403,7 @@ class ModificationsTab(QWidget):
                 )
                 self._row_widgets[target] = row
 
-        # ── Custom Modifications ─────────────────────────────────
+        # Custom Modifications
         self._custom_section = CollapsibleSection(
             tr('modifications.section.custom_modifications'), expanded=True
         )
@@ -4514,9 +4488,7 @@ class ModificationsTab(QWidget):
         window = DeleteCacheWindow()
         window.show()
 
-    # ------------------------------------------------------------------
     # Status bar
-    # ------------------------------------------------------------------
 
     def _update_status_bar(self):
         applied = sum(1 for e in self._manager.entries if e.get('status') == 'applied')
@@ -4545,9 +4517,7 @@ class ModificationsTab(QWidget):
         except RuntimeError:
             return
 
-    # ------------------------------------------------------------------
     # Section: Avatar Meshes — Add Head Variant
-    # ------------------------------------------------------------------
 
     def _on_add_head_variant(self):
         # Filter out already-added variants
@@ -4591,9 +4561,7 @@ class ModificationsTab(QWidget):
             )
             self._row_widgets[target] = row
 
-    # ------------------------------------------------------------------
     # Section: Skybox — Apply to All
-    # ------------------------------------------------------------------
 
     def _on_apply_all_sky(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -4619,9 +4587,7 @@ class ModificationsTab(QWidget):
             if target in self._row_widgets:
                 self._row_widgets[target].apply_source_external('local_file', path)
 
-    # ------------------------------------------------------------------
     # Section: Custom Modifications
-    # ------------------------------------------------------------------
 
     def _on_add_custom(self):
         dlg = _CustomModDialog(self._manager, self)
@@ -4659,9 +4625,7 @@ class ModificationsTab(QWidget):
         row.deleteLater()
         self._update_status_bar()
 
-    # ------------------------------------------------------------------
     # Fast Flags toggle
-    # ------------------------------------------------------------------
 
     def _on_fflag_toggle(self, checked: bool):
         self._manager.fast_flags_enabled = checked
@@ -4678,9 +4642,7 @@ class ModificationsTab(QWidget):
             self._manager.apply_pending_modifications()
 
 
-# ═══════════════════════════════════════════════════════════════════
 # Custom Modification Dialog
-# ═══════════════════════════════════════════════════════════════════
 
 
 def _relative_target_path_for_resource_file(
