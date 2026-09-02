@@ -535,6 +535,12 @@ class CollapsibleSection(QWidget):
         header_widgets: list[QWidget] | None = None,
     ):
         super().__init__(parent)
+        # A section should never absorb spare vertical space from its parent.
+        # Its height is determined by the header plus the currently visible
+        # content; any remaining viewport height belongs outside the card.
+        policy = self.sizePolicy()
+        policy.setVerticalPolicy(QSizePolicy.Policy.Maximum)
+        self.setSizePolicy(policy)
 
         self._expanded = expanded
         self._animation: QPropertyAnimation | None = None
