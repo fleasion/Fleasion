@@ -35,17 +35,13 @@ from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2
 
 logger = logging.getLogger(__name__)
 
-# -------------------------------------------------------------------------------
 # Magic bytes
-# -------------------------------------------------------------------------------
 KTX1_MAGIC = b'\xabKTX 11\xbb\r\n\x1a\n'
 KTX2_MAGIC = b'\xabKTX 20\xbb\r\n\x1a\n'
 _KTX_MAGIC_SCAN_LIMIT = 64
 
 
-# -------------------------------------------------------------------------------
 # Public API
-# -------------------------------------------------------------------------------
 class _ConversionError(RuntimeError):
     """Wrap an unexpected decoder failure at the public conversion boundary."""
 
@@ -107,9 +103,7 @@ def strip_prefixed_ktx(data: bytes) -> bytes | None:
     return None
 
 
-# -------------------------------------------------------------------------------
 # KTX1 -- header parsing + ETC/EAC dispatch
-# -------------------------------------------------------------------------------
 # GL internal format constants (from KTX1/Main.cs KtxTextureFormat enum)
 _GL_RGB8_ETC1 = 0x8D64
 _GL_R11_EAC = 0x9270
@@ -201,9 +195,7 @@ def _decode_ktx1(
     return None
 
 
-# -------------------------------------------------------------------------------
 # ETC helpers  (port of Internal.cs + Public.cs)
-# -------------------------------------------------------------------------------
 def _bswap64(b8: bytes) -> int:
     """Read 8 bytes big-endian -- int (equivalent to C# BSwap)."""
     return int.from_bytes(b8[:8], 'big')
@@ -610,9 +602,7 @@ def _decode_etc_rgba(image_data: bytes, width: int, height: int) -> np.ndarray:
     return np.frombuffer(dest, dtype=np.uint8).reshape(height, width, 4)
 
 
-# -------------------------------------------------------------------------------
 # KTX2 -- local RGBA8 / ETC2 paths plus optional native libktx path
-# -------------------------------------------------------------------------------
 # Vulkan ETC2 formats used by Roblox's Android/Sober TexturePack stream.
 _VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK = 147
 _VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK = 148

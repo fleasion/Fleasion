@@ -121,9 +121,7 @@ def deserialize_rbxm(data: bytes) -> RbxDocument:
     return RbxmDeserializer().deserialize(data)
 
 
-# ---------------------------------------------------------------------------
 # OBJ export helpers
-# ---------------------------------------------------------------------------
 
 
 def _export_obj_from_doc(
@@ -293,9 +291,7 @@ def _collect_mesh_parts(
     return parts
 
 
-# ---------------------------------------------------------------------------
 # MeshData extraction and injection
-# ---------------------------------------------------------------------------
 
 
 def _get_top_level_mesh_data(doc: RbxDocument) -> bytes | None:
@@ -381,9 +377,7 @@ def _inject_mesh_data(doc: RbxDocument, mesh_data: bytes) -> None:
         log.warning('Could not find any PartOperation instance to inject MeshData into')
 
 
-# ---------------------------------------------------------------------------
 # ChildData extraction (original + improved)
-# ---------------------------------------------------------------------------
 
 
 def _try_extract_child_data(doc: RbxDocument) -> RbxDocument | None:

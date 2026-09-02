@@ -1542,10 +1542,8 @@ class ColumnVisibilityMenu(QMenu):
 
         self._building = False
 
-    # ------------------------------------------------------------------
     # Prevent the menu from closing when the user clicks a checkable item.
     # It will still close on Escape or clicking outside.
-    # ------------------------------------------------------------------
     @override
     def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:
         if a0 is None:
@@ -1732,9 +1730,7 @@ class CacheViewerTab(QWidget):
             self._type_probe_worker = None
         super().closeEvent(event)
 
-    # ------------------------------------------------------------------
     # Column visibility / width helpers
-    # ------------------------------------------------------------------
 
     def _default_col_visibility(self) -> dict[str, bool]:
         return {key: default_vis for key, default_vis, _w in _SCRAPER_COLUMN_META}
@@ -1872,9 +1868,7 @@ class CacheViewerTab(QWidget):
             self._save_col_settings()
             QTimer.singleShot(0, self._auto_snap_splitter)
 
-    # ------------------------------------------------------------------
     # Column-visibility menu helpers
-    # ------------------------------------------------------------------
 
     def _get_or_create_col_menu(self) -> ColumnVisibilityMenu:
         """Return (and lazily create) the shared ColumnVisibilityMenu."""
@@ -1907,9 +1901,7 @@ class CacheViewerTab(QWidget):
         self._col_visibility = new_visibility
         self._apply_column_visibility()
 
-    # ------------------------------------------------------------------
     # Column resize tracking
-    # ------------------------------------------------------------------
 
     def _on_sort_indicator_changed(self, logical_index: int, order: Qt.SortOrder) -> None:
         """Block sort on col 0 (▼ toggle); track sort column for all others."""
@@ -1944,9 +1936,7 @@ class CacheViewerTab(QWidget):
         self._save_col_settings()
         QTimer.singleShot(0, self._auto_snap_splitter)
 
-    # ------------------------------------------------------------------
     # Splitter auto-snap
-    # ------------------------------------------------------------------
 
     def _auto_snap_splitter(self) -> None:
         """Resize the splitter so the preview gets as much space as possible.
@@ -2001,9 +1991,7 @@ class CacheViewerTab(QWidget):
             preview_w = max(total - table_w - splitter_handle, 50)
             self.splitter.setSizes([table_w, preview_w])
 
-    # ------------------------------------------------------------------
     # resizeEvent - update splitter continuously as main window resizes
-    # ------------------------------------------------------------------
 
     @override
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -2318,7 +2306,7 @@ class CacheViewerTab(QWidget):
         # Hide the native row-number vertical header — col 0 now shows the counter
         self.table.verticalHeader().hide()
 
-        # ── Intercept clicks on col 0 to open the visibility menu ──────────
+        # Intercept clicks on col 0 to open the visibility menu
         # sortIndicatorChanged fires before Qt's internal sort call, so we can
         # restore the previous sort inside the guard without a visible flicker.
         header.sortIndicatorChanged.connect(self._on_sort_indicator_changed)
@@ -2614,7 +2602,7 @@ class CacheViewerTab(QWidget):
 
     def _populate_table(self, assets: list[_AssetRecord]) -> None:
         """Populate the table with assets."""
-        # ── Save scroll anchor ────────────────────────────────────────────
+        # Save scroll anchor
         # Capture the asset_id of the row at the top of the visible viewport
         # so we can scroll back to it after rebuilding the table.
         # This prevents the "user teleportation" bug where inserting new rows
@@ -2792,7 +2780,7 @@ class CacheViewerTab(QWidget):
             with QSignalBlocker(self.table):
                 self.table.selectRow(row_to_select)
 
-        # ── Restore scroll anchor ─────────────────────────────────────────
+        # Restore scroll anchor
         # Rules:
         #   1. If user was at the very top (scroll == 0), stay at the top.
         #      New assets arriving should not push the user away from the top.
@@ -6199,9 +6187,7 @@ class CacheViewerTab(QWidget):
         self.text_viewer.show()
         self.stop_preview_btn.show()
 
-    # ------------------------------------------------------------------
     # Load Asset dialog
-    # ------------------------------------------------------------------
 
     def _show_blacklist_dialog(self) -> None:
         """Show a dialog for managing blacklisted asset IDs."""

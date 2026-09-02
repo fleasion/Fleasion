@@ -433,9 +433,7 @@ _TEMP_CLEAN_HOSTS = _PLATFORM_TEMP_DIR / 'fleasion_hosts_restore.txt'
 # Other instances check this on startup to avoid disturbing a live proxy.
 _PROXY_OWNER_PID_FILE = _PLATFORM_TEMP_DIR / 'fleasion_proxy_owner.pid'
 
-# ---------------------------------------------------------------------------
 # Task-Scheduler watchdog (force-kill guard)
-# ---------------------------------------------------------------------------
 # When the proxy is running, we maintain a Windows Task Scheduler task that
 # fires a short time into the future.  A background thread refreshes the task
 # before that deadline so it never actually fires during normal operation.  If the
@@ -447,7 +445,6 @@ _PROXY_OWNER_PID_FILE = _PLATFORM_TEMP_DIR / 'fleasion_proxy_owner.pid'
 # will NEVER fire retroactively on the next boot — the PendingFileRename
 # guard handles that case instead.  On the next Fleasion launch we also
 # delete any stale watchdog task left from a previous crash.
-# ---------------------------------------------------------------------------
 
 _WATCHDOG_TASK_NAME = 'Fleasion-HostsWatchdog'
 _WATCHDOG_LOOKAHEAD = 30  # seconds ahead the task is scheduled
@@ -1596,9 +1593,7 @@ def _flush_dns() -> None:
         log_buffer.log('Hosts', f'DNS flush failed (non-fatal): {exc}')
 
 
-# ---------------------------------------------------------------------------
 # Reboot-time crash guard (PendingFileRenameOperations)
-# ---------------------------------------------------------------------------
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -1749,9 +1744,7 @@ def _cancel_hosts_cleanup_on_reboot() -> None:
         log_buffer.log('Hosts', f'Could not cancel reboot cleanup (non-fatal): {exc}')
 
 
-# ---------------------------------------------------------------------------
 # Admin check
-# ---------------------------------------------------------------------------
 
 
 def _is_admin() -> bool:
@@ -2031,9 +2024,7 @@ def _list_port_listeners(port: int) -> list[_PortListener]:
     return unique
 
 
-# ---------------------------------------------------------------------------
 # Hosts file management
-# ---------------------------------------------------------------------------
 
 _HOSTS_WRITE_RETRIES = 8
 _HOSTS_WRITE_DELAY = 0.25  # seconds between direct-write retries
@@ -2946,9 +2937,7 @@ def cleanup_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None =
     return True
 
 
-# ---------------------------------------------------------------------------
 # Roblox CA installation
-# ---------------------------------------------------------------------------
 
 
 def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
@@ -3120,7 +3109,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
             _add(directory, source)
         return len(directories)
 
-    # ── 1. Main Registry Search ──────────────────────────────────────────
+    # 1. Main Registry Search
     # Walk HKCU\Software and one layer of subkeys; collect any "PlayerPath" value.
     t = time.perf_counter()
     reg_found = 0
@@ -3159,7 +3148,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
         f'  Registry PlayerPath: {int((time.perf_counter() - t) * 1000)} ms ({reg_found} found)',
     )
 
-    # ── 2. MS Store Version ──────────────────────────────────────────────
+    # 2. MS Store Version
     # C:\XboxGames\Roblox, up to two layers deep.
     t = time.perf_counter()
     xbox_found = 0
@@ -3171,7 +3160,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
         f'  XboxGames\\Roblox: {int((time.perf_counter() - t) * 1000)} ms ({xbox_found} found)',
     )
 
-    # ── 3. Active Roblox ─────────────────────────────────────────────────
+    # 3. Active Roblox
     # Read HKCU\...\roblox-player\shell\open\command (Default); parse the exe
     # path and search up to two layers under its parent directory.
     t = time.perf_counter()
@@ -3184,7 +3173,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
         f'  Active Roblox (registry): {int((time.perf_counter() - t) * 1000)} ms ({active_found} found)',
     )
 
-    # ── 4. Program Files (x86) Roblox ────────────────────────────────────
+    # 4. Program Files (x86) Roblox
     t = time.perf_counter()
     program_files_found = 0
     for d in _scan_for_exe(Path(r'C:\Program Files (x86)\Roblox\Versions'), 2):
@@ -3195,7 +3184,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
         f'  Program Files (x86) Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({program_files_found} found)',
     )
 
-    # ── 5. Regular Roblox ────────────────────────────────────────────────
+    # 5. Regular Roblox
     # %LocalAppData%\Roblox\Versions — one layer down.
     t = time.perf_counter()
     roblox_found = 0
@@ -3207,7 +3196,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
         f'  AppData Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({roblox_found} found)',
     )
 
-    # ── 6. Active Studio ─────────────────────────────────────────────────
+    # 6. Active Studio
     # Read HKCU\...\roblox-studio\shell\open\command (Default); parse the exe
     # path and search up to two layers under its parent directory.
     t = time.perf_counter()
@@ -3220,7 +3209,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
         f'  Active Studio (registry): {int((time.perf_counter() - t) * 1000)} ms ({studio_found} found)',
     )
 
-    # ── 7. Running process install paths ─────────────────────────────────
+    # 7. Running process install paths
     t = time.perf_counter()
     running_found = 0
     for running_exe in (get_roblox_player_exe_path(), get_roblox_studio_exe_path()):
@@ -4387,9 +4376,7 @@ def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
     return changed or not was_launch_healthy or not is_launch_healthy
 
 
-# ---------------------------------------------------------------------------
 # ProxyMaster
-# ---------------------------------------------------------------------------
 
 
 def _generate_proxy_certificate(

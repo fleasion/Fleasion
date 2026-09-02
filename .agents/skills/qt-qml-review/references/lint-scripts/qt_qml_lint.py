@@ -55,9 +55,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Set, Tuple
 
 
-# ---------------------------------------------------------------------------
 # Data model
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Finding:
@@ -92,9 +90,7 @@ class Rule:
     requires_no_flag: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
 # Block tracker for structural rules (ORD, LAY, IMG, PRF, STY)
-# ---------------------------------------------------------------------------
 
 # Line classification categories, in expected order.
 # ORD rules check that lines appear in non-decreasing category order.
@@ -464,9 +460,7 @@ SKIP_ORD_TYPES = SKIP_CHILD_TYPES | {
 }
 
 
-# ---------------------------------------------------------------------------
 # Compiled regex patterns
-# ---------------------------------------------------------------------------
 
 # Comment line detection (same approach as C++ linter)
 RE_COMMENT_LINE = re.compile(r"^\s*(//|/?\*)")
@@ -773,9 +767,7 @@ RE_ERR_UNIX_PATH = re.compile(r'"/tmp/')
 RE_JS_EVAL = re.compile(r'\beval\s*\(')
 
 
-# ---------------------------------------------------------------------------
 # Rule tables
-# ---------------------------------------------------------------------------
 
 # Tier A: Simple match + optional exclude.
 RULES_SIMPLE: "List[Rule]" = [
@@ -875,9 +867,7 @@ RULES_FLAG: "List[Rule]" = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # Per-line rule dispatch
-# ---------------------------------------------------------------------------
 
 def _check_line_rules(
     lineno: int,
@@ -1038,9 +1028,7 @@ def _check_line_rules(
         emit(lineno, rule.id, rule.message)
 
 
-# ---------------------------------------------------------------------------
 # Post-scan file-level checks
-# ---------------------------------------------------------------------------
 
 def _post_scan_checks(
     filepath: str,
@@ -1103,9 +1091,7 @@ def _post_scan_checks(
         emit(f.line, f.rule, f.message)
 
 
-# ---------------------------------------------------------------------------
 # Per-file scanner
-# ---------------------------------------------------------------------------
 
 def scan_file(filepath: str) -> "List[Finding]":
     """Scan a single QML file and return all findings."""
@@ -1422,9 +1408,7 @@ def _scan_image_async(
     return findings
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main() -> int:
     if len(sys.argv) < 2:

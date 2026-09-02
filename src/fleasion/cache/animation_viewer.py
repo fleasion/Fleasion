@@ -891,7 +891,7 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
 
     bone_curves: dict[str, BoneCurve] = {}
 
-    # ── Binary RBXM path ──────────────────────────────────────────────────────
+    # Binary RBXM path
     if anim_data.startswith(b'<roblox!'):
         binary_curves = _load_rbxm_curve_data(anim_data, _vat)
         if binary_curves is None:

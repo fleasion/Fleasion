@@ -32,7 +32,7 @@ from fleasion.utils import APP_CACHE_DIR, log_buffer
 if TYPE_CHECKING:
     from .csg_mesh import CSGVertex
 
-# ── Compression detection ──────────────────────────────────────────────────
+# Compression detection
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC = b'\x1f\x8b'
 
@@ -46,7 +46,7 @@ def _decompress(data: bytes) -> bytes:
     return data
 
 
-# ── Binary RBXM detection ──────────────────────────────────────────────────
+# Binary RBXM detection
 # Binary RBXM starts with b'<roblox!' (byte index 7 == 0x21 = '!').
 # XML RBXMX starts with b'<roblox ' (space) or b'<?xml'.
 _RBXM_BINARY_SIG = b'<roblox!'
@@ -57,7 +57,7 @@ def is_binary_rbxm(data: bytes) -> bool:
     return data[:8] == _RBXM_BINARY_SIG
 
 
-# ── Cache path helper ──────────────────────────────────────────────────────
+# Cache path helper
 
 
 def _cache_obj_path(source: Path) -> Path:
@@ -71,7 +71,7 @@ def _is_cache_fresh(source: Path, cached: Path) -> bool:
     return cached.exists() and source.stat().st_mtime <= cached.stat().st_mtime
 
 
-# ── .mesh → cached OBJ ────────────────────────────────────────────────────
+# .mesh → cached OBJ
 
 
 def mesh_file_to_cached_obj(mesh_path: Path) -> Path:
@@ -132,7 +132,7 @@ def mesh_file_to_cached_obj(mesh_path: Path) -> Path:
     return cached_obj
 
 
-# ── CSGVertex list → OBJ text ──────────────────────────────────────────────
+# CSGVertex list → OBJ text
 
 
 def _csg_vertices_to_obj(vertices: list[CSGVertex], indices: list[int]) -> str:
@@ -181,7 +181,7 @@ def _csg_vertices_to_obj(vertices: list[CSGVertex], indices: list[int]) -> str:
     return ''.join(lines)
 
 
-# ── .bin (binary CSG RBXM) → cached OBJ ───────────────────────────────────
+# .bin (binary CSG RBXM) → cached OBJ
 
 #: Instance class names that carry a MeshData property inside a CSG RBXM.
 _INJECTABLE = frozenset(

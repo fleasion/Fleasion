@@ -3002,7 +3002,7 @@ class FleasionProxy:
                 # below eventually passes through, on its way back here.
                 await response_writer.flush_pending_response()
 
-                # ── Read request ─────────────────────────────────────────────
+                # Read request
                 if pending_req is not None:
                     req_raw = pending_req
                     pending_req = None
@@ -3170,7 +3170,7 @@ class FleasionProxy:
                         break
                     continue
 
-                # ── Modify batch request body if needed ───────────────────────
+                # Modify batch request body if needed
                 if is_batch:
                     # Decompress for reading/modifying, send uncompressed to upstream
                     req_body_plain = _decompress_body(req_body_raw, req_headers)
@@ -3254,7 +3254,7 @@ class FleasionProxy:
                 except ConnectionResetError, BrokenPipeError, OSError:
                     break
 
-                # ── Read upstream response ────────────────────────────────────
+                # Read upstream response
                 resp_result = await _read_headers_raw(cast('asyncio.StreamReader', up_reader))
                 if resp_result is None:
                     break
@@ -3314,7 +3314,7 @@ class FleasionProxy:
                         f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes{snippet_text}',
                     )
 
-                # ── Determine if we need to modify the response body ──────────
+                # Determine if we need to modify the response body
                 # We only modify if: solidmodel injection is requested.
                 # All other responses are forwarded raw (preserving content-encoding).
                 response_modified = False
@@ -3442,7 +3442,7 @@ class FleasionProxy:
                         ):
                             custom_fflag_delivered_signature = None
 
-                # ── Forward response to Roblox ────────────────────────────────
+                # Forward response to Roblox
                 if response_modified:
                     outgoing_response = _build_modified_response(
                         resp_first,

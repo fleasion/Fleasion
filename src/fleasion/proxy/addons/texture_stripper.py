@@ -982,7 +982,7 @@ def _download_remote_file(url: str, dest: Path, label: str) -> bool:
 class TextureStripper:
     """Modifies Roblox asset batch requests/responses and manages CDN redirects."""
 
-    # ── Shared singleton state (class-level) ──────────────────────────────
+    # Shared singleton state (class-level)
     _lock: Lock = Lock()
     _pending: ClassVar[dict[str, tuple[str, str]]] = {}  # requestId -> (kind, value)
     _cdn_redirects: ClassVar[dict[str, str]] = {}  # base_cdn_url -> redirect_url
@@ -993,7 +993,6 @@ class TextureStripper:
     )  # base_cdn_url values that should force v3 CSG export
     _batch_generations: ClassVar[dict[str, int]] = {}  # batch_id -> route generation
     _routes_generation: int = 0
-    # ─────────────────────────────────────────────────────────────────────
 
     ASSET_TYPES: ClassVar[dict[int, str]] = {
         1: 'Image',
@@ -1724,9 +1723,7 @@ class TextureStripper:
         )
         return True
 
-    # ------------------------------------------------------------------
     # Batch request (called from server MITM thread)
-    # ------------------------------------------------------------------
 
     def process_batch_request(
         self,
@@ -2069,7 +2066,7 @@ class TextureStripper:
 
             # CDN / local routing — slot key / wildcard key takes priority
             if req_id and aid:
-                # ── ORM channel compositing (virtual slots 2-5) ──────────────────
+                # ORM channel compositing (virtual slots 2-5)
                 # When the fidelity slot is 2 (ORM) and per-channel PNG overrides
                 # are configured via VSN keys (N≥2), composite them into one texture.
                 # This check runs BEFORE normal local_key routing so that e.g.
@@ -2313,9 +2310,7 @@ class TextureStripper:
             self._solidmodel_force_v3.add(base_loc)
             log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
 
-    # ------------------------------------------------------------------
     # Batch response (called from server MITM thread)
-    # ------------------------------------------------------------------
 
     def process_batch_response(
         self,
@@ -2414,9 +2409,7 @@ class TextureStripper:
                     normal_overrides=normal_overrides,
                 )
 
-    # ------------------------------------------------------------------
     # CDN request check (called from server MITM thread for Roblox CDN hosts)
-    # ------------------------------------------------------------------
 
     def check_cdn_request(self, host: str, path: str) -> _CdnMatch | None:
         """Returns ('local'|'cdn'|'solid'|'solid_v3'|'anim_rig', value) or None.
@@ -2479,9 +2472,7 @@ class TextureStripper:
         with self._lock:
             return bool(self._pending)
 
-    # ------------------------------------------------------------------
     # SolidModel response injection (called from server MITM thread)
-    # ------------------------------------------------------------------
 
     def process_solidmodel_response(
         self,
@@ -2513,9 +2504,7 @@ class TextureStripper:
         log_buffer.log('SolidModel', f'Injected OBJ ({len(modified)} bytes)')
         return modified
 
-    # ------------------------------------------------------------------
     # Internal routing helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _convert_texpack_local(local_path: str, map_index: int | None = None) -> str:

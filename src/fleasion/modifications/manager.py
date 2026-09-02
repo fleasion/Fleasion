@@ -181,9 +181,7 @@ def _rgba_ktx2_module() -> _RgbaKtx2Module:
     return cast('_RgbaKtx2Module', importlib.import_module(_RGBA_KTX2_MODULE))
 
 
-# ---------------------------------------------------------------------------
 # Paths
-# ---------------------------------------------------------------------------
 
 MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
 MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
@@ -365,9 +363,7 @@ def _instance_attr(obj: object, name: str, default: object = None) -> object:
         return default
 
 
-# ---------------------------------------------------------------------------
 # Roblox directory discovery  (mirrors proxy/master.py::_find_roblox_dirs)
-# ---------------------------------------------------------------------------
 
 
 def _find_roblox_dirs() -> list[Path]:
@@ -584,9 +580,7 @@ def _find_roblox_dirs() -> list[Path]:
     return found
 
 
-# ---------------------------------------------------------------------------
 # Bundled asset resolver
-# ---------------------------------------------------------------------------
 
 
 def _bundled_path(name: str) -> Path:
@@ -602,9 +596,7 @@ def _bundled_path(name: str) -> Path:
     return base / name
 
 
-# ---------------------------------------------------------------------------
 # PendingModificationsQueue
-# ---------------------------------------------------------------------------
 
 
 class PendingModificationsQueue:
@@ -650,9 +642,7 @@ class PendingModificationsQueue:
             self._pending_framerate_cap = None
 
 
-# ---------------------------------------------------------------------------
 # ModificationManager
-# ---------------------------------------------------------------------------
 
 
 class ModificationManager(QObject):
@@ -1042,9 +1032,7 @@ class ModificationManager(QObject):
                 f'Cleared read-only guard for {format_count(cleared, "managed Roblox file")}',
             )
 
-    # ------------------------------------------------------------------
     # Persistence
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _normalize_loaded_data(data: _ModificationData) -> _ModificationData:
@@ -1099,9 +1087,7 @@ class ModificationManager(QObject):
                 changed = True
         return changed
 
-    # ------------------------------------------------------------------
     # Entry CRUD
-    # ------------------------------------------------------------------
 
     @property
     def entries(self) -> list[_ModificationEntry]:
@@ -1268,9 +1254,7 @@ class ModificationManager(QObject):
             return action()
         return fallback
 
-    # ------------------------------------------------------------------
     # Processing & applying
-    # ------------------------------------------------------------------
 
     def _apply_entry_unchecked(self, entry: _ModificationEntry, apply_gen: int) -> None:
         data = self._resolve_source(entry)
@@ -1492,9 +1476,7 @@ class ModificationManager(QObject):
             failure_prefix=f'KTX2 conversion skipped for {target_path}',
         )
 
-    # ------------------------------------------------------------------
     # Stash & write / restore
-    # ------------------------------------------------------------------
 
     # Sentinel suffix written alongside the stash directory when the
     # target file did NOT exist before a mod was applied.  _restore_entry
@@ -1625,9 +1607,7 @@ class ModificationManager(QObject):
                     restored = True
             return restored
 
-    # ------------------------------------------------------------------
     # Bulk operations
-    # ------------------------------------------------------------------
 
     def restore_all(self) -> None:
         """Restore every applied modification and fast-flags."""
@@ -1681,9 +1661,7 @@ class ModificationManager(QObject):
 
         log_buffer.log('Modifications', 'Re-applied all modifications (crash recovery)')
 
-    # ------------------------------------------------------------------
     # Fast-flag helpers (delegated to FastFlagManager)
-    # ------------------------------------------------------------------
 
     @property
     def fast_flags_enabled(self) -> bool:

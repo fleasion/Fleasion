@@ -20,9 +20,7 @@ from fleasion.utils.json_types import JsonObject, as_json_object
 
 from .stash_paths import resource_stash_dir
 
-# ---------------------------------------------------------------------------
 # Preset flag name mapping (mirrors Fishstrap PresetFlags)
-# ---------------------------------------------------------------------------
 
 PRESET_FLAGS: dict[str, str] = {
     'Rendering.ManualFullscreen': 'FFlagHandleAltEnterFullscreenManually',
@@ -268,15 +266,13 @@ class FastFlagManager:
         """Replace the Roblox resource roots used for subsequent flag operations."""
         self._roblox_dirs = roblox_dirs
 
-    # ------------------------------------------------------------------
     # Public API
-    # ------------------------------------------------------------------
 
     def build_json(self, settings: Mapping[str, object]) -> dict[str, str]:
         """Convert a UI settings dict into the flags dict that becomes ClientAppSettings.json."""
         flags: dict[str, str] = {}
 
-        # ── Rendering Mode ──────────────────────────────────────────
+        # Rendering Mode
         mode = _setting_str(settings, 'rendering_mode', 'Default')
         if mode != 'Default':
             flag_key = f'Rendering.Mode.{mode}'
@@ -286,21 +282,21 @@ class FastFlagManager:
             if mode in {'Vulkan', 'OpenGL'}:
                 flags[PRESET_FLAGS['Rendering.Mode.DisableD3D11']] = 'True'
 
-        # ── MSAA ────────────────────────────────────────────────────
+        # MSAA
         msaa = _setting_str(settings, 'msaa', 'Default')
         if msaa != 'Default':
             # Strip "x" suffix and any "(Lowest)"/"(Highest)" suffix (e.g., "1x (Lowest)" -> "1")
             msaa_val = msaa.replace('x', '').split(' ')[0]
             flags[PRESET_FLAGS['Rendering.MSAA']] = msaa_val
 
-        # ── Toggles ─────────────────────────────────────────────────
+        # Toggles
         if settings.get('disable_dpi_scale'):
             flags[PRESET_FLAGS['Rendering.DisableScaling']] = 'True'
 
         if settings.get('alt_enter_fullscreen'):
             flags[PRESET_FLAGS['Rendering.ManualFullscreen']] = 'True'
 
-        # ── Texture Quality ─────────────────────────────────────────
+        # Texture Quality
         tex = _setting_str(settings, 'texture_quality', 'Default')
         if tex != 'Default':
             # Extract numeric value from "Level X" or "Level X (Lowest/Highest)" format
@@ -308,7 +304,7 @@ class FastFlagManager:
             flags[PRESET_FLAGS['Rendering.TextureQuality.OverrideEnabled']] = 'True'
             flags[PRESET_FLAGS['Rendering.TextureQuality.Level']] = tex_val
 
-        # ── Mesh LOD (mirrors Fishstrap MeshQuality setter) ─────────
+        # Mesh LOD (mirrors Fishstrap MeshQuality setter)
         # Slider: 0 = Default (no flag), 1 = Level 0, 2 = Level 1, 3 = Level 2, 4 = Level 3
         if settings.get('mesh_lod_enabled'):
             level = _int_value(_setting_int_source(settings, 'mesh_lod', 4))
@@ -319,14 +315,14 @@ class FastFlagManager:
                     flags[PRESET_FLAGS[f'Geometry.MeshLOD.{lod_name}']] = str(lod_value)
                 flags[PRESET_FLAGS['Geometry.MeshLOD.Static']] = str(level - 1)  # Store as 0-3
 
-        # ── FRM Quality Override ────────────────────────────────────
+        # FRM Quality Override
         # Slider: 0 = Default (no flag), 1-21 = quality level
         if settings.get('frm_quality_enabled'):
             val = _int_value(_setting_int_source(settings, 'frm_quality', 21))
             if val > 0:  # 0 = Default means no flag written
                 flags[PRESET_FLAGS['Rendering.FRMQualityOverride']] = str(val)
 
-        # ── Extra standalone flags ──────────────────────────────────
+        # Extra standalone flags
         if settings.get('grey_sky'):
             flags[EXTRA_FLAGS['grey_sky']] = 'True'
         if settings.get('pause_voxelizer'):

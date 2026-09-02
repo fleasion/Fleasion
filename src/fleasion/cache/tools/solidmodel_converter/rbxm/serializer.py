@@ -46,9 +46,7 @@ MAGIC_HEADER = b'<roblox!\x89\xff\x0d\x0a\x1a\x0a'
 FILE_VERSION = 0  # same version the deserializer reads
 
 
-# ---------------------------------------------------------------------------
 # Public entry point
-# ---------------------------------------------------------------------------
 
 
 def write_rbxm(doc: RbxDocument) -> bytes:
@@ -57,9 +55,7 @@ def write_rbxm(doc: RbxDocument) -> bytes:
     return s.serialize()
 
 
-# ---------------------------------------------------------------------------
 # Serializer
-# ---------------------------------------------------------------------------
 
 
 class RbxmSerializer:
@@ -78,9 +74,7 @@ class RbxmSerializer:
         self._assign_types()
         self._collect_shared_strings()
 
-    # ------------------------------------------------------------------
     # Pre-pass: assign type indices and walk instance tree
-    # ------------------------------------------------------------------
 
     def _walk(self) -> list[RbxInstance]:
         """Breadth-first walk over all instances."""
@@ -112,9 +106,7 @@ class RbxmSerializer:
                     self._shared_string_index[prop.value] = len(self._shared_strings)
                     self._shared_strings.append(prop.value)
 
-    # ------------------------------------------------------------------
     # Top-level serialize
-    # ------------------------------------------------------------------
 
     def serialize(self) -> bytes:
         type_count = len(self._type_index)
@@ -155,9 +147,7 @@ class RbxmSerializer:
         )
         return header + bytes(chunks)
 
-    # ------------------------------------------------------------------
     # Chunk framing
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _build_chunk(name: str, data: bytes) -> bytes:
@@ -178,9 +168,7 @@ class RbxmSerializer:
         # Uncompressed: compressed_size field = 0
         return name_b + struct.pack('<III', 0, uncompressed_size, 0) + data
 
-    # ------------------------------------------------------------------
     # META chunk
-    # ------------------------------------------------------------------
 
     def _build_meta(self) -> bytes:
         buf = bytearray()
@@ -191,9 +179,7 @@ class RbxmSerializer:
             buf.extend(write_string(value))
         return bytes(buf)
 
-    # ------------------------------------------------------------------
     # SSTR chunk
-    # ------------------------------------------------------------------
 
     def _build_sstr(self) -> bytes:
         buf = bytearray()
@@ -205,9 +191,7 @@ class RbxmSerializer:
             buf.extend(write_binary_string(blob))
         return bytes(buf)
 
-    # ------------------------------------------------------------------
     # INST chunk
-    # ------------------------------------------------------------------
 
     def _build_inst(self, type_idx: int, class_name: str) -> bytes:
         instances = self._type_instances[type_idx]
@@ -227,9 +211,7 @@ class RbxmSerializer:
 
         return bytes(buf)
 
-    # ------------------------------------------------------------------
     # PROP chunk
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _collect_prop_names(instances: list[RbxInstance]) -> list[str]:
@@ -460,9 +442,7 @@ class RbxmSerializer:
                 encoded = None
         return encoded
 
-    # ------------------------------------------------------------------
     # Property value encoders
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _enc_strings(values: list[Any]) -> bytes:
@@ -683,9 +663,7 @@ class RbxmSerializer:
         buf.extend(raw.value_data)
         return bytes(buf)
 
-    # ------------------------------------------------------------------
     # PRNT chunk
-    # ------------------------------------------------------------------
 
     def _build_prnt(self) -> bytes:
         """Build the PRNT chunk.

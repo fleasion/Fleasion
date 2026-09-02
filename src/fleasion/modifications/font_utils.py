@@ -98,7 +98,7 @@ def apply_custom_font(
     tracked so reset can remove only files Fleasion created.
     """
     for roblox_dir in roblox_dirs:
-        # --- Copy font file -----------------------------------------------
+        # Copy font file
         dst_font = roblox_dir / CUSTOM_FONT_REL
         dst_font.parent.mkdir(parents=True, exist_ok=True)
 
@@ -117,7 +117,7 @@ def apply_custom_font(
         _clear_read_only(dst_font)
         dst_font.write_bytes(font_data)
 
-        # --- Rewrite family manifests -------------------------------------
+        # Rewrite family manifests
         families_dir = roblox_dir / FAMILIES_REL
         marker_path = install_stash / GENERATED_FAMILIES_MARKER_REL
         generated_names = _load_generated_family_names(marker_path)

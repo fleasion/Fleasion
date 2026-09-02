@@ -4579,7 +4579,7 @@ class ModificationsTab(QWidget):
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
 
-        # ── Fast Flags ───────────────────────────────────────────
+        # Fast Flags
         self._fflag_toggle = QCheckBox(
             tr('ui.gui.modifications_tab.enable_allowlisted_fastflag_presets')
         )
@@ -4603,7 +4603,7 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(fflag_section)
 
-        # ── Default Skyboxes ─────────────────────────────────────
+        # Default Skyboxes
         sky_section = CollapsibleSection(
             tr('modifications.section.default_skyboxes'), expanded=True
         )
@@ -4641,7 +4641,7 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(sky_section)
 
-        # ── Textures ─────────────────────────────────────────────
+        # Textures
         tex_section = CollapsibleSection(tr('modifications.section.textures'), expanded=True)
         for name, path, filt in TEXTURES:
             row = ModRowWidget(self._manager, _builtin_label(name), path, file_filter=filt)
@@ -4649,7 +4649,7 @@ class ModificationsTab(QWidget):
             self._row_widgets[path] = row
         self._container_layout.addWidget(tex_section)
 
-        # ── R6 Default Avatar Meshes ─────────────────────────────
+        # R6 Default Avatar Meshes
         self._mesh_section = CollapsibleSection(
             tr('modifications.section.r6_avatar_meshes'), expanded=True
         )
@@ -4680,7 +4680,7 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(self._mesh_section)
 
-        # ── Sounds ───────────────────────────────────────────────
+        # Sounds
         sounds_section = CollapsibleSection(tr('modifications.section.sounds'), expanded=True)
         for name, path, bundled in SOUNDS:
             row = ModRowWidget(
@@ -4695,7 +4695,7 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(sounds_section)
 
-        # ── Custom Font ──────────────────────────────────────────
+        # Custom Font
         font_section = CollapsibleSection(tr('modifications.section.custom_font'), expanded=True)
         font_row = ModRowWidget(
             self._manager,
@@ -4734,7 +4734,7 @@ class ModificationsTab(QWidget):
                 )
                 self._row_widgets[target] = row
 
-        # ── Custom Modifications ─────────────────────────────────
+        # Custom Modifications
         self._custom_section = CollapsibleSection(
             tr('modifications.section.custom_modifications'), expanded=True
         )

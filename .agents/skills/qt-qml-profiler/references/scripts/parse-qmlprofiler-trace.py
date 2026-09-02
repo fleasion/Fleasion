@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 
-# ----- Phase 1: parse XML into typed event lists --------------------------
+# Phase 1: parse XML into typed event lists
 
 def _parse_event_definitions(event_data):
     """Build the eventIndex -> definition lookup from <eventData>."""
@@ -89,7 +89,7 @@ def _extract_events(root, event_defs):
     return ranges, memory_events, pixmap_events, animation_events
 
 
-# ----- Phase 2: summarize event lists into category summaries --------------
+# Phase 2: summarize event lists into category summaries
 
 def _aggregate_hotspots(ranges):
     """Aggregate range events by (filename, line, type), sorted desc."""
@@ -240,7 +240,7 @@ def _summarize_pixmap_cache(pixmap_events):
     }
 
 
-# ----- Phase 3: format / evaluate ------------------------------------------
+# Phase 3: format / evaluate
 
 def _format_hotspots(hotspots, top_n=30):
     """Pick top-N hotspots and round timings for output."""
@@ -267,7 +267,7 @@ def _attach_per_frame_metrics(type_summary, formatted_hotspots, frame_count):
         h["ms_per_frame"] = round(h["total_ms"] / frame_count, 3)
 
 
-# ----- Master --------------------------------------------------------------
+# Master
 
 def parse_trace(path):
     try:
