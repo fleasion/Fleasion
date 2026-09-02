@@ -593,7 +593,9 @@ class JobIdDialog(QDialog):
             return
         self._loading = True
         self._status_label.setText(tr('ui.gui.subplace_joiner_tab.fetching_servers'))
-        threading.Thread(target=self._worker, daemon=True).start()
+        sort = self._current_sort()
+        cursor = self._cursor
+        threading.Thread(target=self._worker, args=(sort, cursor), daemon=True).start()
 
     def _wait_for_rate_limit(self, wait_until: float) -> None:
         remaining = wait_until - time.time()
@@ -632,15 +634,14 @@ class JobIdDialog(QDialog):
             self._results_ready.emit(servers, next_cursor)
             return
 
-    def _worker(self) -> None:
-        sort = self._current_sort()
+    def _worker(self, sort: str, cursor: str | None) -> None:
         sort_order = 'Asc' if sort == 'playing_asc' else 'Desc'
         url = (
             f'https://games.roblox.com/v1/games/{self._place_id}/servers/Public'
             f'?limit={self._PAGE_LIMIT}&sortOrder={sort_order}&excludeFullGames=false'
         )
-        if self._cursor:
-            url += f'&cursor={self._cursor}'
+        if cursor:
+            url += f'&cursor={cursor}'
         _run_contained(
             lambda: self._fetch_server_page(url),
             lambda exc: self._error_ready.emit(str(exc)),
@@ -775,7 +776,7 @@ class SubplaceJoinerTab(QWidget):
         self.recent_ids: list[str] = []
         self.favorites: list[str] = []
 
-        self._resize_timer = QTimer()
+        self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._on_resize_settled)
         self._last_cols = 0

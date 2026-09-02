@@ -162,12 +162,12 @@ class LogsWindow(QDialog):
         self.text_edit.setExtraSelections(extra_selections)
 
     def _start_updates(self) -> None:
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_logs)
         self.timer.start(250)
         self._update_logs()
 
-        self.time_timer = QTimer()
+        self.time_timer = QTimer(self)
         self.time_timer.timeout.connect(self._refresh_time_label)
         self.time_timer.start(1000)
 

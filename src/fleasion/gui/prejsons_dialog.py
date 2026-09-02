@@ -484,9 +484,9 @@ def _fetch_card_thumb_bytes(place_id: int) -> bytes | None:
 
 
 class _CardThumbWorker(QThread):
-    """Fetches the thumbnail for one card via Roblox thumbnails API."""
+    """Fetch thumbnail bytes without creating GUI resources off-thread."""
 
-    thumb_ready = Signal(QPixmap)
+    thumb_ready = Signal(bytes)
 
     def __init__(self, place_id: int) -> None:
         super().__init__()
@@ -504,9 +504,7 @@ class _CardThumbWorker(QThread):
             img_bytes = _get_default_thumb_bytes()
 
         if img_bytes:
-            pix = QPixmap()
-            if pix.loadFromData(img_bytes):
-                self.thumb_ready.emit(pix)
+            self.thumb_ready.emit(img_bytes)
 
 
 class _JsonFetchWorker(QThread):
@@ -652,6 +650,12 @@ class GameCard(QFrame):
         if credit:
             self.credit_label.setText(tr('ui.gui.prejsons_dialog.credit_value', value0=credit))
 
+    def set_thumbnail_bytes(self, data: bytes) -> None:
+        """Create the thumbnail pixmap on this card's GUI thread."""
+        pix = QPixmap()
+        if pix.loadFromData(data):
+            self.set_thumbnail(pix)
+
     def set_thumbnail(self, pix: QPixmap) -> None:
         if not pix or pix.isNull():
             return
@@ -772,17 +776,20 @@ class PreJsonsDialog(QDialog):
         self._thumbs_pending = 0
         self._thumbs_finished = 0
 
-        self._search_timer = QTimer()
+        self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._apply_filter)
 
-        self._resize_timer = QTimer()
+        self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._on_resize_settled)
         self._last_cols = 0
 
         self._setup_ui()
         self._set_icon()
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown_workers)
         self._start_load()
 
     def _set_icon(self) -> None:
@@ -834,6 +841,17 @@ class PreJsonsDialog(QDialog):
 
     # Load
 
+    def _track_worker(self, worker: QThread) -> None:
+        """Retain only active QThreads and delete wrappers on the GUI thread."""
+        self._workers.append(worker)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._on_worker_finished)
+
+    def _on_worker_finished(self) -> None:
+        worker = self.sender()
+        if isinstance(worker, QThread) and worker in self._workers:
+            self._workers.remove(worker)
+
     def _start_load(self) -> None:
         self._load_generation += 1
         self._thumbs_pending = 0
@@ -843,7 +861,7 @@ class PreJsonsDialog(QDialog):
         worker = _ClogWorker()
         worker.done.connect(self._on_clog_done)
         worker.failed.connect(self._on_clog_failed)
-        self._workers.append(worker)
+        self._track_worker(worker)
         worker.start()
 
     def _on_clog_done(self, games: list[GameEntry]) -> None:
@@ -924,7 +942,7 @@ class PreJsonsDialog(QDialog):
         else:
             meta_w = _CardMetaWorker(place_id, cr, up)
             meta_w.name_ready.connect(card.set_data)
-            self._workers.append(meta_w)
+            self._track_worker(meta_w)
             meta_w.start()
 
         if place_id in _thumb_bytes_cache:
@@ -935,9 +953,9 @@ class PreJsonsDialog(QDialog):
             self._thumbs_pending += 1
             generation = self._load_generation
             thumb_w = _CardThumbWorker(place_id)
-            thumb_w.thumb_ready.connect(card.set_thumbnail)
+            thumb_w.thumb_ready.connect(card.set_thumbnail_bytes)
             thumb_w.finished.connect(lambda g=generation: self._on_thumb_worker_finished(g))
-            self._workers.append(thumb_w)
+            self._track_worker(thumb_w)
             thumb_w.start()
 
     def _on_thumb_worker_finished(self, generation: int) -> None:
@@ -1377,7 +1395,7 @@ class PreJsonsDialog(QDialog):
         fetch_w = _JsonFetchWorker(url)
         fetch_w.done.connect(self._open_viewer)
         fetch_w.failed.connect(self._on_json_fetch_failed)
-        self._workers.append(fetch_w)
+        self._track_worker(fetch_w)
         fetch_w.start()
 
     def _on_json_fetch_failed(self, err: str) -> None:
@@ -1418,6 +1436,14 @@ class PreJsonsDialog(QDialog):
         viewer = _preserve_dialog(self.sender())
         if viewer is not None and viewer in self._viewers:
             self._viewers.remove(viewer)
+
+    def _shutdown_workers(self) -> None:
+        """Wait for active QThreads before application teardown drops their wrappers."""
+        self._search_timer.stop()
+        self._resize_timer.stop()
+        for worker in self._workers[:]:
+            worker.wait()
+        self._workers.clear()
 
     @override
     def closeEvent(self, event: QCloseEvent) -> None:
