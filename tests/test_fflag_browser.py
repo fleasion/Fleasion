@@ -593,3 +593,54 @@ def test_custom_fflag_toolbar_uses_compact_json_menu_and_custom_actions_button()
     assert 'Import JSON…' not in button_texts
     assert 'Export JSON…' not in button_texts
     assert app is not None
+
+
+def test_custom_actions_keybind_column_double_click_assigns_hotkey() -> None:
+    app = _qapp()
+    captured: list[str] = []
+    binding: dict[str, int | bool | str] = {
+        'scan_code': 0x10,
+        'extended': False,
+        'modifiers': 0,
+    }
+
+    def capture(name: str) -> tuple[bool, dict[str, int | bool | str] | None]:
+        captured.append(name)
+        return True, binding
+
+    dialog = modifications_tab.FastFlagActionsDialog(
+        {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}},
+        {},
+        capture,
+    )
+
+    dialog._table.cellDoubleClicked.emit(0, 2)  # pyright: ignore[reportPrivateUsage]
+    app.processEvents()
+
+    assert captured == ['90 FPS']
+    assert dialog.action_definitions['90 FPS'].get('keybind') == binding
+    button_texts = {button.text() for button in dialog.findChildren(QPushButton)}
+    assert 'Assign Hotkey…' not in button_texts
+    assert 'Clear Keybind' not in button_texts
+
+
+def test_custom_actions_non_keybind_double_click_edits_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    dialog = modifications_tab.FastFlagActionsDialog(
+        {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}},
+        {},
+        lambda _name: (False, None),
+    )
+    edited: list[None] = []
+
+    def edit_action(_row: int | None = None, _column: int | None = None) -> None:
+        edited.append(None)
+
+    monkeypatch.setattr(dialog, '_edit_action', edit_action)
+
+    dialog._table.cellDoubleClicked.emit(0, 1)  # pyright: ignore[reportPrivateUsage]
+    app.processEvents()
+
+    assert edited == [None]
