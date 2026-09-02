@@ -281,6 +281,7 @@ DEFAULT_SETTINGS = {
     'custom_fflag_folders': {},
     'custom_fflag_disabled_folders': [],
     'custom_fflag_folder_keybinds': {},
+    'custom_fflag_actions': {},
     'linux_fflag_keybind_setup_prompted': False,
     'macos_auth_source': '',
     'upstream_transport_mode': 'auto',
@@ -450,6 +451,28 @@ def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bo
                 'extended': extended,
                 'modifiers': modifiers,
             }
+    return normalized
+
+
+def _normalize_custom_fflag_actions(value: Any) -> dict[str, dict[str, Any]]:
+    """Normalize named FastFlag actions with optional hotkey bindings."""
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_action in value.items():
+        name = str(raw_name).strip()
+        if not name or not isinstance(raw_action, dict):
+            continue
+        flags = _normalize_custom_fflags(raw_action.get('flags', {}))
+        if not flags:
+            continue
+        action: dict[str, Any] = {'flags': flags}
+        binding = _normalize_custom_fflag_keybinds(
+            {name: raw_action.get('keybind')}
+        ).get(name)
+        if binding is not None:
+            action['keybind'] = binding
+        normalized[name] = action
     return normalized
 
 
@@ -1001,6 +1024,16 @@ class ConfigManager:
     @custom_fflag_folder_keybinds.setter
     def custom_fflag_folder_keybinds(self, value):
         self.settings['custom_fflag_folder_keybinds'] = _normalize_custom_fflag_keybinds(value)
+        self._save_settings()
+
+    @property
+    def custom_fflag_actions(self) -> dict[str, dict[str, Any]]:
+        """Named FastFlag value actions, each with an optional global hotkey."""
+        return _normalize_custom_fflag_actions(self.settings.get('custom_fflag_actions', {}))
+
+    @custom_fflag_actions.setter
+    def custom_fflag_actions(self, value):
+        self.settings['custom_fflag_actions'] = _normalize_custom_fflag_actions(value)
         self._save_settings()
 
     @property

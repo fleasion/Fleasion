@@ -333,3 +333,46 @@ def test_custom_fflag_editor_renders_and_toggles_folder_rows():
     assert config.custom_fflag_disabled_folders == ['Visual']
     assert config.custom_fflag_disabled == []
     assert app is not None
+
+
+def test_custom_fflag_toolbar_uses_compact_json_menu_and_custom_actions_button():
+    app = _qapp()
+    config = SimpleNamespace(
+        custom_fflags={},
+        custom_fflags_enabled=False,
+        custom_fflag_disabled=[],
+        custom_fflag_keybinds={},
+        custom_fflag_folders={},
+        custom_fflag_disabled_folders=[],
+        custom_fflag_folder_keybinds={},
+        custom_fflag_actions={},
+    )
+    editor = CustomFFlagEditor(
+        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    )
+
+    button_texts = {button.text() for button in editor.findChildren(modifications_tab.QPushButton)}
+
+    assert 'JSON' in button_texts
+    assert 'Custom Actions' in button_texts
+    assert 'Import JSON…' not in button_texts
+    assert 'Export JSON…' not in button_texts
+    assert app is not None
+
+
+def test_custom_actions_manager_preserves_multiple_actions_for_same_fastflag():
+    app = _qapp()
+    actions = {
+        '90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}},
+        '144 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '144'}},
+    }
+    dialog = modifications_tab.FastFlagActionsDialog(
+        actions,
+        {},
+        lambda _name: (False, None),
+        lambda _binding: 'Not assigned',
+    )
+
+    assert dialog.actions['90 FPS']['flags']['DFIntTaskSchedulerTargetFps'] == '90'
+    assert dialog.actions['144 FPS']['flags']['DFIntTaskSchedulerTargetFps'] == '144'
+    assert app is not None

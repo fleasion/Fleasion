@@ -338,13 +338,40 @@ class WindowsCustomFFlagHotkeyController(QObject):
         folder_bindings = getattr(self._config, 'custom_fflag_folder_keybinds', {}) or {}
         if isinstance(folder_bindings, Mapping):
             merged.update({f'folder:{name}': spec for name, spec in folder_bindings.items()})
+        actions = getattr(self._config, 'custom_fflag_actions', {}) or {}
+        if isinstance(actions, Mapping):
+            for name, action in actions.items():
+                if isinstance(action, Mapping) and isinstance(action.get('keybind'), Mapping):
+                    merged[f'action:{name}'] = action['keybind']
         self._service.set_bindings(merged)
 
     def toggle_target(self, target: str) -> None:
         if target.startswith('folder:'):
             self.toggle_folder(target.removeprefix('folder:'))
             return
+        if target.startswith('action:'):
+            self.apply_action(target.removeprefix('action:'))
+            return
         self.toggle_flag(target)
+
+    def apply_action(self, name: str) -> None:
+        if self._config is None or not getattr(self._config, 'custom_fflags_enabled', False):
+            return
+        actions = getattr(self._config, 'custom_fflag_actions', {}) or {}
+        if not isinstance(actions, Mapping):
+            return
+        action = actions.get(name)
+        if not isinstance(action, Mapping):
+            return
+        action_flags = action.get('flags')
+        if not isinstance(action_flags, Mapping) or not action_flags:
+            return
+        current_flags = getattr(self._config, 'custom_fflags', {}) or {}
+        updated = dict(current_flags) if isinstance(current_flags, Mapping) else {}
+        updated.update({str(flag): str(value) for flag, value in action_flags.items()})
+        self._config.custom_fflags = updated
+        log_buffer.log('CustomFFlags', f'Windows keybind applied action {name}')
+        self.toggled.emit(f'action:{name}')
 
     def toggle_flag(self, name: str) -> None:
         if (
