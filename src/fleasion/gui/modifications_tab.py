@@ -678,6 +678,13 @@ class CollapsibleSection(QWidget):
     def _finish_collapse(self):
         self._content_layout.setEnabled(True)
         self._content_layout.activate()
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None:
+            parent_layout = parent.layout()
+            if parent_layout is not None:
+                parent_layout.invalidate()
+                parent_layout.activate()
 
 
 # NoWheelSpinBox — QSpinBox that ignores mouse wheel events
