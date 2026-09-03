@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 import struct
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any
+
+import lz4.block as lz4_block  # pyright: ignore[reportMissingTypeStubs]
 
 from .binary_writer import (
     encode_ids,
@@ -31,16 +33,6 @@ from .binary_writer import (
     write_u32,
 )
 from .types import PropertyFormat, RbxDocument, RbxInstance, RbxRawPropertyChunk
-
-
-class _Lz4Block(Protocol):
-    def compress(self, data: bytes, *, store_size: bool) -> bytes: ...
-
-
-if TYPE_CHECKING:
-    lz4_block: _Lz4Block
-else:
-    import lz4.block as lz4_block
 
 MAGIC_HEADER = b'<roblox!\x89\xff\x0d\x0a\x1a\x0a'
 FILE_VERSION = 0  # same version the deserializer reads
@@ -162,7 +154,11 @@ class RbxmSerializer:
         if uncompressed_size == 0:
             return name_b + struct.pack('<III', 0, 0, 0)
 
-        compressed = lz4_block.compress(data, store_size=False)
+        compressed = bytes(
+            lz4_block.compress(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+                data, store_size=False
+            )
+        )
         if len(compressed) < uncompressed_size:
             return name_b + struct.pack('<III', len(compressed), uncompressed_size, 0) + compressed
         # Uncompressed: compressed_size field = 0

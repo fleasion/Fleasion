@@ -7,19 +7,9 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TypedDict
 
-
-class _Lz4Block(Protocol):
-    LZ4BlockError: type[Exception]
-
-    def decompress(self, data: bytes, *, uncompressed_size: int = 0) -> bytes: ...
-
-
-if TYPE_CHECKING:
-    lz4_block: _Lz4Block
-else:
-    import lz4.block as lz4_block
+import lz4.block as lz4_block  # pyright: ignore[reportMissingTypeStubs]
 
 
 class CFrameValue(TypedDict):
@@ -28,19 +18,6 @@ class CFrameValue(TypedDict):
 
 
 type PropertyValue = str | bool | int | float | CFrameValue | None
-
-
-if TYPE_CHECKING:
-
-    def _property_values(
-        value: list[int] | list[float] | list[CFrameValue],
-    ) -> list[PropertyValue]: ...
-else:
-
-    def _property_values(
-        value: list[int] | list[float] | list[CFrameValue],
-    ) -> list[PropertyValue]:
-        return value
 
 
 # Magic header for RBXM files
@@ -131,12 +108,16 @@ def decompress_chunk(data: bytes, compressed_size: int, uncompressed_size: int) 
         return data[:uncompressed_size]
 
     try:
-        return lz4_block.decompress(data[:compressed_size], uncompressed_size=uncompressed_size)
-    except (ValueError, lz4_block.LZ4BlockError):
+        return lz4_block.decompress(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            data[:compressed_size], uncompressed_size=uncompressed_size
+        )
+    except ValueError, lz4_block.LZ4BlockError:  # pyright: ignore[reportUnknownMemberType]
         # Try without size hint
         try:
-            return lz4_block.decompress(data[:compressed_size])
-        except (ValueError, lz4_block.LZ4BlockError):
+            return lz4_block.decompress(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+                data[:compressed_size]
+            )
+        except ValueError, lz4_block.LZ4BlockError:  # pyright: ignore[reportUnknownMemberType]
             # Return raw data if decompression fails
             return data[:compressed_size]
 
@@ -340,10 +321,10 @@ def _parse_prop_values(data: bytes, type_id: int, count: int) -> list[PropertyVa
                 values.append(False)
 
     elif type_id == 0x03:  # Int32
-        values = _property_values(decode_interleaved_i32(data, count))
+        values: list[PropertyValue] = [*decode_interleaved_i32(data, count)]
 
     elif type_id == 0x04:  # Float32
-        values = _property_values(decode_interleaved_f32(data, count))
+        values = [*decode_interleaved_f32(data, count)]
 
     elif type_id == 0x05:  # Float64
         for i in range(count):
@@ -354,7 +335,7 @@ def _parse_prop_values(data: bytes, type_id: int, count: int) -> list[PropertyVa
                 values.append(0.0)
 
     elif type_id == 0x10:  # CFrame
-        values = _property_values(_parse_cframes(data, count))
+        values = [*_parse_cframes(data, count)]
 
     else:
         # Unknown type, return empty values

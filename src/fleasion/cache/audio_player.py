@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, override
 
 import numpy as np
+import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
 from numpy.typing import NDArray
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -26,10 +27,19 @@ from fleasion.localization import tr
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QCloseEvent
+
 from fleasion.utils import log_buffer
 
 type AudioArray = NDArray[np.float32]
 type AudioCallback = Callable[[AudioArray, int, object, object], None]
+
+
+class _AudioConfig(Protocol):
+    @property
+    def audio_volume(self) -> int: ...
+
+    @audio_volume.setter
+    def audio_volume(self, value: int) -> None: ...
 
 
 class _OutputStreamLike(Protocol):
@@ -63,45 +73,10 @@ class _SoundDeviceModule(Protocol):
     def get_portaudio_version(self) -> object: ...
 
 
-class _SoundFileModule(Protocol):
-    LibsndfileError: type[Exception]
+def _import_sounddevice_runtime() -> _SoundDeviceModule:
+    import sounddevice  # pyright: ignore[reportMissingTypeStubs]  # ruff: ignore[import-outside-top-level]
 
-    def read(self, path: str, *, dtype: str) -> tuple[AudioArray, int]: ...
-
-
-if TYPE_CHECKING:
-    from PySide6.QtGui import QCloseEvent
-
-    sf: _SoundFileModule
-
-    def _import_sounddevice_runtime() -> _SoundDeviceModule: ...
-
-    def _audio_data(value: AudioArray | None) -> AudioArray: ...
-
-    def _sample_rate(value: int | None) -> int: ...
-
-    def _config_audio_volume(config: object) -> int: ...
-
-    def _set_config_audio_volume(config: object, value: int) -> None: ...
-else:
-    import importlib
-
-    sf = importlib.import_module('soundfile')
-
-    def _import_sounddevice_runtime() -> _SoundDeviceModule:
-        return importlib.import_module('sounddevice')
-
-    def _audio_data(value: AudioArray | None) -> AudioArray:
-        return value
-
-    def _sample_rate(value: int | None) -> int:
-        return value
-
-    def _config_audio_volume(config: object) -> int:
-        return config.audio_volume
-
-    def _set_config_audio_volume(config: object, value: int) -> None:
-        config.audio_volume = value
+    return sounddevice  # pyright: ignore[reportReturnType]
 
 
 _LINUX_LIBRARY_SEARCH_DIRS = (
@@ -227,7 +202,7 @@ class AudioPlayerWidget(QWidget):
         self,
         audio_file_path: str,
         parent: QWidget | None = None,
-        config_manager: object | None = None,
+        config_manager: _AudioConfig | None = None,
     ) -> None:
         """
         Initialize audio player.
@@ -256,7 +231,7 @@ class AudioPlayerWidget(QWidget):
         self.duration = 0.0
 
         # Volume
-        initial_slider = _config_audio_volume(config_manager) if config_manager else 70
+        initial_slider = config_manager.audio_volume if config_manager else 70
 
         if initial_slider <= 0:
             self.volume = 0.0
@@ -281,19 +256,25 @@ class AudioPlayerWidget(QWidget):
         self.timer.start(50)  # 20 FPS
 
     def _read_audio_data(self) -> None:
-        self.audio_data, self.sample_rate = sf.read(self.audio_file_path, dtype='float32')
-        if len(self.audio_data.shape) == 1:
-            self.audio_data = np.column_stack((self.audio_data, self.audio_data))
-        elif self.audio_data.shape[1] == 1:
-            self.audio_data = np.repeat(self.audio_data, 2, axis=1)
-        elif self.audio_data.shape[1] > 2:
-            mono = self.audio_data.mean(axis=1)
-            self.audio_data = np.column_stack((mono, mono))
+        source_audio, sample_rate = sf.read(self.audio_file_path, dtype='float32')
+        audio_data = np.asarray(source_audio, dtype=np.float32)
+        if len(audio_data.shape) == 1:
+            audio_data = np.column_stack((audio_data, audio_data))
+        elif audio_data.shape[1] == 1:
+            audio_data = np.repeat(audio_data, 2, axis=1)
+        elif audio_data.shape[1] > 2:
+            mono = audio_data.mean(axis=1)
+            audio_data = np.column_stack((mono, mono))
 
-        self.audio_data = np.ascontiguousarray(
-            np.clip(self.audio_data, -1.0, 1.0), dtype=np.float32
-        )
-        self.duration = len(_audio_data(self.audio_data)) / _sample_rate(self.sample_rate)
+        self.audio_data = np.ascontiguousarray(np.clip(audio_data, -1.0, 1.0), dtype=np.float32)
+        self.sample_rate = sample_rate
+        self.duration = len(self.audio_data) / sample_rate
+
+    def _loaded_audio(self) -> tuple[AudioArray, int]:
+        if self.audio_data is None or self.sample_rate is None:
+            msg = 'Audio data has not been loaded'
+            raise RuntimeError(msg)
+        return self.audio_data, self.sample_rate
 
     def _load_audio(self) -> None:
         """Load audio file and get metadata."""
@@ -324,7 +305,7 @@ class AudioPlayerWidget(QWidget):
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         # Set initial slider value from config if available, otherwise default to 70
-        initial_val = _config_audio_volume(self.config_manager) if self.config_manager else 70
+        initial_val = self.config_manager.audio_volume if self.config_manager else 70
         self.volume_slider.setValue(initial_val)
         self.volume_slider.valueChanged.connect(self._set_volume)
         self.volume_slider.setFixedWidth(175)
@@ -385,7 +366,7 @@ class AudioPlayerWidget(QWidget):
 
     def _play(self) -> None:
         """Start playback."""
-        if self.audio_data is None:
+        if self.audio_data is None or self.sample_rate is None:
             return
 
         # Reset if at end
@@ -443,7 +424,7 @@ class AudioPlayerWidget(QWidget):
             log_buffer.log('Audio', f'Audio callback status: {status}')
         with self.position_lock:
             start_pos = self.playback_position
-            audio_data = _audio_data(self.audio_data)
+            audio_data, _sample_rate = self._loaded_audio()
             end_pos = min(start_pos + frames, len(audio_data))
             chunk_size = end_pos - start_pos
             if chunk_size <= 0 or stop_event.is_set():
@@ -464,8 +445,9 @@ class AudioPlayerWidget(QWidget):
         ) -> None:
             self._write_audio_callback(stop_event, outdata, frames, status)
 
+        _audio_data, sample_rate = self._loaded_audio()
         return sd.OutputStream(
-            samplerate=_sample_rate(self.sample_rate),
+            samplerate=sample_rate,
             channels=2,
             dtype='float32',
             callback=callback,
@@ -476,7 +458,8 @@ class AudioPlayerWidget(QWidget):
         while not stop_event.is_set():
             time.sleep(0.01)
             with self.position_lock:
-                if self.playback_position >= len(_audio_data(self.audio_data)):
+                audio_data, _sample_rate = self._loaded_audio()
+                if self.playback_position >= len(audio_data):
                     self.should_stop = True
                     stop_event.set()
 
@@ -547,7 +530,8 @@ class AudioPlayerWidget(QWidget):
         new_time = max(0, min(new_time, self.duration))
 
         with self.position_lock:
-            self.playback_position = int(new_time * _sample_rate(self.sample_rate))
+            _audio_data, sample_rate = self._loaded_audio()
+            self.playback_position = int(new_time * sample_rate)
 
         self.is_scrubbing = False
 
@@ -560,7 +544,7 @@ class AudioPlayerWidget(QWidget):
             self.volume = (pow(10, value / 100.0) - 1.0) / 9.0
 
         if self.config_manager:
-            _set_config_audio_volume(self.config_manager, value)
+            self.config_manager.audio_volume = value
 
     def _update_ui(self) -> None:
         """Update progress slider and time label."""

@@ -20,6 +20,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast, overload
 
@@ -33,11 +34,15 @@ type JsonObject = dict[str, JsonValue]
 
 
 class _PasswdEntry(Protocol):
-    pw_gid: int
-    pw_dir: str
+    @property
+    def pw_gid(self) -> int: ...
+
+    @property
+    def pw_dir(self) -> str: ...
 
 
-class _RuntimeArgs(Protocol):
+@dataclass(slots=True)
+class _RuntimeArgs:
     owner_uid: int
     owner_gid: int
     backend_host: str
@@ -56,27 +61,44 @@ class _RuntimeArgs(Protocol):
     shutdown_requested: Callable[[], bool]
 
 
-if TYPE_CHECKING:
+class _ParsedArgs(argparse.Namespace):
+    install_system_ca: bool
+    install_privileged_helper: bool
+    cleanup_hosts: bool
+    source_helper: str | None
+    source_helper_needs_dispatch_flag: bool
+    enable_promptless: bool
+    require_system_ca: bool
+    ca_cert: str | None
+    backend_host: str
+    backend_port: int | None
+    listen_host: str
+    listen_port: int
+    hosts: str | None
+    stop_file: str | None
+    ready_file: str | None
+    hosts_file: str | None
+    config_dir: str | None
+    owner_uid: int | None
+    owner_gid: int | None
+    parent_pid: int
+    parent_start_time: str | None
 
-    def _string_list(value: object) -> list[str]: ...
 
-    def _pwd_entry(uid: int) -> _PasswdEntry: ...
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        item
+        for item in value  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+        if isinstance(item, str)
+    ]
 
-    def _runtime_args(args: argparse.Namespace) -> _RuntimeArgs: ...
-else:
 
-    def _string_list(value: object) -> list[str]:
-        if not isinstance(value, list):
-            return []
-        return [item for item in value if isinstance(item, str)]
-
-    def _pwd_entry(uid: int) -> _PasswdEntry:
-        if pwd is None:
-            raise KeyError(uid)
-        return pwd.getpwuid(uid)
-
-    def _runtime_args(args: argparse.Namespace) -> _RuntimeArgs:
-        return args
+def _pwd_entry(uid: int) -> _PasswdEntry:
+    if pwd is None:
+        raise KeyError(uid)
+    return pwd.getpwuid(uid)
 
 
 HOSTS_FILE = Path('/etc/hosts')
@@ -1291,11 +1313,10 @@ async def _serve(args: _RuntimeArgs) -> int:
     hosts_file_mtime_ns: int | None = None
 
     try:
-        shutdown_requested = getattr(args, 'shutdown_requested', lambda: False)
         while (
-            not shutdown_requested()
+            not args.shutdown_requested()
             and not _runtime_stop_requested(stop_file)
-            and _parent_alive(args.parent_pid, getattr(args, 'parent_start_time', None))
+            and _parent_alive(args.parent_pid, args.parent_start_time)
         ):
             if hosts_file is not None:
                 hosts_file_mtime_ns, current_hosts, read_only_hosts_mode = _poll_live_hosts_update(
@@ -1344,8 +1365,7 @@ def main() -> None:
     parser.add_argument('--owner-gid', type=int)
     parser.add_argument('--parent-pid', type=int, default=0)
     parser.add_argument('--parent-start-time')
-    args = parser.parse_args()
-    runtime_args = _runtime_args(args)
+    args = parser.parse_args(namespace=_ParsedArgs())
 
     if hasattr(os, 'geteuid') and os.geteuid() != 0:
         msg = 'Fleasion Linux proxy helper must run as root'
@@ -1382,18 +1402,36 @@ def main() -> None:
         print(json.dumps(details), flush=True)
         raise SystemExit(0 if details.get('ok') else 1)
 
-    required = (
-        args.backend_port,
-        args.hosts,
-        args.stop_file,
-        args.ready_file,
-        args.config_dir,
-        args.owner_uid,
-        args.owner_gid,
-    )
-    if any(value is None for value in required):
+    if (
+        args.backend_port is None  # ruff: ignore[too-many-boolean-expressions]
+        or args.hosts is None
+        or args.stop_file is None
+        or args.ready_file is None
+        or args.config_dir is None
+        or args.owner_uid is None
+        or args.owner_gid is None
+    ):
         msg = 'missing required proxy helper arguments'
         raise SystemExit(msg)
+
+    runtime_args = _RuntimeArgs(
+        owner_uid=args.owner_uid,
+        owner_gid=args.owner_gid,
+        backend_host=args.backend_host,
+        backend_port=args.backend_port,
+        listen_host=args.listen_host,
+        listen_port=args.listen_port,
+        config_dir=args.config_dir,
+        ready_file=args.ready_file,
+        stop_file=args.stop_file,
+        hosts_file=args.hosts_file,
+        ca_cert=args.ca_cert,
+        hosts=args.hosts,
+        require_system_ca=args.require_system_ca,
+        parent_pid=args.parent_pid,
+        parent_start_time=args.parent_start_time,
+        shutdown_requested=lambda: False,
+    )
 
     try:
         owner_uid, owner_gid = _validate_runtime_args(runtime_args)

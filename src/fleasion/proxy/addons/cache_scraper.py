@@ -215,11 +215,12 @@ if TYPE_CHECKING:
         CacheManager,
     )
 
-    def _int_value(value: object) -> int: ...
-else:
 
-    def _int_value(value: object) -> int:
-        return int(value)
+def _int_value(value: object) -> int:
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        msg = 'Scraped identifier must be numeric'
+        raise TypeError(msg)
+    return int(value)
 
 
 def _b64decode_padded(value: object) -> bytes:

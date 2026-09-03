@@ -6,6 +6,7 @@ from typing import Protocol, cast
 import pytest
 from PySide6.QtGui import QColor, QPalette
 
+from fleasion.gui import theme as theme_module
 from fleasion.gui.theme import ThemeManager
 
 
@@ -327,7 +328,8 @@ def test_windows_system_theme_reads_apps_use_light_theme_registry(
         OpenKey=open_key,
         QueryValueEx=query_value,
     )
-    monkeypatch.setitem(sys.modules, 'winreg', fake_winreg)
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(theme_module, 'winreg', fake_winreg, raising=False)
 
     assert _windows_system_theme(_FakeApp()) == 'Dark'
     values['AppsUseLightTheme'] = 1

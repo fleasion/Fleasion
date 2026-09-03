@@ -211,6 +211,7 @@ class _CacheScraper(Protocol):
 
 class _ConfigManager(Protocol):
     settings: dict[str, object]
+    audio_volume: int
     show_names: bool
     show_creator_id: bool
     scraper_blacklist: list[str]

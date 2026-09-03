@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import stat
@@ -10,7 +9,10 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import Protocol, TypeIs
+
+if sys.platform == 'darwin':
+    from fleasion.utils.platform_macos import find_roblox_resource_dirs
 
 from fleasion.utils import log_buffer
 from fleasion.utils.json_types import (
@@ -22,29 +24,19 @@ from fleasion.utils.json_types import (
 )
 from fleasion.utils.paths import CONFIG_FILE, LOCAL_APPDATA
 
-if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
 
-    def _config_enabled(config: object) -> bool: ...
+class _CustomFFlagConfig(Protocol):
+    @property
+    def custom_fflags_enabled(self) -> bool: ...
 
-    def _config_flags(config: object) -> object: ...
+    @property
+    def custom_fflags(self) -> object: ...
 
-    def _config_disabled(config: object) -> object: ...
 
-    def _disabled_values(value: object) -> Iterable[object]: ...
-else:
-
-    def _config_enabled(config: object) -> bool:
-        return bool(getattr(config, 'custom_fflags_enabled', False))
-
-    def _config_flags(config: object) -> object:
-        return getattr(config, 'custom_fflags', {})
-
-    def _config_disabled(config: object) -> object:
-        return getattr(config, 'custom_fflag_disabled', [])
-
-    def _disabled_values(value: object) -> Iterable[object]:
-        return value if isinstance(value, list | tuple | set) else ()
+def _is_custom_fflag_config(value: object) -> TypeIs[_CustomFFlagConfig]:
+    return isinstance(getattr(value, 'custom_fflags_enabled', None), bool) and isinstance(
+        getattr(value, 'custom_fflags', None), dict
+    )
 
 
 CLIENT_SETTINGS_APPLICATION_PATH = '/settings/application/'
@@ -56,16 +48,12 @@ WINDOWS_FLAG_CACHE_PATH = LOCAL_APPDATA / 'Temp' / 'Roblox' / 'cache' / 'flag_ca
 MACOS_CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
 CLIENT_SETTINGS_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 CLIENT_SETTINGS_STALE_SUCCESS_SECONDS = 15.0
-_MACOS_RESOURCE_FINDER_ATTR = 'find_roblox_resource_dirs'
 
 
 def _find_macos_resource_dirs() -> list[Path]:
-    module = importlib.import_module('fleasion.utils.platform_macos')
-    finder = cast(
-        'Callable[..., list[Path]]',
-        getattr(module, _MACOS_RESOURCE_FINDER_ATTR),
-    )
-    return finder(include_studio=False)
+    if sys.platform != 'darwin':
+        return []
+    return find_roblox_resource_dirs(include_studio=False)
 
 
 def normalize_flag_value(value: object) -> str:
@@ -109,7 +97,10 @@ class CustomFFlagModifier:
         reload_settings_from_disk: bool = False,
         macos_resource_dirs: list[Path] | None = None,
     ) -> None:
-        self.config_manager: object = config_manager
+        if not _is_custom_fflag_config(config_manager):
+            msg = 'Custom FastFlag config is missing its enabled state or flag mapping'
+            raise TypeError(msg)
+        self.config_manager = config_manager
         self._flag_cache_path = flag_cache_path
         self._macos_resource_dirs = (
             list(macos_resource_dirs) if macos_resource_dirs is not None else None
@@ -227,7 +218,7 @@ class CustomFFlagModifier:
         self._refresh_settings_from_disk()
         if self._disk_enabled is not None:
             return self._disk_enabled
-        return _config_enabled(self.config_manager)
+        return self.config_manager.custom_fflags_enabled
 
     @staticmethod
     def handles_path(path: str) -> bool:
@@ -250,15 +241,15 @@ class CustomFFlagModifier:
         """Return saved flags plus Fleasion's non-persisted refresh companion."""
         self._refresh_settings_from_disk()
         saved_flags = (
-            self._disk_flags if self._disk_flags is not None else _config_flags(self.config_manager)
+            self._disk_flags if self._disk_flags is not None else self.config_manager.custom_fflags
         )
         flags = normalize_custom_fflags(saved_flags)
         disabled = (
             self._disk_disabled
             if self._disk_disabled is not None
-            else _config_disabled(self.config_manager)
+            else getattr(self.config_manager, 'custom_fflag_disabled', [])
         )
-        disabled_names = {str(name).strip() for name in _disabled_values(disabled)}
+        disabled_names = {str(name).strip() for name in disabled}
         folders = (
             self._disk_folders
             if self._disk_folders is not None
@@ -270,10 +261,10 @@ class CustomFFlagModifier:
             else getattr(self.config_manager, 'custom_fflag_disabled_folders', [])
         )
         folder_mapping = as_json_object(folders) or {}
-        disabled_folder_names = {str(name).strip() for name in _disabled_values(disabled_folders)}
+        disabled_folder_names = {str(name).strip() for name in disabled_folders}
         for folder_name in disabled_folder_names:
-            members = folder_mapping.get(folder_name, [])
-            disabled_names.update(str(name).strip() for name in _disabled_values(members))
+            members = as_json_array(folder_mapping.get(folder_name, [])) or []
+            disabled_names.update(str(name).strip() for name in members)
         flags = {name: value for name, value in flags.items() if name not in disabled_names}
         # Roblox/Sober reads the reloader interval before applying the response
         # it has just fetched. Therefore, when this companion flag first
@@ -336,7 +327,7 @@ class CustomFFlagModifier:
         flags = self.runtime_flags() if enabled else {}
         self._refresh_settings_from_disk()
         saved_flags = (
-            self._disk_flags if self._disk_flags is not None else _config_flags(self.config_manager)
+            self._disk_flags if self._disk_flags is not None else self.config_manager.custom_fflags
         )
         saved_names = set(normalize_custom_fflags(saved_flags))
         stale_names = (
@@ -513,7 +504,7 @@ class CustomFFlagModifier:
             saved_flags = (
                 self._disk_flags
                 if self._disk_flags is not None
-                else getattr(self.config_manager, 'custom_fflags', {})
+                else self.config_manager.custom_fflags
             )
             saved_names = set(normalize_custom_fflags(saved_flags))
             saved_names.add(DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG)

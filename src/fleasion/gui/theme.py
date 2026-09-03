@@ -2,7 +2,10 @@
 
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
+
+if sys.platform == 'win32':
+    import winreg
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
@@ -18,24 +21,20 @@ class PanelThemeColors:
     container_background_css: str
 
 
-if TYPE_CHECKING:
-
-    def _windows_apps_use_light_theme() -> bool | None: ...
-else:
-
-    def _windows_apps_use_light_theme() -> bool | None:
-        try:
-            winreg = __import__('winreg')
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize',
-                0,
-                winreg.KEY_QUERY_VALUE,
-            ) as key:
-                use_light, _value_type = winreg.QueryValueEx(key, 'AppsUseLightTheme')
-            return bool(int(use_light))
-        except ImportError, OSError, TypeError, ValueError:
-            return None
+def _windows_apps_use_light_theme() -> bool | None:
+    if sys.platform != 'win32':
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize',
+            0,
+            winreg.KEY_QUERY_VALUE,
+        ) as key:
+            use_light, _value_type = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+        return bool(int(use_light))
+    except OSError, TypeError, ValueError:
+        return None
 
 
 class ThemeManager:

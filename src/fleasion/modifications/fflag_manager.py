@@ -6,7 +6,6 @@ and ``FastFlagsViewModel.cs``.
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import shutil
@@ -14,6 +13,12 @@ import stat
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+if TYPE_CHECKING or sys.platform.startswith('linux'):
+    from fleasion.utils import platform_linux
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from fleasion.utils import format_count, log_buffer
 from fleasion.utils.json_types import JsonObject, as_json_object
@@ -58,29 +63,16 @@ LOD_LEVELS = ('L0', 'L12', 'L23', 'L34')
 type FlagValue = str | bool | int
 
 
-if TYPE_CHECKING:
-    from collections.abc import Mapping
+def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str:
+    value = settings.get(key, default)
+    return value if isinstance(value, str) else default
 
-    def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str: ...
 
-    def _setting_int_source(settings: Mapping[str, object], key: str, default: int) -> object: ...
-
-    def _setting_value(settings: Mapping[str, object], key: str) -> object: ...
-
-    def _int_value(value: object) -> int: ...
-else:
-
-    def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str:
-        return settings.get(key, default)
-
-    def _setting_int_source(settings: Mapping[str, object], key: str, default: int) -> object:
-        return settings.get(key, default)
-
-    def _setting_value(settings: Mapping[str, object], key: str) -> object:
-        return settings.get(key)
-
-    def _int_value(value: object) -> int:
-        return int(value)
+def _int_value(value: object) -> int:
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        msg = 'FastFlag setting must be numeric'
+        raise TypeError(msg)
+    return int(value)
 
 
 def _clear_read_only(path: Path) -> None:
@@ -112,7 +104,6 @@ def _sober_config_path_for_resource_dir(roblox_dir: Path) -> Path | None:
     if not sys.platform.startswith('linux'):
         return None
     try:
-        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
         return (
             platform_linux.SOBER_CONFIG_FILE
             if platform_linux.is_sober_resource_dir(roblox_dir)
@@ -307,7 +298,7 @@ class FastFlagManager:
         # Mesh LOD (mirrors Fishstrap MeshQuality setter)
         # Slider: 0 = Default (no flag), 1 = Level 0, 2 = Level 1, 3 = Level 2, 4 = Level 3
         if settings.get('mesh_lod_enabled'):
-            level = _int_value(_setting_int_source(settings, 'mesh_lod', 4))
+            level = _int_value(settings.get('mesh_lod', 4))
             if level > 0:  # 0 = Default means no flag written
                 level = max(1, min(level, len(LOD_LEVELS)))  # 1-4 maps to Level 0-3
                 for i, lod_name in enumerate(LOD_LEVELS):
@@ -318,7 +309,7 @@ class FastFlagManager:
         # FRM Quality Override
         # Slider: 0 = Default (no flag), 1-21 = quality level
         if settings.get('frm_quality_enabled'):
-            val = _int_value(_setting_int_source(settings, 'frm_quality', 21))
+            val = _int_value(settings.get('frm_quality', 21))
             if val > 0:  # 0 = Default means no flag written
                 flags[PRESET_FLAGS['Rendering.FRMQualityOverride']] = str(val)
 
@@ -329,7 +320,7 @@ class FastFlagManager:
             flags[EXTRA_FLAGS['pause_voxelizer']] = 'True'
 
         for key in ('grass_max', 'grass_min', 'grass_motion'):
-            val = _setting_value(settings, key)
+            val = settings.get(key)
             if val not in {None, ''}:
                 flags[EXTRA_FLAGS[key]] = str(_int_value(val))
 
