@@ -1217,6 +1217,9 @@ class ReplacerConfigWindow(QDialog):
         for gate in self._env_proxy_gates:
             gate.set_proxy_enabled(enabled)
 
+    def refresh_settings_tab(self) -> None:
+        self._settings_tab.refresh_from_config()
+
     def apply_cache_viewer_display_setting(
         self,
         setting: Literal['show_names', 'show_creator_id'],
@@ -1226,14 +1229,13 @@ class ReplacerConfigWindow(QDialog):
         tab = getattr(self, '_cache_viewer_tab', None)
         if tab is None:
             return
-        callback_name = (
-            '_on_show_names_toggled' if setting == 'show_names' else '_on_show_creator_id_toggled'
-        )
-        callback = getattr(tab, callback_name, None)
-        if callable(callback):
-            callback(enabled)
+        if setting == 'show_names':
+            tab.set_show_names(enabled)
+        else:
+            tab.set_show_creator_id(enabled)
 
     def set_cache_scraper_enabled(self, *, enabled: bool) -> None:
+        self._settings_tab.set_cache_scraper_enabled(enabled)
         if hasattr(self, '_cache_viewer_tab'):
             self._cache_viewer_tab.set_cache_scraper_enabled(enabled)
 

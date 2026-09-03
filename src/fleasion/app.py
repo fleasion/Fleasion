@@ -52,7 +52,6 @@ from .localization import available_languages, set_language, tr, verbatim
 from .modifications import ModificationManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
-from .tray import SystemTray
 from .utils import (
     APP_DISCORD,
     APP_NAME,
@@ -81,6 +80,7 @@ if TYPE_CHECKING:
     from PySide6.QtGui import QCloseEvent, QFileOpenEvent, QScreen, QSessionManager, QShowEvent
 
     from .proxy.env_lifecycle import EnvProxyLifecycleController
+    from .tray import SystemTray
     from .utils.platform_macos import MacOSRobloxPlayerLaunch
 
 
@@ -4322,6 +4322,8 @@ def _install_gui_sigint_handler(app: QApplication) -> QTimer:
 
 def main() -> None:
     """Main application entry point."""
+    from .tray import SystemTray  # ruff: ignore[import-outside-top-level]
+
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
         '--no-dashboard',

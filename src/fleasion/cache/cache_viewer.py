@@ -3029,6 +3029,14 @@ class CacheViewerTab(QWidget):
             with QSignalBlocker(self.scraper_toggle):
                 self.scraper_toggle.setChecked(enabled)
 
+    def set_show_names(self, enabled: bool) -> None:
+        """Update whether resolved names are displayed in the asset table."""
+        self._on_show_names_toggled(enabled)
+
+    def set_show_creator_id(self, enabled: bool) -> None:
+        """Update whether creator IDs are displayed in the creator column."""
+        self._on_show_creator_id_toggled(enabled)
+
     def _on_search_text_changed(self) -> None:
         """Handle search text change - debounce to avoid too many searches."""
         self._search_debounce.stop()
