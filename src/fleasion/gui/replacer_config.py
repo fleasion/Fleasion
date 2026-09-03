@@ -92,7 +92,7 @@ if TYPE_CHECKING:
     from types import TracebackType
     from typing import TypeGuard
 
-    from fleasion.app import RobloxExitMonitor
+    from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.cache.cache_viewer import CacheViewerTab
     from fleasion.config.manager import ConfigManager
     from fleasion.modifications.manager import ModificationManager

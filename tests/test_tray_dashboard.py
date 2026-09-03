@@ -12,8 +12,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPalette
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from fleasion import app as app_module, tray as tray_module
-from fleasion.tray import SystemTray
+from fleasion.app import core as app_module
+from fleasion.app import tray as tray_module
+from fleasion.app.tray import SystemTray
 from fleasion.utils import platform_macos
 
 

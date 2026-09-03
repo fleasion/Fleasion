@@ -41,10 +41,10 @@ def _slice_build_env() -> str:
 
 def test_qt_diagnostics_remains_statically_imported_for_frozen_startup() -> None:
     root = Path(__file__).resolve().parents[1]
-    app_source = (root / 'src/fleasion/app.py').read_text(encoding='utf-8')
+    app_source = (root / 'src/fleasion/app/core.py').read_text(encoding='utf-8')
 
-    assert 'from .utils.qt_diagnostics import install_qt_message_logging' in app_source
-    assert "import_module('.utils.qt_diagnostics'" not in app_source
+    assert 'from fleasion.utils.qt_diagnostics import install_qt_message_logging' in app_source
+    assert "import_module('fleasion.utils.qt_diagnostics'" not in app_source
 
 
 def test_packaging_collects_all_fleasion_runtime_modules() -> None:
@@ -56,6 +56,13 @@ def test_packaging_collects_all_fleasion_runtime_modules() -> None:
     assert "source_root / 'scripts' in path.parents" in spec_source
     assert "source_root / 'linux_proxy_helper_daemon.py'" in spec_source
     assert "source_root / 'macos_proxy_helper_daemon.py'" in spec_source
+
+
+def test_packaging_uses_package_main_module_as_entrypoint() -> None:
+    spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
+    spec_source = spec_path.read_text(encoding='utf-8')
+
+    assert "Analysis(\n    ['src/fleasion/__main__.py']," in spec_source
 
 
 def test_packaging_uses_numpy_hook_without_collecting_development_modules() -> None:

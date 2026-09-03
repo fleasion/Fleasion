@@ -482,8 +482,7 @@ def test_linux_autostart_quotes_exec_tokens(
     )
 
     desktop_entry = autostart_path.read_text(encoding='utf-8')
-    assert 'Exec="/opt/Fleasion Python" "' in desktop_entry
-    assert 'launcher.py" --no-dashboard' in desktop_entry
+    assert 'Exec="/opt/Fleasion Python" -m fleasion --no-dashboard' in desktop_entry
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='Linux desktop-entry path semantics')

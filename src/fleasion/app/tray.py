@@ -27,22 +27,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .app import (
+from fleasion.app.core import (
     RestartHandoffUncertain,
     _is_admin as _app_is_admin,  # pyright: ignore[reportPrivateUsage]
     _relaunch_as_admin,  # pyright: ignore[reportPrivateUsage]
-    _show_run_on_boot_failure,  # pyright: ignore[reportPrivateUsage]
     restart_fleasion_normally,
+    show_run_on_boot_failure,
 )
-from .gui import (
+from fleasion.gui import (
     AboutWindow,
     DeleteCacheWindow,
     LogsWindow,
     ReplacerConfigWindow,
     ThemeManager,
 )
-from .localization import tr
-from .utils import (
+from fleasion.localization import tr
+from fleasion.utils import (
     APP_DISCORD,
     APP_NAME,
     APP_VERSION,
@@ -56,12 +56,12 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from .app import RobloxExitMonitor
-    from .config.manager import ConfigManager
-    from .modifications.manager import ModificationManager
-    from .proxy.addons.cache_scraper import CacheScraper
-    from .proxy.env_lifecycle import EnvProxyLifecycleController
-    from .proxy.master import ProxyMaster
+    from fleasion.app.roblox_monitor import RobloxExitMonitor
+    from fleasion.config.manager import ConfigManager
+    from fleasion.modifications.manager import ModificationManager
+    from fleasion.proxy.addons.cache_scraper import CacheScraper
+    from fleasion.proxy.env_lifecycle import EnvProxyLifecycleController
+    from fleasion.proxy.master import ProxyMaster
 
 
 class _HotkeyController(Protocol):
@@ -279,12 +279,12 @@ class SystemTray:
         self.custom_fflag_hotkeys: _HotkeyController | None = None
         hotkey_controller: _HotkeyController | None = None
         if sys.platform == 'win32':
-            hotkey_module = importlib.import_module('.gui.windows_hotkeys', __package__)
+            hotkey_module = importlib.import_module('fleasion.gui.windows_hotkeys')
             hotkey_controller = hotkey_module.WindowsCustomFFlagHotkeyController(
                 config_manager, proxy_master, app
             )
         elif sys.platform.startswith('linux'):
-            hotkey_module = importlib.import_module('.gui.linux_hotkeys', __package__)
+            hotkey_module = importlib.import_module('fleasion.gui.linux_hotkeys')
             hotkey_controller = hotkey_module.LinuxCustomFFlagHotkeyController(
                 config_manager, proxy_master, app
             )
@@ -773,7 +773,7 @@ class SystemTray:
 
     def _toggle_run_on_boot(self) -> None:
         """Toggle run-on-boot for the current platform."""
-        autostart = importlib.import_module('.utils.autostart', __package__)
+        autostart = importlib.import_module('fleasion.utils.autostart')
         checked = self.run_on_boot_action.isChecked()
         ok = autostart.sync_autostart(
             checked,
@@ -785,7 +785,7 @@ class SystemTray:
             self.refresh_settings_tab()
         else:
             if sys.platform == 'win32':
-                if _show_run_on_boot_failure(
+                if show_run_on_boot_failure(
                     None,
                     self.config_manager.proxy_mode,
                     enabled=checked,
@@ -817,13 +817,13 @@ class SystemTray:
 
     def _toggle_desktop_integration(self) -> None:
         """Toggle desktop/start-menu integration for the current platform."""
-        desktop_integration = importlib.import_module('.utils.desktop_integration', __package__)
+        desktop_integration = importlib.import_module('fleasion.utils.desktop_integration')
         checked = self.desktop_integration_action.isChecked()
         ok = desktop_integration.sync_desktop_integration(checked)
         if ok:
             self.config_manager.desktop_integration = checked
             if sys.platform.startswith('linux') and self.config_manager.run_on_boot:
-                autostart = importlib.import_module('.utils.autostart', __package__)
+                autostart = importlib.import_module('fleasion.utils.autostart')
                 if not autostart.sync_autostart(
                     enabled=True,
                     config_dir=CONFIG_DIR,
@@ -1005,7 +1005,7 @@ class SystemTray:
         """Keep the macOS dashboard visible when Fleasion loses focus."""
         if sys.platform != 'darwin':
             return
-        platform_macos = importlib.import_module('.utils.platform_macos', __package__)
+        platform_macos = importlib.import_module('fleasion.utils.platform_macos')
         if not platform_macos.set_application_foreground_mode(enabled):
             log_buffer.log('App', 'macOS dashboard activation-policy update was rejected')
         elif enabled and (icon_path := get_icon_path()):

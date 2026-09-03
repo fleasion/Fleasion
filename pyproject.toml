@@ -41,8 +41,8 @@ Issues = 'https://github.com/fleasion/Fleasion/issues'
 Releases = 'https://github.com/fleasion/Fleasion/releases'
 
 [project.scripts]
-fleasion = 'fleasion:main'
-app = 'fleasion:main'
+fleasion = 'fleasion.__main__:main'
+app = 'fleasion.__main__:main'
 build = 'fleasion.scripts.build:main'
 
 [dependency-groups]
@@ -56,7 +56,7 @@ dev = [
 [tool.pyright]
 typeCheckingMode = "strict"
 pythonVersion = "3.14"
-include = ["src", "tests", "launcher.py", "conftest.py"]
+include = ["src", "tests", "conftest.py"]
 exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv", "build", "dist", ".agents"]
 
 [tool.pytest.ini_options]

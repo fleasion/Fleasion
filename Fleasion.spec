@@ -404,7 +404,7 @@ elif sys.platform.startswith('linux'):
     )
 
 a = Analysis(
-    ['launcher.py'],
+    ['src/fleasion/__main__.py'],
     pathex=['src'],
     binaries=binaries,
     datas=datas,
@@ -466,7 +466,7 @@ exe = EXE(
     console=False,  # no console window for end users
     exclude_binaries=sys.platform == 'darwin',
     # uac_admin is intentionally NOT set here.
-    # We handle elevation at runtime in app.py so the user can choose
+    # We handle elevation at runtime in the application module so the user can choose
     # read-only mode if they decline UAC, rather than being blocked entirely
     disable_windowed_traceback=False,
     argv_emulation=False,

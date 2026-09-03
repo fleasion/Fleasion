@@ -86,7 +86,7 @@ def _log(message: str) -> None:
 def _find_project_root() -> Path | None:
     check = Path(__file__).resolve().parent
     for _ in range(8):
-        if (check / 'pyproject.toml').is_file() and (check / 'launcher.py').is_file():
+        if (check / 'pyproject.toml').is_file() and (check / 'src/fleasion/__main__.py').is_file():
             return check
         if check.parent == check:
             break
@@ -110,12 +110,12 @@ def _launch_command() -> tuple[list[str], Path | None, dict[str, str]]:
 
     if project is not None:
         return (
-            [sys.executable, str(project / 'launcher.py')],
+            [sys.executable, '-m', 'fleasion'],
             project,
             {'PYTHONPATH': str(project / 'src')},
         )
 
-    return [sys.executable, '-c', 'from fleasion import main; main()'], None, {}
+    return [sys.executable, '-m', 'fleasion'], None, {}
 
 
 def _remove_windows_shortcut() -> bool:
@@ -157,9 +157,7 @@ def _create_windows_shortcut_runtime(
         return False
 
     try:
-        _write_windows_shortcut(
-            pythoncom_module, client_module, command, working_dir, icon_path
-        )
+        _write_windows_shortcut(pythoncom_module, client_module, command, working_dir, icon_path)
     except (AttributeError, OSError, pythoncom_module.com_error) as exc:
         _log(f'Failed to create Windows start-menu shortcut: {exc}')
         return False

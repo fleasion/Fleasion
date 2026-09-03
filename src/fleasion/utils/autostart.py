@@ -617,7 +617,8 @@ def _macos_launch_agent_payload(launch_info: LaunchInfo) -> dict[str, object]:
         project = Path(_required_project(launch_info))
         args = [
             launch_info['path'],
-            str(project / 'launcher.py'),
+            '-m',
+            'fleasion',
             '--no-dashboard',
         ]
         working_dir = str(project)
@@ -665,9 +666,7 @@ def _linux_autostart_content(launch_info: LaunchInfo) -> str:
         working_dir = str(Path(launch_info['path']).parent)
     else:
         project = Path(_required_project(launch_info))
-        command = _desktop_exec_join(
-            [launch_info['path'], str(project / 'launcher.py'), '--no-dashboard']
-        )
+        command = _desktop_exec_join([launch_info['path'], '-m', 'fleasion', '--no-dashboard'])
         working_dir = str(project)
 
     return (

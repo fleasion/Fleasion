@@ -12,8 +12,11 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QByteArray, QEvent, QSharedMemory, QUrl
 from PySide6.QtWidgets import QApplication
 
-from fleasion import __version__, app as app_module
+from fleasion import __version__
 from fleasion.app import kill_other_fleasion_instances
+from fleasion.app import core as app_module
+from fleasion.app import process_control as process_control_module
+from fleasion.app import roblox_monitor as roblox_monitor_module
 from fleasion.utils import macos_proxy_helper
 
 
@@ -181,7 +184,7 @@ class _RobloxExitMonitorFactory(Protocol):
         proxy_master: object | None = None,
         mod_manager: object | None = None,
         env_lifecycle: object | None = None,
-    ) -> app_module.RobloxExitMonitor: ...
+    ) -> roblox_monitor_module.RobloxExitMonitor: ...
 
 
 def _private_attr(target: object, name: str) -> object:
@@ -194,8 +197,9 @@ _handle_single_instance_command = cast(
 _linux_hosts_nix_snippet = cast(
     'Callable[[object], str]', _private_attr(app_module, '_linux_hosts_nix_snippet')
 )
-_looks_like_macos_fleasion_command = cast(
-    'Callable[[str], bool]', _private_attr(app_module, '_looks_like_macos_fleasion_command')
+_looks_like_fleasion_gui_command = cast(
+    'Callable[[str], bool]',
+    _private_attr(process_control_module, '_looks_like_fleasion_gui_command'),
 )
 _manual_upstream_credentials_missing = cast(
     'Callable[[object], bool]', _private_attr(app_module, '_manual_upstream_credentials_missing')
@@ -229,7 +233,7 @@ _show_roblox_permission_failure = cast(
     '_ShowRobloxPermissionFailure', _private_attr(app_module, '_show_roblox_permission_failure')
 )
 _show_run_on_boot_failure = cast(
-    '_ShowRunOnBootFailure', _private_attr(app_module, '_show_run_on_boot_failure')
+    '_ShowRunOnBootFailure', app_module.show_run_on_boot_failure
 )
 _show_windows_upstream_firewall_dialog = cast(
     'Callable[[object], None]', _private_attr(app_module, '_show_windows_upstream_firewall_dialog')
@@ -267,7 +271,7 @@ _launch_roblox_uri_for_instance = cast(
     'Callable[[object, str], bool]', _private_attr(app_module, '_launch_roblox_uri_for_instance')
 )
 _arm_windows_gdk_env_proxy_when_ready = cast(
-    '_ArmWindowsGdkProxy', _private_attr(app_module, '_arm_windows_gdk_env_proxy_when_ready')
+    '_ArmWindowsGdkProxy', app_module.arm_windows_gdk_env_proxy_when_ready
 )
 _restart_handoff_path = cast(
     '_RestartHandoffPath', _private_attr(app_module, '_restart_handoff_path')
@@ -296,7 +300,9 @@ _write_restart_handoff_marker = cast(
 _strip_restart_handoff_args = cast(
     'Callable[[list[str]], list[str]]', _private_attr(app_module, '_strip_restart_handoff_args')
 )
-_ROBLOX_EXIT_MONITOR_FACTORY = cast('_RobloxExitMonitorFactory', app_module.RobloxExitMonitor)
+_ROBLOX_EXIT_MONITOR_FACTORY = cast(
+    '_RobloxExitMonitorFactory', roblox_monitor_module.RobloxExitMonitor
+)
 _SINGLE_INSTANCE_STATE = cast(
     '_SingleInstanceStateAdapter', _private_attr(app_module, '_single_instance_state')
 )
@@ -462,35 +468,34 @@ def _visible_owner_callback[ResultT](
 
 
 def test_macos_fleasion_process_matching_accepts_real_launch_forms() -> None:
-    assert _looks_like_macos_fleasion_command(
+    assert _looks_like_fleasion_gui_command(
         f'/Applications/Fleasion.app/Contents/MacOS/Fleasion-v{__version__} --no-dashboard'
     )
-    assert _looks_like_macos_fleasion_command('/project/.venv/bin/Fleasion')
-    assert _looks_like_macos_fleasion_command('/usr/bin/python3 /project/launcher.py')
-    assert _looks_like_macos_fleasion_command('/usr/bin/python3 -m Fleasion')
-    assert _looks_like_macos_fleasion_command(
+    assert _looks_like_fleasion_gui_command('/project/.venv/bin/Fleasion')
+    assert _looks_like_fleasion_gui_command('/usr/bin/python3 -m Fleasion')
+    assert _looks_like_fleasion_gui_command(
         '/project/.venv/bin/python /project/.venv/bin/fleasion'
     )
 
 
 def test_macos_fleasion_process_matching_rejects_unrelated_commands() -> None:
-    assert not _looks_like_macos_fleasion_command(
+    assert not _looks_like_fleasion_gui_command(
         "/bin/zsh -c tail '/Users/test/Library/Application Support/FleasionNT/logs/fleasion.log'"
     )
-    assert not _looks_like_macos_fleasion_command(
-        f"/bin/zsh -c ps -axo command | rg 'Fleasion-v{__version__}|launcher.py'"
+    assert not _looks_like_fleasion_gui_command(
+        f"/bin/zsh -c ps -axo command | rg 'Fleasion-v{__version__}|fleasion'"
     )
-    assert not _looks_like_macos_fleasion_command('/usr/bin/python3 /tmp/not-fleasion.py')
+    assert not _looks_like_fleasion_gui_command('/usr/bin/python3 /tmp/not-fleasion.py')
 
 
 def test_fleasion_process_matching_rejects_linux_proxy_helper_commands() -> None:
-    assert not _looks_like_macos_fleasion_command(
+    assert not _looks_like_fleasion_gui_command(
         '/opt/Fleasion/Fleasion --linux-proxy-helper --backend-port 8443'
     )
-    assert not _looks_like_macos_fleasion_command(
-        '/usr/bin/python3 /project/launcher.py --linux-proxy-helper --backend-port 8443'
+    assert not _looks_like_fleasion_gui_command(
+        '/usr/bin/python3 -m fleasion --linux-proxy-helper --backend-port 8443'
     )
-    assert not _looks_like_macos_fleasion_command(
+    assert not _looks_like_fleasion_gui_command(
         '/usr/bin/python3 /project/src/fleasion/linux_proxy_helper_daemon.py --backend-port 8443'
     )
 
@@ -516,10 +521,12 @@ def test_stale_single_instance_not_reclaimed_on_linux_with_gui_process(
 def test_kill_other_instances_prefers_graceful_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[object] = []
 
-    monkeypatch.setattr(app_module, '_request_other_fleasion_instances_exit', lambda: True)
-    monkeypatch.setattr(app_module, '_other_fleasion_pids', lambda: [1234])
     monkeypatch.setattr(
-        app_module.subprocess,
+        process_control_module, 'request_other_fleasion_instances_exit', lambda: True
+    )
+    monkeypatch.setattr(process_control_module, 'other_fleasion_pids', lambda: [1234])
+    monkeypatch.setattr(
+        process_control_module.subprocess,
         'run',
         _args_kwargs_callback(lambda *args, **kwargs: calls.append((args, kwargs))),
     )
@@ -1817,10 +1824,10 @@ def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch: pytest.Mon
     notifications: list[bool] = []
     _monitor_studio_signal(monitor).connect(lambda: notifications.append(True))
 
-    monkeypatch.setattr(app_module, 'is_roblox_running', lambda: False)
-    monkeypatch.setattr(app_module, 'is_studio_running', lambda: True)
+    monkeypatch.setattr(roblox_monitor_module, 'is_roblox_running', lambda: False)
+    monkeypatch.setattr(roblox_monitor_module, 'is_studio_running', lambda: True)
     monkeypatch.setattr(
-        app_module,
+        roblox_monitor_module,
         'get_roblox_studio_exe_path',
         lambda: (_ for _ in ()).throw(AssertionError('Env mode must not inspect Studio')),
     )
@@ -1858,13 +1865,15 @@ def test_windows_desktop_player_launch_uses_env_lifecycle(
     )
     player_exe = tmp_path / 'Roblox' / 'RobloxPlayerBeta.exe'
     monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, 'is_roblox_running', lambda: True)
-    monkeypatch.setattr(app_module, 'is_studio_running', lambda: False)
-    monkeypatch.setattr(app_module, 'get_roblox_player_exe_path', lambda: player_exe)
-    monkeypatch.setattr(app_module, 'run_in_thread', _callable_callback(lambda function: function))
-    monkeypatch.setitem(
-        app_module.sys.modules,
-        'fleasion.utils.platform_windows',
+    monkeypatch.setattr(roblox_monitor_module, 'is_roblox_running', lambda: True)
+    monkeypatch.setattr(roblox_monitor_module, 'is_studio_running', lambda: False)
+    monkeypatch.setattr(roblox_monitor_module, 'get_roblox_player_exe_path', lambda: player_exe)
+    monkeypatch.setattr(
+        roblox_monitor_module, 'run_in_thread', _callable_callback(lambda function: function)
+    )
+    monkeypatch.setattr(
+        roblox_monitor_module,
+        '_platform_windows',
         SimpleNamespace(
             is_roblox_gdk_env_proxy_armed=lambda: False,
             is_gdk_env_proxy_activation_in_progress=lambda: False,
@@ -1912,9 +1921,11 @@ def test_linux_browser_sober_launch_is_always_adopted_without_relaunch(
         env_lifecycle=_Lifecycle(),
     )
     monkeypatch.setattr(app_module.sys, 'platform', 'linux')
-    monkeypatch.setattr(app_module, 'is_roblox_running', lambda: True)
-    monkeypatch.setattr(app_module, 'is_studio_running', lambda: False)
-    monkeypatch.setattr(app_module, 'run_in_thread', _callable_callback(lambda function: function))
+    monkeypatch.setattr(roblox_monitor_module, 'is_roblox_running', lambda: True)
+    monkeypatch.setattr(roblox_monitor_module, 'is_studio_running', lambda: False)
+    monkeypatch.setattr(
+        roblox_monitor_module, 'run_in_thread', _callable_callback(lambda function: function)
+    )
 
     _check_roblox_status_locked(monitor)
 
@@ -2893,8 +2904,8 @@ def test_windows_hosts_to_env_live_switch_rearms_gdk_after_proxy_restart(
         settings_tab, 'run_in_thread', _callable_callback(lambda function: function)
     )
     monkeypatch.setattr(
-        app_module,
-        '_arm_windows_gdk_env_proxy_when_ready',
+        settings_tab,
+        'arm_windows_gdk_env_proxy_when_ready',
         _object_callback(lambda proxy: events.append(('arm_gdk', proxy)) or True),
     )
 
@@ -2916,7 +2927,6 @@ def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     qt_app = QApplication.instance() or QApplication([])
-    from fleasion.utils import platform_macos
 
     monkeypatch.setattr(app_module.sys, 'platform', 'darwin')
     config = SimpleNamespace(
@@ -2947,7 +2957,7 @@ def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(
         set_roblox_player_running=_bool_callback(lambda _running: None),
         wait_for_env_proxy_ready=_float_callback(lambda timeout=0.0: True),
     )
-    monkeypatch.setattr(platform_macos, 'MacOSRobloxUriInterceptor', _Interceptor)
+    monkeypatch.setattr(roblox_monitor_module, '_MacOSRobloxUriInterceptor', _Interceptor)
     monitor = _ROBLOX_EXIT_MONITOR_FACTORY(
         config, proxy_master=proxy_master, env_lifecycle=_Lifecycle()
     )

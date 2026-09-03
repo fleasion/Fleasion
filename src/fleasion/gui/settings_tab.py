@@ -27,6 +27,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fleasion.app.core import (
+    arm_windows_gdk_env_proxy_when_ready,
+    show_run_on_boot_failure,
+)
 from fleasion.gui.theme import ThemeManager
 from fleasion.localization import available_languages, get_language, tr
 from fleasion.utils import CONFIG_DIR, get_roblox_player_exe_path, log_buffer, run_in_thread
@@ -46,7 +50,7 @@ if TYPE_CHECKING:
 
     from PySide6.QtGui import QAction
 
-    from fleasion.app import RobloxExitMonitor
+    from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.config.manager import ConfigManager
     from fleasion.modifications.manager import ModificationManager
     from fleasion.proxy.master import ProxyMaster
@@ -925,12 +929,7 @@ class SettingsTab(QWidget):
                     # The proxy may have fallen back from 58443 to a dynamic
                     # port. Arm Store/GDK only after the restarted proxy has
                     # published its final loopback URL.
-                    app_module = importlib.import_module('fleasion.app')
-                    arm_gdk_env_proxy = cast(
-                        'Callable[[object], None]',
-                        vars(app_module)['_arm_windows_gdk_env_proxy_when_ready'],
-                    )
-                    run_in_thread(arm_gdk_env_proxy)(proxy_master)
+                    run_in_thread(arm_windows_gdk_env_proxy_when_ready)(proxy_master)
             monitor = getattr(self._tray, 'roblox_monitor', None) if self._tray else None
             lifecycle = getattr(monitor, 'env_lifecycle', None)
             if (
@@ -1083,11 +1082,6 @@ class SettingsTab(QWidget):
                 self._tray.run_on_boot_action.setChecked(checked)
         else:
             if sys.platform == 'win32':
-                # Imported on demand to avoid an app <-> GUI import cycle during startup.
-                app_module = importlib.import_module('fleasion.app')
-                show_run_on_boot_failure = cast(
-                    'Callable[..., bool]', vars(app_module)['_show_run_on_boot_failure']
-                )
                 if show_run_on_boot_failure(self, self._config.proxy_mode, enabled=checked):
                     self._config.run_on_boot = checked
                     if self._tray and hasattr(self._tray, 'run_on_boot_action'):

@@ -107,7 +107,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import ClassVar, TypeIs
 
-    from fleasion.app import RobloxExitMonitor
+    from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.config.manager import ConfigManager
     from fleasion.gui.linux_hotkeys import LinuxCustomFFlagHotkeyController, LinuxHotkeyService
     from fleasion.gui.windows_hotkeys import (

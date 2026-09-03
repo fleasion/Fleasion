@@ -29,14 +29,14 @@ def _launch_command(
     installed_app: Path | None = None,
 ) -> tuple[list[str], Path | None]:
     del installed_app
-    return ['/usr/bin/python3', 'launcher.py'], Path('/opt/fleasion')
+    return ['/usr/bin/python3', '-m', 'fleasion'], Path('/opt/fleasion')
 
 
 def _launch_command_no_cwd(
     installed_app: Path | None = None,
 ) -> tuple[list[str], Path | None]:
     del installed_app
-    return ['/usr/bin/python3', 'launcher.py'], None
+    return ['/usr/bin/python3', '-m', 'fleasion'], None
 
 
 def _no_icon() -> None:
@@ -103,7 +103,7 @@ def test_install_desktop_entries_writes_user_launcher_and_removes_deprecated(
     assert 'fleasion-non-admin' not in desktop_text
     assert 'pkexec' not in launcher_text
     assert 'FLEASION_USER_HOME' in launcher_text
-    assert 'exec /usr/bin/python3 launcher.py' in launcher_text
+    assert 'exec /usr/bin/python3 -m fleasion' in launcher_text
     assert 'MimeType=x-scheme-handler/roblox' not in desktop_text
     assert '%U' not in desktop_text
     assert not deprecated.exists()

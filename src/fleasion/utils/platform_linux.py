@@ -1192,7 +1192,7 @@ def restore_linux_roblox_uri_handler() -> bool:
 def _find_project_root() -> Path | None:
     check = Path(__file__).resolve().parent
     for _ in range(8):
-        if (check / 'pyproject.toml').is_file() and (check / 'launcher.py').is_file():
+        if (check / 'pyproject.toml').is_file() and (check / 'src/fleasion/__main__.py').is_file():
             return check
         if check.parent == check:
             break
@@ -1247,9 +1247,9 @@ def _linux_app_launch_command(
 
     project = _find_project_root()
     if project is not None:
-        return [sys.executable, str(project / 'launcher.py')], project
+        return [sys.executable, '-m', 'fleasion'], project
 
-    return [sys.executable, '-c', 'from fleasion import main; main()'], None
+    return [sys.executable, '-m', 'fleasion'], None
 
 
 def _write_executable_script(path: Path, content: str) -> None:

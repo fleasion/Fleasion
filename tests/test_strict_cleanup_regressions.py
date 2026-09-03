@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from fleasion import app as app_module
+from fleasion.app import core as app_module
 from fleasion.cache import cache_viewer, rbxm_parser
 from fleasion.cache.roblox_document import classify_roblox_document
 from fleasion.cache.tools.solidmodel_converter import converter as solidmodel_converter

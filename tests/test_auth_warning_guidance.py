@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from typing import cast
 
-from fleasion import app as app_module
+from fleasion.app import core as app_module
 
 
 def _details(**overrides: object) -> dict[str, object]:
