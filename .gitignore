@@ -235,13 +235,11 @@ __marimo__/
 *~
 
 # Agents
+.repowise/
 .claude/
+.codex/
 CLAUDE.md
 !AGENTS.md
-
-# Private Repowise index and Codex integration
-.repowise/
-.codex/
 .mcp.json
 
 # OS files
@@ -252,3 +250,6 @@ desktop.ini
 # Local configuration and cache
 *.local
 .env.*
+
+# Dev folder
+_dev/
