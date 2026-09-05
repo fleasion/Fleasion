@@ -27,10 +27,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fleasion.app.core import (
-    arm_windows_gdk_env_proxy_when_ready,
-    show_run_on_boot_failure,
-)
+from fleasion.app.dialogs.startup import show_run_on_boot_failure
+from fleasion.app.roblox_launch import arm_windows_gdk_env_proxy_when_ready
 from fleasion.gui.theme import ThemeManager
 from fleasion.localization import available_languages, get_language, tr
 from fleasion.utils import CONFIG_DIR, get_roblox_player_exe_path, log_buffer, run_in_thread

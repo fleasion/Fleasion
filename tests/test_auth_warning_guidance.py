@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from typing import cast
 
-from fleasion.app import core as app_module
+from fleasion.app.dialogs import auth as dialogs_auth_module
 
 
 def _details(**overrides: object) -> dict[str, object]:
@@ -20,7 +20,7 @@ def _details(**overrides: object) -> dict[str, object]:
 def _profile_matches(details: dict[str, object]) -> bool:
     callback = cast(
         'Callable[[dict[str, object]], bool]',
-        app_module.__dict__['_windows_auth_profile_matches_username'],
+        dialogs_auth_module.__dict__['windows_auth_profile_matches_username'],
     )
     return callback(details)
 

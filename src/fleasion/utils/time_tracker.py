@@ -1,11 +1,17 @@
 """Session time tracker."""
 
+from __future__ import annotations
+
 import time
 from typing import Protocol
 
 
 class _TimeConfig(Protocol):
-    time_wasted_seconds: int
+    @property
+    def time_wasted_seconds(self) -> int: ...
+
+    @time_wasted_seconds.setter
+    def time_wasted_seconds(self, value: int) -> None: ...
 
 
 class TimeTracker:

@@ -68,7 +68,7 @@ def test_startup_opengl_config_does_not_create_global_share_context() -> None:
 import sys
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtWidgets import QApplication
-from fleasion.app.core import _configure_opengl_for_legacy_viewers
+from fleasion.app.qt_runtime import configure_opengl_for_legacy_viewers as _configure_opengl_for_legacy_viewers
 _configure_opengl_for_legacy_viewers()
 assert 'OpenGL.GL' not in sys.modules
 app = QApplication([])

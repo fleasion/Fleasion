@@ -14,7 +14,18 @@ from PySide6.QtWidgets import QApplication
 
 from fleasion import __version__
 from fleasion.app import kill_other_fleasion_instances
-from fleasion.app import core as app_module
+from fleasion.app import compatibility as compatibility_module
+from fleasion.app import core as core_module
+from fleasion.app.dialogs import hosts as dialogs_hosts_module
+from fleasion.app.dialogs import permissions as dialogs_permissions_module
+from fleasion.app.dialogs import proxy as dialogs_proxy_module
+from fleasion.app.dialogs import startup as dialogs_startup_module
+from fleasion.app import elevation as elevation_module
+from fleasion.app import repairs as repairs_module
+from fleasion.app import restart as restart_module
+from fleasion.app import restart_handoff as restart_handoff_module
+from fleasion.app import roblox_launch as roblox_launch_module
+from fleasion.app import single_instance as single_instance_module
 from fleasion.app import process_control as process_control_module
 from fleasion.app import roblox_monitor as roblox_monitor_module
 from fleasion.utils import macos_proxy_helper
@@ -192,119 +203,119 @@ def _private_attr(target: object, name: str) -> object:
 
 
 _handle_single_instance_command = cast(
-    'Callable[[object, object], None]', _private_attr(app_module, '_handle_single_instance_command')
+    'Callable[[object, object], None]', _private_attr(single_instance_module, 'handle_single_instance_command')
 )
 _linux_hosts_nix_snippet = cast(
-    'Callable[[object], str]', _private_attr(app_module, '_linux_hosts_nix_snippet')
+    'Callable[[object], str]', _private_attr(dialogs_hosts_module, 'linux_hosts_nix_snippet')
 )
 _looks_like_fleasion_gui_command = cast(
     'Callable[[str], bool]',
     _private_attr(process_control_module, '_looks_like_fleasion_gui_command'),
 )
 _manual_upstream_credentials_missing = cast(
-    'Callable[[object], bool]', _private_attr(app_module, '_manual_upstream_credentials_missing')
+    'Callable[[object], bool]', _private_attr(dialogs_proxy_module, 'manual_upstream_credentials_missing')
 )
 _repair_autostart_once = cast(
-    '_RepairAutostartOnce', _private_attr(app_module, '_repair_autostart_once')
+    '_RepairAutostartOnce', _private_attr(repairs_module, 'repair_autostart_once')
 )
 _repair_roblox_permissions_once = cast(
-    'Callable[[str | None], int]', _private_attr(app_module, '_repair_roblox_permissions_once')
+    'Callable[[str | None], int]', _private_attr(repairs_module, 'repair_roblox_permissions_once')
 )
 _repair_windows_firewall_once = cast(
-    'Callable[[], int]', _private_attr(app_module, '_repair_windows_firewall_once')
+    'Callable[[], int]', _private_attr(repairs_module, 'repair_windows_firewall_once')
 )
 _RobloxUrlEventFilter = cast(
-    'Callable[[], _RobloxUrlEventFilterAdapter]', _private_attr(app_module, '_RobloxUrlEventFilter')
+    'Callable[[], _RobloxUrlEventFilterAdapter]', _private_attr(roblox_launch_module, 'RobloxUrlEventFilter')
 )
 _run_privileged_hosts_cleanup = cast(
-    '_RunPrivilegedHostsCleanup', _private_attr(app_module, '_run_privileged_hosts_cleanup')
+    '_RunPrivilegedHostsCleanup', _private_attr(repairs_module, 'run_privileged_hosts_cleanup')
 )
 _should_reclaim_stale_single_instance = cast(
     'Callable[[QSharedMemory.SharedMemoryError], bool]',
-    _private_attr(app_module, '_should_reclaim_stale_single_instance'),
+    _private_attr(single_instance_module, 'should_reclaim_stale_single_instance'),
 )
 _should_sync_autostart_on_launch = cast(
-    'Callable[[bool], bool]', _private_attr(app_module, '_should_sync_autostart_on_launch')
+    'Callable[[bool], bool]', _private_attr(dialogs_startup_module, 'should_sync_autostart_on_launch')
 )
 _show_env_proxy_stale_hosts_dialog = cast(
-    'Callable[[], bool]', _private_attr(app_module, '_show_env_proxy_stale_hosts_dialog')
+    'Callable[[], bool]', _private_attr(dialogs_hosts_module, 'show_env_proxy_stale_hosts_dialog')
 )
 _show_roblox_permission_failure = cast(
-    '_ShowRobloxPermissionFailure', _private_attr(app_module, '_show_roblox_permission_failure')
+    '_ShowRobloxPermissionFailure', _private_attr(dialogs_permissions_module, 'show_roblox_permission_failure')
 )
 _show_run_on_boot_failure = cast(
-    '_ShowRunOnBootFailure', app_module.show_run_on_boot_failure
+    '_ShowRunOnBootFailure', dialogs_startup_module.show_run_on_boot_failure
 )
 _show_windows_upstream_firewall_dialog = cast(
-    'Callable[[object], None]', _private_attr(app_module, '_show_windows_upstream_firewall_dialog')
+    'Callable[[object], None]', _private_attr(dialogs_permissions_module, 'show_windows_upstream_firewall_dialog')
 )
 _windows_ca_permission_denied_dirs = cast(
     'Callable[[object], list[Path]]',
-    _private_attr(app_module, '_windows_ca_permission_denied_dirs'),
+    _private_attr(dialogs_proxy_module, 'windows_ca_permission_denied_dirs'),
 )
 _prepare_env_proxy_migration = cast(
-    'Callable[[object], bool]', _private_attr(app_module, '_prepare_env_proxy_migration')
+    'Callable[[object], bool]', _private_attr(dialogs_startup_module, 'prepare_env_proxy_migration')
 )
 _show_env_proxy_migration = cast(
-    'Callable[[object, object], None]', _private_attr(app_module, '_show_env_proxy_migration')
+    'Callable[[object, object], None]', _private_attr(dialogs_startup_module, 'show_env_proxy_migration')
 )
 _ProxyErrorInvoker = cast(
-    'Callable[[], _ProxyErrorInvokerAdapter]', _private_attr(app_module, '_ProxyErrorInvoker')
+    'Callable[[], _ProxyErrorInvokerAdapter]', _private_attr(dialogs_proxy_module, 'ProxyErrorInvoker')
 )
 _poll_roblox_permission_repair = cast(
-    '_PollPermissionRepair', _private_attr(app_module, '_poll_roblox_permission_repair')
+    '_PollPermissionRepair', _private_attr(dialogs_permissions_module, 'poll_roblox_permission_repair')
 )
 _append_windows_requesting_user_args = cast(
-    'Callable[[list[str]], bool]', _private_attr(app_module, '_append_windows_requesting_user_args')
+    'Callable[[list[str]], bool]', _private_attr(elevation_module, 'append_windows_requesting_user_args')
 )
 _HOSTS_CLEANUP_NOT_ADMIN_EXIT = cast(
-    'int', _private_attr(app_module, '_HOSTS_CLEANUP_NOT_ADMIN_EXIT')
+    'int', _private_attr(repairs_module, 'HOSTS_CLEANUP_NOT_ADMIN_EXIT')
 )
 _HOSTS_CLEANUP_WRITE_FAILED_EXIT = cast(
-    'int', _private_attr(app_module, '_HOSTS_CLEANUP_WRITE_FAILED_EXIT')
+    'int', _private_attr(repairs_module, 'HOSTS_CLEANUP_WRITE_FAILED_EXIT')
 )
 _HOSTS_CLEANUP_UNEXPECTED_EXIT = cast(
-    'int', _private_attr(app_module, '_HOSTS_CLEANUP_UNEXPECTED_EXIT')
+    'int', _private_attr(repairs_module, 'HOSTS_CLEANUP_UNEXPECTED_EXIT')
 )
-_cleanup_hosts_once = cast('Callable[[], int]', _private_attr(app_module, '_cleanup_hosts_once'))
+_cleanup_hosts_once = cast('Callable[[], int]', _private_attr(repairs_module, 'cleanup_hosts_once'))
 _launch_roblox_uri_for_instance = cast(
-    'Callable[[object, str], bool]', _private_attr(app_module, '_launch_roblox_uri_for_instance')
+    'Callable[[object, str], bool]', _private_attr(roblox_launch_module, 'launch_roblox_uri_for_instance')
 )
 _arm_windows_gdk_env_proxy_when_ready = cast(
-    '_ArmWindowsGdkProxy', app_module.arm_windows_gdk_env_proxy_when_ready
+    '_ArmWindowsGdkProxy', roblox_launch_module.arm_windows_gdk_env_proxy_when_ready
 )
 _restart_handoff_path = cast(
-    '_RestartHandoffPath', _private_attr(app_module, '_restart_handoff_path')
+    '_RestartHandoffPath', _private_attr(restart_handoff_module, 'restart_handoff_path')
 )
 _join_restart_handoff = cast(
-    'Callable[[str, int], bool]', _private_attr(app_module, '_join_restart_handoff')
+    'Callable[[str, int], bool]', _private_attr(restart_handoff_module, 'join_restart_handoff')
 )
 _wait_for_restart_release = cast(
-    'Callable[[str, int], bool]', _private_attr(app_module, '_wait_for_restart_release')
+    'Callable[[str, int], bool]', _private_attr(restart_handoff_module, 'wait_for_restart_release')
 )
 _run_restart_handoff_parent = cast(
-    '_RunRestartHandoffParent', _private_attr(app_module, '_run_restart_handoff_parent')
+    '_RunRestartHandoffParent', _private_attr(restart_handoff_module, 'run_restart_handoff_parent')
 )
 _resume_single_instance_after_handoff_failure = cast(
-    'Callable[[], bool]', _private_attr(app_module, '_resume_single_instance_after_handoff_failure')
+    'Callable[[], bool]', _private_attr(restart_handoff_module, 'resume_single_instance_after_handoff_failure')
 )
 _abort_restart_child_and_wait = cast(
-    '_AbortRestartChild', _private_attr(app_module, '_abort_restart_child_and_wait')
+    '_AbortRestartChild', _private_attr(restart_handoff_module, 'abort_restart_child_and_wait')
 )
 _wait_for_restart_marker = cast(
-    '_WaitForRestartMarker', _private_attr(app_module, '_wait_for_restart_marker')
+    '_WaitForRestartMarker', _private_attr(restart_handoff_module, 'wait_for_restart_marker')
 )
 _write_restart_handoff_marker = cast(
-    'Callable[[str, str, int], bool]', _private_attr(app_module, '_write_restart_handoff_marker')
+    'Callable[[str, str, int], bool]', _private_attr(restart_handoff_module, 'write_restart_handoff_marker')
 )
 _strip_restart_handoff_args = cast(
-    'Callable[[list[str]], list[str]]', _private_attr(app_module, '_strip_restart_handoff_args')
+    'Callable[[list[str]], list[str]]', _private_attr(restart_handoff_module, 'strip_restart_handoff_args')
 )
 _ROBLOX_EXIT_MONITOR_FACTORY = cast(
     '_RobloxExitMonitorFactory', roblox_monitor_module.RobloxExitMonitor
 )
 _SINGLE_INSTANCE_STATE = cast(
-    '_SingleInstanceStateAdapter', _private_attr(app_module, '_single_instance_state')
+    '_SingleInstanceStateAdapter', _private_attr(single_instance_module, 'single_instance_state')
 )
 
 
@@ -503,8 +514,8 @@ def test_fleasion_process_matching_rejects_linux_proxy_helper_commands() -> None
 def test_stale_single_instance_can_be_reclaimed_on_linux_without_gui_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
-    monkeypatch.setattr(app_module, '_other_fleasion_pids', _int_list_callback(list))
+    monkeypatch.setattr(single_instance_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(single_instance_module, '_other_fleasion_pids', _int_list_callback(list))
 
     assert _should_reclaim_stale_single_instance(QSharedMemory.SharedMemoryError.AlreadyExists)
 
@@ -512,8 +523,8 @@ def test_stale_single_instance_can_be_reclaimed_on_linux_without_gui_process(
 def test_stale_single_instance_not_reclaimed_on_linux_with_gui_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
-    monkeypatch.setattr(app_module, '_other_fleasion_pids', lambda: [1234])
+    monkeypatch.setattr(single_instance_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(single_instance_module, '_other_fleasion_pids', lambda: [1234])
 
     assert not _should_reclaim_stale_single_instance(QSharedMemory.SharedMemoryError.AlreadyExists)
 
@@ -595,8 +606,7 @@ def test_roblox_url_event_filter_queues_until_application_is_ready() -> None:
 def test_single_instance_launch_command_preserves_uri(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[Callable[..., object], tuple[object, ...]]] = []
     monkeypatch.setattr(
-        app_module,
-        'run_in_thread',
+        single_instance_module, 'run_in_thread',
         _callable_callback(
             lambda function: _args_callback(lambda *args: calls.append((function, args)))
         ),
@@ -619,18 +629,18 @@ def test_single_instance_launch_command_preserves_uri(monkeypatch: pytest.Monkey
 
 
 def test_autostart_resync_includes_linux_normal_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(dialogs_startup_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(dialogs_startup_module, 'is_admin', lambda: False)
 
     assert _should_sync_autostart_on_launch(True)
-    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(dialogs_startup_module, 'is_admin', lambda: True)
     assert _should_sync_autostart_on_launch(True)
     assert not _should_sync_autostart_on_launch(False)
 
 
 def test_autostart_resync_runs_without_admin_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(dialogs_startup_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(dialogs_startup_module, 'is_admin', lambda: False)
 
     assert _should_sync_autostart_on_launch(True)
 
@@ -746,11 +756,11 @@ def test_linux_env_proxy_migration_adopts_running_sober_without_relaunch(
         def clickedButton(self) -> object | None:
             return self._clicked
 
-    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
-    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
-    monkeypatch.setattr(app_module, 'run_in_thread', _callable_callback(lambda function: function))
+    monkeypatch.setattr(dialogs_startup_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(dialogs_startup_module, 'visible_parent_widget', lambda: None)
+    monkeypatch.setattr(dialogs_startup_module, 'get_icon_path', lambda: None)
+    monkeypatch.setattr(dialogs_startup_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(dialogs_startup_module, 'run_in_thread', _callable_callback(lambda function: function))
 
     _show_env_proxy_migration(config, monitor)
 
@@ -828,9 +838,9 @@ def test_env_proxy_migration_does_not_relaunch_when_proxy_features_are_disabled(
         def clickedButton(self) -> object | None:
             return self._clicked
 
-    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
-    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
+    monkeypatch.setattr(dialogs_startup_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(dialogs_startup_module, 'visible_parent_widget', lambda: None)
+    monkeypatch.setattr(dialogs_startup_module, 'get_icon_path', lambda: None)
 
     _show_env_proxy_migration(config, monitor)
 
@@ -843,7 +853,7 @@ def test_run_on_boot_failure_can_launch_one_time_admin_repair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selected: list[str] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(dialogs_startup_module.sys, 'platform', 'win32')
 
     class _MessageBox:
         class Icon:
@@ -892,11 +902,10 @@ def test_run_on_boot_failure_can_launch_one_time_admin_repair(
             return self._clicked
 
     relaunches: list[dict[str, object]] = []
-    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
+    monkeypatch.setattr(dialogs_startup_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(dialogs_startup_module, 'get_icon_path', lambda: None)
     monkeypatch.setattr(
-        app_module,
-        '_relaunch_as_admin',
+        dialogs_startup_module, 'relaunch_as_admin',
         _kwargs_callback(lambda **kwargs: relaunches.append(kwargs) or True),
     )
 
@@ -947,12 +956,11 @@ def test_nonwindows_run_on_boot_failure_never_offers_admin_repair(
         def exec(self) -> None:
             pass
 
-    monkeypatch.setattr(app_module.sys, 'platform', 'darwin')
-    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
+    monkeypatch.setattr(dialogs_startup_module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(dialogs_startup_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(dialogs_startup_module, 'get_icon_path', lambda: None)
     monkeypatch.setattr(
-        app_module,
-        '_relaunch_as_admin',
+        dialogs_startup_module, 'relaunch_as_admin',
         _kwargs_callback(lambda **_kwargs: calls.append(('relaunch', True))),
     )
 
@@ -967,10 +975,9 @@ def test_nonwindows_run_on_boot_failure_never_offers_admin_repair(
 def test_nonwindows_permission_failure_does_not_offer_windows_acl(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(app_module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(dialogs_permissions_module.sys, 'platform', 'darwin')
     monkeypatch.setattr(
-        app_module,
-        'QMessageBox',
+        dialogs_permissions_module, 'QMessageBox',
         _args_callback(
             lambda *_args: (_ for _ in ()).throw(AssertionError('Windows dialog opened'))
         ),
@@ -984,7 +991,7 @@ def test_windows_ca_permission_failure_extracts_install_for_acl_repair(
 ) -> None:
     install = tmp_path / 'Roblox' / 'Versions' / 'version-test'
     ca_file = install / 'ssl' / 'cacert.pem'
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(dialogs_proxy_module.sys, 'platform', 'win32')
 
     denied = _windows_ca_permission_denied_dirs(
         {
@@ -1011,11 +1018,10 @@ def test_windows_ca_permission_failure_offers_acl_and_retries_proxy(
     install = tmp_path / 'Roblox' / 'Versions' / 'version-test'
     offered: list[tuple[object, list[Path], dict[str, object]]] = []
     retries: list[bool | None] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: 'parent')
+    monkeypatch.setattr(dialogs_proxy_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(dialogs_proxy_module, 'visible_parent_widget', lambda: 'parent')
     monkeypatch.setattr(
-        app_module,
-        '_show_roblox_permission_failure',
+        dialogs_proxy_module, 'show_roblox_permission_failure',
         _parent_paths_kwargs_callback(
             lambda parent, paths, **kwargs: offered.append((parent, paths, kwargs))
         ),
@@ -1040,15 +1046,13 @@ def test_windows_ca_nonpermission_failure_keeps_diagnostic_dialog(
 ) -> None:
     install = tmp_path / 'Roblox' / 'Versions' / 'version-test'
     shown: list[dict[str, object]] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(dialogs_proxy_module.sys, 'platform', 'win32')
     monkeypatch.setattr(
-        app_module,
-        '_show_roblox_ca_patch_failed_dialog',
+        dialogs_proxy_module, 'show_roblox_ca_patch_failed_dialog',
         _details_callback(lambda details: shown.append(details)),
     )
     monkeypatch.setattr(
-        app_module,
-        '_show_roblox_permission_failure',
+        dialogs_proxy_module, 'show_roblox_permission_failure',
         _args_kwargs_callback(
             lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('ACL repair offered'))
         ),
@@ -1071,8 +1075,7 @@ def test_hosts_capacity_error_does_not_retry_proxy(monkeypatch: pytest.MonkeyPat
     shown: list[dict[str, object]] = []
     retries: list[bool | None] = []
     monkeypatch.setattr(
-        app_module,
-        '_show_hosts_capacity_dialog',
+        dialogs_proxy_module, 'show_hosts_capacity_dialog',
         _details_callback(lambda details: shown.append(details)),
     )
 
@@ -1093,7 +1096,7 @@ def test_successful_permission_repair_runs_proxy_retry_callback(
     from fleasion.utils import windows_permissions
 
     callbacks: list[bool] = []
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(dialogs_permissions_module, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(
         windows_permissions,
         'read_repair_result',
@@ -1122,8 +1125,8 @@ def test_permission_repair_poll_times_out_and_cleans_state(
 
     cleared: list[object] = []
     warnings: list[object] = []
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
-    monkeypatch.setattr(app_module.time, 'monotonic', lambda: 20.0)
+    monkeypatch.setattr(dialogs_permissions_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(dialogs_permissions_module.time, 'monotonic', lambda: 20.0)
     monkeypatch.setattr(
         windows_permissions, 'read_repair_result', _path_callback(lambda _path: None)
     )
@@ -1138,7 +1141,7 @@ def test_permission_repair_poll_times_out_and_cleans_state(
         _path_callback(lambda path: cleared.append(('result', path))),
     )
     monkeypatch.setattr(
-        app_module.QMessageBox,
+        dialogs_permissions_module.QMessageBox,
         'warning',
         _args_callback(lambda *args: warnings.append(args)),
     )
@@ -1154,19 +1157,17 @@ def test_repair_autostart_once_syncs_only_from_admin(
 ) -> None:
     calls: list[object] = []
 
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(repairs_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: True)
     monkeypatch.setattr(
-        app_module,
-        'ConfigManager',
+        repairs_module, 'ConfigManager',
         lambda: SimpleNamespace(proxy_mode='env'),
     )
     monkeypatch.setattr(
-        app_module,
-        'log_buffer',
+        repairs_module, 'log_buffer',
         type('Log', (), {'log': staticmethod(_args_callback(lambda *args: None))})(),
     )
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(repairs_module, 'CONFIG_DIR', tmp_path)
 
     from fleasion.utils import autostart, windows_permissions
 
@@ -1204,19 +1205,17 @@ def test_repair_autostart_once_can_remove_legacy_task(
 ) -> None:
     calls: list[object] = []
 
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(repairs_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: True)
     monkeypatch.setattr(
-        app_module,
-        'ConfigManager',
+        repairs_module, 'ConfigManager',
         lambda: SimpleNamespace(proxy_mode='env'),
     )
     monkeypatch.setattr(
-        app_module,
-        'log_buffer',
+        repairs_module, 'log_buffer',
         type('Log', (), {'log': staticmethod(_args_callback(lambda *args: None))})(),
     )
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(repairs_module, 'CONFIG_DIR', tmp_path)
 
     from fleasion.utils import autostart
 
@@ -1243,7 +1242,7 @@ def test_repair_autostart_once_can_remove_legacy_task(
 def test_windows_elevation_carries_original_desktop_sid(monkeypatch: pytest.MonkeyPatch) -> None:
     from fleasion.utils import windows_permissions
 
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(elevation_module.sys, 'platform', 'win32')
     monkeypatch.setattr(
         windows_permissions,
         'current_windows_user_identity',
@@ -1264,7 +1263,7 @@ def test_roblox_permission_prompt_requests_targeted_elevation(
 ) -> None:
     selected: list[str] = []
     relaunches: list[dict[str, object]] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(dialogs_permissions_module.sys, 'platform', 'win32')
 
     class _MessageBox:
         class Icon:
@@ -1304,12 +1303,11 @@ def test_roblox_permission_prompt_requests_targeted_elevation(
         def clickedButton(self) -> object | None:
             return self._clicked
 
-    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(dialogs_permissions_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(dialogs_permissions_module, 'get_icon_path', lambda: None)
+    monkeypatch.setattr(dialogs_permissions_module, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(
-        app_module,
-        '_relaunch_as_admin',
+        dialogs_permissions_module, 'relaunch_as_admin',
         _kwargs_callback(lambda **kwargs: relaunches.append(kwargs) or True),
     )
 
@@ -1335,12 +1333,11 @@ def test_roblox_permission_prompt_requests_targeted_elevation(
 def test_repair_roblox_permissions_once_writes_result_and_clears_pending(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(repairs_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: True)
+    monkeypatch.setattr(repairs_module, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(
-        app_module,
-        'log_buffer',
+        repairs_module, 'log_buffer',
         type('Log', (), {'log': staticmethod(_args_callback(lambda *args: None))})(),
     )
 
@@ -1382,12 +1379,11 @@ def test_repair_roblox_permissions_once_writes_result_and_clears_pending(
 def test_repair_windows_firewall_once_writes_result_and_clears_pending(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(repairs_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: True)
+    monkeypatch.setattr(repairs_module, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(
-        app_module,
-        'log_buffer',
+        repairs_module, 'log_buffer',
         type('Log', (), {'log': staticmethod(_args_callback(lambda *args: None))})(),
     )
 
@@ -1419,8 +1415,8 @@ def test_repair_windows_firewall_once_writes_result_and_clears_pending(
 
 def test_privileged_hosts_cleanup_uses_pkexec_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[object] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(repairs_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: False)
     monkeypatch.setattr(
         'fleasion.utils.linux_proxy_helper.cleanup_hosts_with_pkexec',
         lambda: calls.append(True) or True,
@@ -1435,11 +1431,10 @@ def test_privileged_hosts_cleanup_waits_for_windows_elevated_child(
 ) -> None:
     calls: list[object] = []
     parent = object()
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(repairs_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: False)
     monkeypatch.setattr(
-        app_module,
-        '_window_handle',
+        repairs_module, 'window_handle',
         _object_callback(lambda widget: 123 if widget is parent else None),
     )
 
@@ -1450,7 +1445,7 @@ def test_privileged_hosts_cleanup_waits_for_windows_elevated_child(
         calls.append(kwargs)
         return True
 
-    monkeypatch.setattr(app_module, '_relaunch_as_admin', _relaunch)
+    monkeypatch.setattr(repairs_module, 'relaunch_as_admin', _relaunch)
 
     assert _run_privileged_hosts_cleanup(parent) is True
     assert calls == [
@@ -1467,18 +1462,18 @@ def test_privileged_hosts_cleanup_logs_known_elevated_child_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     logs: list[tuple[object, ...]] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
-    monkeypatch.setattr(app_module, '_window_handle', _object_callback(lambda _widget: None))
+    monkeypatch.setattr(repairs_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: False)
+    monkeypatch.setattr(repairs_module, 'window_handle', _object_callback(lambda _widget: None))
 
     def _relaunch(**kwargs: object) -> bool:
         completion = cast('_RelaunchCompletionAdapter', kwargs['completion'])
         completion['exit_code'] = _HOSTS_CLEANUP_NOT_ADMIN_EXIT
         return False
 
-    monkeypatch.setattr(app_module, '_relaunch_as_admin', _relaunch)
+    monkeypatch.setattr(repairs_module, 'relaunch_as_admin', _relaunch)
     monkeypatch.setattr(
-        app_module.log_buffer, 'log', _args_callback(lambda *args: logs.append(args))
+        repairs_module.log_buffer, 'log', _args_callback(lambda *args: logs.append(args))
     )
 
     assert _run_privileged_hosts_cleanup() is False
@@ -1489,18 +1484,18 @@ def test_privileged_hosts_cleanup_classifies_still_active_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     logs: list[tuple[object, ...]] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
-    monkeypatch.setattr(app_module, '_window_handle', _object_callback(lambda _widget: None))
+    monkeypatch.setattr(repairs_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: False)
+    monkeypatch.setattr(repairs_module, 'window_handle', _object_callback(lambda _widget: None))
 
     def _relaunch(**kwargs: object) -> bool:
         completion = cast('_RelaunchCompletionAdapter', kwargs['completion'])
         completion.update({'wait_result': 258, 'exit_code_read': False, 'exit_code': None})
         return False
 
-    monkeypatch.setattr(app_module, '_relaunch_as_admin', _relaunch)
+    monkeypatch.setattr(repairs_module, 'relaunch_as_admin', _relaunch)
     monkeypatch.setattr(
-        app_module.log_buffer, 'log', _args_callback(lambda *args: logs.append(args))
+        repairs_module.log_buffer, 'log', _args_callback(lambda *args: logs.append(args))
     )
 
     assert _run_privileged_hosts_cleanup() is False
@@ -1511,7 +1506,7 @@ def test_privileged_hosts_cleanup_classifies_still_active_timeout(
 def test_elevated_hosts_cleanup_reports_write_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     from fleasion.proxy import master as proxy_master
 
-    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: True)
 
     def _remove(_hosts: object, *, error_details: dict[str, object]) -> bool:
         error_details['error'] = 'access denied by host protection'
@@ -1527,7 +1522,7 @@ def test_elevated_hosts_cleanup_reports_unexpected_exception(
 ) -> None:
     from fleasion.proxy import master as proxy_master
 
-    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(repairs_module, 'is_admin', lambda: True)
     monkeypatch.setattr(
         proxy_master,
         '_remove_hosts_entries',
@@ -1548,10 +1543,9 @@ def test_stale_env_hosts_dialog_runs_privileged_repair(monkeypatch: pytest.Monke
         proxy_master, 'has_stale_hosts_entries', _object_callback(lambda _hosts: next(stale))
     )
     monkeypatch.setattr(proxy_master, 'INTERCEPT_HOSTS', frozenset({'assetdelivery.roblox.com'}))
-    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(dialogs_hosts_module, 'visible_parent_widget', lambda: None)
     monkeypatch.setattr(
-        app_module,
-        '_run_privileged_hosts_cleanup',
+        dialogs_hosts_module, 'run_privileged_hosts_cleanup',
         _visible_owner_callback(lambda owner: calls.append((owner, owner.visible)) or True),
     )
 
@@ -1607,8 +1601,8 @@ def test_stale_env_hosts_dialog_runs_privileged_repair(monkeypatch: pytest.Monke
         def hide(self) -> None:
             self.visible = False
 
-    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(app_module.QApplication, 'processEvents', lambda: None)
+    monkeypatch.setattr(dialogs_hosts_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(dialogs_hosts_module.QApplication, 'processEvents', lambda: None)
 
     _show_env_proxy_stale_hosts_dialog()
 
@@ -1624,19 +1618,17 @@ def test_windows_upstream_dialog_requests_targeted_firewall_repair(
 ) -> None:
     calls: list[tuple[object, object]] = []
     relaunches: list[dict[str, object]] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
-    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
-    monkeypatch.setattr(app_module, '_window_handle', _object_callback(lambda _widget: None))
+    monkeypatch.setattr(dialogs_permissions_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(dialogs_permissions_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(dialogs_permissions_module, 'visible_parent_widget', lambda: None)
+    monkeypatch.setattr(dialogs_permissions_module, 'window_handle', _object_callback(lambda _widget: None))
     monkeypatch.setattr(
-        app_module,
-        '_relaunch_as_admin',
+        dialogs_permissions_module, 'relaunch_as_admin',
         _kwargs_callback(lambda **kwargs: relaunches.append(kwargs) or True),
     )
-    monkeypatch.setattr(app_module.QTimer, 'singleShot', _args_callback(lambda *_args: None))
+    monkeypatch.setattr(dialogs_permissions_module.QTimer, 'singleShot', _args_callback(lambda *_args: None))
     monkeypatch.setattr(
-        app_module,
-        'log_buffer',
+        dialogs_permissions_module, 'log_buffer',
         type(
             'Log',
             (),
@@ -1690,7 +1682,7 @@ def test_windows_upstream_dialog_requests_targeted_firewall_repair(
         def parentWidget(self) -> None:
             return None
 
-    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(dialogs_permissions_module, 'QMessageBox', _MessageBox)
 
     from fleasion.utils import windows_firewall
 
@@ -1728,16 +1720,15 @@ def test_windows_upstream_dialog_escalates_when_firewall_rules_already_exist(
 
     opened: list[str] = []
     calls: list[tuple[object, object]] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(dialogs_permissions_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(dialogs_permissions_module, 'visible_parent_widget', lambda: None)
     monkeypatch.setattr(
         webbrowser,
         'open',
         _str_callback(lambda url: opened.append(url)),
     )
     monkeypatch.setattr(
-        app_module,
-        'log_buffer',
+        dialogs_permissions_module, 'log_buffer',
         type(
             'Log',
             (),
@@ -1787,7 +1778,7 @@ def test_windows_upstream_dialog_escalates_when_firewall_rules_already_exist(
         def clickedButton(self) -> object | None:
             return self._clicked
 
-    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(dialogs_permissions_module, 'QMessageBox', _MessageBox)
 
     from fleasion.utils import windows_firewall
 
@@ -1797,8 +1788,7 @@ def test_windows_upstream_dialog_escalates_when_firewall_rules_already_exist(
         lambda: {'ok': True, 'rules': ['in', 'out'], 'missing': []},
     )
     monkeypatch.setattr(
-        app_module,
-        '_relaunch_as_admin',
+        dialogs_permissions_module, 'relaunch_as_admin',
         _kwargs_callback(
             lambda **_kwargs: (_ for _ in ()).throw(AssertionError('repair should not repeat'))
         ),
@@ -1864,7 +1854,7 @@ def test_windows_desktop_player_launch_uses_env_lifecycle(
         env_lifecycle=_Lifecycle(),
     )
     player_exe = tmp_path / 'Roblox' / 'RobloxPlayerBeta.exe'
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(core_module.sys, 'platform', 'win32')
     monkeypatch.setattr(roblox_monitor_module, 'is_roblox_running', lambda: True)
     monkeypatch.setattr(roblox_monitor_module, 'is_studio_running', lambda: False)
     monkeypatch.setattr(roblox_monitor_module, 'get_roblox_player_exe_path', lambda: player_exe)
@@ -1920,7 +1910,7 @@ def test_linux_browser_sober_launch_is_always_adopted_without_relaunch(
         proxy_master=proxy_master,
         env_lifecycle=_Lifecycle(),
     )
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(core_module.sys, 'platform', 'linux')
     monkeypatch.setattr(roblox_monitor_module, 'is_roblox_running', lambda: True)
     monkeypatch.setattr(roblox_monitor_module, 'is_studio_running', lambda: False)
     monkeypatch.setattr(
@@ -1943,10 +1933,9 @@ def test_linux_instance_uri_uses_sober_without_env_proxy_relaunch(
     )
     target = 'roblox://experiences/start?placeId=1'
 
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(roblox_launch_module.sys, 'platform', 'linux')
     monkeypatch.setattr(
-        app_module,
-        'launch_as_standard_user',
+        roblox_launch_module, 'launch_as_standard_user',
         _str_callback(lambda uri: launches.append(uri) or True),
     )
 
@@ -1970,7 +1959,7 @@ def test_windows_gdk_arming_waits_for_final_proxy_port(monkeypatch: pytest.Monke
             return 'http://127.0.0.1:49152'
 
     monkeypatch.setitem(
-        app_module.sys.modules,
+        roblox_launch_module.sys.modules,
         'fleasion.utils.platform_windows',
         SimpleNamespace(
             arm_roblox_gdk_env_proxy=_str_callback(lambda url: events.append(('arm', url)) or True),
@@ -1978,7 +1967,7 @@ def test_windows_gdk_arming_waits_for_final_proxy_port(monkeypatch: pytest.Monke
         ),
     )
     monkeypatch.setattr(
-        app_module.atexit,
+        roblox_launch_module.atexit,
         'register',
         _object_callback(lambda callback: events.append(('cleanup', callback))),
     )
@@ -2006,7 +1995,7 @@ def test_windows_gdk_arming_stops_when_proxy_is_not_ready(monkeypatch: pytest.Mo
 def test_restart_handoff_token_cannot_select_an_arbitrary_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
 
     assert _restart_handoff_path('../outside') is None
     assert _restart_handoff_path('A' * 32) is None
@@ -2025,8 +2014,8 @@ def test_restart_child_joins_only_after_parent_release(
     token = '9' * 32
     parent_pid = 2121
     child_pid = 3131
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
-    monkeypatch.setattr(app_module.os, 'getpid', lambda: child_pid)
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_handoff_module.os, 'getpid', lambda: child_pid)
     (tmp_path / f'.restart-release-{token}').write_text(str(parent_pid), encoding='utf-8')
 
     assert _join_restart_handoff(token, parent_pid)
@@ -2039,7 +2028,7 @@ def test_restart_child_consumes_abort_before_ownership_transfer(
 ) -> None:
     token = '5' * 32
     parent_pid = 4141
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
     (tmp_path / f'.restart-abort-{token}').write_text(str(parent_pid), encoding='utf-8')
 
     assert not _wait_for_restart_release(token, parent_pid)
@@ -2082,25 +2071,22 @@ def test_restart_handoff_parent_reclaims_only_after_application_exit(
         state['attached'] = True
         return True
 
-    monkeypatch.setattr(app_module, '_wait_for_restart_marker', wait_marker)
+    monkeypatch.setattr(restart_handoff_module, 'wait_for_restart_marker', wait_marker)
     monkeypatch.setattr(
-        app_module, '_pid_is_alive', _int_callback(lambda pid: pid == application_pid)
+        restart_handoff_module, 'pid_is_alive', _int_callback(lambda pid: pid == application_pid)
     )
-    monkeypatch.setattr(app_module, '_suspend_single_instance_for_handoff', suspend)
+    monkeypatch.setattr(restart_handoff_module, 'suspend_single_instance_for_handoff', suspend)
     monkeypatch.setattr(
-        app_module,
-        '_write_restart_handoff_marker',
+        restart_handoff_module, 'write_restart_handoff_marker',
         _marker_callback(lambda _token, phase, value: events.append((phase, value)) or True),
     )
     monkeypatch.setattr(
-        app_module,
-        '_abort_restart_child_and_wait',
+        restart_handoff_module, 'abort_restart_child_and_wait',
         _args_kwargs_callback(lambda *_args, **_kwargs: events.append('abort-confirmed') or True),
     )
-    monkeypatch.setattr(app_module, '_resume_single_instance_after_handoff_failure', resume)
+    monkeypatch.setattr(restart_handoff_module, 'resume_single_instance_after_handoff_failure', resume)
     monkeypatch.setattr(
-        app_module,
-        '_cleanup_restart_handoff',
+        restart_handoff_module, 'cleanup_restart_handoff',
         _str_callback(lambda _token: events.append('cleanup')),
     )
 
@@ -2113,7 +2099,7 @@ def test_restart_handoff_parent_reclaims_only_after_application_exit(
     assert events == [
         'wait-prepared',
         'suspend',
-        ('release', app_module.os.getpid()),
+        ('release', restart_handoff_module.os.getpid()),
         'wait-ready',
         'abort-confirmed',
         'resume',
@@ -2143,32 +2129,29 @@ def test_restart_handoff_reclaim_failure_is_uncertain_even_after_application_exi
         assert expected_value == application_pid
         return None
 
-    monkeypatch.setattr(app_module, '_wait_for_restart_marker', wait_marker)
+    monkeypatch.setattr(restart_handoff_module, 'wait_for_restart_marker', wait_marker)
     monkeypatch.setattr(
-        app_module, '_pid_is_alive', _int_callback(lambda pid: pid == application_pid)
+        restart_handoff_module, 'pid_is_alive', _int_callback(lambda pid: pid == application_pid)
     )
     monkeypatch.setattr(
-        app_module,
-        '_suspend_single_instance_for_handoff',
+        restart_handoff_module, 'suspend_single_instance_for_handoff',
         lambda: events.append('suspend') or True,
     )
     monkeypatch.setattr(
-        app_module, '_write_restart_handoff_marker', _args_callback(lambda *_args: True)
+        restart_handoff_module, 'write_restart_handoff_marker', _args_callback(lambda *_args: True)
     )
     monkeypatch.setattr(
-        app_module,
-        '_abort_restart_child_and_wait',
+        restart_handoff_module, 'abort_restart_child_and_wait',
         _args_kwargs_callback(lambda *_args, **_kwargs: events.append('abort-confirmed') or True),
     )
     monkeypatch.setattr(
-        app_module,
-        '_resume_single_instance_after_handoff_failure',
+        restart_handoff_module, 'resume_single_instance_after_handoff_failure',
         lambda: events.append('resume-failed') or False,
     )
-    monkeypatch.setattr(app_module, '_cleanup_restart_handoff', _str_callback(lambda _token: None))
+    monkeypatch.setattr(restart_handoff_module, 'cleanup_restart_handoff', _str_callback(lambda _token: None))
 
     with pytest.raises(
-        app_module.RestartHandoffUncertain,
+        compatibility_module.RestartHandoffUncertain,
         match='could not restore single-instance ownership',
     ):
         _run_restart_handoff_parent(
@@ -2190,7 +2173,7 @@ def test_resume_single_instance_fails_when_control_server_cannot_be_restored(
     monkeypatch.setattr(_SINGLE_INSTANCE_STATE, 'tray', object())
     monkeypatch.setattr(_SINGLE_INSTANCE_STATE, 'control_server', None)
     monkeypatch.setattr(
-        app_module, '_start_single_instance_control_server', _args_callback(lambda *_args: None)
+        restart_handoff_module, 'start_single_instance_control_server', _args_callback(lambda *_args: None)
     )
 
     assert not _resume_single_instance_after_handoff_failure()
@@ -2219,37 +2202,33 @@ def test_restart_handoff_does_not_reclaim_if_application_exit_is_unconfirmed(
         assert expected_value == application_pid
         return None
 
-    monkeypatch.setattr(app_module, '_wait_for_restart_marker', wait_marker)
+    monkeypatch.setattr(restart_handoff_module, 'wait_for_restart_marker', wait_marker)
     monkeypatch.setattr(
-        app_module, '_pid_is_alive', _int_callback(lambda pid: pid == application_pid)
+        restart_handoff_module, 'pid_is_alive', _int_callback(lambda pid: pid == application_pid)
     )
     monkeypatch.setattr(
-        app_module,
-        '_suspend_single_instance_for_handoff',
+        restart_handoff_module, 'suspend_single_instance_for_handoff',
         lambda: events.append('suspend') or True,
     )
     monkeypatch.setattr(
-        app_module, '_write_restart_handoff_marker', _args_callback(lambda *_args: True)
+        restart_handoff_module, 'write_restart_handoff_marker', _args_callback(lambda *_args: True)
     )
     monkeypatch.setattr(
-        app_module,
-        '_abort_restart_child_and_wait',
+        restart_handoff_module, 'abort_restart_child_and_wait',
         _args_kwargs_callback(
             lambda *_args, **_kwargs: events.append('abort-unconfirmed') or False
         ),
     )
     monkeypatch.setattr(
-        app_module,
-        '_resume_single_instance_after_handoff_failure',
+        restart_handoff_module, 'resume_single_instance_after_handoff_failure',
         lambda: events.append('resume') or True,
     )
     monkeypatch.setattr(
-        app_module,
-        '_cleanup_restart_handoff',
+        restart_handoff_module, 'cleanup_restart_handoff',
         _cleanup_token_kwargs_callback(lambda _token, **_kwargs: None),
     )
 
-    with pytest.raises(app_module.RestartHandoffUncertain):
+    with pytest.raises(compatibility_module.RestartHandoffUncertain):
         _run_restart_handoff_parent(
             token,
             5151,
@@ -2266,9 +2245,9 @@ def test_abort_does_not_treat_dead_onefile_launcher_as_dead_application(
     parent_pid = 6161
     application_pid = 6163
     state = {'launcher_alive': True}
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(
-        app_module, '_pid_is_alive', _int_callback(lambda pid: pid == application_pid)
+        restart_handoff_module, 'pid_is_alive', _int_callback(lambda pid: pid == application_pid)
     )
 
     assert not _abort_restart_child_and_wait(
@@ -2308,28 +2287,24 @@ def test_restart_handoff_success_accepts_onefile_launcher_and_application_pids(
         assert expected_value == application_pid
         return application_pid
 
-    monkeypatch.setattr(app_module, '_wait_for_restart_marker', wait_marker)
+    monkeypatch.setattr(restart_handoff_module, 'wait_for_restart_marker', wait_marker)
     monkeypatch.setattr(
-        app_module, '_pid_is_alive', _int_callback(lambda pid: pid == application_pid)
+        restart_handoff_module, 'pid_is_alive', _int_callback(lambda pid: pid == application_pid)
     )
     monkeypatch.setattr(
-        app_module,
-        '_suspend_single_instance_for_handoff',
+        restart_handoff_module, 'suspend_single_instance_for_handoff',
         lambda: events.append('suspend') or True,
     )
     monkeypatch.setattr(
-        app_module,
-        '_write_restart_handoff_marker',
+        restart_handoff_module, 'write_restart_handoff_marker',
         _marker_callback(lambda _token, phase, value: events.append((phase, value)) or True),
     )
     monkeypatch.setattr(
-        app_module,
-        '_resume_single_instance_after_handoff_failure',
+        restart_handoff_module, 'resume_single_instance_after_handoff_failure',
         lambda: events.append('resume') or True,
     )
     monkeypatch.setattr(
-        app_module,
-        '_cleanup_restart_handoff',
+        restart_handoff_module, 'cleanup_restart_handoff',
         _str_callback(lambda _token: events.append('cleanup')),
     )
 
@@ -2342,7 +2317,7 @@ def test_restart_handoff_success_accepts_onefile_launcher_and_application_pids(
     assert events == [
         'wait-prepared',
         'suspend',
-        ('release', app_module.os.getpid()),
+        ('release', restart_handoff_module.os.getpid()),
         'wait-ready',
         'cleanup',
     ]
@@ -2354,7 +2329,7 @@ def test_restart_marker_rejects_launcher_that_dies_after_writing_marker(
     token = 'b' * 32
     application_pid = 5252
     alive_checks = iter([True, False])
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
     (tmp_path / f'.restart-ready-{token}').write_text(str(application_pid), encoding='utf-8')
 
     assert (
@@ -2386,22 +2361,21 @@ def test_verified_restart_uses_protocol_args_without_kill_others(
         launches.append((launch, kwargs))
         return _Process()
 
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
-    monkeypatch.setattr(app_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
-    monkeypatch.setattr(app_module.subprocess, 'Popen', popen)
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
+    monkeypatch.setattr(restart_module.subprocess, 'Popen', popen)
     monkeypatch.setattr(
-        app_module,
-        '_run_restart_handoff_parent',
+        restart_module, 'run_restart_handoff_parent',
         _handoff_kwargs_callback(
             lambda handoff_token, child_pid, **_kwargs: (
                 handoffs.append((handoff_token, child_pid)) or True
             )
         ),
     )
-    monkeypatch.setattr(app_module.sys, 'frozen', True, raising=False)
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(restart_module.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(restart_module.sys, 'platform', 'linux')
     monkeypatch.setattr(
-        app_module.sys,
+        restart_module.sys,
         'argv',
         [
             'Fleasion',
@@ -2412,11 +2386,11 @@ def test_verified_restart_uses_protocol_args_without_kill_others(
             '--kill-others',
         ],
     )
-    monkeypatch.setattr(app_module.sys, 'executable', '/tmp/Fleasion')
-    monkeypatch.setattr(app_module.os, 'getpid', lambda: 3131)
+    monkeypatch.setattr(restart_module.sys, 'executable', '/tmp/Fleasion')
+    monkeypatch.setattr(restart_module.os, 'getpid', lambda: 3131)
     monkeypatch.setenv('PYINSTALLER_RESET_ENVIRONMENT', 'stale-parent-value')
 
-    assert app_module.restart_fleasion_normally(verify_startup=True)
+    assert restart_module.restart_fleasion_normally(verify_startup=True)
     assert launches[0][0] == [
         '/tmp/Fleasion',
         '--restart-handoff-token',
@@ -2426,7 +2400,7 @@ def test_verified_restart_uses_protocol_args_without_kill_others(
     ]
     launch_env = cast('dict[str, str]', launches[0][1]['env'])
     assert launch_env['PYINSTALLER_RESET_ENVIRONMENT'] == '1'
-    assert app_module.os.environ['PYINSTALLER_RESET_ENVIRONMENT'] == 'stale-parent-value'
+    assert restart_module.os.environ['PYINSTALLER_RESET_ENVIRONMENT'] == 'stale-parent-value'
     assert handoffs == [(token, 6262)]
 
 
@@ -2441,17 +2415,17 @@ def test_verified_restart_keeps_current_process_when_child_dies_before_prepared(
         def poll(self) -> int:
             return 1
 
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
-    monkeypatch.setattr(app_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
     monkeypatch.setattr(
-        app_module.subprocess, 'Popen', _args_kwargs_callback(lambda *_args, **_kwargs: _Process())
+        restart_module.subprocess, 'Popen', _args_kwargs_callback(lambda *_args, **_kwargs: _Process())
     )
-    monkeypatch.setattr(app_module.sys, 'frozen', True, raising=False)
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
-    monkeypatch.setattr(app_module.sys, 'argv', ['Fleasion'])
-    monkeypatch.setattr(app_module.sys, 'executable', '/tmp/Fleasion')
+    monkeypatch.setattr(restart_module.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(restart_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(restart_module.sys, 'argv', ['Fleasion'])
+    monkeypatch.setattr(restart_module.sys, 'executable', '/tmp/Fleasion')
 
-    assert not app_module.restart_fleasion_normally(verify_startup=True)
+    assert not restart_module.restart_fleasion_normally(verify_startup=True)
 
 
 def test_windows_verified_hosts_restart_invokes_uac_directly(
@@ -2459,21 +2433,20 @@ def test_windows_verified_hosts_restart_invokes_uac_directly(
 ) -> None:
     token = 'f' * 32
     relaunches: list[dict[str, object]] = []
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
-    monkeypatch.setattr(app_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module.sys, 'argv', ['Fleasion'])
-    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
-    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
-    monkeypatch.setattr(app_module, '_window_handle', _object_callback(lambda _widget: 123))
-    monkeypatch.setattr(app_module.os, 'getpid', lambda: 8181)
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
+    monkeypatch.setattr(restart_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(restart_module.sys, 'argv', ['Fleasion'])
+    monkeypatch.setattr(restart_module, 'is_admin', lambda: False)
+    monkeypatch.setattr(restart_module, 'visible_parent_widget', lambda: None)
+    monkeypatch.setattr(restart_module, 'window_handle', _object_callback(lambda _widget: 123))
+    monkeypatch.setattr(restart_module.os, 'getpid', lambda: 8181)
     monkeypatch.setattr(
-        app_module,
-        '_relaunch_as_admin',
+        restart_module, 'relaunch_as_admin',
         _kwargs_callback(lambda **kwargs: relaunches.append(kwargs) or True),
     )
     monkeypatch.setattr(
-        app_module.subprocess,
+        restart_module.subprocess,
         'Popen',
         _args_kwargs_callback(
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -2482,7 +2455,7 @@ def test_windows_verified_hosts_restart_invokes_uac_directly(
         ),
     )
 
-    assert app_module.restart_fleasion_normally(verify_startup=True, require_admin=True)
+    assert restart_module.restart_fleasion_normally(verify_startup=True, require_admin=True)
     assert relaunches == [
         {
             'extra_args': '',
@@ -2504,17 +2477,16 @@ def test_windows_verified_hosts_restart_waits_for_final_elevated_child(
     state = {'attached': True, 'launcher_alive': True, 'application_alive': True}
     child_release = threading.Event()
 
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
-    monkeypatch.setattr(app_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module.sys, 'argv', ['Fleasion'])
-    monkeypatch.setattr(app_module.os, 'getpid', lambda: parent_pid)
-    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
-    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
-    monkeypatch.setattr(app_module, '_window_handle', _object_callback(lambda _widget: None))
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
+    monkeypatch.setattr(restart_handoff_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(restart_handoff_module.sys, 'argv', ['Fleasion'])
+    monkeypatch.setattr(restart_handoff_module.os, 'getpid', lambda: parent_pid)
+    monkeypatch.setattr(restart_module, 'is_admin', lambda: False)
+    monkeypatch.setattr(restart_module, 'visible_parent_widget', lambda: None)
+    monkeypatch.setattr(restart_module, 'window_handle', _object_callback(lambda _widget: None))
     monkeypatch.setattr(
-        app_module,
-        '_pid_is_alive',
+        restart_handoff_module, 'pid_is_alive',
         _int_callback(lambda pid: pid == application_pid and state['application_alive']),
     )
 
@@ -2523,15 +2495,14 @@ def test_windows_verified_hosts_restart_waits_for_final_elevated_child(
         state['attached'] = False
         return True
 
-    monkeypatch.setattr(app_module, '_suspend_single_instance_for_handoff', suspend)
+    monkeypatch.setattr(restart_handoff_module, 'suspend_single_instance_for_handoff', suspend)
     monkeypatch.setattr(
         _SINGLE_INSTANCE_STATE,
         'shared_memory',
         SimpleNamespace(isAttached=lambda: state['attached']),
     )
     monkeypatch.setattr(
-        app_module,
-        '_resume_single_instance_after_handoff_failure',
+        restart_handoff_module, 'resume_single_instance_after_handoff_failure',
         lambda: events.append('unexpected-parent-resume') or True,
     )
 
@@ -2561,9 +2532,9 @@ def test_windows_verified_hosts_restart_waits_for_final_elevated_child(
             child_release.set()
             child.join(timeout=1.0)
 
-    monkeypatch.setattr(app_module, '_relaunch_as_admin', simulated_uac_relaunch)
+    monkeypatch.setattr(restart_module, 'relaunch_as_admin', simulated_uac_relaunch)
 
-    assert app_module.restart_fleasion_normally(verify_startup=True, require_admin=True)
+    assert restart_module.restart_fleasion_normally(verify_startup=True, require_admin=True)
     assert events == [
         'elevated-prepared',
         'parent-release-single-instance',
@@ -2578,21 +2549,20 @@ def test_windows_uac_failure_keeps_parent_ownership_for_rollback(
 ) -> None:
     token = '1' * 32
     suspended: list[bool] = []
-    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
-    monkeypatch.setattr(app_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
-    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
-    monkeypatch.setattr(app_module.sys, 'argv', ['Fleasion'])
-    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
-    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
-    monkeypatch.setattr(app_module, '_window_handle', _object_callback(lambda _widget: None))
-    monkeypatch.setattr(app_module, '_relaunch_as_admin', _kwargs_callback(lambda **_kwargs: False))
+    monkeypatch.setattr(restart_handoff_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(restart_module.secrets, 'token_hex', _int_callback(lambda _bytes: token))
+    monkeypatch.setattr(restart_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(restart_module.sys, 'argv', ['Fleasion'])
+    monkeypatch.setattr(restart_module, 'is_admin', lambda: False)
+    monkeypatch.setattr(restart_module, 'visible_parent_widget', lambda: None)
+    monkeypatch.setattr(restart_module, 'window_handle', _object_callback(lambda _widget: None))
+    monkeypatch.setattr(restart_module, 'relaunch_as_admin', _kwargs_callback(lambda **_kwargs: False))
     monkeypatch.setattr(
-        app_module,
-        '_suspend_single_instance_for_handoff',
+        restart_handoff_module, 'suspend_single_instance_for_handoff',
         lambda: suspended.append(True) or True,
     )
 
-    assert not app_module.restart_fleasion_normally(verify_startup=True, require_admin=True)
+    assert not restart_module.restart_fleasion_normally(verify_startup=True, require_admin=True)
     assert suspended == []
 
 
@@ -2928,7 +2898,7 @@ def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(
 ) -> None:
     qt_app = QApplication.instance() or QApplication([])
 
-    monkeypatch.setattr(app_module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(core_module.sys, 'platform', 'darwin')
     config = SimpleNamespace(
         proxy_mode='env',
         proxy_features_enabled=True,
@@ -3004,8 +2974,7 @@ def test_macos_relay_failure_retry_action_restarts_proxy(monkeypatch: pytest.Mon
     invoker = _ProxyErrorInvoker()
     invoker.retry_proxy.connect(lambda: retries.append(None))
     monkeypatch.setattr(
-        app_module,
-        '_show_macos_relay_failed_dialog',
+        dialogs_proxy_module, 'show_macos_relay_failed_dialog',
         _details_callback(lambda _details: 'retry'),
     )
 
@@ -3022,8 +2991,7 @@ def test_macos_relay_failure_reinstall_action_replaces_helper_and_retries(
     invoker = _ProxyErrorInvoker()
     invoker.retry_proxy.connect(lambda: retries.append(None))
     monkeypatch.setattr(
-        app_module,
-        '_show_macos_relay_failed_dialog',
+        dialogs_proxy_module, 'show_macos_relay_failed_dialog',
         _details_callback(lambda _details: 'reinstall'),
     )
     monkeypatch.setattr(

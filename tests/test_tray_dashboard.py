@@ -12,7 +12,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPalette
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from fleasion.app import core as app_module
+from fleasion.app.dialogs import proxy as dialogs_proxy_module
+from fleasion.app import qt_runtime as qt_runtime_module
 from fleasion.app import tray as tray_module
 from fleasion.app.tray import SystemTray
 from fleasion.utils import platform_macos
@@ -61,7 +62,7 @@ def _ensure_exit_action_enabled(tray: SystemTray) -> None:
 
 
 def _check_linux_gui_dependencies() -> bool:
-    callback = cast('Callable[[], bool]', app_module.__dict__['_check_linux_gui_dependencies'])
+    callback = cast('Callable[[], bool]', qt_runtime_module.__dict__['check_linux_gui_dependencies'])
     return callback()
 
 
@@ -83,7 +84,7 @@ def _disable_proxy_features_after_start_failure(
 ) -> None:
     callback = cast(
         'Callable[[object, object | None, str], None]',
-        app_module.__dict__['_disable_proxy_features_after_start_failure'],
+        dialogs_proxy_module.__dict__['disable_proxy_features_after_start_failure'],
     )
     callback(config, tray, reason)
 
@@ -163,7 +164,7 @@ def test_linux_gui_dependency_check_reports_install_command(
 
     critical_calls: list[tuple[object, ...]] = []
     log_calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(qt_runtime_module.sys, 'platform', 'linux')
 
     def missing_packages() -> list[str]:
         return ['qt6-base']
@@ -175,8 +176,8 @@ def test_linux_gui_dependency_check_reports_install_command(
         log_calls.append((category, message))
 
     monkeypatch.setattr(platform_linux, 'missing_linux_gui_packages', missing_packages)
-    monkeypatch.setattr(app_module.QMessageBox, 'critical', critical)
-    monkeypatch.setattr(app_module.log_buffer, 'log', log)
+    monkeypatch.setattr(qt_runtime_module.QMessageBox, 'critical', critical)
+    monkeypatch.setattr(qt_runtime_module.log_buffer, 'log', log)
 
     assert _check_linux_gui_dependencies() is False
     critical_message = cast('str', critical_calls[0][2])
@@ -200,7 +201,7 @@ def test_linux_gui_dependency_check_accepts_complete_runtime(
 ) -> None:
     from fleasion.utils import platform_linux
 
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(qt_runtime_module.sys, 'platform', 'linux')
     monkeypatch.setattr(platform_linux, 'missing_linux_gui_packages', list[str])
 
     assert _check_linux_gui_dependencies() is True
@@ -454,12 +455,12 @@ def test_linux_helper_start_failure_keeps_proxy_features_enabled(
         calls.append('update_status')
 
     tray = SimpleNamespace(update_status=update_status)
-    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(dialogs_proxy_module.sys, 'platform', 'linux')
 
     def warning(*args: object, **kwargs: object) -> None:
         warnings.append((args, kwargs))
 
-    monkeypatch.setattr(app_module.QMessageBox, 'warning', warning)
+    monkeypatch.setattr(dialogs_proxy_module.QMessageBox, 'warning', warning)
 
     _disable_proxy_features_after_start_failure(
         config,

@@ -27,13 +27,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fleasion.app.core import (
-    RestartHandoffUncertain,
-    _is_admin as _app_is_admin,  # pyright: ignore[reportPrivateUsage]
-    _relaunch_as_admin,  # pyright: ignore[reportPrivateUsage]
-    restart_fleasion_normally,
-    show_run_on_boot_failure,
+from fleasion.app.compatibility import RestartHandoffUncertain
+from fleasion.app.dialogs.startup import show_run_on_boot_failure
+from fleasion.app.elevation import (
+    is_admin as _app_is_admin,
+    relaunch_as_admin as _relaunch_as_admin,
 )
+from fleasion.app.restart import restart_fleasion_normally
 from fleasion.gui import (
     AboutWindow,
     DeleteCacheWindow,

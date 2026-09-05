@@ -8,7 +8,7 @@ from typing import Protocol, cast
 from PySide6.QtGui import QScreen
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton, QTextBrowser, QWidget
 
-from fleasion.app import core as app_module
+from fleasion.app.dialogs import common as dialogs_common_module
 
 
 class _FirstTimeDialogLike(Protocol):
@@ -33,7 +33,7 @@ def _qapp() -> QApplication:
 def _new_dialog() -> _FirstTimeDialogLike:
     factory = cast(
         'Callable[[], _FirstTimeDialogLike]',
-        app_module.__dict__['_FirstTimeSetupDialog'],
+        dialogs_common_module.__dict__['FirstTimeSetupDialog'],
     )
     return factory()
 

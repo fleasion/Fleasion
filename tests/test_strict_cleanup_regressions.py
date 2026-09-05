@@ -15,7 +15,9 @@ from PySide6.QtWidgets import QApplication
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from fleasion.app import core as app_module
+from fleasion.app import qt_runtime as qt_runtime_module
+from fleasion.app.dialogs import proxy as dialogs_proxy_module
+from fleasion.app import elevation as elevation_module
 from fleasion.cache import cache_viewer, rbxm_parser
 from fleasion.cache.roblox_document import classify_roblox_document
 from fleasion.cache.tools.solidmodel_converter import converter as solidmodel_converter
@@ -240,15 +242,14 @@ def test_macos_relay_failure_dialog_uses_exported_helper_log_directory(
         return None
 
     monkeypatch.setattr(
-        app_module,
-        'QApplication',
+        dialogs_proxy_module, 'QApplication',
         SimpleNamespace(topLevelWidgets=top_level_widgets),
     )
-    monkeypatch.setattr(app_module, 'QMessageBox', FakeMessageBox)
-    monkeypatch.setattr(app_module, 'get_icon_path', no_icon_path)
+    monkeypatch.setattr(dialogs_proxy_module, 'QMessageBox', FakeMessageBox)
+    monkeypatch.setattr(dialogs_proxy_module, 'get_icon_path', no_icon_path)
     show_dialog = cast(
         'Callable[[dict[str, object]], str]',
-        vars(app_module)['_show_macos_relay_failed_dialog'],
+        vars(dialogs_proxy_module)['show_macos_relay_failed_dialog'],
     )
 
     assert show_dialog({}) == 'close'
@@ -293,15 +294,15 @@ def test_windows_admin_relaunch_passes_string_working_directory(
         return shell32 if name == 'shell32' else kernel32
 
     executable = tmp_path / 'Fleasion.exe'
-    monkeypatch.setattr(app_module.sys, 'argv', ['fleasion'])
-    monkeypatch.setattr(app_module.sys, 'executable', str(executable))
-    monkeypatch.setattr(app_module.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(elevation_module.sys, 'argv', ['fleasion'])
+    monkeypatch.setattr(elevation_module.sys, 'executable', str(executable))
+    monkeypatch.setattr(elevation_module.sys, 'frozen', True, raising=False)
     def append_requesting_user_args(_args: list[str]) -> bool:
         return True
 
-    monkeypatch.setattr(app_module, '_append_windows_requesting_user_args', append_requesting_user_args)
-    monkeypatch.setattr(app_module.ctypes, 'WinDLL', fake_windll, raising=False)
-    relaunch = cast('Callable[..., bool]', vars(app_module)['_relaunch_as_admin_windows'])
+    monkeypatch.setattr(elevation_module, 'append_windows_requesting_user_args', append_requesting_user_args)
+    monkeypatch.setattr(elevation_module.ctypes, 'WinDLL', fake_windll, raising=False)
+    relaunch = cast('Callable[..., bool]', vars(elevation_module)['relaunch_as_admin_windows'])
 
     assert relaunch(
         '',
@@ -504,11 +505,11 @@ def test_gui_sigint_handler_exits_qt_event_loop(monkeypatch: pytest.MonkeyPatch)
         handlers[signum] = handler
         return signal.SIG_DFL
 
-    monkeypatch.setattr(app_module.signal, 'signal', capture_signal)
-    monkeypatch.setattr(app_module, 'QTimer', FakeTimer)
+    monkeypatch.setattr(qt_runtime_module.signal, 'signal', capture_signal)
+    monkeypatch.setattr(qt_runtime_module, 'QTimer', FakeTimer)
     install_handler = cast(
         'Callable[[object], FakeTimer]',
-        vars(app_module)['_install_gui_sigint_handler'],
+        vars(qt_runtime_module)['install_gui_sigint_handler'],
     )
     fake_app = FakeApplication()
 
