@@ -60,9 +60,10 @@ from fleasion.utils.secure_tokens import decrypt_token, encrypt_token
 
 from .modifications_tab import CollapsibleSection
 from .proxy_gate import ProxyGate
+from .theme import ThemeManager
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
 
     from fleasion.config.manager import ConfigManager
     from fleasion.proxy.master import ProxyMaster
@@ -712,6 +713,8 @@ class RandoStuffTab(QWidget):
         parent: QWidget | None = None,
         config_manager: ConfigManager | None = None,
         proxy_master: ProxyMaster | None = None,
+        *,
+        defer_setup: bool = False,
     ) -> None:
         super().__init__(parent)
         self._config = config_manager
@@ -754,7 +757,12 @@ class RandoStuffTab(QWidget):
         self._username_spoofer_current_username = ''
         self._username_spoofer_state = self._load_username_spoofer_settings()
 
-        self._setup_ui()
+        if not defer_setup:
+            for _ in self.build_ui():
+                pass
+
+    def build_ui(self) -> Generator[None]:
+        yield from self._build_ui()
         self._push_username_spoofer_runtime_state()
         if self._config is not None:
             enabled = bool(self._config.multi_instance_launching) and IS_WINDOWS
@@ -1011,12 +1019,12 @@ class RandoStuffTab(QWidget):
 
     # UI
 
-    def _setup_ui(self) -> None:
-        outer = QVBoxLayout()
+    def _build_ui(self) -> Generator[None]:
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        scroll = QScrollArea()
+        scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
 
@@ -1026,6 +1034,9 @@ class RandoStuffTab(QWidget):
         root = QVBoxLayout(container)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
+        self._update_container_bg()
 
         # Match Modifications/Settings: every utility lives in the same
         # collapsible rounded section card instead of a native QGroupBox.
@@ -1085,6 +1096,7 @@ class RandoStuffTab(QWidget):
         self._rejoin_section.add_widget(rejoin_body)
         self._rejoin_proxy_gate = ProxyGate(self._rejoin_section, compact=True)
         root.addWidget(self._rejoin_proxy_gate)
+        yield
 
         self._multi_instance_section = CollapsibleSection(
             tr('ui.gui.rando_stuff_tab.multi_instance'),
@@ -1099,6 +1111,7 @@ class RandoStuffTab(QWidget):
             )
         self._multi_instance_section.add_widget(self._multi_chk)
         root.addWidget(self._multi_instance_section)
+        yield
 
         self._account_manager_section = CollapsibleSection(
             tr('ui.gui.rando_stuff_tab.account_manager'),
@@ -1168,6 +1181,7 @@ class RandoStuffTab(QWidget):
 
         self._account_manager_section.add_widget(account_body)
         root.addWidget(self._account_manager_section)
+        yield
 
         self._populate_account_list()
 
@@ -1254,6 +1268,7 @@ class RandoStuffTab(QWidget):
             compact=True,
         )
         root.addWidget(self._username_spoofer_proxy_gate)
+        yield
 
         self._animation_converter_section = CollapsibleSection(
             tr('ui.gui.rando_stuff_tab.r6_r15_animation_converter'),
@@ -1293,6 +1308,7 @@ class RandoStuffTab(QWidget):
 
         self._animation_converter_section.add_widget(animation_body)
         root.addWidget(self._animation_converter_section)
+        yield
 
         self._subplace_blacklist_section = CollapsibleSection(
             tr('ui.gui.rando_stuff_tab.subplace_blacklist'),
@@ -1334,6 +1350,7 @@ class RandoStuffTab(QWidget):
             compact=True,
         )
         root.addWidget(self._subplace_blacklist_proxy_gate)
+        yield
 
         # Give all spare viewport height to the trailing spacer.  Without a
         # positive stretch factor QVBoxLayout distributes that space back
@@ -1350,13 +1367,9 @@ class RandoStuffTab(QWidget):
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
 
-        scroll.setWidget(container)
-        outer.addWidget(scroll)
         outer.addWidget(footer_widget)
 
         # Connections
-        self.setLayout(outer)
-        self._update_container_bg()
         self._btn.clicked.connect(self._on_rejoin_clicked)
         self._multi_chk.toggled.connect(self._on_multi_instance_toggled)
         self._username_save_chk.toggled.connect(self._on_username_spoofer_save_toggled)
@@ -1389,15 +1402,11 @@ class RandoStuffTab(QWidget):
             self._update_container_bg()
 
     def _update_container_bg(self) -> None:
-        """Keep the Miscellaneous tab background aligned with the tab theme."""
-        pal = self.palette()
-        win_light = pal.window().color().lightness()
-        alt_light = pal.alternateBase().color().lightness()
-        if win_light < 128 and alt_light <= win_light:
-            bg = 'background-color: rgb(64, 64, 64);'
-        else:
-            bg = 'background-color: palette(alternate-base);'
-        self._misc_container.setStyleSheet(f'QWidget#_FleasionMiscContainer {{ {bg} }}')
+        """Keep the tab background aligned with the active theme."""
+        colors = ThemeManager.panel_colors(self.palette())
+        self._misc_container.setStyleSheet(
+            f'QWidget#_FleasionMiscContainer {{ {colors.container_background_css} }}'
+        )
 
     def set_proxy_features_enabled(self, enabled: bool) -> None:
         for gate_name in (

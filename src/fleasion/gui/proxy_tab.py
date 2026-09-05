@@ -80,7 +80,7 @@ class _AutoReplaceRule(TypedDict, total=False):
     path_filter: str
 
 
-class _ConfigManager(Protocol):
+class ProxyTrafficConfig(Protocol):
     settings: dict[str, object]
 
     def save(self) -> None: ...
@@ -98,12 +98,10 @@ def _load_imported_rule_objects(file_path: str) -> list[dict[str, object]]:
         msg = 'expected a list of rules'
         raise TypeError(msg)
     imported_rules = cast('list[object]', imported)
-    return [
-        cast('dict[str, object]', rule) for rule in imported_rules if isinstance(rule, dict)
-    ]
+    return [cast('dict[str, object]', rule) for rule in imported_rules if isinstance(rule, dict)]
 
 
-class _ProxyMaster(Protocol):
+class ProxyTrafficSource(Protocol):
     def get_auto_replace_rules(self) -> list[_AutoReplaceRule]: ...
 
     def set_auto_replace_rules(self, rules: list[_AutoReplaceRule]) -> None: ...
@@ -363,7 +361,7 @@ class _TableColumnResizer(QObject):
         self,
         table: QTableWidget,
         headers: tuple[str, ...],
-        config_manager: _ConfigManager | None,
+        config_manager: ProxyTrafficConfig | None,
         settings_key: str,
     ) -> None:
         super().__init__(table)
@@ -486,8 +484,8 @@ class AutoReplaceRulesDialog(QDialog):
 
     def __init__(
         self,
-        proxy_master: _ProxyMaster | None = None,
-        config_manager: _ConfigManager | None = None,
+        proxy_master: ProxyTrafficSource | None = None,
+        config_manager: ProxyTrafficConfig | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -707,8 +705,8 @@ class ProxyTrafficTab(QWidget):
 
     def __init__(
         self,
-        config_manager: _ConfigManager | None,
-        proxy_master: _ProxyMaster | None = None,
+        config_manager: ProxyTrafficConfig | None,
+        proxy_master: ProxyTrafficSource | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)

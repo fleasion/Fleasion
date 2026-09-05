@@ -9,7 +9,7 @@ import time
 from copy import deepcopy
 from operator import itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, TypedDict, override
+from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, TypedDict, cast, override
 from urllib.error import URLError
 
 from PySide6.QtCore import (
@@ -76,33 +76,40 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
+from fleasion.cache.cache_viewer import CacheViewerTab
 from fleasion.config.manager import (
     local_replacement_path_for_storage,
     resolve_local_replacement_path,
 )
 from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
+from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.http import http_head_status
 
 from .file_drop import FileDropLineEdit, local_file_path_example
+from .modifications_tab import ModificationsTab
 from .proxy_gate import ProxyGate
+from .proxy_tab import ProxyTrafficTab
+from .rando_stuff_tab import RandoStuffTab
+from .settings_tab import SettingsTab
+from .subplace_joiner_tab import SubplaceJoinerTab
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator, Iterator
     from types import TracebackType
     from typing import TypeGuard
 
     from fleasion.app.roblox_monitor import RobloxExitMonitor
-    from fleasion.cache.cache_viewer import CacheViewerTab
+    from fleasion.cache.cache_viewer import CacheScraperSource, CacheViewerConfig as _CacheConfig
     from fleasion.config.manager import ConfigManager
+    from fleasion.gui.modifications_tab import CustomFFlagHotkeyController, ModificationSource
+    from fleasion.gui.proxy_tab import (
+        ProxyTrafficConfig as _TrafficConfig,
+        ProxyTrafficSource as _TrafficProxy,
+    )
+    from fleasion.gui.subplace_joiner_tab import SubplaceJoinerConfig as _JoinerConfig
     from fleasion.modifications.manager import ModificationManager
     from fleasion.proxy.master import ProxyMaster
-
-    from .modifications_tab import ModificationsTab
-    from .proxy_tab import ProxyTrafficTab
-    from .rando_stuff_tab import RandoStuffTab
-    from .settings_tab import SettingsTab
-    from .subplace_joiner_tab import SubplaceJoinerTab
 
 
 def _qt_optional[T](value: T) -> T | None:
@@ -271,36 +278,6 @@ if TYPE_CHECKING:
 
     def _tray_exiting(tray: _SystemTrayLike) -> bool: ...
 
-    def _make_modifications_tab(
-        manager: ModificationManager,
-        monitor: RobloxExitMonitor | None,
-        config: _ConfigManagerLike,
-        proxy: ProxyMaster | None,
-        hotkey: object | None,
-    ) -> ModificationsTab: ...
-
-    def _make_rando_tab(config: _ConfigManagerLike, proxy: ProxyMaster | None) -> RandoStuffTab: ...
-
-    def _make_subplace_tab(
-        rando: RandoStuffTab,
-        config: _ConfigManagerLike,
-        proxy: ProxyMaster | None,
-    ) -> SubplaceJoinerTab: ...
-
-    def _make_proxy_tab(
-        config: _ConfigManagerLike, proxy: ProxyMaster | None
-    ) -> ProxyTrafficTab: ...
-
-    def _make_settings_tab(
-        config: _ConfigManagerLike, tray: _SystemTrayLike | None
-    ) -> SettingsTab: ...
-
-    def _make_cache_viewer_tab(
-        proxy: ProxyMaster,
-        parent: ReplacerConfigWindow,
-        config: _ConfigManagerLike,
-    ) -> CacheViewerTab: ...
-
     def _set_replacer_window_ref(tab: CacheViewerTab, window: ReplacerConfigWindow) -> None: ...
 
     def _register_interceptor(proxy: ProxyMaster, module: object) -> None: ...
@@ -346,61 +323,6 @@ else:
 
     def _tray_exiting(tray: _SystemTrayLike) -> bool:
         return bool(vars(tray)['_exiting'])
-
-    def _make_modifications_tab(
-        manager: ModificationManager,
-        monitor: RobloxExitMonitor | None,
-        config: _ConfigManagerLike,
-        proxy: ProxyMaster | None,
-        hotkey: object | None,
-    ) -> ModificationsTab:
-        modifications_tab = importlib.import_module('.modifications_tab', __package__)
-        return modifications_tab.ModificationsTab(
-            manager,
-            monitor,
-            config_manager=_real_config(config),
-            proxy_master=proxy,
-            hotkey_controller=hotkey,
-        )
-
-    def _make_rando_tab(config: _ConfigManagerLike, proxy: ProxyMaster | None) -> RandoStuffTab:
-        rando_stuff_tab = importlib.import_module('.rando_stuff_tab', __package__)
-        return rando_stuff_tab.RandoStuffTab(
-            config_manager=_real_config(config), proxy_master=proxy
-        )
-
-    def _make_subplace_tab(
-        rando: RandoStuffTab,
-        config: _ConfigManagerLike,
-        proxy: ProxyMaster | None,
-    ) -> SubplaceJoinerTab:
-        subplace_joiner_tab = importlib.import_module('.subplace_joiner_tab', __package__)
-        return subplace_joiner_tab.SubplaceJoinerTab(
-            rando_tab=rando,
-            config_manager=_real_config(config),
-            proxy_master=proxy,
-        )
-
-    def _make_proxy_tab(config: _ConfigManagerLike, proxy: ProxyMaster | None) -> ProxyTrafficTab:
-        proxy_tab = importlib.import_module('.proxy_tab', __package__)
-        return proxy_tab.ProxyTrafficTab(config_manager=_real_config(config), proxy_master=proxy)
-
-    def _make_settings_tab(config: _ConfigManagerLike, tray: _SystemTrayLike | None) -> SettingsTab:
-        settings_tab = importlib.import_module('.settings_tab', __package__)
-        return settings_tab.SettingsTab(_real_config(config), system_tray=tray)
-
-    def _make_cache_viewer_tab(
-        proxy: ProxyMaster,
-        parent: ReplacerConfigWindow,
-        config: _ConfigManagerLike,
-    ) -> CacheViewerTab:
-        cache_module = importlib.import_module('fleasion.cache')
-        return cache_module.CacheViewerTab(
-            proxy.cache_manager,
-            proxy.cache_scraper,
-            parent,
-            config_manager=_real_config(config),
-        )
 
     def _set_replacer_window_ref(tab: CacheViewerTab, window: ReplacerConfigWindow) -> None:
         vars(tab)['_replacer_window_ref'] = window
@@ -1018,6 +940,8 @@ class _ScrollableConfigMenu(QMenu):
 class ReplacerConfigWindow(QDialog):
     """Replacer configuration window with tabs."""
 
+    first_painted = Signal()
+
     def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
         config_manager: _ConfigManagerLike,
@@ -1041,6 +965,19 @@ class ReplacerConfigWindow(QDialog):
         self._dialog_asset_types_popup_last_closed = 0.0
         self._dialog_asset_types_popup: QMenu | None = None
         self._prejsons_dialog: QDialog | None = None
+        self._preload = GuiWork(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._preload.cancel)
+        self._first_paint = False
+        self._closed = False
+        self._cache_viewer_tab: CacheViewerTab | None = None
+        self._settings_tab: SettingsTab | None = None
+        self._rando_stuff_tab: RandoStuffTab | None = None
+        self._subplace_tab: SubplaceJoinerTab | None = None
+        self._registered_module_interceptors: list[object] = []
+        self._tab_pages: dict[str, QWidget] = {}
+        self._tab_indices: dict[str, int] = {}
         self._proxy_gates: list[ProxyGate] = []
         self._env_proxy_gates: list[ProxyGate] = []
 
@@ -1076,8 +1013,20 @@ class ReplacerConfigWindow(QDialog):
             self.restoreGeometry(QByteArray.fromHex(geometry_hex.encode('utf-8')))
 
     @override
+    def paintEvent(self, event: QPaintEvent) -> None:
+        super().paintEvent(event)
+        if not self._first_paint and not self._closed:
+            self._first_paint = True
+            self.first_painted.emit()
+            self._preload.start(self._preload_tabs())
+
+    @override
     def closeEvent(self, event: QCloseEvent) -> None:
         """Save window geometry on close."""
+        self._closed = True
+        self._preload.cancel()
+        if self._cache_viewer_tab is not None:
+            self._cache_viewer_tab.shutdown()
         self.config_manager.window_geometry = _decode_qbytearray_data(
             self.saveGeometry().toHex().data()
         )
@@ -1119,62 +1068,32 @@ class ReplacerConfigWindow(QDialog):
         replacer_tab = self._create_replacer_tab()
         self.tab_widget.addTab(replacer_tab, tr('ui.gui.replacer_config.replacer'))
 
-        # Create Cache tab if proxy_master is available
-        if self.proxy_master and hasattr(self.proxy_master, 'cache_manager'):
-            cache_tab = self._create_cache_tab()
-            self.tab_widget.addTab(cache_tab, tr('ui.gui.replacer_config.scraper'))
-
-        # Create Modifications tab
+        # Reserve the final tab order without constructing hidden pages
+        names: list[tuple[str, str]] = []
+        if self.proxy_master is not None:
+            names.append(('scraper', tr('ui.gui.replacer_config.scraper')))
         if self._mod_manager is not None:
-            modifications_tab = _make_modifications_tab(
-                self._mod_manager,
-                self.roblox_monitor,
-                self.config_manager,
-                self.proxy_master,
-                self._hotkey_controller,
+            names.append(('modifications', tr('ui.gui.replacer_config.modifications')))
+        names.extend(
+            (
+                ('subplace_joiner', tr('ui.gui.replacer_config.subplace_joiner')),
+                ('miscellaneous', tr('ui.gui.replacer_config.miscellaneous')),
+                ('proxy', tr('ui.gui.replacer_config.proxy')),
+                ('settings', tr('ui.gui.replacer_config.settings')),
             )
-            self.tab_widget.addTab(modifications_tab, tr('ui.gui.replacer_config.modifications'))
-
-        # Create Rando Stuff tab
-        self._rando_stuff_tab = _make_rando_tab(
-            self.config_manager,
-            self.proxy_master,
         )
-        self._registered_module_interceptors: list[object] = []
-
-        # Create Subplace Joiner tab
-        self._subplace_tab = _make_subplace_tab(
-            self._rando_stuff_tab,
-            self.config_manager,
-            self.proxy_master,
-        )
-        self._rando_stuff_tab.selected_account_changed.connect(
-            self._subplace_tab.set_selected_account
-        )
-        self.tab_widget.addTab(
-            self._proxy_required(self._subplace_tab), tr('ui.gui.replacer_config.subplace_joiner')
-        )
-        if self.proxy_master is not None:
-            _register_interceptor(self.proxy_master, self._subplace_tab)
-            self._registered_module_interceptors.append(self._subplace_tab)
-
-        self.tab_widget.addTab(self._rando_stuff_tab, tr('ui.gui.replacer_config.miscellaneous'))
-        if self.proxy_master is not None:
-            _register_interceptor(self.proxy_master, self._rando_stuff_tab)
-            self._registered_module_interceptors.append(self._rando_stuff_tab)
-
-        # Create Proxy tab
-        self._proxy_traffic_tab = _make_proxy_tab(
-            self.config_manager,
-            self.proxy_master,
-        )
-        self.tab_widget.addTab(
-            self._env_proxy_required(self._proxy_traffic_tab), tr('ui.gui.replacer_config.proxy')
-        )
-
-        # Create Settings tab
-        self._settings_tab = _make_settings_tab(self.config_manager, self._system_tray)
-        self.tab_widget.addTab(self._settings_tab, tr('ui.gui.replacer_config.settings'))
+        for name, title in names:
+            page = QWidget(self.tab_widget)
+            QVBoxLayout(page).setContentsMargins(0, 0, 0, 0)
+            self._tab_pages[name] = page
+            wrapper = page
+            if name == 'subplace_joiner':
+                wrapper = self._proxy_required(page)
+            elif name == 'proxy':
+                wrapper = self._env_proxy_required(page)
+            index = self.tab_widget.addTab(wrapper, title)
+            self._tab_indices[name] = index
+            self.tab_widget.setTabEnabled(index, False)  # ruff: ignore[boolean-positional-value-in-call]
 
         main_layout.addWidget(self.tab_widget)
 
@@ -1194,8 +1113,87 @@ class ReplacerConfigWindow(QDialog):
         escape_shortcut = QShortcut(QKeySequence('Escape'), self)
         escape_shortcut.activated.connect(self.close)
 
+    def _install_tab(self, name: str, widget: QWidget, *, enabled: bool = True) -> None:
+        page = self._tab_pages[name]
+        layout = cast('QVBoxLayout', page.layout())
+        layout.addWidget(widget)
+        self.tab_widget.setTabEnabled(self._tab_indices[name], enabled)
+        self.set_proxy_features_enabled(self.config_manager.proxy_features_enabled)
+
+    def _preload_tabs(self) -> Generator[None]:
+        config = _real_config(self.config_manager)
+        # The account selector feeds the joiner, so construct it first
+        rando_tab = RandoStuffTab(
+            parent=self._tab_pages['miscellaneous'],
+            config_manager=config,
+            proxy_master=self.proxy_master,
+            defer_setup=True,
+        )
+        yield from rando_tab.build_ui()
+        self._rando_stuff_tab = rando_tab
+        self._install_tab('miscellaneous', self._rando_stuff_tab)
+        if self.proxy_master is not None:
+            _register_interceptor(self.proxy_master, self._rando_stuff_tab)
+            self._registered_module_interceptors.append(self._rando_stuff_tab)
+        yield
+        subplace_tab = SubplaceJoinerTab(
+            rando_tab=self._rando_stuff_tab,
+            config_manager=cast('_JoinerConfig', config),
+            parent=self._tab_pages['subplace_joiner'],
+            defer_setup=True,
+            proxy_master=self.proxy_master,
+        )
+        yield from subplace_tab.build_ui()
+        self._subplace_tab = subplace_tab
+        self._rando_stuff_tab.selected_account_changed.connect(
+            self._subplace_tab.set_selected_account
+        )
+        self._install_tab('subplace_joiner', self._subplace_tab)
+        if self.proxy_master is not None:
+            _register_interceptor(self.proxy_master, self._subplace_tab)
+            self._registered_module_interceptors.append(self._subplace_tab)
+        yield
+        self._proxy_traffic_tab = ProxyTrafficTab(
+            config_manager=cast('_TrafficConfig', config),
+            parent=self._tab_pages['proxy'],
+            proxy_master=cast('_TrafficProxy | None', self.proxy_master),
+        )
+        self._install_tab('proxy', self._proxy_traffic_tab)
+        yield
+        settings_tab = SettingsTab(
+            config,
+            system_tray=self._system_tray,
+            parent=self._tab_pages['settings'],
+            defer_setup=True,
+        )
+        yield from settings_tab.build_ui()
+        self._settings_tab = settings_tab
+        self._install_tab('settings', self._settings_tab)
+        yield
+        if self.proxy_master is not None:
+            cache_tab = self._create_cache_tab()
+            yield from cache_tab.build_ui()
+            self._cache_viewer_tab = cache_tab
+            cache_tab.initial_population_finished.connect(self._enable_scraper_tab)
+            self._install_tab('scraper', cache_tab, enabled=cache_tab.initial_population_ready)
+            yield
+        if self._mod_manager is not None:
+            tab = ModificationsTab(
+                cast('ModificationSource', self._mod_manager),
+                self.roblox_monitor,
+                config_manager=config,
+                proxy_master=self.proxy_master,
+                hotkey_controller=cast(
+                    'CustomFFlagHotkeyController | None', self._hotkey_controller
+                ),
+                parent=self._tab_pages['modifications'],
+                defer_setup=True,
+            )
+            yield from tab.build_ui()
+            self._install_tab('modifications', tab)
+
     def _proxy_required(self, widget: QWidget) -> ProxyGate:
-        gate = ProxyGate(widget)
+        gate = ProxyGate(widget, parent=self.tab_widget)
         self._proxy_gates.append(gate)
         return gate
 
@@ -1203,6 +1201,7 @@ class ReplacerConfigWindow(QDialog):
         gate = ProxyGate(
             widget,
             message=tr('replacer.proxy_gate.env_mode_required'),
+            parent=self.tab_widget,
         )
         self._env_proxy_gates.append(gate)
         return gate
@@ -1218,7 +1217,8 @@ class ReplacerConfigWindow(QDialog):
             gate.set_proxy_enabled(enabled)
 
     def refresh_settings_tab(self) -> None:
-        self._settings_tab.refresh_from_config()
+        if self._settings_tab is not None:
+            self._settings_tab.refresh_from_config()
 
     def apply_cache_viewer_display_setting(
         self,
@@ -1235,20 +1235,17 @@ class ReplacerConfigWindow(QDialog):
             tab.set_show_creator_id(enabled)
 
     def set_cache_scraper_enabled(self, *, enabled: bool) -> None:
-        self._settings_tab.set_cache_scraper_enabled(enabled)
-        if hasattr(self, '_cache_viewer_tab'):
+        if self._settings_tab is not None:
+            self._settings_tab.set_cache_scraper_enabled(enabled)
+        if self._cache_viewer_tab is not None:
             self._cache_viewer_tab.set_cache_scraper_enabled(enabled)
 
     def set_proxy_features_enabled(self, enabled: bool) -> None:
         for gate in self._proxy_gates:
             gate.set_proxy_enabled(enabled)
-        if hasattr(self, '_cache_viewer_tab') and hasattr(
-            self._cache_viewer_tab, 'set_proxy_features_enabled'
-        ):
+        if self._cache_viewer_tab is not None:
             self._cache_viewer_tab.set_proxy_features_enabled(enabled)
-        if hasattr(self, '_rando_stuff_tab') and hasattr(
-            self._rando_stuff_tab, 'set_proxy_features_enabled'
-        ):
+        if self._rando_stuff_tab is not None:
             self._rando_stuff_tab.set_proxy_features_enabled(enabled)
         self.refresh_env_proxy_gate()
 
@@ -1281,16 +1278,25 @@ class ReplacerConfigWindow(QDialog):
         replacer_widget.setLayout(replacer_layout)
         return replacer_widget
 
-    def _create_cache_tab(self) -> QWidget:
+    def _enable_scraper_tab(self) -> None:
+        enabled = True
+        self.tab_widget.setTabEnabled(self._tab_indices['scraper'], enabled)
+
+    def _create_cache_tab(self) -> CacheViewerTab:
         """Create the cache viewer tab."""
         if self.proxy_master is None:
             msg = 'cache tab requires proxy master'
             raise RuntimeError(msg)
-        tab = _make_cache_viewer_tab(self.proxy_master, self, self.config_manager)
+        tab = CacheViewerTab(
+            self.proxy_master.cache_manager,
+            cast('CacheScraperSource', self.proxy_master.cache_scraper),
+            self._tab_pages['scraper'],
+            config_manager=cast('_CacheConfig', self.config_manager),
+            defer_setup=True,
+        )
         # Store direct reference so Send-to-Replacer can find the entry fields
         # regardless of how Qt re-parents the widget when added to QTabWidget.
         _set_replacer_window_ref(tab, self)
-        self._cache_viewer_tab = tab
         return tab
 
     def _create_config_section(self, parent_layout: QVBoxLayout) -> None:

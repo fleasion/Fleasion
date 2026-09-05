@@ -11,12 +11,12 @@ from fleasion.app.cli import parse_application_args
 
 def test_main_starts_application(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
-    app_module = ModuleType('fleasion.app')
+    app_module = ModuleType('fleasion.app.core')
     app_module.__dict__['run_application'] = lambda: calls.append('application')
 
     monkeypatch.setattr(entrypoint.sys, 'argv', ['fleasion'])
     monkeypatch.setattr(entrypoint.sys, 'platform', 'linux')
-    monkeypatch.setitem(sys.modules, 'fleasion.app', app_module)
+    monkeypatch.setitem(sys.modules, 'fleasion.app.core', app_module)
 
     entrypoint.main()
 
@@ -49,7 +49,7 @@ def test_main_preloads_numpy_before_windows_application(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
-    app_module = ModuleType('fleasion.app')
+    app_module = ModuleType('fleasion.app.core')
     app_module.__dict__['run_application'] = lambda: calls.append('application')
     original_import_module = entrypoint.importlib.import_module
 
@@ -62,7 +62,7 @@ def test_main_preloads_numpy_before_windows_application(
     monkeypatch.setattr(entrypoint.sys, 'argv', ['fleasion'])
     monkeypatch.setattr(entrypoint.sys, 'platform', 'win32')
     monkeypatch.setattr(entrypoint.importlib, 'import_module', import_module)
-    monkeypatch.setitem(sys.modules, 'fleasion.app', app_module)
+    monkeypatch.setitem(sys.modules, 'fleasion.app.core', app_module)
 
     entrypoint.main()
 

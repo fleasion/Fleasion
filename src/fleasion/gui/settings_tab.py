@@ -6,6 +6,7 @@ import importlib
 import sys
 from functools import partial
 from pathlib import Path
+from threading import Thread
 from typing import TYPE_CHECKING, Literal, Protocol, cast, override
 
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QTimer
@@ -31,7 +32,12 @@ from fleasion.app.dialogs.startup import show_run_on_boot_failure
 from fleasion.app.roblox_launch import arm_windows_gdk_env_proxy_when_ready
 from fleasion.gui.theme import ThemeManager
 from fleasion.localization import available_languages, get_language, tr
-from fleasion.utils import CONFIG_DIR, get_roblox_player_exe_path, log_buffer, run_in_thread
+from fleasion.utils import (
+    CONFIG_DIR,
+    get_roblox_player_exe_path,
+    log_buffer,
+    run_in_thread,
+)
 from fleasion.utils.autostart import sync_autostart, windows_autostart_privilege_hint
 from fleasion.utils.desktop_integration import sync_desktop_integration
 from fleasion.utils.macos_proxy_helper import helper_is_ready, install_helper
@@ -44,7 +50,7 @@ from fleasion.utils.roblox_auth import (
 from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpinBox
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
 
     from PySide6.QtGui import QAction
 
@@ -52,6 +58,12 @@ if TYPE_CHECKING:
     from fleasion.config.manager import ConfigManager
     from fleasion.modifications.manager import ModificationManager
     from fleasion.proxy.master import ProxyMaster
+
+
+if sys.platform.startswith('linux'):
+    from fleasion.utils import platform_linux
+else:
+    platform_linux = None
 
 
 class _DashboardWindowLike(Protocol):
@@ -190,6 +202,8 @@ class SettingsTab(QWidget):
         config_manager: object,
         system_tray: object | None = None,
         parent: QWidget | None = None,
+        *,
+        defer_setup: bool = False,
     ) -> None:
         super().__init__(parent)
         self._config = cast('ConfigManager', config_manager)
@@ -200,41 +214,62 @@ class SettingsTab(QWidget):
         self._manual_proxy_credentials_timer.timeout.connect(
             self._revert_manual_proxy_without_credentials
         )
-        self._setup_ui()
+        self._linux_status_thread: Thread | None = None
+        self._linux_status_pending = False
+        self._linux_status_text = ''
+        self._linux_status_timer = QTimer(self)
+        self._linux_status_timer.setInterval(25)
+        self._linux_status_timer.timeout.connect(self._receive_linux_client_status)
+        if not defer_setup:
+            for _ in self.build_ui():
+                pass
+
+    def build_ui(self) -> Generator[None]:
+        yield from self._build_ui()
         self._sync_manual_proxy_credentials_timer()
 
     # UI construction
 
-    def _setup_ui(self) -> None:
-        outer = QVBoxLayout()
+    def _build_ui(self) -> Generator[None]:
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        scroll = QScrollArea()
+        scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         container = QWidget()
         container.setObjectName('_FleasionSettingsContainer')
         self._settings_container = container
-        self._container_layout = QVBoxLayout()
+        self._container_layout = QVBoxLayout(container)
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
+        self._update_container_bg()
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
 
         self._container_layout.addWidget(self._build_language_section())
+        yield
         self._container_layout.addWidget(self._build_appearance_section())
+        yield
         if sys.platform.startswith('linux'):
             self._container_layout.addWidget(self._build_linux_client_section())
+            yield
         self._container_layout.addWidget(self._build_proxy_section())
+        yield
         self._container_layout.addWidget(self._build_convenience_section())
+        yield
         if sys.platform == 'darwin':
             self._container_layout.addWidget(self._build_macos_auth_section())
+            yield
         self._container_layout.addWidget(self._build_scraper_section())
+        yield
         self._container_layout.addWidget(self._build_scraped_games_section())
+        yield
         self._container_layout.addWidget(self._build_export_section())
+        yield
         self._container_layout.addStretch()
-
-        container.setLayout(self._container_layout)
 
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -249,11 +284,7 @@ class SettingsTab(QWidget):
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
 
-        scroll.setWidget(container)
-        outer.addWidget(scroll)
         outer.addWidget(footer_widget)
-        self.setLayout(outer)
-        self._update_container_bg()
 
     @override
     def changeEvent(self, a0: QEvent) -> None:
@@ -355,24 +386,46 @@ class SettingsTab(QWidget):
     def _refresh_linux_client_status(self) -> None:
         if not sys.platform.startswith('linux'):
             return
+        if self._linux_status_thread is not None:
+            self._linux_status_pending = True
+            return
+        self._linux_status_thread = Thread(
+            target=self._probe_linux_client_status, name='fleasion-linux-client-probe', daemon=True
+        )
+        self._linux_status_thread.start()
+        self._linux_status_timer.start()
 
-        def linux_client_status_text() -> str:
-            platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+    def _probe_linux_client_status(self) -> None:
+        if platform_linux is None:
+            return
+        try:
             installed = ', '.join(
                 item.display_name for item in platform_linux.linux_client_installations()
             )
             selected = platform_linux.selected_linux_client_display_name()
-            detail = installed or tr('settings.linux_client.none_detected')
-            return tr(
+            self._linux_status_text = tr(
                 'ui.gui.settings_tab.active_value_installed_value_fleasion_routes_linux',
                 value0=selected,
-                value1=detail,
+                value1=installed or tr('settings.linux_client.none_detected'),
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            log_buffer.log('Settings', f'Linux client detection failed: {exc}')
+            self._linux_status_text = tr(
+                'ui.gui.settings_tab.unable_to_detect_linux_roblox_clients'
             )
 
-        status_text, error = _capture_failure(linux_client_status_text)
-        if error is not None or status_text is None:
-            status_text = tr('ui.gui.settings_tab.unable_to_detect_linux_roblox_clients')
-        self._linux_client_status.setText(status_text)
+    def _receive_linux_client_status(self) -> None:
+        thread = self._linux_status_thread
+        if thread is None or thread.is_alive():
+            return
+        thread.join()
+        self._linux_status_thread = None
+        self._linux_status_timer.stop()
+        if self._linux_status_pending:
+            self._linux_status_pending = False
+            self._refresh_linux_client_status()
+            return
+        self._linux_client_status.setText(self._linux_status_text)
 
     def _build_macos_auth_section(self) -> CollapsibleSection:
         section = CollapsibleSection(tr('settings.roblox_login.section'), expanded=True)

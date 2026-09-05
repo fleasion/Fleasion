@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import os
 import signal
 import sys
@@ -19,6 +18,11 @@ from fleasion.utils import (
     log_buffer,
 )
 
+if sys.platform.startswith('linux'):
+    from fleasion.utils import platform_linux
+else:
+    platform_linux = None
+
 
 def configure_opengl_for_legacy_viewers() -> None:
     """Set only platform policy needed by future OpenGL preview widgets."""
@@ -26,13 +30,20 @@ def configure_opengl_for_legacy_viewers() -> None:
         os.environ.setdefault('QT_OPENGL', 'desktop')
 
 
-def check_linux_gui_dependencies() -> bool:
-    """Report native Linux GUI dependencies that Python packaging cannot supply."""
-    if not sys.platform.startswith('linux'):
-        return True
+def linux_gui_dependency_packages() -> list[str]:
+    """Probe native packages without touching Qt widgets."""
+    if not sys.platform.startswith('linux') or platform_linux is None:
+        return []
+    return platform_linux.missing_linux_gui_packages()
 
-    platform_linux = importlib.import_module('fleasion.utils.platform_linux')
-    missing = platform_linux.missing_linux_gui_packages()
+
+def check_linux_gui_dependencies() -> bool:
+    """Check and report native dependencies for synchronous callers."""
+    return report_linux_gui_dependencies(linux_gui_dependency_packages())
+
+
+def report_linux_gui_dependencies(missing: list[str]) -> bool:
+    """Present a completed background probe on the GUI thread."""
     if not missing:
         return True
 

@@ -23,7 +23,7 @@ def main() -> None:
     if sys.platform == 'win32':
         importlib.import_module('numpy')
 
-    from fleasion.app import run_application
+    from fleasion.app.core import run_application
 
     run_application()
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -8,6 +10,7 @@ import pytest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6.QtCore import QObject, QPropertyAnimation, Signal
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -20,6 +23,8 @@ from PySide6.QtWidgets import (
 
 from fleasion import localization
 from fleasion.gui.modifications_tab import CollapsibleSection, ModificationsTab, ModRowWidget
+from fleasion.gui.rando_stuff_tab import RandoStuffTab
+from fleasion.gui.theme import ThemeManager
 from fleasion.localization import get_language, set_language, tr
 from fleasion.translations.pt import PORTUGUESE
 
@@ -444,3 +449,51 @@ def test_collapsed_sections_do_not_absorb_parent_spare_height() -> None:
     host.close()
     host.deleteLater()
     app.processEvents()
+
+
+@pytest.mark.parametrize('tab_name', ['modifications', 'miscellaneous'])
+@pytest.mark.parametrize('theme', ['System', 'Dark', 'Light'])
+def test_preloaded_tab_background_respects_theme(
+    monkeypatch: pytest.MonkeyPatch, tab_name: str, theme: str
+) -> None:
+    app = _qapp()
+    monkeypatch.setattr(ThemeManager, '_current_theme', theme)
+    monkeypatch.setattr(ThemeManager, '_effective_theme', theme)
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor('#2c3040'))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#202433'))
+    original_palette = app.palette()
+    app.setPalette(palette)
+    parent = QWidget()
+    parent.setEnabled(False)
+    if tab_name == 'modifications':
+        factory = cast('Callable[..., ModificationsTab]', ModificationsTab)
+        tab = factory(_FakeModificationManager(), parent=parent, defer_setup=True)
+        container_name = '_FleasionModContainer'
+    else:
+        tab = RandoStuffTab(parent=parent, defer_setup=True)
+        container_name = '_FleasionMiscContainer'
+    build = tab.build_ui()
+    try:
+        next(build)
+        container = tab.findChild(QWidget, container_name)
+        assert container is not None
+        container.ensurePolished()
+        expected = QColor('#404040') if theme == 'Dark' else QColor('#202433')
+        assert container.palette().window().color() == expected
+        parent.setEnabled(True)
+        parent.show()
+        app.processEvents()
+        assert container.palette().window().color() == expected
+
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#182030'))
+        app.setPalette(palette)
+        app.processEvents()
+        expected = QColor('#404040') if theme == 'Dark' else QColor('#182030')
+        assert container.palette().window().color() == expected
+    finally:
+        build.close()
+        parent.close()
+        parent.deleteLater()
+        app.processEvents()
+        app.setPalette(original_palette)

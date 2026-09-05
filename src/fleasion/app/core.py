@@ -25,23 +25,27 @@ from PySide6.QtWidgets import (
 from fleasion import __version__
 from fleasion.app.cli import parse_application_args
 from fleasion.app.compatibility import CompatibilityBoundaryError, call_compatibility_boundary
-from fleasion.app.dialogs import (
-    ProxyErrorInvoker,
-    complete_first_time_setup,
-    disable_proxy_features_after_start_failure,
-    manual_upstream_credentials_missing,
-    prepare_env_proxy_migration,
-    prompt_first_time_language,
-    schedule_startup_auth_check,
-    should_sync_autostart_on_launch,
+from fleasion.app.dialogs.auth import schedule_startup_auth_check
+from fleasion.app.dialogs.common import (
     show_admin_required_dialog,
-    show_desktop_integration_failure,
-    show_env_proxy_migration,
-    show_env_proxy_stale_hosts_dialog,
-    show_roblox_permission_failure,
-    show_run_on_boot_failure,
     visible_parent_widget,
     window_handle,
+)
+from fleasion.app.dialogs.hosts import show_env_proxy_stale_hosts_dialog
+from fleasion.app.dialogs.permissions import show_roblox_permission_failure
+from fleasion.app.dialogs.proxy import (
+    ProxyErrorInvoker,
+    disable_proxy_features_after_start_failure,
+    manual_upstream_credentials_missing,
+)
+from fleasion.app.dialogs.startup import (
+    complete_first_time_setup,
+    prepare_env_proxy_migration,
+    prompt_first_time_language,
+    should_sync_autostart_on_launch,
+    show_desktop_integration_failure,
+    show_env_proxy_migration,
+    show_run_on_boot_failure,
 )
 from fleasion.app.elevation import is_admin, relaunch_as_admin
 from fleasion.app.process_control import (
@@ -51,9 +55,9 @@ from fleasion.app.process_control import (
     request_other_fleasion_instances_exit as _request_other_fleasion_instances_exit,
 )
 from fleasion.app.qt_runtime import (
-    check_linux_gui_dependencies,
     configure_opengl_for_legacy_viewers,
     install_gui_sigint_handler,
+    report_linux_gui_dependencies,
 )
 from fleasion.app.repairs import (
     cleanup_hosts_once,
@@ -81,6 +85,8 @@ from fleasion.app.single_instance import (
     single_instance_state,
     start_single_instance_control_server,
 )
+from fleasion.app.startup_tasks import StartupTasks
+from fleasion.app.tray import SystemTray
 from fleasion.config import ConfigFolderWatcher, ConfigManager
 from fleasion.localization import set_language, tr
 from fleasion.modifications import ModificationManager
@@ -88,7 +94,6 @@ from fleasion.prejsons import download_prejsons
 from fleasion.proxy import ProxyMaster
 from fleasion.utils import (
     APP_NAME,
-    CONFIG_DIR,
     LOG_FILE,
     get_icon_path,
     log_buffer,
@@ -102,13 +107,9 @@ from fleasion.utils.qt_diagnostics import install_qt_message_logging
 if TYPE_CHECKING:
     from PySide6.QtGui import QSessionManager
 
-    from fleasion.app.tray import SystemTray
-
 
 def run_application() -> None:
     """Assemble and run the Fleasion desktop application."""
-    from fleasion.app.tray import SystemTray  # ruff: ignore[import-outside-top-level]
-
     args = parse_application_args()
     if args.fleasion_gdk_debugger:
         platform_windows = importlib.import_module('fleasion.utils.platform_windows')
@@ -208,9 +209,6 @@ def run_application() -> None:
         if sys.platform == 'darwin':
             platform_macos = importlib.import_module('fleasion.utils.platform_macos')
             platform_macos.set_application_icon(icon_path)
-
-    if not check_linux_gui_dependencies():
-        sys.exit(1)
 
     if sys.platform == 'darwin' and is_admin():
         QMessageBox.critical(
@@ -546,34 +544,13 @@ def run_application() -> None:
     # Check for updates in the background
     start_update_check()
 
-    # Sync launch integrations on every launch (updates if launch method changed)
-    # All platforms use per-user launch entries and reconcile from the normal
-    # non-elevated GUI process
-    autostart_launch_sync_failed = False
-    desktop_integration_launch_sync_failed = False
-    if config_manager.first_time_setup_complete and config_manager.desktop_integration:
-        try:
-            lazy_module = importlib.import_module('fleasion.utils.desktop_integration')
-            sync_desktop_integration = lazy_module.sync_desktop_integration
-
-            desktop_integration_launch_sync_failed = not sync_desktop_integration(enabled=True)
-        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            desktop_integration_launch_sync_failed = True
-            log_buffer.log('DesktopIntegration', f'Launch desktop integration sync failed: {exc}')
-
-    if config_manager.first_time_setup_complete and should_sync_autostart_on_launch(
-        config_manager.run_on_boot
-    ):
-        try:
-            autostart = importlib.import_module('fleasion.utils.autostart')
-            autostart_launch_sync_failed = not autostart.sync_autostart(
-                enabled=True,
-                config_dir=CONFIG_DIR,
-                proxy_mode=config_manager.proxy_mode,
-            )
-        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            autostart_launch_sync_failed = True
-            log_buffer.log('Autostart', f'Launch autostart sync failed: {exc}')
+    startup_tasks = StartupTasks(
+        config_manager,
+        autostart=should_sync_autostart_on_launch(config_manager.run_on_boot),
+        parent=app,
+    )
+    app.aboutToQuit.connect(startup_tasks.shutdown)
+    atexit.register(startup_tasks.shutdown)
 
     # Start proxy only if enabled and we have admin rights
     if (
@@ -638,13 +615,6 @@ def run_application() -> None:
 
         QTimer.singleShot(0, _launch_pending_roblox_uri)
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')
-    if autostart_launch_sync_failed:
-        QTimer.singleShot(
-            0,
-            lambda: show_run_on_boot_failure(visible_parent_widget(), config_manager.proxy_mode),
-        )
-    if desktop_integration_launch_sync_failed:
-        QTimer.singleShot(0, lambda: show_desktop_integration_failure(visible_parent_widget()))
 
     def _check_roblox_permission_failures() -> None:
         denied_dirs = mod_manager.take_permission_denied_dirs()
@@ -794,11 +764,18 @@ def run_application() -> None:
         if not publish_restart_handoff(restart_handoff_token):
             sys.exit(1)
 
-    # Warn if no Roblox installations can be found (same scan used for cert injection)
-    lazy_module = importlib.import_module('fleasion.proxy.master')
-    find_roblox_dirs = lazy_module.find_roblox_dirs
-
-    if not find_roblox_dirs():
+    def _startup_checks_completed() -> None:
+        if startup_tasks.stopping:
+            return
+        if not report_linux_gui_dependencies(startup_tasks.missing_packages):
+            tray.exit_app()
+            return
+        if startup_tasks.autostart_failed:
+            show_run_on_boot_failure(visible_parent_widget(), config_manager.proxy_mode)
+        if startup_tasks.desktop_failed:
+            show_desktop_integration_failure(visible_parent_widget())
+        if startup_tasks.roblox_found:
+            return
         top = QApplication.topLevelWidgets()
         parent = next((w for w in top if w.isVisible()), None)
         on_top = any(
@@ -816,6 +793,8 @@ def run_application() -> None:
         if icon_path := get_icon_path():
             no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
         no_roblox_msg.exec()
+
+    startup_tasks.completed.connect(_startup_checks_completed)
 
     # Setup periodic status update
     status_timer = QTimer()
@@ -840,6 +819,11 @@ def run_application() -> None:
     elif not suppress_dashboard and config_manager.open_dashboard_on_launch:
         # Open dashboard on launch if enabled (suppressed when started by autostart task)
         tray.show_replacer_config()
+
+    if tray.dashboard_window is not None:
+        tray.dashboard_window.first_painted.connect(startup_tasks.start)
+    else:
+        QTimer.singleShot(0, startup_tasks.start)
 
     schedule_startup_auth_check(config_manager, tray, app)
 

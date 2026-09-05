@@ -80,6 +80,7 @@ from PySide6.QtWidgets import (
 from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
+from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.json_types import JsonValue, require_json_value
 from fleasion.utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 
@@ -93,7 +94,7 @@ from .rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from .roblox_document import export_roblox_document, get_roblox_document_export_formats
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterator, Sequence
+    from collections.abc import Callable, Collection, Generator, Iterator, Sequence
     from types import TracebackType
 
     from fleasion.config.manager import ConfigManager
@@ -186,7 +187,7 @@ class _RbxmDraft(TypedDict):
     document: PreviewDocument
 
 
-class _CacheScraper(Protocol):
+class CacheScraperSource(Protocol):
     enabled: bool
 
     def set_enabled(self, enabled: bool) -> None: ...
@@ -209,7 +210,7 @@ class _CacheScraper(Protocol):
     ) -> tuple[bytes | None, int | None]: ...
 
 
-class _ConfigManager(Protocol):
+class CacheViewerConfig(Protocol):
     settings: dict[str, object]
     audio_volume: int
     show_names: bool
@@ -380,7 +381,7 @@ def _detect_cache_extension(cache_manager: CacheManager, data: bytes, asset_type
 
 
 def _scraper_https_get(
-    scraper: _CacheScraper,
+    scraper: CacheScraperSource,
     hostname: str,
     path: str,
     extra_headers: dict[str, str] | None,
@@ -390,7 +391,7 @@ def _scraper_https_get(
 
 
 def _scraper_fetch_asset_with_place_id_retry(
-    scraper: _CacheScraper,
+    scraper: CacheScraperSource,
     asset_id: str,
     extra_headers: dict[str, str] | None,
 ) -> tuple[bytes | None, int | None]:
@@ -890,7 +891,7 @@ class TexturePackLoaderThread(QThread):
         self,
         maps: dict[str, str | int],
         cache_manager: CacheManager,
-        cache_scraper: _CacheScraper | None = None,
+        cache_scraper: CacheScraperSource | None = None,
     ) -> None:
         super().__init__()
         self.maps = maps
@@ -980,7 +981,7 @@ class AssetLoaderThread(QThread):
         self,
         asset_ids: list[int],
         cache_manager: CacheManager,
-        cache_scraper: _CacheScraper | None = None,
+        cache_scraper: CacheScraperSource | None = None,
     ) -> None:
         super().__init__()
         self.asset_ids = asset_ids
@@ -1585,13 +1586,16 @@ class CacheViewerTab(QWidget):
     # Signals used to marshal background work back onto the GUI thread.
     _sync_table_requested = Signal()
     _conversion_warning_requested = Signal(str)
+    initial_population_finished = Signal()
 
     def __init__(
         self,
         cache_manager: CacheManager,
-        cache_scraper: _CacheScraper | None = None,
+        cache_scraper: CacheScraperSource | None = None,
         parent: QWidget | None = None,
-        config_manager: _ConfigManager | None = None,
+        config_manager: CacheViewerConfig | None = None,
+        *,
+        defer_setup: bool = False,
     ) -> None:
         super().__init__(parent)
         self.cache_manager = cache_manager
@@ -1612,6 +1616,11 @@ class CacheViewerTab(QWidget):
         self._name_resolver_stop = threading.Event()
         self._name_resolver_thread: threading.Thread | None = None
         self._shutting_down = False
+        self._ui_ready = False
+        self._initial_population = True
+        self.initial_population_ready = False
+        self._table_population = GuiWork(self)
+        self._table_population.finished.connect(self._finish_initial_population)
         self.destroyed.connect(self._name_resolver_stop.set)
         self._current_pixmap: QPixmap | None = None  # Store current image for resize
         # OpenGL preview surfaces are intentionally created only for a 3D
@@ -1686,7 +1695,14 @@ class CacheViewerTab(QWidget):
         # Guard: prevent re-entrant column resize saves during programmatic resizes
         self._resizing_cols: bool = False
 
-        self._setup_ui()
+        if not defer_setup:
+            for _ in self.build_ui():
+                pass
+
+    def build_ui(self) -> Generator[None]:
+        yield from self._build_ui()
+        self._ui_ready = True
+        self.table.horizontalHeader().sectionResized.connect(self._on_column_resized)
         self.set_proxy_features_enabled(self._proxy_features_enabled())
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._check_for_updates)
@@ -1732,7 +1748,10 @@ class CacheViewerTab(QWidget):
         if self._shutting_down:
             return
         self._shutting_down = True
+        self._table_population.cancel()
         self._name_resolver_stop.set()
+        if not self._ui_ready:
+            return
         for timer in (
             self._refresh_timer,
             self._search_debounce,
@@ -2032,13 +2051,13 @@ class CacheViewerTab(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         # Snap splitter in real-time if preview is open
-        if not self.preview_panel.isHidden():
+        if self._ui_ready and not self.preview_panel.isHidden():
             self._auto_snap_splitter()
 
     @override
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
-        if event.type() == QEvent.Type.PaletteChange:
+        if self._ui_ready and event.type() == QEvent.Type.PaletteChange:
             self._update_table_alt_palette()
 
     def _update_table_alt_palette(self) -> None:
@@ -2067,16 +2086,17 @@ class CacheViewerTab(QWidget):
         }
         return ''.join(char_map.get(c, c) for c in name)
 
-    def _setup_ui(self) -> None:
+    def _build_ui(self) -> Generator[None]:
         """Setup the UI."""
-        layout = QVBoxLayout()
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         # Filters (includes scraper toggle and stats)
         self._create_filters(layout)
+        yield
 
         # Splitter for table and preview
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
         # Left side: Asset table
         table_widget = QWidget()
@@ -2085,10 +2105,12 @@ class CacheViewerTab(QWidget):
         self._create_table(table_layout)
         table_widget.setLayout(table_layout)
         self.splitter.addWidget(table_widget)
+        yield
 
         # Right side: Preview panel
         self.preview_panel = self._create_preview_panel()
         self.splitter.addWidget(self.preview_panel)
+        yield
 
         # Set splitter sizes (table gets more space initially)
         self.splitter.setSizes([600, 300])
@@ -2103,8 +2125,8 @@ class CacheViewerTab(QWidget):
 
         # Actions
         self._create_actions(layout)
+        yield
 
-        self.setLayout(layout)
         # Don't refresh here - wait for the queued refresh after persisted names are loaded
         # self._refresh_assets()
 
@@ -2352,9 +2374,6 @@ class CacheViewerTab(QWidget):
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_col_visibility_from_header)
 
-        # Save column widths when the user drags a seam
-        header.sectionResized.connect(self._on_column_resized)
-
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -2581,6 +2600,8 @@ class CacheViewerTab(QWidget):
 
     def _refresh_assets(self) -> None:
         """Refresh the asset list using search worker for all searches."""
+        if self._shutting_down:
+            return
         # Stop any existing search
         if self._search_worker is not None:
             self._search_worker.stop()
@@ -2621,9 +2642,13 @@ class CacheViewerTab(QWidget):
                     'row': None,
                 }
 
-        # For empty search, show all immediately
+        # Spread the initial table population across GUI event-loop turns
         if not search_text:
-            self._populate_table(assets)
+            if self._initial_population:
+                self._initial_population = False
+                self._table_population.start(self._populate_table_steps(assets))
+            else:
+                self._populate_table(assets)
             return
 
         # Always use worker thread for searches to prevent UI freezing
@@ -2635,8 +2660,22 @@ class CacheViewerTab(QWidget):
         self._search_worker.finished.connect(self._on_search_finished)
         self._search_worker.start()
 
+    def _finish_initial_population(self) -> None:
+        if not self.initial_population_ready:
+            self.initial_population_ready = True
+            self.initial_population_finished.emit()
+
     def _populate_table(self, assets: list[_AssetRecord]) -> None:
-        """Populate the table with assets."""
+        """Replace results, cancelling any unfinished startup population."""
+        if self._shutting_down:
+            return
+        self._table_population.cancel()
+        for _ in self._populate_table_steps(assets):
+            pass
+        self._finish_initial_population()
+
+    def _populate_table_steps(self, assets: list[_AssetRecord]) -> Generator[None]:
+        """Populate rows in small batches while other tabs and input advance."""
         # Save scroll anchor
         # Capture the asset_id of the row at the top of the visible viewport
         # so we can scroll back to it after rebuilding the table.
@@ -2800,6 +2839,8 @@ class CacheViewerTab(QWidget):
                 url = asset.get('url', '')
                 url_item = QTableWidgetItem(url)
                 self.table.setItem(row, _COL_KEY_TO_IDX['url'], url_item)
+                if row % 32 == 31:
+                    yield
 
         finally:
             # Re-enable updates
@@ -3061,7 +3102,7 @@ class CacheViewerTab(QWidget):
             self.cache_manager.list_assets(filter_types),
         )
 
-        # For empty search, show all immediately
+        # Spread the initial table population across GUI event-loop turns
         if not search_text:
             self._populate_table(assets)
             return

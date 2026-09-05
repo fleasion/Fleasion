@@ -48,7 +48,7 @@ from fleasion.utils.roblox_auth import (
 from fleasion.utils.windows import launch_as_standard_user
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
     from pathlib import Path
 
     from PySide6.QtCore import QEvent, QPoint
@@ -115,7 +115,7 @@ class _RandoTab(Protocol):
     def close_singleton_event(self) -> None: ...
 
 
-class _ConfigManager(Protocol):
+class SubplaceJoinerConfig(Protocol):
     proxy_mode: str
     proxy_features_enabled: bool
 
@@ -753,8 +753,10 @@ class SubplaceJoinerTab(QWidget):
         self,
         parent: QWidget | None = None,
         rando_tab: _RandoTab | None = None,
-        config_manager: _ConfigManager | None = None,
+        config_manager: SubplaceJoinerConfig | None = None,
         proxy_master: _ProxyMaster | None = None,
+        *,
+        defer_setup: bool = False,
     ) -> None:
         super().__init__(parent)
         self._rando_tab = rando_tab
@@ -781,7 +783,12 @@ class SubplaceJoinerTab(QWidget):
         self._resize_timer.timeout.connect(self._on_resize_settled)
         self._last_cols = 0
 
-        self._setup_ui()
+        if not defer_setup:
+            for _ in self.build_ui():
+                pass
+
+    def build_ui(self) -> Generator[None]:
+        yield from self._build_ui()
         self._load_settings()
         self._rebuild_recent_buttons()
         self._rebuild_favorite_buttons()
@@ -841,12 +848,12 @@ class SubplaceJoinerTab(QWidget):
 
     # UI setup
 
-    def _setup_ui(self) -> None:
+    def _build_ui(self) -> Generator[None]:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        top_frame = QFrame()
+        top_frame = QFrame(self)
         top_frame.setFrameShape(QFrame.Shape.StyledPanel)
         top_frame.setFrameShadow(QFrame.Shadow.Raised)
         top_layout = QVBoxLayout(top_frame)
@@ -866,6 +873,7 @@ class SubplaceJoinerTab(QWidget):
         self.search_btn.clicked.connect(self.on_search_clicked)
         row0.addWidget(self.search_btn, 0)
         top_layout.addLayout(row0)
+        yield
 
         row1 = QHBoxLayout()
         row1.setSpacing(4)
@@ -895,6 +903,7 @@ class SubplaceJoinerTab(QWidget):
         top_layout.addLayout(row1)
 
         root.addWidget(top_frame)
+        yield
 
         main_layout = QHBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -922,6 +931,7 @@ class SubplaceJoinerTab(QWidget):
         self.recent_layout.setSpacing(2)
         self._recent_scroll.setWidget(self.recent_contents)
         sidebar.addWidget(self._recent_scroll, 1)
+        yield
 
         fav_label = QLabel(tr('ui.gui.subplace_joiner_tab.favorited_placeids'))
         fav_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -941,6 +951,7 @@ class SubplaceJoinerTab(QWidget):
         sidebar.addWidget(self._fav_scroll, 1)
 
         main_layout.addLayout(sidebar)
+        yield
 
         # Results area
         self.results_scroll = QScrollArea()
@@ -960,6 +971,7 @@ class SubplaceJoinerTab(QWidget):
         main_layout.addWidget(self.results_scroll, 1)
 
         root.addLayout(main_layout, 1)
+        yield
 
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)

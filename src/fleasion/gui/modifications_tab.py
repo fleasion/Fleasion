@@ -104,7 +104,7 @@ from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
     from typing import ClassVar, TypeIs
 
     from fleasion.app.roblox_monitor import RobloxExitMonitor
@@ -170,7 +170,7 @@ class _PendingModificationsQueueLike(Protocol):
     def enqueue_framerate_cap(self, value: int) -> None: ...
 
 
-class _ModificationManagerLike(Protocol):
+class ModificationSource(Protocol):
     entry_status_changed: SignalInstance
     apply_finished: SignalInstance
     restore_finished: SignalInstance
@@ -205,7 +205,9 @@ class _FastFlagAction(TypedDict, total=False):
 
 type _FastFlagActions = dict[str, _FastFlagAction]
 type _HotkeyCapture = Callable[[str], tuple[bool, _HotkeyBinding | None]]
-type _HotkeyController = WindowsCustomFFlagHotkeyController | LinuxCustomFFlagHotkeyController
+type CustomFFlagHotkeyController = (
+    WindowsCustomFFlagHotkeyController | LinuxCustomFFlagHotkeyController
+)
 type _HotkeyService = WindowsHotkeyService | LinuxHotkeyService
 
 
@@ -1062,7 +1064,7 @@ class ModRowWidget(QWidget):
 
     def __init__(
         self,
-        manager: _ModificationManagerLike,
+        manager: ModificationSource,
         display_name: str,
         target_path: str,
         *,
@@ -1456,7 +1458,7 @@ class ModPreviewDialog(QDialog):
 
     def __init__(
         self,
-        manager: _ModificationManagerLike,
+        manager: ModificationSource,
         target_path: str,
         display_name: str,
         parent: QWidget | None = None,
@@ -3080,7 +3082,7 @@ class CustomFFlagEditor(QWidget):
         config_manager: ConfigManager | None = None,
         proxy_master: ProxyMaster | None = None,
         parent: QWidget | None = None,
-        hotkey_controller: _HotkeyController | None = None,
+        hotkey_controller: CustomFFlagHotkeyController | None = None,
     ) -> None:
         super().__init__(parent)
         self._config = config_manager
@@ -3090,7 +3092,7 @@ class CustomFFlagEditor(QWidget):
         self._hotkeys_supported = self._windows_keybinds or self._linux_keybinds
         self._hotkey_service: _HotkeyService | None = None
         self._linux_hotkey_service: LinuxHotkeyService | None = None
-        self._hotkey_controller: _HotkeyController | None = None
+        self._hotkey_controller: CustomFFlagHotkeyController | None = None
         self._owns_hotkey_controller = False
         if self._windows_keybinds:
             controller_type = cast(
@@ -4121,12 +4123,12 @@ class FFlagSection(QWidget):
 
     def __init__(
         self,
-        manager: _ModificationManagerLike,
+        manager: ModificationSource,
         *,
         roblox_monitor: RobloxExitMonitor | None = None,
         config_manager: ConfigManager | None = None,
         proxy_master: ProxyMaster | None = None,
-        hotkey_controller: _HotkeyController | None = None,
+        hotkey_controller: CustomFFlagHotkeyController | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -4545,12 +4547,14 @@ class ModificationsTab(QWidget):
 
     def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
-        mod_manager: _ModificationManagerLike,
+        mod_manager: ModificationSource,
         roblox_monitor: RobloxExitMonitor | None = None,
         config_manager: ConfigManager | None = None,
         proxy_master: ProxyMaster | None = None,
-        hotkey_controller: _HotkeyController | None = None,
+        hotkey_controller: CustomFFlagHotkeyController | None = None,
         parent: QWidget | None = None,
+        *,
+        defer_setup: bool = False,
     ) -> None:
         super().__init__(parent)
         self._manager = mod_manager
@@ -4561,12 +4565,17 @@ class ModificationsTab(QWidget):
         self._row_widgets: dict[str, ModRowWidget] = {}  # target_path -> widget
         self._custom_rows: list[ModRowWidget] = []
 
-        self._setup_ui()
+        if not defer_setup:
+            for _ in self.build_ui():
+                pass
+
+    def build_ui(self) -> Generator[None]:
+        yield from self._build_ui()
         self._update_status_bar()
 
         # Connect for live status bar updates
-        mod_manager.apply_finished.connect(self._on_apply_finished)
-        mod_manager.restore_finished.connect(self._update_status_bar)
+        self._manager.apply_finished.connect(self._on_apply_finished)
+        self._manager.restore_finished.connect(self._update_status_bar)
 
         # Connect for Roblox player status changes
         if self._roblox_monitor:
@@ -4574,11 +4583,11 @@ class ModificationsTab(QWidget):
                 self._on_roblox_player_status_changed
             )
 
-    def _setup_ui(self) -> None:
-        outer = QVBoxLayout()
+    def _build_ui(self) -> Generator[None]:
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
+        scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
 
@@ -4588,9 +4597,12 @@ class ModificationsTab(QWidget):
         # Scraper tabs).  Without this, Fusion paints through to Window (#202020).
         container.setObjectName('_FleasionModContainer')
         self._mod_container = container
-        self._container_layout = QVBoxLayout()
+        self._container_layout = QVBoxLayout(container)
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
+        self._update_container_bg()
 
         # Fast Flags
         self._fflag_toggle = QCheckBox(
@@ -4615,6 +4627,7 @@ class ModificationsTab(QWidget):
         fflag_section.add_widget(self._fflag_widget)
 
         self._container_layout.addWidget(fflag_section)
+        yield
 
         # Default Skyboxes
         sky_section = CollapsibleSection(
@@ -4633,9 +4646,11 @@ class ModificationsTab(QWidget):
                 _builtin_label(name),
                 path,
                 file_filter=IMAGE_FILTER,
+                parent=sky_section,
             )
             sky_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
 
         # Indoor sub-label
         indoor_label = QLabel(tr('ui.gui.modifications_tab.i_indoor_skybox_i'))
@@ -4648,11 +4663,14 @@ class ModificationsTab(QWidget):
                 _builtin_label(name),
                 path,
                 file_filter=IMAGE_FILTER,
+                parent=sky_section,
             )
             sky_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
 
         self._container_layout.addWidget(sky_section)
+        yield
 
         # Textures
         tex_section = CollapsibleSection(tr('modifications.section.textures'), expanded=True)
@@ -4660,7 +4678,9 @@ class ModificationsTab(QWidget):
             row = ModRowWidget(self._manager, _builtin_label(name), path, file_filter=filt)
             tex_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
         self._container_layout.addWidget(tex_section)
+        yield
 
         # R6 Default Avatar Meshes
         self._mesh_section = CollapsibleSection(
@@ -4683,6 +4703,7 @@ class ModificationsTab(QWidget):
             )
             self._mesh_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
 
         # Add Head Variant button
         add_head_btn = QPushButton(tr('ui.gui.modifications_tab.add_head_variant'))
@@ -4692,6 +4713,7 @@ class ModificationsTab(QWidget):
         self._mesh_section.add_widget(add_head_btn)
 
         self._container_layout.addWidget(self._mesh_section)
+        yield
 
         # Sounds
         sounds_section = CollapsibleSection(tr('modifications.section.sounds'), expanded=True)
@@ -4705,8 +4727,10 @@ class ModificationsTab(QWidget):
             )
             sounds_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
 
         self._container_layout.addWidget(sounds_section)
+        yield
 
         # Custom Font
         font_section = CollapsibleSection(tr('modifications.section.custom_font'), expanded=True)
@@ -4723,6 +4747,7 @@ class ModificationsTab(QWidget):
         )
 
         self._container_layout.addWidget(font_section)
+        yield
 
         # Rebuild persisted head variant rows (headA-headP added in a previous session)
         head_variant_set = set(HEAD_VARIANTS)
@@ -4746,6 +4771,7 @@ class ModificationsTab(QWidget):
                     row,
                 )
                 self._row_widgets[target] = row
+                yield
 
         # Custom Modifications
         self._custom_section = CollapsibleSection(
@@ -4776,13 +4802,10 @@ class ModificationsTab(QWidget):
                 )
 
         self._container_layout.addWidget(self._custom_section)
+        yield
 
         # Stretch at bottom
         self._container_layout.addStretch()
-
-        container.setLayout(self._container_layout)
-        scroll.setWidget(container)
-        outer.addWidget(scroll)
 
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -4798,9 +4821,6 @@ class ModificationsTab(QWidget):
         footer_layout.addWidget(clear_cache_btn)
         outer.addWidget(footer_widget)
 
-        self.setLayout(outer)
-        self._update_container_bg()
-
     @override
     def changeEvent(self, a0: QEvent) -> None:
         super().changeEvent(a0)
@@ -4808,24 +4828,11 @@ class ModificationsTab(QWidget):
             self._update_container_bg()
 
     def _update_container_bg(self) -> None:
-        """Keep the modifications container background consistent across themes.
-
-        On the explicit Dark theme AlternateBase (64,64,64) is lighter than
-        Window (32,32,32), giving a subtle card effect.  On the System theme
-        with Windows dark mode the OS palette can make AlternateBase darker
-        than Window, which looks wrong.  When that happens we force the same
-        card colour the Dark theme uses.
-        """
-        pal = self.palette()
-        win_light = pal.window().color().lightness()
-        alt_light = pal.alternateBase().color().lightness()
-        if win_light < 128 and alt_light <= win_light:
-            # System dark mode: alternate-base is no lighter than window —
-            # force the same card colour as the explicit dark theme.
-            bg = 'background-color: rgb(64, 64, 64);'
-        else:
-            bg = 'background-color: palette(alternate-base);'
-        self._mod_container.setStyleSheet(f'QWidget#_FleasionModContainer {{ {bg} }}')
+        """Keep the tab background aligned with the active theme."""
+        colors = ThemeManager.panel_colors(self.palette())
+        self._mod_container.setStyleSheet(
+            f'QWidget#_FleasionModContainer {{ {colors.container_background_css} }}'
+        )
 
     def _clear_roblox_cache(self) -> None:
         window_type = cast(
@@ -5018,7 +5025,7 @@ def _relative_target_path_for_resource_file(
 class _CustomModDialog(QDialog):
     """Dialog for adding a custom modification entry."""
 
-    def __init__(self, manager: _ModificationManagerLike, parent: QWidget | None = None) -> None:
+    def __init__(self, manager: ModificationSource, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._manager = manager
         self.display_name = ''
