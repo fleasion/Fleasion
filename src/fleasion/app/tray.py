@@ -8,7 +8,7 @@ import importlib
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, override
+from typing import TYPE_CHECKING, override
 
 if sys.platform == 'win32':
     import winreg
@@ -58,16 +58,11 @@ from fleasion.utils import (
 if TYPE_CHECKING:
     from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.config.manager import ConfigManager
+    from fleasion.gui.modifications_tab import CustomFFlagHotkeyController
     from fleasion.modifications.manager import ModificationManager
     from fleasion.proxy.addons.cache_scraper import CacheScraper
     from fleasion.proxy.env_lifecycle import EnvProxyLifecycleController
     from fleasion.proxy.master import ProxyMaster
-
-
-class _HotkeyController(Protocol):
-    def sync(self) -> None: ...
-
-    def stop(self) -> None: ...
 
 
 def _register_notification_app_id(app_id: str, icon_path: Path | None) -> bool:
@@ -276,8 +271,8 @@ class SystemTray:
         self.mod_manager = mod_manager
         self.roblox_monitor = roblox_monitor
 
-        self.custom_fflag_hotkeys: _HotkeyController | None = None
-        hotkey_controller: _HotkeyController | None = None
+        self.custom_fflag_hotkeys: CustomFFlagHotkeyController | None = None
+        hotkey_controller: CustomFFlagHotkeyController | None = None
         if sys.platform == 'win32':
             hotkey_module = importlib.import_module('fleasion.gui.windows_hotkeys')
             hotkey_controller = hotkey_module.WindowsCustomFFlagHotkeyController(
@@ -1010,6 +1005,10 @@ class SystemTray:
             log_buffer.log('App', 'macOS dashboard activation-policy update was rejected')
         elif enabled and (icon_path := get_icon_path()):
             platform_macos.set_application_icon(icon_path)
+
+    @property
+    def exiting(self) -> bool:
+        return self._exiting
 
     def notify_dashboard_closed(self) -> None:
         """Show the tray notice that the app is still running."""

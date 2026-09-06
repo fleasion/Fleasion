@@ -3,7 +3,7 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from types import SimpleNamespace
+from tests.hotkey_fakes import HotkeyConfig, HotkeyProxy
 from typing import Never, cast
 
 import pytest
@@ -83,8 +83,6 @@ def _record_toggled(values: list[str]) -> Callable[[str], None]:
     return record
 
 
-def _refresh_proxy(proxy: SimpleNamespace) -> None:
-    proxy.refresh_calls += 1
 
 
 def test_linux_keybinding_uses_tagged_evdev_codes() -> None:
@@ -170,18 +168,14 @@ def test_linux_modifier_codes_are_combined_generically() -> None:
 
 
 def test_linux_hotkey_controller_toggles_without_the_dashboard() -> None:
-    config = SimpleNamespace(
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagExample': 'True'},
         custom_fflag_disabled=[],
         custom_fflag_keybinds={},
     )
-    proxy = SimpleNamespace(refresh_calls=0)
+    proxy = HotkeyProxy()
 
-    def refresh() -> None:
-        _refresh_proxy(proxy)
-
-    proxy.refresh_custom_fflag_interception = refresh
     controller = LinuxCustomFFlagHotkeyController(config, proxy)
     toggled: list[str] = []
     controller.toggled.connect(_record_toggled(toggled))
@@ -239,7 +233,7 @@ def test_linux_hotkey_reader_does_not_spin_after_all_devices_disconnect(
 
 
 def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:
-    config = SimpleNamespace(
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
         custom_fflag_disabled=[],
@@ -248,12 +242,8 @@ def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:
         custom_fflag_disabled_folders=[],
         custom_fflag_folder_keybinds={},
     )
-    proxy = SimpleNamespace(refresh_calls=0)
+    proxy = HotkeyProxy()
 
-    def refresh() -> None:
-        _refresh_proxy(proxy)
-
-    proxy.refresh_custom_fflag_interception = refresh
     controller = LinuxCustomFFlagHotkeyController(config, proxy)
     toggled: list[str] = []
     controller.toggled.connect(_record_toggled(toggled))
@@ -268,7 +258,7 @@ def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:
 
 
 def test_linux_custom_fflag_actions_can_switch_same_flag_between_values() -> None:
-    config = SimpleNamespace(
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '60'},
         custom_fflag_disabled=[],
@@ -281,10 +271,7 @@ def test_linux_custom_fflag_actions_can_switch_same_flag_between_values() -> Non
             '144 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '144'}},
         },
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    proxy = HotkeyProxy()
     controller = LinuxCustomFFlagHotkeyController(config, proxy)
     toggled: list[str] = []
     controller.toggled.connect(_record_toggled(toggled))

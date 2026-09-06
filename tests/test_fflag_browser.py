@@ -530,6 +530,7 @@ def test_custom_fflag_editor_renders_and_toggles_folder_rows() -> None:
             custom_fflag_folders={'Visual': ['FFlagOne', 'FFlagTwo']},
             custom_fflag_disabled_folders=[],
             custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
         ),
     )
     proxy = cast(

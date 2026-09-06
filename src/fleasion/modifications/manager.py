@@ -74,6 +74,12 @@ from .stash_paths import resource_stash_dir
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+    from fleasion.modifications.types import (
+        FastFlagSettings as _FastFlagSettings,
+        ModificationEntry as _ModificationEntry,
+        NewModificationEntry as _NewModificationEntry,
+    )
+
 
 class _RegistryKey(Protocol):
     def __enter__(self) -> Self: ...
@@ -159,9 +165,7 @@ def _obj_converter_functions() -> tuple[
     Callable[[str], tuple[object, object, object]],
     Callable[[object, object, object], bytes],
 ]:
-    module = importlib.import_module(
-        'fleasion.cache.tools.solidmodel_converter.obj_to_mesh'
-    )
+    module = importlib.import_module('fleasion.cache.tools.solidmodel_converter.obj_to_mesh')
     parser = cast(
         'Callable[[str], tuple[object, object, object]]',
         getattr(module, _PARSE_OBJ_ATTR),
@@ -187,40 +191,6 @@ MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
 MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
 MOD_CACHE_DIR = CONFIG_DIR / 'ModCache'
 READ_ONLY_STATE_FILE = CONFIG_DIR / 'read_only_modes.json'
-
-
-class _NewModificationEntry(TypedDict, total=False):
-    display_name: str
-    target_path: str
-    source_type: str | None
-    source_value: str | None
-    status: str
-    error_message: str | None
-    converted_cache_path: str | None
-    _is_font: bool
-    _apply_gen: int
-
-
-class _ModificationEntry(_NewModificationEntry):
-    id: str
-
-
-class _FastFlagSettings(TypedDict, total=False):
-    rendering_mode: str
-    msaa: str
-    disable_dpi_scale: bool
-    alt_enter_fullscreen: bool
-    texture_quality: str
-    mesh_lod_enabled: bool
-    mesh_lod: int
-    frm_quality_enabled: bool
-    frm_quality: int
-    grey_sky: bool
-    pause_voxelizer: bool
-    grass_max: int | None
-    grass_min: int | None
-    grass_motion: int | None
-    framerate_cap: int | str | None
 
 
 class _GlobalSettings(TypedDict, total=False):
@@ -359,7 +329,7 @@ def _instance_attr(obj: object, name: str, default: object = None) -> object:
     """Read attributes safely on partially initialized QObject test doubles."""
     try:
         return getattr(obj, name)
-    except (AttributeError, RuntimeError):
+    except AttributeError, RuntimeError:
         return default
 
 
@@ -369,13 +339,9 @@ def _instance_attr(obj: object, name: str, default: object = None) -> object:
 def _find_roblox_dirs() -> list[Path]:
     """Locate Roblox resource directories that can receive file modifications."""
     if sys.platform == 'darwin':
-        find_roblox_resource_dirs = _platform_resource_dir_finder(
-            'fleasion.utils.platform_macos'
-        )
+        find_roblox_resource_dirs = _platform_resource_dir_finder('fleasion.utils.platform_macos')
     elif sys.platform.startswith('linux'):
-        find_roblox_resource_dirs = _platform_resource_dir_finder(
-            'fleasion.utils.platform_linux'
-        )
+        find_roblox_resource_dirs = _platform_resource_dir_finder('fleasion.utils.platform_linux')
     else:
         find_roblox_resource_dirs = None
 
@@ -506,7 +472,7 @@ def _find_roblox_dirs() -> list[Path]:
         try:
             is_file = vars(os.path)['isfile']
             has_player = bool(is_file(str(player_path / ROBLOX_PROCESS)))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return
         if has_player:
             _add(player_path)
@@ -1047,10 +1013,7 @@ class ModificationManager(QObject):
         if 'global_settings' not in data:
             data['global_settings'] = _GlobalSettings()
         legacy_framerate = data.get('fast_flags', {}).pop('framerate_cap', None)
-        if (
-            legacy_framerate is not None
-            and data['global_settings'].get('framerate_cap') is None
-        ):
+        if legacy_framerate is not None and data['global_settings'].get('framerate_cap') is None:
             data['global_settings']['framerate_cap'] = legacy_framerate
         return data
 
@@ -1248,9 +1211,7 @@ class ModificationManager(QObject):
         category: str,
         failure_prefix: str,
     ) -> bytes:
-        with _ExceptionBoundary(
-            lambda exc: log_buffer.log(category, f'{failure_prefix}: {exc}')
-        ):
+        with _ExceptionBoundary(lambda exc: log_buffer.log(category, f'{failure_prefix}: {exc}')):
             return action()
         return fallback
 

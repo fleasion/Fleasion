@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ctypes
-import importlib
 import json
 import re
 import secrets
@@ -78,12 +77,6 @@ class Account(TypedDict):
 type UsernameSpooferState = dict[str, object]
 
 
-def _preserve_str(value: object) -> str:
-    if TYPE_CHECKING:
-        assert isinstance(value, str)
-    return value
-
-
 class _WinFunction(Protocol):
     restype: object
 
@@ -129,14 +122,6 @@ resolve_roblox_player_exe_for_launch = cast(
 
 def _set_signals_blocked(obj: QObject, *, blocked: bool) -> None:
     obj.blockSignals(blocked)
-
-
-def _import_attr(module_name: str, attr_name: str) -> object:
-    return vars(importlib.import_module(module_name))[attr_name]
-
-
-def _delete_cache_window_type() -> type[QWidget]:
-    return cast('type[QWidget]', _import_attr('fleasion.gui.delete_cache', 'DeleteCacheWindow'))
 
 
 def _encrypt_cookie(cookie: str) -> str:
@@ -212,7 +197,7 @@ def _run_proxy_action(
     _run_contained_action(action, _handle_error)
 
 
-def _get_auth_ticket(cookie: str) -> str | None:
+def get_auth_ticket(cookie: str) -> str | None:
     """Fetch a Roblox authentication ticket using the user's cookie."""
     url = 'https://auth.roblox.com/v1/authentication-ticket'
     headers = {
@@ -442,7 +427,7 @@ def _resolve_share_link_impl(link: str, cookie: str) -> tuple[str, str]:
     def _extract(d: dict[str, object]) -> tuple[str, str]:
         pid = str(d.get('placeId') or d.get('rootPlaceId') or '')
         lc = d.get('privateServerLinkCode') or d.get('linkCode') or d.get('accessCode') or ''
-        return pid, _preserve_str(lc)
+        return pid, str(lc)
 
     place_id, link_code = _extract(data)
     for key in (
@@ -479,10 +464,8 @@ def _linux_client_display_name() -> str:
     if not IS_LINUX:
         return tr('rando.linux_roblox_client')
     try:
-        display_name = cast(
-            'Callable[[], str]',
-            _import_attr('fleasion.utils.platform_linux', 'selected_linux_client_display_name'),
-        )
+        from fleasion.utils.platform_linux import selected_linux_client_display_name as display_name
+
         return display_name()
     except ImportError, KeyError, OSError, RuntimeError:
         return tr('rando.linux_roblox_client')
@@ -1419,7 +1402,9 @@ class RandoStuffTab(QWidget):
                 gate.set_proxy_enabled(enabled)
 
     def _clear_roblox_cache(self) -> None:
-        window = _delete_cache_window_type()()
+        from fleasion.gui.delete_cache import DeleteCacheWindow
+
+        window = DeleteCacheWindow()
         window.show()
 
     # Rejoin
@@ -1622,11 +1607,14 @@ class RandoStuffTab(QWidget):
                 lambda exc: log_buffer.log('multiinstance', f'Error: {exc}'),
             )
 
+    @property
+    def account_switched(self) -> bool:
+        return self._account_switched
+
     def _get_roblox_pids(self) -> set[int]:
-        if TYPE_CHECKING:
-            kernel32 = cast('_Kernel32', object())
-        else:
-            kernel32 = ctypes.windll.kernel32
+        if sys.platform != 'win32':
+            return set()
+        kernel32 = cast('_Kernel32', ctypes.windll.kernel32)
         kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
         kernel32.Process32FirstW.restype = wintypes.BOOL
         kernel32.Process32NextW.restype = wintypes.BOOL
@@ -1682,14 +1670,11 @@ class RandoStuffTab(QWidget):
 
     def _scan_and_close_singleton(self, pid: int) -> bool:
         """Scan `pid` for a ROBLOX_singletonEvent handle and close it. Returns True if closed."""
-        if TYPE_CHECKING:
-            ntdll = cast('_Ntdll', object())
-            kernel32 = cast('_Kernel32', object())
-            kernelbase = cast('_KernelBase', object())
-        else:
-            ntdll = ctypes.windll.ntdll
-            kernel32 = ctypes.windll.kernel32
-            kernelbase = ctypes.windll.kernelbase
+        if sys.platform != 'win32':
+            return False
+        ntdll = cast('_Ntdll', ctypes.windll.ntdll)
+        kernel32 = cast('_Kernel32', ctypes.windll.kernel32)
+        kernelbase = cast('_KernelBase', ctypes.windll.kernelbase)
 
         kernel32.OpenEventW.restype = wintypes.HANDLE
         kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -2181,7 +2166,7 @@ class RandoStuffTab(QWidget):
 
     def _get_launch_auth_ticket(self, cookie: str, mode: str) -> str | None:
         log_buffer.log('accounts', f'Requesting auth ticket for {mode} launch')
-        ticket = _get_auth_ticket(cookie)
+        ticket = get_auth_ticket(cookie)
         if ticket:
             log_buffer.log('accounts', f'Auth-ticket retrieval succeeded for {mode} launch')
         else:
@@ -2451,10 +2436,8 @@ class RandoStuffTab(QWidget):
 
         # Detect rig from original bytes (binary parser handles .bin/.rbxm natively)
         try:
-            detect_rig = cast(
-                'Callable[[bytes], str]',
-                _import_attr('fleasion.utils.anim_converter', 'detect_rig'),
-            )
+            from fleasion.utils.anim_converter import detect_rig
+
             rig = detect_rig(data)
         except ImportError, KeyError, RuntimeError, TypeError, ValueError:
             rig = tr('rando.rig.unknown')
@@ -2462,10 +2445,8 @@ class RandoStuffTab(QWidget):
         # Auto-convert binary .rbxm -> .rbxmx so _ac_convert has XML to work with
         if p.suffix.lower() == '.rbxm':
             try:
-                rbxm_to_rbxmx = cast(
-                    'Callable[[bytes], bytes]',
-                    _import_attr('fleasion.utils.anim_converter', 'rbxm_to_rbxmx'),
-                )
+                from fleasion.utils.anim_converter import rbxm_to_rbxmx
+
                 data = rbxm_to_rbxmx(data)
                 self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.auto_converted_rbxm_rbxmx'))
             except (ImportError, KeyError, RuntimeError, TypeError, ValueError) as exc:
@@ -2485,31 +2466,22 @@ class RandoStuffTab(QWidget):
         self._ac_to_r15_btn.setEnabled(rig == 'R6')
 
     def _convert_loaded_animation(self, target: str) -> None:
-        converter_module = 'fleasion.utils.r15_to_r6'
-        convert_keyframe_r6_to_r15 = cast(
-            'Callable[..., None]',
-            _import_attr(converter_module, 'convert_keyframe_r6_to_r15'),
+        from fleasion.utils.r15_to_r6 import (
+            convert_keyframe_r6_to_r15,
+            convert_keyframe_r15_to_r6,
+            sanitize_xml,
         )
-        convert_keyframe_r15_to_r6 = cast(
-            'Callable[..., None]',
-            _import_attr(converter_module, 'convert_keyframe_r15_to_r6'),
+        from fleasion.utils.rig_data import (
+            R6_JOINTS,
+            R6_PARTS,
+            R15_JOINTS,
+            R15_PARTS,
         )
-        sanitize_xml = cast(
-            'Callable[[bytes], str]',
-            _import_attr(converter_module, 'sanitize_xml'),
-        )
-        rig_module = 'fleasion.utils.rig_data'
-        r6_joints = _import_attr(rig_module, 'R6_JOINTS')
-        r6_parts = _import_attr(rig_module, 'R6_PARTS')
-        r15_joints = _import_attr(rig_module, 'R15_JOINTS')
-        r15_parts = _import_attr(rig_module, 'R15_PARTS')
 
         xml_bytes = self._ac_xml_bytes
         if b'CurveAnimation' in xml_bytes:
-            curve_anim_to_keyframe = cast(
-                'Callable[[bytes], bytes]',
-                _import_attr('fleasion.utils.anim_converter', 'curve_anim_to_keyframe'),
-            )
+            from fleasion.utils.anim_converter import curve_anim_to_keyframe
+
             xml_bytes = curve_anim_to_keyframe(xml_bytes)
 
         root = DefusedElementTree.fromstring(sanitize_xml(xml_bytes))
@@ -2526,19 +2498,19 @@ class RandoStuffTab(QWidget):
             for keyframe in keyframes:
                 convert_keyframe_r15_to_r6(
                     keyframe,
-                    r6_parts,
-                    r6_joints,
-                    r15_parts,
-                    r15_joints,
+                    R6_PARTS,
+                    R6_JOINTS,
+                    R15_PARTS,
+                    R15_JOINTS,
                 )
         else:
             for keyframe in keyframes:
                 convert_keyframe_r6_to_r15(
                     keyframe,
-                    r6_parts,
-                    r6_joints,
-                    r15_parts,
-                    r15_joints,
+                    R6_PARTS,
+                    R6_JOINTS,
+                    R15_PARTS,
+                    R15_JOINTS,
                 )
 
         suffix = '_r6' if target == 'R6' else '_r15'
@@ -2608,8 +2580,8 @@ class RandoStuffTab(QWidget):
         if place_id is None or access_code is None:
             return
         with self._lock:
-            self._last_place_id = _preserve_str(place_id)
-            self._last_access_code = _preserve_str(access_code)
+            self._last_place_id = str(place_id)
+            self._last_access_code = str(access_code)
             self._last_session_id = session_id or None
         has_session = bool(session_id)
         log_buffer.log(
@@ -2778,9 +2750,7 @@ class RandoStuffTab(QWidget):
             msg = 'Proxy response is unavailable while capturing account-manager job ID'
             raise RuntimeError(msg)
         resp_json = _json_object(response.content)
-        job_id = _extract_job_id(
-            _preserve_str(resp_json.get('jobId') or resp_json.get('gameId') or '')
-        )
+        job_id = _extract_job_id(str(resp_json.get('jobId') or resp_json.get('gameId') or ''))
         if not job_id:
             return
         self._game_jobs[capture_place_id] = job_id

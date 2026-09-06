@@ -305,3 +305,30 @@ def test_cache_population_yields_and_restores_table_state_on_cancel(
         tab.shutdown()
         tab.close()
         app.processEvents()
+
+
+def test_gui_import_defers_heavy_preview_dependencies() -> None:
+    import subprocess
+    import sys
+
+    code = '''
+import sys
+import fleasion.gui
+
+deferred_modules = {
+    'fleasion.cache.obj_viewer',
+    'fleasion.cache.animation_viewer',
+    'fleasion.utils.anim_converter',
+    'fleasion.utils.r15_to_r6',
+}
+loaded = deferred_modules.intersection(sys.modules)
+assert not loaded, f'GUI import loaded deferred dependencies: {sorted(loaded)}'
+'''
+    result = subprocess.run(
+        [sys.executable, '-c', code],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr

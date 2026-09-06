@@ -67,3 +67,21 @@ def test_relative_target_path_for_resource_file_requires_known_roblox_root(tmp_p
 
     assert _relative_target_path_for_resource_file(target, [resources]) == 'content/sounds/oof.ogg'
     assert _relative_target_path_for_resource_file(outside, [resources]) is None
+
+
+def test_file_drop_line_edit_accepts_text_and_parent_constructor_forms() -> None:
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    parent = QLineEdit()
+    child = FileDropLineEdit(parent)
+    populated = FileDropLineEdit('/tmp/asset.png', parent)
+    try:
+        assert child.parent() is parent
+        assert child.text() == ''
+        assert populated.parent() is parent
+        assert populated.text() == '/tmp/asset.png'
+        assert child.acceptDrops() and populated.acceptDrops()
+    finally:
+        parent.deleteLater()
+        app.processEvents()

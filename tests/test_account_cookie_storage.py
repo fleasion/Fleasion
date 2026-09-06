@@ -425,7 +425,7 @@ def test_account_launch_preseeds_root_for_distinct_subplace(
     preseeded: list[tuple[str, str]] = []
 
     monkeypatch.setattr(rando_stuff_tab, '_find_roblox_exe', _find_fake_roblox_exe)
-    monkeypatch.setattr(rando_stuff_tab, '_get_auth_ticket', _cookie_ticket)
+    monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', _cookie_ticket)
     monkeypatch.setattr(rando_stuff_tab, 'launch_as_standard_user', _record_launch(launched))
     monkeypatch.setattr(
         rando_stuff_tab,
@@ -453,7 +453,7 @@ def test_account_private_server_subplace_launch_preserves_private_game_uri(
     preseeded: list[tuple[str, str]] = []
 
     monkeypatch.setattr(rando_stuff_tab, '_find_roblox_exe', _find_fake_roblox_exe)
-    monkeypatch.setattr(rando_stuff_tab, '_get_auth_ticket', _cookie_ticket)
+    monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', _cookie_ticket)
     monkeypatch.setattr(rando_stuff_tab, '_get_access_code', _access_code)
     monkeypatch.setattr(rando_stuff_tab, 'launch_as_standard_user', _record_launch(launched))
     monkeypatch.setattr(
@@ -490,7 +490,7 @@ def test_account_plain_windows_launch_uses_app_auth_ticket_uri(
     monkeypatch.setattr(rando_stuff_tab, 'IS_WINDOWS', True)
     monkeypatch.setattr(rando_stuff_tab, 'IS_MACOS', False)
     monkeypatch.setattr(rando_stuff_tab, '_find_roblox_exe', _find_fake_roblox_exe)
-    monkeypatch.setattr(rando_stuff_tab, '_get_auth_ticket', _cookie_ticket)
+    monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', _cookie_ticket)
     monkeypatch.setattr(rando_stuff_tab, 'launch_as_standard_user', _record_launch(launched))
     owner.__dict__['_write_cookie_to_dat'] = _noop_cookie_write
 

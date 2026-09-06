@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from functools import partial
 from pathlib import Path
 from threading import Thread
-from typing import TYPE_CHECKING, Literal, Protocol, cast, override
+from typing import TYPE_CHECKING, Literal, cast, override
 
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -52,59 +51,14 @@ from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpin
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    from PySide6.QtGui import QAction
-
-    from fleasion.app.roblox_monitor import RobloxExitMonitor
+    from fleasion.app.tray import SystemTray
     from fleasion.config.manager import ConfigManager
-    from fleasion.modifications.manager import ModificationManager
-    from fleasion.proxy.master import ProxyMaster
 
 
 if sys.platform.startswith('linux'):
     from fleasion.utils import platform_linux
 else:
     platform_linux = None
-
-
-class _DashboardWindowLike(Protocol):
-    def apply_cache_viewer_display_setting(
-        self,
-        setting: Literal['show_names', 'show_creator_id'],
-        *,
-        enabled: bool,
-    ) -> None: ...
-
-    def set_cache_scraper_enabled(self, *, enabled: bool) -> None: ...
-
-
-class _SystemTrayLike(Protocol):
-    proxy_master: ProxyMaster
-    mod_manager: ModificationManager | None
-    roblox_monitor: RobloxExitMonitor | None
-    dashboard_window: _DashboardWindowLike | None
-    open_windows: list[QWidget]
-    theme_actions: dict[str, QAction]
-    export_naming_actions: dict[str, QAction]
-    open_dashboard_action: QAction
-    run_on_boot_action: QAction
-    desktop_integration_action: QAction
-    always_on_top_action: QAction
-    close_to_tray_action: QAction
-    auto_delete_cache_action: QAction
-    clear_cache_action: QAction
-    close_scraped_games_action: QAction
-    close_viewer_on_replace_action: QAction
-    close_scraped_games_menu_on_open_action: QAction
-    show_replacer_notifications_action: QAction
-    show_names_action: QAction
-    show_creator_id_action: QAction
-    cache_scraper_action: QAction
-
-    set_proxy_features_enabled: Callable[[bool], None]
-
-    def restart_fleasion(self) -> bool | None: ...
-
-    def notify_proxy_mode_changed(self) -> None: ...
 
 
 def _set_signals_blocked(obj: QObject, *, blocked: bool) -> None:
@@ -199,15 +153,15 @@ class SettingsTab(QWidget):
 
     def __init__(
         self,
-        config_manager: object,
-        system_tray: object | None = None,
+        config_manager: ConfigManager,
+        system_tray: SystemTray | None = None,
         parent: QWidget | None = None,
         *,
         defer_setup: bool = False,
     ) -> None:
         super().__init__(parent)
-        self._config = cast('ConfigManager', config_manager)
-        self._tray = cast('_SystemTrayLike | None', system_tray)
+        self._config = config_manager
+        self._tray = system_tray
         self._manual_proxy_credentials_timer = QTimer(self)
         self._manual_proxy_credentials_timer.setSingleShot(True)
         self._manual_proxy_credentials_timer.setInterval(10_000)
@@ -348,7 +302,8 @@ class SettingsTab(QWidget):
         return section
 
     def _build_linux_client_section(self) -> CollapsibleSection:
-        linux_clients = importlib.import_module('fleasion.utils.linux_clients')
+        from fleasion.utils import linux_clients
+
         linux_client_descriptors = linux_clients.LINUX_CLIENTS
 
         section = CollapsibleSection(tr('settings.linux_client.section'), expanded=True)
@@ -852,7 +807,8 @@ class SettingsTab(QWidget):
     # Handlers
 
     def _clear_roblox_cache(self) -> None:
-        delete_cache = importlib.import_module('.delete_cache', __package__)
+        from . import delete_cache
+
         window = delete_cache.DeleteCacheWindow()
         window.show()
 
@@ -924,7 +880,8 @@ class SettingsTab(QWidget):
             mod_manager.restore_all()
 
         self._config.linux_client = new_client
-        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+        from fleasion.utils import platform_linux
+
         platform_linux.set_linux_client_preference(new_client)
 
         if mod_manager is not None:
@@ -990,7 +947,8 @@ class SettingsTab(QWidget):
                 and monitor.is_player_running()
             ):
                 if sys.platform.startswith('linux'):
-                    platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+                    from fleasion.utils import platform_linux
+
                     exe_path = Path(platform_linux.selected_linux_client_app_id())
                 else:
                     exe_path = get_roblox_player_exe_path()
@@ -1221,7 +1179,8 @@ class SettingsTab(QWidget):
     def _on_import_manual_token(self) -> None:
         if sys.platform != 'darwin':
             return
-        rando_stuff_tab = importlib.import_module('.rando_stuff_tab', __package__)
+        from . import rando_stuff_tab
+
         dlg = rando_stuff_tab.AddAccountDialog(
             self, title=tr('settings.roblox_login.import_token_title')
         )

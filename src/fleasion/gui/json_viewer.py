@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip as gzip_module
-import importlib
 import io
 import json
 import struct
@@ -12,7 +11,7 @@ import zlib
 from collections.abc import Callable, Iterator
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast, override
+from typing import TYPE_CHECKING, Protocol, override
 from urllib.parse import urlparse
 
 import requests as _requests
@@ -47,11 +46,8 @@ from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 from fleasion.utils.json_types import JsonValue, require_object_dict, require_object_list
 
 if TYPE_CHECKING:
-    from fleasion.cache.animation_viewer import AnimationViewerPanel
     from fleasion.cache.audio_player import AudioPlayerWidget
-    from fleasion.cache.cache_json_viewer import CacheJsonViewer
     from fleasion.cache.font_viewer import FontViewerWidget
-    from fleasion.cache.obj_viewer import ObjViewerPanel
     from fleasion.config.manager import ConfigManager
 
 
@@ -60,10 +56,6 @@ type ImportIdsCallback = Callable[[list[ImportValue]], object]
 type ImportReplacementCallback = Callable[[ImportValue], object]
 type TreeItemPath = tuple[int, ...]
 type TreeSearchSnapshot = list[tuple[TreeItemPath, str]]
-
-
-class _ExportObjFromDoc(Protocol):
-    def __call__(self, doc: object, output_path: Path, *, decompose: bool = False) -> None: ...
 
 
 class _CacheScraperLike(Protocol):
@@ -85,148 +77,73 @@ class _CacheScraperLike(Protocol):
     ) -> bytes | None: ...
 
 
-def _import_attr(module_name: str, attr_name: str) -> object:
-    return vars(importlib.import_module(module_name))[attr_name]
-
-
-def _convert_mesh(data: bytes) -> str | None:
-    convert = cast(
-        'Callable[[bytes], str | None]',
-        _import_attr('fleasion.cache.mesh_processing', 'convert'),
-    )
-    return convert(data)
-
-
-def _creator_game_settings() -> tuple[
-    int,
-    tuple[int, ...],
-    Callable[[int, int, int], list[str]],
-]:
-    module_name = 'fleasion.proxy.addons.cache_scraper'
-    max_scan = cast('int', _import_attr(module_name, 'CREATOR_GAME_MAX_SCAN'))
-    page_limits = cast('tuple[int, ...]', _import_attr(module_name, 'CREATOR_GAME_PAGE_LIMITS'))
-    base_paths = cast(
-        'Callable[[int, int, int], list[str]]',
-        _import_attr(module_name, 'creator_game_base_paths'),
-    )
-    return max_scan, page_limits, base_paths
-
-
-def _solid_model_tools() -> tuple[Callable[[bytes], object], _ExportObjFromDoc]:
-    module_name = 'fleasion.cache.tools.solidmodel_converter.converter'
-    deserialize = cast('Callable[[bytes], object]', _import_attr(module_name, 'deserialize_rbxm'))
-    export_obj = cast('_ExportObjFromDoc', _import_attr(module_name, '_export_obj_from_doc'))
-    return deserialize, export_obj
-
-
-def _animation_viewer_panel_type() -> type[AnimationViewerPanel]:
-    return cast(
-        'type[AnimationViewerPanel]',
-        _import_attr('fleasion.cache.animation_viewer', 'AnimationViewerPanel'),
+def _scraper_fetch_asset(
+    scraper: _CacheScraperLike,
+    asset_id: str,
+    extra_headers: dict[str, str] | None,
+) -> tuple[bytes | None, int | None]:
+    return scraper.fetch_asset_with_place_id_retry(
+        asset_id,
+        extra_headers=extra_headers,
     )
 
 
-def _cache_json_viewer_type() -> type[CacheJsonViewer]:
-    return cast(
-        'type[CacheJsonViewer]',
-        _import_attr('fleasion.cache.cache_json_viewer', 'CacheJsonViewer'),
-    )
+def _scraper_https_get(
+    scraper: _CacheScraperLike,
+    hostname: str,
+    path: str,
+    extra_headers: dict[str, str] | None,
+) -> bytes | None:
+    return scraper.https_get(hostname, path, extra_headers=extra_headers)
 
 
-def _obj_viewer_panel_type() -> type[ObjViewerPanel]:
-    return cast(
-        'type[ObjViewerPanel]',
-        _import_attr('fleasion.cache.obj_viewer', 'ObjViewerPanel'),
-    )
+def _preserve_int_source(value: object) -> str | int | float:
+    if not isinstance(value, str | int | float):
+        msg = 'Expected a number or numeric string'
+        raise TypeError(msg)
+    return value
 
 
-def _audio_player_widget_type() -> type[AudioPlayerWidget]:
-    return cast(
-        'type[AudioPlayerWidget]',
-        _import_attr('fleasion.cache.audio_player', 'AudioPlayerWidget'),
-    )
+def _tree_child(item: QTreeWidgetItem, index: int) -> QTreeWidgetItem:
+    child = item.child(index)
+    if child is None:
+        msg = f'Missing tree child at index {index}'
+        raise IndexError(msg)
+    return child
 
 
-def _font_viewer_widget_type() -> type[FontViewerWidget]:
-    return cast(
-        'type[FontViewerWidget]',
-        _import_attr('fleasion.cache.font_viewer', 'FontViewerWidget'),
-    )
+def _top_level_item(tree: QTreeWidget, index: int) -> QTreeWidgetItem:
+    item = tree.topLevelItem(index)
+    if item is None:
+        msg = f'Missing top-level tree item at index {index}'
+        raise IndexError(msg)
+    return item
 
 
-if TYPE_CHECKING:
+def _take_layout_item(layout: QVBoxLayout) -> QLayoutItem:
+    item = layout.takeAt(0)
+    if item is None:
+        msg = 'Cannot take an item from an empty layout'
+        raise IndexError(msg)
+    return item
 
-    def _scraper_fetch_asset(
-        scraper: _CacheScraperLike,
-        asset_id: str,
-        extra_headers: dict[str, str] | None,
-    ) -> tuple[bytes | None, int | None]: ...
 
-    def _scraper_https_get(
-        scraper: _CacheScraperLike,
-        hostname: str,
-        path: str,
-        extra_headers: dict[str, str] | None,
-    ) -> bytes | None: ...
+def _require_application(value: object) -> QApplication:
+    if not isinstance(value, QApplication):
+        msg = 'A QApplication is required for the viewer'
+        raise TypeError(msg)
+    return value
 
-    def _preserve_int_source(value: object) -> str | int | float: ...
 
-    def _preserve_str(value: object) -> str: ...
+def _key_event(value: QEvent) -> QKeyEvent:
+    if not isinstance(value, QKeyEvent):
+        msg = 'Expected a keyboard event'
+        raise TypeError(msg)
+    return value
 
-    def _tree_child(item: QTreeWidgetItem, index: int) -> QTreeWidgetItem: ...
 
-    def _top_level_item(tree: QTreeWidget, index: int) -> QTreeWidgetItem: ...
-
-    def _take_layout_item(layout: QVBoxLayout) -> QLayoutItem: ...
-
-    def _require_application(value: object) -> QApplication: ...
-
-    def _key_event(value: QEvent) -> QKeyEvent: ...
-
-    def _toggle_audio_player(player: AudioPlayerWidget) -> None: ...
-else:
-
-    def _scraper_fetch_asset(
-        scraper: _CacheScraperLike,
-        asset_id: str,
-        extra_headers: dict[str, str] | None,
-    ) -> tuple[bytes | None, int | None]:
-        return scraper.fetch_asset_with_place_id_retry(
-            asset_id,
-            extra_headers=extra_headers,
-        )
-
-    def _scraper_https_get(
-        scraper: _CacheScraperLike,
-        hostname: str,
-        path: str,
-        extra_headers: dict[str, str] | None,
-    ) -> bytes | None:
-        return scraper.https_get(hostname, path, extra_headers=extra_headers)
-
-    def _preserve_int_source(value: object) -> str | int | float:
-        return value
-
-    def _preserve_str(value: object) -> str:
-        return value
-
-    def _tree_child(item: QTreeWidgetItem, index: int) -> QTreeWidgetItem:
-        return item.child(index)
-
-    def _top_level_item(tree: QTreeWidget, index: int) -> QTreeWidgetItem:
-        return tree.topLevelItem(index)
-
-    def _take_layout_item(layout: QVBoxLayout) -> QLayoutItem:
-        return layout.takeAt(0)
-
-    def _require_application(value: object) -> QApplication:
-        return value
-
-    def _key_event(value: QEvent) -> QKeyEvent:
-        return value
-
-    def _toggle_audio_player(player: AudioPlayerWidget) -> None:
-        player.play_pause_btn.click()
+def _toggle_audio_player(player: AudioPlayerWidget) -> None:
+    player.play_pause_btn.click()
 
 
 def _coerce_import_value(value: object) -> ImportValue | None:
@@ -303,10 +220,8 @@ class AssetFetcherThread(QThread):
         self._stop_requested = True
 
     def _get_roblosecurity(self) -> str | None:
-        get_roblosecurity = cast(
-            'Callable[[], str | None]',
-            _import_attr('fleasion.utils.roblox_auth', 'get_roblosecurity'),
-        )
+        from fleasion.utils.roblox_auth import get_roblosecurity
+
         return get_roblosecurity()
 
     @staticmethod
@@ -347,20 +262,23 @@ class AssetFetcherThread(QThread):
                     if place_id not in seen_pids:
                         seen_pids.add(place_id)
                         yield place_id
-            cursor = _preserve_str(response_json.get('nextPageCursor') or '')
+            cursor = str(response_json.get('nextPageCursor') or '')
             if not cursor:
                 break
 
     @classmethod
     def _creator_place_ids(cls, creator_id: int, creator_type: int) -> Iterator[int]:
-        creator_game_max_scan, creator_game_page_limits, creator_game_base_paths = (
-            _creator_game_settings()
+        from fleasion.proxy.addons.cache_scraper import (
+            CREATOR_GAME_MAX_SCAN,
+            CREATOR_GAME_PAGE_LIMITS,
+            creator_game_base_paths,
         )
+
         seen_pids: set[int] = set()
         attempted_paths: set[str] = set()
-        for limit in creator_game_page_limits:
+        for limit in CREATOR_GAME_PAGE_LIMITS:
             found_before_limit = len(seen_pids)
-            max_pages = max(1, (creator_game_max_scan + limit - 1) // limit)
+            max_pages = max(1, (CREATOR_GAME_MAX_SCAN + limit - 1) // limit)
             for game_path in creator_game_base_paths(creator_id, creator_type, limit):
                 if game_path in attempted_paths:
                     continue
@@ -527,12 +445,18 @@ def _decode_image_rgba(data: bytes) -> tuple[bytes, int, int]:
 
 
 def _mesh_obj_content(data: bytes) -> str | None:
+    from fleasion.cache.mesh_processing import convert
+
     working = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
-    return _convert_mesh(working)
+    return convert(working)
 
 
 def _solid_model_obj_content(data: bytes) -> str:
-    deserialize_rbxm, export_obj_from_doc = _solid_model_tools()
+    from fleasion.cache.tools.solidmodel_converter.converter import (
+        deserialize_rbxm,
+        export_obj_from_doc,
+    )
+
     working = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
     doc = deserialize_rbxm(working)
     with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as file:
@@ -932,9 +856,9 @@ class JsonTreeViewer(QDialog):
 
     def _create_preview_panel(self) -> QWidget:
         """Create the right-side preview panel (mirrors cache_viewer's panel)."""
-        animation_viewer_type = _animation_viewer_panel_type()
-        cache_json_viewer_type = _cache_json_viewer_type()
-        obj_viewer_type = _obj_viewer_panel_type()
+        from fleasion.cache.animation_viewer import AnimationViewerPanel
+        from fleasion.cache.cache_json_viewer import CacheJsonViewer
+        from fleasion.cache.obj_viewer import ObjViewerPanel
 
         preview_widget = QWidget()
         preview_layout = QVBoxLayout()
@@ -958,7 +882,7 @@ class JsonTreeViewer(QDialog):
         self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
 
         # 3D viewer for meshes
-        self.obj_viewer = obj_viewer_type(config_manager=self.config_manager)
+        self.obj_viewer = ObjViewerPanel(config_manager=self.config_manager)
         self.obj_viewer.clear_requested.connect(self._clear_preview)
         self.preview_container_layout.addWidget(self.obj_viewer)
 
@@ -996,7 +920,7 @@ class JsonTreeViewer(QDialog):
         self.preview_container_layout.addWidget(self.audio_wrapper)
 
         # Animation viewer
-        self.animation_viewer = animation_viewer_type(config_manager=self.config_manager)
+        self.animation_viewer = AnimationViewerPanel(config_manager=self.config_manager)
         self.preview_container_layout.addWidget(self.animation_viewer)
 
         # Text viewer (hex dump / plain text)
@@ -1006,7 +930,7 @@ class JsonTreeViewer(QDialog):
         self.preview_container_layout.addWidget(self.text_viewer)
 
         # JSON viewer
-        self.json_viewer = cache_json_viewer_type()
+        self.json_viewer = CacheJsonViewer()
         self.preview_container_layout.addWidget(self.json_viewer)
 
         # RBXM/RBXMX structure viewer
@@ -1255,9 +1179,10 @@ class JsonTreeViewer(QDialog):
             pass
 
     def _preview_audio(self, data: bytes) -> None:
-        audio_player_type = _audio_player_widget_type()
+        from fleasion.cache.audio_player import AudioPlayerWidget
+
         try:
-            self._show_audio_preview(data, audio_player_type)
+            self._show_audio_preview(data, AudioPlayerWidget)
         except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
             self._show_text_preview(tr('json.preview.audio_error', error=exc))
 
@@ -1275,9 +1200,10 @@ class JsonTreeViewer(QDialog):
 
     def _preview_font(self, data: bytes) -> None:
         """Preview a font asset (TTF, OTF, TTC)."""
-        font_viewer_type = _font_viewer_widget_type()
+        from fleasion.cache.font_viewer import FontViewerWidget
+
         try:
-            self._show_font_preview(data, font_viewer_type)
+            self._show_font_preview(data, FontViewerWidget)
         except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
             self._show_text_preview(tr('json.preview.font_error', error=exc))
 
@@ -1298,7 +1224,7 @@ class JsonTreeViewer(QDialog):
         text = decompressed.decode('utf-8', errors='replace')
         if text.strip().startswith('<'):
             try:
-                dom = defused_minidom.parseString(cast('str', decompressed))
+                dom = defused_minidom.parse(io.BytesIO(decompressed))
                 pretty = dom.toprettyxml(indent='  ')
             except DefusedXmlException, ValueError:
                 pass
@@ -1594,7 +1520,7 @@ class JsonTreeViewer(QDialog):
 
     def _show_texturepack_context_menu(self, pos: QPoint, label: QLabel) -> None:
         """Show context menu for texturepack image."""
-        map_name = _preserve_str(label.property('map_name'))
+        map_name = str(label.property('map_name'))
         map_id = label.property('map_id')
 
         menu = QMenu(self)

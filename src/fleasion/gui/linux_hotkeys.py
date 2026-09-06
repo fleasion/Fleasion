@@ -16,116 +16,26 @@ import struct
 import subprocess
 import sys
 import threading
-from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCore import QObject, Signal
 
 from fleasion.utils import log_buffer
 
+from .hotkey_config import binding_mapping as _binding_mapping
 from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
 from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, MODIFIER_MASK
 
-type HotkeyBinding = dict[str, int | str]
-
-
-class _DisabledConfigLike(Protocol):
-    custom_fflag_disabled: list[str]
-    custom_fflag_disabled_folders: list[str]
-
-
-class _FlagConfigLike(Protocol):
-    custom_fflags: dict[str, str]
-
-
-class _RefreshProxyLike(Protocol):
-    def refresh_custom_fflag_interception(self) -> None: ...
-
-
-class _SignalLike(Protocol):
-    def emit(self, *args: object) -> None: ...
-
-
 if TYPE_CHECKING:
+    from collections.abc import Mapping
 
-    def _binding_mapping(value: object) -> Mapping[str, object] | None: ...
+    from PySide6.QtCore import SignalInstance
 
-    def _qt_signal(obj: object, name: str) -> _SignalLike: ...
+    from .hotkey_config import HotkeyConfig, HotkeyProxy
 
-    def _config_enabled(config: object) -> bool: ...
 
-    def _config_bindings(config: object) -> Mapping[str, Mapping[str, object]]: ...
-
-    def _config_flags(config: object) -> Mapping[str, object]: ...
-
-    def _config_folders(config: object) -> Mapping[str, object]: ...
-
-    def _config_folder_bindings(config: object) -> Mapping[str, Mapping[str, object]]: ...
-
-    def _config_actions(config: object) -> Mapping[str, object]: ...
-
-    def _set_config_flags(config: object, values: dict[str, str]) -> None: ...
-
-    def _config_disabled(config: object) -> list[str]: ...
-
-    def _set_config_disabled(config: object, values: list[str]) -> None: ...
-
-    def _config_disabled_folders(config: object) -> list[str]: ...
-
-    def _set_config_disabled_folders(config: object, values: list[str]) -> None: ...
-
-    def _refresh_proxy(proxy: object) -> None: ...
-else:
-
-    def _binding_mapping(value: object) -> Mapping[str, object] | None:
-        return value if isinstance(value, Mapping) else None
-
-    def _qt_signal(obj: object, name: str) -> _SignalLike:
-        return getattr(obj, name)
-
-    def _config_enabled(config: object) -> bool:
-        return bool(getattr(config, 'custom_fflags_enabled', False))
-
-    def _config_bindings(config: object) -> Mapping[str, Mapping[str, object]]:
-        bindings = getattr(config, 'custom_fflag_keybinds', {}) or {}
-        return bindings if isinstance(bindings, Mapping) else {}
-
-    def _config_flags(config: object) -> Mapping[str, object]:
-        flags = getattr(config, 'custom_fflags', {}) or {}
-        return flags if isinstance(flags, Mapping) else {}
-
-    def _config_folders(config: object) -> Mapping[str, object]:
-        folders = getattr(config, 'custom_fflag_folders', {}) or {}
-        return folders if isinstance(folders, Mapping) else {}
-
-    def _config_folder_bindings(config: object) -> Mapping[str, Mapping[str, object]]:
-        bindings = getattr(config, 'custom_fflag_folder_keybinds', {}) or {}
-        return bindings if isinstance(bindings, Mapping) else {}
-
-    def _config_actions(config: object) -> Mapping[str, object]:
-        actions = getattr(config, 'custom_fflag_actions', {}) or {}
-        return actions if isinstance(actions, Mapping) else {}
-
-    def _set_config_flags(config: _FlagConfigLike, values: dict[str, str]) -> None:
-        config.custom_fflags = values
-
-    def _config_disabled(config: object) -> list[str]:
-        disabled = getattr(config, 'custom_fflag_disabled', []) or []
-        return [str(value) for value in disabled]
-
-    def _set_config_disabled(config: _DisabledConfigLike, values: list[str]) -> None:
-        config.custom_fflag_disabled = values
-
-    def _config_disabled_folders(config: object) -> list[str]:
-        disabled = getattr(config, 'custom_fflag_disabled_folders', []) or []
-        return [str(value) for value in disabled]
-
-    def _set_config_disabled_folders(config: _DisabledConfigLike, values: list[str]) -> None:
-        config.custom_fflag_disabled_folders = values
-
-    def _refresh_proxy(proxy: _RefreshProxyLike) -> None:
-        proxy.refresh_custom_fflag_interception()
+type HotkeyBinding = dict[str, int | str]
 
 
 # ``struct input_event`` on Linux.  Native alignment keeps this correct for
@@ -580,18 +490,18 @@ class LinuxHotkeyService(QObject):
                 self._was_active[name] = active
 
         if is_pressed:
-            self._emit_signal('key_pressed', code, active_modifiers)
+            self._emit_signal(self.key_pressed, code, active_modifiers)
         else:
-            self._emit_signal('key_released', code)
+            self._emit_signal(self.key_released, code)
         for name in activations:
-            self._emit_signal('activated', name)
+            self._emit_signal(self.activated, name)
 
-    def _emit_signal(self, signal_name: str, *args: object) -> None:
+    def _emit_signal(self, signal: SignalInstance, *args: object) -> None:
         """Deliver a queued Qt signal unless this QObject is being deleted."""
         if self._qt_deleted.is_set():
             return
         try:
-            _qt_signal(self, signal_name).emit(*args)
+            signal.emit(*args)
         except RuntimeError:
             # Qt may delete a parent-owned QObject between the check above and
             # emit(). The event was already obsolete, so just terminate the
@@ -617,9 +527,9 @@ class LinuxHotkeyService(QObject):
                 and int(binding['modifiers']) == modifiers
             ]
         wheel_code = SMU_MOUSE_WHEEL_UP if delta > 0 else SMU_MOUSE_WHEEL_DOWN
-        self._emit_signal('wheel_scrolled', wheel_code, modifiers)
+        self._emit_signal(self.wheel_scrolled, wheel_code, modifiers)
         for name in activations:
-            self._emit_signal('activated', name)
+            self._emit_signal(self.activated, name)
 
     def _binding_is_active(self, binding: HotkeyBinding, modifiers: int | None = None) -> bool:
         if binding.get('kind') == 'mouse_wheel':
@@ -655,8 +565,8 @@ class LinuxCustomFFlagHotkeyController(QObject):
 
     def __init__(
         self,
-        config_manager: object | None = None,
-        proxy_master: object | None = None,
+        config_manager: HotkeyConfig | None = None,
+        proxy_master: HotkeyProxy | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -670,17 +580,17 @@ class LinuxCustomFFlagHotkeyController(QObject):
         return self._service
 
     def sync(self) -> None:
-        if self._config is None or not _config_enabled(self._config):
+        if self._config is None or not self._config.custom_fflags_enabled:
             self._service.set_bindings({})
             return
-        bindings = dict(_config_bindings(self._config))
+        bindings = dict(self._config.custom_fflag_keybinds)
         bindings.update(
             {
                 f'folder:{name}': binding
-                for name, binding in _config_folder_bindings(self._config).items()
+                for name, binding in self._config.custom_fflag_folder_keybinds.items()
             }
         )
-        for name, action_value in _config_actions(self._config).items():
+        for name, action_value in self._config.custom_fflag_actions.items():
             action = _binding_mapping(action_value)
             if action is None:
                 continue
@@ -699,37 +609,37 @@ class LinuxCustomFFlagHotkeyController(QObject):
         self.toggle_flag(target)
 
     def apply_action(self, name: str) -> None:
-        if self._config is None or not _config_enabled(self._config):
+        if self._config is None or not self._config.custom_fflags_enabled:
             return
-        action = _binding_mapping(_config_actions(self._config).get(name))
+        action = _binding_mapping(self._config.custom_fflag_actions.get(name))
         if action is None:
             return
         action_flags = _binding_mapping(action.get('flags'))
         if not action_flags:
             return
-        updated = {str(flag): str(value) for flag, value in _config_flags(self._config).items()}
+        updated = {str(flag): str(value) for flag, value in self._config.custom_fflags.items()}
         updated.update({str(flag): str(value) for flag, value in action_flags.items()})
-        _set_config_flags(self._config, updated)
+        self._config.custom_fflags = updated
         log_buffer.log('CustomFFlags', f'Linux keybind applied action {name}')
         self.toggled.emit(f'action:{name}')
 
     def toggle_flag(self, name: str) -> None:
         if (
             self._config is None
-            or not _config_enabled(self._config)
-            or name not in _config_flags(self._config)
+            or not self._config.custom_fflags_enabled
+            or name not in self._config.custom_fflags
         ):
             return
-        disabled = set(_config_disabled(self._config))
+        disabled = set(self._config.custom_fflag_disabled)
         is_enabled = name in disabled
         if is_enabled:
             disabled.remove(name)
         else:
             disabled.add(name)
-        _set_config_disabled(self._config, sorted(disabled))
+        self._config.custom_fflag_disabled = sorted(disabled)
         if self._proxy_master is not None:
             try:
-                _refresh_proxy(self._proxy_master)
+                self._proxy_master.refresh_custom_fflag_interception()
             except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
         log_buffer.log(
@@ -741,20 +651,20 @@ class LinuxCustomFFlagHotkeyController(QObject):
     def toggle_folder(self, name: str) -> None:
         if (
             self._config is None
-            or not _config_enabled(self._config)
-            or name not in _config_folders(self._config)
+            or not self._config.custom_fflags_enabled
+            or name not in self._config.custom_fflag_folders
         ):
             return
-        disabled = set(_config_disabled_folders(self._config))
+        disabled = set(self._config.custom_fflag_disabled_folders)
         is_enabled = name in disabled
         if is_enabled:
             disabled.remove(name)
         else:
             disabled.add(name)
-        _set_config_disabled_folders(self._config, sorted(disabled))
+        self._config.custom_fflag_disabled_folders = sorted(disabled)
         if self._proxy_master is not None:
             try:
-                _refresh_proxy(self._proxy_master)
+                self._proxy_master.refresh_custom_fflag_interception()
             except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
         log_buffer.log(

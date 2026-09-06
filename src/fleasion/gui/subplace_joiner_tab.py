@@ -10,7 +10,6 @@ import time
 import traceback
 import uuid
 from datetime import UTC, datetime
-from importlib import import_module
 from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast, override
 from urllib.parse import quote, urlparse
 
@@ -39,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr, tr_count
+from fleasion.utils.json_types import require_object_dict
 from fleasion.utils.logging import log_buffer
 from fleasion.utils.paths import CONFIG_DIR, PROXY_CA_DIR
 from fleasion.utils.roblox_auth import (
@@ -47,6 +47,15 @@ from fleasion.utils.roblox_auth import (
 )
 from fleasion.utils.windows import launch_as_standard_user
 
+from .prejsons_dialog import (
+    CARD_HEIGHT,
+    CARD_WIDTH,
+    THUMB_HEIGHT,
+    THUMB_WIDTH,
+    make_rounded_pixmap,
+    preprocess_thumb_bytes,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
     from pathlib import Path
@@ -54,6 +63,8 @@ if TYPE_CHECKING:
     from PySide6.QtCore import QEvent, QPoint
     from PySide6.QtGui import QAction, QEnterEvent, QMouseEvent, QResizeEvent, QShowEvent
     from PySide6.QtWidgets import QLayoutItem
+
+    from fleasion.proxy.server import ProxyFlow
 
 
 type _MainCallback = Callable[[], object]
@@ -108,7 +119,8 @@ class _GameInfo(TypedDict, total=False):
 
 
 class _RandoTab(Protocol):
-    _account_switched: bool
+    @property
+    def account_switched(self) -> bool: ...
 
     def is_multi_instance_enabled(self) -> bool: ...
 
@@ -116,35 +128,17 @@ class _RandoTab(Protocol):
 
 
 class SubplaceJoinerConfig(Protocol):
-    proxy_mode: str
-    proxy_features_enabled: bool
+    @property
+    def proxy_mode(self) -> str: ...
+
+    @property
+    def proxy_features_enabled(self) -> bool: ...
 
 
 class _ProxyMaster(Protocol):
     def roblox_env_proxy_url(self) -> str: ...
 
     def hosts_intercepts_host(self, host: str) -> bool: ...
-
-
-class _FlowHeaders(Protocol):
-    def get(self, key: str, default: str = '') -> str: ...
-
-
-class _FlowRequest(Protocol):
-    pretty_url: str
-    headers: _FlowHeaders
-    content: bytes
-    raw_content: bytes
-    url: str
-
-
-class _FlowResponse(Protocol):
-    def json(self) -> dict[str, object]: ...
-
-
-class _ProxyFlow(Protocol):
-    request: _FlowRequest
-    response: _FlowResponse | None
 
 
 _DEFAULT_THUMB_URL = (
@@ -283,39 +277,8 @@ class _Invoker(QObject):
 
 # GameCardWidget (inline, PySide6)
 
-if TYPE_CHECKING:
-    _CARD_H: int = 0
-    _CARD_W: int = 0
-    _THUMB_H: int = 0
-    _THUMB_W: int = 0
 
-    def _make_rounded_pixmap(pix: QPixmap, w: int, h: int, radius: int = 6) -> QPixmap: ...
-
-    def _preprocess_thumb_bytes(
-        raw: bytes, w: int, h: int, radius: int = 6
-    ) -> tuple[bytes, int, int] | None: ...
-
-    def _rando_account_switched(tab: _RandoTab) -> bool: ...
-
-    def _get_auth_ticket_runtime(cookie: str) -> str | None: ...
-else:
-    _prejsons = import_module(f'{__package__}.prejsons_dialog')
-    _CARD_H = _prejsons.__dict__['_CARD_H']
-    _CARD_W = _prejsons.__dict__['_CARD_W']
-    _THUMB_H = _prejsons.__dict__['_THUMB_H']
-    _THUMB_W = _prejsons.__dict__['_THUMB_W']
-    _make_rounded_pixmap = _prejsons.__dict__['_make_rounded_pixmap']
-    _preprocess_thumb_bytes = _prejsons.__dict__['_preprocess_thumb_bytes']
-
-    def _rando_account_switched(tab: _RandoTab) -> bool:
-        return bool(tab.__dict__['_account_switched'])
-
-    def _get_auth_ticket_runtime(cookie: str) -> str | None:
-        module = import_module(f'{__package__}.rando_stuff_tab')
-        return module.__dict__['_get_auth_ticket'](cookie)
-
-
-_SUBPLACE_CARD_H = _CARD_H + 8
+_SUBPLACE_CARD_H = CARD_HEIGHT + 8
 
 
 class _JobIdEdit(QLineEdit):
@@ -375,7 +338,7 @@ class SubplaceGameCard(QFrame):
 
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self._apply_style()
-        self.setMinimumWidth(_CARD_W)
+        self.setMinimumWidth(CARD_WIDTH)
         self.setFixedHeight(_SUBPLACE_CARD_H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._setup_ui()
@@ -386,8 +349,8 @@ class SubplaceGameCard(QFrame):
         layout.setSpacing(4)
 
         self.thumb_label = QLabel(tr('ui.gui.subplace_joiner_tab.loading'))
-        self.thumb_label.setFixedHeight(_THUMB_H)
-        self.thumb_label.setMinimumWidth(_THUMB_W)
+        self.thumb_label.setFixedHeight(THUMB_HEIGHT)
+        self.thumb_label.setMinimumWidth(THUMB_WIDTH)
         self.thumb_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setScaledContents(True)
@@ -453,7 +416,7 @@ class SubplaceGameCard(QFrame):
         if not pix or pix.isNull():
             return
         try:
-            baked = _make_rounded_pixmap(pix, _THUMB_W, _THUMB_H, radius=6)
+            baked = make_rounded_pixmap(pix, THUMB_WIDTH, THUMB_HEIGHT, radius=6)
         except OSError, RuntimeError, TypeError, ValueError:
             baked = pix
         self.thumb_label.setPixmap(baked)
@@ -987,11 +950,9 @@ class SubplaceJoinerTab(QWidget):
         root.addWidget(footer_widget)
 
     def _clear_roblox_cache(self) -> None:
-        window_type = cast(
-            'Callable[[], QWidget]',
-            import_module('fleasion.gui.delete_cache').__dict__['DeleteCacheWindow'],
-        )
-        window = window_type()
+        from fleasion.gui.delete_cache import DeleteCacheWindow
+
+        window = DeleteCacheWindow()
         window.show()
 
     # Settings persistence
@@ -1440,7 +1401,7 @@ class SubplaceJoinerTab(QWidget):
     def _queue_thumbnail(
         self, place_id: int, image_bytes: bytes, cancel_event: threading.Event
     ) -> None:
-        processed = _preprocess_thumb_bytes(image_bytes, _THUMB_W, _THUMB_H)
+        processed = preprocess_thumb_bytes(image_bytes, THUMB_WIDTH, THUMB_HEIGHT)
         if processed is None:
             return
         rgba, width, height = processed
@@ -1462,7 +1423,7 @@ class SubplaceJoinerTab(QWidget):
         fallback = _get_default_thumb_bytes()
         if fallback is None:
             return
-        processed = _preprocess_thumb_bytes(fallback, _THUMB_W, _THUMB_H)
+        processed = preprocess_thumb_bytes(fallback, THUMB_WIDTH, THUMB_HEIGHT)
         if processed is None:
             return
         rgba, width, height = processed
@@ -1810,7 +1771,7 @@ class SubplaceJoinerTab(QWidget):
     def _get_cols(self) -> int:
         vp = self.results_scroll.viewport()
         available = vp.width() if vp else (self.width() - 30)
-        return max(1, available // (_CARD_W + self.results_grid.spacing()))
+        return max(1, available // (CARD_WIDTH + self.results_grid.spacing()))
 
     def _place_cards(self, visible: list[SubplaceGameCard]) -> None:
         for card in self._cards:
@@ -1883,12 +1844,9 @@ class SubplaceJoinerTab(QWidget):
         if (
             self._rando_tab is not None
             and self._rando_tab.is_multi_instance_enabled()
-            and _rando_account_switched(self._rando_tab)
+            and self._rando_tab.account_switched
         ):
-            is_roblox_running = cast(
-                'Callable[[], bool]',
-                import_module('fleasion.utils.windows').__dict__['is_roblox_running'],
-            )
+            from fleasion.utils.windows import is_roblox_running
 
             if is_roblox_running():
                 log_buffer.log(
@@ -1901,7 +1859,9 @@ class SubplaceJoinerTab(QWidget):
                 def _launch_with_uri(
                     place_id: int | str = place_id, cookie: str | None = cookie
                 ) -> None:
-                    ticket = _get_auth_ticket_runtime(cast('str', cookie))
+                    from .rando_stuff_tab import get_auth_ticket
+
+                    ticket = get_auth_ticket(cookie) if cookie else None
                     if not ticket:
                         log_buffer.log(
                             'subplace',
@@ -1948,12 +1908,8 @@ class SubplaceJoinerTab(QWidget):
             and getattr(self._config_manager, 'proxy_features_enabled', False)
             and self._proxy_master is not None
         ):
-            relaunch_roblox_with_proxy_env = cast(
-                'Callable[[str, str], bool]',
-                import_module('fleasion.utils.platform_macos').__dict__[
-                    'relaunch_roblox_with_proxy_env'
-                ],
-            )
+            from fleasion.utils.platform_macos import relaunch_roblox_with_proxy_env
+
             return relaunch_roblox_with_proxy_env(self._proxy_master.roblox_env_proxy_url(), target)
         return launch_as_standard_user(target)
 
@@ -2061,7 +2017,7 @@ class SubplaceJoinerTab(QWidget):
 
     # Proxy interceptor hooks (called by ProxyMaster on gamejoin traffic)
 
-    def request(self, flow: _ProxyFlow) -> None:
+    def request(self, flow: ProxyFlow) -> None:
         url = flow.request.pretty_url
         parsed_url = urlparse(url)
         content_type = flow.request.headers.get('Content-Type', '').lower()
@@ -2093,7 +2049,7 @@ class SubplaceJoinerTab(QWidget):
             new_body = json.dumps(body_json, separators=(',', ':')).encode()
             flow.request.raw_content = new_body
 
-    def response(self, flow: _ProxyFlow) -> None:
+    def response(self, flow: ProxyFlow) -> None:
         url = flow.request.pretty_url
         parsed_url = urlparse(url)
 
@@ -2101,7 +2057,7 @@ class SubplaceJoinerTab(QWidget):
             if flow.response is None:
                 return
             try:
-                data = flow.response.json()
+                data = require_object_dict(flow.response.json())
             except TypeError, ValueError:
                 return
             if data.get('status') == 2:

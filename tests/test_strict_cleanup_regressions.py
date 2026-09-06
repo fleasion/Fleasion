@@ -458,11 +458,7 @@ def test_prejson_rounded_pixmap_supports_pyside_memoryview() -> None:
     pixmap = QPixmap(32, 24)
     pixmap.fill(QColor('red'))
 
-    make_rounded_pixmap = cast(
-        'Callable[[QPixmap, int, int], QPixmap]',
-        vars(prejsons_dialog)['_make_rounded_pixmap'],
-    )
-    rounded = make_rounded_pixmap(pixmap, 20, 12)
+    rounded = prejsons_dialog.make_rounded_pixmap(pixmap, 20, 12)
 
     assert rounded.width() == 20
     assert rounded.height() == 12

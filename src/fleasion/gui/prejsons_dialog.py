@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import importlib
 import io
 import json
 import re
@@ -78,71 +77,43 @@ class GameEntry(TypedDict):
     replacement: str
 
 
-if TYPE_CHECKING:
-
-    def _preserve_int_source(value: object) -> str | int | float: ...
-
-    def _preserve_str(value: object) -> str: ...
-
-    def _card_game_name(card: GameCard) -> str: ...
-
-    def _card_dump_file(card: GameCard) -> Path | None: ...
-
-    def _parent_config_manager(parent: object) -> ConfigManager | None: ...
-
-    def _append_replace_ids(parent: object, ids: list[ImportValue]) -> None: ...
-
-    def _set_replacement_value(parent: object, value: ImportValue) -> None: ...
-
-    def _preserve_dialog(value: QObject | None) -> QDialog | None: ...
-
-    def _entry_url(entry: GameEntry, key: Literal['github', 'replacement']) -> str: ...
-
-    def _set_entry_url(
-        entry: GameEntry, key: Literal['github', 'replacement'], value: str
-    ) -> None: ...
-else:
-
-    def _preserve_int_source(value: object) -> str | int | float:
-        return value
-
-    def _preserve_str(value: object) -> str:
-        return value
-
-    def _card_game_name(card: GameCard) -> str:
-        return card.game_name
-
-    def _card_dump_file(card: GameCard) -> Path | None:
-        return card.dump_file
-
-    def _parent_config_manager(parent: object) -> ConfigManager | None:
-        return getattr(parent, 'config_manager', None)
-
-    def _append_replace_ids(parent: object, ids: list[ImportValue]) -> None:
-        if hasattr(parent, 'replace_entry'):
-            cur = parent.replace_entry.text()
-            parent.replace_entry.setText(
-                (cur + ', ' if cur.strip() else '') + ', '.join(str(x) for x in ids)
-            )
-
-    def _set_replacement_value(parent: object, value: ImportValue) -> None:
-        if hasattr(parent, 'replacement_entry'):
-            parent.replacement_entry.setText(str(value))
-
-    def _preserve_dialog(value: QObject | None) -> QDialog | None:
-        return value
-
-    def _entry_url(entry: GameEntry, key: Literal['github', 'replacement']) -> str:
-        return entry.get(key, '')
-
-    def _set_entry_url(entry: GameEntry, key: Literal['github', 'replacement'], value: str) -> None:
-        entry[key] = value
+def _preserve_int_source(value: object) -> str | int | float:
+    if not isinstance(value, str | int | float):
+        msg = 'Expected a number or numeric string'
+        raise TypeError(msg)
+    return value
 
 
-if TYPE_CHECKING:
-    _LANCZOS = Image.Resampling.LANCZOS
-else:
-    _LANCZOS = Image.LANCZOS
+def _parent_config_manager(parent: object) -> ConfigManager | None:
+    return getattr(parent, 'config_manager', None)
+
+
+def _append_replace_ids(parent: object, ids: list[ImportValue]) -> None:
+    entry = getattr(parent, 'replace_entry', None)
+    if isinstance(entry, QLineEdit):
+        cur = entry.text()
+        entry.setText((cur + ', ' if cur.strip() else '') + ', '.join(str(x) for x in ids))
+
+
+def _set_replacement_value(parent: object, value: ImportValue) -> None:
+    entry = getattr(parent, 'replacement_entry', None)
+    if isinstance(entry, QLineEdit):
+        entry.setText(str(value))
+
+
+def _preserve_dialog(value: QObject | None) -> QDialog | None:
+    return value if isinstance(value, QDialog) else None
+
+
+def _entry_url(entry: GameEntry, key: Literal['github', 'replacement']) -> str:
+    return entry.get(key, '')
+
+
+def _set_entry_url(entry: GameEntry, key: Literal['github', 'replacement'], value: str) -> None:
+    entry[key] = value
+
+
+_LANCZOS = Image.Resampling.LANCZOS
 
 CUSTOM_DUMPS_DIR = PREJSONS_DIR / 'custom_dumps'
 CLOG_CACHE_FILE = PREJSONS_DIR / 'CLOG.json'
@@ -183,7 +154,7 @@ def _safe_filename(name: str) -> str:
 # PIL-based rounded thumbnail helper
 
 
-def _make_rounded_pixmap(pix: QPixmap, w: int, h: int, radius: int = 6) -> QPixmap:
+def make_rounded_pixmap(pix: QPixmap, w: int, h: int, radius: int = 6) -> QPixmap:
     """Scale-crop pixmap to (w x h) with rounded corners via PIL."""
     qimg = pix.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
     ptr = qimg.bits()
@@ -242,7 +213,7 @@ def _process_thumb_image(
     return img.tobytes('raw', 'RGBA'), w, h
 
 
-def _preprocess_thumb_bytes(
+def preprocess_thumb_bytes(
     raw: bytes, w: int, h: int, radius: int = 6
 ) -> tuple[bytes, int, int] | None:
     """Crop, resize, and round-corner raw image bytes using PIL only.
@@ -255,10 +226,6 @@ def _preprocess_thumb_bytes(
         return _process_thumb_image(img, w, h, radius)
     except OSError, TypeError, ValueError, Image.DecompressionBombError:
         return None
-
-
-if TYPE_CHECKING:
-    _ = _preprocess_thumb_bytes
 
 
 # Normalize game entry
@@ -294,8 +261,8 @@ def _normalize_entry(e: object) -> GameEntry | None:
         'updated': str(entry.get('updated') or ''),
         'credit': str(credit),
         'placeId': pid,
-        'github': _preserve_str(entry.get('github') or ''),
-        'replacement': _preserve_str(entry.get('replacement') or entry.get('Replacement') or ''),
+        'github': str(entry.get('github') or ''),
+        'replacement': str(entry.get('replacement') or entry.get('Replacement') or ''),
     }
 
 
@@ -415,11 +382,11 @@ def _fetch_card_metadata(
     if not entries:
         return None
     entry = require_object_dict(entries[0])
-    name = _preserve_str(entry.get('name') or '')
+    name = str(entry.get('name') or '')
     if not name:
         return None
-    created = _preserve_str(entry.get('created') or fallback_cr)
-    updated = _preserve_str(entry.get('updated') or fallback_up)
+    created = str(entry.get('created') or fallback_cr)
+    updated = str(entry.get('updated') or fallback_up)
     return name, created, updated
 
 
@@ -477,7 +444,7 @@ def _fetch_card_thumb_bytes(place_id: int) -> bytes | None:
     thumb_data = meta.get('data')
     thumb_entries: list[object] = require_object_list(thumb_data) if thumb_data else [{}]
     first_thumb = require_object_dict(thumb_entries[0])
-    img_url = _preserve_str(first_thumb.get('imageUrl') or '')
+    img_url = str(first_thumb.get('imageUrl') or '')
     if not img_url:
         return None
     return _http_get(img_url, timeout=10)
@@ -529,10 +496,10 @@ class _JsonFetchWorker(QThread):
 
 # Card constants
 
-_CARD_W = 210
-_CARD_H = 272
-_THUMB_W = 196
-_THUMB_H = 128
+CARD_WIDTH = 210
+CARD_HEIGHT = 272
+THUMB_WIDTH = 196
+THUMB_HEIGHT = 128
 
 
 # Game Card Widget
@@ -554,8 +521,8 @@ class GameCard(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setMinimumWidth(_CARD_W)
-        self.setFixedHeight(_CARD_H)
+        self.setMinimumWidth(CARD_WIDTH)
+        self.setFixedHeight(CARD_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._apply_style()
         self._game_name = ''
@@ -577,8 +544,8 @@ class GameCard(QFrame):
         layout.setSpacing(4)
 
         self.thumb_label = QLabel()
-        self.thumb_label.setFixedHeight(_THUMB_H)
-        self.thumb_label.setMinimumWidth(_THUMB_W)
+        self.thumb_label.setFixedHeight(THUMB_HEIGHT)
+        self.thumb_label.setMinimumWidth(THUMB_WIDTH)
         self.thumb_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setScaledContents(True)
@@ -592,7 +559,7 @@ class GameCard(QFrame):
             pix = QPixmap()
             if pix.loadFromData(default_bytes):
                 try:
-                    pix = _make_rounded_pixmap(pix, _THUMB_W, _THUMB_H, radius=6)
+                    pix = make_rounded_pixmap(pix, THUMB_WIDTH, THUMB_HEIGHT, radius=6)
                 except OSError, RuntimeError, TypeError, ValueError:
                     pass
                 self.thumb_label.setPixmap(pix)
@@ -660,7 +627,7 @@ class GameCard(QFrame):
         if not pix or pix.isNull():
             return
         try:
-            baked = _make_rounded_pixmap(pix, _THUMB_W, _THUMB_H, radius=6)
+            baked = make_rounded_pixmap(pix, THUMB_WIDTH, THUMB_HEIGHT, radius=6)
         except OSError, RuntimeError, TypeError, ValueError:
             baked = pix
         self.thumb_label.setPixmap(baked)
@@ -714,8 +681,8 @@ class AddCard(QFrame):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self._apply_style()
-        self.setMinimumWidth(_CARD_W)
-        self.setFixedHeight(_CARD_H)
+        self.setMinimumWidth(CARD_WIDTH)
+        self.setFixedHeight(CARD_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -1000,14 +967,14 @@ class PreJsonsDialog(QDialog):
     def _get_cols(self) -> int:
         vp = self.scroll_area.viewport()
         available = vp.width() if vp else (self.width() - 30)
-        return max(1, available // (_CARD_W + self.grid.spacing()))
+        return max(1, available // (CARD_WIDTH + self.grid.spacing()))
 
     def _place_all(self) -> None:
         """Layout all cards, respecting the current search filter."""
         text = self.search_edit.text().strip().lower()
         visible: list[GameCard] = []
         for card in self._cards:
-            show = not text or text in _card_game_name(card).lower()
+            show = not text or text in card.game_name.lower()
             card.setVisible(show)
             if show:
                 visible.append(card)
@@ -1354,7 +1321,7 @@ class PreJsonsDialog(QDialog):
     # Custom dump — delete
 
     def _delete_custom_card(self, card: GameCard) -> None:
-        dump_file = _card_dump_file(card)
+        dump_file = card.dump_file
         if dump_file:
             try:
                 dump_file.unlink(missing_ok=True)
@@ -1406,7 +1373,8 @@ class PreJsonsDialog(QDialog):
         )
 
     def _open_viewer(self, data: JsonValue, filename: str) -> None:
-        json_viewer = importlib.import_module('.json_viewer', __package__)
+        from . import json_viewer
+
         viewer_class = json_viewer.JsonTreeViewer
 
         parent = self.parent()

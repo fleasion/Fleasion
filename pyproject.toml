@@ -13,7 +13,11 @@ dependencies = [
     'cryptography>=42.0.0,<49; sys_platform == "darwin"',
     'cryptography>=49; sys_platform != "darwin"',
     'win11toast>=0.36.3; sys_platform == "win32"',
+    'pyside6==6.7.3; sys_platform == "darwin"',
+    'pyside6>=6.8.0; sys_platform != "darwin"',
     'pywin32>=307; sys_platform == "win32"',
+    'numpy==2.3.5; sys_platform == "win32"',
+    'numpy>=2.0.0; sys_platform != "win32"',
     'python-dateutil>=2.9.0',
     'platformdirs>=4.0.0',
     'sounddevice>=0.5.3',
@@ -23,16 +27,12 @@ dependencies = [
     'requests>=2.32.0',
     'defusedxml>=0.7.1',
     'colorama>=0.4.6',
+    'packaging>=26.2',
     'pyopengl>=3.1.0',
     'pillow>=11.0.0',
     'DracoPy>=1.3.0',
     'orjson>=3.9.0',
-    'numpy==2.3.5; sys_platform == "win32"',
-    'numpy>=2.0.0; sys_platform != "win32"',
     'lz4>=4.4.5',
-    'packaging>=26.2',
-    'pyside6==6.7.3; sys_platform == "darwin"',
-    'pyside6>=6.8.0; sys_platform != "darwin"',
 ]
 
 [project.urls]
@@ -58,11 +58,6 @@ typeCheckingMode = "strict"
 pythonVersion = "3.14"
 include = ["src", "tests", "conftest.py"]
 exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv", "build", "dist", ".agents"]
-
-[tool.pytest.ini_options]
-markers = [
-    "threaded_asyncio: requires working cross-thread event-loop socket wakeups",
-]
 
 [tool.ruff]
 line-length = 100
@@ -150,6 +145,9 @@ unfixable = [
     "line-too-long",  # Ruff format handles line length
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# GUI actions defer optional viewers and platform dependencies until they are used
+'src/fleasion/gui/*.py' = ['import-outside-top-level']
 
 [tool.ruff.format]
 quote-style = "single"
@@ -174,6 +172,11 @@ parametrize-names-type = "csv"
 
 [tool.ruff.lint.flake8-quotes]
 inline-quotes = "single"
+
+[tool.pytest.ini_options]
+markers = [
+    "threaded_asyncio: requires working cross-thread event-loop socket wakeups",
+]
 
 [tool.ruff.lint.pep8-naming]
 extend-ignore-names = [

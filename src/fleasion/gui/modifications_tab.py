@@ -12,9 +12,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
-from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast, override
+from typing import TYPE_CHECKING, TypedDict, override
 
 from PySide6.QtCore import (
     QAbstractItemModel,
@@ -30,7 +29,6 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
     Signal,
-    SignalInstance,
 )
 from PySide6.QtGui import (
     QCloseEvent,
@@ -114,84 +112,12 @@ if TYPE_CHECKING:
         WindowsCustomFFlagHotkeyController,
         WindowsHotkeyService,
     )
+    from fleasion.modifications.manager import ModificationManager
+    from fleasion.modifications.types import (
+        FastFlagSettings as _FastFlagSettings,
+        NewModificationEntry as _NewModificationEntry,
+    )
     from fleasion.proxy.master import ProxyMaster
-
-
-def _lazy_attr(module_name: str, attr_name: str) -> object:
-    return getattr(import_module(module_name), attr_name)
-
-
-class _ObjViewerLoadable(Protocol):
-    def load_obj(self, obj_text: str) -> None: ...
-
-
-class _NewModificationEntry(TypedDict, total=False):
-    display_name: str
-    target_path: str
-    source_type: str | None
-    source_value: str | None
-    status: str
-    error_message: str | None
-    converted_cache_path: str | None
-    _is_font: bool
-
-
-class _ModificationEntry(_NewModificationEntry):
-    id: str
-
-
-class _FastFlagSettings(TypedDict, total=False):
-    rendering_mode: str
-    msaa: str
-    disable_dpi_scale: bool
-    alt_enter_fullscreen: bool
-    texture_quality: str
-    mesh_lod_enabled: bool
-    mesh_lod: int
-    frm_quality_enabled: bool
-    frm_quality: int
-    grey_sky: bool
-    pause_voxelizer: bool
-    grass_max: int | None
-    grass_min: int | None
-    grass_motion: int | None
-
-
-class _FastFlagProfileManagerLike(Protocol):
-    def list_profiles(self) -> list[str]: ...
-    def save(self, name: str, flags: dict[str, object]) -> str: ...
-    def load(self, name: str) -> dict[str, str]: ...
-    def delete(self, name: str) -> None: ...
-    def rename(self, old_name: str, new_name: str) -> str: ...
-
-
-class _PendingModificationsQueueLike(Protocol):
-    def enqueue_fast_flags(self, settings: _FastFlagSettings) -> None: ...
-    def enqueue_framerate_cap(self, value: int) -> None: ...
-
-
-class ModificationSource(Protocol):
-    entry_status_changed: SignalInstance
-    apply_finished: SignalInstance
-    restore_finished: SignalInstance
-    entries: list[_ModificationEntry]
-    fast_flags: _FastFlagSettings
-    fast_flags_enabled: bool
-    framerate_cap: int
-    pending_modifications_queue: _PendingModificationsQueueLike
-
-    @property
-    def roblox_dirs(self) -> list[Path]: ...
-
-    def add_entry(self, entry: _NewModificationEntry) -> str: ...
-    def update_entry(self, entry_id: str, **kwargs: str | None) -> bool: ...
-    def remove_entry(self, entry_id: str) -> bool: ...
-    def clear_entry(self, entry_id: str) -> bool: ...
-    def restore_orphaned_stash(self, target_path: str) -> bool: ...
-    def sync_saved_global_settings(self) -> None: ...
-    def reset_framerate_cap(self) -> None: ...
-    def write_fast_flags(self, settings: _FastFlagSettings) -> None: ...
-    def apply_pending_modifications(self) -> None: ...
 
 
 type _HotkeyBinding = dict[str, int | bool | str]
@@ -242,7 +168,16 @@ def _is_object_collection(
 
 
 def _is_hotkey_bindings(value: object) -> TypeIs[_HotkeyBindings]:
-    return isinstance(value, dict)
+    if not _is_object_dict(value):
+        return False
+    return all(
+        isinstance(name, str)
+        and _is_object_dict(binding)
+        and all(
+            isinstance(key, str) and isinstance(item, int | str) for key, item in binding.items()
+        )
+        for name, binding in value.items()
+    )
 
 
 def _fastflag_actions(value: object) -> _FastFlagActions:
@@ -272,20 +207,11 @@ def _fastflag_actions(value: object) -> _FastFlagActions:
     return actions
 
 
-def _linux_hotkey_service(service: _HotkeyService) -> LinuxHotkeyService:
-    if TYPE_CHECKING:
-        assert isinstance(service, LinuxHotkeyService)
-    return service
-
-
 def _required_config(config: ConfigManager | None) -> ConfigManager:
-    if TYPE_CHECKING:
-        assert config is not None
+    if config is None:
+        msg = 'FastFlag configuration is unavailable'
+        raise RuntimeError(msg)
     return config
-
-
-def _object_flags(flags: dict[str, str]) -> dict[str, object]:
-    return cast('dict[str, object]', flags)
 
 
 # Built-in entry definition
@@ -1064,7 +990,7 @@ class ModRowWidget(QWidget):
 
     def __init__(
         self,
-        manager: ModificationSource,
+        manager: ModificationManager,
         display_name: str,
         target_path: str,
         *,
@@ -1194,9 +1120,7 @@ class ModRowWidget(QWidget):
 
     def _check_for_orphaned_stash(self) -> None:
         """Show a warning if a stash file exists but Fleasion has no active record."""
-        mod_originals_dir = cast(
-            'Path', _lazy_attr('fleasion.modifications.manager', 'MOD_ORIGINALS_DIR')
-        )
+        from fleasion.modifications.manager import MOD_ORIGINALS_DIR
 
         roblox_dirs = self._manager.roblox_dirs
         if not roblox_dirs:
@@ -1205,7 +1129,7 @@ class ModRowWidget(QWidget):
             target_path = target_path_for_roblox_dir(self._target_path, roblox_dirs[0])
         except ValueError:
             return
-        stash = resource_stash_dir(mod_originals_dir, roblox_dirs[0]) / target_path
+        stash = resource_stash_dir(MOD_ORIGINALS_DIR, roblox_dirs[0]) / target_path
         if stash.is_file():
             self._update_status('orphaned_stash')
             self._status_label.setToolTip(
@@ -1458,7 +1382,7 @@ class ModPreviewDialog(QDialog):
 
     def __init__(
         self,
-        manager: ModificationSource,
+        manager: ModificationManager,
         target_path: str,
         display_name: str,
         parent: QWidget | None = None,
@@ -1501,22 +1425,18 @@ class ModPreviewDialog(QDialog):
         self.setLayout(layout)
 
     def _build_mesh_preview(self, data: bytes, mode: str) -> QWidget:
-        convert_mesh = cast(
-            'Callable[[bytes], str | None]',
-            _lazy_attr('fleasion.cache.mesh_processing', 'convert'),
-        )
+        from fleasion.cache.mesh_processing import convert as convert_mesh
+
         obj_text = convert_mesh(data)
         if not obj_text:
             return QLabel(tr('ui.gui.modifications_tab.could_not_convert_mesh_for_preview'))
         if mode == 'mod':
             self._mod_converted_bytes = obj_text.encode()
             self._mod_converted_ext = '.obj'
-        viewer_type = cast(
-            'Callable[[], QWidget]',
-            _lazy_attr('fleasion.cache.obj_viewer', 'ObjViewerPanel'),
-        )
-        viewer = viewer_type()
-        cast('_ObjViewerLoadable', viewer).load_obj(obj_text)
+        from fleasion.cache.obj_viewer import ObjViewerPanel
+
+        viewer = ObjViewerPanel()
+        viewer.load_obj(obj_text)
         return viewer
 
     def _build_audio_preview(self, data: bytes) -> QWidget:
@@ -1524,22 +1444,18 @@ class ModPreviewDialog(QDialog):
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
-        player_type = cast(
-            'Callable[[str], QWidget]',
-            _lazy_attr('fleasion.cache.audio_player', 'AudioPlayerWidget'),
-        )
-        return player_type(tmp_path)
+        from fleasion.cache.audio_player import AudioPlayerWidget
+
+        return AudioPlayerWidget(tmp_path)
 
     def _build_font_preview(self, data: bytes) -> QWidget:
         decoded = data.decode('utf-8', errors='replace')
         try:
             parsed = json.loads(decoded)
         except ValueError:
-            font_viewer_type = cast(
-                'Callable[[bytes], QWidget]',
-                _lazy_attr('fleasion.cache.font_viewer', 'FontViewerWidget'),
-            )
-            return font_viewer_type(data)
+            from fleasion.cache.font_viewer import FontViewerWidget
+
+            return FontViewerWidget(data)
         viewer = QTextEdit()
         viewer.setReadOnly(True)
         viewer.setPlainText(json.dumps(parsed, indent=2))
@@ -1596,10 +1512,8 @@ class ModPreviewDialog(QDialog):
                     or data[:6] in {b'GIF87a', b'GIF89a'}
                 )
                 if not is_raw_image:
-                    tex_to_png_bytes = cast(
-                        'Callable[[bytes], bytes | None]',
-                        _lazy_attr('fleasion.modifications.dds_to_png', 'tex_to_png_bytes'),
-                    )
+                    from fleasion.modifications.dds_to_png import tex_to_png_bytes
+
                     converted = tex_to_png_bytes(data)
                     if converted:
                         display_bytes = converted
@@ -1664,9 +1578,8 @@ class ModPreviewDialog(QDialog):
 
     def _load_data(self, mode: str) -> bytes | None:
         """Load file bytes for preview. mode='mod' or 'original'."""
-        mod_originals_dir = cast(
-            'Path', _lazy_attr('fleasion.modifications.manager', 'MOD_ORIGINALS_DIR')
-        )
+        from fleasion.modifications.manager import MOD_ORIGINALS_DIR
+
         if not self._manager.roblox_dirs:
             return None
         roblox_dir = self._manager.roblox_dirs[0]
@@ -1683,7 +1596,7 @@ class ModPreviewDialog(QDialog):
                 else read_current_platform_original_asset(self._target_path, roblox_dir)
             )
 
-        stash = resource_stash_dir(mod_originals_dir, roblox_dir) / target_path
+        stash = resource_stash_dir(MOD_ORIGINALS_DIR, roblox_dir) / target_path
         if stash.is_file():
             result = stash.read_bytes()
         else:
@@ -1837,7 +1750,7 @@ class FastFlagProfilesDialog(QDialog):
         self.setWindowTitle(tr('ui.gui.modifications_tab.custom_fastflag_profiles'))
         self.setMinimumWidth(560)
         self._flags = dict(flags)
-        self._profiles: _FastFlagProfileManagerLike = FastFlagProfileManager()
+        self._profiles = FastFlagProfileManager()
         self.loaded_flags: dict[str, str] | None = None
         self._setup_ui()
         self._refresh_profiles()
@@ -1938,7 +1851,7 @@ class FastFlagProfilesDialog(QDialog):
 
     def _save_profile(self) -> None:
         try:
-            name = self._profiles.save(self._name.text(), _object_flags(self._flags))
+            name = self._profiles.save(self._name.text(), dict(self._flags))
         except (OSError, ValueError) as exc:
             self._show_error(tr('ui.gui.modifications_tab.profile_action_save'), exc)
             return
@@ -1961,7 +1874,7 @@ class FastFlagProfilesDialog(QDialog):
         if not name:
             return
         try:
-            self._profiles.save(name, _object_flags(self._flags))
+            self._profiles.save(name, dict(self._flags))
         except (OSError, ValueError) as exc:
             self._show_error(tr('ui.gui.modifications_tab.profile_action_update'), exc)
 
@@ -2493,29 +2406,28 @@ class WindowsHotkeyCaptureDialog(QDialog):
 
     @classmethod
     def _modifier_mask(cls, modifiers: Qt.KeyboardModifier) -> int:
-        mod_alt = cast('int', _lazy_attr('fleasion.gui.windows_hotkeys', 'MOD_ALT'))
-        mod_ctrl = cast('int', _lazy_attr('fleasion.gui.windows_hotkeys', 'MOD_CTRL'))
-        mod_shift = cast('int', _lazy_attr('fleasion.gui.windows_hotkeys', 'MOD_SHIFT'))
-        mod_win = cast('int', _lazy_attr('fleasion.gui.windows_hotkeys', 'MOD_WIN'))
+        from fleasion.gui.windows_hotkeys import (
+            MOD_ALT,
+            MOD_CTRL,
+            MOD_SHIFT,
+            MOD_WIN,
+        )
 
         qt_modifiers = cls._enum_value(modifiers)
         result = 0
         if qt_modifiers & 0x02000000:
-            result |= mod_shift
+            result |= MOD_SHIFT
         if qt_modifiers & 0x04000000:
-            result |= mod_ctrl
+            result |= MOD_CTRL
         if qt_modifiers & 0x08000000:
-            result |= mod_alt
+            result |= MOD_ALT
         if qt_modifiers & 0x10000000:
-            result |= mod_win
+            result |= MOD_WIN
         return result
 
     @staticmethod
     def _event_binding(event: QKeyEvent, modifiers: int) -> _HotkeyBinding | None:
-        modifier_mask_for_virtual_key = cast(
-            'Callable[[int], int]',
-            _lazy_attr('fleasion.gui.windows_hotkeys', 'modifier_mask_for_virtual_key'),
-        )
+        from fleasion.gui.windows_hotkeys import modifier_mask_for_virtual_key
 
         scan_code = int(event.nativeScanCode())
         virtual_key = int(event.nativeVirtualKey())
@@ -2553,18 +2465,20 @@ class WindowsHotkeyCaptureDialog(QDialog):
 
     @staticmethod
     def _modifier_preview(modifiers: int) -> str:
-        mod_alt = cast('int', _lazy_attr('fleasion.gui.windows_hotkeys', 'MOD_ALT'))
-        mod_ctrl = cast('int', _lazy_attr('fleasion.gui.windows_hotkeys', 'MOD_CTRL'))
-        mod_shift = cast('int', _lazy_attr('fleasion.gui.windows_hotkeys', 'MOD_SHIFT'))
-        mod_win = cast('int', _lazy_attr('fleasion.gui.windows_hotkeys', 'MOD_WIN'))
+        from fleasion.gui.windows_hotkeys import (
+            MOD_ALT,
+            MOD_CTRL,
+            MOD_SHIFT,
+            MOD_WIN,
+        )
 
         labels = [
             label
             for flag, label in (
-                (mod_win, tr('modifications.hotkey.modifier.win')),
-                (mod_ctrl, tr('modifications.hotkey.modifier.ctrl')),
-                (mod_alt, tr('modifications.hotkey.modifier.alt')),
-                (mod_shift, tr('modifications.hotkey.modifier.shift')),
+                (MOD_WIN, tr('modifications.hotkey.modifier.win')),
+                (MOD_CTRL, tr('modifications.hotkey.modifier.ctrl')),
+                (MOD_ALT, tr('modifications.hotkey.modifier.alt')),
+                (MOD_SHIFT, tr('modifications.hotkey.modifier.shift')),
             )
             if modifiers & flag
         ]
@@ -2585,10 +2499,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
             self._preview.setText(tr('ui.gui.modifications_tab.that_key_could_not_be_read_as'))
             return
         if key in self._MODIFIER_KEYS:
-            modifier_mask_for_virtual_key = cast(
-                'Callable[[int], int]',
-                _lazy_attr('fleasion.gui.windows_hotkeys', 'modifier_mask_for_virtual_key'),
-            )
+            from fleasion.gui.windows_hotkeys import modifier_mask_for_virtual_key
 
             self._pending_modifier = binding
             self._pending_modifier_key = key
@@ -2703,10 +2614,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self.accept()
 
     def _key_pressed(self, code: int, modifiers: int) -> None:
-        modifier_mask_for_evdev_code = cast(
-            'Callable[[int], int]',
-            _lazy_attr('fleasion.gui.linux_hotkeys', 'modifier_mask_for_evdev_code'),
-        )
+        from fleasion.gui.linux_hotkeys import modifier_mask_for_evdev_code
 
         # Raw evdev sees the dialog controls too. Only Clear and Cancel arm
         # this suppression; every other mouse button remains bindable. Delay
@@ -2775,15 +2683,9 @@ class LinuxHotkeyCaptureDialog(QDialog):
 
 def _format_hotkey_binding(binding: _HotkeyBinding | None) -> str:
     if sys.platform.startswith('linux'):
-        binding_text = cast(
-            'Callable[[_HotkeyBinding | None], str]',
-            _lazy_attr('fleasion.gui.linux_hotkeys', 'binding_text'),
-        )
+        from fleasion.gui.linux_hotkeys import binding_text
     else:
-        binding_text = cast(
-            'Callable[[_HotkeyBinding | None], str]',
-            _lazy_attr('fleasion.gui.windows_hotkeys', 'binding_text'),
-        )
+        from fleasion.gui.windows_hotkeys import binding_text
     return binding_text(binding)
 
 
@@ -3095,29 +2997,32 @@ class CustomFFlagEditor(QWidget):
         self._hotkey_controller: CustomFFlagHotkeyController | None = None
         self._owns_hotkey_controller = False
         if self._windows_keybinds:
-            controller_type = cast(
-                'type[WindowsCustomFFlagHotkeyController]',
-                _lazy_attr('fleasion.gui.windows_hotkeys', 'WindowsCustomFFlagHotkeyController'),
+            from fleasion.gui.windows_hotkeys import (
+                WindowsCustomFFlagHotkeyController,
             )
 
             self._hotkey_controller = hotkey_controller
             if self._hotkey_controller is None:
-                self._hotkey_controller = controller_type(config_manager, proxy_master, self)
+                self._hotkey_controller = WindowsCustomFFlagHotkeyController(
+                    config_manager, proxy_master, self
+                )
                 self._owns_hotkey_controller = True
             self._hotkey_service = self._hotkey_controller.service
             self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         elif self._linux_keybinds:
-            controller_type = cast(
-                'type[LinuxCustomFFlagHotkeyController]',
-                _lazy_attr('fleasion.gui.linux_hotkeys', 'LinuxCustomFFlagHotkeyController'),
+            from fleasion.gui.linux_hotkeys import (
+                LinuxCustomFFlagHotkeyController,
             )
 
             self._hotkey_controller = hotkey_controller
             if self._hotkey_controller is None:
-                self._hotkey_controller = controller_type(config_manager, proxy_master, self)
+                self._hotkey_controller = LinuxCustomFFlagHotkeyController(
+                    config_manager, proxy_master, self
+                )
                 self._owns_hotkey_controller = True
             self._hotkey_service = self._hotkey_controller.service
-            self._linux_hotkey_service = _linux_hotkey_service(self._hotkey_controller.service)
+            if isinstance(self._hotkey_controller, LinuxCustomFFlagHotkeyController):
+                self._linux_hotkey_service = self._hotkey_controller.service
             self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         self._loading = False
         self._sort_column: int | None = 0
@@ -3442,7 +3347,7 @@ class CustomFFlagEditor(QWidget):
         return set(getattr(self._config, 'custom_fflag_disabled', []) or [])
 
     def _folders(self) -> dict[str, list[str]]:
-        raw = cast('object', getattr(self._config, 'custom_fflag_folders', {}))
+        raw: object = getattr(self._config, 'custom_fflag_folders', {})
         if not _is_object_dict(raw):
             return {}
         folders: dict[str, list[str]] = {}
@@ -3453,13 +3358,13 @@ class CustomFFlagEditor(QWidget):
         return folders
 
     def _disabled_folder_names(self) -> set[str]:
-        raw = cast('object', getattr(self._config, 'custom_fflag_disabled_folders', []))
+        raw: object = getattr(self._config, 'custom_fflag_disabled_folders', [])
         if not _is_object_collection(raw):
             return set()
         return {str(name) for name in raw}
 
     def _folder_keybinds(self) -> _HotkeyBindings:
-        raw = cast('object', getattr(self._config, 'custom_fflag_folder_keybinds', {}))
+        raw: object = getattr(self._config, 'custom_fflag_folder_keybinds', {})
         return raw if _is_hotkey_bindings(raw) else {}
 
     def _keybinds(self) -> _HotkeyBindings:
@@ -3470,7 +3375,7 @@ class CustomFFlagEditor(QWidget):
         return bindings if _is_hotkey_bindings(bindings) else empty_bindings
 
     def _custom_actions(self) -> _FastFlagActions:
-        raw = cast('object', getattr(self._config, 'custom_fflag_actions', {}))
+        raw: object = getattr(self._config, 'custom_fflag_actions', {})
         return _fastflag_actions(raw)
 
     @staticmethod
@@ -3601,10 +3506,8 @@ class CustomFFlagEditor(QWidget):
         if prompt.clickedButton() != setup_button:
             return None
         try:
-            launch_permission_setup = cast(
-                'Callable[[], None]',
-                _lazy_attr('fleasion.gui.linux_hotkeys', 'launch_permission_setup'),
-            )
+            from fleasion.gui.linux_hotkeys import launch_permission_setup
+
             launch_permission_setup()
         except OSError as exc:
             QMessageBox.warning(
@@ -3864,10 +3767,7 @@ class CustomFFlagEditor(QWidget):
         self._load_flags()
 
     def _import_mapping(self, payload: object) -> None:
-        normalize_custom_fflags = cast(
-            'Callable[[object], dict[str, str]]',
-            _lazy_attr('fleasion.proxy.addons.custom_fflags', 'normalize_custom_fflags'),
-        )
+        from fleasion.proxy.addons.custom_fflags import normalize_custom_fflags
 
         if not _is_object_dict(payload):
             raise ValueError(tr('modifications.fastflag.import_root_must_be_object'))
@@ -4123,7 +4023,7 @@ class FFlagSection(QWidget):
 
     def __init__(
         self,
-        manager: ModificationSource,
+        manager: ModificationManager,
         *,
         roblox_monitor: RobloxExitMonitor | None = None,
         config_manager: ConfigManager | None = None,
@@ -4547,7 +4447,7 @@ class ModificationsTab(QWidget):
 
     def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
-        mod_manager: ModificationSource,
+        mod_manager: ModificationManager,
         roblox_monitor: RobloxExitMonitor | None = None,
         config_manager: ConfigManager | None = None,
         proxy_master: ProxyMaster | None = None,
@@ -4835,11 +4735,9 @@ class ModificationsTab(QWidget):
         )
 
     def _clear_roblox_cache(self) -> None:
-        window_type = cast(
-            'Callable[[], QWidget]',
-            _lazy_attr('fleasion.gui.delete_cache', 'DeleteCacheWindow'),
-        )
-        window = window_type()
+        from fleasion.gui.delete_cache import DeleteCacheWindow
+
+        window = DeleteCacheWindow()
         window.show()
 
     # Status bar
@@ -5025,7 +4923,7 @@ def _relative_target_path_for_resource_file(
 class _CustomModDialog(QDialog):
     """Dialog for adding a custom modification entry."""
 
-    def __init__(self, manager: ModificationSource, parent: QWidget | None = None) -> None:
+    def __init__(self, manager: ModificationManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._manager = manager
         self.display_name = ''

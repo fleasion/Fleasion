@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import importlib
 import json
 import pathlib
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Protocol, TypedDict, cast, override
+from typing import TYPE_CHECKING, Literal, Protocol, cast, override
 
 from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QPoint, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import (
@@ -45,43 +44,22 @@ from fleasion.utils.paths import PROXY_TRAFFIC_FILE
 from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
 from .rules_dialog_ui import UiDialog as UiRulesDialog
 
+if TYPE_CHECKING:
+    from fleasion.proxy.server import (
+        AutoReplaceRule as _AutoReplaceRule,
+        ProxyRequestLogEntry as _TrafficEntry,
+    )
+    from fleasion.utils.json_types import JsonValue
+
 type _ShortcutHandler = Callable[[], object]
 type _PendingIntercept = tuple[int, str]
 type _PendingResponseKey = tuple[int, str]
 type _CompletedResponseKey = tuple[int, bytes | bytearray | None]
 
 
-class _TrafficEntry(TypedDict):
-    id: int
-    time: float | None
-    host: str
-    port: int
-    method: str
-    path: str
-    intercepted: bool
-    status: int | None
-    size: int
-    ms: int | None
-    request_raw: bytes | bytearray | None
-    response_raw: bytes | bytearray | None
-    pending_stage: str | None
-    was_intercepted: bool
-    dropped_request: bool
-    dropped_response: bool
-
-
-class _AutoReplaceRule(TypedDict, total=False):
-    enabled: bool
-    direction: str
-    type: str
-    match: str
-    replacement: str
-    host_filter: str
-    path_filter: str
-
-
 class ProxyTrafficConfig(Protocol):
-    settings: dict[str, object]
+    @property
+    def settings(self) -> dict[str, JsonValue]: ...
 
     def save(self) -> None: ...
 
@@ -594,14 +572,14 @@ class AutoReplaceRulesDialog(QDialog):
         if self._loading or row >= len(self._rules):
             return
         widget = cast('_CompactComboBox', self.ui.rulesTable.cellWidget(row, 1))
-        self._rules[row]['direction'] = str(cast('object', widget.currentData()) or 'both')
+        self._rules[row]['direction'] = str(widget.currentData() or 'both')
         self._save()
 
     def _on_type_changed(self, row: int) -> None:
         if self._loading or row >= len(self._rules):
             return
         widget = cast('_CompactComboBox', self.ui.rulesTable.cellWidget(row, 2))
-        self._rules[row]['type'] = str(cast('object', widget.currentData()) or 'plain')
+        self._rules[row]['type'] = str(widget.currentData() or 'plain')
         self._save()
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -633,7 +611,7 @@ class AutoReplaceRulesDialog(QDialog):
         if not rows:
             return
         for row in rows:
-            self._rules.append(cast('_AutoReplaceRule', dict(self._rules[row])))
+            self._rules.append(self._rules[row].copy())
         self._render_rules()
         self._save()
 
@@ -971,8 +949,8 @@ class ProxyTrafficTab(QWidget):
             table.setCurrentCell(current_row, 0, QItemSelectionModel.SelectionFlag.NoUpdate)
         del blocker
 
-        if current_row >= 0:
-            self._show_entry(self._entries_by_id[cast('int', current_id)])
+        if current_row >= 0 and current_id is not None:
+            self._show_entry(self._entries_by_id[current_id])
         elif current_id is not None:
             # The previously current request scrolled out of the log's cap.
             self._displayed_entry_id = None
@@ -1029,9 +1007,7 @@ class ProxyTrafficTab(QWidget):
         # submit/replay turns it back into valid wire bytes regardless of
         # how it's formatted here.
         if self._loaded_request_entry_id != entry['id']:
-            _set_text_preserving_scroll(
-                self.ui.requestText, self._format_preview('format_env_proxy_request_preview', entry)
-            )
+            _set_text_preserving_scroll(self.ui.requestText, self._format_preview('request', entry))
             self._loaded_request_entry_id = entry['id']
 
         # The response box only becomes editable while actually held for the
@@ -1042,7 +1018,7 @@ class ProxyTrafficTab(QWidget):
             if pending_stage == 'response':
                 _set_text_preserving_scroll(
                     self.ui.responseText,
-                    self._format_preview('format_env_proxy_response_preview', entry),
+                    self._format_preview('response', entry),
                 )
             self._loaded_pending_response_key = pending_response_key
 
@@ -1051,7 +1027,7 @@ class ProxyTrafficTab(QWidget):
             if completed_response_key != self._loaded_completed_response_key:
                 _set_text_preserving_scroll(
                     self.ui.responseText,
-                    self._format_preview('format_env_proxy_response_preview', entry),
+                    self._format_preview('response', entry),
                 )
                 self._loaded_completed_response_key = completed_response_key
 
@@ -1067,14 +1043,14 @@ class ProxyTrafficTab(QWidget):
             else tr('ui.gui.proxy_tab.response')
         )
 
-    def _format_preview(self, method_name: str, entry: _TrafficEntry) -> str:
+    def _format_preview(self, stage: Literal['request', 'response'], entry: _TrafficEntry) -> str:
         if self._proxy_master is None:
             return ''
-        fmt = cast(
-            'Callable[[_TrafficEntry], str] | None',
-            getattr(self._proxy_master, method_name, None),
+        text = (
+            self._proxy_master.format_env_proxy_request_preview(entry)
+            if stage == 'request'
+            else self._proxy_master.format_env_proxy_response_preview(entry)
         )
-        text = fmt(entry) if callable(fmt) else ''
         if not text and entry.get('method') == 'CONNECT':
             return tr('proxy.tunnel_note')
         return text
@@ -1086,7 +1062,11 @@ class ProxyTrafficTab(QWidget):
             for entry_id, stage in self._proxy_master.get_env_proxy_pending_intercepts():
                 self._proxy_master.submit_env_proxy_pending(entry_id, stage, action, None)
         else:
-            entry = self._entries_by_id.get(cast('int', self._displayed_entry_id))
+            entry = (
+                self._entries_by_id.get(self._displayed_entry_id)
+                if self._displayed_entry_id is not None
+                else None
+            )
             stage = entry.get('pending_stage') if entry is not None else None
             if entry is None or not stage:
                 return
@@ -1118,7 +1098,11 @@ class ProxyTrafficTab(QWidget):
             self._proxy_master, 'replay_env_proxy_request'
         ):
             return
-        entry = self._entries_by_id.get(cast('int', self._displayed_entry_id))
+        entry = (
+            self._entries_by_id.get(self._displayed_entry_id)
+            if self._displayed_entry_id is not None
+            else None
+        )
         if entry is None:
             return
         self._proxy_master.replay_env_proxy_request(entry['id'], self.ui.requestText.toPlainText())
@@ -1128,7 +1112,11 @@ class ProxyTrafficTab(QWidget):
         # already driving the request/response boxes (same row the A/D/R
         # shortcuts act on) - no separate "which row did you right-click"
         # logic needed.
-        entry = self._entries_by_id.get(cast('int', self._displayed_entry_id))
+        entry = (
+            self._entries_by_id.get(self._displayed_entry_id)
+            if self._displayed_entry_id is not None
+            else None
+        )
         if entry is None:
             return
         menu = QMenu(self)
@@ -1234,7 +1222,8 @@ class ProxyTrafficTab(QWidget):
         self._render_table()
 
     def _clear_roblox_cache(self) -> None:
-        delete_cache = importlib.import_module('.delete_cache', __package__)
+        from . import delete_cache
+
         window = delete_cache.DeleteCacheWindow()
         window.show()
 

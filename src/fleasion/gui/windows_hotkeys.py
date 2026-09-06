@@ -11,7 +11,6 @@ import ctypes
 import queue
 import sys
 import threading
-from collections.abc import Mapping
 from ctypes import wintypes
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -19,22 +18,16 @@ from PySide6.QtCore import QObject, Signal
 
 from fleasion.utils import log_buffer
 
+from .hotkey_config import binding_mapping as _binding_mapping
 from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from .hotkey_config import HotkeyConfig, HotkeyProxy
+
+
 type HotkeyBinding = dict[str, int | bool | str]
-
-
-class _DisabledConfigLike(Protocol):
-    custom_fflag_disabled: list[str]
-    custom_fflag_disabled_folders: list[str]
-
-
-class _FlagConfigLike(Protocol):
-    custom_fflags: dict[str, str]
-
-
-class _RefreshProxyLike(Protocol):
-    def refresh_custom_fflag_interception(self) -> None: ...
 
 
 class _WinFunction(Protocol):
@@ -51,6 +44,8 @@ class _User32(Protocol):
     TranslateMessage: _WinFunction
     DispatchMessageW: _WinFunction
     UnhookWindowsHookEx: _WinFunction
+    CallNextHookEx: _WinFunction
+    SetWindowsHookExW: _WinFunction
 
 
 class _Kernel32(Protocol):
@@ -62,126 +57,47 @@ class _Windll(Protocol):
     kernel32: _Kernel32
 
 
-if TYPE_CHECKING:
+def _windll() -> _Windll:
+    if sys.platform == 'win32':
+        return cast('_Windll', ctypes.windll)
+    msg = 'Windows hotkeys require Windows'
+    raise OSError(msg)
 
-    def _binding_mapping(value: object) -> Mapping[str, object] | None: ...
 
-    def _windll() -> _Windll: ...
+def _install_mouse_wheel_hook_runtime(
+    wheel_events: queue.SimpleQueue[str],
+) -> tuple[object, object] | None:
+    if sys.platform != 'win32':
+        return None
 
-    def _install_mouse_wheel_hook_runtime(
-        wheel_events: queue.SimpleQueue[str],
-    ) -> tuple[object, object] | None: ...
+    class POINT(ctypes.Structure):
+        _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
 
-    def _config_enabled(config: object) -> bool: ...
+    class MSLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [
+            ('pt', POINT),
+            ('mouseData', wintypes.DWORD),
+            ('flags', wintypes.DWORD),
+            ('time', wintypes.DWORD),
+            ('dwExtraInfo', ctypes.c_size_t),
+        ]
 
-    def _config_bindings(config: object) -> Mapping[str, Mapping[str, object]]: ...
+    callback_type = ctypes.WINFUNCTYPE(
+        ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+    )
+    user32 = _windll().user32
 
-    def _config_flags(config: object) -> Mapping[str, object]: ...
+    @callback_type
+    def callback(code: int, message: int, lparam: int) -> int:
+        if code >= 0 and message == 0x020A:  # WM_MOUSEWHEEL
+            data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+            delta = ctypes.c_short((data.mouseData >> 16) & 0xFFFF).value
+            if delta:
+                wheel_events.put('up' if delta > 0 else 'down')
+        return user32.CallNextHookEx(None, code, message, lparam)
 
-    def _config_folders(config: object) -> Mapping[str, object]: ...
-
-    def _config_folder_bindings(config: object) -> Mapping[str, Mapping[str, object]]: ...
-
-    def _config_actions(config: object) -> Mapping[str, object]: ...
-
-    def _set_config_flags(config: object, values: dict[str, str]) -> None: ...
-
-    def _config_disabled(config: object) -> list[str]: ...
-
-    def _set_config_disabled(config: object, values: list[str]) -> None: ...
-
-    def _config_disabled_folders(config: object) -> list[str]: ...
-
-    def _set_config_disabled_folders(config: object, values: list[str]) -> None: ...
-
-    def _refresh_proxy(proxy: object) -> None: ...
-else:
-
-    def _binding_mapping(value: object) -> Mapping[str, object] | None:
-        return value if isinstance(value, Mapping) else None
-
-    def _windll() -> _Windll:
-        return ctypes.windll
-
-    def _install_mouse_wheel_hook_runtime(
-        wheel_events: queue.SimpleQueue[str],
-    ) -> tuple[object, object] | None:
-        if sys.platform != 'win32':
-            return None
-
-        class POINT(ctypes.Structure):
-            _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
-
-        class MSLLHOOKSTRUCT(ctypes.Structure):
-            _fields_ = [
-                ('pt', POINT),
-                ('mouseData', wintypes.DWORD),
-                ('flags', wintypes.DWORD),
-                ('time', wintypes.DWORD),
-                ('dwExtraInfo', ctypes.c_size_t),
-            ]
-
-        callback_type = ctypes.WINFUNCTYPE(
-            ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
-        )
-        user32 = _windll().user32
-
-        @callback_type
-        def callback(code: int, message: int, lparam: int) -> int:
-            if code >= 0 and message == 0x020A:  # WM_MOUSEWHEEL
-                data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                delta = ctypes.c_short((data.mouseData >> 16) & 0xFFFF).value
-                if delta:
-                    wheel_events.put('up' if delta > 0 else 'down')
-            return user32.CallNextHookEx(None, code, message, lparam)
-
-        hook = user32.SetWindowsHookExW(
-            14, callback, ctypes.windll.kernel32.GetModuleHandleW(None), 0
-        )
-        return (hook, callback) if hook else None
-
-    def _config_enabled(config: object) -> bool:
-        return bool(getattr(config, 'custom_fflags_enabled', False))
-
-    def _config_bindings(config: object) -> Mapping[str, Mapping[str, object]]:
-        bindings = getattr(config, 'custom_fflag_keybinds', {}) or {}
-        return bindings if isinstance(bindings, Mapping) else {}
-
-    def _config_flags(config: object) -> Mapping[str, object]:
-        flags = getattr(config, 'custom_fflags', {}) or {}
-        return flags if isinstance(flags, Mapping) else {}
-
-    def _config_folders(config: object) -> Mapping[str, object]:
-        folders = getattr(config, 'custom_fflag_folders', {}) or {}
-        return folders if isinstance(folders, Mapping) else {}
-
-    def _config_folder_bindings(config: object) -> Mapping[str, Mapping[str, object]]:
-        bindings = getattr(config, 'custom_fflag_folder_keybinds', {}) or {}
-        return bindings if isinstance(bindings, Mapping) else {}
-
-    def _config_actions(config: object) -> Mapping[str, object]:
-        actions = getattr(config, 'custom_fflag_actions', {}) or {}
-        return actions if isinstance(actions, Mapping) else {}
-
-    def _set_config_flags(config: _FlagConfigLike, values: dict[str, str]) -> None:
-        config.custom_fflags = values
-
-    def _config_disabled(config: object) -> list[str]:
-        disabled = getattr(config, 'custom_fflag_disabled', []) or []
-        return [str(value) for value in disabled]
-
-    def _set_config_disabled(config: _DisabledConfigLike, values: list[str]) -> None:
-        config.custom_fflag_disabled = values
-
-    def _config_disabled_folders(config: object) -> list[str]:
-        disabled = getattr(config, 'custom_fflag_disabled_folders', []) or []
-        return [str(value) for value in disabled]
-
-    def _set_config_disabled_folders(config: _DisabledConfigLike, values: list[str]) -> None:
-        config.custom_fflag_disabled_folders = values
-
-    def _refresh_proxy(proxy: _RefreshProxyLike) -> None:
-        proxy.refresh_custom_fflag_interception()
+    hook = user32.SetWindowsHookExW(14, callback, ctypes.windll.kernel32.GetModuleHandleW(None), 0)
+    return (hook, callback) if hook else None
 
 
 MOD_SHIFT = 0x01
@@ -597,8 +513,8 @@ class WindowsCustomFFlagHotkeyController(QObject):
 
     def __init__(
         self,
-        config_manager: object | None = None,
-        proxy_master: object | None = None,
+        config_manager: HotkeyConfig | None = None,
+        proxy_master: HotkeyProxy | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -612,17 +528,17 @@ class WindowsCustomFFlagHotkeyController(QObject):
         return self._service
 
     def sync(self) -> None:
-        if self._config is None or not _config_enabled(self._config):
+        if self._config is None or not self._config.custom_fflags_enabled:
             self._service.set_bindings({})
             return
-        bindings = dict(_config_bindings(self._config))
+        bindings = dict(self._config.custom_fflag_keybinds)
         bindings.update(
             {
                 f'folder:{name}': binding
-                for name, binding in _config_folder_bindings(self._config).items()
+                for name, binding in self._config.custom_fflag_folder_keybinds.items()
             }
         )
-        for name, action_value in _config_actions(self._config).items():
+        for name, action_value in self._config.custom_fflag_actions.items():
             action = _binding_mapping(action_value)
             if action is None:
                 continue
@@ -641,37 +557,37 @@ class WindowsCustomFFlagHotkeyController(QObject):
         self.toggle_flag(target)
 
     def apply_action(self, name: str) -> None:
-        if self._config is None or not _config_enabled(self._config):
+        if self._config is None or not self._config.custom_fflags_enabled:
             return
-        action = _binding_mapping(_config_actions(self._config).get(name))
+        action = _binding_mapping(self._config.custom_fflag_actions.get(name))
         if action is None:
             return
         action_flags = _binding_mapping(action.get('flags'))
         if not action_flags:
             return
-        updated = {str(flag): str(value) for flag, value in _config_flags(self._config).items()}
+        updated = {str(flag): str(value) for flag, value in self._config.custom_fflags.items()}
         updated.update({str(flag): str(value) for flag, value in action_flags.items()})
-        _set_config_flags(self._config, updated)
+        self._config.custom_fflags = updated
         log_buffer.log('CustomFFlags', f'Windows keybind applied action {name}')
         self.toggled.emit(f'action:{name}')
 
     def toggle_flag(self, name: str) -> None:
         if (
             self._config is None
-            or not _config_enabled(self._config)
-            or name not in _config_flags(self._config)
+            or not self._config.custom_fflags_enabled
+            or name not in self._config.custom_fflags
         ):
             return
-        disabled = set(_config_disabled(self._config))
+        disabled = set(self._config.custom_fflag_disabled)
         is_enabled = name in disabled
         if is_enabled:
             disabled.remove(name)
         else:
             disabled.add(name)
-        _set_config_disabled(self._config, sorted(disabled))
+        self._config.custom_fflag_disabled = sorted(disabled)
         if self._proxy_master is not None:
             try:
-                _refresh_proxy(self._proxy_master)
+                self._proxy_master.refresh_custom_fflag_interception()
             except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
         log_buffer.log(
@@ -683,20 +599,20 @@ class WindowsCustomFFlagHotkeyController(QObject):
     def toggle_folder(self, name: str) -> None:
         if (
             self._config is None
-            or not _config_enabled(self._config)
-            or name not in _config_folders(self._config)
+            or not self._config.custom_fflags_enabled
+            or name not in self._config.custom_fflag_folders
         ):
             return
-        disabled = set(_config_disabled_folders(self._config))
+        disabled = set(self._config.custom_fflag_disabled_folders)
         is_enabled = name in disabled
         if is_enabled:
             disabled.remove(name)
         else:
             disabled.add(name)
-        _set_config_disabled_folders(self._config, sorted(disabled))
+        self._config.custom_fflag_disabled_folders = sorted(disabled)
         if self._proxy_master is not None:
             try:
-                _refresh_proxy(self._proxy_master)
+                self._proxy_master.refresh_custom_fflag_interception()
             except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
         log_buffer.log(

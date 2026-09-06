@@ -1,6 +1,6 @@
 import os
 from collections.abc import Callable
-from types import SimpleNamespace
+from tests.hotkey_fakes import HotkeyConfig, HotkeyProxy
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -44,16 +44,13 @@ def test_scan_code_binding_labels_and_modifier_categories_are_human_readable() -
 
 
 def test_custom_fflag_hotkey_controller_toggles_without_dashboard() -> None:
-    config = SimpleNamespace(
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagExample': 'True'},
         custom_fflag_disabled=[],
         custom_fflag_keybinds={},
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    proxy = HotkeyProxy()
     controller = WindowsCustomFFlagHotkeyController(config, proxy)
     toggled: list[str] = []
     controller.toggled.connect(_record_toggled(toggled))
@@ -67,7 +64,7 @@ def test_custom_fflag_hotkey_controller_toggles_without_dashboard() -> None:
 
 
 def test_custom_fflag_hotkey_controller_toggles_folder_without_dashboard() -> None:
-    config = SimpleNamespace(
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
         custom_fflag_disabled=[],
@@ -76,10 +73,7 @@ def test_custom_fflag_hotkey_controller_toggles_folder_without_dashboard() -> No
         custom_fflag_disabled_folders=[],
         custom_fflag_folder_keybinds={},
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    proxy = HotkeyProxy()
     controller = WindowsCustomFFlagHotkeyController(config, proxy)
     toggled: list[str] = []
     controller.toggled.connect(_record_toggled(toggled))
@@ -94,7 +88,7 @@ def test_custom_fflag_hotkey_controller_toggles_folder_without_dashboard() -> No
 
 
 def test_custom_fflag_actions_can_switch_same_flag_between_values() -> None:
-    config = SimpleNamespace(
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '60'},
         custom_fflag_disabled=[],
@@ -107,10 +101,7 @@ def test_custom_fflag_actions_can_switch_same_flag_between_values() -> None:
             '144 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '144'}},
         },
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    proxy = HotkeyProxy()
     controller = WindowsCustomFFlagHotkeyController(config, proxy)
     toggled: list[str] = []
     controller.toggled.connect(_record_toggled(toggled))

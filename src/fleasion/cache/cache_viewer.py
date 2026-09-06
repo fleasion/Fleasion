@@ -17,7 +17,16 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast, overload, override
+from typing import (
+    TYPE_CHECKING,
+    Literal,
+    NotRequired,
+    Protocol,
+    TypedDict,
+    cast,
+    overload,
+    override,
+)
 from xml.parsers.expat import ExpatError
 
 import requests
@@ -98,6 +107,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from fleasion.config.manager import ConfigManager
+    from fleasion.gui.replacer_config import ReplacerConfigWindow
     from fleasion.utils.r15_to_r6 import JointMap, PartMap
 
     from .animation_viewer import AnimationViewerPanel
@@ -194,6 +204,7 @@ class CacheScraperSource(Protocol):
 
     def clear_tracking(self) -> None: ...
 
+    @overload
     def _https_get(
         self,
         hostname: str,
@@ -202,8 +213,20 @@ class CacheScraperSource(Protocol):
         extra_headers: dict[str, str] | None = None,
         timeout: float = 8.0,
         max_redirects: int = 6,
-        return_status: bool = False,
-    ) -> bytes | tuple[bytes | None, int | None] | None: ...
+        return_status: Literal[False] = False,
+    ) -> bytes | None: ...
+
+    @overload
+    def _https_get(
+        self,
+        hostname: str,
+        path: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+        timeout: float = 8.0,
+        max_redirects: int = 6,
+        return_status: Literal[True],
+    ) -> tuple[bytes | None, int | None]: ...
 
     def _fetch_asset_with_place_id_retry(
         self, asset_id: str, extra_headers: dict[str, str] | None = None
@@ -211,11 +234,29 @@ class CacheScraperSource(Protocol):
 
 
 class CacheViewerConfig(Protocol):
-    settings: dict[str, object]
-    audio_volume: int
-    show_names: bool
-    show_creator_id: bool
-    scraper_blacklist: list[str]
+    @property
+    def settings(self) -> dict[str, JsonValue]: ...
+
+    @property
+    def audio_volume(self) -> int: ...
+
+    @audio_volume.setter
+    def audio_volume(self, value: int) -> None: ...
+    @property
+    def show_names(self) -> bool: ...
+
+    @show_names.setter
+    def show_names(self, value: bool) -> None: ...
+    @property
+    def show_creator_id(self) -> bool: ...
+
+    @show_creator_id.setter
+    def show_creator_id(self, value: bool) -> None: ...
+    @property
+    def scraper_blacklist(self) -> list[str]: ...
+
+    @scraper_blacklist.setter
+    def scraper_blacklist(self, value: list[str]) -> None: ...
 
     def save(self) -> None: ...
 
@@ -1598,6 +1639,7 @@ class CacheViewerTab(QWidget):
         defer_setup: bool = False,
     ) -> None:
         super().__init__(parent)
+        self.replacer_window: ReplacerConfigWindow | None = None
         self.cache_manager = cache_manager
         self.cache_scraper = cache_scraper
         self.config_manager = config_manager
@@ -2271,7 +2313,9 @@ class CacheViewerTab(QWidget):
     def _save_search_cols(self) -> None:
         if self.config_manager is None:
             return
-        self.config_manager.settings['scraper_search_columns'] = sorted(self._active_search_cols)
+        self.config_manager.settings['scraper_search_columns'] = list[JsonValue](
+            sorted(self._active_search_cols)
+        )
         self.config_manager.save()
 
     def _update_search_col_btn(self) -> None:
@@ -3041,7 +3085,7 @@ class CacheViewerTab(QWidget):
     def _toggle_scraper(self, state: int) -> None:
         """Toggle cache scraper on/off."""
         enabled = bool(state)
-        owner = getattr(self, '_replacer_window_ref', None)
+        owner = self.replacer_window
         if owner is None:
             owner = self.window()
         tray = getattr(owner, '_system_tray', None)
@@ -5224,7 +5268,7 @@ class CacheViewerTab(QWidget):
         if not asset_ids:
             return
 
-        replacer_window = getattr(self, '_replacer_window_ref', None)
+        replacer_window = self.replacer_window
         if replacer_window:
             # Add to existing IDs if there are any
             current_text = replacer_window.replace_entry.text().strip()
@@ -5274,7 +5318,7 @@ class CacheViewerTab(QWidget):
             return
         asset_id = id_item.text()
 
-        replacer_window = getattr(self, '_replacer_window_ref', None)
+        replacer_window = self.replacer_window
         if replacer_window:
             replacer_window.replacement_entry.setText(asset_id)
             log_buffer.log('Scraper', f'Set Replace With to asset ID {asset_id}')
