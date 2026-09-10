@@ -248,6 +248,7 @@ def _write_macos_app_bundle(
         'CFBundleShortVersionString': bundle_version,
         'CFBundleVersion': bundle_version,
         'LSApplicationCategoryType': 'public.app-category.utilities',
+        'LSUIElement': True,
         'NSHumanReadableCopyright': _DESCRIPTION,
     }
     if icon_name:
