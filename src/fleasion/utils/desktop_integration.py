@@ -203,6 +203,7 @@ def _create_macos_app() -> bool:
             'CFBundleShortVersionString': bundle_version,
             'CFBundleVersion': bundle_version,
             'LSApplicationCategoryType': 'public.app-category.utilities',
+            'LSUIElement': True,
             'NSHumanReadableCopyright': _DESCRIPTION,
         }
         if icon_name:

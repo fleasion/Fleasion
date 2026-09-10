@@ -72,6 +72,7 @@ def test_macos_launcher_app_contains_metadata_icon_and_current_launch(tmp_path, 
     assert info["CFBundleShortVersionString"] == "2.4.0"
     assert info["CFBundleVersion"] == "2.4.0"
     assert info["CFBundleIconFile"] == "fleasionlogoHR"
+    assert info["LSUIElement"] is True
     assert info["NSHumanReadableCopyright"] == "Roblox asset interceptor and replacer"
     assert "CFBundleURLTypes" not in info
     assert "exec /usr/bin/uv --project" in script
