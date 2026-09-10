@@ -8,9 +8,12 @@ everything runs in the same process.
 import base64
 import gzip
 import hashlib
+import http.client
 import logging
 import os
 import re
+import socket
+import ssl
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from urllib.parse import urlparse
@@ -19,6 +22,7 @@ import requests
 
 from ...cache.cache_manager import CacheManager
 from ...utils import format_count, log_buffer
+from ..upstream import HttpProxyConfig
 
 try:
     import orjson
@@ -375,6 +379,7 @@ class CacheScraper:
         # (before the hosts file is written). Keyed by hostname.
         # Used to bypass our own hosts file when making direct API calls.
         self._real_ips: dict[str, tuple[str, ...]] = {}
+        self._http_proxy_fallback: HttpProxyConfig | None = None
 
         # (session removed - API fetches use _https_get() with raw ssl for SNI control)
 
@@ -692,6 +697,57 @@ class CacheScraper:
                 existing = self._real_ips.get(host, ())
                 self._real_ips[host] = tuple(dict.fromkeys((*candidates, *existing)))
 
+    def set_http_proxy_fallback(self, proxy: HttpProxyConfig | None) -> None:
+        """Set the HTTP CONNECT route used after direct HTTPS endpoints fail."""
+        with self._lock:
+            self._http_proxy_fallback = proxy
+
+    @staticmethod
+    def _connect_https_via_http_proxy(
+        ctx: ssl.SSLContext,
+        hostname: str,
+        proxy: HttpProxyConfig,
+        timeout: float,
+    ) -> tuple[ssl.SSLSocket, str] | None:
+        headers: dict[str, str] = {}
+        if proxy.username:
+            raw = f'{proxy.username}:{proxy.password or ""}'.encode(
+                'utf-8', errors='replace'
+            )
+            token = base64.b64encode(raw).decode('ascii')
+            headers['Proxy-Authorization'] = f'Basic {token}'
+
+        conn = http.client.HTTPConnection(proxy.host, proxy.port, timeout=timeout)
+        raw_sock: socket.socket | None = None
+        try:
+            conn.set_tunnel(hostname, 443, headers=headers)
+            conn.connect()
+            raw_sock = conn.sock
+            if raw_sock is None:
+                log_buffer.log(
+                    'Cache',
+                    f'HTTP CONNECT fallback returned no socket for {hostname} via '
+                    f'{proxy.host}:{proxy.port}',
+                )
+                return None
+            conn.sock = None
+            ssl_sock = ctx.wrap_socket(raw_sock, server_hostname=hostname)
+            return ssl_sock, f'{proxy.host}:{proxy.port}->{hostname}:443'
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            if raw_sock is not None:
+                try:
+                    raw_sock.close()
+                except OSError:
+                    pass
+            log_buffer.log(
+                'Cache',
+                f'HTTP CONNECT fallback failed {hostname} via '
+                f'{proxy.host}:{proxy.port}: {exc}',
+            )
+            return None
+        finally:
+            conn.close()
+
     def _https_get(
         self,
         hostname: str,
@@ -716,14 +772,7 @@ class CacheScraper:
         because Python's requests library sends gzip/deflate Accept-Encoding by
         default, never zstd.
         """
-        import http.client
-        import socket
-        import ssl
-        from urllib.parse import urlparse
-
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
 
         cur_hostname = hostname
         cur_path = path
@@ -750,6 +799,16 @@ class CacheScraper:
                     log_buffer.log(
                         'Cache', f'Socket connect failed {cur_hostname} ({candidate}): {exc}'
                     )
+
+            if ssl_sock is None:
+                with self._lock:
+                    http_proxy = self._http_proxy_fallback
+                if http_proxy is not None:
+                    proxied = self._connect_https_via_http_proxy(
+                        ctx, cur_hostname, http_proxy, timeout
+                    )
+                    if proxied is not None:
+                        ssl_sock, real_ip = proxied
 
             if ssl_sock is None:
                 return (None, None) if return_status else None

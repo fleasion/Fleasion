@@ -269,6 +269,42 @@ def test_profile_api_has_upstream_connection_limit(monkeypatch, tmp_path):
     assert PROFILE_API_HOST in proxy._upstream_host_limits
 
 
+def test_upstream_tls_context_preserves_default_certificate_verification(monkeypatch, tmp_path):
+    class FakeSSLContext:
+        check_hostname = True
+        verify_mode = ssl.CERT_REQUIRED
+        minimum_version = None
+        maximum_version = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def load_cert_chain(self, *_args, **_kwargs):
+            pass
+
+        def set_alpn_protocols(self, *_args, **_kwargs):
+            pass
+
+        def set_servername_callback(self, *_args, **_kwargs):
+            pass
+
+    upstream_ctx = FakeSSLContext()
+    monkeypatch.setattr('fleasion.proxy.server.ssl.SSLContext', FakeSSLContext)
+    monkeypatch.setattr('fleasion.proxy.server.ssl.create_default_context', lambda: upstream_ctx)
+
+    proxy = FleasionProxy(
+        texture_stripper=SimpleNamespace(),
+        cache_scraper=SimpleNamespace(),
+        host_certs={},
+        default_cert=(tmp_path / 'default.crt', tmp_path / 'default.key'),
+        upstream_endpoints={},
+    )
+
+    assert proxy._upstream_ssl_ctx is upstream_ctx
+    assert upstream_ctx.check_hostname is True
+    assert upstream_ctx.verify_mode == ssl.CERT_REQUIRED
+
+
 def test_profile_api_preserves_unmodified_browser_wire(monkeypatch, tmp_path):
     class FakeSSLContext:
         verify_mode = None

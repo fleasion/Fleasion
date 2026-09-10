@@ -5641,6 +5641,14 @@ class ProxyMaster:
         # calls bypass our hosts file redirect (including CDN redirects).
         scraper_ips = _endpoint_ip_candidates(real_endpoints)
         self.cache_scraper.set_real_ips(scraper_ips)
+        scraper_http_proxy = None
+        if effective_upstream_mode == UpstreamMode.SYSTEM_PROXY.value:
+            scraper_http_proxy = system_http_proxy
+        elif effective_upstream_mode == UpstreamMode.HTTP_CONNECT.value:
+            scraper_http_proxy = manual_http_proxy
+        elif effective_upstream_mode == UpstreamMode.AUTO.value:
+            scraper_http_proxy = system_http_proxy or manual_http_proxy
+        self.cache_scraper.set_http_proxy_fallback(scraper_http_proxy)
 
         # Wire the scraper into the json_viewer's AssetFetcherThread so the
         # Preview tab in the standalone JSON viewer also bypasses the hosts file.

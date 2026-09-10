@@ -442,7 +442,10 @@ def test_macos_relay_failure_emits_health_diagnostics_before_hosts_write(
         vpn_compat_max_assetdelivery_connections=16,
         vpn_compat_max_cdn_connections=32,
     )
-    proxy.cache_scraper = SimpleNamespace(set_real_ips=lambda _ips: None)
+    proxy.cache_scraper = SimpleNamespace(
+        set_real_ips=lambda _ips: None,
+        set_http_proxy_fallback=lambda _proxy: None,
+    )
     proxy.custom_fflag_modifier = None
     proxy._module_interceptors = []
     proxy._on_proxy_start_error = lambda code, details: errors.append((code, details))
@@ -723,7 +726,10 @@ def test_linux_proxy_start_emits_read_only_hosts_error(tmp_path, monkeypatch):
         vpn_compat_max_assetdelivery_connections=0,
         vpn_compat_max_cdn_connections=0,
     )
-    proxy.cache_scraper = SimpleNamespace(set_real_ips=lambda _ips: None)
+    proxy.cache_scraper = SimpleNamespace(
+        set_real_ips=lambda _ips: None,
+        set_http_proxy_fallback=lambda _proxy: None,
+    )
     proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: False)
     proxy._module_interceptors = []
     proxy._on_proxy_start_error = lambda code, details: errors.append((code, details))
@@ -957,7 +963,10 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
         vpn_compat_max_cdn_connections=0,
         wire_preserving_passthrough=False,
     )
-    proxy.cache_scraper = SimpleNamespace(set_real_ips=lambda _ips: None)
+    proxy.cache_scraper = SimpleNamespace(
+        set_real_ips=lambda _ips: None,
+        set_http_proxy_fallback=lambda _proxy: None,
+    )
     proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: False)
     proxy.custom_fflag_modifier = SimpleNamespace(
         is_enabled=lambda: True,
@@ -1096,7 +1105,10 @@ def test_linux_helper_refresh_requests_helper_update_without_direct_hosts_write(
     proxy._hosts_installed = True
     proxy._proxy = ProxyStub()
     proxy._lock = threading.Lock()
-    proxy.cache_scraper = SimpleNamespace(set_real_ips=lambda _ips: None)
+    proxy.cache_scraper = SimpleNamespace(
+        set_real_ips=lambda _ips: None,
+        set_http_proxy_fallback=lambda _proxy: None,
+    )
 
     proxy.refresh_username_spoofer_interception()
 
@@ -1150,7 +1162,10 @@ def test_linux_helper_custom_fflags_adds_only_clientsettings_endpoints(monkeypat
     proxy._hosts_installed = True
     proxy._proxy = ProxyStub()
     proxy._lock = threading.Lock()
-    proxy.cache_scraper = SimpleNamespace(set_real_ips=lambda _ips: None)
+    proxy.cache_scraper = SimpleNamespace(
+        set_real_ips=lambda _ips: None,
+        set_http_proxy_fallback=lambda _proxy: None,
+    )
 
     proxy.refresh_custom_fflag_interception()
 

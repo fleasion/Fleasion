@@ -1,11 +1,13 @@
 import json
 import http.client
 import socket
+import ssl
 import struct
 from types import SimpleNamespace
 
 from fleasion.cache import cache_manager as cache_manager_module
 from fleasion.proxy.addons.cache_scraper import CacheScraper, _ktx2_pack_index
+from fleasion.proxy.upstream import HttpProxyConfig
 
 
 class _CacheManager:
@@ -148,11 +150,13 @@ def test_https_get_tries_the_next_cached_endpoint_after_a_connect_failure(monkey
 
     class _FakeContext:
         check_hostname = True
-        verify_mode = None
+        verify_mode = ssl.CERT_REQUIRED
 
         def wrap_socket(self, raw_sock, server_hostname):
             assert server_hostname == 'assetdelivery.roblox.com'
             return raw_sock
+
+    context = _FakeContext()
 
     def fake_connect(address, timeout):
         attempts.append((address, timeout))
@@ -161,7 +165,7 @@ def test_https_get_tries_the_next_cached_endpoint_after_a_connect_failure(monkey
         return _FakeSocket()
 
     monkeypatch.setattr(socket, 'create_connection', fake_connect)
-    monkeypatch.setattr('ssl.create_default_context', lambda: _FakeContext())
+    monkeypatch.setattr('ssl.create_default_context', lambda: context)
     monkeypatch.setattr(http.client.HTTPConnection, '__init__', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(http.client.HTTPConnection, 'request', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -181,6 +185,67 @@ def test_https_get_tries_the_next_cached_endpoint_after_a_connect_failure(monkey
         scraper._executor.shutdown(wait=False, cancel_futures=True)
 
     assert [address[0] for address, _timeout in attempts] == ['198.51.100.1', '93.184.216.34']
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_https_get_falls_back_to_http_connect_after_direct_tls_verification_failure(monkeypatch):
+    scraper = _make_scraper()
+    proxy_config = HttpProxyConfig('127.0.0.1', 7890)
+    scraper.set_real_ips({'assetdelivery.roblox.com': ['149.248.211.216']})
+    scraper.set_http_proxy_fallback(proxy_config)
+    attempts = []
+    fallback_calls = []
+
+    class _FakeSocket:
+        def close(self):
+            return None
+
+    class _FakeContext:
+        check_hostname = True
+        verify_mode = ssl.CERT_REQUIRED
+
+        def wrap_socket(self, raw_sock, server_hostname):
+            assert server_hostname == 'assetdelivery.roblox.com'
+            raise ssl.SSLCertVerificationError('hostname mismatch')
+
+    context = _FakeContext()
+
+    def fake_connect(address, timeout):
+        attempts.append((address, timeout))
+        return _FakeSocket()
+
+    def fake_proxy_connect(ctx, hostname, proxy, timeout):
+        fallback_calls.append((ctx, hostname, proxy, timeout))
+        return _FakeSocket(), f'{proxy.host}:{proxy.port}->{hostname}:443'
+
+    monkeypatch.setattr(socket, 'create_connection', fake_connect)
+    monkeypatch.setattr('ssl.create_default_context', lambda: context)
+    monkeypatch.setattr(scraper, '_connect_https_via_http_proxy', fake_proxy_connect)
+    monkeypatch.setattr(http.client.HTTPConnection, '__init__', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(http.client.HTTPConnection, 'request', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        http.client.HTTPConnection,
+        'getresponse',
+        lambda _self: SimpleNamespace(status=404, read=lambda: b'', headers={}),
+    )
+
+    try:
+        assert scraper._https_get(
+            'assetdelivery.roblox.com',
+            '/v1/asset/?id=123',
+            return_status=True,
+        ) == (None, 404)
+    finally:
+        scraper._executor.shutdown(wait=False, cancel_futures=True)
+
+    assert attempts == [(('149.248.211.216', 443), 8.0)]
+    assert len(fallback_calls) == 1
+    ctx, hostname, proxy, timeout = fallback_calls[0]
+    assert ctx is context
+    assert hostname == 'assetdelivery.roblox.com'
+    assert proxy is proxy_config
+    assert timeout == 8.0
 
 
 def _fake_roblox_ktx2(
