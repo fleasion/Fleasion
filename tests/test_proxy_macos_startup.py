@@ -660,7 +660,14 @@ def test_macos_relay_failure_emits_health_diagnostics_before_hosts_write(
             vpn_compat_max_cdn_connections=32,
         ),
     )
-    setattr(proxy, 'cache_scraper', SimpleNamespace(set_real_ips=_callback1(lambda _ips: None)))
+    setattr(
+        proxy,
+        'cache_scraper',
+        SimpleNamespace(
+            set_real_ips=_callback1(lambda _ips: None),
+            set_http_proxy_fallback=_callback1(lambda _proxy: None),
+        ),
+    )
     setattr(proxy, 'custom_fflag_modifier', None)
     setattr(proxy, '_module_interceptors', [])
     setattr(proxy, '_on_proxy_start_error', _collect_proxy_errors(errors))
@@ -1050,7 +1057,14 @@ def test_linux_proxy_start_emits_read_only_hosts_error(
             vpn_compat_max_cdn_connections=0,
         ),
     )
-    setattr(proxy, 'cache_scraper', SimpleNamespace(set_real_ips=_callback1(lambda _ips: None)))
+    setattr(
+        proxy,
+        'cache_scraper',
+        SimpleNamespace(
+            set_real_ips=_callback1(lambda _ips: None),
+            set_http_proxy_fallback=_callback1(lambda _proxy: None),
+        ),
+    )
     setattr(proxy, 'username_spoofer', SimpleNamespace(is_enabled=_callback0(lambda: False)))
     setattr(proxy, '_module_interceptors', [])
     setattr(proxy, '_on_proxy_start_error', _collect_proxy_errors(errors))
@@ -1313,7 +1327,14 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
             wire_preserving_passthrough=False,
         ),
     )
-    setattr(proxy, 'cache_scraper', SimpleNamespace(set_real_ips=_callback1(lambda _ips: None)))
+    setattr(
+        proxy,
+        'cache_scraper',
+        SimpleNamespace(
+            set_real_ips=_callback1(lambda _ips: None),
+            set_http_proxy_fallback=_callback1(lambda _proxy: None),
+        ),
+    )
     setattr(proxy, 'username_spoofer', SimpleNamespace(is_enabled=_callback0(lambda: False)))
     setattr(
         proxy,
@@ -1502,7 +1523,14 @@ def test_linux_helper_refresh_requests_helper_update_without_direct_hosts_write(
     setattr(proxy, '_hosts_installed', True)
     setattr(proxy, '_proxy', ProxyStub())
     setattr(proxy, '_lock', threading.Lock())
-    setattr(proxy, 'cache_scraper', SimpleNamespace(set_real_ips=_callback1(lambda _ips: None)))
+    setattr(
+        proxy,
+        'cache_scraper',
+        SimpleNamespace(
+            set_real_ips=_callback1(lambda _ips: None),
+            set_http_proxy_fallback=_callback1(lambda _proxy: None),
+        ),
+    )
 
     proxy.refresh_username_spoofer_interception()
 
@@ -1568,7 +1596,14 @@ def test_linux_helper_custom_fflags_adds_only_clientsettings_endpoints(
     setattr(proxy, '_hosts_installed', True)
     setattr(proxy, '_proxy', ProxyStub())
     setattr(proxy, '_lock', threading.Lock())
-    setattr(proxy, 'cache_scraper', SimpleNamespace(set_real_ips=_callback1(lambda _ips: None)))
+    setattr(
+        proxy,
+        'cache_scraper',
+        SimpleNamespace(
+            set_real_ips=_callback1(lambda _ips: None),
+            set_http_proxy_fallback=_callback1(lambda _proxy: None),
+        ),
+    )
 
     proxy.refresh_custom_fflag_interception()
 

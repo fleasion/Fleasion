@@ -910,6 +910,13 @@ def _set_cache_scraper_real_ips(
     setter(real_ips)
 
 
+def _set_cache_scraper_http_proxy_fallback(
+    scraper: CacheScraper, proxy: HttpProxyConfig | None
+) -> None:
+    setter = cast('Callable[[HttpProxyConfig | None], None]', scraper.set_http_proxy_fallback)
+    setter(proxy)
+
+
 def _log_system_proxy_info(info: WindowsProxyInfo, system_proxy: HttpProxyConfig | None) -> None:
     if IS_MACOS:
         http_enabled = 'yes' if info.macos_http_enabled else 'no'
@@ -6213,6 +6220,14 @@ class ProxyMaster:
         self._texture_stripper.set_cache_scraper(self.cache_scraper)
         scraper_ips = _endpoint_ip_candidates(real_endpoints)
         _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
+        scraper_http_proxy: HttpProxyConfig | None = None
+        if effective_upstream_mode == UpstreamMode.SYSTEM_PROXY.value:
+            scraper_http_proxy = system_http_proxy
+        elif effective_upstream_mode == UpstreamMode.HTTP_CONNECT.value:
+            scraper_http_proxy = manual_http_proxy
+        elif effective_upstream_mode == UpstreamMode.AUTO.value:
+            scraper_http_proxy = system_http_proxy or manual_http_proxy
+        _set_cache_scraper_http_proxy_fallback(self.cache_scraper, scraper_http_proxy)
 
         with contextlib.suppress(Exception):
             asset_fetcher_thread = _lazy_attr('fleasion.gui.json_viewer', 'AssetFetcherThread')

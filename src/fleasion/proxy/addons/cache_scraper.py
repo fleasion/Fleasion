@@ -214,6 +214,7 @@ if TYPE_CHECKING:
     from fleasion.cache.cache_manager import (
         CacheManager,
     )
+    from fleasion.proxy.upstream import HttpProxyConfig
 
 
 def _int_value(value: object) -> int:
@@ -577,6 +578,7 @@ class CacheScraper:
         # (before the hosts file is written). Keyed by hostname.
         # Used to bypass our own hosts file when making direct API calls.
         self._real_ips: dict[str, tuple[str, ...]] = {}
+        self._http_proxy_fallback: HttpProxyConfig | None = None
 
         # (session removed - API fetches use _https_get() with raw ssl for SNI control)
 
@@ -908,6 +910,53 @@ class CacheScraper:
                 existing = self._real_ips.get(host, ())
                 self._real_ips[host] = tuple(dict.fromkeys((*candidates, *existing)))
 
+    def set_http_proxy_fallback(self, proxy: HttpProxyConfig | None) -> None:
+        """Set the HTTP CONNECT route used after direct HTTPS endpoints fail."""
+        with self._lock:
+            self._http_proxy_fallback = proxy
+
+    @staticmethod
+    def _detach_http_connection_socket(conn: http.client.HTTPConnection) -> socket.socket:
+        raw_sock = conn.sock
+        if raw_sock is None:
+            msg = 'HTTP CONNECT proxy returned no socket'
+            raise OSError(msg)
+        conn.sock = None
+        return raw_sock
+
+    @staticmethod
+    def _connect_https_via_http_proxy(
+        ctx: ssl.SSLContext,
+        hostname: str,
+        proxy: HttpProxyConfig,
+        timeout: float,
+    ) -> tuple[ssl.SSLSocket, str] | None:
+        headers: dict[str, str] = {}
+        if proxy.username:
+            raw = f'{proxy.username}:{proxy.password or ""}'.encode('utf-8', errors='replace')
+            token = base64.b64encode(raw).decode('ascii')
+            headers['Proxy-Authorization'] = f'Basic {token}'
+
+        conn = http.client.HTTPConnection(proxy.host, proxy.port, timeout=timeout)
+        raw_sock: socket.socket | None = None
+        try:
+            conn.set_tunnel(hostname, 443, headers=headers)
+            conn.connect()
+            raw_sock = CacheScraper._detach_http_connection_socket(conn)
+            ssl_sock = ctx.wrap_socket(raw_sock, server_hostname=hostname)
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            if raw_sock is not None:
+                with suppress(OSError):
+                    raw_sock.close()
+            log_buffer.log(
+                'Cache',
+                f'HTTP CONNECT fallback failed {hostname} via {proxy.host}:{proxy.port}: {exc}',
+            )
+            return None
+        finally:
+            conn.close()
+        return ssl_sock, f'{proxy.host}:{proxy.port}->{hostname}:443'
+
     @staticmethod
     def _connect_https_socket(
         ctx: ssl.SSLContext,
@@ -1039,6 +1088,13 @@ class CacheScraper:
                 real_ips = self._real_ips.get(cur_hostname, ())
             candidates = real_ips or (cur_hostname,)
             connection = self._connect_https_socket(ctx, cur_hostname, candidates, timeout)
+            if connection is None:
+                with self._lock:
+                    http_proxy = self._http_proxy_fallback
+                if http_proxy is not None:
+                    connection = self._connect_https_via_http_proxy(
+                        ctx, cur_hostname, http_proxy, timeout
+                    )
             if connection is None:
                 return (None, None) if return_status else None
             ssl_sock, real_ip = connection
