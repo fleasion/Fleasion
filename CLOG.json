@@ -101,13 +101,12 @@
             "id": 94987506187454,
             "github": "https://raw.githubusercontent.com/pipluplia/Fleasion-PreJSONs/refs/heads/main/Redliner.json",
             "Replacement": null
+        },
+        "Bloxstrike": {
+            "Owner": "7lin",
+            "id": 114234929420007,
+            "github": "https://raw.githubusercontent.com/7-linn/scrapes/refs/heads/main/Bloxstrike.json",
+            "Replacement": null
         }
     }
 }
-
-
-
-
-
-
-
