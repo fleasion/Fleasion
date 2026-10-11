@@ -1,4 +1,7 @@
+import sys
 from pathlib import Path
+
+import pytest
 
 from fleasion.proxy import master as proxy_master
 
@@ -158,6 +161,7 @@ def test_repair_hosts_file_streams_blank_lines_and_preserves_user_mappings(tmp_p
     assert not Path(details['backup_path']).exists()
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX file permissions fixture')
 def test_repair_hosts_file_preserves_original_permissions(tmp_path, monkeypatch):
     hosts_file = tmp_path / 'hosts'
     hosts_file.write_bytes(
