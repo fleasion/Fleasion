@@ -389,7 +389,7 @@ def test_macos_launch_agent_update_does_not_start_second_instance(tmp_path, monk
     assert launch_calls == []
 
 
-@pytest.mark.skipif(sys.platform == 'win32', reason='Linux desktop-entry path semantics')
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux desktop-entry path semantics')
 def test_linux_autostart_quotes_exec_tokens(tmp_path, monkeypatch):
     autostart_path = tmp_path / ".config" / "autostart" / "fleasion.desktop"
     project = tmp_path / "Project Folder"
@@ -411,7 +411,7 @@ def test_linux_autostart_quotes_exec_tokens(tmp_path, monkeypatch):
     assert 'launcher.py" --no-dashboard' in desktop_entry
 
 
-@pytest.mark.skipif(sys.platform == 'win32', reason='Linux desktop-entry path semantics')
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux desktop-entry path semantics')
 def test_linux_autostart_prefers_installed_launcher(tmp_path, monkeypatch):
     autostart_path = tmp_path / ".config" / "autostart" / "fleasion.desktop"
     launcher = tmp_path / ".local" / "bin" / "fleasion-launch"

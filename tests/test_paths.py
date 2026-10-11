@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 
-pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='Linux-only path configuration tests')
+pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='Linux-only path configuration tests')
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PATHS_PATH = _REPO_ROOT / "src" / "fleasion" / "utils" / "paths.py"

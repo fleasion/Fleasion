@@ -10,6 +10,7 @@ def test_normalise_roblox_dir_rejects_embedded_null():
 def test_load_saved_roblox_dirs_skips_malformed_entries_and_keeps_scanning(tmp_path, monkeypatch):
     valid = tmp_path / 'valid-roblox-resource-dir'
     (valid / 'content').mkdir(parents=True)
+    (valid / roblox_dirs.ROBLOX_PROCESS).write_bytes(b'exe')
     cache_file = tmp_path / 'roblox_dirs.json'
     cache_file.write_text(
         json.dumps(
