@@ -68,7 +68,10 @@ from ..config.manager import (
 )
 from .file_drop import FileDropLineEdit, local_file_path_example
 from .json_viewer import JsonTreeViewer
+from . import command_palette, glass
+from .conflicts import ConflictBadge
 from .proxy_gate import ProxyGate
+from .theme import ThemeManager
 
 _ROLE_PATH = Qt.ItemDataRole.UserRole
 _ROLE_KIND = Qt.ItemDataRole.UserRole.value + 1
@@ -829,6 +832,82 @@ class ReplacerConfigWindow(QDialog):
         escape_shortcut = QShortcut(QKeySequence('Escape'), self)
         escape_shortcut.activated.connect(self.close)
 
+        self._command_palette = command_palette.install(self, self._palette_commands)
+        command_palette.fade_tabs(self.tab_widget)
+        glass.theme.configure(self.config_manager)
+        glass.theme.attach(self)
+
+    def _palette_commands(self) -> list[command_palette.Command]:
+        """Everything the Ctrl+K palette can do from the dashboard."""
+        Command = command_palette.Command  # noqa: N806 - local alias for brevity
+        commands: list[command_palette.Command] = []
+        go_to = tr('ui.gui.command_palette.kind_go_to')
+        for index in range(self.tab_widget.count()):
+            commands.append(
+                Command(
+                    self.tab_widget.tabText(index),
+                    go_to,
+                    lambda i=index: self.tab_widget.setCurrentIndex(i),
+                )
+            )
+        for name in self.config_manager.config_names:
+            enabled = self.config_manager.is_config_enabled(name)
+            commands.append(
+                Command(
+                    name,
+                    tr('ui.gui.command_palette.kind_disable')
+                    if enabled
+                    else tr('ui.gui.command_palette.kind_enable'),
+                    lambda n=name, on=not enabled: self._on_config_toggle(n, on),
+                    hint=tr('ui.gui.command_palette.hint_on')
+                    if enabled
+                    else tr('ui.gui.command_palette.hint_off'),
+                )
+            )
+        themes = (
+            ('System', tr('settings.appearance.theme.system')),
+            ('Light', tr('settings.appearance.theme.light')),
+            ('Dark', tr('settings.appearance.theme.dark')),
+            ('Glass', tr('settings.appearance.theme.glass')),
+        )
+        kind_theme = tr('ui.gui.command_palette.kind_theme')
+        for theme_name, label in themes:
+            commands.append(Command(label, kind_theme, lambda t=theme_name: self._apply_theme(t)))
+        kind_backdrop = tr('settings.appearance.glass_backdrop_tooltip')
+        for mode in glass.BACKDROPS:
+            commands.append(
+                Command(
+                    glass.backdrop_label(mode),
+                    kind_backdrop,
+                    lambda m=mode: glass.theme.set_backdrop(m),
+                )
+            )
+        kind_accent = tr('ui.gui.command_palette.kind_accent')
+        for accent in glass.ACCENTS:
+            commands.append(
+                Command(accent, kind_accent, lambda a=accent: glass.theme.set_accent(a))
+            )
+        kind_action = tr('ui.gui.command_palette.kind_action')
+        actions = (
+            (tr('ui.gui.conflicts.palette'), self._conflict_badge.show_dialog),
+            (tr('ui.gui.replacer_config.clear_cache'), self._clear_roblox_cache),
+            (tr('ui.gui.replacer_config.open_configs'), self._open_configs_folder),
+            (tr('ui.gui.replacer_config.scraped_games'), self._open_prejsons_browser),
+            (tr('ui.gui.replacer_config.undo_ctrl_z'), self._do_undo),
+            (tr('ui.gui.command_palette.action_redo'), self._do_redo),
+            (tr('ui.gui.replacer_config.keybinds'), self._show_keybinds_help),
+        )
+        commands.extend(Command(title, kind_action, run) for title, run in actions)
+        return commands
+
+    def _apply_theme(self, theme_name: str) -> None:
+        tray = self._system_tray
+        if tray is not None and hasattr(tray, '_set_theme'):
+            tray._set_theme(theme_name)  # noqa: SLF001 - keeps tray checkmarks in sync
+        else:
+            ThemeManager.apply_theme(theme_name)
+            self.config_manager.theme = theme_name
+
     def _proxy_required(self, widget: QWidget) -> ProxyGate:
         gate = ProxyGate(widget)
         self._proxy_gates.append(gate)
@@ -1127,6 +1206,9 @@ class ReplacerConfigWindow(QDialog):
         footer_layout.addWidget(self._configs_path_label)
 
         footer_layout.addStretch()
+
+        self._conflict_badge = ConflictBadge(self.config_manager)
+        footer_layout.addWidget(self._conflict_badge)
 
         help_btn = QPushButton(tr('ui.gui.replacer_config.text_2'))
         help_btn.setMaximumWidth(25)

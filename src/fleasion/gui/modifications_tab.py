@@ -717,6 +717,13 @@ class DropdownComboBox(QComboBox):
     def paintEvent(self, e):
         from PyQt6.QtWidgets import QStyle, QStyleOptionComboBox, QStylePainter
 
+        from . import glass
+
+        if glass.theme.active:
+            # The Glass stylesheet draws its own chevron.
+            super().paintEvent(e)
+            return
+
         style = self.style()
         if style is None:
             super().paintEvent(e)

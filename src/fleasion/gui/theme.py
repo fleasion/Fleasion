@@ -39,10 +39,17 @@ class ThemeManager:
         ThemeManager._current_theme = theme
         ThemeManager._effective_theme = theme
 
-        if theme == 'System':
-            ThemeManager._apply_system_theme(app)
+        from . import glass
+
+        if theme == 'Glass':
+            ThemeManager._set_color_scheme(app, 'Dark')
+            glass.theme.enable(app)
         else:
-            ThemeManager._apply_forced_theme(app, theme)
+            glass.theme.disable(app)
+            if theme == 'System':
+                ThemeManager._apply_system_theme(app)
+            else:
+                ThemeManager._apply_forced_theme(app, theme)
 
         ThemeManager._refresh_widgets(app)
 
@@ -286,6 +293,13 @@ class ThemeManager:
                 section_background=palette.alternateBase().color(),
                 section_border=palette.mid().color(),
                 container_background_css='background-color: palette(alternate-base);',
+            )
+
+        if panel_theme == 'Glass':
+            return PanelThemeColors(
+                section_background=QColor(255, 255, 255, 16),
+                section_border=QColor(255, 255, 255, 34),
+                container_background_css='background-color: rgba(255, 255, 255, 0.05);',
             )
 
         is_dark = panel_theme == 'Dark'

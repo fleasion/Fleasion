@@ -258,6 +258,9 @@ class SystemTray:
         self.tray.setContextMenu(self.menu)
 
         # Apply initial theme
+        from .gui import glass
+
+        glass.theme.configure(self.config_manager)
         ThemeManager.apply_theme(self.config_manager.theme)
 
         # Connect tray activation signal
@@ -397,6 +400,7 @@ class SystemTray:
             ('System', tr('tray.theme.system')),
             ('Light', tr('tray.theme.light')),
             ('Dark', tr('tray.theme.dark')),
+            ('Glass', tr('tray.theme.glass')),
         ]:
             action = QAction(label, theme_menu)
             action.setCheckable(True)
