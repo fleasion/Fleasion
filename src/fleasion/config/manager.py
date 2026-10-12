@@ -5,6 +5,7 @@ import locale
 import os
 import stat
 import threading
+from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -790,6 +791,40 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def glass_accent(self) -> str:
+        """Accent preset name used by the Glass theme."""
+        return str(self.settings.get('glass_accent', 'Ice'))
+
+    @glass_accent.setter
+    def glass_accent(self, value: str):
+        self.settings['glass_accent'] = value
+        self._save_settings()
+
+    @property
+    def glass_opacity(self) -> float:
+        """Glass tint strength, 0.2 (clear) to 0.97 (nearly opaque)."""
+        try:
+            value = float(self.settings.get('glass_opacity', 0.45))
+        except (TypeError, ValueError):
+            value = 0.45
+        return min(0.97, max(0.2, value))
+
+    @glass_opacity.setter
+    def glass_opacity(self, value: float):
+        self.settings['glass_opacity'] = round(min(0.97, max(0.2, float(value))), 2)
+        self._save_settings()
+
+    @property
+    def glass_backdrop(self) -> Literal['desktop', 'wallpaper']:
+        """What the Glass theme blurs: the window under Fleasion, or the wallpaper."""
+        return 'wallpaper' if self.settings.get('glass_backdrop') == 'wallpaper' else 'desktop'
+
+    @glass_backdrop.setter
+    def glass_backdrop(self, value: Literal['desktop', 'wallpaper']):
+        self.settings['glass_backdrop'] = value
+        self._save_settings()
+
+    @property
     def language(self) -> str:
         """Return a supported language code, falling back to English."""
         from ..localization import normalize_language
@@ -1546,6 +1581,24 @@ class ConfigManager:
     def refresh_config_names(self):
         """Refresh config names from disk (for external changes)."""
         self.reconcile_configs()
+
+    def iter_enabled_rules(self) -> Iterator[tuple[str, int, dict[str, Any]]]:
+        """Yield ``(config_name, enabled_order, rule)`` for enabled profiles.
+
+        Configs come in enabled order, so a later one overrides an earlier one
+        for the same asset, as in :meth:`get_all_replacements`.
+        """
+        for order, name in enumerate(self.enabled_configs):
+            for rule in self._iter_replacement_rules(self.get_replacement_rules(name)):
+                if isinstance(rule, dict) and rule.get('enabled', True):
+                    yield name, order, rule
+
+    def enabled_configs_signature(self) -> tuple[tuple[str, tuple[int, int] | None], ...]:
+        """Changes whenever an enabled config is toggled or edited on disk."""
+        return tuple(
+            (name, self._file_signature(self._get_config_path(name)))
+            for name in self.enabled_configs
+        )
 
     def get_replacement_rules(self, config_name: str) -> list:
         """Get rules for a specific config."""
