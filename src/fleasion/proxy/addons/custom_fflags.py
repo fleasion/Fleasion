@@ -8,12 +8,8 @@ import stat
 import sys
 import threading
 import time
-from compression.zstd import ZstdError, compress as zstd_compress, decompress as zstd_decompress
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeIs
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from typing import Protocol, TypeIs
 
 if sys.platform == 'darwin':
     from fleasion.utils.platform_macos import find_roblox_resource_dirs
@@ -52,44 +48,6 @@ WINDOWS_FLAG_CACHE_PATH = LOCAL_APPDATA / 'Temp' / 'Roblox' / 'cache' / 'flag_ca
 MACOS_CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
 CLIENT_SETTINGS_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 CLIENT_SETTINGS_STALE_SUCCESS_SECONDS = 15.0
-
-
-# Protect only the flag-cache entry; sibling cache maintenance stays writable
-LINUX_LEGACY_SEED_LOCKED_DIR_MODE = 0o555
-
-
-def _linux_set_write_access(path: Path, *, enabled: bool) -> None:
-    """Adjust write permission without widening read or execute access."""
-    try:
-        mode = stat.S_IMODE(path.stat().st_mode)
-        updated = (
-            mode | stat.S_IWUSR if enabled else mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-        )
-        if updated != mode:
-            path.chmod(updated)
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        log_buffer.log('CustomFFlags', f'Could not update flag-cache permissions for {path}: {exc}')
-
-
-def _lock_linux_flag_cache(cache_path: Path) -> None:
-    """Protect the seeded entry from in-place writes without locking its directory."""
-    _linux_set_write_access(cache_path, enabled=False)
-
-
-def _unlock_linux_flag_cache(cache_dir: Path, cache_path: Path) -> None:
-    """Recover file write access and the directory lock used by earlier versions."""
-    try:
-        if stat.S_IMODE(cache_dir.stat().st_mode) == LINUX_LEGACY_SEED_LOCKED_DIR_MODE:
-            _linux_set_write_access(cache_dir, enabled=True)
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        log_buffer.log(
-            'CustomFFlags', f'Could not inspect legacy flag-cache directory {cache_dir}: {exc}'
-        )
-    _linux_set_write_access(cache_path, enabled=True)
 
 
 def _find_macos_resource_dirs() -> list[Path]:
@@ -134,31 +92,24 @@ class CustomFFlagModifier:
     def __init__(
         self,
         config_manager: object,
-        *,
         flag_cache_path: Path | None = None,
         settings_path: Path | None = None,
         reload_settings_from_disk: bool = False,
         macos_resource_dirs: list[Path] | None = None,
-        linux_flag_cache_path: Path | None = None,
     ) -> None:
         if not _is_custom_fflag_config(config_manager):
             msg = 'Custom FastFlag config is missing its enabled state or flag mapping'
             raise TypeError(msg)
         self.config_manager = config_manager
         self._flag_cache_path = flag_cache_path
-        self._linux_flag_cache_path = linux_flag_cache_path
         self._macos_resource_dirs = (
             list(macos_resource_dirs) if macos_resource_dirs is not None else None
         )
         self._macos_seeded_flag_names: set[str] = set()
         self._windows_seeded_flag_names: set[str] = set()
-        self._linux_seeded_flag_names: set[str] = set()
         self._last_fresh_response_flags: tuple[tuple[str, str], ...] | None = None
         self._delivery_generation = 0
         self._delivery_state_lock = threading.Lock()
-        self._delivery_notification_callback: Callable[[str, str], None] | None = None
-        self._notification_generation = 0
-        self._delivery_notifications_sent = 0
         self._settings_path = settings_path or (CONFIG_FILE if reload_settings_from_disk else None)
         self._settings_signature: tuple[int, int] | None = None
         self._disk_enabled: bool | None = None
@@ -169,8 +120,6 @@ class CustomFFlagModifier:
         self._last_response_success_at: float | None = None
         self._first_response_failure_at: float | None = None
         self._last_failure_log_at: dict[str, float] = {}
-        if reload_settings_from_disk:
-            self.release_linux_flag_cache_lock()
 
     @staticmethod
     def _flag_signature(flags: dict[str, str]) -> tuple[tuple[str, str], ...]:
@@ -186,12 +135,6 @@ class CustomFFlagModifier:
         """
         with self._delivery_state_lock:
             return self._delivery_generation
-
-    def set_delivery_notification_callback(
-        self, callback: Callable[[str, str], None] | None
-    ) -> None:
-        """Set the callback used to surface delivery-progress notifications."""
-        self._delivery_notification_callback = callback
 
     def note_response_success(
         self,
@@ -209,7 +152,6 @@ class CustomFFlagModifier:
         """
         if delivered_signature is None:
             delivered_signature = self._flag_signature(self.runtime_flags())
-        notification: str | None = None
         with self._delivery_state_lock:
             if generation is not None and generation != self._delivery_generation:
                 return False
@@ -218,66 +160,7 @@ class CustomFFlagModifier:
             self._last_response_success_at = success_at
             self._first_response_failure_at = None
             self._last_failure_log_at.clear()
-            notification = self._advance_delivery_notifications_locked()
-        if notification is not None:
-            self._dispatch_delivery_notification(notification)
         return True
-
-    def note_client_settings_seen(self, *, generation: int | None = None) -> bool:
-        """Record a ClientSettings round trip that kept the live loop proven.
-
-        A 304 Not Modified (or otherwise bodyless success) means the client
-        kept its cached - already modified - copy, so Fleasion's flags remain
-        applied even though no body was intercepted.  This advances the
-        delivery notifications without touching fresh-response bookkeeping,
-        which must only reflect responses whose body was actually inspected.
-        """
-        if not self.is_enabled():
-            return False
-        active_signature = self._flag_signature(self.runtime_flags())
-        notification: str | None = None
-        with self._delivery_state_lock:
-            if generation is not None and generation != self._delivery_generation:
-                return False
-            if self._last_fresh_response_flags != active_signature:
-                return False
-            notification = self._advance_delivery_notifications_locked()
-        if notification is not None:
-            self._dispatch_delivery_notification(notification)
-        return True
-
-    def _advance_delivery_notifications_locked(self) -> str | None:
-        """Return the next notification message to dispatch, if any.
-
-        Closing and reopening the client bumps the delivery generation, which
-        re-arms both notifications so a fresh Player sees them in the right
-        order.  Late responses from the old process are rejected by the
-        generation check and can never advance this counter.
-        """
-        if self._delivery_notification_callback is None or not self.is_enabled():
-            return None
-        if self._notification_generation != self._delivery_generation:
-            self._notification_generation = self._delivery_generation
-            self._delivery_notifications_sent = 0
-        if self._delivery_notifications_sent >= 2:
-            return None
-        self._delivery_notifications_sent += 1
-        if self._delivery_notifications_sent == 1:
-            return 'Dynamic FFlags applied'
-        return 'Live FFlag editing now available'
-
-    def _dispatch_delivery_notification(self, message: str) -> None:
-        """Forward one delivery notification; never let UI faults break the proxy."""
-        callback = self._delivery_notification_callback
-        if callback is None:
-            return
-        try:
-            callback('Fleasion', message)
-        except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer.log(
-                'CustomFFlags',
-                f'Failed to dispatch FastFlag delivery notification: {exc}',
-            )
 
     def log_response_failure(self, key: str, message: str) -> None:
         """Rate-limit repeated ClientSettings failures while keeping stalls visible."""
@@ -421,178 +304,88 @@ class CustomFFlagModifier:
             self._delivery_generation += 1
             self._last_fresh_response_flags = None
 
-    def prime_windows_flag_cache(self) -> bool:
-        """Synchronize active overrides into Roblox's Windows flag cache.
+    def _windows_flag_cache_update(
+        self, raw: bytes
+    ) -> tuple[bytes, dict[str, str], set[str]] | None:
+        if len(raw) < 5:
+            return None
+        signature_length = int.from_bytes(raw[:4], 'little')
+        compression_offset = 4 + signature_length
+        payload_offset = compression_offset + 1
+        if payload_offset >= len(raw) or raw[compression_offset] != 0:
+            return None
 
-        Some flags, including the task-scheduler target FPS, are consumed before
-        the dynamic reloader's first network request.  Roblox's current cache
-        layout is a four-byte signature length, that many signature bytes, one
-        compression byte (0 = raw, 1 = zstd), then the ClientSettings JSON.  We
-        preserve the header, remove stale overrides when disabled, and replace
-        the JSON atomically, keeping the original compression.  Disabled mode
-        never adds flags; it only clears values previously seeded by Fleasion.
-        """
+        payload_value: object = json.loads(raw[payload_offset:])
+        payload = as_json_object(payload_value)
+        if payload is None:
+            return None
+        application_settings = as_json_object(payload.get('applicationSettings'))
+        if application_settings is None:
+            return None
+
+        enabled = self.is_enabled()
+        flags = self.runtime_flags() if enabled else {}
+        self._refresh_settings_from_disk()
+        saved_flags = (
+            self._disk_flags if self._disk_flags is not None else self.config_manager.custom_fflags
+        )
+        saved_names = set(normalize_custom_fflags(saved_flags))
+        stale_names = (
+            self._windows_seeded_flag_names | saved_names | {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG}
+        ) - set(flags)
+        removed_names = {
+            name for name in stale_names if application_settings.pop(name, None) is not None
+        }
+        application_settings.update(flags)
+        updated = raw[:payload_offset] + json.dumps(
+            payload, separators=(',', ':'), ensure_ascii=False
+        ).encode('utf-8')
+        self._windows_seeded_flag_names = set(flags)
+        return updated, flags, removed_names
+
+    def _prime_windows_flag_cache_unchecked(
+        self, cache_path: Path
+    ) -> tuple[dict[str, str], set[str]] | None:
+        raw = cache_path.read_bytes()
+        update = self._windows_flag_cache_update(raw)
+        if update is None:
+            return None
+        updated, flags, removed_names = update
+        if updated == raw:
+            return None
+        temporary_path = cache_path.with_name(f'.{cache_path.name}.{os.getpid()}.tmp')
+        try:
+            temporary_path.write_bytes(updated)
+            temporary_path.replace(cache_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+        return flags, removed_names
+
+    def prime_windows_flag_cache(self) -> bool:
+        """Synchronize active overrides into Roblox's uncompressed Windows flag cache."""
         if self._flag_cache_path is None and sys.platform != 'win32':
             return False
 
         cache_path = self._flag_cache_path or WINDOWS_FLAG_CACHE_PATH
-        changed, flags, removed_names = self._prime_flag_cache_file(
-            cache_path, self._windows_seeded_flag_names
-        )
-        self._windows_seeded_flag_names = set(flags)
-        if changed:
-            self._log_flag_cache_seed(flags, removed_names)
-        return changed
-
-    def prime_linux_flag_cache(self) -> bool:
-        """Seed custom flags into Sober's flag_cache.dat before launch.
-
-        The file mirrors the Windows flag cache layout (little-endian
-        signature length, signature blob, compression byte, then either a raw
-        or zstd-compressed JSON body).  Sober's Player loads this cache before
-        it issues its first ClientSettings request, so seeding it makes
-        startup-only custom flags available immediately — the Linux
-        counterpart of the Windows flag cache.  Sober's own fetched defaults
-        and unrelated entries are preserved.  After a successful seed the
-        cache file is made read-only to prevent in-place writes. Its parent
-        stays writable for unrelated cache maintenance; atomic replacement
-        by the client remains possible. Startup recovery and every re-seed
-        restore write access to this entry. Disabled mode never adds flags;
-        it only clears values previously seeded by Fleasion.
-        """
-        if self._linux_flag_cache_path is None and not sys.platform.startswith('linux'):
+        try:
+            result = self._prime_windows_flag_cache_unchecked(cache_path)
+        except OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError:
             return False
+        if result is None:
+            return False
+        flags, removed_names = result
 
-        cache_path = self._linux_flag_cache_path
-        if cache_path is None:
-            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                SOBER_FLAG_CACHE_PATH,
-            )
-
-            cache_path = SOBER_FLAG_CACHE_PATH
-        cache_dir = cache_path.parent
-        _unlock_linux_flag_cache(cache_dir, cache_path)
-        changed, flags, removed_names = self._prime_flag_cache_file(
-            cache_path, self._linux_seeded_flag_names
-        )
-        self._linux_seeded_flag_names = set(flags)
-        if changed:
-            self._log_flag_cache_seed(flags, removed_names, label='Sober flag cache')
-        if flags and self.is_enabled():
-            _lock_linux_flag_cache(cache_path)
-        return changed
-
-    def release_linux_flag_cache_lock(self) -> None:
-        """Restore cache write access when Fleasion stops managing delivery."""
-        if self._linux_flag_cache_path is None and not sys.platform.startswith('linux'):
-            return
-        cache_path = self._linux_flag_cache_path
-        if cache_path is None:
-            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                SOBER_FLAG_CACHE_PATH,
-            )
-
-            cache_path = SOBER_FLAG_CACHE_PATH
-        _unlock_linux_flag_cache(cache_path.parent, cache_path)
-
-    def _prime_flag_cache_file(  # ruff: ignore[too-many-return-statements]
-        self,
-        cache_path: Path,
-        seeded_names: set[str],
-    ) -> tuple[bool, dict[str, str], set[str]]:
-        """Merge active overrides into one flag cache file.
-
-        Returns whether the file changed, the flag set now recorded as seeded,
-        and the names removed as stale.  Never adds flags while disabled; it
-        only clears values previously seeded by Fleasion.  Supports the raw
-        (compression byte 0) and zstd (byte 1) layouts and preserves the
-        original compression on write.
-        """
-        try:  # ruff: ignore[too-many-statements-in-try-clause]
-            original_mode = stat.S_IMODE(cache_path.stat().st_mode)
-            raw = cache_path.read_bytes()
-            if len(raw) < 5:
-                return False, {}, set()
-            signature_length = int.from_bytes(raw[:4], 'little')
-            compression_offset = 4 + signature_length
-            payload_offset = compression_offset + 1
-            if payload_offset >= len(raw):
-                return False, {}, set()
-            compression = raw[compression_offset]
-            compressed_payload = raw[payload_offset:]
-            if compression == 0:
-                payload_bytes = compressed_payload
-            elif compression == 1:
-                payload_bytes = zstd_decompress(compressed_payload)
-            else:
-                return False, {}, set()
-
-            payload_value: object = json.loads(payload_bytes)
-            payload = as_json_object(payload_value)
-            if payload is None:
-                return False, {}, set()
-            app_settings = as_json_object(payload.get('applicationSettings'))
-            if app_settings is None:
-                return False, {}, set()
-
-            enabled = self.is_enabled()
-            flags = self.runtime_flags() if enabled else {}
-            self._refresh_settings_from_disk()
-            saved_flags = (
-                self._disk_flags
-                if self._disk_flags is not None
-                else getattr(self.config_manager, 'custom_fflags', {})
-            )
-            saved_names = set(normalize_custom_fflags(saved_flags))
-            stale_names = (
-                seeded_names | saved_names | {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG}
-            ) - set(flags)
-            removed_names = {
-                name for name in stale_names if app_settings.pop(name, None) is not None
-            }
-            app_settings.update(flags)
-            updated_payload = json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode(
-                'utf-8'
-            )
-            updated = raw[:payload_offset] + (
-                updated_payload if compression == 0 else zstd_compress(updated_payload)
-            )
-            if updated == raw:
-                return False, flags, set()
-            temporary_path = cache_path.with_name(f'.{cache_path.name}.{os.getpid()}.tmp')
-            try:
-                temporary_path.write_bytes(updated)
-                temporary_path.chmod(original_mode)
-                temporary_path.replace(cache_path)
-            finally:
-                temporary_path.unlink(missing_ok=True)
-        except (
-            OSError,
-            ValueError,
-            json.JSONDecodeError,
-            UnicodeDecodeError,
-            ZstdError,
-        ):
-            return False, {}, set()
-        return True, flags, removed_names
-
-    @staticmethod
-    def _log_flag_cache_seed(
-        flags: dict[str, str],
-        removed_names: set[str],
-        *,
-        label: str = 'Roblox flag cache',
-    ) -> None:
         if flags:
             log_buffer.log(
                 'CustomFFlags',
-                f'Pre-seeded {label} with {len(flags)} custom FastFlag(s)',
+                f'Pre-seeded Roblox flag cache with {len(flags)} custom FastFlag(s)',
             )
         elif removed_names:
             log_buffer.log(
                 'CustomFFlags',
-                f'Removed {len(removed_names)} disabled custom FastFlag(s) from {label}',
+                f'Removed {len(removed_names)} disabled custom FastFlag(s) from Roblox flag cache',
             )
+        return True
 
     def _macos_client_settings_paths(self) -> list[Path]:
         """Return live Player ClientSettings files used during macOS startup."""
@@ -719,7 +512,14 @@ class CustomFFlagModifier:
         updated_paths = sum(
             self._prime_macos_client_settings_path(target, flags, stale_names) for target in paths
         )
+
         self._macos_seeded_flag_names = desired_names
+        if updated_paths:
+            log_buffer.log(
+                'CustomFFlags',
+                f'Pre-seeded macOS Roblox ClientSettings with {len(flags)} '
+                f'custom FastFlag(s) into {updated_paths} Player file(s)',
+            )
         return bool(updated_paths)
 
     def prime_startup_flag_cache(self) -> bool:
@@ -728,8 +528,6 @@ class CustomFFlagModifier:
         # helper contract for macOS; it must take precedence over the host OS.
         if self._macos_resource_dirs is not None or sys.platform == 'darwin':
             return self.prime_macos_client_settings()
-        if self._linux_flag_cache_path is not None or sys.platform.startswith('linux'):
-            return self.prime_linux_flag_cache()
         return self.prime_windows_flag_cache()
 
     @staticmethod

@@ -297,7 +297,7 @@ def _flatpak_info_succeeds(
             text=True,
             timeout=5,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
 

@@ -1622,8 +1622,6 @@ class FleasionProxy:
             frozenset(intercept_hosts) if intercept_hosts is not None else INTERCEPT_HOSTS
         )
         self._intercept_all_hosts = bool(intercept_all_hosts)
-        self._intercept_connection_predicate: Callable[[str], bool] | None = None
-        self._intercept_passthrough_timeout: float | None = None
         self._intercept_excluded_hosts = frozenset(
             str(host).strip().lower().rstrip('.')
             for host in (intercept_excluded_hosts or ())
@@ -2000,38 +1998,14 @@ class FleasionProxy:
             str(host).strip().lower().rstrip('.') for host in hosts if str(host).strip()
         )
 
-    def set_intercept_connection_predicate(
-        self, predicate: Callable[[str], bool] | None, *, passthrough_timeout: float | None = None
-    ) -> None:
-        """Set a per-connection interception gate consulted for explicit CONNECTs.
-
-        The predicate receives the normalized host and returns True when the
-        connection may still be TLS-terminated. None disables the gate.
-        A passthrough timeout retires gated tunnels so a reused bootstrap
-        connection cannot keep subsequent refreshes outside interception.
-        """
-        if passthrough_timeout is not None and passthrough_timeout <= 0:
-            msg = 'The interception passthrough timeout must be positive'
-            raise ValueError(msg)
-        self._intercept_connection_predicate = predicate
-        self._intercept_passthrough_timeout = passthrough_timeout
-
     def _should_intercept_explicit_host(self, host: str, port: int) -> bool:
         """Return whether an explicit-proxy CONNECT should be TLS-terminated."""
         normalized_host = (host or '').strip().lower().rstrip('.')
-        if not (
+        return (
             port == 443
             and normalized_host not in self._intercept_excluded_hosts
             and (self._intercept_all_hosts or normalized_host in self._intercept_hosts)
-        ):
-            return False
-        if self._intercept_connection_predicate is not None:
-            try:
-                if not self._intercept_connection_predicate(normalized_host):
-                    return False
-            except Exception:
-                logger.exception('Intercept connection predicate failed for %s', normalized_host)
-        return True
+        )
 
     def set_auto_replace_rules(self, rules: Iterable[AutoReplaceRule]) -> None:
         """Replace the live set of Auto Replace rules (see apply_auto_replace_rules)."""
@@ -2494,33 +2468,21 @@ class FleasionProxy:
             return
 
         should_intercept = self._should_intercept_explicit_host(host, port)
-        if host in CUSTOM_FFLAGS_INTERCEPT_HOSTS:
-            log_buffer.log(
-                'CustomFFlags',
-                f'ClientSettings connection to {host}: '
-                f'{"TLS-intercepted" if should_intercept else "tunneled without interception"}',
-            )
         if not should_intercept:
-            normalized_host = host.strip().lower().rstrip('.')
-            gated_tunnel = (
-                self._intercept_connection_predicate is not None
-                and port == 443
-                and normalized_host not in self._intercept_excluded_hosts
-                and (self._intercept_all_hosts or normalized_host in self._intercept_hosts)
-            )
-            # Intercept-all logs tunnels, including gated bootstrap connections
+            # Feature hosts (self._intercept_hosts) always work regardless of
+            # this toggle - that's Fleasion's own texture stripper/custom
+            # FastFlags/username spoofer/etc, and none of those ever reach
+            # this branch (they're already covered by `should_intercept`
+            # above). This branch only ever sees traffic UNRELATED to those
+            # features, so it's the one gated by "log/intercept everything":
+            # when off, don't even record that this connection happened.
             entry = (
                 self._record_request(host, port, 'CONNECT', '', intercepted=False)
                 if self._intercept_all_hosts
                 else None
             )
             await self._tunnel_explicit_proxy_connection(
-                reader,
-                writer,
-                host,
-                port,
-                log_entry=entry,
-                max_duration=self._intercept_passthrough_timeout if gated_tunnel else None,
+                reader, writer, host, port, log_entry=entry
             )
             return
 
@@ -2580,8 +2542,6 @@ class FleasionProxy:
         host: str,
         port: int,
         log_entry: ProxyRequestLogEntry | None = None,
-        *,
-        max_duration: float | None = None,
     ) -> None:
         log_buffer = _get_log_buffer()
 
@@ -2633,14 +2593,9 @@ class FleasionProxy:
                     writer.close()
 
         try:
-            async with asyncio.timeout(max_duration):
-                await asyncio.gather(
-                    _pipe(client_reader, upstream_writer),
-                    _pipe(upstream_reader, client_writer, track=True),
-                )
-        except TimeoutError:
-            log_buffer.log(
-                'Proxy', f'Bootstrap tunnel to {host} expired; subsequent refreshes must reconnect'
+            await asyncio.gather(
+                _pipe(client_reader, upstream_writer),
+                _pipe(upstream_reader, client_writer, track=True),
             )
         finally:
             for tunnel_writer in (upstream_writer, client_writer):
@@ -3504,12 +3459,6 @@ class FleasionProxy:
                 response_writer.write(outgoing_response)
 
                 delivery_ack_deferred = False
-                cached_custom_fflags_seen = (
-                    custom_fflag_response_enabled
-                    and custom_fflag_delivered_signature is None
-                    and status_code == 304
-                    and not custom_fflag_modifier.requires_fresh_response()
-                )
                 if custom_fflag_delivered_signature is not None:
                     delivered_signature = custom_fflag_delivered_signature
                     delivery_generation = custom_fflag_request_generation
@@ -3526,16 +3475,6 @@ class FleasionProxy:
                     delivery_ack_deferred = response_writer.defer_delivery_acknowledgement(
                         _ack_custom_fflag_delivery
                     )
-                elif cached_custom_fflags_seen:
-
-                    def _ack_cached_custom_fflags(
-                        generation: int | None = custom_fflag_request_generation,
-                    ) -> None:
-                        custom_fflag_modifier.note_client_settings_seen(generation=generation)
-
-                    delivery_ack_deferred = response_writer.defer_delivery_acknowledgement(
-                        _ack_cached_custom_fflags
-                    )
 
                 try:
                     await response_writer.drain()
@@ -3546,16 +3485,6 @@ class FleasionProxy:
                     custom_fflag_modifier.note_response_success(
                         custom_fflag_delivered_signature,
                         generation=custom_fflag_request_generation,
-                    )
-                elif cached_custom_fflags_seen and not delivery_ack_deferred:
-                    # A 304 Not Modified means the client kept its cached copy.
-                    # When upstream flags are unchanged the conditional request
-                    # headers are no longer stripped, so Roblox answers 304 and
-                    # no body is intercepted; the round trip still proves the
-                    # live editing loop is working, so let it advance the
-                    # delivery notifications.
-                    custom_fflag_modifier.note_client_settings_seen(
-                        generation=custom_fflag_request_generation
                     )
 
                 if not _keep_alive(req_first, req_headers) or not _keep_alive(

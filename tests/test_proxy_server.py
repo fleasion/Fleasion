@@ -1,6 +1,4 @@
 import asyncio
-import contextlib
-import json
 import socket
 import ssl
 import tempfile
@@ -13,8 +11,6 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from fleasion.proxy import server as proxy_server
-from fleasion.proxy import master as proxy_master
-from fleasion.proxy.addons.custom_fflags import CustomFFlagModifier
 from fleasion.proxy.server import (
     ASSET_DELIVERY_HOST,
     PROFILE_API_HOST,
@@ -779,134 +775,6 @@ def test_explicit_proxy_tunnels_non_intercept_hosts(tmp_path: Path) -> None:
             await upstream.wait_closed()
 
     asyncio.run(run_test())
-
-
-def test_bootstrap_tls_tunnel_expires_and_refreshes_reconnect_with_overrides(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    host = 'clientsettingscdn.roblox.com'
-    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
-    monkeypatch.setattr(proxy_master, '_custom_fflag_engine_process', lambda: (1001, 0.0))
-    monkeypatch.setattr(proxy_master, '_custom_fflag_last_engine_process', None)
-    monkeypatch.setattr(proxy_master, '_custom_fflag_launch_passthrough_remaining', 1)
-
-    async def run_test() -> None:
-        upstream_dir = tmp_path / 'upstream'
-        upstream_dir.mkdir()
-        upstream_ca, upstream_key = generate_ca(upstream_dir)
-        upstream_cert = generate_host_cert(host, upstream_ca, upstream_key, upstream_dir)
-        upstream_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        upstream_ctx.load_cert_chain(*upstream_cert)
-        body = b'{"applicationSettings":{"FFlagExample":"False"}}'
-
-        async def serve_settings(
-            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-        ) -> None:
-            try:
-                while True:
-                    await reader.readuntil(b'\r\n\r\n')
-                    writer.write(
-                        b'HTTP/1.1 200 OK\r\n'
-                        + f'Content-Length: {len(body)}\r\n'.encode('ascii')
-                        + b'Connection: keep-alive\r\n\r\n'
-                        + body
-                    )
-                    await writer.drain()
-            except asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError:
-                pass
-            finally:
-                writer.close()
-
-        upstream = await asyncio.start_server(serve_settings, '127.0.0.1', 0, ssl=upstream_ctx)
-        upstream_port = _server_port(upstream)
-        proxy_ca, proxy_key = generate_ca(tmp_path)
-        proxy_cert = generate_host_cert(host, proxy_ca, proxy_key, tmp_path)
-        config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
-        modifier = CustomFFlagModifier(config)
-        proxy = FleasionProxy(
-            texture_stripper=_texture_stub(
-                config_manager=SimpleNamespace(get_all_replacements=_empty_replacements),
-            ),
-            cache_scraper=_cache_stub(enabled=False),
-            custom_fflag_modifier=modifier,
-            host_certs={host: proxy_cert},
-            default_cert=proxy_cert,
-            upstream_endpoints={},
-            intercept_hosts={host},
-            explicit_proxy=True,
-            port=0,
-        )
-        gate = cast(
-            'Callable[[str], bool]', getattr(proxy_master, '_custom_fflag_intercept_predicate')
-        )
-        proxy.set_intercept_connection_predicate(gate, passthrough_timeout=1.0)
-
-        async def connect_tunnel(_host: str, _port: int) -> UpstreamConnectResult:
-            reader, writer = await asyncio.open_connection('127.0.0.1', upstream_port)
-            return UpstreamConnectResult(
-                reader=reader, writer=writer, method='test', endpoint='local'
-            )
-
-        async def connect_intercepted(_host: str) -> UpstreamConnectResult:
-            ctx = ssl.create_default_context(cafile=str(upstream_ca))
-            reader, writer = await asyncio.open_connection(
-                '127.0.0.1',
-                upstream_port,
-                ssl=ctx,
-                server_hostname=host,
-            )
-            return UpstreamConnectResult(
-                reader=reader, writer=writer, method='direct_ip', endpoint='local'
-            )
-
-        monkeypatch.setattr(proxy_server, '_open_explicit_proxy_tunnel', connect_tunnel)
-        proxy.__dict__['_connect_upstream'] = connect_intercepted
-        await proxy.start()
-        port = _server_port(cast('object', proxy.__dict__['_server']))
-
-        async def connect(ca_path: Path) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-            reader, writer = await asyncio.open_connection('127.0.0.1', port)
-            writer.write(f'CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n'.encode('ascii'))
-            await writer.drain()
-            assert (await reader.readuntil(b'\r\n\r\n')).startswith(b'HTTP/1.1 200')
-            await writer.start_tls(
-                ssl.create_default_context(cafile=str(ca_path)), server_hostname=host
-            )
-            return reader, writer
-
-        async def refresh(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> object:
-            writer.write(
-                f'GET /v2/settings/application/PCDesktopClient HTTP/1.1\r\nHost: {host}\r\n'
-                'Connection: keep-alive\r\n\r\n'.encode('ascii')
-            )
-            await writer.drain()
-            headers = await _read_headers_raw(reader)
-            assert headers is not None
-            payload = await reader.readexactly(int(headers.headers[b'content-length']))
-            return json.loads(payload)['applicationSettings']['FFlagExample']
-
-        writers: list[asyncio.StreamWriter] = []
-        try:
-            reader, writer = await connect(upstream_ca)
-            writers.append(writer)
-            assert await refresh(reader, writer) == 'False'
-            assert await asyncio.wait_for(reader.read(), timeout=2.0) == b''
-            reader, writer = await connect(proxy_ca)
-            writers.append(writer)
-            assert await refresh(reader, writer) == 'True'
-            config.custom_fflags = {'FFlagExample': 'False'}
-            assert await refresh(reader, writer) == 'False'
-        finally:
-            for writer in writers:
-                writer.close()
-                with contextlib.suppress(OSError):
-                    await writer.wait_closed()
-            await proxy.stop()
-            upstream.close()
-            await upstream.wait_closed()
-
-    asyncio.run(asyncio.wait_for(run_test(), timeout=10.0))
 
 
 def test_explicit_tunnel_dialer_prefers_ipv4_and_falls_back(

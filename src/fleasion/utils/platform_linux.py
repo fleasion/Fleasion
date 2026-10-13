@@ -143,10 +143,6 @@ SOBER_DATA_DIR = SOBER_FLATPAK_ROOT / 'data' / 'sober'
 SOBER_CONFIG_FILE = SOBER_FLATPAK_ROOT / 'config' / 'sober' / 'config.json'
 SOBER_ASSET_OVERLAY_DIR = SOBER_DATA_DIR / 'asset_overlay'
 SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
-# Sober's Player keeps its client-settings cache in the same layout as
-# Windows's %LOCALAPPDATA%\Temp\Roblox\cache directory.
-SOBER_FLAG_CACHE_DIR = SOBER_FLATPAK_ROOT / 'cache' / 'sober' / 'cache'
-SOBER_FLAG_CACHE_PATH = SOBER_FLAG_CACHE_DIR / 'flag_cache.dat'
 SOBER_CGROUP_MARKER = SOBER_CLIENT.cgroup_marker
 LINUX_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'linux_proxy_override.json'
 # Sober fetches its update/feature manifest before the Roblox engine starts.
