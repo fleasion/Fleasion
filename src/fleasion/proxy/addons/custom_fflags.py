@@ -10,7 +10,7 @@ import threading
 import time
 from compression.zstd import ZstdError, compress as zstd_compress, decompress as zstd_decompress
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeIs, cast
+from typing import TYPE_CHECKING, Protocol, TypeIs
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -222,9 +222,14 @@ class CustomFFlagModifier:
         delivery notifications without touching fresh-response bookkeeping,
         which must only reflect responses whose body was actually inspected.
         """
+        if not self.is_enabled():
+            return False
+        active_signature = self._flag_signature(self.runtime_flags())
         notification: str | None = None
         with self._delivery_state_lock:
             if generation is not None and generation != self._delivery_generation:
+                return False
+            if self._last_fresh_response_flags != active_signature:
                 return False
             notification = self._advance_delivery_notifications_locked()
         if notification is not None:
@@ -239,7 +244,7 @@ class CustomFFlagModifier:
         order.  Late responses from the old process are rejected by the
         generation check and can never advance this counter.
         """
-        if self._delivery_notification_callback is None:
+        if self._delivery_notification_callback is None or not self.is_enabled():
             return None
         if self._notification_generation != self._delivery_generation:
             self._notification_generation = self._delivery_generation
@@ -510,11 +515,13 @@ class CustomFFlagModifier:
             else:
                 return False, {}, set()
 
-            payload = json.loads(payload_bytes)
-            application_settings = payload.get('applicationSettings')
-            if not isinstance(application_settings, dict):
+            payload_value: object = json.loads(payload_bytes)
+            payload = as_json_object(payload_value)
+            if payload is None:
                 return False, {}, set()
-            app_settings = cast('dict[str, object]', application_settings)
+            app_settings = as_json_object(payload.get('applicationSettings'))
+            if app_settings is None:
+                return False, {}, set()
 
             enabled = self.is_enabled()
             flags = self.runtime_flags() if enabled else {}

@@ -676,6 +676,25 @@ def test_modifier_does_not_replace_an_unknown_compressed_flag_cache(tmp_path: Pa
     assert cache_path.read_bytes() == original
 
 
+def test_modifier_rejects_invalid_json_cache_shapes_on_both_platforms(tmp_path: Path) -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    cache_path = tmp_path / 'flag_cache.dat'
+    for body in (b'[]', b'null', b'1', b'"text"', b'{}', b'{"applicationSettings":[]}'):
+        for compressed in (False, True):
+            payload = zstandard.ZstdCompressor().compress(body) if compressed else body
+            raw = bytes(4) + bytes([int(compressed)]) + payload
+            cache_path.write_bytes(raw)
+            modifier = CustomFFlagModifier(
+                config, flag_cache_path=cache_path, linux_flag_cache_path=cache_path
+            )
+            assert not modifier.prime_windows_flag_cache()
+            assert cache_path.read_bytes() == raw
+            assert not modifier.prime_linux_flag_cache()
+            assert cache_path.read_bytes() == raw
+            assert cache_path.stat().st_mode & stat.S_IWUSR
+            assert tmp_path.stat().st_mode & stat.S_IWUSR
+
+
 def test_modifier_requests_fresh_responses_until_each_flag_set_is_delivered() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
@@ -770,6 +789,65 @@ def test_bodyless_304_response_advances_delivery_notifications() -> None:
     modifier.prepare_for_player_launch()
     assert not modifier.note_client_settings_seen(generation=0)
     assert messages == ['Dynamic FFlags applied', 'Live FFlag editing now available']
+
+
+def test_proxy_304_notifications_require_enabled_confirmed_delivery() -> None:
+    config = SimpleNamespace(custom_fflags_enabled=False, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    messages: list[str] = []
+    modifier.set_delivery_notification_callback(lambda _title, message: messages.append(message))
+    response = b'HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n'
+    for _ in range(2):
+        _run_client_settings_session(modifier, response, conditional=True)
+    assert messages == []
+
+    config.custom_fflags_enabled = True
+    _run_client_settings_session(modifier, response, conditional=True)
+    assert messages == []
+    assert modifier.requires_fresh_response()
+
+    body = b'{"applicationSettings":{"Existing":"True"}}'
+    _run_client_settings_session(
+        modifier,
+        b'HTTP/1.1 200 OK\r\n'
+        + f'Content-Length: {len(body)}\r\n'.encode('ascii')
+        + b'Connection: close\r\n\r\n'
+        + body,
+    )
+    assert messages == ['Dynamic FFlags applied']
+
+    config.custom_fflags = {'FFlagExample': 'False'}
+    _run_client_settings_session(modifier, response, conditional=True)
+    assert messages == ['Dynamic FFlags applied']
+
+    config.custom_fflags = {'FFlagExample': 'True'}
+    config.custom_fflags_enabled = False
+    _run_client_settings_session(modifier, response, conditional=True)
+    assert messages == ['Dynamic FFlags applied']
+
+    config.custom_fflags_enabled = True
+    _run_client_settings_session(modifier, response, conditional=True)
+    assert messages == ['Dynamic FFlags applied', 'Live FFlag editing now available']
+
+
+def test_bodyless_notification_cannot_confirm_undelivered_flags() -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    messages: list[str] = []
+    modifier.set_delivery_notification_callback(lambda _title, message: messages.append(message))
+    assert not modifier.note_client_settings_seen()
+    modifier.note_response_success()
+    assert messages == ['Dynamic FFlags applied']
+    config.custom_fflags_enabled = False
+    assert not modifier.note_client_settings_seen()
+    modifier.note_response_success()
+    assert messages == ['Dynamic FFlags applied']
+    config.custom_fflags_enabled = True
+    config.custom_fflags = {'FFlagExample': 'False'}
+    assert not modifier.note_client_settings_seen()
+    modifier.prepare_for_player_launch()
+    assert not modifier.note_client_settings_seen()
+    assert messages == ['Dynamic FFlags applied']
 
 
 def test_delivery_notification_callback_faults_never_break_delivery() -> None:

@@ -1999,9 +1999,7 @@ class FleasionProxy:
             str(host).strip().lower().rstrip('.') for host in hosts if str(host).strip()
         )
 
-    def set_intercept_connection_predicate(
-        self, predicate: Callable[[str], bool] | None
-    ) -> None:
+    def set_intercept_connection_predicate(self, predicate: Callable[[str], bool] | None) -> None:
         """Set a per-connection interception gate consulted for explicit CONNECTs.
 
         The predicate receives the normalized host and returns True when the
@@ -3510,9 +3508,10 @@ class FleasionProxy:
                         generation=custom_fflag_request_generation,
                     )
                 elif (
-                    custom_fflag_request
+                    custom_fflag_response_enabled
                     and custom_fflag_delivered_signature is None
                     and status_code == 304
+                    and not custom_fflag_modifier.requires_fresh_response()
                 ):
                     # A 304 Not Modified means the client kept its cached copy.
                     # When upstream flags are unchanged the conditional request
