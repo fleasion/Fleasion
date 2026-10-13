@@ -1537,13 +1537,15 @@ def _custom_fflag_engine_process() -> tuple[int, float] | None:
 
 
 def _should_intercept_custom_fflag_connection() -> bool:
-    """Gate ClientSettings interception on a per-launch request counter.
+    """Gate ClientSettings interception on a per-launch connection counter.
 
     The Linux client's launch-time ClientSettings fetch comes from its pinned
     bootstrap and must fall through unmodified: intercepting it makes the client
     detect the proxy and refuse to start with a fake internet error. Custom
     FastFlags are therefore delivered pre-launch via the client's configuration
-    and by interception starting with the second request. The fall-through
+    and by interception starting with the second connection. Bootstrap
+    tunnels expire after the bootstrap window to force a fresh connection
+    even when the client keeps its first TLS connection alive. The fall-through
     re-arms whenever a new engine process identity is seen, so every launch
     behaves the same way.
     """
@@ -1567,7 +1569,7 @@ def _should_intercept_custom_fflag_connection() -> bool:
             log_buffer.log(
                 'CustomFFlags',
                 f'Detected client engine process {engine_process[0]}; the first '
-                'clientsettingscdn.roblox.com request of this launch will fall through',
+                'ClientSettings connection of this launch will fall through',
             )
         _custom_fflag_last_engine_process = engine_process
         if _custom_fflag_launch_passthrough_remaining > 0:
@@ -1576,7 +1578,7 @@ def _should_intercept_custom_fflag_connection() -> bool:
     if fall_through:
         log_buffer.log(
             'CustomFFlags',
-            'clientsettingscdn.roblox.com connection: first request after client '
+            'clientsettingscdn.roblox.com connection: first connection after client '
             'launch falls through unmodified',
         )
         return False
@@ -6524,7 +6526,10 @@ class ProxyMaster:
         if IS_LINUX:
             predicate_setter = getattr(proxy, 'set_intercept_connection_predicate', None)
             if callable(predicate_setter):
-                predicate_setter(_custom_fflag_intercept_predicate)
+                predicate_setter(
+                    _custom_fflag_intercept_predicate,
+                    passthrough_timeout=SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS,
+                )
 
         log_buffer.log('Info', '=' * 50)
         log_buffer.log('Info', 'Fleasion Proxy Active')

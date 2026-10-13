@@ -165,6 +165,7 @@ def _run_client_settings_session(
     auto_replace_rules: list[_AutoReplaceRule] | None = None,
     intercept_response_action: str | None = None,
     client_drain_failure: bool = False,
+    on_response_held: Callable[[], None] | None = None,
 ) -> tuple[bytes, bytes]:
     async def _run() -> tuple[bytes, bytes]:
         host = 'clientsettings.roblox.com'
@@ -263,6 +264,8 @@ def _run_client_settings_session(
             assert proxy.submit_pending(1, 'request', 'forward')
             while (1, 'response') not in proxy.get_pending_intercepts():
                 await asyncio.sleep(0)
+            if on_response_held is not None:
+                on_response_held()
             assert proxy.submit_pending(1, 'response', action)
 
         if intercept_response_action is None:
@@ -894,6 +897,34 @@ def test_bodyless_notification_cannot_confirm_undelivered_flags() -> None:
     modifier.prepare_for_player_launch()
     assert not modifier.note_client_settings_seen()
     assert messages == ['Dynamic FFlags applied']
+
+
+def test_held_304_acknowledges_only_successfully_forwarded_responses() -> None:
+    for action, fail_drain in (('drop', False), ('forward', False), ('forward', True)):
+        config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+        modifier = CustomFFlagModifier(config)
+        messages: list[str] = []
+        held_messages: list[list[str]] = []
+        modifier.set_delivery_notification_callback(
+            lambda _title, message: messages.append(message)
+        )
+        modifier.note_response_success()
+        delivered, _request = _run_client_settings_session(
+            modifier,
+            b'HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n',
+            conditional=True,
+            intercept_response_action=action,
+            client_drain_failure=fail_drain,
+            on_response_held=lambda: held_messages.append(list(messages)),
+        )
+        assert held_messages == [['Dynamic FFlags applied']]
+        if action == 'drop':
+            assert delivered == b''
+        if action == 'forward' and not fail_drain:
+            assert delivered.startswith(b'HTTP/1.1 304')
+            assert messages == ['Dynamic FFlags applied', 'Live FFlag editing now available']
+        else:
+            assert messages == ['Dynamic FFlags applied']
 
 
 def test_delivery_notification_callback_faults_never_break_delivery() -> None:
