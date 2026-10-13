@@ -1,0 +1,201 @@
+"""Discover and render wallpapers outside the GUI thread."""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import subprocess
+import sys
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from time import monotonic
+from typing import TYPE_CHECKING, Final
+from urllib.parse import unquote, urlparse
+
+from PIL import Image, ImageFilter
+from PySide6.QtGui import QImage
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+_TIMEOUT: Final = 2
+_BLUR_RADIUS: Final = 18
+_REFRESH_SECONDS: Final = 5
+_MAX_SIZES: Final = 8
+log = logging.getLogger(__name__)
+
+
+def _gsettings(schema: str, key: str) -> str:
+    executable = shutil.which('gsettings')
+    if executable is None:
+        return ''
+    try:
+        result = subprocess.run(
+            [executable, 'get', schema, key],
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return ''
+    return result.stdout.strip().strip("'")
+
+
+def _file_from_uri(uri: str) -> Path | None:
+    if not uri.startswith('file://'):
+        return None
+    path = Path(unquote(urlparse(uri).path))
+    return path if path.is_file() and path.suffix.lower() != '.xml' else None
+
+
+def _linux_wallpaper() -> Path | None:
+    keys: Sequence[str] = ('picture-uri', 'picture-uri-dark')
+    if 'dark' in _gsettings('org.gnome.desktop.interface', 'color-scheme'):
+        keys = tuple(reversed(keys))
+    for key in keys:
+        if path := _file_from_uri(_gsettings('org.gnome.desktop.background', key)):
+            return path
+    kde = Path.home() / '.config' / 'plasma-org.kde.plasma.desktop-appletsrc'
+    if kde.is_file():
+        for line in kde.read_text(encoding='utf-8', errors='ignore').splitlines():
+            if line.startswith('Image=') and (path := _file_from_uri(line.split('=', 1)[1])):
+                return path
+    return None
+
+
+def wallpaper_path() -> Path | None:
+    """Best-effort lookup of the current desktop wallpaper."""
+    if sys.platform.startswith('linux'):
+        return _linux_wallpaper()
+    if sys.platform == 'win32':
+        themes = Path(os.environ.get('APPDATA', '')) / 'Microsoft' / 'Windows' / 'Themes'
+        path = themes / 'TranscodedWallpaper'
+        return path if path.is_file() else None
+    return None
+
+
+@dataclass(frozen=True)
+class WallpaperSource:
+    path: Path | None = None
+    stamp: tuple[int, int] | None = None
+
+
+def _discover_source() -> WallpaperSource:
+    path = wallpaper_path()
+    if path is None:
+        return WallpaperSource()
+    try:
+        stat = path.stat()
+    except OSError:
+        log.warning('Wallpaper became unavailable: %s', path)
+        return WallpaperSource()
+    return WallpaperSource(path, (stat.st_mtime_ns, stat.st_size))
+
+
+def render_wallpaper(source: Path, width: int, height: int) -> QImage:
+    """Decode, scale and blur an image in a worker, without disk cache files."""
+    with Image.open(source) as original:
+        img = original.convert('RGB')
+    scale = max(width / img.width, height / img.height)
+    size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
+    img = img.resize(size, Image.Resampling.BILINEAR)
+    left, top = (img.width - width) // 2, (img.height - height) // 2
+    img = img.crop((left, top, left + width, top + height))
+    half = (max(1, width // 2), max(1, height // 2))
+    small = img.resize(half, Image.Resampling.BILINEAR).filter(
+        ImageFilter.GaussianBlur(_BLUR_RADIUS)
+    )
+    rendered = small.resize((width, height), Image.Resampling.BICUBIC)
+    # Own the pixel buffer before the temporary Pillow image and bytes disappear
+    return QImage(rendered.tobytes(), width, height, width * 3, QImage.Format.Format_RGB888).copy()
+
+
+class WallpaperCache:
+    """Retain images for multiple screen sizes; discovery and rendering are asynchronous."""
+
+    def __init__(self) -> None:
+        self._source = WallpaperSource()
+        self._executor: ThreadPoolExecutor | None = None
+        self._pending: Future[WallpaperSource] | None = None
+        self._entries: OrderedDict[tuple[int, int], QImage | Future[QImage]] = OrderedDict()
+        self._next_refresh = 0.0
+        self._notify_ready = False
+
+    def _pool(self) -> ThreadPoolExecutor:
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='wallpaper')
+        return self._executor
+
+    @staticmethod
+    def _completed(future: Future[QImage]) -> QImage:
+        try:
+            return future.result()
+        except OSError, ValueError, Image.DecompressionBombError:
+            log.exception('Could not render the desktop wallpaper')
+            return QImage()
+
+    def refresh_source(self) -> bool:
+        """Poll ready results on the GUI thread and schedule periodic discovery."""
+        changed = self._notify_ready
+        self._notify_ready = False
+        if self._pending is not None and self._pending.done():
+            try:
+                source = self._pending.result()
+            except OSError:
+                log.exception('Could not discover the desktop wallpaper')
+                source = WallpaperSource()
+            self._pending = None
+            if source != self._source:
+                for entry in self._entries.values():
+                    if isinstance(entry, Future):
+                        entry.cancel()
+                self._entries.clear()
+                self._source = source
+                changed = True
+        for size, entry in list(self._entries.items()):
+            if isinstance(entry, Future) and entry.done():
+                self._entries[size] = self._completed(entry)
+                changed = True
+        if self._pending is None and monotonic() >= self._next_refresh:
+            self._pending = self._pool().submit(_discover_source)
+            self._next_refresh = monotonic() + _REFRESH_SECONDS
+        return changed
+
+    def image(self, width: int, height: int) -> QImage:
+        """Return a cached image immediately, or queue one and return an empty image."""
+        size = (max(1, width), max(1, height))
+        entry = self._entries.get(size)
+        if entry is not None:
+            self._entries.move_to_end(size)
+            if isinstance(entry, QImage):
+                return entry
+            if entry.done():
+                image = self._completed(entry)
+                self._entries[size] = image
+                self._notify_ready = True
+                return image
+            return QImage()
+        if self._source.path is not None:
+            self._entries[size] = self._pool().submit(render_wallpaper, self._source.path, *size)
+            while len(self._entries) > _MAX_SIZES:
+                _, oldest = self._entries.popitem(last=False)
+                if isinstance(oldest, Future):
+                    oldest.cancel()
+        return QImage()
+
+    def close(self) -> None:
+        """Release cached images and cancel queued jobs without blocking the GUI."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
+        self._entries.clear()
+        self._pending = None
+        self._next_refresh = 0.0
+        self._notify_ready = False
+
+
+wallpapers = WallpaperCache()

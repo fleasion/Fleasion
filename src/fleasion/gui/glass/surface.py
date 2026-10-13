@@ -2,41 +2,26 @@
 
 from __future__ import annotations
 
-import hashlib
-import logging
-import os
-import shutil
-import subprocess
 import sys
-from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path
-from time import monotonic
 from typing import TYPE_CHECKING, Final, override
-from urllib.parse import unquote, urlparse
 from weakref import WeakKeyDictionary
 
-from PIL import Image, ImageFilter
 from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QPushButton, QWidget
 from shiboken6 import isValid
 
 from .desktop_blur import blur
 from .state import UNBLURRED_OPACITY, state
-from .style import ICON_DIR, RADIUS
+from .style import RADIUS
+from .wallpaper import wallpapers
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from PySide6.QtGui import QScreen
 
-_TIMEOUT: Final = 2
-_BLUR_RADIUS: Final = 18
 _COMPACT_BUTTON_MAX: Final = 40
 _ARROW_BUTTON_MAX: Final = 24
 _FALLBACK_BACKDROP: Final = (20, 22, 34)
-_WALLPAPER_REFRESH_SECONDS: Final = 5
-log = logging.getLogger(__name__)
 
 
 def effective_opacity() -> float:
@@ -45,135 +30,6 @@ def effective_opacity() -> float:
     if settings.backdrop == 'wallpaper' or blur.status() == 'on':
         return settings.opacity
     return max(settings.opacity, UNBLURRED_OPACITY)
-
-
-# ---------------------------------------------------------------- wallpaper
-
-
-def _gsettings(schema: str, key: str) -> str:
-    executable = shutil.which('gsettings')
-    if executable is None:
-        return ''
-    try:
-        result = subprocess.run(
-            [executable, 'get', schema, key],
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT,
-            check=False,
-        )
-    except OSError, subprocess.SubprocessError:
-        return ''
-    return result.stdout.strip().strip("'")
-
-
-def _file_from_uri(uri: str) -> Path | None:
-    if not uri.startswith('file://'):
-        return None
-    path = Path(unquote(urlparse(uri).path))
-    return path if path.is_file() and path.suffix.lower() != '.xml' else None
-
-
-def _linux_wallpaper() -> Path | None:
-    keys: Sequence[str] = ('picture-uri', 'picture-uri-dark')
-    if 'dark' in _gsettings('org.gnome.desktop.interface', 'color-scheme'):
-        keys = tuple(reversed(keys))
-    for key in keys:
-        if path := _file_from_uri(_gsettings('org.gnome.desktop.background', key)):
-            return path
-    kde = Path.home() / '.config' / 'plasma-org.kde.plasma.desktop-appletsrc'
-    if kde.is_file():
-        for line in kde.read_text(encoding='utf-8', errors='ignore').splitlines():
-            if line.startswith('Image=') and (path := _file_from_uri(line.split('=', 1)[1])):
-                return path
-    return None
-
-
-def wallpaper_path() -> Path | None:
-    """Best-effort lookup of the current desktop wallpaper."""
-    if sys.platform.startswith('linux'):
-        return _linux_wallpaper()
-    if sys.platform == 'win32':
-        themes = Path(os.environ.get('APPDATA', '')) / 'Microsoft' / 'Windows' / 'Themes'
-        path = themes / 'TranscodedWallpaper'
-        return path if path.is_file() else None
-    return None
-
-
-class _WallpaperCache:
-    """One blurred, screen-sized wallpaper image, rebuilt when either changes."""
-
-    def __init__(self) -> None:
-        self._key = ''
-        self._image = QImage()
-        self._source: Path | None = None
-        self._executor: ThreadPoolExecutor | None = None
-        self._pending: Future[Path | None] | None = None
-        self._next_refresh = 0.0
-
-    def refresh_source(self) -> bool:
-        """Poll discovery on the GUI thread; desktop CLI calls run in a worker."""
-        changed = False
-        if self._pending is not None and self._pending.done():
-            try:
-                source = self._pending.result()
-            except OSError:
-                log.exception('Could not discover the desktop wallpaper')
-                source = None
-            self._pending = None
-            changed = source != self._source
-            self._source = source
-        if self._pending is None and monotonic() >= self._next_refresh:
-            if self._executor is None:
-                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='wallpaper')
-            self._pending = self._executor.submit(wallpaper_path)
-            self._next_refresh = monotonic() + _WALLPAPER_REFRESH_SECONDS
-        return changed
-
-    def image(self, width: int, height: int) -> QImage:
-        source = self._source
-        stamp = ''
-        if source is not None:
-            try:
-                stat = source.stat()
-            except OSError:
-                log.warning('Wallpaper became unavailable: %s', source)
-                self._source = source = None
-            else:
-                stamp = f'{source}{stat.st_mtime_ns}{stat.st_size}'
-        key = hashlib.sha256(f'{stamp}|{width}x{height}'.encode()).hexdigest()[:16]
-        if key != self._key:
-            self._image = QImage(str(self._render(key, source, width, height)))
-            self._key = key
-        return self._image
-
-    @staticmethod
-    def _render(key: str, source: Path | None, width: int, height: int) -> Path:
-        target = ICON_DIR / f'wallpaper-{key}.png'
-        if target.is_file():
-            return target
-        ICON_DIR.mkdir(parents=True, exist_ok=True)
-        for stale in ICON_DIR.glob('wallpaper-*.png'):
-            stale.unlink(missing_ok=True)
-        if source is None:
-            img = Image.new('RGB', (width, height), _FALLBACK_BACKDROP)
-        else:
-            img = Image.open(source).convert('RGB')
-            scale = max(width / img.width, height / img.height)
-            size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
-            img = img.resize(size, Image.Resampling.BILINEAR)
-            left, top = (img.width - width) // 2, (img.height - height) // 2
-            img = img.crop((left, top, left + width, top + height))
-        # Blurring at half size looks the same and is a quarter of the work
-        half = (max(1, width // 2), max(1, height // 2))
-        small = img.resize(half, Image.Resampling.BILINEAR).filter(
-            ImageFilter.GaussianBlur(_BLUR_RADIUS)
-        )
-        small.resize((width, height), Image.Resampling.BICUBIC).save(target)
-        return target
-
-
-_wallpapers = _WallpaperCache()
 
 
 def _screen(window: QWidget) -> QScreen | None:
@@ -198,8 +54,9 @@ def _paint_wallpaper(painter: QPainter, window: QWidget, path: QPainterPath) -> 
     # Cover the screen, or the window if it is larger than the screen
     width = max(geometry.width(), window.width())
     height = max(geometry.height(), window.height())
-    image = _wallpapers.image(width, height)
+    image = wallpapers.image(width, height)
     if image.isNull():
+        painter.fillPath(path, QColor(*_FALLBACK_BACKDROP))
         return
     origin = _origin_in_screen(window, width, height)
     source = QRectF(origin.x(), origin.y(), window.width(), window.height())
@@ -219,6 +76,8 @@ def paint_glass(
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     path = QPainterPath()
     path.addRoundedRect(rect, radius, radius)
+    if window is not None and _opaque_fallback(window):
+        painter.fillPath(path, QColor(*_FALLBACK_BACKDROP))
     if window is not None and state.settings.backdrop == 'wallpaper':
         _paint_wallpaper(painter, window, path)
     painter.fillPath(path, QColor(16, 17, 24, round(255 * effective_opacity())))
@@ -248,6 +107,13 @@ def _is_window(obj: QObject | None) -> bool:
     return isinstance(obj, (QMainWindow, QDialog)) and obj.isWindow()
 
 
+def _opaque_fallback(window: QWidget) -> bool:
+    # Windows and macOS require frameless windows for per-pixel translucency
+    return sys.platform in {'win32', 'darwin'} and not (
+        window.windowFlags() & Qt.WindowType.FramelessWindowHint
+    )
+
+
 class GlassWindows(QObject):
     """Gives top-level windows an alpha surface and paints the glass on them."""
 
@@ -256,13 +122,13 @@ class GlassWindows(QObject):
         self._app = app
         self._attributes: WeakKeyDictionary[QWidget, tuple[bool, bool]] = WeakKeyDictionary()
         self._wallpaper_timer = QTimer(self)
-        self._wallpaper_timer.setInterval(1000)
+        self._wallpaper_timer.setInterval(100)
         self._wallpaper_timer.timeout.connect(self.refresh_wallpaper)
         self._wallpaper_timer.start()
         self.refresh_wallpaper()
 
     def refresh_wallpaper(self) -> None:
-        if state.settings.backdrop == 'wallpaper' and _wallpapers.refresh_source():
+        if state.settings.backdrop == 'wallpaper' and wallpapers.refresh_source():
             for window in self._app.topLevelWidgets():
                 window.update()
 
@@ -301,7 +167,10 @@ class GlassWindows(QObject):
     def _paints(widget: QWidget) -> bool:
         return (
             _is_window(widget)
-            and widget.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            and (
+                widget.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+                or _opaque_fallback(widget)
+            )
             and not widget.property('glassOwnSurface')
         )
 
@@ -312,8 +181,10 @@ class GlassWindows(QObject):
                     widget.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground),
                     widget.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground),
                 )
-            # Polish runs before the native surface exists, so it gets an alpha channel
-            widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            translucent = not _opaque_fallback(widget)
+            widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=translucent)
+            if not translucent:
+                widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, on=False)
         elif not isinstance(widget, QPushButton):
             return
         elif (
