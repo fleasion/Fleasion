@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 _TIMEOUT: Final = 2
 _BLUR_RADIUS: Final = 18
 _REFRESH_SECONDS: Final = 5
+_RETRY_SECONDS: Final = 5
 _MAX_SIZES: Final = 8
 _MACOS_MULTI_WALLPAPER_SCRIPT: Final = """
 ObjC.import('AppKit');
@@ -348,6 +349,13 @@ def render_wallpaper(source: Path, width: int, height: int) -> QImage:
     return QImage(rendered.tobytes(), width, height, width * 3, QImage.Format.Format_RGB888).copy()
 
 
+@dataclass(frozen=True)
+class _RenderFailure:
+    """Retry a failed render after a cooldown instead of caching a null image."""
+
+    retry_at: float
+
+
 class WallpaperCache:
     """Retain images for multiple screen sizes; discovery and rendering are asynchronous."""
 
@@ -356,7 +364,8 @@ class WallpaperCache:
         self._executor: ThreadPoolExecutor | None = None
         self._pending: Future[WallpaperSource] | None = None
         self._entries: OrderedDict[
-            tuple[Path, tuple[int, int] | None, int, int], QImage | Future[QImage]
+            tuple[Path, tuple[int, int] | None, int, int],
+            QImage | Future[QImage] | _RenderFailure,
         ] = OrderedDict()
         self._next_refresh = 0.0
         self._notify_ready = False
@@ -367,12 +376,17 @@ class WallpaperCache:
         return self._executor
 
     @staticmethod
-    def _completed(future: Future[QImage]) -> QImage:
+    def _completed(future: Future[QImage]) -> QImage | None:
         try:
-            return future.result()
+            image = future.result()
         except OSError, ValueError, Image.DecompressionBombError:
             log.exception('Could not render the desktop wallpaper')
-            return QImage()
+            return None
+        return image if not image.isNull() else None
+
+    @staticmethod
+    def _render_entry(image: QImage | None) -> QImage | _RenderFailure:
+        return image if image is not None else _RenderFailure(monotonic() + _RETRY_SECONDS)
 
     def refresh_source(self) -> bool:
         """Poll ready results on the GUI thread and schedule periodic discovery."""
@@ -394,8 +408,12 @@ class WallpaperCache:
                 changed = True
         for size, entry in list(self._entries.items()):
             if isinstance(entry, Future) and entry.done():
-                self._entries[size] = self._completed(entry)
+                self._entries[size] = self._render_entry(self._completed(entry))
                 changed = True
+            elif isinstance(entry, _RenderFailure) and monotonic() >= entry.retry_at:
+                self._entries[size] = self._pool().submit(
+                    render_wallpaper, size[0], size[2], size[3]
+                )
         if self._pending is None and monotonic() >= self._next_refresh:
             self._pending = self._pool().submit(_discover_source)
             self._next_refresh = monotonic() + _REFRESH_SECONDS
@@ -412,11 +430,17 @@ class WallpaperCache:
             self._entries.move_to_end(size)
             if isinstance(entry, QImage):
                 return entry
+            if isinstance(entry, _RenderFailure):
+                if monotonic() >= entry.retry_at:
+                    self._entries[size] = self._pool().submit(
+                        render_wallpaper, path, size[2], size[3]
+                    )
+                return QImage()
             if entry.done():
                 image = self._completed(entry)
-                self._entries[size] = image
+                self._entries[size] = self._render_entry(image)
                 self._notify_ready = True
-                return image
+                return image if image is not None else QImage()
             return QImage()
         self._entries[size] = self._pool().submit(render_wallpaper, path, size[2], size[3])
         while len(self._entries) > _MAX_SIZES:

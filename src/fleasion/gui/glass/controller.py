@@ -61,6 +61,7 @@ class GlassTheme:
     def __init__(self) -> None:
         self._filter: GlassWindows | None = None
         self._previous_font: QFont | None = None
+        self._previous_stylesheet: str | None = None
 
     @property
     def active(self) -> bool:
@@ -82,6 +83,8 @@ class GlassTheme:
             self._previous_font = QFont(app.font())
             if (font := pick_font()) is not None:
                 app.setFont(font)
+        if self._previous_stylesheet is None:
+            self._previous_stylesheet = app.styleSheet()
         app.setStyleSheet(stylesheet(state.settings))
         if self._filter is None:
             self._filter = GlassWindows(app)
@@ -97,6 +100,8 @@ class GlassTheme:
             apply_chrome(window, enabled=True)
 
     def disable(self, app: QApplication) -> None:
+        if self._filter is None and self._previous_stylesheet is None:
+            return
         window_filter = self._filter
         if self._filter is not None:
             app.removeEventFilter(self._filter)
@@ -104,7 +109,9 @@ class GlassTheme:
         if self._previous_font is not None:
             app.setFont(self._previous_font)
             self._previous_font = None
-        app.setStyleSheet('')
+        if self._previous_stylesheet is not None:
+            app.setStyleSheet(self._previous_stylesheet)
+            self._previous_stylesheet = None
         for window in registered_windows():
             apply_chrome(window, enabled=False)
         if window_filter is not None:
