@@ -11,11 +11,12 @@ from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import TYPE_CHECKING, Final
 from urllib.parse import unquote, urlparse
 
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, UnidentifiedImageError
 from PySide6.QtGui import QImage
 
 if TYPE_CHECKING:
@@ -25,6 +26,13 @@ _TIMEOUT: Final = 2
 _BLUR_RADIUS: Final = 18
 _REFRESH_SECONDS: Final = 5
 _MAX_SIZES: Final = 8
+_MACOS_WALLPAPER_SCRIPT: Final = """
+ObjC.import('AppKit');
+var screens = $.NSScreen.screens;
+screens.count > 0
+    ? ObjC.unwrap($.NSWorkspace.sharedWorkspace.desktopImageURLForScreen(screens.objectAtIndex(0)).path)
+    : '';
+"""
 log = logging.getLogger(__name__)
 
 
@@ -75,7 +83,30 @@ def wallpaper_path() -> Path | None:
         themes = Path(os.environ.get('APPDATA', '')) / 'Microsoft' / 'Windows' / 'Themes'
         path = themes / 'TranscodedWallpaper'
         return path if path.is_file() else None
+    if sys.platform == 'darwin':
+        return _macos_wallpaper()
     return None
+
+
+def _macos_wallpaper() -> Path | None:
+    """Read AppKit's primary-screen wallpaper without automating another app."""
+    executable = shutil.which('osascript')
+    if executable is None:
+        return None
+    try:
+        result = subprocess.run(
+            [executable, '-l', 'JavaScript', '-e', _MACOS_WALLPAPER_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return None
+    if result.returncode != 0 or not (value := result.stdout.strip()):
+        return None
+    path = Path(value)
+    return path if path.is_file() else None
 
 
 @dataclass(frozen=True)
@@ -96,10 +127,35 @@ def _discover_source() -> WallpaperSource:
     return WallpaperSource(path, (stat.st_mtime_ns, stat.st_size))
 
 
+def _load_image(source: Path) -> Image.Image:
+    try:
+        with Image.open(source) as original:
+            return original.convert('RGB')
+    except UnidentifiedImageError:
+        # macOS desktop pictures can use HEIC, which Pillow cannot decode by default
+        executable = shutil.which('sips') if sys.platform == 'darwin' else None
+        if executable is None:
+            raise
+        with TemporaryDirectory(prefix='fleasion-wallpaper-') as directory:
+            converted = Path(directory) / 'wallpaper.png'
+            try:
+                subprocess.run(
+                    [executable, '-s', 'format', 'png', str(source), '--out', str(converted)],
+                    capture_output=True,
+                    text=True,
+                    timeout=_TIMEOUT,
+                    check=True,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                message = 'Could not convert the macOS wallpaper to PNG'
+                raise OSError(message) from exc
+            with Image.open(converted) as original:
+                return original.convert('RGB')
+
+
 def render_wallpaper(source: Path, width: int, height: int) -> QImage:
-    """Decode, scale and blur an image in a worker, without disk cache files."""
-    with Image.open(source) as original:
-        img = original.convert('RGB')
+    """Decode, scale and blur an image in a worker, without persistent disk caches."""
+    img = _load_image(source)
     scale = max(width / img.width, height / img.height)
     size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
     img = img.resize(size, Image.Resampling.BILINEAR)

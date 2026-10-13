@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Final, Literal, override
 from weakref import WeakKeyDictionary, ref
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QSize, Qt
-from PySide6.QtGui import QIcon, QMouseEvent
+from PySide6.QtGui import QCursor, QHoverEvent, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QBoxLayout,
@@ -119,10 +119,45 @@ class EdgeResizer(QObject):
     def __init__(self, window: QWidget) -> None:
         super().__init__(window)
         self._window = window
-        window.setMouseTracking(True)
+        app = QApplication.instance()
+        self._app = app if isinstance(app, QApplication) else None
+        self._hover: WeakKeyDictionary[QWidget, bool] = WeakKeyDictionary()
+        self._cursor_widget: QWidget | None = None
+        self._previous_cursor: QCursor | None = None
+        self._cursor_was_set = False
+        for widget in [window, *window.findChildren(QWidget)]:
+            self._track(widget)
+        if self._app is not None:
+            self._app.installEventFilter(self)
+
+    def _track(self, widget: QWidget) -> None:
+        if widget not in self._hover:
+            self._hover[widget] = widget.testAttribute(Qt.WidgetAttribute.WA_Hover)
+            widget.setAttribute(Qt.WidgetAttribute.WA_Hover)
+
+    def _restore_cursor(self) -> None:
+        widget = self._cursor_widget
+        if widget is not None and isValid(widget):
+            if self._cursor_was_set and self._previous_cursor is not None:
+                widget.setCursor(self._previous_cursor)
+            else:
+                widget.unsetCursor()
+        self._cursor_widget = None
+        self._previous_cursor = None
+
+    def detach(self) -> None:
+        if self._app is not None:
+            self._app.removeEventFilter(self)
+        self._restore_cursor()
+        for widget, hovered in list(self._hover.items()):
+            if isValid(widget):
+                widget.setAttribute(Qt.WidgetAttribute.WA_Hover, on=hovered)
+        self._hover.clear()
 
     def _edges(self, pos: QPoint) -> Qt.Edge:
         window = self._window
+        if not window.rect().contains(pos):
+            return Qt.Edge(0)
         edges = Qt.Edge(0)
         if pos.x() <= _RESIZE_MARGIN:
             edges |= Qt.Edge.LeftEdge
@@ -134,35 +169,69 @@ class EdgeResizer(QObject):
             edges |= Qt.Edge.BottomEdge
         return edges
 
-    def _update_cursor(self, edges: Qt.Edge) -> None:
+    def _update_cursor(self, widget: QWidget, edges: Qt.Edge) -> None:
+        if not edges or widget is not self._cursor_widget:
+            self._restore_cursor()
+        if not edges:
+            return
+        if self._cursor_widget is None:
+            self._cursor_widget = widget
+            self._previous_cursor = QCursor(widget.cursor())
+            self._cursor_was_set = widget.testAttribute(Qt.WidgetAttribute.WA_SetCursor)
         if edges in _SIDE_CURSORS:
-            self._window.setCursor(_SIDE_CURSORS[edges])
-        elif edges:
+            widget.setCursor(_SIDE_CURSORS[edges])
+        else:
             diagonal = edges in _FALLING_DIAGONALS
             cursor = Qt.CursorShape.SizeFDiagCursor if diagonal else Qt.CursorShape.SizeBDiagCursor
-            self._window.setCursor(cursor)
-        else:
-            self._window.unsetCursor()
+            widget.setCursor(cursor)
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        kind = event.type()
         if (
-            watched is not self._window
-            or self._window.isMaximized()
-            or not isinstance(event, QMouseEvent)
+            not isValid(self._window)
+            or not isinstance(watched, QWidget)
+            or kind
+            not in {
+                QEvent.Type.Polish,
+                QEvent.Type.Leave,
+                QEvent.Type.Hide,
+                QEvent.Type.WindowDeactivate,
+                QEvent.Type.MouseMove,
+                QEvent.Type.HoverMove,
+                QEvent.Type.MouseButtonPress,
+            }
         ):
             return False
-        edges = self._edges(event.position().toPoint())
-        if event.type() == QEvent.Type.MouseMove:
-            self._update_cursor(edges)
+        if watched.window() is not self._window:
+            if kind in {QEvent.Type.MouseMove, QEvent.Type.HoverMove, QEvent.Type.MouseButtonPress}:
+                self._restore_cursor()
+            return False
+        if kind == QEvent.Type.Polish:
+            self._track(watched)
+        if (
+            self._window.isMaximized()
+            or (kind == QEvent.Type.Leave and watched is self._cursor_widget)
+            or (
+                kind in {QEvent.Type.Hide, QEvent.Type.WindowDeactivate} and watched is self._window
+            )
+        ):
+            self._restore_cursor()
+            return False
+        if not isinstance(event, QMouseEvent | QHoverEvent):
+            return False
+        position = watched.mapTo(self._window, event.position().toPoint())
+        edges = self._edges(position)
+        if kind in {QEvent.Type.MouseMove, QEvent.Type.HoverMove}:
+            self._update_cursor(self._window.childAt(position) or self._window, edges)
         elif (
-            event.type() == QEvent.Type.MouseButtonPress
+            isinstance(event, QMouseEvent)
+            and kind == QEvent.Type.MouseButtonPress
             and event.button() == Qt.MouseButton.LeftButton
             and edges
             and (handle := _window_handle(self._window)) is not None
         ):
-            handle.startSystemResize(edges)
-            return True
+            return handle.startSystemResize(edges)
         return False
 
 
@@ -211,7 +280,6 @@ def apply_chrome(window: QWidget, *, enabled: bool) -> None:
     if enabled and chrome is None and layout is not None:
         chrome = _Chrome(GlassTitleBar(window), EdgeResizer(window))
         layout.insertWidget(0, chrome.title_bar)
-        window.installEventFilter(chrome.resizer)
         layout.setContentsMargins(*_CHROME_MARGINS)
         _installed[window] = chrome
     elif not enabled and chrome is not None:
@@ -219,7 +287,8 @@ def apply_chrome(window: QWidget, *, enabled: bool) -> None:
             layout.removeWidget(chrome.title_bar)
             layout.setContentsMargins(0, 0, 0, 0)
         chrome.title_bar.deleteLater()
-        window.removeEventFilter(chrome.resizer)
+        chrome.resizer.detach()
+        chrome.resizer.deleteLater()
         del _installed[window]
     window.setProperty('glassChrome', enabled)
     frameless = bool(window.windowFlags() & Qt.WindowType.FramelessWindowHint)
