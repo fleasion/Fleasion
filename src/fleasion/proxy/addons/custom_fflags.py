@@ -462,9 +462,22 @@ class CustomFFlagModifier:
         self._linux_seeded_flag_names = set(flags)
         if changed:
             self._log_flag_cache_seed(flags, removed_names, label='Sober flag cache')
-        if changed or not cache_path.exists():
+        if flags and self.is_enabled():
             _lock_linux_flag_cache(cache_dir, cache_path)
         return changed
+
+    def release_linux_flag_cache_lock(self) -> None:
+        """Restore cache write access when Fleasion stops managing delivery."""
+        if self._linux_flag_cache_path is None and not sys.platform.startswith('linux'):
+            return
+        cache_path = self._linux_flag_cache_path
+        if cache_path is None:
+            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+                SOBER_FLAG_CACHE_PATH,
+            )
+
+            cache_path = SOBER_FLAG_CACHE_PATH
+        _unlock_linux_flag_cache(cache_path.parent, cache_path)
 
     def _prime_flag_cache_file(  # ruff: ignore[too-many-return-statements]
         self,
@@ -683,13 +696,11 @@ class CustomFFlagModifier:
             saved_names = set(normalize_custom_fflags(saved_flags))
             saved_names.add(DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG)
         stale_names = (self._macos_seeded_flag_names | saved_names) - desired_names
-        return (
-            sum(
-                self._prime_macos_client_settings_path(target, flags, stale_names)
-                for target in paths
-            )
-            > 0
+        updated_paths = sum(
+            self._prime_macos_client_settings_path(target, flags, stale_names) for target in paths
         )
+        self._macos_seeded_flag_names = desired_names
+        return bool(updated_paths)
 
     def prime_startup_flag_cache(self) -> bool:
         """Seed the platform-specific local flag source used before networking."""

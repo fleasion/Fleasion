@@ -89,8 +89,6 @@ def _record_toggled(values: list[str]) -> Callable[[str], None]:
     return record
 
 
-
-
 def test_linux_keybinding_uses_tagged_evdev_codes() -> None:
     assert normalize_binding(
         {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_CTRL | MOD_SHIFT}
@@ -273,6 +271,24 @@ def test_linux_shifted_binding_shadows_bare_binding_on_the_same_key() -> None:
     _set_key_state(service, 43, 42, False)
     _set_key_state(service, 43, 30, True)
     assert activations == ['shifted', 'bare']
+
+
+def test_linux_modifier_press_activates_independent_keys() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'shift_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+        'ctrl_shift_b': {
+            'platform': 'linux_evdev',
+            'scan_code': 48,
+            'modifiers': MOD_CTRL | MOD_SHIFT,
+        },
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+    for code in (29, 30, 48, 42):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['shift_a', 'ctrl_shift_b']
 
 
 def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:

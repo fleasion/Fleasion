@@ -1084,19 +1084,56 @@ def test_linux_helper_does_not_intercept_profile_api_when_spoofer_disabled(
     assert getattr(proxy, '_desired_intercept_hosts')() == set(proxy_master.BASE_INTERCEPT_HOSTS)
 
 
-def test_linux_custom_fflags_intercept_immediately_for_engine_process(
+def test_linux_env_custom_fflags_intercept_without_route_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    setattr(proxy, 'config_manager', SimpleNamespace(settings={}))
+    setattr(proxy, 'config_manager', SimpleNamespace(settings={}, proxy_mode='env'))
     setattr(proxy, 'username_spoofer', SimpleNamespace(is_enabled=_callback0(lambda: False)))
     setattr(proxy, 'custom_fflag_modifier', SimpleNamespace(is_enabled=_callback0(lambda: True)))
 
     assert getattr(proxy, '_desired_intercept_hosts')() == (
-        set(proxy_master.BASE_INTERCEPT_HOSTS)
-        | set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+        set(proxy_master.BASE_INTERCEPT_HOSTS) | set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS)
     )
+
+
+def test_linux_hosts_custom_fflags_wait_for_each_engine_bootstrap_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils import platform_linux
+
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
+    monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
+    monkeypatch.setattr(proxy_master, 'IS_WINDOWS', False)
+    monkeypatch.setattr(
+        proxy_master.ProxyMaster, '_sober_boottime', staticmethod(_callback0(lambda: 130.0))
+    )
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    setattr(proxy, 'config_manager', SimpleNamespace(settings={}, proxy_mode='hosts'))
+    setattr(proxy, 'username_spoofer', SimpleNamespace(is_enabled=_callback0(lambda: False)))
+    setattr(proxy, 'custom_fflag_modifier', SimpleNamespace(is_enabled=_callback0(lambda: True)))
+    setattr(
+        proxy,
+        '_active_linux_client_installation',
+        SimpleNamespace(
+            key='sober', client=SimpleNamespace(clientsettings_route_delay_seconds=30.0)
+        ),
+    )
+    for process, ready in (
+        (None, False),
+        ((1001, 101.0), False),
+        ((1001, 100.0), True),
+        (None, False),
+        ((1002, 129.9), False),
+    ):
+        monkeypatch.setattr(
+            platform_linux, 'linux_client_main_process', _callback1(lambda _installation: process)
+        )
+        expected = set(proxy_master.BASE_INTERCEPT_HOSTS)
+        if ready:
+            expected.update(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+        assert getattr(proxy, '_desired_intercept_hosts')() == expected
 
 
 def test_linux_custom_fflags_first_engine_request_falls_through(
@@ -1126,6 +1163,70 @@ def test_linux_custom_fflags_first_engine_request_falls_through(
     engine['process'] = (1002, 0.0)
     assert not _should_intercept_custom_fflag_connection()
     assert _should_intercept_custom_fflag_connection()
+    assert _should_intercept_custom_fflag_connection()
+
+
+@pytest.mark.parametrize('mode', ['hosts', 'env'])
+def test_linux_hosts_timer_reconciles_routes_and_stops(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    setattr(proxy, 'config_manager', SimpleNamespace(proxy_mode=mode))
+    setattr(proxy, 'custom_fflag_modifier', SimpleNamespace(is_enabled=_callback0(lambda: True)))
+    setattr(
+        proxy,
+        '_active_linux_client_installation',
+        SimpleNamespace(
+            key='sober', client=SimpleNamespace(clientsettings_route_delay_seconds=30.0)
+        ),
+    )
+    readiness = iter((False, True, False))
+    refreshed: list[bool] = []
+    current_ready = False
+
+    def ready() -> bool:
+        nonlocal current_ready
+        current_ready = next(readiness)
+        return current_ready
+
+    def refresh() -> None:
+        refreshed.append(current_ready)
+        if len(refreshed) == 3:
+            getattr(proxy, '_sober_fflag_timer_stop').set()
+
+    setattr(proxy, '_linux_sober_custom_fflag_routes_ready', ready)
+    setattr(proxy, 'refresh_username_spoofer_interception', refresh)
+    try:
+        getattr(proxy, '_start_linux_sober_custom_fflag_timer')()
+        thread = cast('threading.Thread | None', getattr(proxy, '_sober_fflag_timer_thread', None))
+        if mode == 'env':
+            assert thread is None
+            assert refreshed == []
+        else:
+            assert thread is not None
+            thread.join(timeout=2.0)
+            assert not thread.is_alive()
+            assert refreshed == [False, True, False]
+    finally:
+        getattr(proxy, '_stop_linux_sober_custom_fflag_timer')()
+    assert getattr(proxy, '_sober_fflag_timer_thread') is None
+
+
+def test_linux_custom_fflags_bootstrap_requests_between_engines_stay_tunneled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
+    monkeypatch.setattr(proxy_master, '_custom_fflag_launch_passthrough_remaining', 0)
+    monkeypatch.setattr(proxy_master, '_custom_fflag_last_engine_process', (1001, 0.0))
+    monkeypatch.setattr(proxy_master, '_custom_fflag_engine_process', _callback0(lambda: None))
+    assert not _should_intercept_custom_fflag_connection()
+    assert not _should_intercept_custom_fflag_connection()
+    monkeypatch.setattr(
+        proxy_master, '_custom_fflag_engine_process', _callback0(lambda: (1002, 0.0))
+    )
+    assert not _should_intercept_custom_fflag_connection()
     assert _should_intercept_custom_fflag_connection()
 
 
@@ -1548,6 +1649,7 @@ def test_linux_helper_custom_fflags_adds_only_clientsettings_endpoints(
             prime_windows_flag_cache=_callback0(lambda: False),
         ),
     )
+    setattr(proxy, '_linux_sober_custom_fflag_routes_ready', _callback0(lambda: True))
     setattr(proxy, '_roblox_player_running', False)
     setattr(proxy, '_active_intercept_hosts', set(proxy_master.BASE_INTERCEPT_HOSTS))
     setattr(proxy, '_hosts_installed', True)

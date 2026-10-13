@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCore import QObject, Signal
 
+from fleasion.gui.hotkey_matching import most_specific_names
 from fleasion.utils import log_buffer
 
 from .hotkey_config import binding_mapping as _binding_mapping
@@ -203,20 +204,6 @@ if command -v setfacl >/dev/null 2>&1; then
 fi
 echo "Installed Fleasion Linux keybind permissions for $target_user."
 """
-
-
-def _most_specific_names(matches: list[tuple[str, int]]) -> list[str]:
-    """Return the names from ``matches`` bound with the most modifiers.
-
-    Bindings match when their required modifiers are a subset of the active
-    ones, so both a bare key and its shifted combination can match one press.
-    The combination with the most required modifiers wins, mirroring how
-    hotkey systems let Shift+A shadow A.
-    """
-    if not matches:
-        return []
-    best = max(required.bit_count() for _name, required in matches)
-    return [name for name, required in matches if required.bit_count() == best]
 
 
 def modifier_mask_for_evdev_code(code: int) -> int:
@@ -497,14 +484,14 @@ class LinuxHotkeyService(QObject):
                 return
             active_modifiers = self._active_modifiers()
             newly_active = [
-                (name, int(binding['modifiers']))
+                (name, int(binding['modifiers']), int(binding['scan_code']))
                 for name, binding in self._bindings.items()
                 if self._binding_is_active(binding, active_modifiers)
                 and not self._was_active.get(name, False)
             ]
             for name, binding in self._bindings.items():
                 self._was_active[name] = self._binding_is_active(binding, active_modifiers)
-            activations = _most_specific_names(newly_active)
+            activations = most_specific_names(newly_active)
 
         if is_pressed:
             self._emit_signal(self.key_pressed, code, active_modifiers)
@@ -537,7 +524,7 @@ class LinuxHotkeyService(QObject):
             modifiers = self._active_modifiers()
             direction = 'up' if delta > 0 else 'down'
             matches = [
-                (name, int(binding['modifiers']))
+                (name, int(binding['modifiers']), 0)
                 for name, binding in self._bindings.items()
                 if binding.get('kind') == 'mouse_wheel'
                 and binding.get('direction') == direction
@@ -545,7 +532,7 @@ class LinuxHotkeyService(QObject):
             ]
         wheel_code = SMU_MOUSE_WHEEL_UP if delta > 0 else SMU_MOUSE_WHEEL_DOWN
         self._emit_signal(self.wheel_scrolled, wheel_code, modifiers)
-        for name in _most_specific_names(matches):
+        for name in most_specific_names(matches):
             self._emit_signal(self.activated, name)
 
     def _binding_is_active(self, binding: HotkeyBinding, modifiers: int | None = None) -> bool:

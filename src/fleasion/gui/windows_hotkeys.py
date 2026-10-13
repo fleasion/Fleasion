@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from PySide6.QtCore import QObject, Signal
 
+from fleasion.gui.hotkey_matching import most_specific_names
 from fleasion.utils import log_buffer
 
 from .hotkey_config import binding_mapping as _binding_mapping
@@ -105,20 +106,6 @@ MOD_CTRL = 0x02
 MOD_ALT = 0x04
 MOD_WIN = 0x08
 MODIFIER_MASK = MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_WIN
-
-
-def _most_specific_names(matches: list[tuple[str, int]]) -> list[str]:
-    """Return the names from ``matches`` bound with the most modifiers.
-
-    Bindings match when their required modifiers are a subset of the active
-    ones, so both a bare key and its shifted combination can match one press.
-    The combination with the most required modifiers wins, mirroring how
-    hotkey systems let Shift+A shadow A.
-    """
-    if not matches:
-        return []
-    best = max(required.bit_count() for _name, required in matches)
-    return [name for name, required in matches if required.bit_count() == best]
 
 
 _VK_SHIFT = 0x10
@@ -455,10 +442,10 @@ class WindowsHotkeyService(QObject):
             # Extra held modifiers must not silence the binding: holding
             # Shift while pressing the bound key still toggles.  Shadowing
             # between a bare binding and its modified combination is
-            # resolved by firing only the most specific match per poll.
-            return is_pressed(virtual_key) and (
-                modifiers & required_modifiers
-            ) == required_modifiers
+            # resolved by firing only the most specific match per key
+            return (
+                is_pressed(virtual_key) and (modifiers & required_modifiers) == required_modifiers
+            )
 
         wheel_events: queue.SimpleQueue[str] = queue.SimpleQueue()
         mouse_hook = self._install_mouse_wheel_hook(wheel_events) if wheel_bindings else None
@@ -478,21 +465,21 @@ class WindowsHotkeyService(QObject):
                     direction = wheel_events.get_nowait()
                     modifiers = active_modifiers()
                     candidates = [
-                        (name, required_modifiers)
+                        (name, required_modifiers, 0)
                         for name, (required_direction, required_modifiers) in wheel_bindings.items()
                         if direction == required_direction
                         and (modifiers & required_modifiers) == required_modifiers
                     ]
-                    for name in _most_specific_names(candidates):
+                    for name in most_specific_names(candidates):
                         self._emit_activation(name)
                 modifiers = active_modifiers()
-                newly_active: list[tuple[str, int]] = []
+                newly_active: list[tuple[str, int, int]] = []
                 for name, (virtual_key, required_modifiers) in translated.items():
                     active = binding_is_active(virtual_key, required_modifiers, modifiers)
                     if active and not was_active[name]:
-                        newly_active.append((name, required_modifiers))
+                        newly_active.append((name, required_modifiers, virtual_key))
                     was_active[name] = active
-                for name in _most_specific_names(newly_active):
+                for name in most_specific_names(newly_active):
                     self._emit_activation(name)
         finally:
             if mouse_hook is not None:

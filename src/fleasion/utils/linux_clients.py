@@ -97,6 +97,7 @@ class LinuxClientDescriptor:
     cache_storage_relative_path: Path | None = None
     proxy_environment_names: tuple[str, ...] = ()
     proxy_passthrough_hosts: frozenset[str] = frozenset()
+    clientsettings_route_delay_seconds: float = 0.0
 
     @property
     def desktop_id(self) -> str:
@@ -222,6 +223,7 @@ SOBER_CLIENT = LinuxClientDescriptor(
         'no_proxy',
     ),
     proxy_passthrough_hosts=frozenset({'sober.vinegarhq.org', 'raw.githubusercontent.com'}),
+    clientsettings_route_delay_seconds=30.0,
 )
 
 # A future backend belongs here only after its descriptor and any truly
@@ -295,7 +297,7 @@ def _flatpak_info_succeeds(
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return False
     return result.returncode == 0
 

@@ -455,6 +455,101 @@ def test_modifier_creates_missing_linux_sober_flag_cache(tmp_path: Path) -> None
     assert not modifier.prime_startup_flag_cache()
 
 
+def test_linux_cache_identical_reseed_keeps_write_protection(tmp_path: Path) -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    cache_dir = tmp_path / 'cache'
+    cache_dir.mkdir()
+    cache_path = cache_dir / 'flag_cache.dat'
+    cache_path.write_bytes(bytes(5) + b'{"applicationSettings":{"Existing":"True"}}')
+    modifier = CustomFFlagModifier(config, linux_flag_cache_path=cache_path)
+    try:
+        assert modifier.prime_linux_flag_cache()
+        assert not modifier.prime_linux_flag_cache()
+        assert not cache_path.stat().st_mode & stat.S_IWUSR
+        assert not cache_dir.stat().st_mode & stat.S_IWUSR
+    finally:
+        modifier.release_linux_flag_cache_lock()
+
+
+def test_linux_cache_shutdown_restores_write_access(tmp_path: Path) -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    cache_dir = tmp_path / 'cache'
+    cache_dir.mkdir()
+    cache_path = cache_dir / 'flag_cache.dat'
+    cache_path.write_bytes(bytes(5) + b'{"applicationSettings":{}}')
+    modifier = CustomFFlagModifier(config, linux_flag_cache_path=cache_path)
+    try:
+        assert modifier.prime_linux_flag_cache()
+        proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+        setattr(proxy, 'custom_fflag_modifier', modifier)
+        setattr(proxy, '_lock', threading.Lock())
+        setattr(proxy, '_running', False)
+        setattr(proxy, '_thread', None)
+        proxy.stop()
+        assert cache_path.stat().st_mode & stat.S_IWUSR
+        assert cache_dir.stat().st_mode & stat.S_IWUSR
+    finally:
+        modifier.release_linux_flag_cache_lock()
+
+
+def test_linux_cache_disable_while_player_runs_restores_write_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    cache_dir = tmp_path / 'cache'
+    cache_dir.mkdir()
+    cache_path = cache_dir / 'flag_cache.dat'
+    cache_path.write_bytes(bytes(5) + b'{"applicationSettings":{}}')
+    modifier = CustomFFlagModifier(config, linux_flag_cache_path=cache_path)
+    try:
+        assert modifier.prime_linux_flag_cache()
+        config.custom_fflags_enabled = False
+        proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+        setattr(proxy, 'custom_fflag_modifier', modifier)
+        monkeypatch.setattr(proxy_master, 'is_roblox_running', lambda: True)
+        assert not proxy.prime_custom_fflag_cache()
+        assert cache_path.stat().st_mode & stat.S_IWUSR
+        assert cache_dir.stat().st_mode & stat.S_IWUSR
+    finally:
+        modifier.release_linux_flag_cache_lock()
+
+
+def test_linux_cache_failed_proxy_startup_restores_write_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    cache_dir = tmp_path / 'cache'
+    cache_dir.mkdir()
+    cache_path = cache_dir / 'flag_cache.dat'
+    cache_path.write_bytes(bytes(5) + b'{"applicationSettings":{}}')
+    modifier = CustomFFlagModifier(config, linux_flag_cache_path=cache_path)
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    setattr(proxy, 'config_manager', SimpleNamespace(proxy_mode='env'))
+    setattr(proxy, 'custom_fflag_modifier', modifier)
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', False)
+
+    def prepare(_env_proxy_mode: bool) -> None:
+        assert modifier.prime_linux_flag_cache()
+
+    def diagnostics(_loop: object, _env_proxy_mode: bool) -> None:
+        return None
+
+    setattr(proxy, '_prepare_proxy_startup', prepare)
+    setattr(proxy, '_install_proxy_loop_diagnostics', diagnostics)
+
+    async def run() -> None:
+        await getattr(proxy, '_run_proxy')()
+
+    try:
+        asyncio.run(run())
+        assert cache_path.stat().st_mode & stat.S_IWUSR
+        assert cache_dir.stat().st_mode & stat.S_IWUSR
+    finally:
+        modifier.release_linux_flag_cache_lock()
+
+
 def test_modifier_unlocks_and_reseeds_locked_linux_sober_flag_cache(tmp_path: Path) -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
@@ -505,6 +600,8 @@ def test_modifier_removes_previous_linux_seed_when_flags_change_or_disable(tmp_p
         assert modifier.prime_linux_flag_cache()
         payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
         assert payload == {'Existing': 'True'}
+        assert cache_path.stat().st_mode & stat.S_IWUSR
+        assert cache_dir.stat().st_mode & stat.S_IWUSR
     finally:
         cache_path.chmod(0o644)
         cache_dir.chmod(0o755)
@@ -528,6 +625,22 @@ def test_modifier_primes_macos_player_client_settings(tmp_path: Path) -> None:
         'Existing': 'True',
         'DFFlagDebugDrawBroadPhaseAABBs': 'True',
         'FFlagExample': 'False',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+    }
+
+
+def test_macos_cache_removes_deleted_startup_override(tmp_path: Path) -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    resources = tmp_path / 'Roblox.app' / 'Contents' / 'Resources'
+    settings = resources / 'ClientSettings' / 'ClientAppSettings.json'
+    settings.parent.mkdir(parents=True)
+    settings.write_text('{"Existing": "True"}', encoding='utf-8')
+    modifier = CustomFFlagModifier(config, macos_resource_dirs=[resources])
+    assert modifier.prime_macos_client_settings()
+    config.custom_fflags = {}
+    assert modifier.prime_macos_client_settings()
+    assert json.loads(settings.read_text(encoding='utf-8')) == {
+        'Existing': 'True',
         DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
     }
 
