@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 from ast import literal_eval
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from time import monotonic
 from typing import Final, Literal, cast
 
@@ -113,6 +113,7 @@ class DesktopBlur:
         self._can_toggle = False
         self._executor: ThreadPoolExecutor | None = None
         self._pending: Future[tuple[BlurStatus, bool]] | None = None
+        self._toggle_pending: Future[tuple[BlurStatus, bool]] | None = None
         self._pending_generation = 0
         self._generation = 0
         self._next_refresh = 0.0
@@ -128,8 +129,44 @@ class DesktopBlur:
         return self._status or 'unavailable'
 
     def can_toggle(self) -> bool:
-        self.status()
+        """Read cached availability without blocking Qt on a compositor probe."""
         return self._can_toggle
+
+    @property
+    def toggle_pending(self) -> bool:
+        """Whether a compositor toggle has not yet been consumed by the GUI."""
+        return self._toggle_pending is not None
+
+    def _ensure_executor(self) -> ThreadPoolExecutor:
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='glass-blur')
+        return self._executor
+
+    def toggle(self) -> bool:
+        """Queue one toggle after the current probe, without blocking the caller."""
+        if (
+            self._toggle_pending is not None
+            or not self._can_toggle
+            or self._status == 'unavailable'
+        ):
+            return False
+        self._generation += 1
+        if self._pending is not None:
+            self._pending.cancel()
+            self._pending = None
+        self._toggle_pending = self._ensure_executor().submit(self._toggle_work)
+        return True
+
+    @staticmethod
+    def _toggle_work() -> tuple[BlurStatus, bool]:
+        """Recheck permission and make the change entirely on the worker thread."""
+        _status, can_toggle = DesktopBlur._probe()
+        if can_toggle:
+            if DesktopBlur.owns_entry():
+                DesktopBlur._restore_whitelist()
+            else:
+                DesktopBlur._enable_whitelist()
+        return DesktopBlur._probe()
 
     @staticmethod
     def owns_entry() -> bool:
@@ -156,6 +193,19 @@ class DesktopBlur:
         Returns True when the cached status or toggle availability changes.
         """
         changed = False
+        toggle = self._toggle_pending
+        if toggle is not None:
+            if not toggle.done():
+                return False
+            self._toggle_pending = None
+            self._next_refresh = monotonic() + _REFRESH_SECONDS
+            try:
+                self._status, self._can_toggle = toggle.result()
+            except CancelledError, OSError, ValueError, subprocess.SubprocessError:
+                log.exception('Could not toggle compositor blur')
+                self._next_refresh = 0.0  # Recheck partial writes asynchronously
+            return True  # The GUI must re-enable its button even if status did not change
+
         pending = self._pending
         if pending is not None:
             if not pending.done():
@@ -171,25 +221,34 @@ class DesktopBlur:
                     self._status, self._can_toggle = result
                     changed = previous != result
         if self._pending is None and monotonic() >= self._next_refresh:
-            if self._executor is None:
-                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='glass-blur')
             self._pending_generation = self._generation
-            self._pending = self._executor.submit(self._probe)
+            self._pending = self._ensure_executor().submit(self._probe)
             self._next_refresh = monotonic() + _REFRESH_SECONDS
         return changed
 
     def stop_polling(self) -> None:
         """Cancel unused work after Glass is disabled without waiting for desktop commands."""
+        self._generation += 1
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
+        # A running toggle is allowed to finish. Keep its future so a later
+        # theme activation can collect the result before accepting another toggle
         self._pending = None
         self._next_refresh = 0.0
 
     def enable(self) -> bool:
         if self.status(refresh=True) == 'on':
             return True
-        if not self.can_toggle() or _read('blur') != 'true' or _read('enable-all') == 'true':
+        if not self.can_toggle():
+            return False
+        if not self._enable_whitelist():
+            return False
+        return self.status(refresh=True) == 'on'
+
+    @staticmethod
+    def _enable_whitelist() -> bool:
+        if _read('blur') != 'true' or _read('enable-all') == 'true':
             return False
         original = _run('dconf', 'read', _SCHEMA_PATH + 'whitelist')
         if original is None or (whitelist := _parse_list(original)) is None:
@@ -201,20 +260,23 @@ class DesktopBlur:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             backup = {'whitelist': original, 'whitelist_applied': applied}
             _BACKUP_FILE.write_text(json.dumps(backup), encoding='utf-8')
-        if not _write('whitelist', applied):
-            return False
-        return self.status(refresh=True) == 'on'
+        return _write('whitelist', applied)
 
     def disable(self) -> None:
+        if self._restore_whitelist():
+            self.status(refresh=True)
+
+    @staticmethod
+    def _restore_whitelist() -> bool:
         values = _load_backup()
         if 'whitelist' not in values or 'whitelist_applied' not in values:
-            return
+            return False
         current = _run('dconf', 'read', _SCHEMA_PATH + 'whitelist')
         if current is None:
-            return
+            return False
         whitelist = _parse_list(current)
         if whitelist is None:
-            return
+            return False
         if whitelist == _parse_list(values['whitelist_applied']):
             original = values['whitelist']
             restored = (
@@ -229,7 +291,7 @@ class DesktopBlur:
             )
         if restored:
             _BACKUP_FILE.unlink(missing_ok=True)
-        self.status(refresh=True)
+        return restored
 
 
 blur = DesktopBlur()

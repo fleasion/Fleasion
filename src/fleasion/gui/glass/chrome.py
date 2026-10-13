@@ -98,7 +98,11 @@ class GlassTitleBar(QWidget):
 
     @override
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        self._press('max')
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press('max')
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
 
 
 _SIDE_CURSORS: Final = {

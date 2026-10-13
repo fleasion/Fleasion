@@ -291,13 +291,18 @@ class ConflictBadge(QPushButton):
             return
         self._signature = signature
         self.conflicts = find_conflicts(self._source)
-        count = len(self.conflicts)
-        self.setText(
-            tr('ui.gui.conflicts.badge_count', value0=count)
-            if count
-            else tr('ui.gui.conflicts.badge_none')
-        )
-        self.setProperty('clean', count == 0)
+        exact = sum(not conflict.potential for conflict in self.conflicts)
+        potential = len(self.conflicts) - exact
+        if exact and potential:
+            label = tr('ui.gui.conflicts.badge_mixed', value0=exact, value1=potential)
+        elif potential:
+            label = tr('ui.gui.conflicts.badge_potential', value0=potential)
+        elif exact:
+            label = tr('ui.gui.conflicts.badge_count', value0=exact)
+        else:
+            label = tr('ui.gui.conflicts.badge_none')
+        self.setText(label)
+        self.setProperty('clean', not (exact or potential))
         style = self.style()
         style.unpolish(self)
         style.polish(self)

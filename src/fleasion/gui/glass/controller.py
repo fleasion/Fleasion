@@ -143,7 +143,9 @@ class GlassTheme:
         for widget in app.allWidgets():
             if isinstance(widget, QPushButton) and widget.objectName() == BLUR_BUTTON:
                 widget.setVisible(status != 'unavailable' and state.settings.backdrop == 'desktop')
-                widget.setEnabled(status != 'unavailable' and blur.can_toggle())
+                widget.setEnabled(
+                    status != 'unavailable' and blur.can_toggle() and not blur.toggle_pending
+                )
                 widget.setText(
                     tr('settings.appearance.glass_blur_on')
                     if status == 'on'
@@ -162,16 +164,8 @@ class GlassTheme:
 
     @staticmethod
     def toggle_desktop_blur() -> None:
-        blur.status(refresh=True)
-        if not blur.can_toggle():
-            return
-        if blur.owns_entry():
-            blur.disable()
-        else:
-            blur.enable()
-        GlassTheme._sync_blur_controls()
-        if (app := _app()) is not None:
-            _refresh_windows(app)
+        if blur.toggle():
+            GlassTheme._sync_blur_controls()
 
 
 theme = GlassTheme()

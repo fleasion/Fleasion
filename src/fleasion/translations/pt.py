@@ -740,6 +740,8 @@ PORTUGUESE: dict[str, str] = {
     'settings.appearance.glass_blur_scope': 'Enable application blur in Blur my Shell first. Fleasion manages only the whitelist entry it adds; existing desktop settings stay under your control.',
     'ui.gui.conflicts.badge_none': 'No conflicts',
     'ui.gui.conflicts.badge_count': '{value0} conflicts',
+    'ui.gui.conflicts.badge_potential': '{value0} potential overlaps',
+    'ui.gui.conflicts.badge_mixed': '{value0} conflicts, {value1} potential overlaps',
     'ui.gui.conflicts.title': 'Mod conflicts',
     'ui.gui.conflicts.summary': '{value0} overlapping rule groups found. Exact-key collisions identify the winning rule; potential overlaps between asset IDs, asset types, and texture slots depend on the request. The proxy applies its normal specificity and replacement precedence.',
     'ui.gui.conflicts.col_asset': 'Asset',
