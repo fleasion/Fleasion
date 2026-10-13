@@ -98,6 +98,7 @@ from fleasion.utils.http import http_get
 from fleasion.utils.json_types import JsonValue, require_json_value
 from fleasion.utils.threading import run_in_thread
 
+from . import glass
 from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
 
@@ -855,6 +856,11 @@ class DropdownComboBox(QComboBox):
 
     @override
     def paintEvent(self, e: QPaintEvent) -> None:
+        if glass.theme.active:
+            # The Glass stylesheet draws its own chevron
+            super().paintEvent(e)
+            return
+
         style = _style_or_none(self)
         if style is None:
             super().paintEvent(e)

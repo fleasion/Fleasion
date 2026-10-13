@@ -21,6 +21,7 @@ from threading import Lock, Thread
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast
 from urllib.parse import urlparse
 
+from fleasion.config.manager import ANIMATION_TYPE_KEYS
 from fleasion.proxy.roblox_metadata import strip_roblox_metadata
 from fleasion.utils import APP_CACHE_DIR, format_count, log_buffer
 from fleasion.utils.http import http_download_to
@@ -1164,7 +1165,7 @@ class TextureStripper:
     _PRECHECK_HTTP_RETRY_SECONDS = 15 * 60.0
 
     # Animation type IDs (main + all subtypes)
-    _ANIM_TYPE_IDS: frozenset[int] = frozenset({24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78})
+    _ANIM_TYPE_IDS: frozenset[int] = ANIMATION_TYPE_KEYS
     _CONV_CACHE_DIR: Path = APP_CACHE_DIR / 'rig_converted'
 
     # Virtual rig-filter type keys -> required original rig ('R6', 'R15', 'unknown')

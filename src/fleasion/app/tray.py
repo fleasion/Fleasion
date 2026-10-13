@@ -40,6 +40,7 @@ from fleasion.gui import (
     LogsWindow,
     ReplacerConfigWindow,
     ThemeManager,
+    glass,
 )
 from fleasion.localization import tr
 from fleasion.utils import (
@@ -309,6 +310,7 @@ class SystemTray:
         self.tray.setContextMenu(self.menu)
 
         # Apply initial theme
+        glass.theme.configure(self.config_manager)
         ThemeManager.apply_theme(self.config_manager.theme)
 
         # Connect tray activation signal
@@ -452,14 +454,15 @@ class SystemTray:
             ('System', tr('tray.theme.system')),
             ('Light', tr('tray.theme.light')),
             ('Dark', tr('tray.theme.dark')),
+            ('Glass', tr('tray.theme.glass')),
         ]:
             action = QAction(label, theme_menu)
             action.setCheckable(True)
 
-            def set_theme(_checked: bool = False, theme: str = theme_name) -> None:
-                self._set_theme(theme)
+            def on_theme(_checked: bool = False, theme: str = theme_name) -> None:
+                self.set_theme(theme)
 
-            action.triggered.connect(set_theme)
+            action.triggered.connect(on_theme)
             theme_menu.addAction(action)
             self.theme_actions[theme_name] = action
 
@@ -714,7 +717,7 @@ class SystemTray:
         if self.dashboard_window:
             self.dashboard_window.refresh_env_proxy_gate()
 
-    def _set_theme(self, theme: str) -> None:
+    def set_theme(self, theme: str) -> None:
         """Set the application theme."""
         # Update checkmarks
         for name, action in self.theme_actions.items():

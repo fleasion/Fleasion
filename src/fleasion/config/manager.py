@@ -38,6 +38,7 @@ _WINDOWS_MOUSE_BUTTON_CODES = frozenset({1, 2, 4, 5, 6})
 _WINDOWS_HOTKEY_PLATFORMS = (None, 'windows')
 type ReplacementRules = list[JsonValue]
 type ReplacementKey = int | str
+type ReplacementMode = Literal['remove', 'id', 'cdn', 'local']
 type ReplacementMaps = tuple[
     dict[ReplacementKey, int],
     set[ReplacementKey],
@@ -256,6 +257,9 @@ _ASSET_TYPE_IDS = {
     'codesnippet': 80,
 }
 _RESERVED_ASSET_TYPE_ID_MAX = max(_ASSET_TYPE_IDS.values())
+ASSET_TYPE_KEYS = frozenset(_ASSET_TYPE_IDS.values())
+ASSET_TYPE_NAMES = {code: name for name, code in _ASSET_TYPE_IDS.items()}
+TEXTUREPACK_TYPE_KEY = _ASSET_TYPE_IDS['texturepack']
 _VIRTUAL_ANIM_TYPES = {
     'r6animation': 'R6Animation',
     'r15animation': 'R15Animation',
@@ -264,6 +268,26 @@ _VIRTUAL_ANIM_TYPES = {
     'r15 animation': 'R15Animation',
     'non-player animation': 'NonPlayerAnimation',
 }
+
+# Keep the GUI's overlap predicates aligned with the proxy's animation entry check
+ANIMATION_TYPE_KEYS = frozenset(
+    _ASSET_TYPE_IDS[name]
+    for name in (
+        'animation',
+        'climbanimation',
+        'deathanimation',
+        'fallanimation',
+        'idleanimation',
+        'jumpanimation',
+        'runanimation',
+        'swimanimation',
+        'walkanimation',
+        'poseanimation',
+        'emoteanimation',
+        'moodanimation',
+    )
+)
+VIRTUAL_ANIMATION_KEYS = frozenset(_VIRTUAL_ANIM_TYPES.values())
 
 
 def _parse_config_asset_id(value: object) -> int | None:
@@ -352,6 +376,21 @@ def _apply_replacement_rule(rule: JsonObject, targets: ReplacementMaps) -> None:
     if target_id is None or 0 <= target_id <= _RESERVED_ASSET_TYPE_ID_MAX:
         return
     replacements.update(dict.fromkeys(parsed_ids, target_id))
+
+
+def replacement_rule_claims(rule: JsonObject) -> Iterator[tuple[ReplacementKey, ReplacementMode]]:
+    """Return the normalized claims actually contributed to the proxy maps."""
+    targets: ReplacementMaps = ({}, set(), {}, {})
+    _apply_replacement_rule(rule, targets)
+    replacements, removals, cdn, local = targets
+    for key in replacements:
+        yield key, 'id'
+    for key in removals:
+        yield key, 'remove'
+    for key in cdn:
+        yield key, 'cdn'
+    for key in local:
+        yield key, 'local'
 
 
 ConfigFileStatus = Literal['valid', 'invalid', 'binary', 'unreadable']
@@ -977,6 +1016,40 @@ class ConfigManager:
     def theme(self, value: str) -> None:
         """Set theme setting."""
         self.settings['theme'] = value
+        self._save_settings()
+
+    @property
+    def glass_accent(self) -> str:
+        """Accent preset name used by the Glass theme."""
+        value = self.settings.get('glass_accent', 'Ice')
+        return value if isinstance(value, str) else 'Ice'
+
+    @glass_accent.setter
+    def glass_accent(self, value: str) -> None:
+        self.settings['glass_accent'] = value
+        self._save_settings()
+
+    @property
+    def glass_opacity(self) -> float:
+        """Glass tint strength, 0.2 (clear) to 0.97 (nearly opaque)."""
+        value = self.settings.get('glass_opacity', 0.45)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            value = 0.45
+        return min(0.97, max(0.2, float(value)))
+
+    @glass_opacity.setter
+    def glass_opacity(self, value: float) -> None:
+        self.settings['glass_opacity'] = round(min(0.97, max(0.2, value)), 2)
+        self._save_settings()
+
+    @property
+    def glass_backdrop(self) -> Literal['desktop', 'wallpaper']:
+        """What the Glass theme blurs: the window under Fleasion, or the wallpaper."""
+        return 'wallpaper' if self.settings.get('glass_backdrop') == 'wallpaper' else 'desktop'
+
+    @glass_backdrop.setter
+    def glass_backdrop(self, value: Literal['desktop', 'wallpaper']) -> None:
+        self.settings['glass_backdrop'] = value
         self._save_settings()
 
     @property
@@ -1795,6 +1868,24 @@ class ConfigManager:
     def refresh_config_names(self) -> None:
         """Refresh config names from disk (for external changes)."""
         self.reconcile_configs()
+
+    def iter_enabled_rules(self) -> Iterator[tuple[str, int, JsonObject]]:
+        """Yield ``(config_name, enabled_order, rule)`` for enabled profiles.
+
+        Configs come in enabled order, so a later one overrides an earlier one
+        for the same asset, as in :meth:`get_all_replacements`.
+        """
+        for order, name in enumerate(self.enabled_configs):
+            for rule in self._iter_replacement_rules(self.get_replacement_rules(name)):
+                if isinstance(rule, dict) and rule.get('enabled', True):
+                    yield name, order, rule
+
+    def enabled_configs_signature(self) -> ReplacementsSignature:
+        """Changes whenever an enabled config is toggled or edited on disk."""
+        return tuple(
+            (name, self._file_signature(self._get_config_path(name)))
+            for name in self.enabled_configs
+        )
 
     def get_replacement_rules(self, config_name: str) -> ReplacementRules:
         """Get rules for a specific config."""
