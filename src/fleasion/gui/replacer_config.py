@@ -6,6 +6,7 @@ import re
 import sys
 import time
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast, override
 from urllib.error import URLError
@@ -85,6 +86,9 @@ from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.http import http_head_status
 from fleasion.utils.json_types import require_json_value
 
+from . import command_palette, glass
+from .command_palette import Command
+from .conflicts import ConflictBadge
 from .file_drop import FileDropLineEdit, local_file_path_example
 from .modifications_tab import ModificationsTab
 from .proxy_gate import ProxyGate
@@ -92,6 +96,7 @@ from .proxy_tab import ProxyTrafficTab
 from .rando_stuff_tab import RandoStuffTab
 from .settings_tab import SettingsTab
 from .subplace_joiner_tab import SubplaceJoinerTab
+from .theme import ThemeManager
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
@@ -1047,6 +1052,11 @@ class ReplacerConfigWindow(QDialog):
         escape_shortcut = QShortcut(QKeySequence('Escape'), self)
         escape_shortcut.activated.connect(self.close)
 
+        self._command_palette = command_palette.install(self, self._palette_commands)
+        command_palette.fade_tabs(self.tab_widget)
+        glass.theme.configure(self.config_manager)
+        glass.theme.attach(self)
+
     def _install_tab(self, name: str, widget: QWidget, *, enabled: bool = True) -> None:
         page = self._tab_pages[name]
         layout = cast('QVBoxLayout', page.layout())
@@ -1123,6 +1133,76 @@ class ReplacerConfigWindow(QDialog):
             )
             yield from tab.build_ui()
             self._install_tab('modifications', tab)
+
+    def _palette_commands(self) -> list[Command]:
+        """Everything the Ctrl+K palette can do from the dashboard."""
+        config = self.config_manager
+        go_to = tr('ui.gui.command_palette.kind_go_to')
+        commands = [
+            Command(
+                self.tab_widget.tabText(index),
+                go_to,
+                partial(self.tab_widget.setCurrentIndex, index),
+            )
+            for index in range(self.tab_widget.count())
+        ]
+        for name in config.config_names:
+            enabled = config.is_config_enabled(name)
+            commands.append(
+                Command(
+                    name,
+                    tr('ui.gui.command_palette.kind_disable')
+                    if enabled
+                    else tr('ui.gui.command_palette.kind_enable'),
+                    partial(self._on_config_toggle, name, not enabled),
+                    hint=tr('ui.gui.command_palette.hint_on')
+                    if enabled
+                    else tr('ui.gui.command_palette.hint_off'),
+                )
+            )
+        themes = (
+            ('System', tr('settings.appearance.theme.system')),
+            ('Light', tr('settings.appearance.theme.light')),
+            ('Dark', tr('settings.appearance.theme.dark')),
+            ('Glass', tr('settings.appearance.theme.glass')),
+        )
+        kind_theme = tr('ui.gui.command_palette.kind_theme')
+        commands.extend(
+            Command(label, kind_theme, partial(self._apply_theme, theme_name))
+            for theme_name, label in themes
+        )
+        kind_backdrop = tr('settings.appearance.glass_backdrop_tooltip')
+        commands.extend(
+            Command(
+                glass.backdrop_label(mode), kind_backdrop, partial(glass.theme.set_backdrop, mode)
+            )
+            for mode in glass.BACKDROPS
+        )
+        kind_accent = tr('ui.gui.command_palette.kind_accent')
+        commands.extend(
+            Command(accent, kind_accent, partial(glass.theme.set_accent, accent))
+            for accent in glass.ACCENTS
+        )
+        kind_action = tr('ui.gui.command_palette.kind_action')
+        actions = (
+            (tr('ui.gui.conflicts.palette'), self._conflict_badge.show_dialog),
+            (tr('ui.gui.replacer_config.clear_cache'), self._clear_roblox_cache),
+            (tr('ui.gui.replacer_config.open_configs'), self._open_configs_folder),
+            (tr('ui.gui.replacer_config.scraped_games'), self._open_prejsons_browser),
+            (tr('ui.gui.replacer_config.undo_ctrl_z'), self._do_undo),
+            (tr('ui.gui.command_palette.action_redo'), self._do_redo),
+            (tr('ui.gui.replacer_config.keybinds'), self._show_keybinds_help),
+        )
+        commands.extend(Command(title, kind_action, run) for title, run in actions)
+        return commands
+
+    def _apply_theme(self, theme_name: str) -> None:
+        if self._system_tray is not None:
+            # Goes through the tray so its theme checkmarks stay in sync
+            self._system_tray.set_theme(theme_name)
+        else:
+            ThemeManager.apply_theme(theme_name)
+            self.config_manager.theme = theme_name
 
     def _proxy_required(self, widget: QWidget) -> ProxyGate:
         gate = ProxyGate(widget, parent=self.tab_widget)
@@ -1456,6 +1536,9 @@ class ReplacerConfigWindow(QDialog):
         footer_layout.addWidget(self._configs_path_label)
 
         footer_layout.addStretch()
+
+        self._conflict_badge = ConflictBadge(self.config_manager)
+        footer_layout.addWidget(self._conflict_badge)
 
         help_btn = QPushButton(tr('ui.gui.replacer_config.text_2'))
         help_btn.setMaximumWidth(25)
