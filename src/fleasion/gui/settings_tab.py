@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -296,13 +297,15 @@ class SettingsTab(QWidget):
             btn_group.addButton(chk)
             theme_row.addWidget(chk)
             self._theme_buttons[name] = chk
-        self._glass_controls = self._build_glass_controls(visible=current_theme == 'Glass')
-        theme_row.addWidget(self._glass_controls)
         theme_row.addStretch()
 
         row_widget = QWidget()
         row_widget.setLayout(theme_row)
         section.add_widget(row_widget)
+
+        # Glass options need their own rows so they never widen the theme selector
+        self._glass_controls = self._build_glass_controls(visible=current_theme == 'Glass')
+        section.add_widget(self._glass_controls)
 
         return section
 
@@ -722,6 +725,18 @@ class SettingsTab(QWidget):
             rb.setChecked(name == self._config.theme)
             _set_signals_blocked(rb, blocked=False)
 
+        # Updating persisted Glass preferences must not invoke their controller
+        # callbacks, which would rewrite configuration and trigger theme work
+        with QSignalBlocker(self._backdrop_combo):
+            index = self._backdrop_combo.findData(self._config.glass_backdrop)
+            self._backdrop_combo.setCurrentIndex(max(0, index))
+        with QSignalBlocker(self._accent_combo):
+            index = self._accent_combo.findText(self._config.glass_accent)
+            self._accent_combo.setCurrentIndex(max(0, index))
+        with QSignalBlocker(self._opacity_slider):
+            self._opacity_slider.setValue(round(self._config.glass_opacity * 100))
+        self._refresh_blur_button()
+
         for chk, value in [
             (self._open_dashboard_chk, self._config.open_dashboard_on_launch),
             (self._proxy_features_chk, self._config.proxy_features_enabled),
@@ -821,8 +836,9 @@ class SettingsTab(QWidget):
     def _build_glass_controls(self, *, visible: bool) -> QWidget:
         """Blur source, accent, tint strength and desktop-blur toggle for Glass."""
         controls = QWidget()
-        row = QHBoxLayout(controls)
-        row.setContentsMargins(12, 0, 0, 0)
+        row = QGridLayout(controls)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setColumnStretch(2, 1)
 
         self._backdrop_combo = QComboBox()
         self._backdrop_combo.setObjectName(glass.BACKDROP_COMBO)
@@ -833,7 +849,7 @@ class SettingsTab(QWidget):
             max(0, self._backdrop_combo.findData(self._config.glass_backdrop))
         )
         self._backdrop_combo.currentIndexChanged.connect(self._on_glass_backdrop_changed)
-        row.addWidget(self._backdrop_combo)
+        row.addWidget(self._backdrop_combo, 0, 0)
 
         self._accent_combo = QComboBox()
         self._accent_combo.setObjectName(glass.ACCENT_COMBO)
@@ -841,7 +857,7 @@ class SettingsTab(QWidget):
         self._accent_combo.setCurrentText(self._config.glass_accent)
         self._accent_combo.setToolTip(tr('settings.appearance.glass_accent_tooltip'))
         self._accent_combo.currentTextChanged.connect(glass.theme.set_accent)
-        row.addWidget(self._accent_combo)
+        row.addWidget(self._accent_combo, 0, 1)
 
         self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self._opacity_slider.setRange(
@@ -851,12 +867,12 @@ class SettingsTab(QWidget):
         self._opacity_slider.setValue(round(self._config.glass_opacity * 100))
         self._opacity_slider.setToolTip(tr('settings.appearance.glass_opacity_tooltip'))
         self._opacity_slider.valueChanged.connect(self._on_glass_opacity_changed)
-        row.addWidget(self._opacity_slider)
+        row.addWidget(self._opacity_slider, 1, 0)
 
         self._blur_button = QPushButton()
         self._blur_button.setObjectName(glass.BLUR_BUTTON)
         self._blur_button.clicked.connect(self._toggle_desktop_blur)
-        row.addWidget(self._blur_button)
+        row.addWidget(self._blur_button, 1, 1)
         self._refresh_blur_button()
 
         controls.setVisible(visible)

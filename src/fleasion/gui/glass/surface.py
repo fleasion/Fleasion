@@ -96,6 +96,8 @@ def paint_glass(
 
 def _repolish_later(widget: QWidget) -> None:
     def repolish() -> None:
+        if not isValid(widget):
+            return
         style = widget.style()
         style.unpolish(widget)
         style.polish(widget)

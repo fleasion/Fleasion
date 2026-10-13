@@ -239,6 +239,7 @@ class EdgeResizer(QObject):
 class _Chrome:
     title_bar: GlassTitleBar
     resizer: EdgeResizer
+    original_margins: tuple[int, int, int, int]
 
 
 _installed: WeakKeyDictionary[QWidget, _Chrome] = WeakKeyDictionary()
@@ -278,14 +279,16 @@ def apply_chrome(window: QWidget, *, enabled: bool) -> None:
     layout = _layout(window)
     chrome = _installed.get(window)
     if enabled and chrome is None and layout is not None:
-        chrome = _Chrome(GlassTitleBar(window), EdgeResizer(window))
+        margins = layout.contentsMargins()
+        original_margins = (margins.left(), margins.top(), margins.right(), margins.bottom())
+        chrome = _Chrome(GlassTitleBar(window), EdgeResizer(window), original_margins)
         layout.insertWidget(0, chrome.title_bar)
         layout.setContentsMargins(*_CHROME_MARGINS)
         _installed[window] = chrome
     elif not enabled and chrome is not None:
         if layout is not None:
             layout.removeWidget(chrome.title_bar)
-            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setContentsMargins(*chrome.original_margins)
         chrome.title_bar.deleteLater()
         chrome.resizer.detach()
         chrome.resizer.deleteLater()
