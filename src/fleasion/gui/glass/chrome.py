@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, override
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, ref
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QSize, Qt
 from PySide6.QtGui import QIcon, QMouseEvent
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QWidget,
 )
+from shiboken6 import isValid
 
 from .style import icon_path
 
@@ -177,11 +178,21 @@ _capable: WeakKeyDictionary[QWidget, bool] = WeakKeyDictionary()
 
 def register(window: QWidget) -> None:
     """Mark a window whose platform title bar Glass may replace."""
+    if window in _capable or not isValid(window):
+        return
     _capable[window] = True
+    reference = ref(window)
+
+    def forget() -> None:
+        if (deleted := reference()) is not None:
+            _installed.pop(deleted, None)
+            _capable.pop(deleted, None)
+
+    window.destroyed.connect(forget)
 
 
 def registered_windows() -> list[QWidget]:
-    return list(_capable)
+    return [window for window in _capable if isValid(window)]
 
 
 def _layout(window: QWidget) -> QBoxLayout | None:
@@ -191,6 +202,10 @@ def _layout(window: QWidget) -> QBoxLayout | None:
 
 def apply_chrome(window: QWidget, *, enabled: bool) -> None:
     """Swap the platform title bar for the glass one, or restore it."""
+    if not isValid(window):
+        _installed.pop(window, None)
+        _capable.pop(window, None)
+        return
     layout = _layout(window)
     chrome = _installed.get(window)
     if enabled and chrome is None and layout is not None:

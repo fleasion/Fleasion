@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import pytest
+
 from fleasion.config import manager as manager_module
 from fleasion.gui import command_palette
 from fleasion.gui.glass import desktop_blur as blur_module
@@ -14,8 +16,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from fleasion.utils.json_types import JsonObject
-
-    import pytest
 
 
 class _FakeConfig:
@@ -106,7 +106,7 @@ def test_desktop_blur_round_trip_restores_original_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     original = {
-        'blur': 'false',
+        'blur': 'true',
         'opacity': '215',
         'dynamic-opacity': 'true',
         'whitelist': "['Firefox']",
@@ -120,18 +120,120 @@ def test_desktop_blur_round_trip_restores_original_settings(
 
     assert blur.enable() is True
     assert fake.values['whitelist'] == "['Firefox', 'fleasion']"
-    assert json.loads((tmp_path / 'backup.json').read_text())['opacity'] == '215'
+    assert json.loads((tmp_path / 'backup.json').read_text())['whitelist'] == "['Firefox']"
 
     blur.disable()
     assert fake.values == original
     assert not (tmp_path / 'backup.json').exists()
 
 
-def test_empty_whitelist_is_typed_for_dconf(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_disable_preserves_user_whitelist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fake = _FakeDconf({'whitelist': "['fleasion']"})
     monkeypatch.setattr(blur_module, '_run', fake.run)
+    monkeypatch.setattr(blur_module, '_BACKUP_FILE', tmp_path / 'backup.json')
     blur_module.DesktopBlur().disable()
-    assert fake.values['whitelist'] == '@as []'
+    assert fake.values['whitelist'] == "['fleasion']"
+
+
+@pytest.mark.parametrize('original', [None, '@as []', "['Firefox']", "['Firefox', 'fleasion']"])
+def test_desktop_blur_preserves_exact_whitelist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    original: str | None,
+) -> None:
+    values = {'blur': 'true', 'opacity': '180', 'dynamic-opacity': 'true'}
+    if original is not None:
+        values['whitelist'] = original
+    fake = _FakeDconf(dict(values))
+    monkeypatch.setattr(blur_module, '_run', fake.run)
+    monkeypatch.setattr(blur_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(blur_module, 'CONFIG_DIR', tmp_path)
+    backup = tmp_path / 'backup.json'
+    monkeypatch.setattr(blur_module, '_BACKUP_FILE', backup)
+    blur = blur_module.DesktopBlur()
+    assert blur.enable()
+    assert blur.enable()
+    assert fake.values['blur'] == values['blur']
+    assert fake.values['opacity'] == values['opacity']
+    assert fake.values['dynamic-opacity'] == values['dynamic-opacity']
+    blur.disable()
+    assert fake.values == values
+    assert not backup.exists()
+
+
+@pytest.mark.parametrize('global_blur,enable_all', [('false', 'false'), ('true', 'true')])
+def test_desktop_blur_does_not_change_global_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    global_blur: str,
+    enable_all: str,
+) -> None:
+    original = {
+        'blur': global_blur,
+        'enable-all': enable_all,
+        'opacity': '180',
+        'dynamic-opacity': 'true',
+        'whitelist': "['Firefox']",
+    }
+    fake = _FakeDconf(dict(original))
+    monkeypatch.setattr(blur_module, '_run', fake.run)
+    monkeypatch.setattr(blur_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(blur_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(blur_module, '_BACKUP_FILE', tmp_path / 'backup.json')
+    blur = blur_module.DesktopBlur()
+    blur.enable()
+    assert not blur.can_toggle()
+    blur.disable()
+    assert fake.values == original
+    assert not (tmp_path / 'backup.json').exists()
+
+
+def test_desktop_blur_preserves_concurrent_whitelist_edits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeDconf({'blur': 'true', 'whitelist': "['Firefox']"})
+    monkeypatch.setattr(blur_module, '_run', fake.run)
+    monkeypatch.setattr(blur_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(blur_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(blur_module, '_BACKUP_FILE', tmp_path / 'backup.json')
+    blur = blur_module.DesktopBlur()
+    assert blur.enable()
+    fake.values['whitelist'] = "['Firefox', 'fleasion', 'Other,App']"
+    # Ownership survives restarting Fleasion
+    blur_module.DesktopBlur().disable()
+    assert fake.values['whitelist'] == "['Firefox', 'Other,App']"
+
+
+def test_desktop_blur_keeps_backup_after_failed_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeDconf({'blur': 'true', 'whitelist': "['Firefox']"})
+    monkeypatch.setattr(blur_module, '_run', fake.run)
+    monkeypatch.setattr(blur_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(blur_module, 'CONFIG_DIR', tmp_path)
+    backup = tmp_path / 'backup.json'
+    monkeypatch.setattr(blur_module, '_BACKUP_FILE', backup)
+    blur = blur_module.DesktopBlur()
+    assert blur.enable()
+
+    def failed_write(*args: str) -> str | None:
+        if args[0] == 'dconf' and args[1] == 'write':
+            return None
+        return fake.run(*args)
+
+    monkeypatch.setattr(blur_module, '_run', failed_write)
+    blur.disable()
+    assert backup.exists()
+    assert fake.values['whitelist'] == "['Firefox', 'fleasion']"
+    monkeypatch.setattr(blur_module, '_run', fake.run)
+    blur.disable()
+    assert fake.values['whitelist'] == "['Firefox']"
+    assert not backup.exists()
 
 
 def test_palette_ranks_word_starts_first() -> None:

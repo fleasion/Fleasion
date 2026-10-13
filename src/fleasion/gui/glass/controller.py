@@ -147,7 +147,10 @@ class GlassTheme:
 
     @staticmethod
     def toggle_desktop_blur() -> None:
-        if blur.status(refresh=True) == 'on':
+        blur.status(refresh=True)
+        if not blur.can_toggle():
+            return
+        if blur.owns_entry():
             blur.disable()
         else:
             blur.enable()

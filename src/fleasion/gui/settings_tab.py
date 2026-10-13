@@ -874,6 +874,8 @@ class SettingsTab(QWidget):
 
     def _refresh_blur_button(self) -> None:
         status = glass.blur.status(refresh=True)
+        self._blur_button.setEnabled(glass.blur.can_toggle())
+        self._blur_button.setToolTip(tr('settings.appearance.glass_blur_scope'))
         self._blur_button.setVisible(
             status != 'unavailable' and self._config.glass_backdrop == 'desktop'
         )

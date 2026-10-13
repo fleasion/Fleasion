@@ -105,10 +105,8 @@ class CommandPalette(QDialog):
         # The card is the visible surface; Glass must not paint the popup itself
         self.setProperty('glassOwnSurface', True)  # ruff: ignore[boolean-positional-value-in-call] - Qt API
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        if not glass.theme.active:
-            self.setStyleSheet(_FALLBACK_STYLE)
-
         card = QWidget(self)
+        self._card = card
         card.setObjectName('PaletteCard')
         self.search = QLineEdit()
         self.search.setPlaceholderText(tr('ui.gui.command_palette.placeholder'))
@@ -125,18 +123,26 @@ class CommandPalette(QDialog):
         inner.addWidget(self.results)
         inner.addWidget(hint)
 
-        # Compositor blur covers the whole popup rect, so Glass drops the shadow
-        # margin; other themes keep it for the drop shadow
-        margin = 0 if glass.theme.active else _SHADOW_MARGIN
-        if not glass.theme.active:
-            shadow = QGraphicsDropShadowEffect(card)
+        outer = QVBoxLayout(self)
+        self._outer = outer
+        outer.addWidget(card)
+        self._refresh_theme()
+
+    def _refresh_theme(self) -> None:
+        active = glass.theme.active
+        self.setStyleSheet('' if active else _FALLBACK_STYLE)
+        # Compositor blur covers the popup rect; Glass omits the shadow margin
+        margin = 0 if active else _SHADOW_MARGIN
+        self._outer.setContentsMargins(margin, margin, margin, margin)
+        if active:
+            # Qt accepts a null effect to remove it; the PySide stub omits None
+            self._card.setGraphicsEffect(None)  # pyright: ignore[reportArgumentType]
+        elif self._card.graphicsEffect() is None:
+            shadow = QGraphicsDropShadowEffect(self._card)
             shadow.setBlurRadius(40)
             shadow.setOffset(0, 10)
             shadow.setColor(QColor(0, 0, 0, 160))
-            card.setGraphicsEffect(shadow)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(margin, margin, margin, margin)
-        outer.addWidget(card)
+            self._card.setGraphicsEffect(shadow)
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -160,6 +166,7 @@ class CommandPalette(QDialog):
         parent = self.parentWidget()
         if parent is None:
             return
+        self._refresh_theme()
         self._commands = self._provider()
         width = min(640, max(420, parent.width() - 80))
         self.resize(width, 460)

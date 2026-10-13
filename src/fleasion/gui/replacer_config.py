@@ -327,8 +327,11 @@ class _ElidedLabel(QLabel):
         self._refresh_text()
 
     def _refresh_text(self) -> None:
-        available_width = max(0, self.contentsRect().width() - 4)
-        display_text = self.fontMetrics().elidedText(
+        metrics = self.fontMetrics()
+        # Include stylesheet padding and QLabel's own text margins
+        decoration_width = max(0, self.sizeHint().width() - metrics.horizontalAdvance(self.text()))
+        available_width = max(0, self.width() - decoration_width - 1)
+        display_text = metrics.elidedText(
             self._full_text,
             Qt.TextElideMode.ElideMiddle,
             available_width,

@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -37,8 +36,6 @@ type Signature = tuple[tuple[str, tuple[int, int] | None], ...]
 
 _RANK: Final[dict[Mode, int]] = {'remove': 0, 'id': 1, 'cdn': 2, 'local': 3}
 _REFRESH_MS: Final = 1500
-_WINNER_COLOR: Final = QColor('#7ef0bf')
-_LOSER_COLOR: Final = QColor(245, 247, 251, 120)
 
 
 class RuleSource(Protocol):
@@ -145,8 +142,6 @@ class ConflictsDialog(QDialog):
                     '\n'.join(claim.label() for claim in conflict.losers),
                 ]
             )
-            item.setForeground(1, QBrush(_WINNER_COLOR))
-            item.setForeground(2, QBrush(_LOSER_COLOR))
             font = item.font(1)
             font.setBold(True)
             item.setFont(1, font)

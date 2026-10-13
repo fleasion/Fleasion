@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import gc
 from pathlib import Path
 from threading import get_ident
 from typing import TYPE_CHECKING
@@ -10,14 +11,16 @@ import pytest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PIL import Image
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QApplication, QDialog, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QTreeWidget, QVBoxLayout, QWidget
+from shiboken6 import isValid
 
 from fleasion.config import manager
 from fleasion.gui import glass
 from fleasion.gui.command_palette import CommandPalette
-from fleasion.gui.conflicts import ConflictBadge, find_conflicts
+from fleasion.gui.conflicts import Claim, Conflict, ConflictBadge, ConflictsDialog, find_conflicts
+from fleasion.gui.glass import chrome
 from fleasion.gui.glass import surface
 from fleasion.gui.settings_tab import SettingsTab
 from fleasion.gui.theme import ThemeManager
@@ -224,4 +227,61 @@ def test_palette_has_readable_text(app: QApplication, theme: str) -> None:
         assert palette.results.palette().color(QPalette.ColorRole.Text).lightness() > 128
     finally:
         parent.deleteLater()
+        app.processEvents()
+
+
+def test_destroyed_glass_dashboard_does_not_break_theme_changes(app: QApplication) -> None:
+    window = QDialog()
+    window.setLayout(QVBoxLayout())
+    window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    glass.theme.attach(window)
+    ThemeManager.apply_theme('Glass')
+    window.show()
+    app.processEvents()
+    window.close()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    gc.collect()
+    assert not isValid(window)
+    assert window not in chrome.registered_windows()
+    assert window not in chrome._installed  # pyright: ignore[reportPrivateUsage]
+    # Both enumeration and a direct stale reference must be harmless
+    chrome.apply_chrome(window, enabled=False)
+    ThemeManager.apply_theme('Light')
+    ThemeManager.apply_theme('Glass')
+    ThemeManager.apply_theme('Light')
+
+
+@pytest.mark.parametrize('initial', ['Glass', 'Light'])
+def test_palette_style_tracks_theme_changes(app: QApplication, initial: str) -> None:
+    ThemeManager.apply_theme(initial)
+    parent = QWidget()
+    palette = CommandPalette(parent, lambda: [])
+    try:
+        for theme in ('Glass', 'Light', 'Dark', 'Glass', 'Light'):
+            ThemeManager.apply_theme(theme)
+            palette.popup()
+            app.processEvents()
+            assert palette.results.palette().color(QPalette.ColorRole.Text).lightness() > 128
+            assert bool(palette.styleSheet()) == (theme != 'Glass')
+            palette.close()
+    finally:
+        parent.deleteLater()
+        app.processEvents()
+
+
+@pytest.mark.parametrize('theme', ['Light', 'Dark', 'Glass'])
+def test_conflict_details_follow_theme_colors(app: QApplication, theme: str) -> None:
+    ThemeManager.apply_theme(theme)
+    conflict = Conflict('1001', [Claim('a', '', 'id', 0), Claim('b', '', 'id', 1)])
+    dialog = ConflictsDialog(None, [conflict])
+    try:
+        tree = dialog.findChild(QTreeWidget)
+        assert tree is not None
+        item = tree.topLevelItem(0)
+        assert item is not None
+        assert item.foreground(1).style() == Qt.BrushStyle.NoBrush
+        assert item.foreground(2).style() == Qt.BrushStyle.NoBrush
+        assert item.font(1).bold()
+    finally:
+        dialog.deleteLater()
         app.processEvents()

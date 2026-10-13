@@ -737,6 +737,7 @@ TURKISH: dict[str, str] = {
     'settings.appearance.glass_opacity_tooltip': 'Glass tint strength',
     'settings.appearance.glass_blur_on': 'Desktop blur: on',
     'settings.appearance.glass_blur_off': 'Enable desktop blur',
+    'settings.appearance.glass_blur_scope': 'Enable application blur in Blur my Shell first. Fleasion manages only the whitelist entry it adds; existing desktop settings stay under your control.',
     'ui.gui.conflicts.badge_none': 'No conflicts',
     'ui.gui.conflicts.badge_count': '{value0} conflicts',
     'ui.gui.conflicts.title': 'Mod conflicts',
