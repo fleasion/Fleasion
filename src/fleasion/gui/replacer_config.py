@@ -1212,6 +1212,7 @@ class ReplacerConfigWindow(QDialog):
         else:
             ThemeManager.apply_theme(theme_name)
             self.config_manager.theme = theme_name
+            self.refresh_settings_tab()
 
     def _proxy_required(self, widget: QWidget) -> ProxyGate:
         gate = ProxyGate(widget, parent=self.tab_widget)

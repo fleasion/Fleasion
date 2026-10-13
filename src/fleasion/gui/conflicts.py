@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 type Mode = Literal['remove', 'id', 'cdn', 'local']
 type Rule = dict[str, Any]
 type Signature = tuple[tuple[str, tuple[int, int] | None], ...]
+type AnimationRig = Literal['R6', 'R15', 'unknown']
 
 _RANK: Final[dict[Mode, int]] = {'remove': 0, 'id': 1, 'cdn': 2, 'local': 3}
 _REFRESH_MS: Final = 1500
@@ -108,6 +109,7 @@ class _RequestScope:
     asset_id: int | None = None
     asset_types: frozenset[int] | None = None
     texpack_slot: int | None = None
+    animation_rigs: frozenset[AnimationRig] | None = None
 
     def overlaps(self, other: _RequestScope) -> bool:
         """Whether one request can satisfy both matching-key constraints."""
@@ -123,6 +125,11 @@ class _RequestScope:
                 or other.texpack_slot is None
                 or self.texpack_slot == other.texpack_slot
             )
+            and (
+                self.animation_rigs is None
+                or other.animation_rigs is None
+                or not self.animation_rigs.isdisjoint(other.animation_rigs)
+            )
         )
 
 
@@ -134,7 +141,13 @@ def _request_scope(key: str) -> _RequestScope | None:
     not that the request has no type or TexturePack slot.
     """
     if key in VIRTUAL_ANIMATION_KEYS:
-        return _RequestScope(asset_types=ANIMATION_TYPE_KEYS)
+        rigs: dict[str, AnimationRig] = {
+            'R6Animation': 'R6',
+            'R15Animation': 'R15',
+            'NonPlayerAnimation': 'unknown',
+        }
+        rig = rigs[key]
+        return _RequestScope(asset_types=ANIMATION_TYPE_KEYS, animation_rigs=frozenset({rig}))
     if key.isdigit():
         value = int(key)
         if value in ASSET_TYPE_KEYS:
@@ -164,6 +177,13 @@ def find_conflicts(source: RuleSource) -> list[Conflict]:
     for config, order, rule in source.iter_enabled_rules():
         for key, mode in replacement_rule_claims(rule):
             asset = str(key)
+            # Only report keys that actually participate in proxy routing.
+            # In process_batch_request, virtual rig keys are appended to
+            # all_keys, but only winning_keys (or synthetic slot removals)
+            # can become a local/CDN/ID route. Virtual keys also do not match
+            # _should_remove. Report them if the proxy implements routing later.
+            if asset in VIRTUAL_ANIMATION_KEYS or _request_scope(asset) is None:
+                continue
             # The proxy overwrites within each mode, retaining other mode maps
             bucket = [
                 claim

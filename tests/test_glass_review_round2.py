@@ -309,9 +309,9 @@ def test_cache_recreates_discovery_worker_after_theme_reactivation(
     [
         ('TexturePack:1', 1001, True),
         ('TexturePack:1', 'TexturePack', True),
-        ('R6Animation', 1001, True),
-        ('R15Animation', 'Animation', True),
-        ('R6Animation', 'R15Animation', True),
+        ('R6Animation', 1001, False),
+        ('R15Animation', 'Animation', False),
+        ('R6Animation', 'R15Animation', False),
         (1001, '1001:1', True),
         ('TexturePack', '1001:1', True),
         ('TexturePack:1', '1001:1', True),
