@@ -4,6 +4,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from tests.hotkey_fakes import HotkeyConfig, HotkeyProxy
+from types import SimpleNamespace
 from typing import Never, cast
 
 import pytest
@@ -36,6 +37,11 @@ def _fd_paths(service: LinuxHotkeyService) -> dict[int, Path]:
 def _drain(service: LinuxHotkeyService, fd: int) -> None:
     callback = cast('Callable[[int], None]', getattr(service, '_drain_device'))
     callback(fd)
+
+
+def _set_key_state(service: LinuxHotkeyService, fd: int, code: int, pressed: bool) -> None:
+    callback = cast('Callable[[int, int, bool], None]', getattr(service, '_set_key_state'))
+    callback(fd, code, pressed)
 
 
 def _run(service: LinuxHotkeyService) -> None:
@@ -81,8 +87,6 @@ def _record_toggled(values: list[str]) -> Callable[[str], None]:
         values.append(name)
 
     return record
-
-
 
 
 def test_linux_keybinding_uses_tagged_evdev_codes() -> None:
@@ -232,8 +236,155 @@ def test_linux_hotkey_reader_does_not_spin_after_all_devices_disconnect(
     assert len(select_calls) == 1
 
 
+def test_linux_bare_binding_still_fires_when_shift_is_held() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'flag1': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': 0},
+    }
+    service.__dict__['_fds'] = {43: set()}
+
+    # Hold Shift first, then press the bound key.
+    _set_key_state(service, 43, 42, True)
+    _set_key_state(service, 43, 30, True)
+
+    assert activations == ['flag1']
+
+
+def test_linux_shifted_binding_shadows_bare_binding_on_the_same_key() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'bare': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': 0},
+        'shifted': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+    }
+    service.__dict__['_fds'] = {43: set()}
+
+    _set_key_state(service, 43, 42, True)
+    _set_key_state(service, 43, 30, True)
+    assert activations == ['shifted']
+
+    # Release Shift while keeping the key held, then press it again bare.
+    _set_key_state(service, 43, 30, False)
+    _set_key_state(service, 43, 42, False)
+    _set_key_state(service, 43, 30, True)
+    assert activations == ['shifted', 'bare']
+
+
+def test_linux_modifier_press_activates_independent_keys() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'shift_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+        'ctrl_shift_b': {
+            'platform': 'linux_evdev',
+            'scan_code': 48,
+            'modifiers': MOD_CTRL | MOD_SHIFT,
+        },
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+    for code in (29, 30, 48, 42):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['shift_a', 'ctrl_shift_b']
+
+
+def test_linux_already_active_binding_shadows_new_less_specific_match() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'ctrl_shift_a': {
+            'platform': 'linux_evdev',
+            'scan_code': 30,
+            'modifiers': MOD_CTRL | MOD_SHIFT,
+        },
+        'alt_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_ALT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+    for code in (29, 42, 30, 56):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['ctrl_shift_a']
+
+
+def test_linux_bare_binding_activates_when_shift_is_released_with_key_held() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'bare': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': 0},
+        'shifted': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+
+    _set_key_state(service, 43, 42, True)
+    _set_key_state(service, 43, 30, True)
+    assert activations == ['shifted']
+
+    _set_key_state(service, 43, 42, False)
+    assert activations == ['shifted', 'bare']
+    _set_key_state(service, 43, 42, True)
+    assert activations == ['shifted', 'bare', 'shifted']
+
+
+
+def test_linux_shadowed_binding_activates_when_modifier_priority_changes() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'ctrl_shift_a': {
+            'platform': 'linux_evdev',
+            'scan_code': 30,
+            'modifiers': MOD_CTRL | MOD_SHIFT,
+        },
+        'alt_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_ALT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+
+    for code in (29, 42, 30):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['ctrl_shift_a']
+
+    _set_key_state(service, 43, 56, True)  # Alt matches but remains shadowed
+    assert activations == ['ctrl_shift_a']
+
+    _set_key_state(service, 43, 29, False)
+    _set_key_state(service, 43, 42, False)
+    assert activations == ['ctrl_shift_a', 'alt_a']
+
+    # Reversing the modifier transition must rearm the previously shadowed chord
+    _set_key_state(service, 43, 29, True)
+    _set_key_state(service, 43, 42, True)
+    assert activations == ['ctrl_shift_a', 'alt_a', 'ctrl_shift_a']
+    _set_key_state(service, 43, 29, False)
+    assert activations == ['ctrl_shift_a', 'alt_a', 'ctrl_shift_a', 'alt_a']
+
+
+def test_linux_identical_and_equal_specificity_bindings_both_activate() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'shift_a_first': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+        'shift_a_second': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+        'alt_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_ALT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+
+    for code in (42, 56, 30):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['shift_a_first', 'shift_a_second', 'alt_a']
+
+    _set_key_state(service, 43, 56, False)
+    _set_key_state(service, 43, 56, True)
+    assert activations == ['shift_a_first', 'shift_a_second', 'alt_a', 'alt_a']
+
+
 def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:
-    config = HotkeyConfig(
+    config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
         custom_fflag_disabled=[],
@@ -244,7 +395,7 @@ def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:
     )
     proxy = HotkeyProxy()
 
-    controller = LinuxCustomFFlagHotkeyController(config, proxy)
+    controller = LinuxCustomFFlagHotkeyController(cast('HotkeyConfig', config), proxy)
     toggled: list[str] = []
     controller.toggled.connect(_record_toggled(toggled))
 

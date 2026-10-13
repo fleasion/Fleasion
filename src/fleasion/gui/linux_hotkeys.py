@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCore import QObject, Signal
 
+from fleasion.gui.hotkey_matching import most_specific_names
 from fleasion.utils import log_buffer
 
 from .hotkey_config import binding_mapping as _binding_mapping
@@ -397,9 +398,8 @@ class LinuxHotkeyService(QObject):
             self._fds = opened
             self._fd_paths = opened_paths
             self._pressed.clear()
-            self._was_active = {
-                name: self._binding_is_active(binding) for name, binding in self._bindings.items()
-            }
+            winning_names = set(self._winning_bindings())
+            self._was_active = {name: name in winning_names for name in self._bindings}
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name='fleasion-linux-fflag-hotkeys'
@@ -456,9 +456,8 @@ class LinuxHotkeyService(QObject):
             path = self._fd_paths.pop(fd, Path(f'fd:{fd}'))
             self._fds.pop(fd, None)
             self._pressed = set().union(*self._fds.values()) if self._fds else set()
-            self._was_active = {
-                name: self._binding_is_active(binding) for name, binding in self._bindings.items()
-            }
+            winning_names = set(self._winning_bindings())
+            self._was_active = {name: name in winning_names for name in self._bindings}
         with contextlib.suppress(OSError):
             os.close(fd)
         detail = reason.strerror or reason if isinstance(reason, OSError) else reason
@@ -482,12 +481,10 @@ class LinuxHotkeyService(QObject):
             if was_pressed == is_pressed:
                 return
             active_modifiers = self._active_modifiers()
-            activations: list[str] = []
-            for name, binding in self._bindings.items():
-                active = self._binding_is_active(binding, active_modifiers)
-                if active and not self._was_active.get(name, False):
-                    activations.append(name)
-                self._was_active[name] = active
+            winners = self._winning_bindings(active_modifiers)
+            activations = [name for name in winners if not self._was_active.get(name, False)]
+            winning_names = set(winners)
+            self._was_active = {name: name in winning_names for name in self._bindings}
 
         if is_pressed:
             self._emit_signal(self.key_pressed, code, active_modifiers)
@@ -519,17 +516,28 @@ class LinuxHotkeyService(QObject):
         with self._lock:
             modifiers = self._active_modifiers()
             direction = 'up' if delta > 0 else 'down'
-            activations = [
-                name
+            matches = [
+                (name, int(binding['modifiers']), 0)
                 for name, binding in self._bindings.items()
                 if binding.get('kind') == 'mouse_wheel'
                 and binding.get('direction') == direction
-                and int(binding['modifiers']) == modifiers
+                and (modifiers & int(binding['modifiers'])) == int(binding['modifiers'])
             ]
         wheel_code = SMU_MOUSE_WHEEL_UP if delta > 0 else SMU_MOUSE_WHEEL_DOWN
         self._emit_signal(self.wheel_scrolled, wheel_code, modifiers)
-        for name in activations:
+        for name in most_specific_names(matches):
             self._emit_signal(self.activated, name)
+
+    def _winning_bindings(self, modifiers: int | None = None) -> list[str]:
+        """Find the bindings eligible to activate after per-key shadowing."""
+        if modifiers is None:
+            modifiers = self._active_modifiers()
+        matches = [
+            (name, int(binding['modifiers']), int(binding['scan_code']))
+            for name, binding in self._bindings.items()
+            if self._binding_is_active(binding, modifiers)
+        ]
+        return most_specific_names(matches)
 
     def _binding_is_active(self, binding: HotkeyBinding, modifiers: int | None = None) -> bool:
         if binding.get('kind') == 'mouse_wheel':
@@ -537,9 +545,12 @@ class LinuxHotkeyService(QObject):
         code = int(binding['scan_code'])
         if modifiers is None:
             modifiers = self._active_modifiers()
-        return code in self._pressed and (modifiers & ~modifier_mask_for_evdev_code(code)) == int(
-            binding['modifiers']
-        )
+        required = int(binding['modifiers'])
+        # Extra held modifiers must not silence the binding: holding Shift
+        # while pressing the bound key still toggles.  Shadowing between a
+        # bare binding and its modified combination is resolved by firing
+        # only the most specific match for the same press.
+        return code in self._pressed and (modifiers & required) == required
 
     def stop(self) -> None:
         self._stop.set()

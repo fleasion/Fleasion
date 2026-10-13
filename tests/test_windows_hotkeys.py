@@ -1,17 +1,213 @@
 import os
 from collections.abc import Callable
 from tests.hotkey_fakes import HotkeyConfig, HotkeyProxy
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from fleasion.gui.windows_hotkeys import (
     MOD_CTRL,
+    MOD_ALT,
     MOD_SHIFT,
     WindowsCustomFFlagHotkeyController,
+    WindowsHotkeyService,
     binding_text,
     modifier_mask_for_virtual_key,
     normalize_binding,
 )
+
+
+def test_windows_poll_activates_distinct_keys_and_shadows_same_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+
+    def key_state(virtual_key: int) -> int:
+        return 0x8000 if polls == 1 and virtual_key in {0xA0, 0x41, 0x42} else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls > 1
+
+    def translate(
+        _user32: object,
+        _bindings: object,
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {'bare_a': (0x41, 0), 'shift_a': (0x41, MOD_SHIFT), 'bare_b': (0x42, 0)}, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+    assert activations == ['shift_a', 'bare_b']
+
+
+def test_windows_active_binding_shadows_new_less_specific_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+
+    def key_state(virtual_key: int) -> int:
+        pressed = {0x41, 0xA0, 0xA2} if polls else set[int]()
+        if polls >= 2:
+            pressed.add(0xA4)
+        return 0x8000 if virtual_key in pressed else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls > 2
+
+    def translate(
+        _user32: object,
+        _bindings: object,
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {'ctrl_shift_a': (0x41, MOD_CTRL | MOD_SHIFT), 'alt_a': (0x41, MOD_ALT)}, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+    assert activations == ['ctrl_shift_a']
+
+
+def test_windows_initially_held_chord_releases_to_newly_eligible_bare_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+    # Both A and Shift are held before the poller starts, so neither is a new action
+    snapshots = ({0x41, 0xA0}, {0x41, 0xA0}, {0x41}, {0x41, 0xA0})
+
+    def key_state(virtual_key: int) -> int:
+        return 0x8000 if virtual_key in snapshots[polls] else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls >= len(snapshots)
+
+    def translate(
+        _user32: object, _bindings: object
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {'bare': (0x41, 0), 'shifted': (0x41, MOD_SHIFT)}, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+
+    assert activations == ['bare', 'shifted']
+
+
+
+def test_windows_shadowed_binding_activates_when_modifier_priority_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+    snapshots = (
+        set[int](),
+        {0x41, 0xA0, 0xA2},  # Ctrl+Shift+A
+        {0x41, 0xA0, 0xA2, 0xA4},  # Add Alt, still shadowed
+        {0x41, 0xA4},  # Release Ctrl+Shift without releasing A
+        {0x41, 0xA0, 0xA2, 0xA4},  # Restore higher-priority chord
+        {0x41, 0xA4},  # Alt+A wins again
+    )
+
+    def key_state(virtual_key: int) -> int:
+        return 0x8000 if virtual_key in snapshots[polls] else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls >= len(snapshots)
+
+    def translate(
+        _user32: object, _bindings: object
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {'ctrl_shift_a': (0x41, MOD_CTRL | MOD_SHIFT), 'alt_a': (0x41, MOD_ALT)}, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+
+    assert activations == ['ctrl_shift_a', 'alt_a', 'ctrl_shift_a', 'alt_a']
+
+
+def test_windows_identical_and_equal_specificity_bindings_both_activate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+    snapshots = (set[int](), {0x41, 0xA0, 0xA4}, {0x41, 0xA0}, {0x41, 0xA0, 0xA4})
+
+    def key_state(virtual_key: int) -> int:
+        return 0x8000 if virtual_key in snapshots[polls] else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls >= len(snapshots)
+
+    def translate(
+        _user32: object, _bindings: object
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {
+            'shift_a_first': (0x41, MOD_SHIFT),
+            'shift_a_second': (0x41, MOD_SHIFT),
+            'alt_a': (0x41, MOD_ALT),
+        }, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+
+    assert activations == ['shift_a_first', 'shift_a_second', 'alt_a', 'alt_a']
 
 
 def _record_toggled(values: list[str]) -> Callable[[str], None]:

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from PySide6.QtCore import QObject, Signal
 
+from fleasion.gui.hotkey_matching import most_specific_names
 from fleasion.utils import log_buffer
 
 from .hotkey_config import binding_mapping as _binding_mapping
@@ -105,6 +106,7 @@ MOD_CTRL = 0x02
 MOD_ALT = 0x04
 MOD_WIN = 0x08
 MODIFIER_MASK = MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_WIN
+
 
 _VK_SHIFT = 0x10
 _VK_CONTROL = 0x11
@@ -437,8 +439,13 @@ class WindowsHotkeyService(QObject):
             return result
 
         def binding_is_active(virtual_key: int, required_modifiers: int, modifiers: int) -> bool:
-            main_modifier = modifier_mask_for_virtual_key(virtual_key)
-            return is_pressed(virtual_key) and (modifiers & ~main_modifier) == required_modifiers
+            # Extra held modifiers must not silence the binding: holding
+            # Shift while pressing the bound key still toggles.  Shadowing
+            # between a bare binding and its modified combination is
+            # resolved by firing only the most specific match per key
+            return (
+                is_pressed(virtual_key) and (modifiers & required_modifiers) == required_modifiers
+            )
 
         wheel_events: queue.SimpleQueue[str] = queue.SimpleQueue()
         mouse_hook = self._install_mouse_wheel_hook(wheel_events) if wheel_bindings else None
@@ -447,25 +454,40 @@ class WindowsHotkeyService(QObject):
         # baseline, not as a new press.  This prevents a settings refresh from
         # retriggering the same hotkey until the user releases it first.
         initial_modifiers = active_modifiers()
-        was_active = {
-            name: binding_is_active(virtual_key, required_modifiers, initial_modifiers)
-            for name, (virtual_key, required_modifiers) in translated.items()
-        }
+        previously_winning = set(
+            most_specific_names(
+                [
+                    (name, required_modifiers, virtual_key)
+                    for name, (virtual_key, required_modifiers) in translated.items()
+                    if binding_is_active(virtual_key, required_modifiers, initial_modifiers)
+                ]
+            )
+        )
         try:
             while not self._stop.wait(self._POLL_SECONDS):
                 self._pump_windows_messages()
                 while not wheel_events.empty():
                     direction = wheel_events.get_nowait()
                     modifiers = active_modifiers()
-                    for name, (required_direction, required_modifiers) in wheel_bindings.items():
-                        if direction == required_direction and modifiers == required_modifiers:
-                            self._emit_activation(name)
-                modifiers = active_modifiers()
-                for name, (virtual_key, required_modifiers) in translated.items():
-                    active = binding_is_active(virtual_key, required_modifiers, modifiers)
-                    if active and not was_active[name]:
+                    candidates = [
+                        (name, required_modifiers, 0)
+                        for name, (required_direction, required_modifiers) in wheel_bindings.items()
+                        if direction == required_direction
+                        and (modifiers & required_modifiers) == required_modifiers
+                    ]
+                    for name in most_specific_names(candidates):
                         self._emit_activation(name)
-                    was_active[name] = active
+                modifiers = active_modifiers()
+                matches = [
+                    (name, required_modifiers, virtual_key)
+                    for name, (virtual_key, required_modifiers) in translated.items()
+                    if binding_is_active(virtual_key, required_modifiers, modifiers)
+                ]
+                winners = most_specific_names(matches)
+                for name in winners:
+                    if name not in previously_winning:
+                        self._emit_activation(name)
+                previously_winning = set(winners)
         finally:
             if mouse_hook is not None:
                 _windll().user32.UnhookWindowsHookEx(mouse_hook[0])
