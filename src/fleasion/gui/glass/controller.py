@@ -85,7 +85,14 @@ class GlassTheme:
                 app.setFont(font)
         if self._previous_stylesheet is None:
             self._previous_stylesheet = app.styleSheet()
-        app.setStyleSheet(stylesheet(state.settings))
+        # Keep application-wide rules (notably the dialog button order) while
+        # placing Glass rules last so its intended presentation still wins
+        glass_style = stylesheet(state.settings)
+        app.setStyleSheet(
+            f'{self._previous_stylesheet}\n{glass_style}'
+            if self._previous_stylesheet
+            else glass_style
+        )
         if self._filter is None:
             self._filter = GlassWindows(app)
             self._filter.blur_status_changed.connect(self._sync_blur_controls)

@@ -125,6 +125,7 @@ class GlassWindows(QObject):
         super().__init__(app)
         self._app = app
         self._attributes: WeakKeyDictionary[QWidget, tuple[bool, bool]] = WeakKeyDictionary()
+        self._button_properties: WeakKeyDictionary[QPushButton, set[str]] = WeakKeyDictionary()
         self._wallpaper_timer = QTimer(self)
         self._wallpaper_timer.setInterval(100)
         self._wallpaper_timer.timeout.connect(self.refresh_wallpaper)
@@ -153,6 +154,13 @@ class GlassWindows(QObject):
             window.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, on=no_background)
             window.update()
         self._attributes.clear()
+        for button, names in list(self._button_properties.items()):
+            if not isValid(button):
+                continue
+            for name in names:
+                # None removes the dynamic property, restoring its initial absence
+                button.setProperty(name, None)
+        self._button_properties.clear()
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -186,6 +194,15 @@ class GlassWindows(QObject):
             and not widget.property('glassOwnSurface')
         )
 
+    def _mark_button(self, button: QPushButton, name: str) -> None:
+        # Properties supplied by the application belong to the application.
+        # Only record and undo the dynamic properties Glass itself introduces.
+        if button.property(name) is not None:
+            return
+        button.setProperty(name, True)  # ruff: ignore[boolean-positional-value-in-call] - Qt API
+        self._button_properties.setdefault(button, set()).add(name)
+        _repolish_later(button)
+
     def polish(self, widget: QWidget) -> None:
         if _is_window(widget):
             if widget not in self._attributes:
@@ -204,10 +221,8 @@ class GlassWindows(QObject):
             and widget.maximumWidth() <= _ARROW_BUTTON_MAX
             and widget.property('glassArrow') is None
         ):
-            widget.setProperty('glassArrow', True)  # ruff: ignore[boolean-positional-value-in-call] - Qt API
-            _repolish_later(widget)
+            self._mark_button(widget, 'glassArrow')
         elif (
             0 < widget.maximumWidth() <= _COMPACT_BUTTON_MAX and widget.property('compact') is None
         ):
-            widget.setProperty('compact', True)  # ruff: ignore[boolean-positional-value-in-call] - Qt API
-            _repolish_later(widget)
+            self._mark_button(widget, 'compact')
