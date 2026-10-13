@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from threading import get_ident
+from typing import TYPE_CHECKING
+
+import pytest
+
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+
+from PIL import Image
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QApplication, QDialog, QWidget
+
+from fleasion.config import manager
+from fleasion.gui import glass
+from fleasion.gui.command_palette import CommandPalette
+from fleasion.gui.conflicts import ConflictBadge, find_conflicts
+from fleasion.gui.glass import surface
+from fleasion.gui.settings_tab import SettingsTab
+from fleasion.gui.theme import ThemeManager
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from fleasion.utils.json_types import JsonObject
+
+
+@pytest.fixture
+def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> manager.ConfigManager:
+    monkeypatch.setattr(manager, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(manager, 'CONFIG_FILE', tmp_path / 'settings.json')
+    monkeypatch.setattr(manager, 'CONFIGS_FOLDER', tmp_path / 'configs')
+    return manager.ConfigManager()
+
+
+@pytest.fixture
+def app(monkeypatch: pytest.MonkeyPatch) -> Iterator[QApplication]:
+    instance = QApplication.instance()
+    application = instance if isinstance(instance, QApplication) else QApplication([])
+    previous_theme = str(getattr(ThemeManager, '_current_theme'))
+    for name in ('_current_theme', '_effective_theme', '_system_style_name'):
+        monkeypatch.setattr(ThemeManager, name, getattr(ThemeManager, name))
+    ThemeManager.apply_theme('Light')
+    yield application
+    ThemeManager.apply_theme(previous_theme)
+    application.processEvents()
+
+
+def _enable(config: manager.ConfigManager, name: str, rules: list[JsonObject]) -> None:
+    assert config.create_config(name)
+    config.set_replacement_rules(name, list(rules))
+    config.set_config_enabled(name, True)
+
+
+def test_conflict_retains_higher_priority_rule(config: manager.ConfigManager) -> None:
+    _enable(
+        config,
+        'a',
+        [
+            {'mode': 'local', 'replace_ids': [1001], 'local_path': 'a.obj', 'name': 'local'},
+            {'mode': 'id', 'replace_ids': [1001], 'with_id': 1002},
+        ],
+    )
+    _enable(
+        config,
+        'b',
+        [
+            {'mode': 'cdn', 'replace_ids': [1001], 'cdn_url': 'https://example.invalid/b'},
+        ],
+    )
+    assert 1001 in config.get_all_replacements()[3]
+    (conflict,) = find_conflicts(config)
+    assert conflict.winner.config == 'a'
+    assert conflict.winner.rule == 'local'
+    assert conflict.winner.mode == 'local'
+
+
+@pytest.mark.parametrize('first,second', [('01001', 1001), ('Mesh', 'mesh')])
+def test_asset_aliases_are_normalized(
+    config: manager.ConfigManager,
+    first: str,
+    second: str | int,
+) -> None:
+    _enable(config, 'a', [{'replace_ids': [first], 'with_id': 2001}])
+    _enable(config, 'b', [{'replace_ids': [second], 'with_id': 2002}])
+    assert len(config.get_all_replacements()[0]) == 1
+    (conflict,) = find_conflicts(config)
+    assert conflict.winner.config == 'b'
+
+
+def test_invalid_id_list_does_not_crash_badge(
+    app: QApplication,
+    config: manager.ConfigManager,
+) -> None:
+    _enable(config, 'a', [{'replace_ids': 1001, 'with_id': 2001}])
+    assert config.get_all_replacements() == ({}, set(), {}, {})
+    badge = ConflictBadge(config)
+    assert badge.conflicts == []
+    badge.deleteLater()
+    app.processEvents()
+
+
+@pytest.mark.parametrize(
+    'rule',
+    [
+        {'mode': 'unknown', 'replace_ids': [1001], 'with_id': 2002},
+        {'replace_ids': [1001], 'with_id': 1},
+        {'replace_ids': [1001], 'with_id': 'invalid'},
+    ],
+)
+def test_ignored_rules_do_not_create_conflicts(
+    config: manager.ConfigManager,
+    rule: JsonObject,
+) -> None:
+    _enable(config, 'a', [rule])
+    _enable(config, 'b', [{'replace_ids': [1001], 'with_id': 2001}])
+    assert find_conflicts(config) == []
+
+
+@pytest.mark.parametrize('existing', [False, True])
+def test_dialog_surface_survives_theme_round_trip(app: QApplication, existing: bool) -> None:
+    dialog = QDialog() if existing else None
+    if dialog is not None:
+        dialog.resize(100, 100)
+        dialog.show()
+        app.processEvents()
+    ThemeManager.apply_theme('Glass')
+    if dialog is None:
+        dialog = QDialog()
+        dialog.resize(100, 100)
+        dialog.show()
+    try:
+        app.processEvents()
+        assert dialog.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        assert dialog.grab().toImage().pixelColor(50, 50).alpha() > 0
+        # Reapplying an accent must preserve the original attributes
+        glass.theme.enable(app)
+        ThemeManager.apply_theme('Light')
+        app.processEvents()
+        assert not dialog.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        assert not dialog.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        assert dialog.grab().toImage().pixelColor(50, 50).alpha() == 255
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_preexisting_translucent_surface_is_preserved(app: QApplication) -> None:
+    dialog = QDialog()
+    dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    dialog.show()
+    app.processEvents()
+    try:
+        ThemeManager.apply_theme('Glass')
+        ThemeManager.apply_theme('Light')
+        assert dialog.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        assert dialog.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_wallpaper_discovery_runs_outside_paint_and_gui_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = tmp_path / 'source.png'
+    Image.new('RGB', (10, 10)).save(image)
+    calls: list[int] = []
+
+    def discover() -> Path:
+        calls.append(get_ident())
+        return image
+
+    monkeypatch.setattr(surface, 'wallpaper_path', discover)
+    monkeypatch.setattr(surface, 'ICON_DIR', tmp_path)
+    cache = surface._WallpaperCache()  # pyright: ignore[reportPrivateUsage]
+    try:
+        cache.image(100, 100)
+        assert calls == []
+        cache.refresh_source()
+        pending = cache._pending  # pyright: ignore[reportPrivateUsage]
+        assert pending is not None
+        assert pending.result(timeout=2) == image
+        assert cache.refresh_source()
+        assert len(calls) == 1
+        assert calls[0] != get_ident()
+        assert not cache.image(100, 100).isNull()
+        cache.image(100, 100)
+        assert len(calls) == 1
+    finally:
+        executor = cache._executor  # pyright: ignore[reportPrivateUsage]
+        if executor is not None:
+            executor.shutdown()
+
+
+def test_tray_theme_refresh_updates_glass_controls(
+    app: QApplication,
+    config: manager.ConfigManager,
+) -> None:
+    config.theme = 'Light'
+    tab = SettingsTab(config)
+    try:
+        for theme in ('Glass', 'Light', 'Glass'):
+            config.theme = theme
+            tab.refresh_from_config()
+            assert tab._glass_controls.isHidden() == (theme != 'Glass')  # pyright: ignore[reportPrivateUsage]
+    finally:
+        tab.deleteLater()
+        app.processEvents()
+
+
+@pytest.mark.parametrize('theme', ['Light', 'Dark'])
+def test_palette_has_readable_text(app: QApplication, theme: str) -> None:
+    ThemeManager.apply_theme(theme)
+    parent = QWidget()
+    palette = CommandPalette(parent, lambda: [])
+    try:
+        palette.ensurePolished()
+        palette.results.ensurePolished()
+        assert palette.results.palette().color(QPalette.ColorRole.Text).lightness() > 128
+    finally:
+        parent.deleteLater()
+        app.processEvents()

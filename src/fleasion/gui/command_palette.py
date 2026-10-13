@@ -41,9 +41,12 @@ _SHADOW_MARGIN: Final = 24
 _FALLBACK_STYLE: Final = """
 #PaletteCard { background: rgba(28,29,38,0.97); border-radius: 16px;
                border: 1px solid rgba(255,255,255,0.18); }
+#PaletteCard QWidget { color: #f5f7fb; }
 #PaletteCard QLineEdit { font-size: 13pt; padding: 9px 12px; border-radius: 10px; }
+#PaletteCard QLineEdit { background: #171820; selection-background-color: #405a80; }
 #PaletteCard QListWidget { background: transparent; border: 0; }
 #PaletteCard QListWidget::item { padding: 8px 10px; border-radius: 8px; }
+#PaletteCard QListWidget::item:selected { background: #405a80; color: #f5f7fb; }
 #PaletteHint { font-size: 8.5pt; }
 """
 

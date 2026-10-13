@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fleasion.config.manager import replacement_rule_claims
 from fleasion.localization import tr
 
 if TYPE_CHECKING:
@@ -97,14 +98,14 @@ def rule_mode(rule: Rule) -> Mode:
 def find_conflicts(source: RuleSource) -> list[Conflict]:
     claims: dict[str, list[Claim]] = {}
     for config, order, rule in source.iter_enabled_rules():
-        mode = rule_mode(rule)
-        raw_ids: list[object] = list(rule.get('replace_ids') or [])
-        for raw in raw_ids:
-            asset = str(raw).strip()
-            if not asset:
-                continue
-            # Within one config only its last rule for an ID matters
-            bucket = [claim for claim in claims.get(asset, []) if claim.config != config]
+        for key, mode in replacement_rule_claims(rule):
+            asset = str(key)
+            # The proxy overwrites within each mode, retaining other mode maps
+            bucket = [
+                claim
+                for claim in claims.get(asset, [])
+                if claim.config != config or claim.mode != mode
+            ]
             bucket.append(Claim(config, str(rule.get('name', '')), mode, order))
             claims[asset] = bucket
     conflicts = [

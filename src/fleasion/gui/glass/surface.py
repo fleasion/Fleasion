@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Final, override
 from urllib.parse import unquote, urlparse
+from weakref import WeakKeyDictionary
 
 from PIL import Image, ImageFilter
 from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QPushButton, QWidget
+from shiboken6 import isValid
 
 from .desktop_blur import blur
 from .state import UNBLURRED_OPACITY, state
@@ -30,6 +35,8 @@ _BLUR_RADIUS: Final = 18
 _COMPACT_BUTTON_MAX: Final = 40
 _ARROW_BUTTON_MAX: Final = 24
 _FALLBACK_BACKDROP: Final = (20, 22, 34)
+_WALLPAPER_REFRESH_SECONDS: Final = 5
+log = logging.getLogger(__name__)
 
 
 def effective_opacity() -> float:
@@ -99,13 +106,41 @@ class _WallpaperCache:
     def __init__(self) -> None:
         self._key = ''
         self._image = QImage()
+        self._source: Path | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        self._pending: Future[Path | None] | None = None
+        self._next_refresh = 0.0
+
+    def refresh_source(self) -> bool:
+        """Poll discovery on the GUI thread; desktop CLI calls run in a worker."""
+        changed = False
+        if self._pending is not None and self._pending.done():
+            try:
+                source = self._pending.result()
+            except OSError:
+                log.exception('Could not discover the desktop wallpaper')
+                source = None
+            self._pending = None
+            changed = source != self._source
+            self._source = source
+        if self._pending is None and monotonic() >= self._next_refresh:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='wallpaper')
+            self._pending = self._executor.submit(wallpaper_path)
+            self._next_refresh = monotonic() + _WALLPAPER_REFRESH_SECONDS
+        return changed
 
     def image(self, width: int, height: int) -> QImage:
-        source = wallpaper_path()
+        source = self._source
         stamp = ''
         if source is not None:
-            stat = source.stat()
-            stamp = f'{source}{stat.st_mtime_ns}{stat.st_size}'
+            try:
+                stat = source.stat()
+            except OSError:
+                log.warning('Wallpaper became unavailable: %s', source)
+                self._source = source = None
+            else:
+                stamp = f'{source}{stat.st_mtime_ns}{stat.st_size}'
         key = hashlib.sha256(f'{stamp}|{width}x{height}'.encode()).hexdigest()[:16]
         if key != self._key:
             self._image = QImage(str(self._render(key, source, width, height)))
@@ -216,13 +251,38 @@ def _is_window(obj: QObject | None) -> bool:
 class GlassWindows(QObject):
     """Gives top-level windows an alpha surface and paints the glass on them."""
 
+    def __init__(self, app: QApplication) -> None:
+        super().__init__(app)
+        self._app = app
+        self._attributes: WeakKeyDictionary[QWidget, tuple[bool, bool]] = WeakKeyDictionary()
+        self._wallpaper_timer = QTimer(self)
+        self._wallpaper_timer.setInterval(1000)
+        self._wallpaper_timer.timeout.connect(self.refresh_wallpaper)
+        self._wallpaper_timer.start()
+        self.refresh_wallpaper()
+
+    def refresh_wallpaper(self) -> None:
+        if state.settings.backdrop == 'wallpaper' and _wallpapers.refresh_source():
+            for window in self._app.topLevelWidgets():
+                window.update()
+
+    def restore(self) -> None:
+        self._wallpaper_timer.stop()
+        for window, (translucent, no_background) in list(self._attributes.items()):
+            if not isValid(window):
+                continue
+            window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=translucent)
+            window.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, on=no_background)
+            window.update()
+        self._attributes.clear()
+
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if not isinstance(watched, QWidget):
             return False
         kind = event.type()
         if kind == QEvent.Type.Polish:
-            self._polish(watched)
+            self.polish(watched)
         elif kind == QEvent.Type.Paint and self._paints(watched):
             painter = QPainter(watched)
             framed = bool(watched.property('glassChrome')) and not watched.isMaximized()
@@ -245,9 +305,13 @@ class GlassWindows(QObject):
             and not widget.property('glassOwnSurface')
         )
 
-    @staticmethod
-    def _polish(widget: QWidget) -> None:
+    def polish(self, widget: QWidget) -> None:
         if _is_window(widget):
+            if widget not in self._attributes:
+                self._attributes[widget] = (
+                    widget.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground),
+                    widget.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground),
+                )
             # Polish runs before the native surface exists, so it gets an alpha channel
             widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         elif not isinstance(widget, QPushButton):

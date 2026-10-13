@@ -31,8 +31,8 @@ def _rule(ids: list[int], mode: str = 'id', **extra: object) -> dict[str, Any]:
 def test_later_config_wins_within_same_mode() -> None:
     source = _FakeConfigs(
         {
-            'a': [_rule([1001], with_id=5)],
-            'b': [_rule([1001], with_id=6)],
+            'a': [_rule([1001], with_id=2005)],
+            'b': [_rule([1001], with_id=2006)],
         }
     )
     (conflict,) = find_conflicts(source)
@@ -43,10 +43,10 @@ def test_later_config_wins_within_same_mode() -> None:
 def test_local_beats_cdn_beats_id_beats_remove() -> None:
     source = _FakeConfigs(
         {
-            'local': [_rule([7], mode='local', local_path='/x.obj')],
-            'cdn': [_rule([7], mode='cdn', cdn_url='https://example.invalid/x')],
-            'swap': [_rule([7], with_id=9)],
-            'remove': [_rule([7], mode='remove')],
+            'local': [_rule([1007], mode='local', local_path='/x.obj')],
+            'cdn': [_rule([1007], mode='cdn', cdn_url='https://example.invalid/x')],
+            'swap': [_rule([1007], with_id=2009)],
+            'remove': [_rule([1007], mode='remove')],
         }
     )
     (conflict,) = find_conflicts(source)
@@ -55,20 +55,20 @@ def test_local_beats_cdn_beats_id_beats_remove() -> None:
 
 
 def test_empty_targets_are_removals() -> None:
-    assert rule_mode(_rule([1], mode='cdn', cdn_url='')) == 'remove'
-    assert rule_mode(_rule([1], mode='local', local_path='')) == 'remove'
-    assert rule_mode(_rule([1])) == 'remove'
-    assert rule_mode({'replace_ids': [1], 'remove': True}) == 'remove'
+    assert rule_mode(_rule([1001], mode='cdn', cdn_url='')) == 'remove'
+    assert rule_mode(_rule([1001], mode='local', local_path='')) == 'remove'
+    assert rule_mode(_rule([1001])) == 'remove'
+    assert rule_mode({'replace_ids': [1001], 'remove': True}) == 'remove'
 
 
 def test_disabled_rules_are_ignored() -> None:
-    disabled = _rule([3], with_id=4)
+    disabled = _rule([1003], with_id=2004)
     disabled['enabled'] = False
     source = _FakeConfigs(
         {
-            'a': [_rule([3], mode='cdn', cdn_url='')],
+            'a': [_rule([1003], mode='cdn', cdn_url='')],
             'b': [disabled],
-            'c': [_rule([3], with_id=4)],
+            'c': [_rule([1003], with_id=2004)],
         }
     )
     (conflict,) = find_conflicts(source)
@@ -77,5 +77,5 @@ def test_disabled_rules_are_ignored() -> None:
 
 
 def test_same_config_twice_is_not_a_conflict() -> None:
-    source = _FakeConfigs({'a': [_rule([1], with_id=2), _rule([1], with_id=3)]})
+    source = _FakeConfigs({'a': [_rule([1001], with_id=2002), _rule([1001], with_id=2003)]})
     assert find_conflicts(source) == []

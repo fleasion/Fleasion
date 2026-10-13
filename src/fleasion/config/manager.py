@@ -38,6 +38,7 @@ _WINDOWS_MOUSE_BUTTON_CODES = frozenset({1, 2, 4, 5, 6})
 _WINDOWS_HOTKEY_PLATFORMS = (None, 'windows')
 type ReplacementRules = list[JsonValue]
 type ReplacementKey = int | str
+type ReplacementMode = Literal['remove', 'id', 'cdn', 'local']
 type ReplacementMaps = tuple[
     dict[ReplacementKey, int],
     set[ReplacementKey],
@@ -352,6 +353,21 @@ def _apply_replacement_rule(rule: JsonObject, targets: ReplacementMaps) -> None:
     if target_id is None or 0 <= target_id <= _RESERVED_ASSET_TYPE_ID_MAX:
         return
     replacements.update(dict.fromkeys(parsed_ids, target_id))
+
+
+def replacement_rule_claims(rule: JsonObject) -> Iterator[tuple[ReplacementKey, ReplacementMode]]:
+    """Return the normalized claims actually contributed to the proxy maps."""
+    targets: ReplacementMaps = ({}, set(), {}, {})
+    _apply_replacement_rule(rule, targets)
+    replacements, removals, cdn, local = targets
+    for key in replacements:
+        yield key, 'id'
+    for key in removals:
+        yield key, 'remove'
+    for key in cdn:
+        yield key, 'cdn'
+    for key in local:
+        yield key, 'local'
 
 
 ConfigFileStatus = Literal['valid', 'invalid', 'binary', 'unreadable']

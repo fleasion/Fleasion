@@ -87,6 +87,7 @@ class GlassTheme:
             self._filter = GlassWindows(app)
             app.installEventFilter(self._filter)
         for widget in app.allWidgets():
+            self._filter.polish(widget)
             style = widget.style()
             style.unpolish(widget)
             style.polish(widget)
@@ -95,9 +96,9 @@ class GlassTheme:
             apply_chrome(window, enabled=True)
 
     def disable(self, app: QApplication) -> None:
+        window_filter = self._filter
         if self._filter is not None:
             app.removeEventFilter(self._filter)
-            self._filter.deleteLater()
             self._filter = None
         if self._previous_font is not None:
             app.setFont(self._previous_font)
@@ -105,6 +106,9 @@ class GlassTheme:
         app.setStyleSheet('')
         for window in registered_windows():
             apply_chrome(window, enabled=False)
+        if window_filter is not None:
+            window_filter.restore()
+            window_filter.deleteLater()
         _refresh_windows(app)
 
     def attach(self, window: QWidget) -> None:
@@ -128,9 +132,10 @@ class GlassTheme:
         if (app := _app()) is not None:
             _refresh_windows(app)
 
-    @staticmethod
-    def set_backdrop(mode: Backdrop) -> None:
+    def set_backdrop(self, mode: Backdrop) -> None:
         state.set_backdrop(mode)
+        if self._filter is not None:
+            self._filter.refresh_wallpaper()
         if (app := _app()) is None:
             return
         _sync_combo(app, BACKDROP_COMBO, data=mode)

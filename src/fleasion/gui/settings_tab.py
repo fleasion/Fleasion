@@ -716,6 +716,7 @@ class SettingsTab(QWidget):
 
     def refresh_from_config(self) -> None:
         """Re-read all settings from config and update widgets (no signals emitted)."""
+        self._glass_controls.setVisible(self._config.theme == 'Glass')
         for name, rb in self._theme_buttons.items():
             _set_signals_blocked(rb, blocked=True)
             rb.setChecked(name == self._config.theme)
