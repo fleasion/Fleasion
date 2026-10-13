@@ -167,10 +167,14 @@ QFrame#SubplaceGameCard:hover {
     background: rgba(255,255,255,0.11); border-color: rgba(255,255,255,0.30);
 }
 QPushButton#SubplaceSidebarButton {
-    padding: 4px 10px; border-radius: 11px; font-weight: 500;
+    padding: 5px 10px; border-radius: 11px; font-weight: 500;
 }
 QPushButton#SubplaceSidebarButton:hover {
     background: rgba(255,255,255,0.16);
+}
+QWidget#SubplaceFooter { background: transparent; border: 0; }
+QPushButton#SubplaceClearCacheButton {
+    padding: 3px 10px; min-height: 18px; border-radius: 12px;
 }
 
 QGroupBox {
@@ -269,6 +273,8 @@ QAbstractItemView, QTreeView, QTreeWidget, QListView, QListWidget, QTableView, Q
     border-radius: ${radius}px; selection-background-color: rgba($accent_rgb,0.24);
     selection-color: $text;
 }
+/* Preserve all four rounded outer corners; the separate QHeaderView reset
+   below prevents duplicate header outlines without flattening the view */
 QTreeView::item, QListView::item, QTableView::item { padding: 6px 4px; border: 0; }
 QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
     background: rgba(255,255,255,0.05);
@@ -276,10 +282,11 @@ QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
 QTreeView::item:selected, QListView::item:selected { background: rgba($accent_rgb,0.24); }
 QTableView, QTableWidget { selection-background-color: rgba($accent_rgb,0.11); }
 QTableView::item:selected { background: rgba($accent_rgb,0.11); }
-QHeaderView { background: transparent; }
+/* QHeaderView inherits QAbstractItemView; reset the inherited inner rounded frame */
+QHeaderView { background: transparent; border: 0; border-radius: 0; }
 QHeaderView::section {
-    background: transparent; color: $muted; border: 0;
-    border-bottom: 1px solid rgba(255,255,255,0.08); padding: 8px;
+    background: rgba(255,255,255,0.045); color: $muted; border: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.10); padding: 8px;
     font-size: 8.5pt; font-weight: 700;
 }
 QTableCornerButton::section { background: transparent; border: 0; }

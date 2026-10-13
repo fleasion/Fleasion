@@ -11,7 +11,7 @@ import pytest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -83,6 +83,15 @@ def test_glass_scraper_selected_row_is_subtle_and_unselected_rows_keep_colors(
         table.clearFocus()
         QTest.qWait(20)
         before = _row_colors(table)
+        assert table.objectName() == 'ScraperAssetsTable'
+        glass_alternate = table.palette().color(QPalette.ColorRole.AlternateBase)
+        assert glass_alternate == QColor(255, 255, 255, 9)
+        assert before[1].alpha() < 255
+        header = table.horizontalHeader()
+        header_image = header.grab().toImage()
+        assert header.frameWidth() == 0
+        assert header_image.width() > 40
+        assert header_image.pixelColor(0, 3).alpha() == header_image.pixelColor(20, 3).alpha()
         assert before[0] != before[1]
         assert before[0] == before[2]
         assert before[1] == before[3]
@@ -114,6 +123,11 @@ def test_glass_scraper_selected_row_is_subtle_and_unselected_rows_keep_colors(
             table.viewport().palette().color(table.viewport().backgroundRole()).getRgb(),
             table.viewport().testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground),
         )
+
+        ThemeManager.apply_theme('Dark')
+        QTest.qWait(30)
+        assert table.palette().color(QPalette.ColorRole.AlternateBase) == QColor(53, 53, 53)
+        assert all(color.alpha() == 255 for color in _row_colors(table))
     finally:
         ThemeManager.apply_theme('Light')
         # This fixture builds only the table, not the remaining timers/loaders.

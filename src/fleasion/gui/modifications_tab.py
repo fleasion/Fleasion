@@ -32,6 +32,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QCloseEvent,
+    QColor,
     QFont,
     QFontMetrics,
     QKeyEvent,
@@ -755,6 +756,13 @@ class CollapsibleSection(QWidget):
         path = QPainterPath()
         path.addRoundedRect(rect, 8.0, 8.0)
         painter.fillPath(path, colors.section_background)
+        if glass.theme.active:
+            # Scraper's table header uses this same subtle 4.5% white overlay
+            painter.save()
+            painter.setClipPath(path)
+            header = QRectF(rect.left(), rect.top(), rect.width(), self._header_widget.height())
+            painter.fillRect(header, QColor(255, 255, 255, 11))
+            painter.restore()
         painter.setPen(colors.section_border)
         painter.drawPath(path)
         painter.end()

@@ -924,11 +924,11 @@ class SubplaceJoinerTab(QWidget):
 
         main_layout = QHBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(4)
+        main_layout.setSpacing(8)
 
         # Left sidebar
         sidebar = QVBoxLayout()
-        sidebar.setSpacing(4)
+        sidebar.setSpacing(8)
 
         recent_label = QLabel(tr('ui.gui.subplace_joiner_tab.recent_placeids'))
         recent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -936,7 +936,7 @@ class SubplaceJoinerTab(QWidget):
 
         self._recent_scroll = QScrollArea()
         self._recent_scroll.setObjectName('SubplaceRecentScroll')
-        self._recent_scroll.setFixedWidth(200)
+        self._recent_scroll.setFixedWidth(216)
         self._recent_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._recent_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._recent_scroll.setWidgetResizable(True)
@@ -946,8 +946,8 @@ class SubplaceJoinerTab(QWidget):
         self.recent_contents.setAutoFillBackground(True)
         self.recent_contents.setBackgroundRole(QPalette.ColorRole.Base)
         self.recent_layout = QVBoxLayout(self.recent_contents)
-        self.recent_layout.setContentsMargins(8, 4, 8, 4)
-        self.recent_layout.setSpacing(2)
+        self.recent_layout.setContentsMargins(9, 8, 9, 8)
+        self.recent_layout.setSpacing(1)
         self._recent_scroll.setWidget(self.recent_contents)
         sidebar.addWidget(self._recent_scroll, 1)
         yield
@@ -958,7 +958,7 @@ class SubplaceJoinerTab(QWidget):
 
         self._fav_scroll = QScrollArea()
         self._fav_scroll.setObjectName('SubplaceFavoritesScroll')
-        self._fav_scroll.setFixedWidth(200)
+        self._fav_scroll.setFixedWidth(216)
         self._fav_scroll.setWidgetResizable(True)
         self.fav_contents = QWidget()
         self.fav_contents.setObjectName('FavoritedPlaceIdsContents')
@@ -966,8 +966,8 @@ class SubplaceJoinerTab(QWidget):
         self.fav_contents.setAutoFillBackground(True)
         self.fav_contents.setBackgroundRole(QPalette.ColorRole.Base)
         self.fav_layout = QVBoxLayout(self.fav_contents)
-        self.fav_layout.setContentsMargins(8, 4, 8, 4)
-        self.fav_layout.setSpacing(2)
+        self.fav_layout.setContentsMargins(9, 8, 9, 8)
+        self.fav_layout.setSpacing(1)
         self._fav_scroll.setWidget(self.fav_contents)
         sidebar.addWidget(self._fav_scroll, 1)
 
@@ -995,14 +995,16 @@ class SubplaceJoinerTab(QWidget):
         yield
 
         footer_widget = QWidget()
+        footer_widget.setObjectName('SubplaceFooter')
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(8, 4, 8, 4)
+        footer_layout.setContentsMargins(8, 2, 8, 2)
         self._selected_label = QLabel(tr('ui.gui.subplace_joiner_tab.selected_none'))
         self._selected_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
         footer_layout.addWidget(self._selected_label)
         footer_layout.addStretch()
         clear_cache_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.clear_cache'))
+        clear_cache_btn.setObjectName('SubplaceClearCacheButton')
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
         root.addWidget(footer_widget)

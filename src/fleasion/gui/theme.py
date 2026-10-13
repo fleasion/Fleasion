@@ -302,10 +302,12 @@ class ThemeManager:
             )
 
         if panel_theme == 'Glass':
+            # Match the QAbstractItemView / Scraper Glass surface rather than
+            # adding an unrelated opaque navy panel above the backdrop
             return PanelThemeColors(
-                section_background=QColor(255, 255, 255, 16),
-                section_border=QColor(255, 255, 255, 34),
-                container_background_css='background-color: rgba(255, 255, 255, 0.05);',
+                section_background=QColor(8, 9, 14, 77),
+                section_border=QColor(255, 255, 255, 20),
+                container_background_css='background-color: transparent;',
             )
 
         is_dark = panel_theme == 'Dark'

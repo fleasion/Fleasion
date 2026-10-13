@@ -96,6 +96,15 @@ class GlassTheme:
             if self._filter is None and QApplication.platformName() == 'xcb'
             else {}
         )
+        original_itemview_masks = (
+            {
+                widget: QRegion(widget.mask())
+                for widget in app.allWidgets()
+                if GlassWindows.is_itemview_chrome(widget)
+            }
+            if self._filter is None and QApplication.platformName() == 'xcb'
+            else {}
+        )
         glass_style = stylesheet(state.settings)
         app.setStyleSheet(
             f'{self._previous_stylesheet}\n{glass_style}'
@@ -103,7 +112,7 @@ class GlassTheme:
             else glass_style
         )
         if self._filter is None:
-            self._filter = GlassWindows(app, original_combo_masks)
+            self._filter = GlassWindows(app, original_combo_masks, original_itemview_masks)
             self._filter.blur_status_changed.connect(self._sync_blur_controls)
             app.installEventFilter(self._filter)
         for widget in app.allWidgets():
@@ -111,6 +120,7 @@ class GlassTheme:
             style = widget.style()
             style.unpolish(widget)
             style.polish(widget)
+            self._filter.update_itemview_shape(widget)
             widget.update()
         for window in registered_windows():
             apply_chrome(window, enabled=True)

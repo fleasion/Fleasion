@@ -2103,15 +2103,21 @@ class CacheViewerTab(QWidget):
             self._update_table_alt_palette()
 
     def _update_table_alt_palette(self) -> None:
-        """Apply a slightly darker alternate-row colour in dark mode, or reset in light/system mode."""
-        pal = self.palette()
-        is_dark = pal.color(QPalette.ColorRole.Window).lightness() < 128
-        if is_dark:
-            table_pal = self.table.palette()
-            table_pal.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
-            self.table.setPalette(table_pal)
+        """Keep Scraper's alternating rows translucent in Glass, solid in Dark."""
+        window_color = self.palette().color(QPalette.ColorRole.Window)
+        if window_color.alpha() < 255:
+            # Glass uses a translucent window palette; opaque dark-mode rows
+            # would obscure its backdrop when Qt paints without QSS
+            alternate = QColor(255, 255, 255, 9)
+        elif window_color.lightness() < 128:
+            alternate = QColor(53, 53, 53)
         else:
-            self.table.setPalette(QPalette())  # inherit from application
+            self.table.setPalette(QPalette())
+            return
+        table_pal = self.table.palette()
+        if table_pal.color(QPalette.ColorRole.AlternateBase) != alternate:
+            table_pal.setColor(QPalette.ColorRole.AlternateBase, alternate)
+            self.table.setPalette(table_pal)
 
     def _sanitize_filename(self, name: str) -> str:
         """Replace characters that are illegal in Windows filenames with Unicode look-alikes."""
@@ -2380,6 +2386,7 @@ class CacheViewerTab(QWidget):
     def _create_table(self, parent_layout: QVBoxLayout) -> None:
         """Create asset table."""
         self.table = QTableWidget()
+        self.table.setObjectName('ScraperAssetsTable')
         self.table.setColumnCount(len(_COL_IDX_TO_KEY))
         self.table.setHorizontalHeaderLabels(
             ['▼'] + [label for _key, label, _vis, _width in _scraper_columns()]
