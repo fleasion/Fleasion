@@ -7,7 +7,6 @@ import ctypes
 import importlib
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -36,6 +35,7 @@ from fleasion.app.elevation import (
     is_admin as _app_is_admin,
     relaunch_as_admin as _relaunch_as_admin,
 )
+from fleasion.app.notification_process import NotificationProcess
 from fleasion.app.restart import restart_fleasion_normally
 from fleasion.gui import (
     AboutWindow,
@@ -1033,16 +1033,14 @@ class SystemTray:
             if self._show_freedesktop_notification(title, message, icon_path):
                 return
 
-        if os.name != 'nt':
-            if icon_path is not None:
-                self.tray.showMessage(title, message, QIcon(str(icon_path)), 10000)
-            else:
-                self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.NoIcon, 10000)
+        if os.name == 'nt' and self._show_windows_notification(title, message, icon_path):
             return
+        self._show_qt_notification(title, message, icon_path)
 
-        if self._show_windows_notification(title, message, icon_path):
+    def _show_qt_notification(self, title: str, message: str, icon_path: Path | None) -> None:
+        """Show the tray fallback after a native notification command fails."""
+        if getattr(self, '_tray_cleaned_up', False):
             return
-
         if icon_path is not None:
             self.tray.showMessage(title, message, QIcon(str(icon_path)), 10000)
         else:
@@ -1065,29 +1063,24 @@ class SystemTray:
         png_path = Path(tempfile.gettempdir()) / f'{APP_NAME.lower()}-notification.png'
         icon = QIcon(str(icon_path)) if icon_path is not None else self.tray.icon()
         pixmap = icon.pixmap(64, 64)
-        try:
-            if pixmap.isNull() or not pixmap.save(str(png_path), 'PNG'):
-                return False
-
-            subprocess.run(
-                [
-                    send_command,
-                    '--app-name',
-                    APP_NAME,
-                    '--icon',
-                    str(png_path),
-                    '--expire-time',
-                    '10000',
-                    title,
-                    message,
-                ],
-                check=True,
-                timeout=5,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError):
+        if pixmap.isNull() or not pixmap.save(str(png_path), 'PNG'):
             return False
+
+        process = NotificationProcess(self.tray)
+        process.failed.connect(lambda: self._show_qt_notification(title, message, icon_path))
+        process.start(
+            send_command,
+            [
+                '--app-name',
+                APP_NAME,
+                '--icon',
+                str(png_path),
+                '--expire-time',
+                '10000',
+                title,
+                message,
+            ],
+        )
         return True
 
     def _show_xfce_notification(self, title: str, message: str, icon_path: Path | None) -> bool:
@@ -1326,6 +1319,8 @@ class SystemTray:
             return
 
         self._tray_cleaned_up = True
+        for process in self.tray.findChildren(NotificationProcess):
+            process.cancel()
         if notification := getattr(self, '_xfce_notification', None):
             notification.close()
             self._xfce_notification = None

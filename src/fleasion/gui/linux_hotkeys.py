@@ -483,15 +483,18 @@ class LinuxHotkeyService(QObject):
             if was_pressed == is_pressed:
                 return
             active_modifiers = self._active_modifiers()
-            newly_active = [
+            matches = [
                 (name, int(binding['modifiers']), int(binding['scan_code']))
                 for name, binding in self._bindings.items()
                 if self._binding_is_active(binding, active_modifiers)
-                and not self._was_active.get(name, False)
+            ]
+            activations = [
+                name
+                for name in most_specific_names(matches)
+                if not self._was_active.get(name, False)
             ]
             for name, binding in self._bindings.items():
                 self._was_active[name] = self._binding_is_active(binding, active_modifiers)
-            activations = most_specific_names(newly_active)
 
         if is_pressed:
             self._emit_signal(self.key_pressed, code, active_modifiers)

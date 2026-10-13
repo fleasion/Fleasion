@@ -16,6 +16,7 @@ from fleasion.app.dialogs import proxy as dialogs_proxy_module
 from fleasion.app import qt_runtime as qt_runtime_module
 from fleasion.app import tray as tray_module
 from fleasion.app.tray import SystemTray
+from fleasion.app.notification_process import NotificationProcess
 from fleasion.utils import platform_macos
 
 
@@ -62,7 +63,9 @@ def _ensure_exit_action_enabled(tray: SystemTray) -> None:
 
 
 def _check_linux_gui_dependencies() -> bool:
-    callback = cast('Callable[[], bool]', qt_runtime_module.__dict__['check_linux_gui_dependencies'])
+    callback = cast(
+        'Callable[[], bool]', qt_runtime_module.__dict__['check_linux_gui_dependencies']
+    )
     return callback()
 
 
@@ -155,6 +158,9 @@ class _TrayIconStub:
 
     def deleteLater(self) -> None:
         self.delete_later_calls += 1
+
+    def findChildren(self, _kind: type[NotificationProcess]) -> list[NotificationProcess]:
+        return []
 
 
 def test_linux_gui_dependency_check_reports_install_command(

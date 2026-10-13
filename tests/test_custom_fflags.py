@@ -435,10 +435,9 @@ def test_modifier_primes_linux_sober_flag_cache(tmp_path: Path) -> None:
         assert payload['DFFlagDebugDrawBroadPhaseAABBs'] == 'True'
         assert payload['FFlagExample'] == 'False'
         assert payload[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
-        # The seeded cache is frozen so Sober cannot overwrite it from the
-        # network before the Player reads it.
+        # Only the seeded entry is protected from in-place writes
         assert not cache_path.stat().st_mode & stat.S_IWRITE
-        assert not cache_dir.stat().st_mode & stat.S_IWUSR
+        assert cache_dir.stat().st_mode & stat.S_IWUSR
     finally:
         cache_path.chmod(0o644)
         cache_dir.chmod(0o755)
@@ -466,9 +465,56 @@ def test_linux_cache_identical_reseed_keeps_write_protection(tmp_path: Path) -> 
         assert modifier.prime_linux_flag_cache()
         assert not modifier.prime_linux_flag_cache()
         assert not cache_path.stat().st_mode & stat.S_IWUSR
-        assert not cache_dir.stat().st_mode & stat.S_IWUSR
+        assert cache_dir.stat().st_mode & stat.S_IWUSR
     finally:
         modifier.release_linux_flag_cache_lock()
+
+
+def test_linux_seed_allows_sibling_cache_maintenance(tmp_path: Path) -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    cache_dir = tmp_path / 'cache'
+    cache_dir.mkdir(mode=0o700)
+    cache_path = cache_dir / 'flag_cache.dat'
+    cache_path.write_bytes(bytes(5) + b'{"applicationSettings":{}}')
+    cache_path.chmod(0o600)
+    modifier = CustomFFlagModifier(config, linux_flag_cache_path=cache_path)
+    try:
+        assert modifier.prime_linux_flag_cache()
+        assert stat.S_IMODE(cache_dir.stat().st_mode) == 0o700
+        sibling = cache_dir / 'tombstone.dat'
+        sibling.write_bytes(b'initial')
+        temporary = cache_dir / '.tombstone.tmp'
+        temporary.write_bytes(b'updated')
+        temporary.replace(sibling)
+        assert sibling.read_bytes() == b'updated'
+        sibling.unlink()
+        assert not sibling.exists()
+    finally:
+        modifier.release_linux_flag_cache_lock()
+    assert stat.S_IMODE(cache_path.stat().st_mode) == 0o600
+
+
+def test_linux_startup_recovers_locks_left_by_an_abrupt_exit(tmp_path: Path) -> None:
+    config = SimpleNamespace(custom_fflags_enabled=False, custom_fflags={})
+    cache_dir = tmp_path / 'cache'
+    cache_dir.mkdir()
+    cache_path = cache_dir / 'flag_cache.dat'
+    cache_path.write_bytes(bytes(5) + b'{"applicationSettings":{}}')
+    cache_path.chmod(0o444)
+    cache_dir.chmod(0o555)
+    try:
+        CustomFFlagModifier(
+            config,
+            linux_flag_cache_path=cache_path,
+            settings_path=tmp_path / 'settings.json',
+            reload_settings_from_disk=True,
+        )
+        assert cache_path.stat().st_mode & stat.S_IWUSR
+        assert cache_dir.stat().st_mode & stat.S_IWUSR
+        (cache_dir / 'tombstone.dat').write_bytes(b'recovered')
+    finally:
+        cache_dir.chmod(0o755)
+        cache_path.chmod(0o644)
 
 
 def test_linux_cache_shutdown_restores_write_access(tmp_path: Path) -> None:
@@ -571,7 +617,7 @@ def test_modifier_unlocks_and_reseeds_locked_linux_sober_flag_cache(tmp_path: Pa
         payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
         assert payload['FFlagExample'] == 'False'
         assert not cache_path.stat().st_mode & stat.S_IWRITE
-        assert not cache_dir.stat().st_mode & stat.S_IWUSR
+        assert cache_dir.stat().st_mode & stat.S_IWUSR
     finally:
         cache_path.chmod(0o644)
         cache_dir.chmod(0o755)

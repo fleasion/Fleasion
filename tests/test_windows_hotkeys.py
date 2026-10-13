@@ -11,6 +11,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from fleasion.gui.windows_hotkeys import (
     MOD_CTRL,
+    MOD_ALT,
     MOD_SHIFT,
     WindowsCustomFFlagHotkeyController,
     WindowsHotkeyService,
@@ -52,6 +53,43 @@ def test_windows_poll_activates_distinct_keys_and_shadows_same_key(
     run = cast('Callable[[object], None]', getattr(service, '_run'))
     run({})
     assert activations == ['shift_a', 'bare_b']
+
+
+def test_windows_active_binding_shadows_new_less_specific_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+
+    def key_state(virtual_key: int) -> int:
+        pressed = {0x41, 0xA0, 0xA2} if polls else set[int]()
+        if polls >= 2:
+            pressed.add(0xA4)
+        return 0x8000 if virtual_key in pressed else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls > 2
+
+    def translate(
+        _user32: object,
+        _bindings: object,
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {'ctrl_shift_a': (0x41, MOD_CTRL | MOD_SHIFT), 'alt_a': (0x41, MOD_ALT)}, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+    assert activations == ['ctrl_shift_a']
 
 
 def _record_toggled(values: list[str]) -> Callable[[str], None]:

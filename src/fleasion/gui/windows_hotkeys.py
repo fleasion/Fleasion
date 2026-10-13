@@ -473,14 +473,17 @@ class WindowsHotkeyService(QObject):
                     for name in most_specific_names(candidates):
                         self._emit_activation(name)
                 modifiers = active_modifiers()
-                newly_active: list[tuple[str, int, int]] = []
+                matches: list[tuple[str, int, int]] = []
+                active_by_name: dict[str, bool] = {}
                 for name, (virtual_key, required_modifiers) in translated.items():
                     active = binding_is_active(virtual_key, required_modifiers, modifiers)
-                    if active and not was_active[name]:
-                        newly_active.append((name, required_modifiers, virtual_key))
-                    was_active[name] = active
-                for name in most_specific_names(newly_active):
-                    self._emit_activation(name)
+                    if active:
+                        matches.append((name, required_modifiers, virtual_key))
+                    active_by_name[name] = active
+                for name in most_specific_names(matches):
+                    if not was_active[name]:
+                        self._emit_activation(name)
+                was_active = active_by_name
         finally:
             if mouse_hook is not None:
                 _windll().user32.UnhookWindowsHookEx(mouse_hook[0])

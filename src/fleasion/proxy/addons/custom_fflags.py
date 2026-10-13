@@ -54,34 +54,42 @@ CLIENT_SETTINGS_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 CLIENT_SETTINGS_STALE_SUCCESS_SECONDS = 15.0
 
 
-# After seeding Sober's flag cache (flag_cache.dat), drop write access to
-# both the file and its directory so the client cannot overwrite the seeded
-# flags with defaults fetched from clientsettingscdn.  Fleasion unlocks the
-# pair before every re-seed, so normal relaunches stay fully managed.
-LINUX_SEED_LOCKED_FILE_MODE = 0o444
-LINUX_SEED_LOCKED_DIR_MODE = 0o555
-LINUX_SEED_UNLOCKED_FILE_MODE = 0o644
-LINUX_SEED_UNLOCKED_DIR_MODE = 0o755
+# Protect only the flag-cache entry; sibling cache maintenance stays writable
+LINUX_LEGACY_SEED_LOCKED_DIR_MODE = 0o555
 
 
-def _linux_chmod(path: Path, mode: int) -> None:
-    """Best-effort chmod used to lock and unlock Sober's cache locations."""
+def _linux_set_write_access(path: Path, *, enabled: bool) -> None:
+    """Adjust write permission without widening read or execute access."""
     try:
-        path.chmod(mode)
-    except OSError:
-        pass
+        mode = stat.S_IMODE(path.stat().st_mode)
+        updated = (
+            mode | stat.S_IWUSR if enabled else mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+        )
+        if updated != mode:
+            path.chmod(updated)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        log_buffer.log('CustomFFlags', f'Could not update flag-cache permissions for {path}: {exc}')
 
 
-def _lock_linux_flag_cache(cache_dir: Path, cache_path: Path) -> None:
-    """Remove write permission from the seeded flag cache file and directory."""
-    _linux_chmod(cache_path, LINUX_SEED_LOCKED_FILE_MODE)
-    _linux_chmod(cache_dir, LINUX_SEED_LOCKED_DIR_MODE)
+def _lock_linux_flag_cache(cache_path: Path) -> None:
+    """Protect the seeded entry from in-place writes without locking its directory."""
+    _linux_set_write_access(cache_path, enabled=False)
 
 
 def _unlock_linux_flag_cache(cache_dir: Path, cache_path: Path) -> None:
-    """Restore write permission on the flag cache file and directory."""
-    _linux_chmod(cache_dir, LINUX_SEED_UNLOCKED_DIR_MODE)
-    _linux_chmod(cache_path, LINUX_SEED_UNLOCKED_FILE_MODE)
+    """Recover file write access and the directory lock used by earlier versions."""
+    try:
+        if stat.S_IMODE(cache_dir.stat().st_mode) == LINUX_LEGACY_SEED_LOCKED_DIR_MODE:
+            _linux_set_write_access(cache_dir, enabled=True)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        log_buffer.log(
+            'CustomFFlags', f'Could not inspect legacy flag-cache directory {cache_dir}: {exc}'
+        )
+    _linux_set_write_access(cache_path, enabled=True)
 
 
 def _find_macos_resource_dirs() -> list[Path]:
@@ -161,6 +169,8 @@ class CustomFFlagModifier:
         self._last_response_success_at: float | None = None
         self._first_response_failure_at: float | None = None
         self._last_failure_log_at: dict[str, float] = {}
+        if reload_settings_from_disk:
+            self.release_linux_flag_cache_lock()
 
     @staticmethod
     def _flag_signature(flags: dict[str, str]) -> tuple[tuple[str, str], ...]:
@@ -444,9 +454,10 @@ class CustomFFlagModifier:
         startup-only custom flags available immediately — the Linux
         counterpart of the Windows flag cache.  Sober's own fetched defaults
         and unrelated entries are preserved.  After a successful seed the
-        cache file and its directory are made read-only so Sober cannot
-        overwrite the seeded values from the network; the pair is unlocked
-        again before any subsequent re-seed.  Disabled mode never adds flags;
+        cache file is made read-only to prevent in-place writes. Its parent
+        stays writable for unrelated cache maintenance; atomic replacement
+        by the client remains possible. Startup recovery and every re-seed
+        restore write access to this entry. Disabled mode never adds flags;
         it only clears values previously seeded by Fleasion.
         """
         if self._linux_flag_cache_path is None and not sys.platform.startswith('linux'):
@@ -468,7 +479,7 @@ class CustomFFlagModifier:
         if changed:
             self._log_flag_cache_seed(flags, removed_names, label='Sober flag cache')
         if flags and self.is_enabled():
-            _lock_linux_flag_cache(cache_dir, cache_path)
+            _lock_linux_flag_cache(cache_path)
         return changed
 
     def release_linux_flag_cache_lock(self) -> None:
@@ -498,6 +509,7 @@ class CustomFFlagModifier:
         original compression on write.
         """
         try:  # ruff: ignore[too-many-statements-in-try-clause]
+            original_mode = stat.S_IMODE(cache_path.stat().st_mode)
             raw = cache_path.read_bytes()
             if len(raw) < 5:
                 return False, {}, set()
@@ -550,6 +562,7 @@ class CustomFFlagModifier:
             temporary_path = cache_path.with_name(f'.{cache_path.name}.{os.getpid()}.tmp')
             try:
                 temporary_path.write_bytes(updated)
+                temporary_path.chmod(original_mode)
                 temporary_path.replace(cache_path)
             finally:
                 temporary_path.unlink(missing_ok=True)

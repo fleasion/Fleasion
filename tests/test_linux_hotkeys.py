@@ -291,6 +291,24 @@ def test_linux_modifier_press_activates_independent_keys() -> None:
     assert activations == ['shift_a', 'ctrl_shift_b']
 
 
+def test_linux_already_active_binding_shadows_new_less_specific_match() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'ctrl_shift_a': {
+            'platform': 'linux_evdev',
+            'scan_code': 30,
+            'modifiers': MOD_CTRL | MOD_SHIFT,
+        },
+        'alt_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_ALT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+    for code in (29, 42, 30, 56):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['ctrl_shift_a']
+
+
 def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
