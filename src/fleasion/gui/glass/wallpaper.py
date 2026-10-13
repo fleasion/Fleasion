@@ -10,6 +10,7 @@ import sys
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from operator import itemgetter
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
@@ -60,7 +61,69 @@ def _file_from_uri(uri: str) -> Path | None:
     return path if path.is_file() and path.suffix.lower() != '.xml' else None
 
 
+def _xfce_workspace() -> int:
+    """Get the current EWMH workspace when X11 exposes one."""
+    executable = shutil.which('xprop')
+    if executable is None:
+        return 0
+    try:
+        result = subprocess.run(
+            [executable, '-root', '_NET_CURRENT_DESKTOP'],
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return 0
+    value = result.stdout.rpartition('=')[2].strip()
+    return int(value) if result.returncode == 0 and value.isdigit() else 0
+
+
+def _xfce_wallpaper() -> Path | None:
+    """Read XFCE's per-monitor, per-workspace wallpaper from xfconf."""
+    executable = shutil.which('xfconf-query')
+    if executable is None:
+        return None
+    try:
+        result = subprocess.run(
+            [executable, '-c', 'xfce4-desktop', '-lv'],
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return None
+    if result.returncode != 0:
+        return None
+    workspace = _xfce_workspace()
+    candidates: list[tuple[int, Path]] = []
+    for line in result.stdout.splitlines():
+        fields = line.split(maxsplit=1)
+        if len(fields) != 2:
+            continue
+        key, value = fields
+        if not key.startswith('/backdrop/') or not key.endswith(('/last-image', '/image-path')):
+            continue
+        value = value.strip().strip('"')
+        path = _file_from_uri(value) if value.startswith('file://') else Path(value).expanduser()
+        if path is None or not path.is_file() or path.suffix.lower() == '.xml':
+            continue
+        score = (
+            (100 if f'/workspace{workspace}/' in key else 0)
+            + (20 if '/workspace0/' in key else 0)
+            + (10 if '/screen0/' in key else 0)
+            + (2 if key.endswith('/last-image') else 0)
+        )
+        candidates.append((score, path))
+    return max(candidates, key=itemgetter(0))[1] if candidates else None
+
+
 def _linux_wallpaper() -> Path | None:
+    desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+    if 'xfce' in desktop and (xfce := _xfce_wallpaper()) is not None:
+        return xfce
     keys: Sequence[str] = ('picture-uri', 'picture-uri-dark')
     if 'dark' in _gsettings('org.gnome.desktop.interface', 'color-scheme'):
         keys = tuple(reversed(keys))
@@ -72,7 +135,7 @@ def _linux_wallpaper() -> Path | None:
         for line in kde.read_text(encoding='utf-8', errors='ignore').splitlines():
             if line.startswith('Image=') and (path := _file_from_uri(line.split('=', 1)[1])):
                 return path
-    return None
+    return _xfce_wallpaper() if 'xfce' not in desktop else None
 
 
 def wallpaper_path() -> Path | None:

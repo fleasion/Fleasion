@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QApplication, QComboBox, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QWidget
 
 from fleasion.localization import tr
 
@@ -85,6 +85,7 @@ class GlassTheme:
         app.setStyleSheet(stylesheet(state.settings))
         if self._filter is None:
             self._filter = GlassWindows(app)
+            self._filter.blur_status_changed.connect(self._sync_blur_controls)
             app.installEventFilter(self._filter)
         for widget in app.allWidgets():
             self._filter.polish(widget)
@@ -132,6 +133,23 @@ class GlassTheme:
         if (app := _app()) is not None:
             _refresh_windows(app)
 
+    @staticmethod
+    def _sync_blur_controls() -> None:
+        """Refresh the blur toggle when compositor settings change outside Fleasion."""
+        app = _app()
+        if app is None:
+            return
+        status = blur.cached_status()
+        for widget in app.allWidgets():
+            if isinstance(widget, QPushButton) and widget.objectName() == BLUR_BUTTON:
+                widget.setVisible(status != 'unavailable' and state.settings.backdrop == 'desktop')
+                widget.setEnabled(status != 'unavailable' and blur.can_toggle())
+                widget.setText(
+                    tr('settings.appearance.glass_blur_on')
+                    if status == 'on'
+                    else tr('settings.appearance.glass_blur_off')
+                )
+
     def set_backdrop(self, mode: Backdrop) -> None:
         state.set_backdrop(mode)
         if self._filter is not None:
@@ -139,10 +157,7 @@ class GlassTheme:
         if (app := _app()) is None:
             return
         _sync_combo(app, BACKDROP_COMBO, data=mode)
-        show_blur = mode == 'desktop' and blur.status() != 'unavailable'
-        for widget in app.allWidgets():
-            if widget.objectName() == BLUR_BUTTON:
-                widget.setVisible(show_blur)
+        self._sync_blur_controls()
         _refresh_windows(app)
 
     @staticmethod
@@ -154,6 +169,7 @@ class GlassTheme:
             blur.disable()
         else:
             blur.enable()
+        GlassTheme._sync_blur_controls()
         if (app := _app()) is not None:
             _refresh_windows(app)
 

@@ -6,7 +6,7 @@ import sys
 from typing import TYPE_CHECKING, Final, override
 from weakref import WeakKeyDictionary
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QPushButton, QWidget
 from shiboken6 import isValid
@@ -27,7 +27,7 @@ _FALLBACK_BACKDROP: Final = (20, 22, 34)
 def effective_opacity() -> float:
     """Tint strength: the user's choice when something blurs behind us, else denser."""
     settings = state.settings
-    if settings.backdrop == 'wallpaper' or blur.status() == 'on':
+    if settings.backdrop == 'wallpaper' or blur.cached_status() == 'on':
         return settings.opacity
     return max(settings.opacity, UNBLURRED_OPACITY)
 
@@ -117,6 +117,8 @@ def _opaque_fallback(window: QWidget) -> bool:
 class GlassWindows(QObject):
     """Gives top-level windows an alpha surface and paints the glass on them."""
 
+    blur_status_changed = Signal()
+
     def __init__(self, app: QApplication) -> None:
         super().__init__(app)
         self._app = app
@@ -128,12 +130,19 @@ class GlassWindows(QObject):
         self.refresh_wallpaper()
 
     def refresh_wallpaper(self) -> None:
+        blur_changed = blur.poll_refresh()
+        if blur_changed:
+            self.blur_status_changed.emit()
+        changed = blur_changed
         if state.settings.backdrop == 'wallpaper' and wallpapers.refresh_source():
+            changed = True
+        if changed:
             for window in self._app.topLevelWidgets():
                 window.update()
 
     def restore(self) -> None:
         self._wallpaper_timer.stop()
+        blur.stop_polling()
         for window, (translucent, no_background) in list(self._attributes.items()):
             if not isValid(window):
                 continue

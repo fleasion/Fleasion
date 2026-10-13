@@ -119,7 +119,6 @@ _WELL: Final = (
 )
 
 _STYLESHEET: Final = Template("""
-* { outline: 0; }
 QMainWindow, QDialog { background: transparent; }
 QWidget { color: $text; }
 QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget, QTabWidget > QWidget,
@@ -171,6 +170,13 @@ QPushButton[glassArrow="true"]:hover { color: $text; background: rgba(255,255,25
 QPushButton[compact="true"] { padding: 0; border-radius: 9px; }
 QPushButton:hover, QToolButton:hover {
     background: $pane_hover; border-top-color: rgba(255,255,255,0.45);
+}
+QPushButton:focus, QToolButton:focus {
+    border: 2px solid rgba($accent_rgb,0.95);
+}
+QTabBar::tab:focus { border: 2px solid rgba($accent_rgb,0.95); }
+QCheckBox:focus, QRadioButton:focus {
+    border: 1px dotted rgba($accent_rgb,0.95); border-radius: 4px;
 }
 QPushButton:pressed, QToolButton:pressed, QToolButton:checked {
     background: rgba($accent_rgb,0.30); border-color: rgba($accent_rgb,0.55);

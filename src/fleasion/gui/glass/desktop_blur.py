@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import sys
 from ast import literal_eval
+from concurrent.futures import Future, ThreadPoolExecutor
+from time import monotonic
 from typing import Final, Literal, cast
 
 from fleasion.utils.paths import CONFIG_DIR
@@ -24,6 +26,7 @@ _EXTENSION: Final = 'blur-my-shell@aunetx'
 _SCHEMA_PATH: Final = '/org/gnome/shell/extensions/blur-my-shell/applications/'
 _BACKUP_FILE: Final = CONFIG_DIR / 'blur-my-shell-backup.json'
 _TIMEOUT: Final = 3
+_REFRESH_SECONDS: Final = 15
 log = logging.getLogger(__name__)
 
 
@@ -84,7 +87,11 @@ def _extension_active() -> bool:
     if not sys.platform.startswith('linux'):
         return False
     info = _run('gnome-extensions', 'info', _EXTENSION) or ''
-    return 'ACTIVE' in info or 'ENABLED' in info
+    return any(
+        line.partition(':')[2].strip().upper() == 'ACTIVE'
+        for line in info.splitlines()
+        if line.partition(':')[0].strip().lower() == 'state'
+    )
 
 
 def _load_backup() -> dict[str, str]:
@@ -99,16 +106,26 @@ def _load_backup() -> dict[str, str]:
 
 
 class DesktopBlur:
-    """Status is cached because it is read on every window paint."""
+    """Cache compositor status and refresh it without blocking window painting."""
 
     def __init__(self) -> None:
         self._status: BlurStatus | None = None
         self._can_toggle = False
+        self._executor: ThreadPoolExecutor | None = None
+        self._pending: Future[tuple[BlurStatus, bool]] | None = None
+        self._pending_generation = 0
+        self._generation = 0
+        self._next_refresh = 0.0
 
     def status(self, *, refresh: bool = False) -> BlurStatus:
         if self._status is None or refresh:
-            self._status = self._probe()
+            self._generation += 1
+            self._status, self._can_toggle = self._probe()
         return self._status
+
+    def cached_status(self) -> BlurStatus:
+        """Read the latest known state without invoking desktop commands in a paint event."""
+        return self._status or 'unavailable'
 
     def can_toggle(self) -> bool:
         self.status()
@@ -119,19 +136,55 @@ class DesktopBlur:
         backup = _load_backup()
         return 'whitelist' in backup and 'whitelist_applied' in backup
 
-    def _probe(self) -> BlurStatus:
-        self._can_toggle = False
+    @staticmethod
+    def _probe() -> tuple[BlurStatus, bool]:
         if not _extension_active():
-            return 'unavailable'
+            return 'unavailable', False
         blurring = _read('blur') == 'true'
         all_apps = _read('enable-all') == 'true'
         listed = APP_ID in _read_list('whitelist')
         covered = all_apps or listed
-        owned = self.owns_entry()
-        self._can_toggle = owned or (
+        owned = DesktopBlur.owns_entry()
+        can_toggle = owned or (
             blurring and not all_apps and not listed and not _BACKUP_FILE.exists()
         )
-        return 'on' if blurring and covered else 'off'
+        return ('on' if blurring and covered else 'off'), can_toggle
+
+    def poll_refresh(self) -> bool:
+        """Schedule and collect compositor checks on the GUI thread without waiting.
+
+        Returns True when the cached status or toggle availability changes.
+        """
+        changed = False
+        pending = self._pending
+        if pending is not None:
+            if not pending.done():
+                return False
+            self._pending = None
+            try:
+                result = pending.result()
+            except OSError, ValueError, subprocess.SubprocessError:
+                log.exception('Could not refresh compositor blur status')
+            else:
+                if self._pending_generation == self._generation:
+                    previous = self._status, self._can_toggle
+                    self._status, self._can_toggle = result
+                    changed = previous != result
+        if self._pending is None and monotonic() >= self._next_refresh:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='glass-blur')
+            self._pending_generation = self._generation
+            self._pending = self._executor.submit(self._probe)
+            self._next_refresh = monotonic() + _REFRESH_SECONDS
+        return changed
+
+    def stop_polling(self) -> None:
+        """Cancel unused work after Glass is disabled without waiting for desktop commands."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
+        self._pending = None
+        self._next_refresh = 0.0
 
     def enable(self) -> bool:
         if self.status(refresh=True) == 'on':
