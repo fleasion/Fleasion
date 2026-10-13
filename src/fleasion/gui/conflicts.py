@@ -141,7 +141,14 @@ def _request_scope(key: str) -> _RequestScope | None:
             return _RequestScope(asset_types=frozenset({value}))
         return _RequestScope(asset_id=value)
     prefix, sep, suffix = key.partition(':')
-    if sep and suffix.isdigit():
+    # The proxy emits canonical decimal slot keys. Imported forms such as
+    # TexturePack:00 and 01001:1 cannot match any generated request key.
+    if (
+        sep
+        and suffix.isdigit()
+        and suffix == str(int(suffix))
+        and (not prefix.isdigit() or prefix == str(int(prefix)))
+    ):
         texturepack_types = frozenset({TEXTUREPACK_TYPE_KEY})
         if prefix == 'TexturePack':
             return _RequestScope(asset_types=texturepack_types, texpack_slot=int(suffix))

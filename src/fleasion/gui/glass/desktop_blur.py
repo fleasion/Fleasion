@@ -162,7 +162,7 @@ class DesktopBlur:
         """Recheck permission and make the change entirely on the worker thread."""
         _status, can_toggle = DesktopBlur._probe()
         if can_toggle:
-            if DesktopBlur.owns_entry():
+            if DesktopBlur._reconcile_ownership():
                 DesktopBlur._restore_whitelist()
             else:
                 DesktopBlur._enable_whitelist()
@@ -172,6 +172,25 @@ class DesktopBlur:
     def owns_entry() -> bool:
         backup = _load_backup()
         return 'whitelist' in backup and 'whitelist_applied' in backup
+
+    @staticmethod
+    def _reconcile_ownership() -> bool:
+        """Discard a stale backup if the compositor no longer lists Fleasion.
+
+        Also recovers backups left by older versions after unsuccessful writes.
+        Only discard one when the desktop state can be read and parsed.
+        """
+        if not DesktopBlur.owns_entry():
+            return False
+        current = _run('dconf', 'read', _SCHEMA_PATH + 'whitelist')
+        if (
+            current is not None
+            and (whitelist := _parse_list(current)) is not None
+            and APP_ID not in whitelist
+        ):
+            _BACKUP_FILE.unlink(missing_ok=True)
+            return False
+        return True
 
     @staticmethod
     def _probe() -> tuple[BlurStatus, bool]:
@@ -256,11 +275,24 @@ class DesktopBlur:
         if APP_ID in whitelist:
             return False
         applied = _list_value([*whitelist, APP_ID])
-        if not _BACKUP_FILE.exists():
+        created_backup = not _BACKUP_FILE.exists()
+        if created_backup:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             backup = {'whitelist': original, 'whitelist_applied': applied}
             _BACKUP_FILE.write_text(json.dumps(backup), encoding='utf-8')
-        return _write('whitelist', applied)
+        if _write('whitelist', applied):
+            return True
+
+        # dconf can report failure after the write was applied. Only discard
+        # the backup we just created when a read confirms nothing was changed
+        current = _run('dconf', 'read', _SCHEMA_PATH + 'whitelist')
+        if current is not None and _parse_list(current) == _parse_list(applied):
+            return True
+        if created_backup and current is not None:
+            current_list = _parse_list(current)
+            if current_list is not None and APP_ID not in current_list:
+                _BACKUP_FILE.unlink(missing_ok=True)
+        return False
 
     def disable(self) -> None:
         if self._restore_whitelist():
