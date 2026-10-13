@@ -203,7 +203,10 @@ def test_wallpaper_discovery_runs_outside_paint_and_gui_thread(
 
 def _wait_image(cache: wallpaper.WallpaperCache, width: int, height: int) -> QImage:
     cache.image(width, height)
-    entry = cache._entries[(width, height)]  # pyright: ignore[reportPrivateUsage]
+    entry = next(
+        value for key, value in cache._entries.items()  # pyright: ignore[reportPrivateUsage]
+        if key[2:] == (width, height)
+    )
     if isinstance(entry, Future):
         entry.result(timeout=5)
     return cache.image(width, height)

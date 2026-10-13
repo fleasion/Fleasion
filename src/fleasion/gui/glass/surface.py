@@ -54,7 +54,7 @@ def _paint_wallpaper(painter: QPainter, window: QWidget, path: QPainterPath) -> 
     # Cover the screen, or the window if it is larger than the screen
     width = max(geometry.width(), window.width())
     height = max(geometry.height(), window.height())
-    image = wallpapers.image(width, height)
+    image = wallpapers.image(width, height, screen.name())
     if image.isNull():
         painter.fillPath(path, QColor(*_FALLBACK_BACKDROP))
         return
@@ -143,6 +143,7 @@ class GlassWindows(QObject):
     def restore(self) -> None:
         self._wallpaper_timer.stop()
         blur.stop_polling()
+        wallpapers.close()
         for window, (translucent, no_background) in list(self._attributes.items()):
             if not isValid(window):
                 continue

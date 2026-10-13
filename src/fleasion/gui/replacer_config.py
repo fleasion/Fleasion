@@ -1137,6 +1137,11 @@ class ReplacerConfigWindow(QDialog):
             yield from tab.build_ui()
             self._install_tab('modifications', tab)
 
+    def _open_palette_tab(self, index: int) -> None:
+        """Do not navigate to a tab disabled during asynchronous initialization."""
+        if 0 <= index < self.tab_widget.count() and self.tab_widget.isTabEnabled(index):
+            self.tab_widget.setCurrentIndex(index)
+
     def _palette_commands(self) -> list[Command]:
         """Everything the Ctrl+K palette can do from the dashboard."""
         config = self.config_manager
@@ -1145,9 +1150,10 @@ class ReplacerConfigWindow(QDialog):
             Command(
                 self.tab_widget.tabText(index),
                 go_to,
-                partial(self.tab_widget.setCurrentIndex, index),
+                partial(self._open_palette_tab, index),
             )
             for index in range(self.tab_widget.count())
+            if self.tab_widget.isTabEnabled(index)
         ]
         for name in config.config_names:
             enabled = config.is_config_enabled(name)

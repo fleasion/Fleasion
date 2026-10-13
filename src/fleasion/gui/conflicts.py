@@ -1,4 +1,4 @@
-"""Mod-conflict checker: asset IDs claimed by more than one enabled config.
+"""Mod-conflict checker: exact-key collisions and possible overlapping replacement scopes.
 
 Mirrors the proxy's real precedence so the reported winner is what players
 actually get: any replacement beats a removal, local files beat CDN URLs, CDN
@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fleasion.config.manager import replacement_rule_claims
+from fleasion.config.manager import ASSET_TYPE_KEYS, ASSET_TYPE_NAMES, replacement_rule_claims
 from fleasion.localization import tr
 
 if TYPE_CHECKING:
@@ -65,6 +65,7 @@ class Claim:
 class Conflict:
     asset: str
     claims: list[Claim] = field(default_factory=list[Claim])
+    potential: bool = False
 
     @property
     def winner(self) -> Claim:
@@ -110,6 +111,36 @@ def find_conflicts(source: RuleSource) -> list[Conflict]:
         for asset, found in claims.items()
         if len({claim.config for claim in found}) > 1
     ]
+    # An asset-ID override and an asset-type fallback can both match a request.
+    # They are only potential conflicts: the asset's type is not known here.
+    type_keys = sorted((key for key in claims if key.isdigit() and int(key) in ASSET_TYPE_KEYS))
+    asset_keys = sorted(
+        (key for key in claims if key.isdigit() and int(key) not in ASSET_TYPE_KEYS)
+    )
+    for asset in asset_keys:
+        for asset_type in type_keys:
+            scoped = [*claims[asset], *claims[asset_type]]
+            if len({claim.config for claim in scoped}) > 1:
+                conflicts.append(
+                    Conflict(
+                        f'{asset} / {ASSET_TYPE_NAMES[int(asset_type)].title()}',
+                        scoped,
+                        potential=True,
+                    )
+                )
+
+    # TexturePack slot wildcards also overlap exact slots from other configs.
+    wildcards = {key: found for key, found in claims.items() if key.startswith('TexturePack:')}
+    for asset, found in claims.items():
+        prefix, separator, slot = asset.partition(':')
+        if not separator or not prefix.isdigit() or not slot.isdigit():
+            continue
+        wildcard = f'TexturePack:{slot}'
+        if wildcard in wildcards:
+            scoped = [*found, *wildcards[wildcard]]
+            if len({claim.config for claim in scoped}) > 1:
+                conflicts.append(Conflict(f'{asset} / {wildcard}', scoped, potential=True))
+
     conflicts.sort(key=lambda conflict: (conflict.winner.config, conflict.asset))
     return conflicts
 
@@ -138,12 +169,18 @@ class ConflictsDialog(QDialog):
             item = QTreeWidgetItem(
                 [
                     conflict.asset,
-                    conflict.winner.label(),
-                    '\n'.join(claim.label() for claim in conflict.losers),
+                    tr('ui.gui.conflicts.potential')
+                    if conflict.potential
+                    else conflict.winner.label(),
+                    '\n'.join(
+                        claim.label()
+                        for claim in (conflict.claims if conflict.potential else conflict.losers)
+                    ),
                 ]
             )
             font = item.font(1)
-            font.setBold(True)
+            font.setBold(not conflict.potential)
+            font.setItalic(conflict.potential)
             item.setFont(1, font)
             tree.addTopLevelItem(item)
         header = tree.header()

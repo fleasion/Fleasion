@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -14,7 +15,7 @@ from operator import itemgetter
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import unquote, urlparse
 
 from PIL import Image, ImageFilter, UnidentifiedImageError
@@ -27,6 +28,18 @@ _TIMEOUT: Final = 2
 _BLUR_RADIUS: Final = 18
 _REFRESH_SECONDS: Final = 5
 _MAX_SIZES: Final = 8
+_MACOS_MULTI_WALLPAPER_SCRIPT: Final = """
+ObjC.import('AppKit');
+var screens = $.NSScreen.screens;
+var wallpapers = {};
+for (var i = 0; i < screens.count; i++) {
+    var screen = screens.objectAtIndex(i);
+    var name = ObjC.unwrap(screen.localizedName);
+    var url = $.NSWorkspace.sharedWorkspace.desktopImageURLForScreen(screen);
+    if (url) wallpapers[name] = ObjC.unwrap(url.path);
+}
+JSON.stringify(wallpapers);
+"""
 _MACOS_WALLPAPER_SCRIPT: Final = """
 ObjC.import('AppKit');
 var screens = $.NSScreen.screens;
@@ -120,6 +133,92 @@ def _xfce_wallpaper() -> Path | None:
     return max(candidates, key=itemgetter(0))[1] if candidates else None
 
 
+def _xfce_wallpapers() -> dict[str, Path]:
+    """Find wallpapers for individual XFCE monitors in the active workspace."""
+    executable = shutil.which('xfconf-query')
+    if executable is None:
+        return {}
+    try:
+        result = subprocess.run(
+            [executable, '-c', 'xfce4-desktop', '-lv'],
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return {}
+    if result.returncode != 0:
+        return {}
+    workspace = _xfce_workspace()
+    matches: dict[str, tuple[int, Path]] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(maxsplit=1)
+        if len(fields) != 2:
+            continue
+        key, value = fields
+        components = key.split('/')
+        if len(components) != 6 or components[1] != 'backdrop':
+            continue
+        _, _, _screen, monitor, work, field = components
+        if not monitor.startswith('monitor') or field not in {'last-image', 'image-path'}:
+            continue
+        if not work.startswith('workspace') or not work[9:].isdigit():
+            continue
+        work_num = int(work[9:])
+        if work_num not in {0, workspace}:
+            continue
+        name = monitor.removeprefix('monitor')
+        if not name:
+            continue
+        value = value.strip().strip('"')
+        path = _file_from_uri(value) if value.startswith('file://') else Path(value).expanduser()
+        if path is None or not path.is_file() or path.suffix.lower() == '.xml':
+            continue
+        priority = (10 if work_num == workspace else 0) + (1 if field == 'last-image' else 0)
+        if name not in matches or priority > matches[name][0]:
+            matches[name] = priority, path
+    return {name: path for name, (_, path) in matches.items()}
+
+
+def _macos_wallpapers() -> dict[str, Path]:
+    executable = shutil.which('osascript')
+    if executable is None:
+        return {}
+    try:
+        result = subprocess.run(
+            [executable, '-l', 'JavaScript', '-e', _MACOS_MULTI_WALLPAPER_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            check=False,
+        )
+        entries: object = json.loads(result.stdout) if result.returncode == 0 else {}
+    except OSError, ValueError, subprocess.SubprocessError:
+        return {}
+    if not isinstance(entries, dict):
+        return {}
+    sources: dict[str, Path] = {}
+    for name, value in cast('dict[object, object]', entries).items():
+        if isinstance(name, str) and isinstance(value, str):
+            path = Path(value)
+            if path.is_file():
+                sources[name] = path
+    return sources
+
+
+def screen_wallpaper_paths() -> dict[str, Path]:
+    """Best-effort per-display sources, keyed by Qt's QScreen.name()."""
+    if sys.platform == 'darwin':
+        return _macos_wallpapers()
+    if (
+        sys.platform.startswith('linux')
+        and 'xfce' in os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+    ):
+        return _xfce_wallpapers()
+    return {}
+
+
 def _linux_wallpaper() -> Path | None:
     desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
     if 'xfce' in desktop and (xfce := _xfce_wallpaper()) is not None:
@@ -176,18 +275,34 @@ def _macos_wallpaper() -> Path | None:
 class WallpaperSource:
     path: Path | None = None
     stamp: tuple[int, int] | None = None
+    screens: tuple[tuple[str, Path, tuple[int, int]], ...] = ()
+
+    def for_screen(self, screen_name: str) -> tuple[Path | None, tuple[int, int] | None]:
+        for name, path, stamp in self.screens:
+            if name.casefold() == screen_name.casefold():
+                return path, stamp
+        return self.path, self.stamp
 
 
 def _discover_source() -> WallpaperSource:
+    """Stat all desktop sources in the discovery worker, never in paint events."""
     path = wallpaper_path()
-    if path is None:
-        return WallpaperSource()
-    try:
-        stat = path.stat()
-    except OSError:
-        log.warning('Wallpaper became unavailable: %s', path)
-        return WallpaperSource()
-    return WallpaperSource(path, (stat.st_mtime_ns, stat.st_size))
+    stamp: tuple[int, int] | None = None
+    if path is not None:
+        try:
+            stat = path.stat()
+            stamp = stat.st_mtime_ns, stat.st_size
+        except OSError:
+            log.warning('Wallpaper became unavailable: %s', path)
+            path = None
+    screens: list[tuple[str, Path, tuple[int, int]]] = []
+    for name, source in screen_wallpaper_paths().items():
+        try:
+            stat = source.stat()
+        except OSError:
+            continue
+        screens.append((name, source, (stat.st_mtime_ns, stat.st_size)))
+    return WallpaperSource(path, stamp, tuple(sorted(screens)))
 
 
 def _load_image(source: Path) -> Image.Image:
@@ -240,7 +355,9 @@ class WallpaperCache:
         self._source = WallpaperSource()
         self._executor: ThreadPoolExecutor | None = None
         self._pending: Future[WallpaperSource] | None = None
-        self._entries: OrderedDict[tuple[int, int], QImage | Future[QImage]] = OrderedDict()
+        self._entries: OrderedDict[
+            tuple[Path, tuple[int, int] | None, int, int], QImage | Future[QImage]
+        ] = OrderedDict()
         self._next_refresh = 0.0
         self._notify_ready = False
 
@@ -284,9 +401,12 @@ class WallpaperCache:
             self._next_refresh = monotonic() + _REFRESH_SECONDS
         return changed
 
-    def image(self, width: int, height: int) -> QImage:
-        """Return a cached image immediately, or queue one and return an empty image."""
-        size = (max(1, width), max(1, height))
+    def image(self, width: int, height: int, screen_name: str = '') -> QImage:
+        """Look up the screen's wallpaper without blocking on discovery or rendering."""
+        path, stamp = self._source.for_screen(screen_name)
+        if path is None:
+            return QImage()
+        size = (path, stamp, max(1, width), max(1, height))
         entry = self._entries.get(size)
         if entry is not None:
             self._entries.move_to_end(size)
@@ -298,12 +418,11 @@ class WallpaperCache:
                 self._notify_ready = True
                 return image
             return QImage()
-        if self._source.path is not None:
-            self._entries[size] = self._pool().submit(render_wallpaper, self._source.path, *size)
-            while len(self._entries) > _MAX_SIZES:
-                _, oldest = self._entries.popitem(last=False)
-                if isinstance(oldest, Future):
-                    oldest.cancel()
+        self._entries[size] = self._pool().submit(render_wallpaper, path, size[2], size[3])
+        while len(self._entries) > _MAX_SIZES:
+            _, oldest = self._entries.popitem(last=False)
+            if isinstance(oldest, Future):
+                oldest.cancel()
         return QImage()
 
     def close(self) -> None:
@@ -312,6 +431,7 @@ class WallpaperCache:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
         self._entries.clear()
+        self._source = WallpaperSource()
         self._pending = None
         self._next_refresh = 0.0
         self._notify_ready = False

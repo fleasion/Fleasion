@@ -257,6 +257,8 @@ _ASSET_TYPE_IDS = {
     'codesnippet': 80,
 }
 _RESERVED_ASSET_TYPE_ID_MAX = max(_ASSET_TYPE_IDS.values())
+ASSET_TYPE_KEYS = frozenset(_ASSET_TYPE_IDS.values())
+ASSET_TYPE_NAMES = {code: name for name, code in _ASSET_TYPE_IDS.items()}
 _VIRTUAL_ANIM_TYPES = {
     'r6animation': 'R6Animation',
     'r15animation': 'R15Animation',
