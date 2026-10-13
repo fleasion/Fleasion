@@ -309,6 +309,80 @@ def test_linux_already_active_binding_shadows_new_less_specific_match() -> None:
     assert activations == ['ctrl_shift_a']
 
 
+def test_linux_bare_binding_activates_when_shift_is_released_with_key_held() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'bare': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': 0},
+        'shifted': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+
+    _set_key_state(service, 43, 42, True)
+    _set_key_state(service, 43, 30, True)
+    assert activations == ['shifted']
+
+    _set_key_state(service, 43, 42, False)
+    assert activations == ['shifted', 'bare']
+    _set_key_state(service, 43, 42, True)
+    assert activations == ['shifted', 'bare', 'shifted']
+
+
+
+def test_linux_shadowed_binding_activates_when_modifier_priority_changes() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'ctrl_shift_a': {
+            'platform': 'linux_evdev',
+            'scan_code': 30,
+            'modifiers': MOD_CTRL | MOD_SHIFT,
+        },
+        'alt_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_ALT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+
+    for code in (29, 42, 30):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['ctrl_shift_a']
+
+    _set_key_state(service, 43, 56, True)  # Alt matches but remains shadowed
+    assert activations == ['ctrl_shift_a']
+
+    _set_key_state(service, 43, 29, False)
+    _set_key_state(service, 43, 42, False)
+    assert activations == ['ctrl_shift_a', 'alt_a']
+
+    # Reversing the modifier transition must rearm the previously shadowed chord
+    _set_key_state(service, 43, 29, True)
+    _set_key_state(service, 43, 42, True)
+    assert activations == ['ctrl_shift_a', 'alt_a', 'ctrl_shift_a']
+    _set_key_state(service, 43, 29, False)
+    assert activations == ['ctrl_shift_a', 'alt_a', 'ctrl_shift_a', 'alt_a']
+
+
+def test_linux_identical_and_equal_specificity_bindings_both_activate() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'shift_a_first': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+        'shift_a_second': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+        'alt_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_ALT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+
+    for code in (42, 56, 30):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['shift_a_first', 'shift_a_second', 'alt_a']
+
+    _set_key_state(service, 43, 56, False)
+    _set_key_state(service, 43, 56, True)
+    assert activations == ['shift_a_first', 'shift_a_second', 'alt_a', 'alt_a']
+
+
 def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,

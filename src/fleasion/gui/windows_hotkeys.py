@@ -454,10 +454,15 @@ class WindowsHotkeyService(QObject):
         # baseline, not as a new press.  This prevents a settings refresh from
         # retriggering the same hotkey until the user releases it first.
         initial_modifiers = active_modifiers()
-        was_active = {
-            name: binding_is_active(virtual_key, required_modifiers, initial_modifiers)
-            for name, (virtual_key, required_modifiers) in translated.items()
-        }
+        previously_winning = set(
+            most_specific_names(
+                [
+                    (name, required_modifiers, virtual_key)
+                    for name, (virtual_key, required_modifiers) in translated.items()
+                    if binding_is_active(virtual_key, required_modifiers, initial_modifiers)
+                ]
+            )
+        )
         try:
             while not self._stop.wait(self._POLL_SECONDS):
                 self._pump_windows_messages()
@@ -473,17 +478,16 @@ class WindowsHotkeyService(QObject):
                     for name in most_specific_names(candidates):
                         self._emit_activation(name)
                 modifiers = active_modifiers()
-                matches: list[tuple[str, int, int]] = []
-                active_by_name: dict[str, bool] = {}
-                for name, (virtual_key, required_modifiers) in translated.items():
-                    active = binding_is_active(virtual_key, required_modifiers, modifiers)
-                    if active:
-                        matches.append((name, required_modifiers, virtual_key))
-                    active_by_name[name] = active
-                for name in most_specific_names(matches):
-                    if not was_active[name]:
+                matches = [
+                    (name, required_modifiers, virtual_key)
+                    for name, (virtual_key, required_modifiers) in translated.items()
+                    if binding_is_active(virtual_key, required_modifiers, modifiers)
+                ]
+                winners = most_specific_names(matches)
+                for name in winners:
+                    if name not in previously_winning:
                         self._emit_activation(name)
-                was_active = active_by_name
+                previously_winning = set(winners)
         finally:
             if mouse_hook is not None:
                 _windll().user32.UnhookWindowsHookEx(mouse_hook[0])
