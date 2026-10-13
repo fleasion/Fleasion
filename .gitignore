@@ -235,7 +235,6 @@ __marimo__/
 *~
 
 # Agents
-.repowise/
 .claude/
 .codex/
 CLAUDE.md
