@@ -259,6 +259,7 @@ _ASSET_TYPE_IDS = {
 _RESERVED_ASSET_TYPE_ID_MAX = max(_ASSET_TYPE_IDS.values())
 ASSET_TYPE_KEYS = frozenset(_ASSET_TYPE_IDS.values())
 ASSET_TYPE_NAMES = {code: name for name, code in _ASSET_TYPE_IDS.items()}
+TEXTUREPACK_TYPE_KEY = _ASSET_TYPE_IDS['texturepack']
 _VIRTUAL_ANIM_TYPES = {
     'r6animation': 'R6Animation',
     'r15animation': 'R15Animation',
@@ -267,6 +268,26 @@ _VIRTUAL_ANIM_TYPES = {
     'r15 animation': 'R15Animation',
     'non-player animation': 'NonPlayerAnimation',
 }
+
+# Keep the GUI's overlap predicates aligned with the proxy's animation entry check
+ANIMATION_TYPE_KEYS = frozenset(
+    _ASSET_TYPE_IDS[name]
+    for name in (
+        'animation',
+        'climbanimation',
+        'deathanimation',
+        'fallanimation',
+        'idleanimation',
+        'jumpanimation',
+        'runanimation',
+        'swimanimation',
+        'walkanimation',
+        'poseanimation',
+        'emoteanimation',
+        'moodanimation',
+    )
+)
+VIRTUAL_ANIMATION_KEYS = frozenset(_VIRTUAL_ANIM_TYPES.values())
 
 
 def _parse_config_asset_id(value: object) -> int | None:

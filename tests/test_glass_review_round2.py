@@ -302,3 +302,101 @@ def test_cache_recreates_discovery_worker_after_theme_reactivation(
         assert cache._source.path == source  # pyright: ignore[reportPrivateUsage]
     finally:
         cache.close()
+
+
+@pytest.mark.parametrize(
+    ('first', 'second', 'expected'),
+    [
+        ('TexturePack:1', 1001, True),
+        ('TexturePack:1', 'TexturePack', True),
+        ('R6Animation', 1001, True),
+        ('R15Animation', 'Animation', True),
+        ('R6Animation', 'R15Animation', True),
+        (1001, '1001:1', True),
+        ('TexturePack', '1001:1', True),
+        ('TexturePack:1', '1001:1', True),
+        ('Mesh', 1001, True),
+        ('TexturePack:1', 'Mesh', False),
+        ('R6Animation', 'TexturePack', False),
+        ('R6Animation', 'Mesh', False),
+        ('TexturePack:1', 'TexturePack:2', False),
+        ('1001:1', '1001:2', False),
+        ('1001:1', '1002:1', False),
+        (1001, 1002, False),
+        ('Mesh', 'Audio', False),
+    ],
+)
+def test_conflict_overlap_follows_possible_proxy_request(
+    config: manager.ConfigManager, first: str | int, second: str | int, expected: bool
+) -> None:
+    _enable(config, 'a', [{'replace_ids': [first], 'with_id': 2001}])
+    _enable(config, 'b', [{'replace_ids': [second], 'with_id': 2002}])
+    overlaps = find_conflicts(config)
+    assert bool(overlaps) is expected
+    if expected:
+        assert len(overlaps) == 1
+        assert overlaps[0].potential
+        assert {claim.config for claim in overlaps[0].claims} == {'a', 'b'}
+
+
+def test_animated_proxy_type_ids_use_shared_matching_constraints() -> None:
+    from fleasion.config.manager import ANIMATION_TYPE_KEYS
+    from fleasion.proxy.addons.texture_stripper import TextureStripper
+
+    assert TextureStripper._ANIM_TYPE_IDS == ANIMATION_TYPE_KEYS  # pyright: ignore[reportPrivateUsage]
+
+
+def test_fade_tabs_does_not_accumulate_completed_animations(app: QApplication) -> None:
+    from PySide6.QtCore import QAbstractAnimation, QEvent, QPropertyAnimation
+    from PySide6.QtWidgets import QTabWidget
+
+    from fleasion.gui.command_palette import fade_tabs
+
+    tabs = QTabWidget()
+    tabs.addTab(QWidget(), 'First')
+    tabs.addTab(QWidget(), 'Second')
+    fade_tabs(tabs)
+    try:
+        for index in range(100):
+            tabs.setCurrentIndex((index + 1) % 2)
+            active = tabs.findChildren(QPropertyAnimation)
+            assert len(active) <= 2
+            for animation in active:
+                if animation.state() == QAbstractAnimation.State.Running:
+                    animation.setCurrentTime(animation.duration())
+            app.processEvents()
+            app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert not tabs.findChildren(QPropertyAnimation)
+    finally:
+        tabs.deleteLater()
+        app.processEvents()
+
+
+def test_many_unrelated_asset_ids_do_not_create_spurious_conflicts(
+    config: manager.ConfigManager,
+) -> None:
+    _enable(config, 'even', [{'replace_ids': list(range(1000, 5000, 2)), 'with_id': 8001}])
+    _enable(config, 'odd', [{'replace_ids': list(range(1001, 5000, 2)), 'with_id': 8002}])
+    assert find_conflicts(config) == []
+
+
+def test_rapid_tab_switches_eventually_release_animations(app: QApplication) -> None:
+    from PySide6.QtCore import QEvent, QPropertyAnimation
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QTabWidget
+
+    from fleasion.gui.command_palette import fade_tabs
+
+    tabs = QTabWidget()
+    tabs.addTab(QWidget(), 'First')
+    tabs.addTab(QWidget(), 'Second')
+    fade_tabs(tabs)
+    try:
+        for index in range(100):
+            tabs.setCurrentIndex((index + 1) % 2)
+        QTest.qWait(250)
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert not tabs.findChildren(QPropertyAnimation)
+    finally:
+        tabs.deleteLater()
+        app.processEvents()

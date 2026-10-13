@@ -9,6 +9,7 @@ earlier one (``ConfigManager.get_all_replacements`` uses dict updates).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import chain, combinations
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from PySide6.QtCore import QTimer
@@ -24,7 +25,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fleasion.config.manager import ASSET_TYPE_KEYS, ASSET_TYPE_NAMES, replacement_rule_claims
+from fleasion.config.manager import (
+    ANIMATION_TYPE_KEYS,
+    ASSET_TYPE_KEYS,
+    ASSET_TYPE_NAMES,
+    TEXTUREPACK_TYPE_KEY,
+    VIRTUAL_ANIMATION_KEYS,
+    replacement_rule_claims,
+)
 from fleasion.localization import tr
 
 if TYPE_CHECKING:
@@ -93,6 +101,57 @@ def rule_mode(rule: Rule) -> Mode:
     return known.get(mode, 'id')
 
 
+@dataclass(frozen=True)
+class _RequestScope:
+    """Constraints on a possible proxy request, independent of replacement mode."""
+
+    asset_id: int | None = None
+    asset_types: frozenset[int] | None = None
+    texpack_slot: int | None = None
+
+    def overlaps(self, other: _RequestScope) -> bool:
+        """Whether one request can satisfy both matching-key constraints."""
+        return (
+            (self.asset_id is None or other.asset_id is None or self.asset_id == other.asset_id)
+            and (
+                self.asset_types is None
+                or other.asset_types is None
+                or not self.asset_types.isdisjoint(other.asset_types)
+            )
+            and (
+                self.texpack_slot is None
+                or other.texpack_slot is None
+                or self.texpack_slot == other.texpack_slot
+            )
+        )
+
+
+def _request_scope(key: str) -> _RequestScope | None:
+    """Project the proxy's request matching keys to their shared request constraints.
+
+    Mirrors ``TextureStripper``'s slot/asset/wildcard/type key groups and
+    animation-only virtual keys. A missing constraint means any value is possible,
+    not that the request has no type or TexturePack slot.
+    """
+    if key in VIRTUAL_ANIMATION_KEYS:
+        return _RequestScope(asset_types=ANIMATION_TYPE_KEYS)
+    if key.isdigit():
+        value = int(key)
+        if value in ASSET_TYPE_KEYS:
+            return _RequestScope(asset_types=frozenset({value}))
+        return _RequestScope(asset_id=value)
+    prefix, sep, suffix = key.partition(':')
+    if sep and suffix.isdigit():
+        texturepack_types = frozenset({TEXTUREPACK_TYPE_KEY})
+        if prefix == 'TexturePack':
+            return _RequestScope(asset_types=texturepack_types, texpack_slot=int(suffix))
+        if prefix.isdigit():
+            return _RequestScope(
+                asset_id=int(prefix), asset_types=texturepack_types, texpack_slot=int(suffix)
+            )
+    return None
+
+
 def find_conflicts(source: RuleSource) -> list[Conflict]:
     claims: dict[str, list[Claim]] = {}
     for config, order, rule in source.iter_enabled_rules():
@@ -111,35 +170,44 @@ def find_conflicts(source: RuleSource) -> list[Conflict]:
         for asset, found in claims.items()
         if len({claim.config for claim in found}) > 1
     ]
-    # An asset-ID override and an asset-type fallback can both match a request.
-    # They are only potential conflicts: the asset's type is not known here.
-    type_keys = sorted((key for key in claims if key.isdigit() and int(key) in ASSET_TYPE_KEYS))
-    asset_keys = sorted(
-        (key for key in claims if key.isdigit() and int(key) not in ASSET_TYPE_KEYS)
-    )
-    for asset in asset_keys:
-        for asset_type in type_keys:
-            scoped = [*claims[asset], *claims[asset_type]]
-            if len({claim.config for claim in scoped}) > 1:
-                conflicts.append(
-                    Conflict(
-                        f'{asset} / {ASSET_TYPE_NAMES[int(asset_type)].title()}',
-                        scoped,
-                        potential=True,
-                    )
-                )
+    # Unlike exact-key collisions, different matching groups can only be
+    # identified as potential overlaps without the asset's request metadata.
+    # Compare their shared request constraints instead of enumerating special
+    # cases (ID/type, slot/wildcard, animation fallback, etc.).
+    scopes = {key: scope for key in claims if (scope := _request_scope(key)) is not None}
+    broad_keys: list[str] = []
+    specific_by_id: dict[int, list[str]] = {}
+    for key, scope in scopes.items():
+        if scope.asset_id is None:
+            broad_keys.append(key)
+        else:
+            specific_by_id.setdefault(scope.asset_id, []).append(key)
 
-    # TexturePack slot wildcards also overlap exact slots from other configs.
-    wildcards = {key: found for key, found in claims.items() if key.startswith('TexturePack:')}
-    for asset, found in claims.items():
-        prefix, separator, slot = asset.partition(':')
-        if not separator or not prefix.isdigit() or not slot.isdigit():
+    # Unrelated concrete asset IDs can never overlap. Only compare keys with
+    # unconstrained IDs, or keys that target the same concrete asset ID.
+    concrete_keys = [key for group in specific_by_id.values() for key in group]
+    candidates = chain(
+        combinations(broad_keys, 2),
+        ((left, right) for left in broad_keys for right in concrete_keys),
+        (pair for group in specific_by_id.values() for pair in combinations(group, 2)),
+    )
+    for left, right in candidates:
+        if not scopes[left].overlaps(scopes[right]):
             continue
-        wildcard = f'TexturePack:{slot}'
-        if wildcard in wildcards:
-            scoped = [*found, *wildcards[wildcard]]
-            if len({claim.config for claim in scoped}) > 1:
-                conflicts.append(Conflict(f'{asset} / {wildcard}', scoped, potential=True))
+        found = [*claims[left], *claims[right]]
+        if len({claim.config for claim in found}) <= 1:
+            continue
+        left_label = (
+            ASSET_TYPE_NAMES.get(int(left), left).title()
+            if left.isdigit() and int(left) in ASSET_TYPE_KEYS
+            else left
+        )
+        right_label = (
+            ASSET_TYPE_NAMES.get(int(right), right).title()
+            if right.isdigit() and int(right) in ASSET_TYPE_KEYS
+            else right
+        )
+        conflicts.append(Conflict(f'{left_label} / {right_label}', found, potential=True))
 
     conflicts.sort(key=lambda conflict: (conflict.winner.config, conflict.asset))
     return conflicts

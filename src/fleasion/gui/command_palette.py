@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Final, override
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, Qt
+from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QEvent, QObject, QPropertyAnimation, Qt
 from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
@@ -217,7 +217,7 @@ def fade_tabs(tabs: QTabWidget) -> None:
         animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         # Graphics effects slow down large tables, so switch it off once faded in
         animation.finished.connect(partial(effect.setEnabled, False))  # ruff: ignore[boolean-positional-value-in-call] - Qt API
-        animation.start()
+        animation.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
     tabs.currentChanged.connect(on_change)
 
