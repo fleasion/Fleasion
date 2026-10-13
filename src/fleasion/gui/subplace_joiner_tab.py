@@ -15,7 +15,7 @@ from urllib.parse import quote, urlparse
 
 import requests
 from dateutil import parser as _dateutil_parser
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QImage, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -48,8 +48,6 @@ from fleasion.utils.roblox_auth import (
 from fleasion.utils.windows import launch_as_standard_user
 
 from .prejsons_dialog import (
-    CARD_HEIGHT,
-    CARD_WIDTH,
     THUMB_HEIGHT,
     THUMB_WIDTH,
     make_rounded_pixmap,
@@ -60,8 +58,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator
     from pathlib import Path
 
-    from PySide6.QtCore import QEvent, QPoint
-    from PySide6.QtGui import QAction, QEnterEvent, QMouseEvent, QResizeEvent, QShowEvent
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QAction, QMouseEvent, QResizeEvent, QShowEvent
     from PySide6.QtWidgets import QLayoutItem
 
     from fleasion.proxy.server import ProxyFlow
@@ -278,7 +276,8 @@ class _Invoker(QObject):
 # GameCardWidget (inline, PySide6)
 
 
-_SUBPLACE_CARD_H = CARD_HEIGHT + 8
+_SUBPLACE_CARD_W = 286
+_SUBPLACE_CARD_H = 324
 
 
 class _JobIdEdit(QLineEdit):
@@ -287,7 +286,7 @@ class _JobIdEdit(QLineEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setPlaceholderText(tr('ui.gui.subplace_joiner_tab.jobid_optional'))
-        self.setFixedHeight(20)
+        self.setMinimumHeight(30)
         self.setStyleSheet('font-size: 9pt;')
 
     def get_job_id(self) -> str:
@@ -316,32 +315,90 @@ class _CopyPlaceIdLabel(QLabel):
         super().mousePressEvent(event)
 
 
-class SubplaceGameCard(QFrame):
-    """Game card matching the PreJsons visual design, with subplace-joiner buttons."""
+class _PlaceIdButton(QPushButton):
+    """Sidebar button that elides its label within the visible scroll viewport."""
 
-    def _apply_style(self, hover: bool = False) -> None:
+    def __init__(self, place_id: str) -> None:
+        super().__init__(place_id)
+        self._full_label = place_id
+        # A parented timer cannot outlive the Qt button it updates
+        self._relabel_timer = QTimer(self)
+        self._relabel_timer.setSingleShot(True)
+        self._relabel_timer.timeout.connect(self._update_label)
+        self.setObjectName('SubplaceSidebarButton')
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
+    def set_display_name(self, name: str) -> None:
+        self._full_label = name
+        self.setToolTip(name)
+        self._update_label()
+
+    def _update_label(self) -> None:
+        label = self.fontMetrics().elidedText(
+            self._full_label, Qt.TextElideMode.ElideRight, max(0, self.width() - 40)
+        )
+        escaped = label.replace('&', '&&')
+        if escaped != self.text():
+            self.setText(escaped)
+
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._update_label()
+
+    @override
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in {QEvent.Type.FontChange, QEvent.Type.StyleChange}:
+            self._relabel_timer.start(0)
+
+
+class SubplaceGameCard(QFrame):
+    """A constant-size subplace card in every theme and viewport width."""
+
+    def _apply_style(self) -> None:
+        window_color = QApplication.palette().color(QPalette.ColorRole.Window)
+        variant = (
+            'Glass'
+            if window_color.alpha() == 0
+            else 'Dark'
+            if window_color.lightness() < 128
+            else 'Light'
+        )
+        if variant == self._style_variant:
+            return
+        self._style_variant = variant
+        if variant == 'Glass':
+            # The global Glass QSS owns the card surface and hover state
+            self.setStyleSheet('')
+            return
         dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
         border = 'rgba(255,255,255,0.22)' if dark else 'rgba(0,0,0,0.18)'
-        bg = (
-            ('rgba(255,255,255,0.07)' if hover else 'rgba(255,255,255,0.04)')
-            if dark
-            else ('rgba(0,0,0,0.06)' if hover else 'transparent')
+        bg = 'rgba(255,255,255,0.04)' if dark else 'rgba(0,0,0,0.03)'
+        hover = 'rgba(255,255,255,0.09)' if dark else 'rgba(0,0,0,0.06)'
+        self.setStyleSheet(
+            f'QFrame#SubplaceGameCard {{ border: 1px solid {border}; background: {bg}; }}'
+            f'QFrame#SubplaceGameCard:hover {{ background: {hover}; }}'
         )
-        self.setStyleSheet(f'SubplaceGameCard {{ border: 1px solid {border}; background: {bg}; }}')
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._restyle_timer = QTimer(self)
+        self._restyle_timer.setSingleShot(True)
+        self._restyle_timer.timeout.connect(self._apply_style)
         self.place_id: int | None = None
         self.is_root: bool = False
         self.created_iso: str | None = None
         self.updated_iso: str | None = None
+        self._style_variant: str | None = None
 
+        self.setObjectName('SubplaceGameCard')
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self._apply_style()
-        self.setMinimumWidth(CARD_WIDTH)
-        self.setFixedHeight(_SUBPLACE_CARD_H)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedSize(_SUBPLACE_CARD_W, _SUBPLACE_CARD_H)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._setup_ui()
+        self._apply_style()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout()
@@ -387,19 +444,25 @@ class SubplaceGameCard(QFrame):
         btn_row.setSpacing(4)
 
         self.join_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.join'))
-        self.join_btn.setFixedHeight(22)
+        self.join_btn.setMinimumHeight(30)
         btn_row.addWidget(self.join_btn)
 
         self.open_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.browser'))
-        self.open_btn.setFixedHeight(22)
+        self.open_btn.setMinimumHeight(30)
         btn_row.addWidget(self.open_btn)
 
         self.fetch_jobs_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.jobids'))
-        self.fetch_jobs_btn.setFixedHeight(22)
+        self.fetch_jobs_btn.setMinimumHeight(30)
         btn_row.addWidget(self.fetch_jobs_btn)
 
         layout.addLayout(btn_row)
         self.setLayout(layout)
+
+    @override
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.StyleChange:
+            self._restyle_timer.start(0)
 
     def set_data(self, name: str, created: str = '', updated: str = '') -> None:
         self.name_label.setText(name)
@@ -431,16 +494,6 @@ class SubplaceGameCard(QFrame):
 
     def on_fetch_jobs(self, fn: _ButtonCallback) -> None:
         self.fetch_jobs_btn.clicked.connect(fn)
-
-    @override
-    def enterEvent(self, event: QEnterEvent) -> None:
-        self._apply_style(hover=True)
-        super().enterEvent(event)
-
-    @override
-    def leaveEvent(self, event: QEvent) -> None:
-        self._apply_style()
-        super().leaveEvent(event)
 
 
 # JobId Dialog
@@ -817,6 +870,7 @@ class SubplaceJoinerTab(QWidget):
         root.setSpacing(0)
 
         top_frame = QFrame(self)
+        top_frame.setObjectName('SubplaceSearchPanel')
         top_frame.setFrameShape(QFrame.Shape.StyledPanel)
         top_frame.setFrameShadow(QFrame.Shadow.Raised)
         top_layout = QVBoxLayout(top_frame)
@@ -881,16 +935,18 @@ class SubplaceJoinerTab(QWidget):
         sidebar.addWidget(recent_label)
 
         self._recent_scroll = QScrollArea()
+        self._recent_scroll.setObjectName('SubplaceRecentScroll')
         self._recent_scroll.setFixedWidth(200)
         self._recent_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._recent_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._recent_scroll.setWidgetResizable(True)
         self.recent_contents = QWidget()
         self.recent_contents.setObjectName('RecentPlaceIdsContents')
+        self.recent_contents.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.recent_contents.setAutoFillBackground(True)
         self.recent_contents.setBackgroundRole(QPalette.ColorRole.Base)
         self.recent_layout = QVBoxLayout(self.recent_contents)
-        self.recent_layout.setContentsMargins(2, 2, 2, 2)
+        self.recent_layout.setContentsMargins(8, 4, 8, 4)
         self.recent_layout.setSpacing(2)
         self._recent_scroll.setWidget(self.recent_contents)
         sidebar.addWidget(self._recent_scroll, 1)
@@ -901,14 +957,16 @@ class SubplaceJoinerTab(QWidget):
         sidebar.addWidget(fav_label)
 
         self._fav_scroll = QScrollArea()
+        self._fav_scroll.setObjectName('SubplaceFavoritesScroll')
         self._fav_scroll.setFixedWidth(200)
         self._fav_scroll.setWidgetResizable(True)
         self.fav_contents = QWidget()
         self.fav_contents.setObjectName('FavoritedPlaceIdsContents')
+        self.fav_contents.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.fav_contents.setAutoFillBackground(True)
         self.fav_contents.setBackgroundRole(QPalette.ColorRole.Base)
         self.fav_layout = QVBoxLayout(self.fav_contents)
-        self.fav_layout.setContentsMargins(2, 2, 2, 2)
+        self.fav_layout.setContentsMargins(8, 4, 8, 4)
         self.fav_layout.setSpacing(2)
         self._fav_scroll.setWidget(self.fav_contents)
         sidebar.addWidget(self._fav_scroll, 1)
@@ -918,8 +976,8 @@ class SubplaceJoinerTab(QWidget):
 
         # Results area
         self.results_scroll = QScrollArea()
-        self.results_scroll.setObjectName('Results')
-        self.results_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.results_scroll.setObjectName('SubplaceResultsScroll')
+        self.results_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.results_scroll.setWidgetResizable(True)
 
         self.results_container = QWidget()
@@ -1194,7 +1252,7 @@ class SubplaceJoinerTab(QWidget):
         return None
 
     def _make_placeid_button(self, place_id: str, handler: _PlaceIdCallback) -> QPushButton:
-        btn = QPushButton(place_id)
+        btn = _PlaceIdButton(place_id)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(lambda _=False, pid=place_id: handler(pid))
         btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1204,11 +1262,9 @@ class SubplaceJoinerTab(QWidget):
 
         btn.customContextMenuRequested.connect(_show_context_menu)
 
-        def _set_name(name: str, b: QPushButton = btn) -> None:
+        def _set_name(name: str, b: _PlaceIdButton = btn) -> None:
             try:
-                elided = b.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 170)
-                b.setText(elided.replace('&', '&&'))
-                b.setToolTip(name)
+                b.set_display_name(name)
             except RuntimeError:
                 pass
 
@@ -1256,12 +1312,8 @@ class SubplaceJoinerTab(QWidget):
         self._custom_names[place_id] = name
         self._place_name_cache[place_id] = name
         self._save_settings()
-        try:
-            elided = btn.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 170)
-            btn.setText(elided.replace('&', '&&'))
-            btn.setToolTip(name)
-        except RuntimeError:
-            pass
+        if isinstance(btn, _PlaceIdButton):
+            btn.set_display_name(name)
 
     def _rebuild_recent_buttons(self) -> None:
         self._clear_layout_buttons(self.recent_layout)
@@ -1771,7 +1823,10 @@ class SubplaceJoinerTab(QWidget):
     def _get_cols(self) -> int:
         vp = self.results_scroll.viewport()
         available = vp.width() if vp else (self.width() - 30)
-        return max(1, available // (CARD_WIDTH + self.results_grid.spacing()))
+        margins = self.results_grid.contentsMargins()
+        available -= margins.left() + margins.right()
+        spacing = self.results_grid.spacing()
+        return max(1, (available + spacing) // (_SUBPLACE_CARD_W + spacing))
 
     def _place_cards(self, visible: list[SubplaceGameCard]) -> None:
         for card in self._cards:
@@ -1779,14 +1834,13 @@ class SubplaceJoinerTab(QWidget):
 
         cols = self._get_cols()
         self._last_cols = cols
-
-        for c in range(max(self.results_grid.columnCount(), cols) + 1):
+        for c in range(self.results_grid.columnCount() + 1):
             self.results_grid.setColumnStretch(c, 0)
-        for c in range(cols):
-            self.results_grid.setColumnStretch(c, 1)
 
         for i, card in enumerate(visible):
-            self.results_grid.addWidget(card, i // cols, i % cols)
+            self.results_grid.addWidget(
+                card, i // cols, i % cols, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+            )
 
     def _on_resize_settled(self) -> None:
         cols = self._get_cols()

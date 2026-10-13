@@ -1551,7 +1551,8 @@ class ReplacerConfigWindow(QDialog):
         footer_layout.addWidget(self._conflict_badge)
 
         help_btn = QPushButton(tr('ui.gui.replacer_config.text_2'))
-        help_btn.setMaximumWidth(25)
+        help_btn.setFlat(True)
+        help_btn.setFixedWidth(24)
         help_btn.setToolTip(tr('ui.gui.replacer_config.view_keybinds'))
         help_btn.clicked.connect(self._show_keybinds_help)
         footer_layout.addWidget(help_btn)

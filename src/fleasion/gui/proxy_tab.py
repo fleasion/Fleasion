@@ -733,7 +733,8 @@ class ProxyTrafficTab(QWidget):
         # Match the native height of the neighboring buttons.  This is the same
         # approach used by the replacer footer help button: constrain width only
         # and let the active Qt style choose the vertical geometry.
-        help_btn.setMaximumWidth(25)
+        help_btn.setFlat(True)
+        help_btn.setFixedWidth(24)
         help_btn.setToolTip(tr('ui.gui.proxy_tab.about_this_tab'))
         help_btn.clicked.connect(self._show_help)
         self.ui.horizontalLayout_3.insertWidget(

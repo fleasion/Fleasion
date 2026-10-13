@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
 from typing import TYPE_CHECKING, Final, override
 
-from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QEvent, QObject, QPropertyAnimation, Qt
-from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QShortcut
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, Qt, QVariantAnimation
+from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QPainter, QPaintEvent, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
     QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -20,6 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from fleasion.localization import tr
 
@@ -201,23 +200,72 @@ class CommandPalette(QDialog):
             command.run()
 
 
+class _TabReveal(QWidget):
+    """Fade a temporary, noninteractive cover instead of the entire tab page."""
+
+    def __init__(self, page: QWidget) -> None:
+        super().__init__(page)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._alpha = 1.0
+        background = page.palette().window().color()
+        # A transparent Glass palette still needs an opaque initial cover
+        self._color = background if background.alpha() == 255 else QColor('#20212a')
+        self.setGeometry(page.rect())
+        page.installEventFilter(self)
+        self.show()
+        self.raise_()
+        animation = QVariantAnimation(self)
+        self._animation = animation
+        animation.setDuration(_TAB_FADE_MS)
+        animation.setStartValue(1.0)
+        animation.setEndValue(0.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.valueChanged.connect(self._set_alpha)
+        animation.finished.connect(self.deleteLater)
+        animation.start()
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            isinstance(watched, QWidget)
+            and watched is self.parentWidget()
+            and event.type() == QEvent.Type.Resize
+        ):
+            self.setGeometry(watched.rect())
+        return False
+
+    def cancel(self) -> None:
+        self._animation.stop()
+        self.hide()
+        self.deleteLater()
+
+    def _set_alpha(self, value: object) -> None:
+        self._alpha = float(value) if isinstance(value, int | float) else 0.0
+        self.update()
+
+    @override
+    def paintEvent(self, _event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        color = QColor(self._color)
+        color.setAlphaF(self._alpha)
+        painter.fillRect(self.rect(), color)
+        painter.end()
+
+
 def fade_tabs(tabs: QTabWidget) -> None:
-    """Fade the incoming page in when the tab changes."""
+    """Reveal each tab without translucency or cached rendering on its page."""
+    active: _TabReveal | None = None
 
     def on_change(index: int) -> None:
+        nonlocal active
+        if active is not None and isValid(active):
+            active.cancel()
+        active = None
         page = tabs.widget(index)
-        if page is None:
-            return
-        effect = QGraphicsOpacityEffect(page)
-        page.setGraphicsEffect(effect)
-        animation = QPropertyAnimation(effect, b'opacity', page)
-        animation.setDuration(_TAB_FADE_MS)
-        animation.setStartValue(0.25)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        # Graphics effects slow down large tables, so switch it off once faded in
-        animation.finished.connect(partial(effect.setEnabled, False))  # ruff: ignore[boolean-positional-value-in-call] - Qt API
-        animation.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+        if page is not None and page.isVisible():
+            active = _TabReveal(page)
 
     tabs.currentChanged.connect(on_change)
 

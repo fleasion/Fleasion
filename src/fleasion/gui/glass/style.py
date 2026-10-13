@@ -150,6 +150,29 @@ QTabBar::tab {
 QTabBar::tab:hover { color: $text; background: rgba(255,255,255,0.06); }
 QTabBar::tab:selected { color: $text; background: $pane_hover; $rim }
 
+QFrame#SubplaceSearchPanel {
+    background: rgba(255,255,255,0.065); border: 1px solid rgba(255,255,255,0.12);
+    border-top-color: rgba(255,255,255,0.23); border-radius: 12px;
+}
+QScrollArea#SubplaceRecentScroll, QScrollArea#SubplaceFavoritesScroll,
+QScrollArea#SubplaceResultsScroll {
+    background: rgba(8,10,17,0.26); border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 10px;
+}
+QFrame#SubplaceGameCard {
+    background: rgba(255,255,255,0.075); border: 1px solid rgba(255,255,255,0.17);
+    border-top-color: rgba(255,255,255,0.30); border-radius: 12px;
+}
+QFrame#SubplaceGameCard:hover {
+    background: rgba(255,255,255,0.11); border-color: rgba(255,255,255,0.30);
+}
+QPushButton#SubplaceSidebarButton {
+    padding: 4px 10px; border-radius: 11px; font-weight: 500;
+}
+QPushButton#SubplaceSidebarButton:hover {
+    background: rgba(255,255,255,0.16);
+}
+
 QGroupBox {
     background: $pane; $rim border-radius: ${radius}px;
     margin-top: 24px; padding: 12px 10px 10px 10px;
@@ -250,9 +273,9 @@ QTreeView::item, QListView::item, QTableView::item { padding: 6px 4px; border: 0
 QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
     background: rgba(255,255,255,0.05);
 }
-QTreeView::item:selected, QListView::item:selected, QTableView::item:selected {
-    background: rgba($accent_rgb,0.24);
-}
+QTreeView::item:selected, QListView::item:selected { background: rgba($accent_rgb,0.24); }
+QTableView, QTableWidget { selection-background-color: rgba($accent_rgb,0.11); }
+QTableView::item:selected { background: rgba($accent_rgb,0.11); }
 QHeaderView { background: transparent; }
 QHeaderView::section {
     background: transparent; color: $muted; border: 0;

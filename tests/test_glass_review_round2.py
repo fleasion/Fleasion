@@ -346,29 +346,35 @@ def test_animated_proxy_type_ids_use_shared_matching_constraints() -> None:
     assert TextureStripper._ANIM_TYPE_IDS == ANIMATION_TYPE_KEYS  # pyright: ignore[reportPrivateUsage]
 
 
-def test_fade_tabs_does_not_accumulate_completed_animations(app: QApplication) -> None:
-    from PySide6.QtCore import QAbstractAnimation, QEvent, QPropertyAnimation
-    from PySide6.QtWidgets import QTabWidget
+def test_dashboard_tab_switches_leave_no_page_opacity_effects(
+    app: QApplication, config: manager.ConfigManager
+) -> None:
+    from PySide6.QtCore import QEvent, QPropertyAnimation
+    from PySide6.QtWidgets import QGraphicsOpacityEffect
 
-    from fleasion.gui.command_palette import fade_tabs
-
-    tabs = QTabWidget()
-    tabs.addTab(QWidget(), 'First')
-    tabs.addTab(QWidget(), 'Second')
-    fade_tabs(tabs)
+    window = replacer_config.ReplacerConfigWindow(config)
     try:
-        for index in range(100):
-            tabs.setCurrentIndex((index + 1) % 2)
-            active = tabs.findChildren(QPropertyAnimation)
-            assert len(active) <= 2
-            for animation in active:
-                if animation.state() == QAbstractAnimation.State.Running:
-                    animation.setCurrentTime(animation.duration())
+        tabs = window.tab_widget
+        window.show()
+        app.processEvents()
+        for index in range(tabs.count()):
+            tabs.setTabEnabled(index, True)
+        from fleasion.gui.command_palette import _TabReveal  # pyright: ignore[reportPrivateUsage]
+
+        for attempt in range(100):
+            current = attempt % tabs.count()
+            tabs.setCurrentIndex(current)
             app.processEvents()
             app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        assert not tabs.findChildren(QPropertyAnimation)
+            for index in range(tabs.count()):
+                page = tabs.widget(index)
+                assert page is not None
+                assert not isinstance(page.graphicsEffect(), QGraphicsOpacityEffect)
+            assert len(tabs.findChildren(_TabReveal)) <= 2
+            assert not tabs.findChildren(QPropertyAnimation)
     finally:
-        tabs.deleteLater()
+        window.close()
+        window.deleteLater()
         app.processEvents()
 
 
@@ -378,25 +384,3 @@ def test_many_unrelated_asset_ids_do_not_create_spurious_conflicts(
     _enable(config, 'even', [{'replace_ids': list(range(1000, 5000, 2)), 'with_id': 8001}])
     _enable(config, 'odd', [{'replace_ids': list(range(1001, 5000, 2)), 'with_id': 8002}])
     assert find_conflicts(config) == []
-
-
-def test_rapid_tab_switches_eventually_release_animations(app: QApplication) -> None:
-    from PySide6.QtCore import QEvent, QPropertyAnimation
-    from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QTabWidget
-
-    from fleasion.gui.command_palette import fade_tabs
-
-    tabs = QTabWidget()
-    tabs.addTab(QWidget(), 'First')
-    tabs.addTab(QWidget(), 'Second')
-    fade_tabs(tabs)
-    try:
-        for index in range(100):
-            tabs.setCurrentIndex((index + 1) % 2)
-        QTest.qWait(250)
-        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        assert not tabs.findChildren(QPropertyAnimation)
-    finally:
-        tabs.deleteLater()
-        app.processEvents()

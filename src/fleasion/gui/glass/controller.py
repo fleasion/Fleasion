@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QRegion
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QWidget
 
 from fleasion.localization import tr
@@ -87,6 +87,15 @@ class GlassTheme:
             self._previous_stylesheet = app.styleSheet()
         # Keep application-wide rules (notably the dialog button order) while
         # placing Glass rules last so its intended presentation still wins
+        original_combo_masks = (
+            {
+                widget: QRegion(widget.mask())
+                for widget in app.allWidgets()
+                if GlassWindows.is_combo_popup(widget)
+            }
+            if self._filter is None and QApplication.platformName() == 'xcb'
+            else {}
+        )
         glass_style = stylesheet(state.settings)
         app.setStyleSheet(
             f'{self._previous_stylesheet}\n{glass_style}'
@@ -94,7 +103,7 @@ class GlassTheme:
             else glass_style
         )
         if self._filter is None:
-            self._filter = GlassWindows(app)
+            self._filter = GlassWindows(app, original_combo_masks)
             self._filter.blur_status_changed.connect(self._sync_blur_controls)
             app.installEventFilter(self._filter)
         for widget in app.allWidgets():
@@ -105,6 +114,7 @@ class GlassTheme:
             widget.update()
         for window in registered_windows():
             apply_chrome(window, enabled=True)
+            self._filter.update_window_shape(window)
 
     def disable(self, app: QApplication) -> None:
         if self._filter is None and self._previous_stylesheet is None:
@@ -129,8 +139,10 @@ class GlassTheme:
     def attach(self, window: QWidget) -> None:
         """Let Glass replace this window's title bar while the theme is active."""
         register(window)
-        if self.active:
+        if self._filter is not None:
+            self._filter.remember_window(window)
             apply_chrome(window, enabled=True)
+            self._filter.update_window_shape(window)
 
     def set_accent(self, name: str) -> None:
         if name not in ACCENTS:
