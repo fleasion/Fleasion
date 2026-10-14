@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from fleasion.utils import platform_linux
-from fleasion.utils.linux_fflags import set_linux_flag_layer
+from fleasion.utils.linux_clients import LINUX_CLIENTS
+from fleasion.utils.linux_fflags import managed_linux_flag_paths, set_linux_flag_layer
 from fleasion.utils.paths import CONFIG_FILE, LOCAL_APPDATA, MOD_ORIGINALS_DIR
 
 from ...utils import log_buffer
@@ -483,12 +484,19 @@ class CustomFFlagModifier:
         with self._linux_flag_lock:
             return self._synchronize_linux_flags()
 
+    def _managed_linux_flags(self) -> set[Path]:
+        legacy_paths = (
+            path for client in LINUX_CLIENTS for path in client.paths().fflag_files()
+        )
+        return self._linux_seeded_paths | managed_linux_flag_paths(
+            MOD_ORIGINALS_DIR, 'custom', legacy_candidates=legacy_paths
+        )
+
     def _synchronize_linux_flags(self) -> bool:
         flags = self.runtime_flags() if self.is_enabled() else {}
         current_paths = set(platform_linux.find_linux_fflag_files())
-        stale_paths = (
-            self._linux_seeded_paths - current_paths if flags else self._linux_seeded_paths
-        )
+        managed_paths = self._managed_linux_flags()
+        stale_paths = managed_paths - current_paths if flags else managed_paths
         cleanup_failed = False
         for path in tuple(stale_paths):
             if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', {}):
@@ -512,7 +520,7 @@ class CustomFFlagModifier:
 
     def _restore_linux_flags(self) -> bool:
         restored = True
-        for path in tuple(self._linux_seeded_paths):
+        for path in self._managed_linux_flags():
             if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', {}):
                 self._linux_seeded_paths.discard(path)
             else:

@@ -551,3 +551,129 @@ def test_client_switch_retains_selection_when_flag_cleanup_fails() -> None:
     assert config.linux_client == 'cordial'
     assert selection == [2]
     assert signals == [True, False]
+
+
+def test_cached_resource_roots_only_belong_to_selected_linux_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sober = _installation(SOBER_CLIENT, tmp_path)
+    cordial = _installation(CORDIAL_CLIENT, tmp_path)
+    sober_root = sober.paths.resource_roots[0]
+    cordial_root = cordial.paths.resource_roots[0]
+    for root in (sober_root, cordial_root):
+        root.mkdir(parents=True)
+
+    saved = [sober_root, cordial_root]
+    persisted: list[list[Path]] = []
+    selected = [cordial]
+    monkeypatch.setattr(
+        platform_linux, 'get_selected_linux_client_installation', lambda: selected[0]
+    )
+
+    def empty_resource_dirs(*, include_studio: bool = True) -> list[Path]:
+        del include_studio
+        return []
+
+    monkeypatch.setattr(platform_linux, 'find_roblox_resource_dirs', empty_resource_dirs)
+    monkeypatch.setattr(modification_module, 'load_saved_roblox_dirs', lambda: saved)
+    monkeypatch.setattr(modification_module, 'save_saved_roblox_dirs', persisted.append)
+
+    assert modification_module._find_roblox_dirs() == [cordial_root]  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+    assert set(persisted[-1]) == {cordial_root, sober_root}
+    monkeypatch.setattr(modification_module, 'MOD_ORIGINALS_DIR', tmp_path / 'originals')
+    monkeypatch.setattr(modification_module, 'MOD_CACHE_DIR', tmp_path / 'cache')
+    monkeypatch.setattr(modification_module, 'MODIFICATIONS_JSON', tmp_path / 'mods.json')
+    monkeypatch.setattr(modification_module, 'READ_ONLY_STATE_FILE', tmp_path / 'modes.json')
+    monkeypatch.setattr(platform_linux, 'find_linux_fflag_files', list)
+    manager = modification_module.ModificationManager()
+    manager.write_fast_flags({'grey_sky': True})
+    cordial_flags = cordial_root / 'ClientSettings' / 'ClientAppSettings.json'
+    sober_flags = sober_root / 'ClientSettings' / 'ClientAppSettings.json'
+    assert cordial_flags.is_file()
+    assert not sober_flags.exists()
+
+    manager.restore_all()
+    selected[0] = sober
+    assert modification_module._find_roblox_dirs() == [sober_root]  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+    assert set(persisted[-1]) == {sober_root, cordial_root}
+    manager.refresh_roblox_dirs()
+    manager.reapply_all()
+    assert sober_flags.is_file()
+    assert not cordial_flags.exists()
+
+
+@pytest.mark.parametrize('enabled_after_restart', [False, True])
+def test_crashed_custom_flags_cleanup_recovers_other_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, enabled_after_restart: bool
+) -> None:
+    old = tmp_path / 'old.json'
+    new = tmp_path / 'new.json'
+    original = '{"FStringUser": "preserved"}\n'
+    old.write_text(original, encoding='utf-8')
+    new.write_text(original, encoding='utf-8')
+    selected = [old]
+    monkeypatch.setattr(platform_linux, 'find_linux_fflag_files', lambda: list(selected))
+    monkeypatch.setattr(custom_fflags, 'MOD_ORIGINALS_DIR', tmp_path / 'originals')
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagCustom': 'True'})
+    assert custom_fflags.CustomFFlagModifier(config).prime_linux_client_flags()
+    assert json.loads(old.read_text())['FFlagCustom'] == 'True'
+
+    # New modifier has no remembered paths after the previous process crashed
+    selected[:] = [new]
+    config.custom_fflags_enabled = enabled_after_restart
+    reloaded = custom_fflags.CustomFFlagModifier(config)
+    assert reloaded.prime_linux_client_flags()
+    assert old.read_text() == original
+    flags = json.loads(new.read_text())
+    assert ('FFlagCustom' in flags) is enabled_after_restart
+    assert reloaded.restore_linux_client_flags()
+    assert new.read_text() == original
+
+
+def test_legacy_custom_flag_manifest_recovers_known_client_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv('HOME', str(tmp_path))
+    mocktail = MOCKTAIL_CLIENT.paths(home=tmp_path, environ={})
+    path = mocktail.config_root / 'fflags.json'
+    path.parent.mkdir(parents=True)
+    original = '{"FStringUser": "preserved"}\n'
+    path.write_text(original, encoding='utf-8')
+    monkeypatch.setattr(platform_linux, 'find_linux_fflag_files', lambda: [path])
+    monkeypatch.setattr(custom_fflags, 'MOD_ORIGINALS_DIR', tmp_path / 'originals')
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagCustom': 'True'})
+    assert custom_fflags.CustomFFlagModifier(config).prime_linux_client_flags()
+    manifest = next((tmp_path / 'originals' / 'linux_client_fflags').glob('*.layers.json'))
+    previous_format = json.loads(manifest.read_text())
+    previous_format.pop('_target')
+    manifest.write_text(json.dumps(previous_format), encoding='utf-8')
+
+    # The old manifest has no target path, so recover it through known client paths
+    assert custom_fflags.CustomFFlagModifier(config).restore_linux_client_flags()
+    assert path.read_text() == original
+
+
+def test_cordial_launcher_without_engine_is_not_running_roblox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installation = _installation(CORDIAL_CLIENT, tmp_path)
+    proc = tmp_path / 'proc'
+    for pid in (301, 302):
+        directory = proc / str(pid)
+        directory.mkdir(parents=True)
+        (directory / 'cgroup').write_text(
+            f'0::/user.slice/{CORDIAL_CLIENT.cgroup_marker}-test.scope\n', encoding='utf-8'
+        )
+    processes: dict[str, list[int]] = {'cordial-shell': [301], 'cordial-run': []}
+
+    def process_pids(name: str) -> list[int]:
+        return processes.get(name, [])
+
+    monkeypatch.setattr(platform_linux, 'PROC_ROOT', proc)
+    monkeypatch.setattr(platform_linux, '_process_pids', process_pids)
+    monkeypatch.setattr(
+        platform_linux, 'get_selected_linux_client_installation', lambda: installation
+    )
+    assert not platform_linux.is_roblox_running()
+    processes['cordial-run'] = [302]
+    assert platform_linux.is_roblox_running()

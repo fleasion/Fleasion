@@ -173,9 +173,18 @@ def _find_roblox_dirs() -> list[Path]:
 
         for roblox_dir in find_roblox_resource_dirs(include_studio=False):
             _add(roblox_dir)
-        for cached_dir in load_saved_roblox_dirs():
-            _add(cached_dir)
-        save_saved_roblox_dirs(found)
+        cached_dirs = load_saved_roblox_dirs()
+        if sys.platform.startswith('linux'):
+            installation = platform_linux.get_selected_linux_client_installation()
+            for cached_dir in cached_dirs:
+                if installation is not None and installation.owns_resource_path(cached_dir):
+                    _add(cached_dir)
+            # Preserve other clients' history without applying to their resource roots
+            save_saved_roblox_dirs([*found, *cached_dirs])
+        else:
+            for cached_dir in cached_dirs:
+                _add(cached_dir)
+            save_saved_roblox_dirs(found)
         if sys.platform == 'darwin':
             from ..utils.platform_macos import find_bootstrapper_restore_resource_dirs
 

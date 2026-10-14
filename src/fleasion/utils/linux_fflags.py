@@ -8,13 +8,14 @@ import os
 import shutil
 import stat
 import threading
+from collections.abc import Iterable
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 from fleasion.utils.logging import log_buffer
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from pathlib import Path
 
 type FlagLayer = Literal['presets', 'custom']
 type FlagLayers = dict[FlagLayer, dict[str, object]]
@@ -26,6 +27,41 @@ def linux_flag_stash_paths(stash_dir: Path, path: Path) -> tuple[Path, Path]:
     digest = hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:16]
     base = stash_dir / 'linux_client_fflags' / f'{path.parent.name}-{digest}'
     return base.with_suffix('.json'), base.with_suffix('.absent')
+
+
+def managed_linux_flag_paths(
+    stash_dir: Path, layer: FlagLayer, *, legacy_candidates: Iterable[Path] = ()
+) -> set[Path]:
+    """Recover a layer's managed targets from on-disk manifests."""
+    root = stash_dir / 'linux_client_fflags'
+    paths: set[Path] = set()
+    for manifest in root.glob('*.layers.json'):
+        try:
+            payload = _read_object(manifest)
+            if not isinstance(payload.get(layer), dict):
+                continue
+            target = payload.get('_target')
+            if not isinstance(target, str):
+                continue
+            path = Path(target)
+            if (
+                path.is_absolute()
+                and linux_flag_stash_paths(stash_dir, path)[0].with_suffix('.layers.json')
+                == manifest
+            ):
+                paths.add(path)
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            log_buffer.log('FastFlags', f'Could not read managed flag target {manifest}: {exc}')
+
+    # Older manifests had no path field; known client files can still be recovered
+    for path in legacy_candidates:
+        stash, _absent = linux_flag_stash_paths(stash_dir, path)
+        try:
+            if layer in _read_layers(stash.with_suffix('.layers.json')):
+                paths.add(path)
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            log_buffer.log('FastFlags', f'Could not read managed flag target {path}: {exc}')
+    return paths
 
 
 def _read_object(path: Path) -> dict[str, object]:
@@ -41,6 +77,8 @@ def _read_layers(path: Path) -> FlagLayers:
         return {}
     result: FlagLayers = {}
     for name, value in _read_object(path).items():
+        if name == '_target' and isinstance(value, str):
+            continue
         if name not in {'presets', 'custom'} or not isinstance(value, dict):
             msg = f'{path} contains an invalid FastFlag layer'
             raise ValueError(msg)
@@ -97,7 +135,7 @@ def _synchronize_layer(
     for name in ('presets', 'custom'):
         merged.update(layers.get(name, {}))
     mode = stat.S_IMODE(stash.stat().st_mode) if stash.exists() else 0o600
-    _write_json(manifest, layers, 0o600)
+    _write_json(manifest, {'_target': str(path), **layers}, 0o600)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_json(path, merged, mode)
 
