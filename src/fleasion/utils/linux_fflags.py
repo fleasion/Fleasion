@@ -153,10 +153,33 @@ def _restore(path: Path, stash: Path, absent: Path, manifest: Path) -> None:
     manifest.unlink(missing_ok=True)
 
 
+def _retire_recovery_state(stash: Path, absent: Path, manifest: Path) -> None:
+    """Drop obsolete ownership records without touching the native client path."""
+    stash.unlink(missing_ok=True)
+    absent.unlink(missing_ok=True)
+    manifest.unlink(missing_ok=True)
+
+
 def _synchronize_layer(
     path: Path, stash: Path, absent: Path, layer: FlagLayer, flags: Mapping[str, object]
 ) -> None:
     manifest = stash.with_suffix('.layers.json')
+    try:
+        native_mode = path.lstat().st_mode
+    except FileNotFoundError:
+        native_mode = None
+    if native_mode is not None and stat.S_ISLNK(native_mode):
+        if flags:
+            msg = f'Native FastFlag file {path} is a symlink; refusing to replace it'
+            raise ValueError(msg)
+        # A user-supplied replacement link cannot contain our former managed file
+        _retire_recovery_state(stash, absent, manifest)
+        return
+    if native_mode is None and not flags:
+        # Client removed the file: honour the deletion and release every stale layer
+        _retire_recovery_state(stash, absent, manifest)
+        return
+
     previous_layers = _read_layers(manifest)
     old_values = _managed_values(previous_layers)
     if previous_layers and not (stash.exists() or absent.exists()):
@@ -204,9 +227,7 @@ def _synchronize_layer(
         if not _json_equal(merged, current):
             mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
             _write_json(path, merged, mode)
-        stash.unlink(missing_ok=True)
-        absent.unlink(missing_ok=True)
-        manifest.unlink(missing_ok=True)
+        _retire_recovery_state(stash, absent, manifest)
         return
 
     if not stash.exists() and not absent.exists():

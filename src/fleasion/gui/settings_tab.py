@@ -3,8 +3,6 @@
 import sys
 from pathlib import Path
 
-from fleasion.utils.logging import log_buffer
-
 from PyQt6.QtCore import QEvent, Qt, QTimer
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -23,6 +21,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from fleasion.utils.logging import log_buffer
 
 from ..gui.theme import ThemeManager
 from ..localization import available_languages, get_language, tr
@@ -799,6 +799,8 @@ class SettingsTab(QWidget):
                 self._linux_client_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
                 self._linux_client_combo.setCurrentIndex(max(0, index))
                 self._linux_client_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+                if proxy_was_running:
+                    proxy_master.start()
                 self._refresh_linux_client_status()
                 return
 

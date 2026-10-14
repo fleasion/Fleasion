@@ -870,3 +870,146 @@ def test_native_flag_conflict_detects_json_type_change(tmp_path: Path) -> None:
     assert not set_linux_flag_layer(path, stash, 'presets', {})
     assert json.loads(path.read_text())['FFlagOwned'] is True
     assert managed_linux_flag_paths(stash, 'presets') == {path}
+
+
+@pytest.mark.parametrize('original_exists', [False, True])
+def test_deleted_native_flags_retire_all_layers_without_recreating_file(
+    tmp_path: Path, *, original_exists: bool
+) -> None:
+    path = tmp_path / 'flags.json'
+    stash_dir = tmp_path / 'stash'
+    if original_exists:
+        path.write_text('{"FStringUser":"original"}\n', encoding='utf-8')
+    assert set_linux_flag_layer(path, stash_dir, 'presets', {'FFlagPreset': True})
+    assert set_linux_flag_layer(path, stash_dir, 'custom', {'FFlagCustom': False})
+    stash, absent = linux_flag_stash_paths(stash_dir, path)
+    manifest = stash.with_suffix('.layers.json')
+    assert manifest.exists()
+    path.unlink()
+
+    assert set_linux_flag_layer(path, stash_dir, 'custom', {})
+    assert not path.exists()
+    assert not stash.exists()
+    assert not absent.exists()
+    assert not manifest.exists()
+    assert not managed_linux_flag_paths(stash_dir, 'presets')
+    assert not managed_linux_flag_paths(stash_dir, 'custom')
+    assert set_linux_flag_layer(path, stash_dir, 'presets', {})
+    assert set_linux_flag_layer(path, stash_dir, 'custom', {})
+    assert not path.exists()
+
+    # The regenerated profile can subsequently be managed independently
+    path.write_text('{"FStringNew":"client"}', encoding='utf-8')
+    assert set_linux_flag_layer(path, stash_dir, 'custom', {'FFlagNew': 3})
+    assert set_linux_flag_layer(path, stash_dir, 'custom', {})
+    assert json.loads(path.read_text()) == {'FStringNew': 'client'}
+
+
+def test_deleted_native_flags_can_restore_after_modifier_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / 'cordial' / 'flags.json'
+    path.parent.mkdir(parents=True)
+    path.write_text('{"FFlagUser":true}', encoding='utf-8')
+    stash_dir = tmp_path / 'originals'
+    monkeypatch.setattr(custom_fflags, 'MOD_ORIGINALS_DIR', stash_dir)
+    monkeypatch.setattr(platform_linux, 'find_linux_fflag_files', lambda: [path])
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagTest': 'True'})
+    assert custom_fflags.CustomFFlagModifier(config).prime_linux_client_flags()
+    path.unlink()
+
+    # No in-memory ownership survives a process restart
+    assert custom_fflags.CustomFFlagModifier(config).restore_linux_client_flags()
+    assert not path.exists()
+    assert not managed_linux_flag_paths(stash_dir, 'custom')
+
+
+@pytest.mark.parametrize('broken', [False, True])
+def test_native_flags_reject_symlink_without_modifying_link_or_target(
+    tmp_path: Path, *, broken: bool
+) -> None:
+    path = tmp_path / 'flags.json'
+    target = tmp_path / 'user-managed.json'
+    stash_dir = tmp_path / 'stash'
+    contents = '{"FFlagUser":true}\n'
+    if not broken:
+        target.write_text(contents, encoding='utf-8')
+    path.symlink_to(target)
+
+    assert not set_linux_flag_layer(path, stash_dir, 'presets', {'FFlagPreset': True})
+    assert not set_linux_flag_layer(path, stash_dir, 'custom', {'FFlagCustom': False})
+    assert path.is_symlink()
+    assert path.readlink() == target
+    assert target.exists() is not broken
+    if not broken:
+        assert target.read_text() == contents
+    assert set_linux_flag_layer(path, stash_dir, 'presets', {})
+    assert path.is_symlink()
+    assert not managed_linux_flag_paths(stash_dir, 'presets')
+    assert not managed_linux_flag_paths(stash_dir, 'custom')
+
+
+def test_replaced_native_flags_symlink_releases_obsolete_ownership(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'flags.json'
+    replacement = tmp_path / 'replacement.json'
+    replacement.write_text('{"FFlagFromClient":17}', encoding='utf-8')
+    path.write_text('{"FFlagOriginal":1}', encoding='utf-8')
+    stash_dir = tmp_path / 'stash'
+    assert set_linux_flag_layer(path, stash_dir, 'presets', {'FFlagPreset': True})
+    assert set_linux_flag_layer(path, stash_dir, 'custom', {'FFlagCustom': True})
+    path.unlink()
+    path.symlink_to(replacement)
+
+    assert set_linux_flag_layer(path, stash_dir, 'custom', {})
+    assert path.is_symlink()
+    assert path.resolve() == replacement
+    assert json.loads(replacement.read_text()) == {'FFlagFromClient': 17}
+    assert not managed_linux_flag_paths(stash_dir, 'presets')
+    assert not managed_linux_flag_paths(stash_dir, 'custom')
+    assert set_linux_flag_layer(path, stash_dir, 'presets', {})
+    assert path.is_symlink()
+
+
+@pytest.mark.parametrize('was_running', [True, False])
+def test_failed_linux_client_switch_restores_proxy_running_state(
+    was_running: bool,
+) -> None:
+    events: list[str] = []
+    indexes: list[int] = []
+    blocked_signals: list[bool] = []
+    config = SimpleNamespace(linux_client='cordial')
+
+    def find_client_index(key: str) -> int:
+        return 3 if key == 'cordial' else -1
+
+    proxy = SimpleNamespace(
+        is_running=was_running,
+        stop=lambda: events.append('stop'),
+        restore_linux_custom_fflags=lambda: events.append('restore') or False,
+        start=lambda: events.append('start'),
+    )
+    view = cast(
+        'SettingsTab',
+        SimpleNamespace(
+            _config=config,
+            _tray=SimpleNamespace(proxy_master=proxy),
+            _linux_client_combo=SimpleNamespace(
+                currentData=lambda: 'mocktail',
+                findData=find_client_index,
+                setCurrentIndex=indexes.append,
+                blockSignals=blocked_signals.append,
+            ),
+            _refresh_linux_client_status=lambda: events.append('refresh'),
+        ),
+    )
+
+    SettingsTab._on_linux_client_changed(view)  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+
+    assert events == (
+        ['stop', 'restore', 'start', 'refresh'] if was_running else ['restore', 'refresh']
+    )
+    assert config.linux_client == 'cordial'
+    assert indexes == [3]
+    assert blocked_signals == [True, False]
