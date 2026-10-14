@@ -23,6 +23,7 @@ from fleasion.gui import replacer_config as dashboard_module
 from fleasion.gui.replacer_config import ReplacerConfigWindow
 from fleasion.utils import gui_work as work_module
 from fleasion.utils.gui_work import GuiWork
+from fleasion.utils.json_types import JsonValue
 
 _app: QApplication | None = None
 
@@ -332,3 +333,74 @@ assert not loaded, f'GUI import loaded deferred dependencies: {sorted(loaded)}'
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_dashboard_ignores_non_object_rules_without_rewriting_config(
+    app: QApplication,
+    config: ConfigManager,
+) -> None:
+    rules: list[JsonValue] = [
+        'unexpected root string',
+        {'name': 'Valid', 'replace_ids': [123], 'mode': 'id', 'with_id': 456},
+        {
+            'type': 'group',
+            'name': 'Group',
+            'children': [
+                'unexpected nested string',
+                {'name': 'Nested', 'replace_ids': [234], 'mode': 'remove'},
+                None,
+                {'type': 'group', 'name': 'Empty', 'children': [False]},
+            ],
+        },
+        42,
+        None,
+    ]
+    config.replacement_rules = rules
+    path = config_module.CONFIGS_FOLDER / f'{config.last_config}.json'
+    original_bytes = path.read_bytes()
+
+    window = _window(config)
+    try:
+        role = dashboard_module.Qt.ItemDataRole.UserRole
+        roots = {
+            item.data(0, role): item
+            for index in range(window.tree.topLevelItemCount())
+            if (item := window.tree.topLevelItem(index)) is not None
+        }
+        assert set(roots) == {(1,), (2,)}
+        group = roots[(2,)]
+        child_paths = {
+            item.data(0, role)
+            for index in range(group.childCount())
+            if (item := group.child(index)) is not None
+        }
+        assert child_paths == {(2, 1), (2, 3)}
+        assert config.replacement_rules == rules
+    finally:
+        window.close()
+    assert path.read_bytes() == original_bytes
+
+
+def test_dashboard_handles_non_list_group_children_and_scalar_only_config(
+    app: QApplication,
+    config: ConfigManager,
+) -> None:
+    config.replacement_rules = [
+        {'type': 'group', 'name': 'Broken children', 'children': 'not a list'},
+        ['also invalid'],
+    ]
+    window = _window(config)
+    try:
+        assert window.tree.topLevelItemCount() == 1
+        group = window.tree.topLevelItem(0)
+        assert group is not None
+        assert group.childCount() == 0
+    finally:
+        window.close()
+
+    config.replacement_rules = ['unexpected', 1, None]
+    window = _window(config)
+    try:
+        assert window.tree.topLevelItemCount() == 0
+    finally:
+        window.close()

@@ -245,6 +245,10 @@ def _group_ancestors(value: object) -> tuple[tuple[int, ...], ...]:
     return tuple(path for item in items if (path := _item_path(item)) is not None)
 
 
+def _is_rule_entry(value: object) -> TypeGuard[_RuleEntry]:
+    return isinstance(value, dict)
+
+
 def _required_profile(value: _RuleEntry) -> _ProfileRule:
     if value.get('type') == 'group':
         msg = 'Expected a profile rule'
@@ -264,7 +268,10 @@ def _optional_widget(value: QWidget) -> QWidget | None:
 
 
 def _children_if_present(entry: _RuleEntry) -> _RuleList:
-    return cast('_GroupRule', entry)['children'] if entry.get('type') == 'group' else []
+    if not _is_rule_entry(entry) or entry.get('type') != _KIND_GROUP:
+        return []
+    children = entry.get('children')
+    return cast('_RuleList', children) if isinstance(children, list) else []
 
 
 _ROLE_PATH = Qt.ItemDataRole.UserRole
@@ -1867,7 +1874,11 @@ class ReplacerConfigWindow(QDialog):
             current_group_depth = group_depth + 1
             child_ancestors = (*group_ancestors, path)
             self._group_depth_by_path[path] = current_group_depth
-            for child_index, child in enumerate(entry.get('children', [])):
+            for child_index, child in enumerate(_children_if_present(entry)):
+                # Config files are user-editable; unknown JSON entries must not
+                # crash the dashboard or be silently removed from the file.
+                if not _is_rule_entry(child):
+                    continue
                 child_item, child_summary = self._make_tree_item_with_summary(
                     child,
                     (*path, child_index),
@@ -1985,6 +1996,8 @@ class ReplacerConfigWindow(QDialog):
             self._group_depth_by_path.clear()
             has_groups = False
             for index, entry in enumerate(rules):
+                if not _is_rule_entry(entry):
+                    continue
                 item, _summary = self._make_tree_item_with_summary(entry, (index,))
                 self.tree.addTopLevelItem(item)
                 if self._is_group(entry):
