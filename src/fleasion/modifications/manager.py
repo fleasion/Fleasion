@@ -1363,8 +1363,9 @@ class ModificationManager(QObject):
 
     # Bulk operations
 
-    def restore_all(self) -> None:
-        """Restore every applied modification and fast-flags."""
+    def restore_all(self) -> bool:
+        """Restore applied modifications; return whether native flags were restored."""
+        preset_flags_restored = True
         self.clear_managed_file_read_only()
 
         try:
@@ -1380,8 +1381,10 @@ class ModificationManager(QObject):
 
             if self._data.get('fast_flags_enabled'):
                 try:
-                    self.fflag_manager.restore()
+                    if not self.fflag_manager.restore():
+                        preset_flags_restored = False
                 except Exception as exc:
+                    preset_flags_restored = False
                     log_buffer.log('FastFlags', f'Restore failed: {exc}')
 
             # Restore global settings
@@ -1393,7 +1396,11 @@ class ModificationManager(QObject):
             self.clear_managed_file_read_only()
 
         self.restore_finished.emit()
-        log_buffer.log('Modifications', 'All modifications restored')
+        if not preset_flags_restored:
+            log_buffer.log('Modifications', 'Native preset FastFlag restoration is incomplete')
+        else:
+            log_buffer.log('Modifications', 'All modifications restored')
+        return preset_flags_restored
 
     def reapply_all(self) -> None:
         """Re-apply all entries (crash recovery on startup)."""

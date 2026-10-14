@@ -60,6 +60,13 @@ MOCKTAIL_INTEGRATION_ENV_NAMES = (
     'MOCKTAIL_FLEASION_PROXY_PORT',
     'MOCKTAIL_FLEASION_CA_CERTIFICATE',
 )
+# Existing Flatpak proxy overrides take precedence over config.yaml
+MOCKTAIL_NETWORK_PROXY_ENV_NAMES = (
+    'MOCKTAIL_USE_SYSTEM_PROXY',
+    'MOCKTAIL_HTTP_PROXY_HOST',
+    'MOCKTAIL_HTTP_PROXY_PORT',
+    'MOCKTAIL_HTTP_PROXY_SCHEME',
+)
 # Sober fetches its update/feature manifest before the Roblox engine starts.
 # That bootstrap client uses certificate pinning and does not trust Fleasion's
 # generated CA, so these connections must remain tunneled when the Proxy tab's
@@ -975,7 +982,9 @@ def _read_mocktail_integration_state() -> dict[str, str | None] | None:
 def _read_mocktail_proxy_environment(
     installation: LinuxClientInstallation,
 ) -> dict[str, str | None]:
-    environment: dict[str, str | None] = dict.fromkeys(MOCKTAIL_INTEGRATION_ENV_NAMES)
+    environment: dict[str, str | None] = dict.fromkeys(
+        (*MOCKTAIL_INTEGRATION_ENV_NAMES, *MOCKTAIL_NETWORK_PROXY_ENV_NAMES)
+    )
     flatpak = shutil.which('flatpak')
     if flatpak is None:
         return environment
@@ -983,7 +992,9 @@ def _read_mocktail_proxy_environment(
         'subprocess.CompletedProcess[str]',
         _standard_user_run(
             [flatpak, 'override', '--user', '--show', installation.app_id],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         ),
     )
     if result.returncode:
@@ -1001,6 +1012,30 @@ def _read_mocktail_proxy_environment(
             {name: parser.get('Environment', name, fallback=None) for name in environment}
         )
     return environment
+
+
+def _mocktail_network_environment_conflict(
+    environment: dict[str, str | None], proxy_port: int | None
+) -> str | None:
+    """Identify effective Mocktail network overrides incompatible with Fleasion."""
+    system_proxy = environment.get('MOCKTAIL_USE_SYSTEM_PROXY')
+    # Mocktail treats any nonempty value other than '0' as enabled
+    if system_proxy and system_proxy != '0':
+        return 'MOCKTAIL_USE_SYSTEM_PROXY'
+
+    host = environment.get('MOCKTAIL_HTTP_PROXY_HOST')
+    port = environment.get('MOCKTAIL_HTTP_PROXY_PORT')
+    scheme = environment.get('MOCKTAIL_HTTP_PROXY_SCHEME') or 'http'
+    if host or port:
+        if not host:
+            return 'MOCKTAIL_HTTP_PROXY_PORT'
+        if host != '127.0.0.1':
+            return 'MOCKTAIL_HTTP_PROXY_HOST'
+        if proxy_port is None or port != str(proxy_port):
+            return 'MOCKTAIL_HTTP_PROXY_PORT'
+        if scheme not in {'http', 'https'}:
+            return 'MOCKTAIL_HTTP_PROXY_SCHEME'
+    return None
 
 
 def _arm_mocktail_integration(
@@ -1025,6 +1060,20 @@ def _arm_mocktail_integration(
     except OSError as exc:
         log_buffer.log('Launcher', f'Cannot set up {name}: Fleasion CA is unreadable ({exc})')
         return False
+    try:
+        environment = _read_mocktail_proxy_environment(installation)
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
+        log_buffer.log('Launcher', f'Cannot inspect {name} proxy overrides: {exc}')
+        return False
+    conflict = _mocktail_network_environment_conflict(environment, proxy_port)
+    if conflict is not None:
+        log_buffer.log(
+            'Launcher',
+            f'{name} would refuse the Fleasion integration with Flatpak override '
+            f'{conflict}={environment.get(conflict)!r}; remove or correct that override first',
+        )
+        return False
+
     destination = _mocktail_ca_destination(installation)
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1091,9 +1140,7 @@ def _arm_mocktail_integration(
     )
 
 
-def _save_mocktail_integration_state(
-    text: str, installation: LinuxClientInstallation
-) -> None:
+def _save_mocktail_integration_state(text: str, installation: LinuxClientInstallation) -> None:
     payload = _read_mocktail_state_payload()
     original = _read_mocktail_integration_state()
     if original is None and (
@@ -1103,7 +1150,11 @@ def _save_mocktail_integration_state(
         raise mocktail_config.MocktailConfigError(msg)
     if original is not None and payload is not None and 'environment' in payload:
         return
-    environment = _read_mocktail_proxy_environment(installation)
+    environment = {
+        name: value
+        for name, value in _read_mocktail_proxy_environment(installation).items()
+        if name in MOCKTAIL_INTEGRATION_ENV_NAMES
+    }
     if original is None:
         original = mocktail_config.read_integration(text)
     else:
@@ -1149,14 +1200,16 @@ def _disarm_mocktail_integration(installation: LinuxClientInstallation) -> bool:
     stored_environment = payload.get('environment')
     environment = (
         cast('dict[str, object]', stored_environment)
-        if isinstance(stored_environment, dict) else {}
+        if isinstance(stored_environment, dict)
+        else {}
     )
     names = MOCKTAIL_INTEGRATION_ENV_NAMES
     if original is not None and 'ca_certificate' not in original:
         # Legacy snapshots did not own the CA environment variable
         names = tuple(name for name in names if name != 'MOCKTAIL_FLEASION_CA_CERTIFICATE')
     args = [
-        f'--env={name}={value}' if isinstance(value := environment.get(name), str)
+        f'--env={name}={value}'
+        if isinstance(value := environment.get(name), str)
         else f'--unset-env={name}'
         for name in names
     ]

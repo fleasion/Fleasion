@@ -394,8 +394,8 @@ class FastFlagManager:
             )
         return updated_count
 
-    def restore(self) -> None:
-        """Restore (or delete) ``ClientAppSettings.json`` in every Roblox dir."""
+    def restore(self) -> bool:
+        """Restore native flags and report whether every target was restored."""
         restored = 0
         failed = 0
 
@@ -464,5 +464,9 @@ class FastFlagManager:
         failed += self._restore_linux_flag_files()
         message = 'Restored ClientAppSettings.json'
         if failed:
-            message += f' in {format_count(restored, "Roblox dir")}; skipped {format_count(failed, "Roblox dir")} due to permission errors'
+            message += (
+                f' in {format_count(restored, "Roblox dir")}; '
+                f'{format_count(failed, "target")} could not be restored'
+            )
         log_buffer.log('FastFlags', message)
+        return failed == 0

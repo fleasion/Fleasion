@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
+from fleasion.utils.linux_clients import MOCKTAIL_CLIENT
 from fleasion.utils.logging import log_buffer
 
 if TYPE_CHECKING:
@@ -21,6 +22,7 @@ type FlagLayer = Literal['presets', 'custom']
 type FlagLayers = dict[FlagLayer, dict[str, object]]
 
 _FILE_LOCK = threading.RLock()
+_MOCKTAIL_MAX_FLAGS_BYTES = 64 * 1024
 
 
 def linux_flag_stash_paths(stash_dir: Path, path: Path) -> tuple[Path, Path]:
@@ -219,6 +221,22 @@ def _synchronize_layer(
             else:
                 merged.pop(key, None)
             originals.pop(key)
+
+    if (
+        layers
+        and path.name == 'fflags.json'
+        and path.parent.name == 'mocktail'
+        and path.parent.parent.name == 'config'
+        and MOCKTAIL_CLIENT.app_id in path.parts
+    ):
+        serialized_size = len((json.dumps(merged, indent=2) + '\n').encode('utf-8'))
+        if serialized_size > _MOCKTAIL_MAX_FLAGS_BYTES:
+            msg = (
+                f'Mocktail FastFlag file {path} would be {serialized_size:,} bytes, '
+                f'exceeding its {_MOCKTAIL_MAX_FLAGS_BYTES:,}-byte startup limit; '
+                'existing flags were left unchanged'
+            )
+            raise ValueError(msg)
 
     if not layers:
         if (stash.exists() and _json_equal(merged, baseline)) or (absent.exists() and not merged):

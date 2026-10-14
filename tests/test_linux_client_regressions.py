@@ -404,12 +404,20 @@ def test_mocktail_reads_case_sensitive_flatpak_ca_environment(
     def run(args: list[str], **_kwargs: object) -> CompletedProcess[str]:
         assert args[-2:] == ['--show', installed.app_id]
         return CompletedProcess(
-            args, 0, '[Environment]\nMOCKTAIL_FLEASION_CA_CERTIFICATE=/old/ca.pem\n', ''
+            args,
+            0,
+            '[Environment]\nMOCKTAIL_FLEASION_CA_CERTIFICATE=/old/ca.pem\n'
+            'MOCKTAIL_USE_SYSTEM_PROXY=1\nMOCKTAIL_HTTP_PROXY_HOST=example.org\n'
+            'MOCKTAIL_HTTP_PROXY_PORT=8123\n',
+            '',
         )
 
     monkeypatch.setattr(platform_linux, '_standard_user_run', run)
     environment = platform_linux._read_mocktail_proxy_environment(installed)  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
     assert environment['MOCKTAIL_FLEASION_CA_CERTIFICATE'] == '/old/ca.pem'
+    assert environment['MOCKTAIL_USE_SYSTEM_PROXY'] == '1'
+    assert environment['MOCKTAIL_HTTP_PROXY_HOST'] == 'example.org'
+    assert environment['MOCKTAIL_HTTP_PROXY_PORT'] == '8123'
 
 
 @pytest.fixture
@@ -1013,3 +1021,100 @@ def test_failed_linux_client_switch_restores_proxy_running_state(
     assert config.linux_client == 'cordial'
     assert indexes == [3]
     assert blocked_signals == [True, False]
+
+
+def test_preset_restore_conflict_blocks_client_switch_and_restarts_proxy(
+    tmp_path: Path,
+    modification_manager: modification_module.ModificationManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = tmp_path / 'cordial' / 'flags.json'
+    native.parent.mkdir(parents=True)
+    native.write_text('{"FFlagOriginal": true}', encoding='utf-8')
+    monkeypatch.setattr(platform_linux, 'find_linux_fflag_files', lambda: [native])
+    modification_manager._data['fast_flags_enabled'] = True  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+    stash = modification_manager.fflag_manager._stash_dir  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+    assert set_linux_flag_layer(native, stash, 'presets', {'FFlagFirst': 1, 'FFlagSecond': 2})
+    externally_modified = json.loads(native.read_text())
+    externally_modified['FFlagFirst'] = 99
+    native.write_text(json.dumps(externally_modified), encoding='utf-8')
+
+    events: list[str] = []
+    preferences: list[str] = []
+    monkeypatch.setattr(platform_linux, 'set_linux_client_preference', preferences.append)
+    proxy = SimpleNamespace(
+        is_running=True,
+        stop=lambda: events.append('stop'),
+        restore_linux_custom_fflags=lambda: events.append('restore_custom') or True,
+        start=lambda: events.append('start'),
+        prime_custom_fflag_cache=lambda: events.append('prime_custom'),
+    )
+    selected_indexes: list[int] = []
+    config = SimpleNamespace(linux_client='cordial')
+    view = cast(
+        'SettingsTab',
+        SimpleNamespace(
+            _config=config,
+            _tray=SimpleNamespace(proxy_master=proxy, mod_manager=modification_manager),
+            _linux_client_combo=SimpleNamespace(
+                currentData=lambda: 'mocktail',
+                findData=lambda _key: 2,
+                setCurrentIndex=selected_indexes.append,
+                blockSignals=lambda _checked: None,
+            ),
+            _refresh_linux_client_status=lambda: events.append('refresh'),
+        ),
+    )
+    SettingsTab._on_linux_client_changed(view)  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+    assert config.linux_client == 'cordial'
+    assert preferences == []
+    assert selected_indexes == [2]
+    assert events == ['stop', 'restore_custom', 'start', 'refresh']
+    assert json.loads(native.read_text()) == externally_modified
+    assert managed_linux_flag_paths(stash, 'presets') == {native}
+
+    externally_modified['FFlagFirst'] = 1
+    native.write_text(json.dumps(externally_modified), encoding='utf-8')
+    assert modification_manager.restore_all()
+    assert json.loads(native.read_text()) == {'FFlagOriginal': True}
+
+
+@pytest.mark.parametrize('layer', ['custom', 'presets'])
+def test_mocktail_refuses_oversized_native_flags_without_changes(
+    tmp_path: Path, layer: FlagLayer
+) -> None:
+    native = MOCKTAIL_CLIENT.paths(home=tmp_path, environ={}).config_root / 'fflags.json'
+    native.parent.mkdir(parents=True)
+    native.write_text('{"FFlagUser": true}\n', encoding='utf-8')
+    initial = native.read_bytes()
+    stash = tmp_path / 'stash'
+    flags = {f'FStringLong{i:04d}': 'x' * 80 for i in range(1000)}
+    assert not set_linux_flag_layer(native, stash, layer, flags)
+    assert native.read_bytes() == initial
+    assert not managed_linux_flag_paths(stash, layer)
+    assert not linux_flag_stash_paths(stash, native)[0].exists()
+
+    assert set_linux_flag_layer(native, stash, layer, {'FFlagSmall': True})
+    manifest = linux_flag_stash_paths(stash, native)[0].with_suffix('.layers.json')
+    initial_managed = native.read_bytes()
+    initial_manifest = manifest.read_bytes()
+    assert not set_linux_flag_layer(native, stash, layer, flags)
+    assert native.read_bytes() == initial_managed
+    assert manifest.read_bytes() == initial_manifest
+    assert set_linux_flag_layer(native, stash, layer, {})
+    assert native.read_bytes() == initial
+
+
+def test_mocktail_native_flags_size_limit_checks_utf8_serialized_bytes(tmp_path: Path) -> None:
+    native = MOCKTAIL_CLIENT.paths(home=tmp_path, environ={}).config_root / 'fflags.json'
+    native.parent.mkdir(parents=True)
+    stash = tmp_path / 'stash'
+    # Calculate a boundary payload against the writer's actual JSON formatting
+    prefix_size = len((json.dumps({'FStringTest': ''}, indent=2) + '\n').encode('utf-8'))
+    exact = 'x' * (64 * 1024 - prefix_size)
+    assert set_linux_flag_layer(native, stash, 'custom', {'FStringTest': exact})
+    assert native.stat().st_size == 64 * 1024
+    assert not set_linux_flag_layer(native, stash, 'custom', {'FStringTest': exact + 'x'})
+    assert native.stat().st_size == 64 * 1024
+    assert set_linux_flag_layer(native, stash, 'custom', {})
+    assert not native.exists()

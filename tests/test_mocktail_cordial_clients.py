@@ -258,9 +258,9 @@ def test_mocktail_hosts_mode_drops_the_port(mocktail_home: MocktailHome) -> None
         'enabled': 'true',
         'proxy_mode': 'hosts',
         'proxy_port': None,
-        'ca_certificate': json.dumps(str(
-            installation.paths.flatpak_root / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt'
-        )),
+        'ca_certificate': json.dumps(
+            str(installation.paths.flatpak_root / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt')
+        ),
     }
     assert '--env=MOCKTAIL_FLEASION_PROXY_MODE=hosts' in overrides[-1]
 
@@ -474,3 +474,82 @@ def test_extracted_cordial_bundles_get_the_fleasion_ca(tmp_path, monkeypatch):
     text = bundle.read_text(encoding='utf-8')
     assert text.startswith('-----BEGIN CERTIFICATE-----\nAAAA')
     assert 'ZmxlYXNpb24=' in text
+
+
+@pytest.mark.parametrize(
+    ('overrides', 'conflict'),
+    [
+        ({'MOCKTAIL_USE_SYSTEM_PROXY': '1'}, 'MOCKTAIL_USE_SYSTEM_PROXY'),
+        ({'MOCKTAIL_USE_SYSTEM_PROXY': 'false'}, 'MOCKTAIL_USE_SYSTEM_PROXY'),
+        (
+            {'MOCKTAIL_HTTP_PROXY_HOST': 'proxy.example', 'MOCKTAIL_HTTP_PROXY_PORT': '8080'},
+            'MOCKTAIL_HTTP_PROXY_HOST',
+        ),
+        (
+            {'MOCKTAIL_HTTP_PROXY_HOST': '127.0.0.1', 'MOCKTAIL_HTTP_PROXY_PORT': '59999'},
+            'MOCKTAIL_HTTP_PROXY_PORT',
+        ),
+        ({'MOCKTAIL_HTTP_PROXY_HOST': '127.0.0.1'}, 'MOCKTAIL_HTTP_PROXY_PORT'),
+        ({'MOCKTAIL_HTTP_PROXY_PORT': '8080'}, 'MOCKTAIL_HTTP_PROXY_PORT'),
+        (
+            {
+                'MOCKTAIL_HTTP_PROXY_HOST': '127.0.0.1',
+                'MOCKTAIL_HTTP_PROXY_PORT': '60001',
+                'MOCKTAIL_HTTP_PROXY_SCHEME': 'socks5',
+            },
+            'MOCKTAIL_HTTP_PROXY_SCHEME',
+        ),
+    ],
+)
+def test_mocktail_arm_rejects_conflicting_flatpak_proxy_environment(
+    mocktail_home: MocktailHome,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, str],
+    conflict: str,
+) -> None:
+    installation, applied, ca_file = mocktail_home
+    config = installation.paths.config_file
+    config.parent.mkdir(parents=True)
+    config.write_text(MOCKTAIL_CONFIG, encoding='utf-8')
+    captured: list[str] = []
+    monkeypatch.setattr(
+        platform_linux.log_buffer, 'log', lambda _category, message: captured.append(message)
+    )
+    monkeypatch.setattr(
+        platform_linux,
+        '_read_mocktail_proxy_environment',
+        lambda _installation: dict(overrides),
+    )
+    assert not platform_linux.set_linux_client_env_proxy_override(
+        'http://127.0.0.1:60001', client_key='mocktail', ca_cert_path=ca_file
+    )
+    assert any(conflict in message for message in captured)
+    assert not platform_linux.MOCKTAIL_INTEGRATION_STATE.exists()
+    assert not (
+        installation.paths.flatpak_root / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt'
+    ).exists()
+    assert config.read_text(encoding='utf-8') == MOCKTAIL_CONFIG
+    assert applied == []
+
+
+@pytest.mark.parametrize('proxy_mode', ['env', 'hosts'])
+def test_mocktail_flatpak_proxy_override_compatible_only_in_env_mode(
+    mocktail_home: MocktailHome,
+    monkeypatch: pytest.MonkeyPatch,
+    proxy_mode: str,
+) -> None:
+    installation, applied, ca_file = mocktail_home
+    network = {
+        'MOCKTAIL_USE_SYSTEM_PROXY': '0',
+        'MOCKTAIL_HTTP_PROXY_HOST': '127.0.0.1',
+        'MOCKTAIL_HTTP_PROXY_PORT': '60001',
+        'MOCKTAIL_HTTP_PROXY_SCHEME': 'http',
+    }
+    monkeypatch.setattr(
+        platform_linux, '_read_mocktail_proxy_environment', lambda _installation: network
+    )
+    armed = platform_linux.set_linux_client_env_proxy_override(
+        'http://127.0.0.1:60001', client_key='mocktail', ca_cert_path=ca_file, proxy_mode=proxy_mode
+    )
+    assert armed is (proxy_mode == 'env')
+    assert bool(applied) is armed
