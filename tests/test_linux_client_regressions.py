@@ -4,6 +4,7 @@ from __future__ import annotations
 # ruff: file-ignore[implicit-namespace-package]
 import json
 import stat
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,10 @@ from fleasion.utils.linux_fflags import set_linux_flag_layer
 
 if TYPE_CHECKING:
     from fleasion.utils.linux_clients import LinuxClientDescriptor
+
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith('linux'), reason='Linux client runtime integration'
+)
 
 CONFIG = (
     'version: 1\nintegrations:\n  fleasion:\n'
