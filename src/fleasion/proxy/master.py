@@ -4225,10 +4225,13 @@ class ProxyMaster:
         """Restore selected-client state after any proxy shutdown path."""
         if IS_LINUX:
             self._clear_linux_env_proxy_override()
-            modifier = getattr(self, 'custom_fflag_modifier', None)
-            restore_flags = getattr(modifier, 'restore_linux_client_flags', None)
-            if callable(restore_flags):
-                restore_flags()
+            self.restore_linux_custom_fflags()
+
+    def restore_linux_custom_fflags(self) -> bool:
+        """Restore tracked native custom flags before changing the selected client."""
+        modifier = getattr(self, 'custom_fflag_modifier', None)
+        restore_flags = getattr(modifier, 'restore_linux_client_flags', None)
+        return bool(restore_flags()) if callable(restore_flags) else True
 
     def wait_for_env_proxy_ready(self, timeout: float = 15.0, *, cancelled=None) -> bool:
         """Wait for bind/TLS readiness while allowing restart handoff cancellation."""

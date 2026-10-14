@@ -23,6 +23,8 @@ from typing import Iterable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from fleasion.utils import platform_linux
+
 from ..cache.tools.ktx_to_png import strip_prefixed_ktx
 from ..utils import (
     CONFIG_DIR,
@@ -413,6 +415,12 @@ class PendingModificationsQueue:
 # ModificationManager
 
 
+def _native_fflag_targets() -> set[Path]:
+    if not sys.platform.startswith('linux'):
+        return set()
+    return {path.resolve() for path in platform_linux.find_linux_fflag_files()}
+
+
 class ModificationManager(QObject):
     """Core engine for modification entries: eager-write, stash, restore."""
 
@@ -425,6 +433,7 @@ class ModificationManager(QObject):
         super().__init__()
         self._cache_scraper = cache_scraper
         self._roblox_dirs: list[Path] = _find_roblox_dirs()
+        self._linux_fflag_targets = _native_fflag_targets()
         self._stash_dir = MOD_ORIGINALS_DIR
 
         log_buffer.log(
@@ -1473,7 +1482,7 @@ class ModificationManager(QObject):
         """Handle an explicit UI request to return Roblox to its default cap."""
         self.global_settings_manager.reset_framerate_cap()
 
-    def write_fast_flags(self, settings: dict) -> None:
+    def write_fast_flags(self, settings: dict[str, object]) -> None:
         """Update and write fast-flags to disk."""
         self._data['fast_flags'] = {k: v for k, v in settings.items() if k != 'framerate_cap'}
         self._data['fast_flags_enabled'] = True
@@ -1501,15 +1510,17 @@ class ModificationManager(QObject):
     def refresh_roblox_dirs(self, *, reapply_if_changed: bool = False) -> bool:
         """Re-discover Roblox directories (e.g. after an update)."""
         previous = {str(path.resolve()).lower() for path in self._roblox_dirs}
+        previous_native = getattr(self, '_linux_fflag_targets', set[Path]())
         self._roblox_dirs = _find_roblox_dirs()
         self.fflag_manager._roblox_dirs = self._roblox_dirs
         self.global_settings_manager.refresh_roblox_dirs()
         current = {str(path.resolve()).lower() for path in self._roblox_dirs}
+        self._linux_fflag_targets = _native_fflag_targets()
         log_buffer.log(
             'Modifications',
             f'Refreshed: {format_count(self._roblox_dirs, "Roblox dir")}',
         )
-        changed = current != previous
+        changed = current != previous or self._linux_fflag_targets != previous_native
         if changed and reapply_if_changed:
             self.reapply_all()
         return changed

@@ -1,9 +1,12 @@
 """Mocktail and Cordial Linux client support."""
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -17,6 +20,11 @@ from fleasion.utils.linux_clients import (
     LinuxClientInstallation,
     select_linux_client,
 )
+
+if TYPE_CHECKING:
+    from fleasion.utils.linux_clients import LinuxClientDescriptor
+
+MocktailHome = tuple[LinuxClientInstallation, list[list[str]], Path]
 
 MOCKTAIL_CONFIG = """\
 # Mocktail configuration.
@@ -40,7 +48,7 @@ network:
 CA_PEM = '-----BEGIN CERTIFICATE-----\nZmxlYXNpb24=\n-----END CERTIFICATE-----\n'
 
 
-def _installation(client, home: Path) -> LinuxClientInstallation:
+def _installation(client: LinuxClientDescriptor, home: Path) -> LinuxClientInstallation:
     return LinuxClientInstallation(
         client=client,
         paths=client.paths(home=home, environ={}),
@@ -138,6 +146,7 @@ def test_mocktail_config_edit_keeps_comments_and_other_keys():
         'enabled': 'true',
         'proxy_mode': 'env',
         'proxy_port': '60001',
+        'ca_certificate': None,
     }
     assert "# Boolean (default: false): trust Fleasion's CA" in updated
     assert updated.count('enabled: false') == 1  # discord_rpc untouched
@@ -171,7 +180,7 @@ def test_mocktail_network_conflicts(network, port, conflict):
 
 
 @pytest.fixture
-def mocktail_home(tmp_path, monkeypatch):
+def mocktail_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> MocktailHome:
     overrides: list[list[str]] = []
     monkeypatch.setattr(
         platform_linux,
@@ -185,6 +194,11 @@ def mocktail_home(tmp_path, monkeypatch):
         platform_linux, 'LINUX_PROXY_OVERRIDE_STATE', tmp_path / 'fleasion' / 'override.json'
     )
     monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', None)
+
+    def environment(_installation: LinuxClientInstallation) -> dict[str, str | None]:
+        return dict.fromkeys(platform_linux.MOCKTAIL_INTEGRATION_ENV_NAMES)
+
+    monkeypatch.setattr(platform_linux, '_read_mocktail_proxy_environment', environment)
     installation = _installation(MOCKTAIL_CLIENT, tmp_path)
     monkeypatch.setattr(platform_linux, '_installation_for_client_key', lambda _key: installation)
     ca_file = tmp_path / 'proxy_ca' / 'ca.crt'
@@ -193,7 +207,7 @@ def mocktail_home(tmp_path, monkeypatch):
     return installation, overrides, ca_file
 
 
-def test_mocktail_arm_and_disarm_round_trip(mocktail_home):
+def test_mocktail_arm_and_disarm_round_trip(mocktail_home: MocktailHome) -> None:
     installation, overrides, ca_file = mocktail_home
     config = installation.paths.config_file
     config.parent.mkdir(parents=True)
@@ -209,11 +223,13 @@ def test_mocktail_arm_and_disarm_round_trip(mocktail_home):
         'enabled': 'true',
         'proxy_mode': 'env',
         'proxy_port': '60001',
+        'ca_certificate': json.dumps(str(sandbox_ca)),
     }
     assert config.stat().st_mode & 0o777 == 0o600
     assert overrides[-1] == [
         '--env=MOCKTAIL_FLEASION_ENABLED=true',
         '--env=MOCKTAIL_FLEASION_PROXY_MODE=env',
+        f'--env=MOCKTAIL_FLEASION_CA_CERTIFICATE={sandbox_ca}',
         '--env=MOCKTAIL_FLEASION_PROXY_PORT=60001',
     ]
 
@@ -229,7 +245,7 @@ def test_mocktail_arm_and_disarm_round_trip(mocktail_home):
     assert not platform_linux.MOCKTAIL_INTEGRATION_STATE.exists()
 
 
-def test_mocktail_hosts_mode_drops_the_port(mocktail_home):
+def test_mocktail_hosts_mode_drops_the_port(mocktail_home: MocktailHome) -> None:
     installation, overrides, ca_file = mocktail_home
     config = installation.paths.config_file
     config.parent.mkdir(parents=True)
@@ -242,6 +258,9 @@ def test_mocktail_hosts_mode_drops_the_port(mocktail_home):
         'enabled': 'true',
         'proxy_mode': 'hosts',
         'proxy_port': None,
+        'ca_certificate': json.dumps(str(
+            installation.paths.flatpak_root / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt'
+        )),
     }
     assert '--env=MOCKTAIL_FLEASION_PROXY_MODE=hosts' in overrides[-1]
 

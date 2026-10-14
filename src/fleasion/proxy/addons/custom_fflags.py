@@ -75,6 +75,7 @@ class CustomFFlagModifier:
         self._macos_seeded_flag_names: set[str] = set()
         self._windows_seeded_flag_names: set[str] = set()
         self._linux_seeded_paths: set[Path] = set()
+        self._linux_flag_lock = threading.RLock()
         self._last_fresh_response_flags: tuple[tuple[str, str], ...] | None = None
         self._delivery_generation = 0
         self._delivery_state_lock = threading.Lock()
@@ -479,19 +480,44 @@ class CustomFFlagModifier:
         """Seed custom flags into the selected client's native startup files."""
         if not sys.platform.startswith('linux'):
             return False
+        with self._linux_flag_lock:
+            return self._synchronize_linux_flags()
+
+    def _synchronize_linux_flags(self) -> bool:
         flags = self.runtime_flags() if self.is_enabled() else {}
+        current_paths = set(platform_linux.find_linux_fflag_files())
+        stale_paths = (
+            self._linux_seeded_paths - current_paths if flags else self._linux_seeded_paths
+        )
+        cleanup_failed = False
+        for path in tuple(stale_paths):
+            if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', {}):
+                self._linux_seeded_paths.discard(path)
+            else:
+                cleanup_failed = True
         written = False
-        for path in platform_linux.find_linux_fflag_files():
+        for path in current_paths:
             if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', flags):
                 written = True
-                self._linux_seeded_paths.add(path)
-        return written
+                if flags:
+                    self._linux_seeded_paths.add(path)
+                else:
+                    self._linux_seeded_paths.discard(path)
+        return written and not cleanup_failed
 
-    def restore_linux_client_flags(self) -> None:
+    def restore_linux_client_flags(self) -> bool:
         """Remove the custom layer from files seeded by this modifier."""
+        with self._linux_flag_lock:
+            return self._restore_linux_flags()
+
+    def _restore_linux_flags(self) -> bool:
+        restored = True
         for path in tuple(self._linux_seeded_paths):
             if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', {}):
-                self._linux_seeded_paths.remove(path)
+                self._linux_seeded_paths.discard(path)
+            else:
+                restored = False
+        return restored
 
     def prime_startup_flag_cache(self) -> bool:
         """Seed the platform-specific local flag source used before networking."""

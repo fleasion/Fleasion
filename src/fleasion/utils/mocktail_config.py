@@ -2,13 +2,12 @@
 
 Mocktail ships its own Fleasion integration (``integrations.fleasion``): when
 enabled it routes itself through ``127.0.0.1:<proxy_port>`` and builds a CA
-bundle that trusts Fleasion's certificate. Values in the config file take
-precedence over Mocktail's environment variables, and the file Mocktail writes
-on first launch already contains ``enabled: false``, so Fleasion has to edit
-the file rather than set ``MOCKTAIL_FLEASION_*`` variables.
+bundle that trusts Fleasion's certificate. Environment values take precedence
+over the config file. Fleasion keeps both sources consistent while armed and
+restores the original settings when it disarms the client.
 
 Mocktail generates the file with explanatory comments and promises never to
-replace the user's edits, so this module changes only the three keys it owns
+replace the user's edits, so this module changes only the integration keys it owns
 and leaves every other line byte-for-byte intact. It understands just the
 block-style mappings Mocktail writes; anything it cannot place safely is
 reported as an error instead of being rewritten.
@@ -16,10 +15,11 @@ reported as an error instead of being rewritten.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
-INTEGRATION_KEYS = ('enabled', 'proxy_mode', 'proxy_port')
+INTEGRATION_KEYS = ('enabled', 'proxy_mode', 'proxy_port', 'ca_certificate')
 _QUOTED_SCALAR_MIN_LENGTH = 2
 
 _KEY_LINE = re.compile(r'^(?P<indent>[ ]*)(?P<key>[A-Za-z0-9_]+):(?P<rest>.*)$')
@@ -154,6 +154,19 @@ def read_integration(text: str) -> dict[str, str | None]:
         if index is not None:
             values[key] = _parse(lines[index]).value
     return values
+
+
+def read_certificate_path(text: str) -> str | None:
+    value = read_integration(text)['ca_certificate']
+    if value is None:
+        return None
+    if value.startswith('"'):
+        parsed: object = json.loads(value)
+        if not isinstance(parsed, str):
+            msg = 'Mocktail certificate path must be a string'
+            raise MocktailConfigError(msg)
+        return parsed
+    return _unquote(value)
 
 
 def _update_keys(lines: list[str], block: int, child: int, updates: dict[str, str | None]) -> None:
