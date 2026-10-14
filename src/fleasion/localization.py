@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from PySide6.QtCore import Qt
+
+from .translations.ar import ARABIC
 from .translations.de import GERMAN
 from .translations.en import ENGLISH
 from .translations.es import SPANISH
@@ -19,10 +22,13 @@ from .translations.zh import CHINESE
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from PySide6.QtWidgets import QApplication
+
 DEFAULT_LANGUAGE = 'en'
 
 LANGUAGES: dict[str, str] = {
     'en': 'English',
+    'ar': 'العربية',
     'es': 'Español',
     'pt': 'Português (Brasil)',
     'ru': 'Русский',
@@ -37,6 +43,7 @@ LANGUAGES: dict[str, str] = {
 
 _TRANSLATIONS: dict[str, Mapping[str, str]] = {
     DEFAULT_LANGUAGE: ENGLISH,
+    'ar': ARABIC,
     'es': SPANISH,
     'pt': PORTUGUESE,
     'ru': RUSSIAN,
@@ -87,6 +94,18 @@ def set_language(language: Any) -> str:
 
 def get_language() -> str:
     return _state['language']
+
+
+def is_right_to_left() -> bool:
+    """Return whether the active language uses right-to-left layout."""
+    return _state['language'] == 'ar'
+
+
+def apply_language_direction(app: QApplication) -> None:
+    """Apply the active language's reading direction to the Qt widget tree."""
+    app.setLayoutDirection(
+        Qt.LayoutDirection.RightToLeft if is_right_to_left() else Qt.LayoutDirection.LeftToRight
+    )
 
 
 def tr(identifier: str, /, **values: Any) -> str:

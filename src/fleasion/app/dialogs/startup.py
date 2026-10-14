@@ -24,7 +24,12 @@ from PySide6.QtWidgets import (
 
 from fleasion.app.dialogs.common import FirstTimeSetupDialog, visible_parent_widget, window_handle
 from fleasion.app.elevation import is_admin, relaunch_as_admin
-from fleasion.localization import available_languages, set_language, tr
+from fleasion.localization import (
+    apply_language_direction,
+    available_languages,
+    set_language,
+    tr,
+)
 from fleasion.utils import (
     CONFIG_DIR,
     get_icon_path,
@@ -275,6 +280,9 @@ def prompt_first_time_language(config_manager: ConfigManager) -> None:
     selected = str(combo.currentData() or 'en')
     config_manager.language = selected
     set_language(config_manager.language)
+    app = QApplication.instance()
+    if isinstance(app, QApplication):
+        apply_language_direction(app)
 
 
 def prompt_first_time_startup_options(

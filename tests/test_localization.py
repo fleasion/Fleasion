@@ -11,6 +11,7 @@ import pytest
 
 from fleasion import localization
 from fleasion.config import manager as manager_module
+from fleasion.translations.ar import ARABIC
 from fleasion.translations.de import GERMAN
 from fleasion.translations.es import SPANISH
 from fleasion.translations.fil import FILIPINO
@@ -37,6 +38,7 @@ def _settings_language_change(settings_module: object, tab: object) -> None:
 
 
 _TRANSLATED_CATALOGS = {
+    'ar': ARABIC,
     'es': SPANISH,
     'pt': PORTUGUESE,
     'ru': RUSSIAN,
@@ -53,6 +55,7 @@ _TRANSLATED_CATALOGS = {
 def test_english_is_default_and_supported_languages_are_available() -> None:
     assert localization.available_languages() == (
         ('en', 'English'),
+        ('ar', 'العربية'),
         ('es', 'Español'),
         ('pt', 'Português (Brasil)'),
         ('ru', 'Русский'),
@@ -66,6 +69,9 @@ def test_english_is_default_and_supported_languages_are_available() -> None:
     )
     assert localization.normalize_language(None) == 'en'
     assert localization.normalize_language('en-US') == 'en'
+    assert localization.normalize_language('ar') == 'ar'
+    assert localization.normalize_language('ar-SA') == 'ar'
+    assert localization.normalize_language('ar_EG') == 'ar'
     assert localization.normalize_language('es-MX') == 'es'
     assert localization.normalize_language('es_ES') == 'es'
     assert localization.normalize_language('pt') == 'pt'
@@ -127,6 +133,7 @@ def test_portuguese_translation_lookup_formats_and_counts() -> None:
 
 def test_new_translation_lookup_formats_and_counts() -> None:
     catalogs = {
+        'ar': ARABIC,
         'ru': RUSSIAN,
         'kk': KAZAKH,
         'tr': TURKISH,
@@ -171,6 +178,7 @@ def test_translation_catalogs_match_english_keys_markup_and_placeholders() -> No
     tag_re = re.compile(r'<[^>]+>')
 
     for catalog in (
+        ARABIC,
         SPANISH,
         PORTUGUESE,
         RUSSIAN,

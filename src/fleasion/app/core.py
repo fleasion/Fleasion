@@ -88,7 +88,7 @@ from fleasion.app.single_instance import (
 from fleasion.app.startup_tasks import StartupTasks
 from fleasion.app.tray import SystemTray
 from fleasion.config import ConfigFolderWatcher, ConfigManager
-from fleasion.localization import set_language, tr
+from fleasion.localization import apply_language_direction, set_language, tr
 from fleasion.modifications import ModificationManager
 from fleasion.prejsons import download_prejsons
 from fleasion.proxy import ProxyMaster
@@ -354,6 +354,7 @@ def run_application() -> None:
     # process can still build the prompt UI and show a fallback dialog
     config_manager = ConfigManager()
     set_language(config_manager.language)
+    apply_language_direction(app)
     if not suppress_dashboard and not config_manager.first_time_setup_complete:
         prompt_first_time_language(config_manager)
     if sys.platform.startswith('linux'):
