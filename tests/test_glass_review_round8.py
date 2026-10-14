@@ -58,7 +58,7 @@ def test_glass_restores_original_stylesheet_after_reenable_and_disable(
     app.setStyleSheet(_STARTUP_STYLESHEET)
     ThemeManager.apply_theme('Glass')
     assert controller.theme.active
-    assert app.styleSheet() != _STARTUP_STYLESHEET
+    assert app.styleSheet() == _STARTUP_STYLESHEET
     controller.theme.enable(app)
     ThemeManager.apply_theme('Dark')
     assert not controller.theme.active

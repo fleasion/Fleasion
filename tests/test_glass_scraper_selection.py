@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.cache import cache_manager as cache_module
+from fleasion.appearance import ACCENTS
 from fleasion.cache.cache_viewer import CacheViewerTab
 from fleasion.gui.theme import ThemeManager
 
@@ -56,8 +57,9 @@ def _row_colors(table: QTableWidget) -> list[QColor]:
     ]
 
 
+@pytest.mark.parametrize('accent', ACCENTS)
 def test_glass_scraper_selected_row_is_subtle_and_unselected_rows_keep_colors(
-    app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, accent: str
 ) -> None:
     monkeypatch.setattr(cache_module, 'CONFIG_DIR', tmp_path)
     ThemeManager.apply_theme('System')
@@ -76,7 +78,7 @@ def test_glass_scraper_selected_row_is_subtle_and_unselected_rows_keep_colors(
             table.setItem(row, column, QTableWidgetItem(f'{row}-{column}'))
     try:
         container.show()
-        ThemeManager.apply_theme('Glass')
+        ThemeManager.apply_appearance('Glass', 'Dark', accent)
         QTest.qWait(100)
         table.clearSelection()
         table.setCurrentItem(None)  # pyright: ignore[reportArgumentType] - Qt supports None
@@ -103,7 +105,6 @@ def test_glass_scraper_selected_row_is_subtle_and_unselected_rows_keep_colors(
         assert first_selected[0] != before[0]
         # Previously the first click produced a saturated blue (R=114, alpha=177)
         # over the almost-black rows, rather than a restrained selection wash
-        assert first_selected[0].red() < 105
         assert first_selected[0].alpha() < 165
 
         table.setCurrentCell(1, 1)

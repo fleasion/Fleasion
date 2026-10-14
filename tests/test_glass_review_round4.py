@@ -68,7 +68,7 @@ def test_appearance_glass_controls_do_not_force_horizontal_scrolling(
         assert tab._blur_button.isVisible()  # pyright: ignore[reportPrivateUsage]
         assert scroll.horizontalScrollBar().maximum() == 0
         assert tab._backdrop_combo.isVisible()  # pyright: ignore[reportPrivateUsage]
-        assert tab._accent_combo.isVisible()  # pyright: ignore[reportPrivateUsage]
+        assert tab._accent_selector.isVisible()  # pyright: ignore[reportPrivateUsage]
     finally:
         tab.close()
         tab.deleteLater()
@@ -93,13 +93,13 @@ def test_refresh_from_config_synchronizes_all_glass_values_without_signals(
             changes.append('opacity')
 
         tab._backdrop_combo.currentIndexChanged.connect(on_backdrop)  # pyright: ignore[reportPrivateUsage]
-        tab._accent_combo.currentTextChanged.connect(on_accent)  # pyright: ignore[reportPrivateUsage]
+        tab._accent_selector.accent_changed.connect(on_accent)  # pyright: ignore[reportPrivateUsage]
         tab._opacity_slider.valueChanged.connect(on_opacity)  # pyright: ignore[reportPrivateUsage]
         config.glass_accent = 'Violet'
         config.glass_backdrop = 'wallpaper'
         config.glass_opacity = 0.8
         tab.refresh_from_config()
-        assert tab._accent_combo.currentText() == 'Violet'  # pyright: ignore[reportPrivateUsage]
+        assert tab._accent_selector.accent() == 'Violet'  # pyright: ignore[reportPrivateUsage]
         assert tab._backdrop_combo.currentData() == 'wallpaper'  # pyright: ignore[reportPrivateUsage]
         assert tab._opacity_slider.value() == 80  # pyright: ignore[reportPrivateUsage]
         assert changes == []

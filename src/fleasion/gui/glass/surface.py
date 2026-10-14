@@ -21,24 +21,31 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from .desktop_blur import blur
-from .state import UNBLURRED_OPACITY, state
-from .style import RADIUS
+from .state import state
+from .style import RADIUS, glass_colors
 from .wallpaper import wallpapers
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QScreen
+
+    from .stylesheets import WindowStyles
 
 _COMPACT_BUTTON_MAX: Final = 40
 _ARROW_BUTTON_MAX: Final = 24
 _FALLBACK_BACKDROP: Final = (20, 22, 34)
 
 
+def _fallback_color() -> QColor:
+    return (
+        QColor(*_FALLBACK_BACKDROP)
+        if state.dark and state.base_palette is None
+        else glass_colors().surface
+    )
+
+
 def effective_opacity() -> float:
-    """Tint strength: the user's choice when something blurs behind us, else denser."""
-    settings = state.settings
-    if settings.backdrop == 'wallpaper' or blur.cached_status() == 'on':
-        return settings.opacity
-    return max(settings.opacity, UNBLURRED_OPACITY)
+    """Use the chosen background opacity regardless of compositor blur support."""
+    return state.settings.opacity
 
 
 def _screen(window: QWidget) -> QScreen | None:
@@ -65,7 +72,7 @@ def _paint_wallpaper(painter: QPainter, window: QWidget, path: QPainterPath) -> 
     height = max(geometry.height(), window.height())
     image = wallpapers.image(width, height, screen.name())
     if image.isNull():
-        painter.fillPath(path, QColor(*_FALLBACK_BACKDROP))
+        painter.fillPath(path, _fallback_color())
         return
     origin = _origin_in_screen(window, width, height)
     source = QRectF(origin.x(), origin.y(), window.width(), window.height())
@@ -81,15 +88,23 @@ def _paint_wallpaper(painter: QPainter, window: QWidget, path: QPainterPath) -> 
 def paint_glass(
     painter: QPainter, rect: QRectF, radius: float, window: QWidget | None = None
 ) -> None:
-    """Backdrop, tint, top-down sheen and a specular rim."""
+    """Replace the previous surface, then paint the backdrop, sheen and rim."""
+    # Translucent paints must replace the backing store, including old child pixels
+    painter.save()
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+    painter.fillRect(rect.toAlignedRect(), Qt.GlobalColor.transparent)
+    painter.restore()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     path = QPainterPath()
     path.addRoundedRect(rect, radius, radius)
     if window is not None and _opaque_fallback(window):
-        painter.fillPath(path, QColor(*_FALLBACK_BACKDROP))
+        painter.fillPath(path, _fallback_color())
     if window is not None and state.settings.backdrop == 'wallpaper':
         _paint_wallpaper(painter, window, path)
-    painter.fillPath(path, QColor(16, 17, 24, round(255 * effective_opacity())))
+    colors = glass_colors()
+    surface = QColor(colors.surface)
+    surface.setAlpha(round(255 * effective_opacity()))
+    painter.fillPath(path, surface)
     sheen = QLinearGradient(rect.topLeft(), rect.bottomLeft())
     sheen.setColorAt(0.0, QColor(255, 255, 255, 34))
     sheen.setColorAt(0.25, QColor(255, 255, 255, 10))
@@ -135,10 +150,12 @@ class GlassWindows(QObject):
         app: QApplication,
         original_combo_masks: dict[QWidget, QRegion] | None = None,
         original_itemview_masks: dict[QWidget, QRegion] | None = None,
+        stylesheets: WindowStyles | None = None,
     ) -> None:
         super().__init__(app)
         self._app = app
         self._active = True
+        self._stylesheets = stylesheets
         self._original_combo_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary(
             original_combo_masks or {}
         )
@@ -331,6 +348,8 @@ class GlassWindows(QObject):
         if kind == QEvent.Type.Polish:
             self.polish(watched)
             self.update_itemview_shape(watched)
+        elif kind == QEvent.Type.ParentChange and self._stylesheets is not None:
+            self._stylesheets.polish(watched)
         elif kind in {QEvent.Type.Show, QEvent.Type.Resize, QEvent.Type.WindowStateChange}:
             self.update_window_shape(watched)
             self.update_itemview_shape(watched)
@@ -373,6 +392,8 @@ class GlassWindows(QObject):
         _repolish_later(button)
 
     def polish(self, widget: QWidget) -> None:
+        if self._stylesheets is not None:
+            self._stylesheets.polish(widget)
         if _is_window(widget):
             self.remember_window(widget)
             translucent = not _opaque_fallback(widget)

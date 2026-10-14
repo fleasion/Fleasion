@@ -1907,4 +1907,13 @@ GERMAN: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'Ein FastFlag namens „{value0}“ ist bereits vorhanden.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Ungültiger FastFlag-Name',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'Ein FastFlag-Ordner namens „{value0}“ ist bereits vorhanden. Verwenden Sie stattdessen „Auswahl in Ordner verschieben“.',
+    'settings.appearance.style': 'Stil',
+    'settings.appearance.color_mode': 'Farbmodus',
+    'settings.appearance.accent': 'Akzentfarbe',
+    'settings.appearance.backdrop': 'Hintergrund',
+    'settings.appearance.opacity': 'Deckkraft',
+    'settings.appearance.accent_named': 'Akzentfarbe: {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'Tönungsstärke',
+    'settings.appearance.window_opacity_tooltip': 'Hintergrunddeckkraft; niedrigere Werte zeigen mehr vom darunterliegenden Fenster',
 }

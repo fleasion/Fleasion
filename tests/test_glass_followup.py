@@ -184,10 +184,12 @@ def test_settings_blur_toggle_follows_cached_compositor_state(
 
     from fleasion.gui.glass.controller import BLUR_BUTTON, GlassTheme
     from fleasion.gui.glass.state import state
+    from fleasion.gui.theme import ThemeManager
     from fleasion.localization import tr
 
     instance = QApplication.instance()
     _application = instance if isinstance(instance, QApplication) else QApplication([])
+    ThemeManager.apply_appearance('Glass', 'Dark', 'Ice')
     button = QPushButton()
     button.setObjectName(BLUR_BUTTON)
     button.show()
@@ -205,4 +207,5 @@ def test_settings_blur_toggle_follows_cached_compositor_state(
         assert not button.isEnabled()
     finally:
         button.close()
+        ThemeManager.apply_theme('Light')
         button.deleteLater()

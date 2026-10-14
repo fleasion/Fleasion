@@ -1907,4 +1907,13 @@ RUSSIAN: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'FastFlag с названием «{value0}» уже существует.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Недопустимое название FastFlag',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'Папка FastFlag с названием «{value0}» уже существует. Вместо этого используйте «Переместить выбранные в папку».',
+    'settings.appearance.style': 'Стиль',
+    'settings.appearance.color_mode': 'Цветовой режим',
+    'settings.appearance.accent': 'Цвет акцента',
+    'settings.appearance.backdrop': 'Фон',
+    'settings.appearance.opacity': 'Непрозрачность',
+    'settings.appearance.accent_named': 'Цвет акцента: {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'Интенсивность оттенка',
+    'settings.appearance.window_opacity_tooltip': 'Непрозрачность фона; меньшие значения показывают больше окна под приложением',
 }

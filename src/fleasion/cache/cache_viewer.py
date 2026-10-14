@@ -2108,7 +2108,9 @@ class CacheViewerTab(QWidget):
         if window_color.alpha() < 255:
             # Glass uses a translucent window palette; opaque dark-mode rows
             # would obscure its backdrop when Qt paints without QSS
-            alternate = QColor(255, 255, 255, 9)
+            alternate = (
+                QColor(255, 255, 255, 9) if window_color.lightness() < 128 else QColor(0, 0, 0, 9)
+            )
         elif window_color.lightness() < 128:
             alternate = QColor(53, 53, 53)
         else:

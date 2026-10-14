@@ -1387,10 +1387,7 @@ class RandoStuffTab(QWidget):
 
     def _update_container_bg(self) -> None:
         """Keep the tab background aligned with the active theme."""
-        colors = ThemeManager.panel_colors(self.palette())
-        self._misc_container.setStyleSheet(
-            f'QWidget#_FleasionMiscContainer {{ {colors.container_background_css} }}'
-        )
+        ThemeManager.apply_panel_background(self._misc_container)
 
     def set_proxy_features_enabled(self, enabled: bool) -> None:
         for gate_name in (

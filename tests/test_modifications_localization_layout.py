@@ -459,6 +459,7 @@ def test_preloaded_tab_background_respects_theme(
     app = _qapp()
     monkeypatch.setattr(ThemeManager, '_current_theme', theme)
     monkeypatch.setattr(ThemeManager, '_effective_theme', theme)
+    monkeypatch.setattr(ThemeManager, '_color_mode', theme)
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor('#2c3040'))
     palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#202433'))
@@ -480,17 +481,20 @@ def test_preloaded_tab_background_respects_theme(
         assert container is not None
         container.ensurePolished()
         expected = QColor('#404040') if theme == 'Dark' else QColor('#202433')
-        assert container.palette().window().color() == expected
+        assert container.autoFillBackground()
+        assert container.palette().color(container.backgroundRole()) == expected
         parent.setEnabled(True)
         parent.show()
         app.processEvents()
-        assert container.palette().window().color() == expected
+        assert container.autoFillBackground()
+        assert container.palette().color(container.backgroundRole()) == expected
 
         palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#182030'))
         app.setPalette(palette)
         app.processEvents()
         expected = QColor('#404040') if theme == 'Dark' else QColor('#182030')
-        assert container.palette().window().color() == expected
+        assert container.autoFillBackground()
+        assert container.palette().color(container.backgroundRole()) == expected
     finally:
         build.close()
         parent.close()

@@ -1907,4 +1907,13 @@ KAZAKH: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': '«{value0}» атты FastFlag бұрыннан бар.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'FastFlag атауы жарамсыз',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': '«{value0}» атты FastFlag қалтасы бұрыннан бар. Оның орнына «Таңдалғандарды қалтаға жылжыту» пәрменін пайдаланыңыз.',
+    'settings.appearance.style': 'Стиль',
+    'settings.appearance.color_mode': 'Түс режимі',
+    'settings.appearance.accent': 'Акцент түсі',
+    'settings.appearance.backdrop': 'Фон',
+    'settings.appearance.opacity': 'Мөлдірсіздік',
+    'settings.appearance.accent_named': 'Акцент түсі: {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'Реңк қарқындылығы',
+    'settings.appearance.window_opacity_tooltip': 'Фонның мөлдірсіздігі; төмен мәндер астындағы терезені көбірек көрсетеді',
 }

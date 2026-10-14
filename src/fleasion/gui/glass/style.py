@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from string import Template
 from typing import TYPE_CHECKING, Final
 
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
 
+from fleasion.appearance.colors import accent_color, apply_accent, on_accent
 from fleasion.utils.paths import CONFIG_DIR
+
+from .state import state
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -18,6 +22,43 @@ TEXT: Final = '#f5f7fb'
 MUTED: Final = 'rgba(245,247,251,0.62)'
 RADIUS: Final = 14
 ICON_DIR: Final[Path] = CONFIG_DIR / 'glass'
+
+
+@dataclass(frozen=True)
+class GlassColors:
+    text: QColor
+    ink: QColor
+    surface: QColor
+    well: QColor
+    popup: QColor
+    accent: QColor
+    accent_text: QColor
+
+
+def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
+    settings = settings or state.settings
+    native = state.base_palette
+    dark = state.dark
+    surface = QColor('#101118' if dark else '#f4f5f8')
+    text = QColor(TEXT if dark else '#20232b')
+    well = QColor('#08090e' if dark else '#ffffff')
+    popup = QColor('#1c1d26' if dark else '#f7f8fb')
+    if native is not None:
+        surface = native.window().color()
+        text = native.windowText().color()
+        well = native.base().color()
+        popup = QColor(well)
+    accent = accent_color(settings.accent, surface)
+    return GlassColors(
+        text,
+        QColor('#ffffff' if dark else '#1b2030'),
+        surface,
+        well,
+        popup,
+        accent,
+        on_accent(accent),
+    )
+
 
 _STROKE: Final = 'fill="none" stroke-linecap="round" stroke-linejoin="round"'
 _ICONS: Final[dict[str, str]] = {
@@ -43,10 +84,13 @@ _PREFERRED_FONTS: Final = (
 def icon_path(name: str) -> str:
     """Return the file for a glyph; QSS can only load images from files."""
     ICON_DIR.mkdir(parents=True, exist_ok=True)
-    path = ICON_DIR / f'{name}.svg'
+    colors = glass_colors()
+    foreground = colors.accent_text if name in {'check', 'dot'} else colors.text
+    path = ICON_DIR / f'{name}-{foreground.name()[1:]}.svg'
+    glyph = _ICONS[name].replace(TEXT, foreground.name()).replace('#0c0d12', foreground.name())
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-        f'{_ICONS[name]}</svg>'
+        f'{glyph}</svg>'
     )
     if not path.is_file() or path.read_text(encoding='utf-8') != svg:
         path.write_text(svg, encoding='utf-8')
@@ -58,36 +102,32 @@ def _rgb(hex_color: str) -> str:
     return f'{color.red()},{color.green()},{color.blue()}'
 
 
-def palette(settings: GlassSettings) -> QPalette:
-    pal = QPalette()
+def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) -> QPalette:
+    colors = glass_colors(settings)
+    base = base_palette if base_palette is not None else state.base_palette
+    pal = QPalette(base) if base is not None else QPalette()
     role = QPalette.ColorRole
-    text = QColor(TEXT)
-    accent = QColor(settings.accent_color)
-    colors = {
-        role.Window: QColor(0, 0, 0, 0),
-        role.WindowText: text,
-        role.Base: QColor(10, 11, 16, 120),
-        role.AlternateBase: QColor(255, 255, 255, 8),
-        role.ToolTipBase: QColor(28, 29, 38),
-        role.ToolTipText: text,
-        role.Text: text,
-        role.Button: QColor(255, 255, 255, 20),
-        role.ButtonText: text,
-        role.BrightText: QColor('#ffffff'),
-        role.Link: accent,
-        role.Highlight: accent,
-        role.HighlightedText: QColor('#0c0d12'),
-        role.PlaceholderText: QColor(245, 247, 251, 110),
-        role.Light: QColor(255, 255, 255, 50),
-        role.Midlight: QColor(255, 255, 255, 26),
-        role.Mid: QColor(255, 255, 255, 20),
-        role.Dark: QColor(0, 0, 0, 110),
-        role.Shadow: QColor(0, 0, 0, 150),
-    }
-    for color_role, color in colors.items():
-        pal.setColor(color_role, color)
-    for color_role in (role.Text, role.ButtonText, role.WindowText):
-        pal.setColor(QPalette.ColorGroup.Disabled, color_role, QColor(255, 255, 255, 85))
+    for color_role in (role.WindowText, role.Text, role.ButtonText, role.ToolTipText):
+        foreground = (
+            state.base_palette.color(color_role) if state.base_palette is not None else colors.text
+        )
+        pal.setColor(color_role, foreground)
+        disabled = QColor(foreground)
+        disabled.setAlpha(100)
+        pal.setColor(QPalette.ColorGroup.Disabled, color_role, disabled)
+    pal.setColor(role.Window, colors.surface)
+    pal.setColor(role.Base, colors.well)
+    pal.setColor(role.AlternateBase, colors.surface)
+    pal.setColor(role.ToolTipBase, colors.popup)
+    pal.setColor(role.Button, colors.surface)
+    placeholder = QColor(colors.text)
+    placeholder.setAlpha(128)
+    pal.setColor(role.PlaceholderText, placeholder)
+    pal = apply_accent(pal, settings.accent)
+    # GlassWindows paints the surface; inherited widget backgrounds stay transparent
+    window = QColor(colors.surface)
+    window.setAlpha(0)
+    pal.setColor(role.Window, window)
     return pal
 
 
@@ -106,27 +146,26 @@ def pick_font() -> QFont | None:
 # Well: recessed input field with its highlight along the bottom edge.
 _PANE: Final = (
     'qlineargradient(x1:0, y1:0, x2:0, y2:1, '
-    'stop:0 rgba(255,255,255,0.11), stop:1 rgba(255,255,255,0.045))'
+    'stop:0 rgba($ink_rgb,0.11), stop:1 rgba($ink_rgb,0.045))'
 )
 _PANE_HOVER: Final = (
     'qlineargradient(x1:0, y1:0, x2:0, y2:1, '
-    'stop:0 rgba(255,255,255,0.19), stop:1 rgba(255,255,255,0.08))'
+    'stop:0 rgba($ink_rgb,0.19), stop:1 rgba($ink_rgb,0.08))'
 )
-_RIM: Final = 'border: 1px solid rgba(255,255,255,0.10); border-top-color: rgba(255,255,255,0.30);'
+_RIM: Final = 'border: 1px solid rgba($ink_rgb,0.10); border-top-color: rgba($ink_rgb,0.30);'
 _WELL: Final = (
-    'background: rgba(6,7,11,0.34); border: 1px solid rgba(255,255,255,0.07);'
-    ' border-bottom-color: rgba(255,255,255,0.16);'
+    'background: rgba($well_rgb,0.34); border: 1px solid rgba($ink_rgb,0.07);'
+    ' border-bottom-color: rgba($ink_rgb,0.16);'
 )
 
 _STYLESHEET: Final = Template("""
 QMainWindow, QDialog { background: transparent; }
-QWidget { color: $text; }
 QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget, QTabWidget > QWidget,
 QSplitter, QStatusBar, QLabel { background: transparent; }
 
 QToolTip {
-    background: rgba(30,31,40,0.96); color: $text;
-    border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 6px 9px;
+    background: rgba($popup_rgb,0.96); color: $tooltip_text;
+    border: 1px solid rgba($ink_rgb,0.14); border-radius: 8px; padding: 6px 9px;
 }
 
 #GlassTitleBar { background: transparent; }
@@ -137,7 +176,7 @@ QPushButton#GlassWinBtn {
 }
 QPushButton#GlassWinBtn:hover { background: $pane_hover; }
 QPushButton#GlassWinBtn[role="close"]:hover {
-    background: rgba(255,90,104,0.85); border-color: rgba(255,255,255,0.35);
+    background: rgba(255,90,104,0.85); border-color: rgba($ink_rgb,0.35);
 }
 
 QTabWidget::pane { border: 0; top: 0; }
@@ -147,30 +186,30 @@ QTabBar::tab {
     background: transparent; border: 1px solid transparent; border-radius: 13px;
     padding: 5px 15px; margin: 6px 2px; color: $muted; font-weight: 600;
 }
-QTabBar::tab:hover { color: $text; background: rgba(255,255,255,0.06); }
+QTabBar::tab:hover { color: $text; background: rgba($ink_rgb,0.06); }
 QTabBar::tab:selected { color: $text; background: $pane_hover; $rim }
 
 QFrame#SubplaceSearchPanel {
-    background: rgba(255,255,255,0.065); border: 1px solid rgba(255,255,255,0.12);
-    border-top-color: rgba(255,255,255,0.23); border-radius: 12px;
+    background: rgba($ink_rgb,0.065); border: 1px solid rgba($ink_rgb,0.12);
+    border-top-color: rgba($ink_rgb,0.23); border-radius: 12px;
 }
 QScrollArea#SubplaceRecentScroll, QScrollArea#SubplaceFavoritesScroll,
 QScrollArea#SubplaceResultsScroll {
-    background: rgba(8,10,17,0.26); border: 1px solid rgba(255,255,255,0.09);
+    background: rgba($well_rgb,0.26); border: 1px solid rgba($ink_rgb,0.09);
     border-radius: 10px;
 }
 QFrame#SubplaceGameCard {
-    background: rgba(255,255,255,0.075); border: 1px solid rgba(255,255,255,0.17);
-    border-top-color: rgba(255,255,255,0.30); border-radius: 12px;
+    background: rgba($ink_rgb,0.075); border: 1px solid rgba($ink_rgb,0.17);
+    border-top-color: rgba($ink_rgb,0.30); border-radius: 12px;
 }
 QFrame#SubplaceGameCard:hover {
-    background: rgba(255,255,255,0.11); border-color: rgba(255,255,255,0.30);
+    background: rgba($ink_rgb,0.11); border-color: rgba($ink_rgb,0.30);
 }
 QPushButton#SubplaceSidebarButton {
     padding: 5px 10px; border-radius: 11px; font-weight: 500;
 }
 QPushButton#SubplaceSidebarButton:hover {
-    background: rgba(255,255,255,0.16);
+    background: rgba($ink_rgb,0.16);
 }
 QWidget#SubplaceFooter { background: transparent; border: 0; }
 QPushButton#SubplaceClearCacheButton {
@@ -187,16 +226,17 @@ QGroupBox::title {
 }
 
 QPushButton, QToolButton {
+    color: $button_text;
     background: $pane; $rim border-radius: 14px; padding: 5px 14px; min-height: 18px;
     font-weight: 600;
 }
 QPushButton[glassArrow="true"] {
     background: transparent; border: 0; padding: 0; color: $muted; font-size: 8pt;
 }
-QPushButton[glassArrow="true"]:hover { color: $text; background: rgba(255,255,255,0.08); }
+QPushButton[glassArrow="true"]:hover { color: $text; background: rgba($ink_rgb,0.08); }
 QPushButton[compact="true"] { padding: 0; border-radius: 9px; }
 QPushButton:hover, QToolButton:hover {
-    background: $pane_hover; border-top-color: rgba(255,255,255,0.45);
+    background: $pane_hover; border-top-color: rgba($ink_rgb,0.45);
 }
 QPushButton:focus, QToolButton:focus {
     border: 2px solid rgba($accent_rgb,0.95);
@@ -205,33 +245,34 @@ QTabBar::tab:focus { border: 2px solid rgba($accent_rgb,0.95); }
 QCheckBox:focus, QRadioButton:focus {
     border: 1px dotted rgba($accent_rgb,0.95); border-radius: 4px;
 }
-QPushButton:pressed, QToolButton:pressed, QToolButton:checked {
+QPushButton:pressed, QPushButton:checked, QToolButton:pressed, QToolButton:checked {
     background: rgba($accent_rgb,0.30); border-color: rgba($accent_rgb,0.55);
-    border-top-color: rgba(255,255,255,0.45);
+    border-top-color: rgba($ink_rgb,0.45);
 }
 QPushButton:default {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba($accent_rgb,0.95), stop:1 rgba($accent_rgb,0.75));
-    color: #0c0d12; border: 1px solid rgba(255,255,255,0.55);
+        stop:0 $accent, stop:1 $accent);
+    color: $accent_text; border: 1px solid rgba($ink_rgb,0.55);
 }
 QPushButton:disabled, QToolButton:disabled {
-    color: rgba(255,255,255,0.32); background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.06);
+    color: rgba($ink_rgb,0.32); background: rgba($ink_rgb,0.03);
+    border: 1px solid rgba($ink_rgb,0.06);
 }
 QPushButton#ConflictBadge {
     background: rgba(255,190,69,0.16); border: 1px solid rgba(255,190,69,0.50);
-    border-top-color: rgba(255,230,170,0.75); color: #ffd98a;
+    border-top-color: rgba(255,230,170,0.75); color: $warning;
 }
 QPushButton#ConflictBadge[clean="true"] {
     background: rgba(79,224,166,0.12); border: 1px solid rgba(79,224,166,0.40);
-    border-top-color: rgba(190,255,225,0.6); color: #9ff5cf;
+    border-top-color: rgba(190,255,225,0.6); color: $success;
 }
 
 QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+    color: $input_text;
     $well border-radius: 10px; padding: 5px 10px;
-    selection-background-color: rgba($accent_rgb,0.45);
+    selection-background-color: $accent; selection-color: $accent_text;
 }
-QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: rgba(255,255,255,0.14); }
+QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: rgba($ink_rgb,0.14); }
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus,
 QDoubleSpinBox:focus, QComboBox:focus { border: 1px solid rgba($accent_rgb,0.85); }
 QComboBox::drop-down {
@@ -240,7 +281,7 @@ QComboBox::drop-down {
 }
 QComboBox::down-arrow { image: url($chevron_down); width: 14px; height: 14px; }
 QComboBox QAbstractItemView {
-    background: rgba(28,29,38,0.98); border: 1px solid rgba(255,255,255,0.14);
+    background: rgba($popup_rgb,0.98); border: 1px solid rgba($ink_rgb,0.14);
     border-radius: 10px; padding: 4px; selection-background-color: rgba($accent_rgb,0.35);
     selection-color: $text;
 }
@@ -258,7 +299,7 @@ QSpinBox::down-button, QDoubleSpinBox::down-button {
 }
 QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
 QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-    background: rgba(255,255,255,0.10);
+    background: rgba($ink_rgb,0.10);
 }
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
     image: url($chevron_up); width: 11px; height: 11px;
@@ -267,9 +308,10 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
     image: url($chevron_down); width: 11px; height: 11px;
 }
 
-QAbstractItemView, QTreeView, QTreeWidget, QListView, QListWidget, QTableView, QTableWidget {
-    background: rgba(8,9,14,0.30); alternate-background-color: rgba(255,255,255,0.025);
-    border: 1px solid rgba(255,255,255,0.08); border-top-color: rgba(255,255,255,0.18);
+QAbstractItemView {
+    color: $input_text;
+    background: rgba($well_rgb,0.30); alternate-background-color: rgba($ink_rgb,0.025);
+    border: 1px solid rgba($ink_rgb,0.08); border-top-color: rgba($ink_rgb,0.18);
     border-radius: ${radius}px; selection-background-color: rgba($accent_rgb,0.24);
     selection-color: $text;
 }
@@ -277,7 +319,7 @@ QAbstractItemView, QTreeView, QTreeWidget, QListView, QListWidget, QTableView, Q
    below prevents duplicate header outlines without flattening the view */
 QTreeView::item, QListView::item, QTableView::item { padding: 6px 4px; border: 0; }
 QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
-    background: rgba(255,255,255,0.05);
+    background: rgba($ink_rgb,0.05);
 }
 QTreeView::item:selected, QListView::item:selected { background: rgba($accent_rgb,0.24); }
 QTableView, QTableWidget { selection-background-color: rgba($accent_rgb,0.11); }
@@ -285,8 +327,8 @@ QTableView::item:selected { background: rgba($accent_rgb,0.11); }
 /* QHeaderView inherits QAbstractItemView; reset the inherited inner rounded frame */
 QHeaderView { background: transparent; border: 0; border-radius: 0; }
 QHeaderView::section {
-    background: rgba(255,255,255,0.045); color: $muted; border: 0;
-    border-bottom: 1px solid rgba(255,255,255,0.10); padding: 8px;
+    background: rgba($ink_rgb,0.045); color: $muted; border: 0;
+    border-bottom: 1px solid rgba($ink_rgb,0.10); padding: 8px;
     font-size: 8.5pt; font-weight: 700;
 }
 QTableCornerButton::section { background: transparent; border: 0; }
@@ -300,16 +342,16 @@ QCheckBox::indicator:hover, QRadioButton::indicator:hover {
 }
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba($accent_rgb,1), stop:1 rgba($accent_rgb,0.78));
-    border: 1px solid rgba(255,255,255,0.55);
+        stop:0 $accent, stop:1 $accent);
+    border: 1px solid rgba($ink_rgb,0.55);
 }
 QCheckBox::indicator:checked { image: url($check); }
 QRadioButton::indicator:checked { image: url($dot); }
 
 #PaletteCard {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba(40,42,54,0.97), stop:1 rgba(24,25,33,0.97));
-    border: 1px solid rgba(255,255,255,0.12); border-top-color: rgba(255,255,255,0.32);
+        stop:0 rgba($popup_rgb,0.97), stop:1 rgba($popup_rgb,0.97));
+    border: 1px solid rgba($ink_rgb,0.12); border-top-color: rgba($ink_rgb,0.32);
     border-radius: 18px;
 }
 #PaletteCard QListWidget { background: transparent; border: 0; }
@@ -321,9 +363,9 @@ QRadioButton::indicator:checked { image: url($dot); }
 QScrollBar:vertical { background: transparent; width: 10px; margin: 4px 2px; }
 QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px 4px; }
 QScrollBar::handle {
-    background: rgba(255,255,255,0.20); border-radius: 3px; min-height: 30px; min-width: 30px;
+    background: rgba($ink_rgb,0.20); border-radius: 3px; min-height: 30px; min-width: 30px;
 }
-QScrollBar::handle:hover { background: rgba(255,255,255,0.36); }
+QScrollBar::handle:hover { background: rgba($ink_rgb,0.36); }
 QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {
     background: transparent; border: 0; width: 0; height: 0;
 }
@@ -333,33 +375,52 @@ QSlider::sub-page:horizontal { background: rgba($accent_rgb,0.9); border-radius:
 QSlider::handle:horizontal {
     width: 18px; height: 18px; margin: -7px 0; border-radius: 9px;
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #dde2ec);
-    border: 1px solid rgba(255,255,255,0.8);
+    border: 1px solid rgba($ink_rgb,0.8);
 }
 QProgressBar { $well border-radius: 5px; text-align: center; height: 10px; color: transparent; }
 QProgressBar::chunk { background: rgba($accent_rgb,0.9); border-radius: 4px; }
 
 QMenu {
-    background: rgba(28,29,38,0.97); border: 1px solid rgba(255,255,255,0.14);
-    border-top-color: rgba(255,255,255,0.28); border-radius: 12px; padding: 5px;
+    background: rgba($popup_rgb,0.97); border: 1px solid rgba($ink_rgb,0.14);
+    border-top-color: rgba($ink_rgb,0.28); border-radius: 12px; padding: 5px;
 }
 QMenu::item { padding: 6px 22px; border-radius: 7px; }
 QMenu::item:selected { background: rgba($accent_rgb,0.30); }
-QMenu::separator { height: 1px; background: rgba(255,255,255,0.10); margin: 4px 8px; }
+QMenu::separator { height: 1px; background: rgba($ink_rgb,0.10); margin: 4px 8px; }
 QMenuBar { background: transparent; }
-QSplitter::handle { background: rgba(255,255,255,0.08); }
+QSplitter::handle { background: rgba($ink_rgb,0.08); }
 """)
 
 
 def stylesheet(settings: GlassSettings) -> str:
+    colors = glass_colors(settings)
+    native = state.base_palette
+    values = {
+        'text': colors.text.name(),
+        'input_text': native.text().color().name() if native is not None else colors.text.name(),
+        'button_text': native.buttonText().color().name()
+        if native is not None
+        else colors.text.name(),
+        'tooltip_text': native.toolTipText().color().name()
+        if native is not None
+        else colors.text.name(),
+        'muted': f'rgba({_rgb(colors.text.name())},0.62)',
+        'ink_rgb': _rgb(colors.ink.name()),
+        'well_rgb': _rgb(colors.well.name()),
+        'popup_rgb': _rgb(colors.popup.name()),
+        'accent_rgb': _rgb(colors.accent.name()),
+        'accent': colors.accent.name(),
+        'accent_text': colors.accent_text.name(),
+        'warning': '#ffd98a' if state.dark else '#805500',
+        'success': '#9ff5cf' if state.dark else '#16613f',
+    }
     return _STYLESHEET.substitute(
-        text=TEXT,
-        muted=MUTED,
+        **values,
         radius=RADIUS,
-        pane=_PANE,
-        pane_hover=_PANE_HOVER,
-        rim=_RIM,
-        well=_WELL,
-        accent_rgb=_rgb(settings.accent_color),
+        pane=Template(_PANE).substitute(values),
+        pane_hover=Template(_PANE_HOVER).substitute(values),
+        rim=Template(_RIM).substitute(values),
+        well=Template(_WELL).substitute(values),
         chevron_down=icon_path('chevron-down'),
         chevron_up=icon_path('chevron-up'),
         check=icon_path('check'),

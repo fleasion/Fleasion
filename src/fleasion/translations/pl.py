@@ -1907,4 +1907,13 @@ POLISH: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'FastFlag o nazwie „{value0}” już istnieje.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Nieprawidłowa nazwa FastFlag',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'Folder FastFlag o nazwie „{value0}” już istnieje. Zamiast tego użyj „Przenieś zaznaczone do folderu”.',
+    'settings.appearance.style': 'Styl',
+    'settings.appearance.color_mode': 'Tryb kolorów',
+    'settings.appearance.accent': 'Kolor akcentu',
+    'settings.appearance.backdrop': 'Tło',
+    'settings.appearance.opacity': 'Krycie',
+    'settings.appearance.accent_named': 'Kolor akcentu: {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'Intensywność zabarwienia',
+    'settings.appearance.window_opacity_tooltip': 'Krycie tła; niższe wartości odsłaniają więcej okna znajdującego się pod spodem',
 }

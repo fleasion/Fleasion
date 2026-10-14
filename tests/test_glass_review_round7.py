@@ -176,8 +176,9 @@ def test_command_palette_without_tray_refreshes_settings_theme_and_glass_control
         for theme in ('Dark', 'Glass', 'Light'):
             window._apply_theme(theme)  # pyright: ignore[reportPrivateUsage]
             assert config.theme == theme
-            assert tab._theme_buttons[theme].isChecked()  # pyright: ignore[reportPrivateUsage]
-            assert tab._glass_controls.isHidden() == (theme != 'Glass')  # pyright: ignore[reportPrivateUsage]
+            assert tab._style_buttons[config.appearance_style].isChecked()  # pyright: ignore[reportPrivateUsage]
+            assert tab._color_buttons[config.color_mode].isChecked()  # pyright: ignore[reportPrivateUsage]
+            assert tab._backdrop_combo.isHidden() == (theme != 'Glass')  # pyright: ignore[reportPrivateUsage]
     finally:
         ThemeManager.apply_theme(previous_theme)
         ThemeManager._effective_theme = previous_effective  # pyright: ignore[reportPrivateUsage]

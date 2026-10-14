@@ -1909,4 +1909,13 @@ ARABIC: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'توجد FastFlag باسم «{value0}» بالفعل.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'اسم FastFlag غير صالح',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'يوجد مجلد FastFlag باسم «{value0}» بالفعل. استخدم "نقل المحدد إلى مجلد" بدلًا من ذلك.',
+    'settings.appearance.style': 'النمط',
+    'settings.appearance.color_mode': 'وضع الألوان',
+    'settings.appearance.accent': 'لون التمييز',
+    'settings.appearance.backdrop': 'الخلفية',
+    'settings.appearance.opacity': 'التعتيم',
+    'settings.appearance.accent_named': 'لون التمييز: {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'شدة التظليل',
+    'settings.appearance.window_opacity_tooltip': 'تعتيم الخلفية؛ تكشف القيم الأقل المزيد من النافذة الموجودة أسفل التطبيق',
 }

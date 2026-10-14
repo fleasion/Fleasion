@@ -7,14 +7,23 @@ import ctypes
 import importlib
 import os
 import sys
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Literal, cast, override
 
 if sys.platform == 'win32':
     import winreg
 
 from PySide6.QtCore import QRect, QSignalBlocker, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QColor, QDesktopServices, QIcon, QPalette
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QCloseEvent,
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QPalette,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -34,14 +43,15 @@ from fleasion.app.elevation import (
     relaunch_as_admin as _relaunch_as_admin,
 )
 from fleasion.app.restart import restart_fleasion_normally
+from fleasion.appearance import ACCENTS, COLOR_MODES, STYLES
 from fleasion.gui import (
     AboutWindow,
     DeleteCacheWindow,
     LogsWindow,
     ReplacerConfigWindow,
     ThemeManager,
-    glass,
 )
+from fleasion.gui.appearance_controls import choice_label, swatch_icon
 from fleasion.localization import tr
 from fleasion.utils import (
     APP_DISCORD,
@@ -310,8 +320,8 @@ class SystemTray:
         self.tray.setContextMenu(self.menu)
 
         # Apply initial theme
-        glass.theme.configure(self.config_manager)
-        ThemeManager.apply_theme(self.config_manager.theme)
+        ThemeManager.events().changed.connect(self._sync_appearance_actions)
+        ThemeManager.apply_from_config(self.config_manager)
 
         # Connect tray activation signal
         self.tray.activated.connect(self._on_tray_activated)
@@ -445,33 +455,36 @@ class SystemTray:
         settings_menu.addAction(self.cache_scraper_action)
         settings_menu.addSeparator()
 
-        # Theme submenu
-        theme_menu = QMenu(tr('ui.tray.theme'), settings_menu)
-
-        # Theme actions (radio buttons)
-        self.theme_actions: dict[str, QAction] = {}
-        for theme_name, label in [
-            ('System', tr('tray.theme.system')),
-            ('Light', tr('tray.theme.light')),
-            ('Dark', tr('tray.theme.dark')),
-            ('Glass', tr('tray.theme.glass')),
-        ]:
-            action = QAction(label, theme_menu)
-            action.setCheckable(True)
-
-            def on_theme(_checked: bool = False, theme: str = theme_name) -> None:
-                self.set_theme(theme)
-
-            action.triggered.connect(on_theme)
-            theme_menu.addAction(action)
-            self.theme_actions[theme_name] = action
-
-        # Set current theme as checked
-        current_theme = self.config_manager.theme
-        if current_theme in self.theme_actions:
-            self.theme_actions[current_theme].setChecked(True)
-
-        settings_menu.addMenu(theme_menu)
+        appearance_menu = QMenu(tr('settings.appearance.section'), settings_menu)
+        self.style_actions: dict[str, QAction] = {}
+        self.color_mode_actions: dict[str, QAction] = {}
+        self.accent_actions: dict[str, QAction] = {}
+        for key, label, choices, actions in (
+            ('style', tr('settings.appearance.style'), STYLES, self.style_actions),
+            (
+                'color_mode',
+                tr('settings.appearance.color_mode'),
+                COLOR_MODES,
+                self.color_mode_actions,
+            ),
+            ('accent', tr('settings.appearance.accent'), tuple(ACCENTS), self.accent_actions),
+        ):
+            submenu = QMenu(label, appearance_menu)
+            group = QActionGroup(submenu)
+            group.setExclusive(True)
+            for name in choices:
+                text = choice_label(name) if key != 'accent' and name != 'Fusion' else name
+                action = QAction(text, submenu)
+                if key == 'accent':
+                    action.setIcon(swatch_icon(name))
+                action.setCheckable(True)
+                group.addAction(action)
+                action.triggered.connect(partial(self._set_appearance, key, name))
+                submenu.addAction(action)
+                actions[name] = action
+            appearance_menu.addMenu(submenu)
+        self._sync_appearance_actions()
+        settings_menu.addMenu(appearance_menu)
 
         # Export naming submenu
         export_menu = QMenu(tr('ui.tray.export_naming'), settings_menu)
@@ -717,17 +730,25 @@ class SystemTray:
         if self.dashboard_window:
             self.dashboard_window.refresh_env_proxy_gate()
 
+    def _sync_appearance_actions(self) -> None:
+        for actions, current in (
+            (self.style_actions, self.config_manager.appearance_style),
+            (self.color_mode_actions, self.config_manager.color_mode),
+            (self.accent_actions, self.config_manager.accent_color),
+        ):
+            for name, action in actions.items():
+                action.setChecked(name == current)
+
+    def _set_appearance(self, key: str, value: str, _checked: bool = False) -> None:
+        if key in {'style', 'color_mode', 'accent'}:
+            ThemeManager.set_preference(
+                self.config_manager, cast("Literal['style', 'color_mode', 'accent']", key), value
+            )
+
     def set_theme(self, theme: str) -> None:
-        """Set the application theme."""
-        # Update checkmarks
-        for name, action in self.theme_actions.items():
-            action.setChecked(name == theme)
-
-        # Apply theme
-        ThemeManager.apply_theme(theme)
-
-        # Save to config
+        """Apply a legacy theme command through the independent preferences."""
         self.config_manager.theme = theme
+        ThemeManager.apply_from_config(self.config_manager)
         self.refresh_settings_tab()
 
     def _toggle_export_naming(self, option: str) -> None:

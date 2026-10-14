@@ -1,15 +1,28 @@
 """Theme management for PySide6."""
 
+from __future__ import annotations
+
 import sys
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 if sys.platform == 'win32':
     import winreg
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QStyle, QWidget
+
+from fleasion.appearance import accent_name
+from fleasion.appearance.colors import apply_accent, luminance
+
+from .appearance_events import AppearanceEvents
+
+if TYPE_CHECKING:
+    from typing import Literal
+
+    from fleasion.appearance import AppearanceStyle, ColorMode
+    from fleasion.config.manager import ConfigManager
 
 
 @dataclass(frozen=True)
@@ -18,7 +31,16 @@ class PanelThemeColors:
 
     section_background: QColor
     section_border: QColor
-    container_background_css: str
+    container_background: QColor | None = None
+
+    @property
+    def container_background_css(self) -> str:
+        if self.container_background is None:
+            return 'background-color: palette(alternate-base);'
+        if self.container_background.alpha() == 0:
+            return 'background-color: transparent;'
+        color = self.container_background
+        return f'background-color: rgb({color.red()}, {color.green()}, {color.blue()});'
 
 
 def _windows_apps_use_light_theme() -> bool | None:
@@ -46,39 +68,169 @@ class ThemeManager:
     # one of Fleasion's explicit Light/Dark palettes; Linux and macOS keep
     # their Qt-provided system theme behavior.
     _effective_theme: ClassVar[str] = 'System'
+    _system_palette: ClassVar[QPalette | None] = None
+    _style: ClassVar[AppearanceStyle] = 'Fusion'
+    _color_mode: ClassVar[ColorMode] = 'System'
+    _accent: ClassVar[str] = 'Ice'
+    _applying: ClassVar[bool] = False
+    _events: ClassVar[AppearanceEvents | None] = None
+
+    @staticmethod
+    def _widget_style_name(app: QApplication) -> str:
+        style = app.style()
+        if name := style.objectName():
+            return name
+        # The application stylesheet wraps the native style in an unnamed proxy
+        return next(
+            (child.objectName() for child in style.findChildren(QStyle) if child.objectName()), ''
+        )
+
+    @staticmethod
+    def ensure_widget_style(app: QApplication, name: str) -> None:
+        if ThemeManager._widget_style_name(app).casefold() == name.casefold():
+            return
+        app.setStyle(name)
+
+    @staticmethod
+    def events() -> AppearanceEvents:
+        app = QApplication.instance()
+        if not isinstance(app, QApplication):
+            msg = 'Appearance events require a QApplication'
+            raise TypeError(msg)
+        if ThemeManager._events is None:
+            ThemeManager._events = AppearanceEvents(app)
+        return ThemeManager._events
+
+    @staticmethod
+    def apply_from_config(config: ConfigManager) -> None:
+        from . import glass
+
+        glass.theme.configure(config)
+        ThemeManager.apply_appearance(
+            config.appearance_style, config.color_mode, config.accent_color
+        )
+
+    @staticmethod
+    def set_preference(
+        config: ConfigManager, preference: Literal['style', 'color_mode', 'accent'], value: str
+    ) -> None:
+        from fleasion.appearance import appearance_style, color_mode
+
+        if preference == 'style':
+            style = appearance_style(value)
+            if config.appearance_style == style:
+                return
+            config.appearance_style = style
+        elif preference == 'color_mode':
+            mode = color_mode(value)
+            if config.color_mode == mode:
+                return
+            config.color_mode = mode
+        else:
+            if config.accent_color == accent_name(value):
+                return
+            config.accent_color = value
+        ThemeManager.apply_from_config(config)
 
     @staticmethod
     def apply_theme(theme: str) -> None:
-        """Apply a theme to the application."""
+        """Apply a legacy combined theme choice."""
+        from fleasion.appearance import color_mode
+
+        ThemeManager.apply_appearance(
+            'Glass' if theme == 'Glass' else 'Fusion',
+            'Dark' if theme == 'Glass' else color_mode(theme),
+            ThemeManager._accent,
+        )
+
+    @staticmethod
+    def apply_appearance(style: AppearanceStyle, color_mode: ColorMode, accent: str) -> None:
         app = QApplication.instance()
-        if not isinstance(app, QApplication):
+        if not isinstance(app, QApplication) or ThemeManager._applying:
             return
-
         ThemeManager._remember_system_theme(app)
-        ThemeManager._current_theme = theme
-        ThemeManager._effective_theme = theme
-
+        if ThemeManager._system_palette is None:
+            ThemeManager._system_palette = QPalette(app.palette())
+        events = ThemeManager.events()
+        ThemeManager._style = style
+        ThemeManager._color_mode = color_mode
+        ThemeManager._accent = accent_name(accent)
+        ThemeManager._current_theme = 'Glass' if style == 'Glass' else color_mode
+        ThemeManager._effective_theme = color_mode
         from . import glass
+        from .glass.state import state
 
-        if theme == 'Glass':
-            ThemeManager._set_color_scheme(app, 'Dark')
-            glass.theme.enable(app)
-        else:
-            glass.theme.disable(app)
-            if theme == 'System':
-                ThemeManager._apply_system_theme(app)
+        ThemeManager._applying = True
+        try:
+            if style == 'Fusion':
+                glass.theme.disable(app)
+            base, widget_style = ThemeManager._resolve_palette(app, style, color_mode)
+            ThemeManager.ensure_widget_style(app, widget_style)
+            if style == 'Glass':
+                state.base_palette = (
+                    base if color_mode == 'System' and sys.platform != 'win32' else None
+                )
+                state.dark = luminance(base.window().color()) < 0.3
+                glass.theme.enable(app, accent=ThemeManager._accent, base_palette=base)
             else:
-                ThemeManager._apply_forced_theme(app, theme)
+                app.setPalette(apply_accent(base, ThemeManager._accent))
+            ThemeManager._refresh_widgets(app)
+        finally:
+            ThemeManager._applying = False
+        events.changed.emit()
 
-        ThemeManager._refresh_widgets(app)
+    @staticmethod
+    def _resolve_palette(
+        app: QApplication, style: AppearanceStyle, color_mode: ColorMode
+    ) -> tuple[QPalette, str]:
+        """Resolve colors without installing an intermediate application palette."""
+        ThemeManager._set_color_scheme(app, 'Unknown' if color_mode == 'System' else color_mode)
+        if color_mode == 'Dark':
+            return ThemeManager._dark_palette(), 'Fusion'
+        if color_mode == 'Light':
+            return ThemeManager._light_palette(), 'Fusion'
+        if sys.platform == 'win32':
+            effective = ThemeManager._windows_system_theme(app)
+            ThemeManager._effective_theme = effective
+            return (
+                ThemeManager._dark_palette()
+                if effective == 'Dark'
+                else ThemeManager._light_palette(),
+                'Fusion',
+            )
+        widget_style = (
+            ThemeManager._system_style_name or 'Fusion'
+            if style == 'Fusion' and sys.platform.startswith('linux')
+            else 'Fusion'
+        )
+        return QPalette(ThemeManager._system_palette), widget_style
+
+    @staticmethod
+    def follows_system() -> bool:
+        return ThemeManager._color_mode == 'System' and not ThemeManager._applying
+
+    @staticmethod
+    def set_accent(name: str) -> None:
+        ThemeManager.apply_appearance(ThemeManager._style, ThemeManager._color_mode, name)
+
+    @staticmethod
+    def remember_native_palette(palette: QPalette) -> bool:
+        if ThemeManager._applying:
+            return False
+        ThemeManager._system_palette = QPalette(palette)
+        return ThemeManager.follows_system()
+
+    @staticmethod
+    def refresh_system() -> None:
+        if ThemeManager.follows_system():
+            ThemeManager.apply_appearance(ThemeManager._style, 'System', ThemeManager._accent)
 
     @staticmethod
     def _remember_system_theme(app: QApplication) -> None:
         if ThemeManager._system_style_name is not None:
             return
 
-        style = app.style()
-        ThemeManager._system_style_name = style.objectName() if style else None
+        ThemeManager._system_style_name = ThemeManager._widget_style_name(app) or None
 
     @staticmethod
     def _apply_system_theme(app: QApplication) -> None:
@@ -96,7 +248,7 @@ class ThemeManager:
                 and current_style_name != ThemeManager._system_style_name
             ):
                 app.setStyle(ThemeManager._system_style_name)
-            app.setPalette(QPalette())
+            app.setPalette(ThemeManager._system_palette or QPalette())
             return
 
         if sys.platform == 'win32':
@@ -271,12 +423,16 @@ class ThemeManager:
 
     @staticmethod
     def _refresh_widgets(app: QApplication) -> None:
-        for widget in app.allWidgets():
-            style = widget.style()
-            if style:
-                style.unpolish(widget)
-                style.polish(widget)
-            widget.update()
+        for window in app.topLevelWidgets():
+            if window.parentWidget() is not None:
+                continue
+            if ThemeManager._style == 'Fusion':
+                # QSS caches inherited palettes even for rules that only set
+                # padding. Refresh those caches once, from parent to child
+                for widget in (window, *window.findChildren(QWidget)):
+                    if widget.testAttribute(Qt.WidgetAttribute.WA_StyleSheet):
+                        widget.style().polish(widget)
+            window.update()
 
     @staticmethod
     def panel_colors(palette: QPalette | None = None) -> PanelThemeColors:
@@ -298,25 +454,38 @@ class ThemeManager:
             return PanelThemeColors(
                 section_background=palette.alternateBase().color(),
                 section_border=palette.mid().color(),
-                container_background_css='background-color: palette(alternate-base);',
             )
 
         if panel_theme == 'Glass':
+            from .glass.style import glass_colors
+
+            colors = glass_colors()
             # Match the QAbstractItemView / Scraper Glass surface rather than
             # adding an unrelated opaque navy panel above the backdrop
             return PanelThemeColors(
-                section_background=QColor(8, 9, 14, 77),
-                section_border=QColor(255, 255, 255, 20),
-                container_background_css='background-color: transparent;',
+                section_background=QColor(
+                    colors.well.red(), colors.well.green(), colors.well.blue(), 77
+                ),
+                section_border=QColor(colors.ink.red(), colors.ink.green(), colors.ink.blue(), 20),
+                container_background=QColor(0, 0, 0, 0),
             )
 
         is_dark = panel_theme == 'Dark'
         return PanelThemeColors(
             section_background=QColor('#272727') if is_dark else QColor('#f0f0f0'),
             section_border=QColor('#3a3a3a') if is_dark else QColor('#d0d0d0'),
-            container_background_css=(
-                'background-color: rgb(64, 64, 64);'
-                if is_dark
-                else 'background-color: palette(alternate-base);'
-            ),
+            container_background=QColor(64, 64, 64) if is_dark else None,
         )
+
+    @staticmethod
+    def apply_panel_background(widget: QWidget) -> None:
+        """Paint the panel without a local stylesheet that freezes inherited colors."""
+        color = ThemeManager.panel_colors().container_background
+        palette = QPalette()
+        role = QPalette.ColorRole.AlternateBase
+        if color is not None:
+            role = QPalette.ColorRole.Window
+            palette.setColor(role, color)
+        widget.setPalette(palette)
+        widget.setBackgroundRole(role)
+        widget.setAutoFillBackground(color is None or color.alpha() != 0)

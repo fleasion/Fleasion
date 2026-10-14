@@ -1907,4 +1907,13 @@ FILIPINO: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'Mayroon nang FastFlag na pinangalanang “{value0}”.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Hindi Wastong Pangalan ng FastFlag',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'Mayroon nang FastFlag folder na pinangalanang “{value0}”. Gamitin sa halip ang “Ilipat ang napili sa folder”.',
+    'settings.appearance.style': 'Estilo',
+    'settings.appearance.color_mode': 'Mode ng kulay',
+    'settings.appearance.accent': 'Kulay ng accent',
+    'settings.appearance.backdrop': 'Backdrop',
+    'settings.appearance.opacity': 'Opacity',
+    'settings.appearance.accent_named': 'Kulay ng accent: {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'Lakas ng tint',
+    'settings.appearance.window_opacity_tooltip': 'Opacity ng background; mas mababang halaga para mas makita ang window sa ilalim',
 }

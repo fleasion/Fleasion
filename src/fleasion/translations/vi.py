@@ -1907,4 +1907,13 @@ VIETNAMESE: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'Đã tồn tại FastFlag tên “{value0}”.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Tên FastFlag không hợp lệ',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'Đã có thư mục FastFlag tên “{value0}”. Hãy dùng “Chuyển mục đã chọn vào thư mục” thay thế.',
+    'settings.appearance.style': 'Kiểu',
+    'settings.appearance.color_mode': 'Chế độ màu',
+    'settings.appearance.accent': 'Màu nhấn',
+    'settings.appearance.backdrop': 'Nền',
+    'settings.appearance.opacity': 'Độ đục',
+    'settings.appearance.accent_named': 'Màu nhấn: {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'Độ đậm màu',
+    'settings.appearance.window_opacity_tooltip': 'Độ đục của nền; giá trị thấp hơn sẽ hiển thị nhiều hơn cửa sổ bên dưới',
 }

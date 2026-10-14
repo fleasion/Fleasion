@@ -15,7 +15,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PIL import Image
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
-from PySide6.QtGui import QImage, QPalette
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QDialog, QTreeWidget, QVBoxLayout, QWidget
 from shiboken6 import isValid
 
@@ -28,6 +28,7 @@ from fleasion.gui.glass import surface
 from fleasion.gui.glass import wallpaper
 from fleasion.gui.settings_tab import SettingsTab
 from fleasion.gui.theme import ThemeManager
+from fleasion.appearance.colors import contrast
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -335,7 +336,7 @@ def test_tray_theme_refresh_updates_glass_controls(
         for theme in ('Glass', 'Light', 'Glass'):
             config.theme = theme
             tab.refresh_from_config()
-            assert tab._glass_controls.isHidden() == (theme != 'Glass')  # pyright: ignore[reportPrivateUsage]
+            assert tab._backdrop_combo.isHidden() == (theme != 'Glass')  # pyright: ignore[reportPrivateUsage]
     finally:
         tab.deleteLater()
         app.processEvents()
@@ -349,7 +350,7 @@ def test_palette_has_readable_text(app: QApplication, theme: str) -> None:
     try:
         palette.ensurePolished()
         palette.results.ensurePolished()
-        assert palette.results.palette().color(QPalette.ColorRole.Text).lightness() > 128
+        assert contrast(palette.results.palette().text().color(), app.palette().window().color()) >= 4.5
     finally:
         parent.deleteLater()
         app.processEvents()
@@ -386,7 +387,7 @@ def test_palette_style_tracks_theme_changes(app: QApplication, initial: str) -> 
             ThemeManager.apply_theme(theme)
             palette.popup()
             app.processEvents()
-            assert palette.results.palette().color(QPalette.ColorRole.Text).lightness() > 128
+            assert contrast(palette.results.palette().text().color(), app.palette().window().color()) >= 4.5
             assert bool(palette.styleSheet()) == (theme != 'Glass')
             palette.close()
     finally:

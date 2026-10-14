@@ -14,11 +14,14 @@ from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeIs
 
+from fleasion.appearance import accent_name, appearance_style, color_mode
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object, is_json_value
 from fleasion.utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from fleasion.appearance import AppearanceStyle, ColorMode
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
@@ -451,7 +454,9 @@ DEFAULT_SETTINGS: JsonObject = {
     'strip_textures': False,
     'enabled_configs': [],
     'last_config': 'Default',
-    'theme': 'System',  # System, Light, Dark
+    'appearance_style': 'Fusion',
+    'color_mode': 'System',
+    'accent_color': 'Ice',
     'language': 'en',
     'audio_volume': 70,  # 0-100
     'always_on_top': False,
@@ -796,16 +801,23 @@ class ConfigManager:
         if 'configs' in loaded:
             self._migrate_old_format(loaded)
             return {
+                **deepcopy(DEFAULT_SETTINGS),
                 'strip_textures': loaded.get('strip_textures', False),
                 'enabled_configs': [],
                 'last_config': loaded.get('active_config', 'Default'),
-                'theme': 'System',
             }
         # Migrate from old active_config to new format
         if 'active_config' in loaded and 'enabled_configs' not in loaded:
             loaded['enabled_configs'] = [loaded['active_config']]
             loaded['last_config'] = loaded['active_config']
             del loaded['active_config']
+        # Migrate before adding defaults so existing choices take precedence
+        legacy_theme = loaded.pop('theme', 'System')
+        loaded.setdefault('appearance_style', 'Glass' if legacy_theme == 'Glass' else 'Fusion')
+        loaded.setdefault(
+            'color_mode', 'Dark' if legacy_theme == 'Glass' else color_mode(legacy_theme)
+        )
+        loaded.setdefault('accent_color', accent_name(loaded.pop('glass_accent', 'Ice')))
         return {**DEFAULT_SETTINGS, **loaded}
 
     @staticmethod
@@ -1009,37 +1021,62 @@ class ConfigManager:
 
     @property
     def theme(self) -> str:
-        """Get theme setting."""
-        return _preserve_runtime_type(self.settings.get('theme', 'System'), str)
+        """Compatibility view of the former combined theme setting."""
+        return 'Glass' if self.appearance_style == 'Glass' else self.color_mode
 
     @theme.setter
     def theme(self, value: str) -> None:
-        """Set theme setting."""
-        self.settings['theme'] = value
+        self.settings['appearance_style'] = 'Glass' if value == 'Glass' else 'Fusion'
+        self.settings['color_mode'] = 'Dark' if value == 'Glass' else color_mode(value)
+        self._save_settings()
+
+    @property
+    def appearance_style(self) -> AppearanceStyle:
+        return appearance_style(self.settings.get('appearance_style'))
+
+    @appearance_style.setter
+    def appearance_style(self, value: AppearanceStyle) -> None:
+        self.settings['appearance_style'] = appearance_style(value)
+        self._save_settings()
+
+    @property
+    def color_mode(self) -> ColorMode:
+        return color_mode(self.settings.get('color_mode'))
+
+    @color_mode.setter
+    def color_mode(self, value: ColorMode) -> None:
+        self.settings['color_mode'] = color_mode(value)
+        self._save_settings()
+
+    @property
+    def accent_color(self) -> str:
+        return accent_name(self.settings.get('accent_color', self.settings.get('glass_accent')))
+
+    @accent_color.setter
+    def accent_color(self, value: str) -> None:
+        self.settings['accent_color'] = accent_name(value)
         self._save_settings()
 
     @property
     def glass_accent(self) -> str:
-        """Accent preset name used by the Glass theme."""
-        value = self.settings.get('glass_accent', 'Ice')
-        return value if isinstance(value, str) else 'Ice'
+        """Compatibility alias for the shared accent preference."""
+        return self.accent_color
 
     @glass_accent.setter
     def glass_accent(self, value: str) -> None:
-        self.settings['glass_accent'] = value
-        self._save_settings()
+        self.accent_color = value
 
     @property
     def glass_opacity(self) -> float:
-        """Glass tint strength, 0.2 (clear) to 0.97 (nearly opaque)."""
+        """Glass background opacity, from 0.2 to fully opaque at 1.0."""
         value = self.settings.get('glass_opacity', 0.45)
         if isinstance(value, bool) or not isinstance(value, int | float):
             value = 0.45
-        return min(0.97, max(0.2, float(value)))
+        return min(1.0, max(0.2, float(value)))
 
     @glass_opacity.setter
     def glass_opacity(self, value: float) -> None:
-        self.settings['glass_opacity'] = round(min(0.97, max(0.2, value)), 2)
+        self.settings['glass_opacity'] = round(min(1.0, max(0.2, value)), 2)
         self._save_settings()
 
     @property

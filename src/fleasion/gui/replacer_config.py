@@ -75,11 +75,13 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
+from fleasion.appearance import ACCENTS, COLOR_MODES, STYLES
 from fleasion.cache.cache_viewer import CacheViewerTab
 from fleasion.config.manager import (
     local_replacement_path_for_storage,
     resolve_local_replacement_path,
 )
+from fleasion.gui.appearance_controls import choice_label
 from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
 from fleasion.utils.gui_work import GuiWork
@@ -1176,28 +1178,30 @@ class ReplacerConfigWindow(QDialog):
                     else tr('ui.gui.command_palette.hint_off'),
                 )
             )
-        themes = (
-            ('System', tr('settings.appearance.theme.system')),
-            ('Light', tr('settings.appearance.theme.light')),
-            ('Dark', tr('settings.appearance.theme.dark')),
-            ('Glass', tr('settings.appearance.theme.glass')),
-        )
-        kind_theme = tr('ui.gui.command_palette.kind_theme')
-        commands.extend(
-            Command(label, kind_theme, partial(self._apply_theme, theme_name))
-            for theme_name, label in themes
-        )
+        for key, choices, label in (
+            ('style', STYLES, tr('settings.appearance.style')),
+            ('color_mode', COLOR_MODES, tr('settings.appearance.color_mode')),
+            ('accent', tuple(ACCENTS), tr('settings.appearance.accent')),
+        ):
+            commands.extend(
+                Command(
+                    name if key == 'accent' or name == 'Fusion' else choice_label(name),
+                    label,
+                    partial(
+                        ThemeManager.set_preference,
+                        config,
+                        cast("Literal['style', 'color_mode', 'accent']", key),
+                        name,
+                    ),
+                )
+                for name in choices
+            )
         kind_backdrop = tr('settings.appearance.glass_backdrop_tooltip')
         commands.extend(
             Command(
                 glass.backdrop_label(mode), kind_backdrop, partial(glass.theme.set_backdrop, mode)
             )
             for mode in glass.BACKDROPS
-        )
-        kind_accent = tr('ui.gui.command_palette.kind_accent')
-        commands.extend(
-            Command(accent, kind_accent, partial(glass.theme.set_accent, accent))
-            for accent in glass.ACCENTS
         )
         kind_action = tr('ui.gui.command_palette.kind_action')
         actions = (
@@ -1217,8 +1221,8 @@ class ReplacerConfigWindow(QDialog):
             # Goes through the tray so its theme checkmarks stay in sync
             self._system_tray.set_theme(theme_name)
         else:
-            ThemeManager.apply_theme(theme_name)
             self.config_manager.theme = theme_name
+            ThemeManager.apply_from_config(self.config_manager)
             self.refresh_settings_tab()
 
     def _proxy_required(self, widget: QWidget) -> ProxyGate:

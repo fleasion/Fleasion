@@ -1907,4 +1907,13 @@ DUTCH: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'Er bestaat al een FastFlag met de naam “{value0}”.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Ongeldige FastFlag-naam',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'Er bestaat al een FastFlag-map met de naam “{value0}”. Gebruik in plaats daarvan “Selectie naar map verplaatsen”.',
+    'settings.appearance.style': 'Stijl',
+    'settings.appearance.color_mode': 'Kleurmodus',
+    'settings.appearance.accent': 'Accentkleur',
+    'settings.appearance.backdrop': 'Achtergrond',
+    'settings.appearance.opacity': 'Dekking',
+    'settings.appearance.accent_named': 'Accentkleur: {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'Tintsterkte',
+    'settings.appearance.window_opacity_tooltip': 'Achtergronddekking; lagere waarden tonen meer van het onderliggende venster',
 }

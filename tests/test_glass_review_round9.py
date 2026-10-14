@@ -10,7 +10,7 @@ import pytest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 from shiboken6 import isValid
 
 from fleasion.gui.glass import controller, surface
@@ -45,10 +45,10 @@ def test_glass_keeps_startup_button_layout_policy_while_active(app: QApplication
     app.setStyleSheet(_BASE_QSS)
     ThemeManager.apply_theme('Glass')
     assert controller.theme.active
-    composed = app.styleSheet()
-    assert composed.startswith(_BASE_QSS + '\n')
-    assert 'QPushButton[glassArrow=' in composed
-    assert composed.count(_BASE_QSS) == 1
+    assert app.styleSheet() == _BASE_QSS
+    window = QWidget()
+    window.ensurePolished()
+    assert 'QPushButton[glassArrow=' in window.styleSheet()
     controller.theme.enable(app)
     assert app.styleSheet().count(_BASE_QSS) == 1
     ThemeManager.apply_theme('System')
@@ -57,6 +57,8 @@ def test_glass_keeps_startup_button_layout_policy_while_active(app: QApplication
     assert app.styleSheet().count(_BASE_QSS) == 1
     ThemeManager.apply_theme('Dark')
     assert app.styleSheet() == _BASE_QSS
+    assert window.styleSheet() == ''
+    window.deleteLater()
 
 
 def test_glass_preserves_preexisting_app_qss_after_repeated_enable(app: QApplication) -> None:
@@ -64,7 +66,7 @@ def test_glass_preserves_preexisting_app_qss_after_repeated_enable(app: QApplica
     app.setStyleSheet(original)
     for _ in range(3):
         ThemeManager.apply_theme('Glass')
-        assert app.styleSheet().startswith(original + '\n')
+        assert app.styleSheet() == original
         controller.theme.enable(app)
         assert app.styleSheet().count(original) == 1
         ThemeManager.apply_theme('Light')

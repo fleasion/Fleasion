@@ -721,7 +721,7 @@ class CollapsibleSection(QWidget):
         # --- Content container ---
         self._content = QWidget()
         self._content_layout = QVBoxLayout()
-        self._content_layout.setContentsMargins(8, 0, 8, 8)
+        self._content_layout.setContentsMargins(12, 12, 12, 12)
         self._content_layout.setSpacing(4)
         self._content.setLayout(self._content_layout)
 
@@ -735,7 +735,7 @@ class CollapsibleSection(QWidget):
 
         # --- Assemble ---
         main = QVBoxLayout()
-        main.setContentsMargins(0, 0, 0, 4)
+        main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
         main.addWidget(self._header_widget)
         main.addWidget(sep)
@@ -757,11 +757,13 @@ class CollapsibleSection(QWidget):
         path.addRoundedRect(rect, 8.0, 8.0)
         painter.fillPath(path, colors.section_background)
         if glass.theme.active:
-            # Scraper's table header uses this same subtle 4.5% white overlay
+            # Match the table header overlay in both light and dark Glass
             painter.save()
             painter.setClipPath(path)
             header = QRectF(rect.left(), rect.top(), rect.width(), self._header_widget.height())
-            painter.fillRect(header, QColor(255, 255, 255, 11))
+            header_color = QColor(colors.section_border)
+            header_color.setAlpha(11)
+            painter.fillRect(header, header_color)
             painter.restore()
         painter.setPen(colors.section_border)
         painter.drawPath(path)
@@ -4743,10 +4745,7 @@ class ModificationsTab(QWidget):
 
     def _update_container_bg(self) -> None:
         """Keep the tab background aligned with the active theme."""
-        colors = ThemeManager.panel_colors(self.palette())
-        self._mod_container.setStyleSheet(
-            f'QWidget#_FleasionModContainer {{ {colors.container_background_css} }}'
-        )
+        ThemeManager.apply_panel_background(self._mod_container)
 
     def _clear_roblox_cache(self) -> None:
         from fleasion.gui.delete_cache import DeleteCacheWindow

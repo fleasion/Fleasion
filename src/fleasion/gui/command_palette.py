@@ -23,6 +23,7 @@ from shiboken6 import isValid
 from fleasion.localization import tr
 
 from . import glass
+from .theme import ThemeManager
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,14 +39,15 @@ _TAB_FADE_MS: Final = 180
 _SHADOW_MARGIN: Final = 24
 # Used when the Glass theme (which styles the card itself) is not active
 _FALLBACK_STYLE: Final = """
-#PaletteCard { background: rgba(28,29,38,0.97); border-radius: 16px;
-               border: 1px solid rgba(255,255,255,0.18); }
-#PaletteCard QWidget { color: #f5f7fb; }
+#PaletteCard { background: palette(window); border-radius: 16px;
+               border: 1px solid palette(mid); }
+#PaletteCard QWidget { color: palette(window-text); }
 #PaletteCard QLineEdit { font-size: 13pt; padding: 9px 12px; border-radius: 10px; }
-#PaletteCard QLineEdit { background: #171820; selection-background-color: #405a80; }
+#PaletteCard QLineEdit { background: palette(base); selection-background-color: palette(highlight);
+                       selection-color: palette(highlighted-text); }
 #PaletteCard QListWidget { background: transparent; border: 0; }
 #PaletteCard QListWidget::item { padding: 8px 10px; border-radius: 8px; }
-#PaletteCard QListWidget::item:selected { background: #405a80; color: #f5f7fb; }
+#PaletteCard QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }
 #PaletteHint { font-size: 8.5pt; }
 """
 
@@ -126,10 +128,12 @@ class CommandPalette(QDialog):
         self._outer = outer
         outer.addWidget(card)
         self._refresh_theme()
+        ThemeManager.events().changed.connect(self._refresh_theme)
 
     def _refresh_theme(self) -> None:
         active = glass.theme.active
-        self.setStyleSheet('' if active else _FALLBACK_STYLE)
+        stylesheet = '' if active else _FALLBACK_STYLE
+        self.setStyleSheet(stylesheet)
         # Compositor blur covers the popup rect; Glass omits the shadow margin
         margin = 0 if active else _SHADOW_MARGIN
         self._outer.setContentsMargins(margin, margin, margin, margin)

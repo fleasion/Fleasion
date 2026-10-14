@@ -104,6 +104,7 @@ def test_panel_colors_use_qpalette_for_system_theme(monkeypatch: pytest.MonkeyPa
     palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#123456'))
     palette.setColor(QPalette.ColorRole.Mid, QColor('#abcdef'))
     monkeypatch.setattr(ThemeManager, '_current_theme', 'System')
+    monkeypatch.setattr(ThemeManager, '_effective_theme', 'System')
 
     colors = ThemeManager.panel_colors(palette)
 

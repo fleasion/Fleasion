@@ -23,12 +23,12 @@ class _FakeConfig:
         self.settings = settings
 
     @property
-    def glass_accent(self) -> str:
-        return str(self.settings.get('glass_accent', 'Ice'))
+    def accent_color(self) -> str:
+        return str(self.settings.get('accent_color', 'Ice'))
 
-    @glass_accent.setter
-    def glass_accent(self, value: str) -> None:
-        self.settings['glass_accent'] = value
+    @accent_color.setter
+    def accent_color(self, value: str) -> None:
+        self.settings['accent_color'] = value
 
     @property
     def glass_opacity(self) -> float:
@@ -49,7 +49,7 @@ class _FakeConfig:
 
 
 def test_state_persists_through_config() -> None:
-    config = _FakeConfig({'glass_accent': 'Mint', 'glass_backdrop': 'wallpaper'})
+    config = _FakeConfig({'accent_color': 'Mint', 'glass_backdrop': 'wallpaper'})
     state = GlassState()
     state.configure(config)  # pyright: ignore[reportArgumentType]
     assert state.settings.accent == 'Mint'

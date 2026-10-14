@@ -1907,4 +1907,13 @@ TURKISH: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': '“{value0}” adlı bir FastFlag zaten var.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Geçersiz FastFlag Adı',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': '“{value0}” adlı bir FastFlag klasörü zaten var. Bunun yerine “Seçilenleri klasöre taşı” seçeneğini kullanın.',
+    'settings.appearance.style': 'Stil',
+    'settings.appearance.color_mode': 'Renk modu',
+    'settings.appearance.accent': 'Vurgu rengi',
+    'settings.appearance.backdrop': 'Arka plan',
+    'settings.appearance.opacity': 'Opaklık',
+    'settings.appearance.accent_named': 'Vurgu rengi: {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'Renk yoğunluğu',
+    'settings.appearance.window_opacity_tooltip': 'Arka plan opaklığı; düşük değerler alttaki pencerenin daha fazlasını gösterir',
 }

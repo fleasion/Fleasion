@@ -5,28 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
+from fleasion.appearance import ACCENTS as ACCENTS, DEFAULT_ACCENT as DEFAULT_ACCENT
+
 if TYPE_CHECKING:
+    from PySide6.QtGui import QPalette
+
     from fleasion.config.manager import ConfigManager
 
 type Backdrop = Literal['desktop', 'wallpaper']
 
-ACCENTS: Final[dict[str, str]] = {
-    'Ice': '#8ab4ff',
-    'Signal': '#ff5a68',
-    'Mint': '#4fe0a6',
-    'Amber': '#ffbe45',
-    'Violet': '#b49cff',
-    'Mono': '#f2f4f8',
-}
 BACKDROPS: Final[tuple[Backdrop, ...]] = ('desktop', 'wallpaper')
 
-DEFAULT_ACCENT: Final = 'Ice'
 DEFAULT_BACKDROP: Final[Backdrop] = 'desktop'
-# Tint strength over a blurred backdrop, and the floor used when nothing blurs
+# Background opacity over the selected backdrop
 DEFAULT_OPACITY: Final = 0.45
-UNBLURRED_OPACITY: Final = 0.86
 MIN_OPACITY: Final = 0.2
-MAX_OPACITY: Final = 0.97
+MAX_OPACITY: Final = 1.0
 
 
 def clamp_opacity(value: float) -> float:
@@ -49,6 +43,8 @@ class GlassState:
 
     def __init__(self) -> None:
         self.settings = GlassSettings()
+        self.base_palette: QPalette | None = None
+        self.dark = True
         self._config: ConfigManager | None = None
 
     def configure(self, config: ConfigManager) -> None:
@@ -59,7 +55,7 @@ class GlassState:
         if self._config is None:
             return
         self.settings = GlassSettings(
-            accent=self._config.glass_accent,
+            accent=self._config.accent_color,
             opacity=self._config.glass_opacity,
             backdrop=self._config.glass_backdrop,
         )
@@ -67,7 +63,7 @@ class GlassState:
     def set_accent(self, name: str) -> None:
         self.settings.accent = name
         if self._config is not None:
-            self._config.glass_accent = name
+            self._config.accent_color = name
 
     def set_opacity(self, value: float) -> None:
         self.settings.opacity = clamp_opacity(value)

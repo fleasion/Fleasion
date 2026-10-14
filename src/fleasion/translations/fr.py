@@ -1907,4 +1907,13 @@ FRENCH: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'Un FastFlag nommé « {value0} » existe déjà.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Nom de FastFlag non valide',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'Un dossier FastFlag nommé « {value0} » existe déjà. Utilisez plutôt « Déplacer la sélection vers un dossier ».',
+    'settings.appearance.style': 'Style',
+    'settings.appearance.color_mode': 'Mode de couleur',
+    'settings.appearance.accent': 'Couleur d’accentuation',
+    'settings.appearance.backdrop': 'Arrière-plan',
+    'settings.appearance.opacity': 'Opacité',
+    'settings.appearance.accent_named': 'Couleur d’accentuation : {name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': 'Intensité de la teinte',
+    'settings.appearance.window_opacity_tooltip': 'Opacité de l’arrière-plan ; une valeur plus faible révèle davantage la fenêtre située dessous',
 }

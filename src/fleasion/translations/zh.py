@@ -1907,4 +1907,13 @@ CHINESE: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': '名为“{value0}”的 FastFlag 已存在。',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'FastFlag 名称无效',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': '名为“{value0}”的 FastFlag 文件夹已存在。请改用“将所选项移至文件夹”。',
+    'settings.appearance.style': '样式',
+    'settings.appearance.color_mode': '颜色模式',
+    'settings.appearance.accent': '强调色',
+    'settings.appearance.backdrop': '背景',
+    'settings.appearance.opacity': '不透明度',
+    'settings.appearance.accent_named': '强调色：{name}',
+    'settings.appearance.opacity_value': '{value0}%',
+    'settings.appearance.tint_strength': '色调强度',
+    'settings.appearance.window_opacity_tooltip': '背景不透明度；数值越低，越能看清下方的窗口',
 }

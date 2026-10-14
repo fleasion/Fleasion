@@ -75,6 +75,15 @@ class GlassTitleBar(QWidget):
             button.clicked.connect(self._presser(role))
             row.addWidget(button)
 
+    @override
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            for button in self.findChildren(QPushButton):
+                role = button.property('role')
+                if role in {'min', 'max', 'close'}:
+                    button.setIcon(QIcon(icon_path(f'win-{role}')))
+
     def _presser(self, role: WindowButton) -> Callable[[], None]:
         return lambda: self._press(role)
 
