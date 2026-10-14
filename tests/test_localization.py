@@ -13,6 +13,7 @@ from fleasion import localization
 from fleasion.config import manager as manager_module
 from fleasion.translations.de import GERMAN
 from fleasion.translations.es import SPANISH
+from fleasion.translations.fil import FILIPINO
 from fleasion.translations.fr import FRENCH
 from fleasion.translations.kk import KAZAKH
 from fleasion.translations.pl import POLISH
@@ -43,6 +44,7 @@ _TRANSLATED_CATALOGS = {
     'tr': TURKISH,
     'de': GERMAN,
     'fr': FRENCH,
+    'fil': FILIPINO,
     'zh': CHINESE,
     'pl': POLISH,
 }
@@ -58,6 +60,7 @@ def test_english_is_default_and_supported_languages_are_available() -> None:
         ('tr', 'Türkçe'),
         ('de', 'Deutsch'),
         ('fr', 'Français'),
+        ('fil', 'Filipino'),
         ('zh', '简体中文'),
         ('pl', 'Polski'),
     )
@@ -73,6 +76,8 @@ def test_english_is_default_and_supported_languages_are_available() -> None:
     assert localization.normalize_language('tr-TR') == 'tr'
     assert localization.normalize_language('de-DE') == 'de'
     assert localization.normalize_language('fr-FR') == 'fr'
+    assert localization.normalize_language('fil-PH') == 'fil'
+    assert localization.normalize_language('tl-PH') == 'fil'
     assert localization.normalize_language('pl-PL') == 'pl'
     assert localization.normalize_language('zh-CN') == 'zh'
     assert localization.normalize_language('zh_Hans') == 'zh'
@@ -127,6 +132,7 @@ def test_new_translation_lookup_formats_and_counts() -> None:
         'tr': TURKISH,
         'de': GERMAN,
         'fr': FRENCH,
+        'fil': FILIPINO,
         'zh': CHINESE,
         'pl': POLISH,
     }
@@ -172,6 +178,7 @@ def test_translation_catalogs_match_english_keys_markup_and_placeholders() -> No
         TURKISH,
         GERMAN,
         FRENCH,
+        FILIPINO,
         CHINESE,
         POLISH,
     ):

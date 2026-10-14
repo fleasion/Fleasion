@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from .translations.de import GERMAN
 from .translations.en import ENGLISH
 from .translations.es import SPANISH
+from .translations.fil import FILIPINO
 from .translations.fr import FRENCH
 from .translations.kk import KAZAKH
 from .translations.pl import POLISH
@@ -29,6 +30,7 @@ LANGUAGES: dict[str, str] = {
     'tr': 'Türkçe',
     'de': 'Deutsch',
     'fr': 'Français',
+    'fil': 'Filipino',
     'zh': '简体中文',
     'pl': 'Polski',
 }
@@ -42,10 +44,13 @@ _TRANSLATIONS: dict[str, Mapping[str, str]] = {
     'tr': TURKISH,
     'de': GERMAN,
     'fr': FRENCH,
+    'fil': FILIPINO,
     'zh': CHINESE,
     'pl': POLISH,
 }
 _LANGUAGE_ALIASES = {
+    'tl': 'fil',
+    'tl-ph': 'fil',
     'pt-br': 'pt',
     'zh-cn': 'zh',
     'zh-hans': 'zh',
