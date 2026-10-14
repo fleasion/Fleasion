@@ -13,6 +13,7 @@ from .translations.es import SPANISH
 from .translations.fil import FILIPINO
 from .translations.fr import FRENCH
 from .translations.kk import KAZAKH
+from .translations.nl import DUTCH
 from .translations.pl import POLISH
 from .translations.pt import PORTUGUESE
 from .translations.ru import RUSSIAN
@@ -35,6 +36,7 @@ LANGUAGES: dict[str, str] = {
     'kk': 'Қазақша',
     'tr': 'Türkçe',
     'de': 'Deutsch',
+    'nl': 'Nederlands',
     'fr': 'Français',
     'fil': 'Filipino',
     'zh': '简体中文',
@@ -50,6 +52,7 @@ _TRANSLATIONS: dict[str, Mapping[str, str]] = {
     'kk': KAZAKH,
     'tr': TURKISH,
     'de': GERMAN,
+    'nl': DUTCH,
     'fr': FRENCH,
     'fil': FILIPINO,
     'zh': CHINESE,

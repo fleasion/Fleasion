@@ -17,6 +17,7 @@ from fleasion.translations.es import SPANISH
 from fleasion.translations.fil import FILIPINO
 from fleasion.translations.fr import FRENCH
 from fleasion.translations.kk import KAZAKH
+from fleasion.translations.nl import DUTCH
 from fleasion.translations.pl import POLISH
 from fleasion.translations.pt import PORTUGUESE
 from fleasion.translations.ru import RUSSIAN
@@ -45,6 +46,7 @@ _TRANSLATED_CATALOGS = {
     'kk': KAZAKH,
     'tr': TURKISH,
     'de': GERMAN,
+    'nl': DUTCH,
     'fr': FRENCH,
     'fil': FILIPINO,
     'zh': CHINESE,
@@ -62,6 +64,7 @@ def test_english_is_default_and_supported_languages_are_available() -> None:
         ('kk', 'Қазақша'),
         ('tr', 'Türkçe'),
         ('de', 'Deutsch'),
+        ('nl', 'Nederlands'),
         ('fr', 'Français'),
         ('fil', 'Filipino'),
         ('zh', '简体中文'),
@@ -81,6 +84,8 @@ def test_english_is_default_and_supported_languages_are_available() -> None:
     assert localization.normalize_language('kk-KZ') == 'kk'
     assert localization.normalize_language('tr-TR') == 'tr'
     assert localization.normalize_language('de-DE') == 'de'
+    assert localization.normalize_language('nl-NL') == 'nl'
+    assert localization.normalize_language('nl_BE') == 'nl'
     assert localization.normalize_language('fr-FR') == 'fr'
     assert localization.normalize_language('fil-PH') == 'fil'
     assert localization.normalize_language('tl-PH') == 'fil'
@@ -138,6 +143,7 @@ def test_new_translation_lookup_formats_and_counts() -> None:
         'kk': KAZAKH,
         'tr': TURKISH,
         'de': GERMAN,
+        'nl': DUTCH,
         'fr': FRENCH,
         'fil': FILIPINO,
         'zh': CHINESE,
@@ -185,6 +191,7 @@ def test_translation_catalogs_match_english_keys_markup_and_placeholders() -> No
         KAZAKH,
         TURKISH,
         GERMAN,
+        DUTCH,
         FRENCH,
         FILIPINO,
         CHINESE,
@@ -242,6 +249,7 @@ def test_new_language_font_samples_cover_their_writing_systems() -> None:
         'kk': set('аәбвгғдеёжзийкқлмнңоөпрстуұүфхһцчшщъыіьэюя'),
         'tr': set('abcçdefgğhıijklmnoöprsştuüvyz'),
         'de': set('abcdefghijklmnopqrstuvwxyzäöüß'),
+        'nl': set(string.ascii_lowercase),
         'fr': set(string.ascii_lowercase),
         'pl': set('aąbcćdeęfghijklłmnńoóprsśtuwyzźż'),
     }
@@ -1280,3 +1288,71 @@ def test_config_language_invalid_saved_value_falls_back_to_english(
     manager.language = 'also-invalid'
     assert manager.language == 'en'
     assert json.loads(config_file.read_text(encoding='utf-8'))['language'] == 'en'
+
+
+def test_dutch_terms_and_formatting_are_consistent() -> None:
+    """Keep navigation and action labels consistent across Dutch translations."""
+    shared_terms = {
+        'Scraped Games': 'Verzamelde spellen',
+        'Scraped games...': 'Verzamelde spellen...',
+        'Replacer': 'Vervanger',
+        'Scraper': 'Verzamelaar',
+        'Preview': 'Voorbeeld',
+        'Request': 'Verzoek',
+        'Run on Boot': 'Starten bij aanmelden',
+        'Run Anyway (Bad)': 'Toch uitvoeren (afgeraden)',
+        'Replace With Set': 'Vervanging ingesteld',
+        'Clear Cache': 'Cache wissen',
+        'Replacement ID': 'Vervangings-ID',
+        'Asset IDs': "Asset-ID's",
+        'Click Here to Open Directory': 'Klik hier om de map te openen',
+    }
+    for english, dutch in shared_terms.items():
+        matching_keys = [
+            key for key, value in localization.ENGLISH.items() if value == english
+        ]
+        assert matching_keys, english
+        assert {DUTCH[key] for key in matching_keys} == {dutch}, english
+
+    localization.set_language('nl-NL')
+    try:
+        assert localization.get_language() == 'nl'
+        assert localization.tr('language.picker.title') == 'Taal kiezen'
+        assert localization.tr('onboarding.welcome.ok_countdown', seconds=4) == 'OK (4s)'
+        assert localization.tr_count(1, 'count.asset.one', 'count.asset.other') == '1 asset'
+        assert localization.tr_count(3, 'count.asset.one', 'count.asset.other') == '3 assets'
+    finally:
+        localization.set_language('en')
+
+
+def test_dutch_reviewed_network_and_account_actions() -> None:
+    """Protect meanings corrected in the Dutch English-source audit."""
+    assert DUTCH['ui.gui.proxy_tab_ui.drop'] == 'Verwerpen'
+    assert DUTCH['ui.gui.proxy_tab.drop_all'] == 'Alles verwerpen'
+    assert DUTCH['ui.gui.proxy_tab.drop_selected'] == 'Selectie verwerpen'
+    assert 'verwerpen' in DUTCH[
+        'ui.gui.proxy_tab.this_tab_shows_all_network_traffic_coming'
+    ]
+    assert DUTCH['ui.gui.rando_stuff_tab.switch_to_selected'] == (
+        'Overschakelen naar geselecteerd account'
+    )
+    assert DUTCH['ui.gui.rando_stuff_tab.switch_to_selected'] in DUTCH[
+        'ui.gui.rando_stuff_tab.use_switch_to_selected_first_to_pick'
+    ]
+    assert DUTCH['ui.gui.rando_stuff_tab.this_account_will_be_used_for_fleasion'] == (
+        'Dit account wordt gebruikt wanneer Fleasion Roblox op macOS start.'
+    )
+
+
+def test_dutch_reviewed_asset_types_and_help_labels() -> None:
+    """Keep technical Roblox types and referenced Dutch controls accurate."""
+    assert DUTCH['asset_filter.type.11'] == 'Shirt'
+    assert DUTCH['asset_filter.type.13'] == 'Decal'
+    assert DUTCH['cache.texture_map.bumpmap'] == 'Reliëfkaart'
+    assert DUTCH['cache.texture_map.displacement'] == 'Verplaatsingskaart'
+    assert DUTCH['cache.texture_map.normal'] == DUTCH['json.texture_map.normal']
+    assert DUTCH['ui.cache.rbxm_preview.add_child'] == 'Onderliggende instantie toevoegen'
+    assert DUTCH['replacer.rules.add_new'] in DUTCH['onboarding.welcome.body']
+    assert DUTCH[
+        'ui.gui.modifications_tab.move_selected_fastflags_to_folder'
+    ] in DUTCH['ui.gui.modifications_tab.fastflag_folder_already_exists']
