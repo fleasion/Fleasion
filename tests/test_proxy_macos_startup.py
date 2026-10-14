@@ -944,7 +944,9 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     )
     monkeypatch.setattr(
         "fleasion.utils.platform_linux.set_linux_client_env_proxy_override",
-        lambda url, *, client_key: override_calls.append((url, client_key)) or True,
+        lambda url, *, client_key, ca_cert_path=None: (
+            override_calls.append((url, client_key)) or True
+        ),
     )
     monkeypatch.setattr(
         proxy_master,

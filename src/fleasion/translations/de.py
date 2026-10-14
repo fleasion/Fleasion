@@ -1331,6 +1331,7 @@ GERMAN: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Mesh-LOD-Überschreibung',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Fehler bei der Mesh-Vorschau: {value0}',
     'ui.gui.modifications_tab.missing': 'Fehlt',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Modifikation',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Modifikatortaste erfasst. Lassen Sie sie los, um nur diese Taste zu binden, oder drücken Sie für eine Kombination eine weitere Taste.',
     'ui.gui.modifications_tab.msaa_level': 'MSAA-Stufe',

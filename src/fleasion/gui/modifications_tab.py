@@ -392,6 +392,18 @@ _STATUS_STYLES = {
 # _RichTextButton — QPushButton-like label that renders HTML/rich text
 
 
+
+def _selected_linux_client_key() -> str | None:
+    """Key of the Linux client Fleasion targets, or ``None`` off Linux."""
+    if not sys.platform.startswith('linux'):
+        return None
+    try:
+        from ..utils.platform_linux import selected_linux_client_key
+
+        return selected_linux_client_key()
+    except Exception:
+        return None
+
 class _RichTextButton(QPushButton):
     """QPushButton that draws a label and a larger suffix character, each independently
     vertically centred so mixed font sizes don't shift each other's position."""
@@ -2835,7 +2847,7 @@ class CustomFFlagEditor(QWidget):
         )
         layout.addWidget(warning)
 
-        if sys.platform.startswith('linux'):
+        if _selected_linux_client_key() == 'sober':
             sober_delay_warning = QLabel(
                 tr('ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security')
             )
@@ -4261,6 +4273,15 @@ class ModificationsTab(QWidget):
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
 
+        if _selected_linux_client_key() == 'mocktail':
+            mocktail_note = QLabel(tr('ui.gui.modifications_tab.mocktail_file_mods_unavailable'))
+            mocktail_note.setWordWrap(True)
+            mocktail_note.setStyleSheet(
+                'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
+                'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
+            )
+            self._container_layout.addWidget(mocktail_note)
+
         # Fast Flags
         self._fflag_toggle = QCheckBox(
             tr('ui.gui.modifications_tab.enable_allowlisted_fastflag_presets')
@@ -4335,7 +4356,7 @@ class ModificationsTab(QWidget):
         self._mesh_section = CollapsibleSection(
             tr('modifications.section.r6_avatar_meshes'), expanded=True
         )
-        if sys.platform.startswith('linux'):
+        if _selected_linux_client_key() == 'sober':
             sober_mesh_warning = QLabel(
                 tr('ui.gui.modifications_tab.b_linux_sober_limitation_b_r6_default')
             )

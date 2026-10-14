@@ -27,6 +27,11 @@ SOBER_TARGET_PATHS: dict[str, str] = {
 }
 
 
+# Clients whose overlay mirrors the Android APK's assets/ directory and so
+# share Sober's Windows-to-Android target mapping
+ANDROID_ASSET_LAYOUT_CLIENTS = frozenset({'sober', 'cordial'})
+
+
 def _normalise_key(target_path: str | Path) -> str:
     return str(target_path or '').replace('\\', '/').strip('/')
 
@@ -96,7 +101,7 @@ def _linux_resource_client_key(resource_dir: Path) -> str | None:
 
 def _target_path_for_client(client_key: str | None, target_path: str | Path) -> str:
     normalised = _normalise_relative_target(target_path)
-    if client_key == 'sober':
+    if client_key in ANDROID_ASSET_LAYOUT_CLIENTS:
         return _SOBER_TARGET_LOOKUP.get(normalised.casefold(), normalised)
     return normalised
 
@@ -238,6 +243,45 @@ def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, by
     return result
 
 
+def _client_original_asset_dirs(client_key: str) -> tuple[Path, ...]:
+    try:
+        from ..utils.linux_clients import get_linux_client
+        from ..utils.paths import USER_HOME
+
+        return get_linux_client(client_key).paths(home=USER_HOME).original_asset_dirs()
+    except Exception:
+        return ()
+
+
+def _read_extracted_original_asset(client_key: str, target_path: str | Path) -> bytes | None:
+    """Read an original from a client's extracted copy of the APK's assets/."""
+    roots = _client_original_asset_dirs(client_key)
+    for rel in target_path_candidates_for_current_platform(target_path):
+        for root in roots:
+            data = _read_file(root / rel)
+            if data is not None:
+                return data
+    return None
+
+
+def _read_extracted_original_directory(client_key: str, target_dir: str | Path) -> dict[str, bytes]:
+    try:
+        rel = _normalise_relative_target(target_dir)
+    except ValueError:
+        return {}
+    result: dict[str, bytes] = {}
+    for root in _client_original_asset_dirs(client_key):
+        try:
+            paths = sorted(path for path in (root / rel).iterdir() if path.is_file())
+        except OSError:
+            paths = []
+        for path in paths:
+            data = _read_file(path)
+            if data is not None:
+                result.setdefault(path.name, data)
+    return result
+
+
 def read_current_platform_original_asset(
     target_path: str | Path,
     resource_dir: Path | None = None,
@@ -257,6 +301,8 @@ def read_current_platform_original_asset(
             client_key = 'sober'
     if client_key == 'sober':
         return _read_sober_original_asset(target_path)
+    if client_key is not None:
+        return _read_extracted_original_asset(client_key, target_path)
     return None
 
 
@@ -279,4 +325,6 @@ def read_current_platform_original_directory(
             client_key = 'sober'
     if client_key == 'sober':
         return _read_sober_original_asset_directory(target_dir)
+    if client_key is not None:
+        return _read_extracted_original_directory(client_key, target_dir)
     return {}

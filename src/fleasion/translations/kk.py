@@ -1331,6 +1331,7 @@ KAZAKH: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Тор LOD қайта анықтауы',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Торды алдын ала қарау қатесі: {value0}',
     'ui.gui.modifications_tab.missing': 'Жоқ',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Өзгеріс',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Модификатор ұсталды. Оны жеке тағайындау үшін босатыңыз немесе тіркесім үшін басқа пернені басыңыз.',
     'ui.gui.modifications_tab.msaa_level': 'MSAA деңгейі',

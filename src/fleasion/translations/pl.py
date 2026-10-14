@@ -1331,6 +1331,7 @@ POLISH: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Zastąpienie LOD siatki',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Błąd podglądu siatki: {value0}',
     'ui.gui.modifications_tab.missing': 'Brak',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Modyfikacja',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Modyfikator przechwycony. Zwolnij go, aby powiązać go samodzielnie, lub naciśnij inny klawisz, aby uzyskać kombinację.',
     'ui.gui.modifications_tab.msaa_level': 'Poziom MSAA',

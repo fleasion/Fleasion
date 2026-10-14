@@ -6,12 +6,14 @@ and ``FastFlagsViewModel.cs``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import stat
 import sys
 from pathlib import Path
+from typing import cast
 
 from ..utils import format_count, log_buffer
 from .stash_paths import resource_stash_dir
@@ -109,6 +111,36 @@ def client_settings_targets_for_resource_dir(
 
 def client_settings_paths_for_resource_dir(roblox_dir: Path) -> list[Path]:
     return [path for path, _stash_rel in client_settings_targets_for_resource_dir(roblox_dir)]
+
+
+def _linux_client_fflag_files() -> list[Path]:
+    """Flat FastFlag files of the selected Linux client (Mocktail, Cordial)."""
+    if not sys.platform.startswith('linux'):
+        return []
+    try:
+        from ..utils.platform_linux import find_linux_fflag_files
+
+        return find_linux_fflag_files()
+    except Exception as exc:
+        log_buffer.log('FastFlags', f'Could not discover Linux client FastFlag files: {exc}')
+        return []
+
+
+def _linux_fflag_stash(stash_dir: Path, path: Path) -> tuple[Path, Path]:
+    """Return the stash for ``path`` and the marker recording that it was absent."""
+    digest = hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:16]
+    base = stash_dir / 'linux_client_fflags' / f'{path.parent.name}-{digest}'
+    return base.with_suffix('.json'), base.with_suffix('.absent')
+
+
+def _read_flag_object(path: Path) -> dict[str, object]:
+    try:
+        loaded: object = json.loads(path.read_text(encoding='utf-8'))
+    except OSError, UnicodeDecodeError, json.JSONDecodeError:
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {str(key): value for key, value in cast('dict[object, object]', loaded).items()}
 
 
 def _sober_flag_value(value: str):
@@ -272,6 +304,13 @@ class FastFlagManager:
             if wrote_dir:
                 written_dirs += 1
 
+        for flag_file in _linux_client_fflag_files():
+            if self._write_linux_flag_file(flag_file, flags):
+                written_dirs += 1
+            else:
+                failed += 1
+                failed_dirs.add(flag_file.parent)
+
         message = (
             f'Wrote {format_count(flags, "flag")} to {format_count(written_dirs, "Roblox dir")}'
         )
@@ -279,6 +318,50 @@ class FastFlagManager:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
         log_buffer.log('FastFlags', message)
         return failed_dirs
+
+    def _write_linux_flag_file(self, path: Path, flags: dict[str, str]) -> bool:
+        """Merge Fleasion's flags over the user's own in a client flags file."""
+        stash, absent = _linux_fflag_stash(self._stash_dir, path)
+        try:
+            if not stash.exists() and not absent.exists():
+                stash.parent.mkdir(parents=True, exist_ok=True)
+                if path.exists():
+                    shutil.copy2(path, stash)
+                else:
+                    absent.touch()
+            merged: dict[str, object] = _read_flag_object(stash) if stash.exists() else {}
+            merged.update({key: _sober_flag_value(value) for key, value in flags.items()})
+            restore_read_only = _is_read_only(path)
+            _clear_read_only(path)
+            try:
+                path.write_text(json.dumps(merged, indent=2) + '\n', encoding='utf-8')
+            finally:
+                if restore_read_only:
+                    _restore_read_only(path)
+        except OSError as exc:
+            log_buffer.log('FastFlags', f'Failed writing {path}: {exc}')
+            return False
+        return True
+
+    def _restore_linux_flag_files(self) -> int:
+        """Put each client flags file back as it was; return the failure count."""
+        failed = 0
+        for path in _linux_client_fflag_files():
+            stash, absent = _linux_fflag_stash(self._stash_dir, path)
+            try:
+                if stash.exists():
+                    _clear_read_only(path)
+                    shutil.copy2(stash, path)
+                    stash.unlink()
+                elif absent.exists():
+                    if path.exists():
+                        _clear_read_only(path)
+                        path.unlink()
+                    absent.unlink()
+            except OSError as exc:
+                failed += 1
+                log_buffer.log('FastFlags', f'Failed restoring {path}: {exc}')
+        return failed
 
     def reassert_macos_bootstrapper_flags(self, settings: dict) -> int:
         """Merge Fleasion flags into settings rewritten just before a macOS launch.
@@ -412,6 +495,7 @@ class FastFlagManager:
                         f'Failed restoring Sober config {sober_config}: {exc}',
                     )
 
+        failed += self._restore_linux_flag_files()
         message = 'Restored ClientAppSettings.json'
         if failed:
             message += f' in {format_count(restored, "Roblox dir")}; skipped {format_count(failed, "Roblox dir")} due to permission errors'

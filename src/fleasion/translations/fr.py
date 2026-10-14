@@ -1331,6 +1331,7 @@ FRENCH: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Remplacement du LOD de mesh',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Erreur d’aperçu du mesh : {value0}',
     'ui.gui.modifications_tab.missing': 'Manquant',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Modification',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Modificateur capturé. Relâchez-le pour l’attribuer seul, ou appuyez sur une autre touche pour créer une combinaison.',
     'ui.gui.modifications_tab.msaa_level': 'Niveau MSAA',

@@ -1331,6 +1331,7 @@ PORTUGUESE: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Substituição de LOD da malha',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Erro na prévia da malha: {value0}',
     'ui.gui.modifications_tab.missing': 'Ausente',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Modificação',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Modificador capturado. Solte-o para vinculá-lo sozinho ou pressione outra tecla para formar uma combinação.',
     'ui.gui.modifications_tab.msaa_level': 'Nível de MSAA',

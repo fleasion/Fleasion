@@ -1331,6 +1331,7 @@ TURKISH: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Mesh LOD Geçersiz Kılma',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Mesh önizleme hatası: {value0}',
     'ui.gui.modifications_tab.missing': 'Eksik',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Değişiklik',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Değiştirici yakalandı. Tek başına atamak için bırakın veya kombinasyon için başka bir tuşa basın.',
     'ui.gui.modifications_tab.msaa_level': 'MSAA Seviyesi',

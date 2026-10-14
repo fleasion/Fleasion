@@ -2537,6 +2537,13 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
         for cached_dir in load_saved_roblox_dirs():
             _add_posix(cached_dir)
         save_saved_roblox_dirs(found)
+        if IS_LINUX:
+            from ..utils.platform_linux import find_linux_ca_bundle_dirs
+
+            # Bundles a client reads outside its overlay are certificate
+            # targets only, so they are never saved as Roblox dirs
+            for bundle_dir in find_linux_ca_bundle_dirs():
+                _add_posix(bundle_dir)
         return found
 
     import winreg
@@ -3171,6 +3178,33 @@ def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int
     finally:
         if restore_read_only:
             _restore_cacert_read_only(ca_file)
+
+
+def _patch_linux_extra_ca_bundles(ca_pem: str) -> bool:
+    """Add the CA to bundles the selected Linux client reads outside its overlay.
+
+    Cordial hands curl a symlink to the ``ssl/cacert.pem`` it extracted from the
+    APK, and re-extracts it whenever Roblox updates, so these are re-checked on
+    every launch. Returns True if any bundle changed.
+    """
+    if not IS_LINUX:
+        return False
+    from ..utils.platform_linux import find_linux_ca_bundle_dirs
+
+    changed_any = False
+    for bundle_dir in find_linux_ca_bundle_dirs():
+        ca_file = bundle_dir / 'ssl' / 'cacert.pem'
+        try:
+            changed, _fleasion_count, _current_count = _upsert_fleasion_ca_in_cacert(
+                ca_file, ca_pem
+            )
+        except (OSError, UnicodeDecodeError) as exc:
+            log_buffer.log('Certificate', f'Could not add Fleasion CA to {ca_file}: {exc}')
+            continue
+        if changed:
+            changed_any = True
+            log_buffer.log('Certificate', f'Added Fleasion CA to {ca_file}')
+    return changed_any
 
 
 def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[dict]]:
@@ -3838,8 +3872,12 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     elif IS_LINUX:
         from ..utils.platform_linux import find_roblox_resource_dirs
 
+        extra_changed = _patch_linux_extra_ca_bundles(ca_pem)
         dirs = find_roblox_resource_dirs(include_studio=False)
-        roblox_dir = dirs[0] if dirs else exe_path.parent
+        if not dirs:
+            # The client trusts Fleasion through its own integration
+            return extra_changed
+        roblox_dir = dirs[0]
     else:
         roblox_dir = exe_path.parent
     ssl_dir = roblox_dir / 'ssl'
@@ -4122,11 +4160,29 @@ class ProxyMaster:
         armed = set_linux_client_env_proxy_override(
             self.roblox_env_proxy_url(),
             client_key=client_key,
+            ca_cert_path=_current_proxy_ca_dir() / 'ca.crt',
         )
         if armed:
             self._linux_env_proxy_override_client_key = client_key
             self._sober_env_proxy_override_active = client_key == 'sober'
         return bool(armed)
+
+    def _arm_linux_hosts_client_trust(self) -> None:
+        """Let clients with their own Fleasion integration trust the CA in hosts mode."""
+        client_key = self._linux_client_key()
+        if client_key is None:
+            return
+        from ..utils.platform_linux import set_linux_client_env_proxy_override
+
+        if set_linux_client_env_proxy_override(
+            self.roblox_env_proxy_url(),
+            client_key=client_key,
+            ca_cert_path=_current_proxy_ca_dir() / 'ca.crt',
+            proxy_mode='hosts',
+        ):
+            descriptor = self._linux_client_descriptor()
+            if getattr(descriptor, 'proxy_integration', 'flatpak_env') != 'flatpak_env':
+                self._linux_env_proxy_override_client_key = client_key
 
     def _clear_linux_env_proxy_override(self) -> bool:
         """Clear only the client override armed by this proxy instance."""
@@ -4190,7 +4246,9 @@ class ProxyMaster:
             from ..utils.platform_linux import find_roblox_resource_dirs
 
             dirs = find_roblox_resource_dirs(include_studio=False)
-            roblox_dir = dirs[0] if dirs else exe_path.parent
+            if not dirs:
+                return None
+            roblox_dir = dirs[0]
         else:
             roblox_dir = exe_path.parent
         return roblox_dir / 'ssl' / 'cacert.pem', ca_pem
@@ -4940,8 +4998,11 @@ class ProxyMaster:
         elif IS_LINUX:
             from ..utils.platform_linux import find_roblox_resource_dirs
 
+            _patch_linux_extra_ca_bundles(get_ca_pem(ca_cert_path))
             dirs = find_roblox_resource_dirs(include_studio=False)
-            roblox_dir = dirs[0] if dirs else exe_path.parent
+            if not dirs:
+                return
+            roblox_dir = dirs[0]
         else:
             roblox_dir = exe_path.parent
         ca_file = roblox_dir / 'ssl' / 'cacert.pem'
@@ -6138,6 +6199,8 @@ class ProxyMaster:
         _upsert_watchdog_task()  # Initial task creation
         self._start_watchdog()  # Keep task pushed 5 s ahead
         self._start_linux_sober_custom_fflag_timer()
+        if IS_LINUX:
+            self._arm_linux_hosts_client_trust()
         hosts_ready_event = getattr(self, '_hosts_proxy_ready', None)
         if hosts_ready_event is not None:
             hosts_ready_event.set()

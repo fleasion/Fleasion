@@ -1331,6 +1331,7 @@ CHINESE: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': '网格 LOD 覆盖',
     'ui.gui.modifications_tab.mesh_preview_error_value': '网格预览错误：{value0}',
     'ui.gui.modifications_tab.missing': '缺失',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': '修改',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': '已捕获修饰键。松开它即可单独绑定，或按下另一个键组成组合键。',
     'ui.gui.modifications_tab.msaa_level': 'MSAA 级别',

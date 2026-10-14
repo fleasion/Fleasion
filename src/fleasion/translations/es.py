@@ -1331,6 +1331,7 @@ SPANISH: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Anulación de LOD de malla',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Error de vista previa de malla: {value0}',
     'ui.gui.modifications_tab.missing': 'Ausente',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Modificación',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Modificador capturado. Suéltalo para vincularlo solo o presiona otra tecla para obtener una combinación.',
     'ui.gui.modifications_tab.msaa_level': 'Nivel MSAA',
