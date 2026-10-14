@@ -11,9 +11,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ...utils import log_buffer
-from ...utils.paths import CONFIG_FILE, LOCAL_APPDATA
+from fleasion.utils import platform_linux
+from fleasion.utils.linux_fflags import set_linux_flag_layer
+from fleasion.utils.paths import CONFIG_FILE, LOCAL_APPDATA, MOD_ORIGINALS_DIR
 
+from ...utils import log_buffer
 
 CLIENT_SETTINGS_APPLICATION_PATH = '/settings/application/'
 CLIENT_SETTINGS_COMPRESSED_PATH = '/settings-compressed/application/'
@@ -72,6 +74,7 @@ class CustomFFlagModifier:
         )
         self._macos_seeded_flag_names: set[str] = set()
         self._windows_seeded_flag_names: set[str] = set()
+        self._linux_seeded_paths: set[Path] = set()
         self._last_fresh_response_flags: tuple[tuple[str, str], ...] | None = None
         self._delivery_generation = 0
         self._delivery_state_lock = threading.Lock()
@@ -472,12 +475,32 @@ class CustomFFlagModifier:
             )
         return bool(updated_paths)
 
+    def prime_linux_client_flags(self) -> bool:
+        """Seed custom flags into the selected client's native startup files."""
+        if not sys.platform.startswith('linux'):
+            return False
+        flags = self.runtime_flags() if self.is_enabled() else {}
+        written = False
+        for path in platform_linux.find_linux_fflag_files():
+            if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', flags):
+                written = True
+                self._linux_seeded_paths.add(path)
+        return written
+
+    def restore_linux_client_flags(self) -> None:
+        """Remove the custom layer from files seeded by this modifier."""
+        for path in tuple(self._linux_seeded_paths):
+            if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', {}):
+                self._linux_seeded_paths.remove(path)
+
     def prime_startup_flag_cache(self) -> bool:
         """Seed the platform-specific local flag source used before networking."""
         # Explicit resource-dir injection is also the cross-platform test and
         # helper contract for macOS; it must take precedence over the host OS.
         if self._macos_resource_dirs is not None or sys.platform == 'darwin':
             return self.prime_macos_client_settings()
+        if self._flag_cache_path is None and sys.platform.startswith('linux'):
+            return self.prime_linux_client_flags()
         return self.prime_windows_flag_cache()
 
     @staticmethod

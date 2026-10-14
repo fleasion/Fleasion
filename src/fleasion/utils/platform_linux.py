@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -898,6 +899,28 @@ def _mocktail_ca_destination(installation: LinuxClientInstallation) -> Path:
     return installation.paths.flatpak_root / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt'
 
 
+def inspect_mocktail_integration_ca(
+    installation: LinuxClientInstallation, ca_cert_path: Path
+) -> dict[str, object]:
+    """Validate the public CA and ownership of Mocktail's launch integration."""
+    destination = _mocktail_ca_destination(installation)
+    state: dict[str, object] = {'healthy': False, 'path': str(destination)}
+    if installation.key != (_active_linux_proxy_client_key or _read_linux_proxy_override_state()):
+        state['error'] = 'Mocktail proxy integration is not armed'
+        return state
+    try:
+        installed_ca = destination.read_bytes()
+        expected_ca = ca_cert_path.read_bytes()
+    except OSError as exc:
+        state['error'] = str(exc)
+        return state
+    state['sha256'] = hashlib.sha256(installed_ca).hexdigest()
+    state['healthy'] = bool(expected_ca) and installed_ca == expected_ca
+    if not state['healthy']:
+        state['error'] = 'Mocktail sandbox CA does not match the current Fleasion CA'
+    return state
+
+
 def _write_text_atomically(path: Path, text: str, *, mode: int) -> None:
     temporary = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
     try:
@@ -970,6 +993,7 @@ def _arm_mocktail_integration(
         'proxy_port': str(proxy_port) if proxy_port is not None else None,
     }
     config_file = installation.paths.config_file
+    text = ''
     if config_file.is_file():
         try:
             text = config_file.read_text(encoding='utf-8')
@@ -982,13 +1006,7 @@ def _arm_mocktail_integration(
                 )
                 return False
             if _read_mocktail_integration_state() is None:
-                original = mocktail_config.read_integration(text)
-                MOCKTAIL_INTEGRATION_STATE.parent.mkdir(parents=True, exist_ok=True)
-                _write_text_atomically(
-                    MOCKTAIL_INTEGRATION_STATE,
-                    json.dumps({'original': original}) + '\n',
-                    mode=0o600,
-                )
+                _save_mocktail_integration_state(text)
             updated = mocktail_config.set_integration(text, values)
             if updated != text:
                 _write_text_atomically(
@@ -998,6 +1016,12 @@ def _arm_mocktail_integration(
             log_buffer.log(
                 'Launcher', f'Could not enable the Fleasion integration in {name}: {exc}'
             )
+            return False
+    elif _read_mocktail_integration_state() is None:
+        try:
+            _save_mocktail_integration_state(text)
+        except (OSError, mocktail_config.MocktailConfigError) as exc:
+            log_buffer.log('Launcher', f'Could not record {name} integration settings: {exc}')
             return False
 
     env = {
@@ -1013,10 +1037,26 @@ def _arm_mocktail_integration(
     )
 
 
+def _save_mocktail_integration_state(text: str) -> None:
+    if MOCKTAIL_INTEGRATION_STATE.exists() or MOCKTAIL_INTEGRATION_STATE.is_symlink():
+        msg = 'Existing Mocktail recovery state is unreadable; it was left unchanged'
+        raise mocktail_config.MocktailConfigError(msg)
+    original = mocktail_config.read_integration(text)
+    MOCKTAIL_INTEGRATION_STATE.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_atomically(
+        MOCKTAIL_INTEGRATION_STATE,
+        json.dumps({'original': original}) + '\n',
+        mode=0o600,
+    )
+
+
 def _disarm_mocktail_integration(installation: LinuxClientInstallation) -> bool:
     """Put Mocktail's integration settings back the way the user had them."""
     name = installation.display_name
     original = _read_mocktail_integration_state()
+    if original is None and MOCKTAIL_INTEGRATION_STATE.exists():
+        log_buffer.log('Launcher', f'Could not read {name} original integration settings')
+        return False
     config_file = installation.paths.config_file
     restored = True
     if config_file.is_file():
@@ -1033,13 +1073,17 @@ def _disarm_mocktail_integration(installation: LinuxClientInstallation) -> bool:
         except (OSError, UnicodeError, mocktail_config.MocktailConfigError) as exc:
             log_buffer.log('Launcher', f'Could not restore {name} integration settings: {exc}')
             restored = False
-    if restored:
-        MOCKTAIL_INTEGRATION_STATE.unlink(missing_ok=True)
     unset = _flatpak_override(
         installation,
         [f'--unset-env={key}' for key in MOCKTAIL_INTEGRATION_ENV_NAMES],
         'disarm the Fleasion integration for',
     )
+    if restored and unset:
+        try:
+            MOCKTAIL_INTEGRATION_STATE.unlink(missing_ok=True)
+        except OSError as exc:
+            log_buffer.log('Launcher', f'Could not remove {name} recovery state: {exc}')
+            return False
     return restored and unset
 
 
@@ -1095,6 +1139,12 @@ def set_linux_client_env_proxy_override(
             'arm Env Proxy for',
         )
     if not armed:
+        if (
+            integration == 'mocktail_config'
+            and MOCKTAIL_INTEGRATION_STATE.exists()
+            and not clear_linux_client_env_proxy_override(client_key=installation.key)
+        ):
+            log_buffer.log('Launcher', 'Mocktail rollback is pending startup recovery')
         return False
     _active_linux_proxy_client_key = installation.key
     _write_linux_proxy_override_state(installation.key)
@@ -1135,6 +1185,12 @@ def recover_stale_linux_client_env_proxy_override() -> bool:
     """Clear a persisted Env Proxy override left by an earlier Fleasion process."""
     if _active_linux_proxy_client_key is not None:
         return True
+    if MOCKTAIL_INTEGRATION_STATE.exists():
+        if _read_mocktail_integration_state() is None:
+            log_buffer.log('Launcher', 'Mocktail recovery state is unreadable; recovery deferred')
+            return False
+        if not clear_linux_client_env_proxy_override(client_key='mocktail'):
+            return False
     key = _read_linux_proxy_override_state()
     if key is None:
         return True

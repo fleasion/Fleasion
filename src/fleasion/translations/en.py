@@ -1873,4 +1873,7 @@ ENGLISH: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'A FastFlag named “{value0}” already exists.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Invalid FastFlag Name',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'A FastFlag folder named “{value0}” already exists. Use “Move selected to folder” instead.',
+    'app.linux_client_proxy_setup_failed_title': 'Linux Roblox Client Setup Failed',
+    'app.linux_client_proxy_setup_failed_body': 'Fleasion could not prepare {client} for {mode} proxy mode. The proxy was stopped before becoming ready. Check the Launcher log for the configuration, certificate, or Flatpak error, then retry.',
+    'ui.gui.modifications_tab.custom_fastflag_delivery': 'Dynamic FastFlags can update during play after Roblox fetches the changed settings. Non-dynamic FastFlags take effect on the next Roblox launch. Keep the proxy enabled to deliver custom flags.',
 }

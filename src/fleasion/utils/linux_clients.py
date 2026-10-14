@@ -356,9 +356,12 @@ CORDIAL_CLIENT = LinuxClientDescriptor(
     ca_bundle_dir_patterns=_CORDIAL_EXTRACTED_ASSETS,
     original_asset_dir_patterns=_CORDIAL_EXTRACTED_ASSETS,
     fflag_file_patterns=('data/cordial/profiles/*/flags.json',),
-    settings_dir_patterns=('data/cordial/profiles/*/data/files/appData',),
+    settings_dir_patterns=tuple(
+        f'data/cordial/profiles/*/{engine}data/files/appData' for engine in ('', 'quest/')
+    ),
     storage_path_patterns=tuple(
-        f'data/cordial/profiles/*/data/{prefix}rbx-storage{suffix}'
+        f'data/cordial/profiles/*/{engine}data/{prefix}rbx-storage{suffix}'
+        for engine in ('', 'quest/')
         for prefix in ('', 'files/appData/', 'cache/')
         for suffix in ('', '.db', '.db-wal', '.db-shm')
     ),

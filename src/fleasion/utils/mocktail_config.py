@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass
 
 INTEGRATION_KEYS = ('enabled', 'proxy_mode', 'proxy_port')
+_QUOTED_SCALAR_MIN_LENGTH = 2
 
 _KEY_LINE = re.compile(r'^(?P<indent>[ ]*)(?P<key>[A-Za-z0-9_]+):(?P<rest>.*)$')
 
@@ -104,7 +105,12 @@ def read_section_value(text: str, section: str, key: str) -> str | None:
 
 
 def _unquote(value: str | None) -> str | None:
-    if value is not None and len(value) >= 2 and value[0] == value[-1] and value[0] in '"\'':
+    if (
+        value is not None
+        and len(value) >= _QUOTED_SCALAR_MIN_LENGTH
+        and value[0] == value[-1]
+        and value[0] in '"\''
+    ):
         return value[1:-1]
     return value
 
@@ -150,6 +156,35 @@ def read_integration(text: str) -> dict[str, str | None]:
     return values
 
 
+def _update_keys(lines: list[str], block: int, child: int, updates: dict[str, str | None]) -> None:
+    block_end = _block_end(lines, block, child)
+    key_indent = _child_indent(lines, block, block_end, child)
+    pad = ' ' * key_indent
+    insert_at = block + 1
+    for key, value in updates.items():
+        index = _find_key(lines, key, block + 1, block_end, key_indent)
+        if index is None:
+            if value is not None:
+                lines.insert(insert_at, f'{pad}{key}: {value}\n')
+                insert_at += 1
+                block_end += 1
+        elif value is None:
+            del lines[index]
+            block_end -= 1
+        else:
+            scalar = lines[index].rstrip('\n').split(':', 1)[1]
+            stripped = _strip_comment(scalar)
+            comment = scalar[len(stripped) :]
+            spacing = stripped[len(stripped.rstrip()) :] if comment else ''
+            lines[index] = f'{pad}{key}: {value}{spacing}{comment}\n'
+
+
+def _remove_empty_block(lines: list[str], start: int, indent: int) -> None:
+    end = _block_end(lines, start, indent)
+    if all(_parse(line).indent == -1 for line in lines[start + 1 : end]):
+        del lines[start]
+
+
 def set_integration(text: str, updates: dict[str, str | None]) -> str:
     """Set (or, for ``None``, remove) keys under ``integrations.fleasion``.
 
@@ -163,7 +198,7 @@ def set_integration(text: str, updates: dict[str, str | None]) -> str:
     if lines and not lines[-1].endswith('\n'):
         lines[-1] += '\n'
     for line in lines:
-        _parse(line)  # validate indentation before touching anything
+        _parse(line)  # Validate indentation before touching anything
 
     top = _find_key(lines, 'integrations', 0, len(lines), 0)
     if top is None:
@@ -193,22 +228,7 @@ def set_integration(text: str, updates: dict[str, str | None]) -> str:
         msg = 'integrations.fleasion is not a block mapping'
         raise MocktailConfigError(msg)
 
-    block_end = _block_end(lines, block, child)
-    key_indent = _child_indent(lines, block, block_end, child)
-    pad = ' ' * key_indent
-    insert_at = block + 1
-    for key, value in updates.items():
-        index = _find_key(lines, key, block + 1, block_end, key_indent)
-        if index is None:
-            if value is None:
-                continue
-            lines.insert(insert_at, f'{pad}{key}: {value}\n')
-            insert_at += 1
-            block_end += 1
-            continue
-        if value is None:
-            del lines[index]
-            block_end -= 1
-            continue
-        lines[index] = f'{pad}{key}: {value}\n'
+    _update_keys(lines, block, child, updates)
+    _remove_empty_block(lines, block, child)
+    _remove_empty_block(lines, top, 0)
     return ''.join(lines)

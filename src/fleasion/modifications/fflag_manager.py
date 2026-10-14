@@ -6,14 +6,14 @@ and ``FastFlagsViewModel.cs``.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
 import stat
 import sys
 from pathlib import Path
-from typing import cast
+
+from fleasion.utils.linux_fflags import linux_flag_stash_paths, set_linux_flag_layer
 
 from ..utils import format_count, log_buffer
 from .stash_paths import resource_stash_dir
@@ -128,19 +128,7 @@ def _linux_client_fflag_files() -> list[Path]:
 
 def _linux_fflag_stash(stash_dir: Path, path: Path) -> tuple[Path, Path]:
     """Return the stash for ``path`` and the marker recording that it was absent."""
-    digest = hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:16]
-    base = stash_dir / 'linux_client_fflags' / f'{path.parent.name}-{digest}'
-    return base.with_suffix('.json'), base.with_suffix('.absent')
-
-
-def _read_flag_object(path: Path) -> dict[str, object]:
-    try:
-        loaded: object = json.loads(path.read_text(encoding='utf-8'))
-    except OSError, UnicodeDecodeError, json.JSONDecodeError:
-        return {}
-    if not isinstance(loaded, dict):
-        return {}
-    return {str(key): value for key, value in cast('dict[object, object]', loaded).items()}
+    return linux_flag_stash_paths(stash_dir, path)
 
 
 def _sober_flag_value(value: str):
@@ -321,46 +309,15 @@ class FastFlagManager:
 
     def _write_linux_flag_file(self, path: Path, flags: dict[str, str]) -> bool:
         """Merge Fleasion's flags over the user's own in a client flags file."""
-        stash, absent = _linux_fflag_stash(self._stash_dir, path)
-        try:
-            if not stash.exists() and not absent.exists():
-                stash.parent.mkdir(parents=True, exist_ok=True)
-                if path.exists():
-                    shutil.copy2(path, stash)
-                else:
-                    absent.touch()
-            merged: dict[str, object] = _read_flag_object(stash) if stash.exists() else {}
-            merged.update({key: _sober_flag_value(value) for key, value in flags.items()})
-            restore_read_only = _is_read_only(path)
-            _clear_read_only(path)
-            try:
-                path.write_text(json.dumps(merged, indent=2) + '\n', encoding='utf-8')
-            finally:
-                if restore_read_only:
-                    _restore_read_only(path)
-        except OSError as exc:
-            log_buffer.log('FastFlags', f'Failed writing {path}: {exc}')
-            return False
-        return True
+        values = {key: _sober_flag_value(value) for key, value in flags.items()}
+        return set_linux_flag_layer(path, self._stash_dir, 'presets', values)
 
     def _restore_linux_flag_files(self) -> int:
         """Put each client flags file back as it was; return the failure count."""
         failed = 0
         for path in _linux_client_fflag_files():
-            stash, absent = _linux_fflag_stash(self._stash_dir, path)
-            try:
-                if stash.exists():
-                    _clear_read_only(path)
-                    shutil.copy2(stash, path)
-                    stash.unlink()
-                elif absent.exists():
-                    if path.exists():
-                        _clear_read_only(path)
-                        path.unlink()
-                    absent.unlink()
-            except OSError as exc:
+            if not set_linux_flag_layer(path, self._stash_dir, 'presets', {}):
                 failed += 1
-                log_buffer.log('FastFlags', f'Failed restoring {path}: {exc}')
         return failed
 
     def reassert_macos_bootstrapper_flags(self, settings: dict) -> int:

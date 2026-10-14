@@ -584,6 +584,9 @@ class LinuxCustomFFlagHotkeyController(QObject):
         updated = dict(current_flags) if isinstance(current_flags, Mapping) else {}
         updated.update({str(flag): str(value) for flag, value in action_flags.items()})
         self._config.custom_fflags = updated
+        prime = getattr(self._proxy_master, 'prime_custom_fflag_cache', None)
+        if callable(prime):
+            prime()
         log_buffer.log('CustomFFlags', f'Linux keybind applied action {name}')
         self.toggled.emit(f'action:{name}')
 

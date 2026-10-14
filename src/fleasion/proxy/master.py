@@ -19,6 +19,8 @@ VPN compatibility:
   Only our proxy->CDN upstream connections go through the VPN (correct).
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import csv
@@ -40,9 +42,15 @@ import tempfile
 import threading
 import time
 import warnings
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Optional, Set
+from typing import TYPE_CHECKING, Optional, cast
+
+from fleasion.utils import platform_linux
+
+if TYPE_CHECKING:
+    from fleasion.utils.linux_clients import LinuxClientInstallation
 
 try:
     import winreg
@@ -1715,7 +1723,7 @@ def _parse_active_hosts_entries(content: str) -> dict[str, list[dict]]:
     return entries
 
 
-def _hosts_conflicts(hosts: Set[str], entries: dict[str, list[dict]]) -> list[tuple[str, dict]]:
+def _hosts_conflicts(hosts: set[str], entries: dict[str, list[dict]]) -> list[tuple[str, dict]]:
     conflicts: list[tuple[str, dict]] = []
     for host in sorted(hosts):
         for entry in entries.get(host.lower(), []):
@@ -1788,7 +1796,7 @@ def _log_hosts_conflicts(conflicts: list[tuple[str, dict]]) -> None:
         )
 
 
-def _verify_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
+def _verify_hosts_entries(hosts: set[str], error_details: Optional[dict] = None) -> bool:
     """Verify exact active hosts mappings after a write and DNS flush."""
     if hosts_file_is_oversized(error_details):
         return False
@@ -1828,7 +1836,7 @@ def _verify_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
     return True
 
 
-def _hosts_line_has_target_loopback(raw_line: str, hosts: Set[str]) -> bool:
+def _hosts_line_has_target_loopback(raw_line: str, hosts: set[str]) -> bool:
     active = raw_line.split('#', 1)[0].strip()
     if not active:
         return False
@@ -1839,7 +1847,7 @@ def _hosts_line_has_target_loopback(raw_line: str, hosts: Set[str]) -> bool:
     return any(host.lower() in target_hosts for host in parts[1:])
 
 
-def has_stale_hosts_entries(hosts: Set[str] | None = None) -> bool:
+def has_stale_hosts_entries(hosts: set[str] | None = None) -> bool:
     """Return whether Fleasion-owned hosts entries need privileged cleanup."""
     if hosts_file_is_oversized():
         return True
@@ -1854,7 +1862,7 @@ def has_stale_hosts_entries(hosts: Set[str] | None = None) -> bool:
     )
 
 
-def _hosts_file_loopback_hosts(hosts: Set[str]) -> set[str]:
+def _hosts_file_loopback_hosts(hosts: set[str]) -> set[str]:
     """Return requested hosts that already have active loopback mappings."""
     if hosts_file_is_oversized():
         return set()
@@ -1872,7 +1880,7 @@ def _hosts_file_loopback_hosts(hosts: Set[str]) -> set[str]:
     return present
 
 
-def _is_voidstrap_gu_acc_line(raw_line: str, hosts: Set[str]) -> bool:
+def _is_voidstrap_gu_acc_line(raw_line: str, hosts: set[str]) -> bool:
     """Return whether *raw_line* is a known stale Voidstrap hosts entry.
 
     Some affected files prefix an existing line with ``#gu_acc`` while other
@@ -1886,7 +1894,7 @@ def _is_voidstrap_gu_acc_line(raw_line: str, hosts: Set[str]) -> bool:
     return any(token.lower() in target_hosts for token in raw_line.split())
 
 
-def _remove_voidstrap_gu_acc_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
+def _remove_voidstrap_gu_acc_entries(hosts: set[str], error_details: Optional[dict] = None) -> bool:
     """Remove known Voidstrap ``#gu_acc`` entries for Fleasion proxy hosts."""
     if hosts_file_is_oversized(error_details):
         return False
@@ -1920,7 +1928,7 @@ def _remove_voidstrap_gu_acc_entries(hosts: Set[str], error_details: Optional[di
     return True
 
 
-def _spilled_hosts_line_should_remove(line_file, hosts: Set[str]) -> bool:
+def _spilled_hosts_line_should_remove(line_file, hosts: set[str]) -> bool:
     """Classify an unterminated hosts line without loading it into memory."""
     line_file.seek(0)
     prefix = line_file.read(4096)
@@ -1978,7 +1986,7 @@ def _spilled_hosts_line_should_remove(line_file, hosts: Set[str]) -> bool:
 
 
 def repair_hosts_file(
-    hosts: Set[str] | None = None,
+    hosts: set[str] | None = None,
     error_details: Optional[dict] = None,
     *,
     require_safe_size: bool = True,
@@ -2293,7 +2301,7 @@ def _write_hosts_file(content: str) -> None:
         ) from exc
 
 
-def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
+def _add_hosts_entries(hosts: set[str], error_details: Optional[dict] = None) -> bool:
     """Append redirect entries for *hosts* to the system hosts file.
 
     Returns True on success.  Skips entries already present.
@@ -2421,7 +2429,7 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
         return False
 
 
-def _remove_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
+def _remove_hosts_entries(hosts: set[str], error_details: Optional[dict] = None) -> bool:
     """Remove any hosts file entries we previously added.
 
     Returns True if the hosts file is clean (entries removed or were already
@@ -3863,6 +3871,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
         )
         return False
     ca_pem = get_ca_pem(ca_cert_path)
+    extra_changed = False
     if IS_MACOS:
         _patch_bootstrapper_ca_backups(ca_pem)
     if IS_MACOS:
@@ -3954,7 +3963,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             'Certificate',
             f'Roblox launch detected: cacert.pem already launch-healthy for {roblox_dir.name}',
         )
-        return False
+        return extra_changed
 
     stale_count = max(fleasion_count - current_count, 0)
     duplicate_current = max(current_count - 1, 0)
@@ -3985,7 +3994,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             f'CA injected into running Roblox instance: {roblox_dir.name}',
         )
 
-    return changed or not was_launch_healthy or not is_launch_healthy
+    return changed or not was_launch_healthy or not is_launch_healthy or extra_changed
 
 
 # ProxyMaster
@@ -4102,7 +4111,7 @@ class ProxyMaster:
         url_host = f'[{host}]' if ':' in host else host
         return f'http://{url_host}:{port}'
 
-    def _linux_client_installation(self):
+    def _linux_client_installation(self) -> LinuxClientInstallation | None:
         installation = getattr(self, '_active_linux_client_installation', None)
         if installation is not None:
             return installation
@@ -4167,11 +4176,22 @@ class ProxyMaster:
             self._sober_env_proxy_override_active = client_key == 'sober'
         return bool(armed)
 
-    def _arm_linux_hosts_client_trust(self) -> None:
+    def _linux_client_uses_integrated_trust(self) -> bool:
+        return (
+            IS_LINUX
+            and not IS_MACOS
+            and not IS_WINDOWS
+            and getattr(self._linux_client_descriptor(), 'proxy_integration', None)
+            == 'mocktail_config'
+        )
+
+    def _arm_linux_hosts_client_trust(self) -> bool:
         """Let clients with their own Fleasion integration trust the CA in hosts mode."""
+        if not self._linux_client_uses_integrated_trust():
+            return True
         client_key = self._linux_client_key()
         if client_key is None:
-            return
+            return True
         from ..utils.platform_linux import set_linux_client_env_proxy_override
 
         if set_linux_client_env_proxy_override(
@@ -4183,6 +4203,8 @@ class ProxyMaster:
             descriptor = self._linux_client_descriptor()
             if getattr(descriptor, 'proxy_integration', 'flatpak_env') != 'flatpak_env':
                 self._linux_env_proxy_override_client_key = client_key
+            return True
+        return False
 
     def _clear_linux_env_proxy_override(self) -> bool:
         """Clear only the client override armed by this proxy instance."""
@@ -4203,6 +4225,10 @@ class ProxyMaster:
         """Restore selected-client state after any proxy shutdown path."""
         if IS_LINUX:
             self._clear_linux_env_proxy_override()
+            modifier = getattr(self, 'custom_fflag_modifier', None)
+            restore_flags = getattr(modifier, 'restore_linux_client_flags', None)
+            if callable(restore_flags):
+                restore_flags()
 
     def wait_for_env_proxy_ready(self, timeout: float = 15.0, *, cancelled=None) -> bool:
         """Wait for bind/TLS readiness while allowing restart handoff cancellation."""
@@ -4253,17 +4279,47 @@ class ProxyMaster:
             roblox_dir = exe_path.parent
         return roblox_dir / 'ssl' / 'cacert.pem', ca_pem
 
-    def inspect_env_proxy_roblox_ca(self, exe_path: Path, reason: str) -> dict:
+    def inspect_env_proxy_roblox_ca(self, exe_path: Path, reason: str) -> dict[str, object]:
+        if self._linux_client_uses_integrated_trust():
+            installation = self._linux_client_installation()
+            if installation is None:
+                return {'healthy': False, 'error': 'Linux client installation is unavailable'}
+            return platform_linux.inspect_mocktail_integration_ca(
+                installation, _current_proxy_ca_dir() / 'ca.crt'
+            )
         target = self._roblox_ca_target(exe_path)
         if target is None:
             return {'healthy': False, 'error': 'Roblox CA target is unavailable'}
         ca_file, ca_pem = target
-        return _log_cacert_state(ca_file, ca_pem, reason)
+        state = cast('dict[str, object]', _log_cacert_state(ca_file, ca_pem, reason))
+        if IS_LINUX and not IS_MACOS and not IS_WINDOWS:
+            states = [state]
+            states.extend(
+                cast('dict[str, object]', _log_cacert_state(
+                    bundle_dir / 'ssl' / 'cacert.pem', ca_pem, reason
+                ))
+                for bundle_dir in platform_linux.find_linux_ca_bundle_dirs()
+            )
+            unhealthy = next((item for item in states if not item.get('healthy')), None)
+            if unhealthy is not None:
+                return unhealthy
+            if len(states) > 1:
+                state['sha256'] = hashlib.sha256(
+                    '|'.join(str(item.get('sha256', '')) for item in states).encode('utf-8')
+                ).hexdigest()
+        return state
 
-    def ensure_env_proxy_roblox_ca(self, exe_path: Path, *, settle: bool = False) -> dict:
+    def ensure_env_proxy_roblox_ca(
+        self, exe_path: Path, *, settle: bool = False
+    ) -> dict[str, object]:
         """Settle, directly repair, and fully verify Player's CA bundle."""
         if settle:
             time.sleep(_CACERT_LAUNCH_SETTLE_SECONDS)
+        extra_changed = False
+        if IS_LINUX and not IS_MACOS and not IS_WINDOWS:
+            ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
+            if ca_cert_path.exists():
+                extra_changed = _patch_linux_extra_ca_bundles(get_ca_pem(ca_cert_path))
         before = self.inspect_env_proxy_roblox_ca(
             exe_path, f'Env Proxy cacert.pem before launch preparation for {Path(exe_path).name}'
         )
@@ -4275,7 +4331,7 @@ class ProxyMaster:
         return {
             'success': bool(after.get('healthy')),
             'healthy': bool(after.get('healthy')),
-            'changed': before.get('sha256') != after.get('sha256'),
+            'changed': extra_changed or before.get('sha256') != after.get('sha256'),
             'path': after.get('path'),
             'error': after.get('error'),
             'state': after,
@@ -4287,7 +4343,7 @@ class ProxyMaster:
         cancel_event: threading.Event,
         *,
         duration: float = _CACERT_LAUNCH_POLL_SECONDS,
-    ) -> dict:
+    ) -> dict[str, object]:
         """Require CA health for the complete post-launch observation window."""
         deadline = time.monotonic() + max(0.0, duration)
         unhealthy_samples = 0
@@ -4823,7 +4879,13 @@ class ProxyMaster:
     def prime_custom_fflag_cache(self, *, allow_running: bool = False) -> bool:
         """Preload startup-only custom FastFlags for the next Player launch."""
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
-        if custom_modifier is None or (is_roblox_running() and not allow_running):
+        if custom_modifier is None:
+            return False
+        if is_roblox_running() and not allow_running:
+            # Native flag files prepare the next launch while the current engine runs
+            seed_linux_flags = getattr(custom_modifier, 'prime_linux_client_flags', None)
+            if IS_LINUX and callable(seed_linux_flags):
+                return bool(seed_linux_flags())
             return False
         seed_startup_flags = getattr(custom_modifier, 'prime_startup_flag_cache', None)
         if not callable(seed_startup_flags):
@@ -4832,7 +4894,7 @@ class ProxyMaster:
             return False
         return bool(seed_startup_flags())
 
-    def _emit_proxy_start_error(self, code: str, details: dict) -> None:
+    def _emit_proxy_start_error(self, code: str, details: dict[str, object]) -> None:
         """Forward startup failures to the app layer for user-facing dialogs."""
         if self._on_proxy_start_error is None:
             return
@@ -4991,6 +5053,7 @@ class ProxyMaster:
             )
             return
         ca_pem = get_ca_pem(ca_cert_path)
+        extra_changed = False
         if IS_MACOS:
             from ..utils.platform_macos import _resource_root_from_executable
 
@@ -4998,7 +5061,7 @@ class ProxyMaster:
         elif IS_LINUX:
             from ..utils.platform_linux import find_roblox_resource_dirs
 
-            _patch_linux_extra_ca_bundles(get_ca_pem(ca_cert_path))
+            extra_changed = _patch_linux_extra_ca_bundles(ca_pem)
             dirs = find_roblox_resource_dirs(include_studio=False)
             if not dirs:
                 return
@@ -5023,7 +5086,7 @@ class ProxyMaster:
             now = time.monotonic()
             last_refresh = self._last_cert_refresh_by_exe.get(exe_path)
             initial_sha = str(initial_state.get('sha256') or '')
-            if last_refresh is not None:
+            if last_refresh is not None and not extra_changed:
                 last_time, last_sha = last_refresh
                 if now - last_time < _CACERT_RESTART_DEDUP_SECONDS and initial_sha == last_sha:
                     log_buffer.log(
@@ -5053,6 +5116,8 @@ class ProxyMaster:
             stable_unhealthy_samples = 0
             while time.monotonic() < deadline:
                 if bool(last_state.get('healthy')):
+                    if extra_changed:
+                        break
                     log_buffer.log(
                         'Certificate',
                         f'Roblox launch detected: stable patched cert confirmed for {exe_path.parent.name}',
@@ -5535,9 +5600,15 @@ class ProxyMaster:
         # Install CA into Roblox ssl dirs.
         ca_pem = get_ca_pem(ca_cert_path)
         selected_linux_client_key = self._linux_client_key()
-        ca_patch_ok, ca_patch_details = _install_ca_into_roblox(
-            ca_pem, include_studio=not env_proxy_mode
-        )
+        if self._linux_client_uses_integrated_trust():
+            # Mocktail builds its trust bundle from the sandbox CA when it launches
+            ca_patch_ok = True
+            ca_patch_details: dict[str, object] = {}
+        else:
+            ca_patch_ok, ca_patch_details = cast(
+                'tuple[bool, dict[str, object]]',
+                _install_ca_into_roblox(ca_pem, include_studio=not env_proxy_mode),
+            )
         if IS_MACOS and not ca_patch_ok:
             log_buffer.log(
                 'Certificate',
@@ -6006,8 +6077,8 @@ class ProxyMaster:
                         'could not be armed',
                     )
                     self._emit_proxy_start_error(
-                        'linux_env_proxy_override_failed',
-                        {'client': selected_linux_client_key or 'unknown'},
+                        'linux_client_proxy_setup_failed',
+                        {'client': selected_linux_client_key or 'unknown', 'mode': 'env'},
                     )
                     await self._proxy.stop()
                     self._running = False
@@ -6062,6 +6133,15 @@ class ProxyMaster:
                     ready_event.clear()
                 self._stop_linux_sober_custom_fflag_timer()
                 self._running = False
+            return
+        if IS_LINUX and not self._arm_linux_hosts_client_trust():
+            self._emit_proxy_start_error(
+                'linux_client_proxy_setup_failed',
+                {'client': selected_linux_client_key or 'unknown', 'mode': 'hosts'},
+            )
+            await self._proxy.stop()
+            _set_active_hosts_loopbacks(None)
+            self._running = False
             return
         if use_linux_helper:
             from ..utils.linux_proxy_helper import (
@@ -6199,8 +6279,6 @@ class ProxyMaster:
         _upsert_watchdog_task()  # Initial task creation
         self._start_watchdog()  # Keep task pushed 5 s ahead
         self._start_linux_sober_custom_fflag_timer()
-        if IS_LINUX:
-            self._arm_linux_hosts_client_trust()
         hosts_ready_event = getattr(self, '_hosts_proxy_ready', None)
         if hosts_ready_event is not None:
             hosts_ready_event.set()

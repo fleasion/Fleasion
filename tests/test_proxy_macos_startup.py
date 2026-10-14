@@ -837,11 +837,24 @@ def test_linux_sober_clientsettings_stays_tunneled_until_route_is_armed():
     assert 'sober.vinegarhq.org' in excluded_updates[-1]
 
 
-def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeypatch):
-    from fleasion.utils.linux_clients import SOBER_CLIENT
+@pytest.mark.parametrize(
+    'client_key, proxy_mode, armed',
+    [
+        ('sober', 'env', True),
+        ('mocktail', 'env', True),
+        ('mocktail', 'env', False),
+        ('mocktail', 'hosts', False),
+    ],
+)
+def test_proxy_startup_self_tests_only_active_intercept_routes(
+    tmp_path, monkeypatch, client_key, proxy_mode, armed
+):
+    from fleasion.utils.linux_clients import get_linux_client
 
     self_test_hosts = []
     override_calls = []
+    hosts_calls = []
+    errors = []
     logs = []
     ca_cert = tmp_path / "ca.crt"
     ca_key = tmp_path / "ca.key"
@@ -895,9 +908,14 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     monkeypatch.setattr(
         proxy_master,
         "_selected_linux_client_installation",
-        lambda: SimpleNamespace(key='sober', display_name='Sober', client=SOBER_CLIENT),
+        lambda: SimpleNamespace(
+            key=client_key, display_name=client_key, client=get_linux_client(client_key)
+        ),
     )
     monkeypatch.setattr(proxy_master, "_use_linux_privileged_helper", lambda: False)
+    monkeypatch.setattr(proxy_master, "_is_admin", lambda: True)
+    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_needs_install', lambda _path: False)
+    monkeypatch.setattr(linux_proxy_helper, 'install_ca_into_linux_trust', lambda *_a, **_kw: None)
     monkeypatch.setattr(proxy_master, "generate_ca", lambda _dir: (ca_cert, ca_key))
     monkeypatch.setattr(
         proxy_master,
@@ -910,10 +928,19 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
         lambda *_args, **_kwargs: default_cert,
     )
     monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: "ca")
-    monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem, **_kwargs: (True, {}))
+    monkeypatch.setattr(
+        proxy_master, "_install_ca_into_roblox",
+        lambda _pem, **_kwargs: (
+            (False, {'error': 'no_roblox_installs', 'dirs': []})
+            if client_key == 'mocktail' else (True, {})
+        ),
+    )
     monkeypatch.setattr(proxy_master, "_other_proxy_owner_alive", lambda: False)
     monkeypatch.setattr(proxy_master, "_remove_hosts_entries", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(proxy_master, "_add_hosts_entries", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        proxy_master, "_add_hosts_entries",
+        lambda *_args, **_kwargs: hosts_calls.append(True) or True,
+    )
     monkeypatch.setattr(proxy_master, "_verify_hosts_entries", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(proxy_master, "_flush_dns", lambda: None)
     monkeypatch.setattr(proxy_master, "_resolve_real_endpoints", lambda _hosts: {})
@@ -944,8 +971,8 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     )
     monkeypatch.setattr(
         "fleasion.utils.platform_linux.set_linux_client_env_proxy_override",
-        lambda url, *, client_key, ca_cert_path=None: (
-            override_calls.append((url, client_key)) or True
+        lambda url, *, client_key, ca_cert_path=None, proxy_mode='env': (
+            override_calls.append((url, client_key)) or armed
         ),
     )
     monkeypatch.setattr(
@@ -956,7 +983,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
 
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
     proxy.config_manager = SimpleNamespace(
-        proxy_mode="env",
+        proxy_mode=proxy_mode,
         custom_fflags_enabled=True,
         clear_cache_on_launch=False,
         settings={},
@@ -975,7 +1002,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
         prime_windows_flag_cache=lambda: False,
     )
     proxy._module_interceptors = []
-    proxy._on_proxy_start_error = lambda *_args: None
+    proxy._on_proxy_start_error = lambda code, details: errors.append((code, details))
     proxy._running = False
     proxy._lock = threading.Lock()
     proxy._loop = None
@@ -987,6 +1014,8 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     proxy._sober_env_proxy_override_active = False
     proxy._sober_fflag_timer_stop = None
     proxy._sober_fflag_timer_thread = None
+    proxy._hosts_proxy_ready = threading.Event()
+    proxy._active_proxy_port = None
     monkeypatch.setattr(
         proxy_master.ProxyMaster,
         "_startup_intercept_hosts",
@@ -996,9 +1025,16 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     asyncio.run(proxy._run_proxy())
 
     assert self_test_hosts == [set(proxy_master.BASE_INTERCEPT_HOSTS)]
-    assert override_calls == [('http://127.0.0.1:58443', 'sober')]
-    assert proxy._active_env_proxy_mode is True
-    assert proxy._sober_env_proxy_override_active is True
+    assert override_calls == [('http://127.0.0.1:58443', client_key)]
+    assert proxy._active_env_proxy_mode is armed
+    assert proxy._sober_env_proxy_override_active is (armed and client_key == 'sober')
+    assert hosts_calls == []
+    assert not proxy._hosts_proxy_ready.is_set()
+    if not armed:
+        assert errors == [(
+            'linux_client_proxy_setup_failed',
+            {'client': client_key, 'mode': proxy_mode},
+        )]
 
 
 def test_linux_startup_treats_manual_profile_api_hosts_entry_as_active(monkeypatch, tmp_path):
