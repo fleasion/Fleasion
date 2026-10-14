@@ -18,6 +18,7 @@ from .translations.pl import POLISH
 from .translations.pt import PORTUGUESE
 from .translations.ru import RUSSIAN
 from .translations.tr import TURKISH
+from .translations.vi import VIETNAMESE
 from .translations.zh import CHINESE
 
 if TYPE_CHECKING:
@@ -41,6 +42,7 @@ LANGUAGES: dict[str, str] = {
     'fil': 'Filipino',
     'zh': '简体中文',
     'pl': 'Polski',
+    'vi': 'Tiếng Việt',
 }
 
 _TRANSLATIONS: dict[str, Mapping[str, str]] = {
@@ -57,6 +59,7 @@ _TRANSLATIONS: dict[str, Mapping[str, str]] = {
     'fil': FILIPINO,
     'zh': CHINESE,
     'pl': POLISH,
+    'vi': VIETNAMESE,
 }
 _LANGUAGE_ALIASES = {
     'tl': 'fil',

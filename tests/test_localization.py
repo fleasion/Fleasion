@@ -22,6 +22,7 @@ from fleasion.translations.pl import POLISH
 from fleasion.translations.pt import PORTUGUESE
 from fleasion.translations.ru import RUSSIAN
 from fleasion.translations.tr import TURKISH
+from fleasion.translations.vi import VIETNAMESE
 from fleasion.translations.zh import CHINESE
 
 
@@ -51,6 +52,7 @@ _TRANSLATED_CATALOGS = {
     'fil': FILIPINO,
     'zh': CHINESE,
     'pl': POLISH,
+    'vi': VIETNAMESE,
 }
 
 
@@ -69,6 +71,7 @@ def test_english_is_default_and_supported_languages_are_available() -> None:
         ('fil', 'Filipino'),
         ('zh', '简体中文'),
         ('pl', 'Polski'),
+        ('vi', 'Tiếng Việt'),
     )
     assert localization.normalize_language(None) == 'en'
     assert localization.normalize_language('en-US') == 'en'
@@ -90,6 +93,9 @@ def test_english_is_default_and_supported_languages_are_available() -> None:
     assert localization.normalize_language('fil-PH') == 'fil'
     assert localization.normalize_language('tl-PH') == 'fil'
     assert localization.normalize_language('pl-PL') == 'pl'
+    assert localization.normalize_language('vi') == 'vi'
+    assert localization.normalize_language('vi-VN') == 'vi'
+    assert localization.normalize_language('vi_VN') == 'vi'
     assert localization.normalize_language('zh-CN') == 'zh'
     assert localization.normalize_language('zh_Hans') == 'zh'
     assert localization.normalize_language('zh-TW') == 'en'
@@ -148,6 +154,7 @@ def test_new_translation_lookup_formats_and_counts() -> None:
         'fil': FILIPINO,
         'zh': CHINESE,
         'pl': POLISH,
+        'vi': VIETNAMESE,
     }
     for code, catalog in catalogs.items():
         localization.set_language(code)
@@ -196,6 +203,7 @@ def test_translation_catalogs_match_english_keys_markup_and_placeholders() -> No
         FILIPINO,
         CHINESE,
         POLISH,
+        VIETNAMESE,
     ):
         assert list(catalog) == list(localization.ENGLISH)
         assert len(catalog) == len(localization.ENGLISH)
