@@ -2542,9 +2542,18 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
 
         for roblox_dir in find_roblox_resource_dirs(include_studio=not IS_MACOS):
             _add_posix(roblox_dir)
-        for cached_dir in load_saved_roblox_dirs():
-            _add_posix(cached_dir)
-        save_saved_roblox_dirs(found)
+        cached_dirs = load_saved_roblox_dirs()
+        if IS_LINUX:
+            installation = platform_linux.get_selected_linux_client_installation()
+            for cached_dir in cached_dirs:
+                if installation is not None and installation.owns_resource_path(cached_dir):
+                    _add_posix(cached_dir)
+            # Keep other clients' cached roots for later, but never patch their CA
+            save_saved_roblox_dirs(list(dict.fromkeys([*found, *cached_dirs])))
+        else:
+            for cached_dir in cached_dirs:
+                _add_posix(cached_dir)
+            save_saved_roblox_dirs(found)
         if IS_LINUX:
             from ..utils.platform_linux import find_linux_ca_bundle_dirs
 

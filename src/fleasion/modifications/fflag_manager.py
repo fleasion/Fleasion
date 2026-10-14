@@ -13,7 +13,12 @@ import stat
 import sys
 from pathlib import Path
 
-from fleasion.utils.linux_fflags import linux_flag_stash_paths, set_linux_flag_layer
+from fleasion.utils.linux_clients import LINUX_CLIENTS
+from fleasion.utils.linux_fflags import (
+    linux_flag_stash_paths,
+    managed_linux_flag_paths,
+    set_linux_flag_layer,
+)
 
 from ..utils import format_count, log_buffer
 from .stash_paths import resource_stash_dir
@@ -314,8 +319,12 @@ class FastFlagManager:
 
     def _restore_linux_flag_files(self) -> int:
         """Put each client flags file back as it was; return the failure count."""
+        legacy_paths = (path for client in LINUX_CLIENTS for path in client.paths().fflag_files())
+        paths = set(_linux_client_fflag_files()) | managed_linux_flag_paths(
+            self._stash_dir, 'presets', legacy_candidates=legacy_paths
+        )
         failed = 0
-        for path in _linux_client_fflag_files():
+        for path in paths:
             if not set_linux_flag_layer(path, self._stash_dir, 'presets', {}):
                 failed += 1
         return failed

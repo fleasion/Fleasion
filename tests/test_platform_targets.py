@@ -52,6 +52,7 @@ def test_read_linux_sober_original_asset_from_apk(tmp_path, monkeypatch):
         archive.writestr("assets/android/textures/sky/sky512_bk.tex", b"sky")
 
     monkeypatch.setattr(platform_targets.sys, "platform", "linux")
+    monkeypatch.setattr(platform_linux, "selected_linux_client_key", lambda: 'sober')
     monkeypatch.setattr(platform_linux, "SOBER_DATA_DIR", sober_data)
     monkeypatch.setattr(platform_linux, "SOBER_LEGACY_EXE_DIR", sober_data / "exe")
 

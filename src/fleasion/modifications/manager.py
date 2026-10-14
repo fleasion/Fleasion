@@ -180,7 +180,7 @@ def _find_roblox_dirs() -> list[Path]:
                 if installation is not None and installation.owns_resource_path(cached_dir):
                     _add(cached_dir)
             # Preserve other clients' history without applying to their resource roots
-            save_saved_roblox_dirs([*found, *cached_dirs])
+            save_saved_roblox_dirs(list(dict.fromkeys([*found, *cached_dirs])))
         else:
             for cached_dir in cached_dirs:
                 _add(cached_dir)

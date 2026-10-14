@@ -77,13 +77,55 @@ def _read_layers(path: Path) -> FlagLayers:
         return {}
     result: FlagLayers = {}
     for name, value in _read_object(path).items():
-        if name == '_target' and isinstance(value, str):
+        if name in {'_target', '_original'}:
             continue
         if name not in {'presets', 'custom'} or not isinstance(value, dict):
             msg = f'{path} contains an invalid FastFlag layer'
             raise ValueError(msg)
         result[cast('FlagLayer', name)] = cast('dict[str, object]', value)
     return result
+
+
+def _json_equal(left: object, right: object) -> bool:
+    """Compare JSON values without collapsing booleans into numeric values."""
+    return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+
+
+def _managed_values(layers: FlagLayers) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for name in ('presets', 'custom'):
+        values.update(layers.get(name, {}))
+    return values
+
+
+def _original_values(
+    manifest: Path, baseline: dict[str, object], owned: set[str]
+) -> dict[str, dict[str, object]]:
+    """Read per-flag originals, including manifests from older installations."""
+    payload = _read_object(manifest) if manifest.exists() else {}
+    raw: object = payload.get('_original', {})
+    if not isinstance(raw, dict):
+        msg = f'{manifest} has invalid saved FastFlag originals'
+        raise ValueError(msg)
+    entries = cast('dict[str, object]', raw)
+    originals: dict[str, dict[str, object]] = {}
+    for key in owned:
+        entry = entries.get(key)
+        if entry is None:
+            originals[key] = (
+                {'exists': True, 'value': baseline[key]} if key in baseline else {'exists': False}
+            )
+            continue
+        if not isinstance(entry, dict):
+            msg = f'{manifest} has an invalid original value for {key}'
+            raise ValueError(msg)
+        record = cast('dict[str, object]', entry)
+        present = record.get('exists')
+        if not isinstance(present, bool) or (present and 'value' not in record):
+            msg = f'{manifest} has an invalid original value for {key}'
+            raise ValueError(msg)
+        originals[key] = record
+    return originals
 
 
 def _write_json[Key: str](path: Path, payload: Mapping[Key, object], mode: int) -> None:
@@ -115,27 +157,72 @@ def _synchronize_layer(
     path: Path, stash: Path, absent: Path, layer: FlagLayer, flags: Mapping[str, object]
 ) -> None:
     manifest = stash.with_suffix('.layers.json')
-    layers = _read_layers(manifest)
-    if not flags:
+    previous_layers = _read_layers(manifest)
+    old_values = _managed_values(previous_layers)
+    if previous_layers and not (stash.exists() or absent.exists()):
+        msg = f'Missing original FastFlag state for {path}; refusing to overwrite it'
+        raise ValueError(msg)
+
+    baseline = _read_object(stash) if stash.exists() else {}
+    current = _read_object(path) if path.exists() else {}
+    if old_values and not path.exists():
+        msg = f'Native FastFlag file {path} was removed while managed; refusing to recreate it'
+        raise ValueError(msg)
+    for key, expected in old_values.items():
+        if key not in current or not _json_equal(current[key], expected):
+            msg = f'Native FastFlag {key} in {path} was edited externally; refusing to overwrite it'
+            raise ValueError(msg)
+
+    originals = _original_values(manifest, baseline, set(old_values))
+    layers = dict(previous_layers)
+    if flags:
+        layers[layer] = dict(flags)
+    else:
         layers.pop(layer, None)
-        if not layers:
+    new_values = _managed_values(layers)
+    for key in new_values.keys() - old_values.keys():
+        originals[key] = (
+            {'exists': True, 'value': current[key]} if key in current else {'exists': False}
+        )
+
+    merged = dict(current)
+    for key in old_values.keys() | new_values.keys():
+        if key in new_values:
+            merged[key] = new_values[key]
+        else:
+            original = originals[key]
+            if original['exists']:
+                merged[key] = original['value']
+            else:
+                merged.pop(key, None)
+            originals.pop(key)
+
+    if not layers:
+        if (stash.exists() and _json_equal(merged, baseline)) or (absent.exists() and not merged):
             _restore(path, stash, absent, manifest)
             return
-    else:
-        layers[layer] = dict(flags)
+        if not _json_equal(merged, current):
+            mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+            _write_json(path, merged, mode)
+        stash.unlink(missing_ok=True)
+        absent.unlink(missing_ok=True)
+        manifest.unlink(missing_ok=True)
+        return
+
     if not stash.exists() and not absent.exists():
         stash.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            # Validate before preserving or changing the user's file
-            _read_object(path)
             shutil.copy2(path, stash)
         else:
             absent.touch()
-    merged = _read_object(stash) if stash.exists() else {}
-    for name in ('presets', 'custom'):
-        merged.update(layers.get(name, {}))
-    mode = stat.S_IMODE(stash.stat().st_mode) if stash.exists() else 0o600
-    _write_json(manifest, {'_target': str(path), **layers}, 0o600)
+    mode = (
+        stat.S_IMODE(path.stat().st_mode)
+        if path.exists()
+        else stat.S_IMODE(stash.stat().st_mode)
+        if stash.exists()
+        else 0o600
+    )
+    _write_json(manifest, {'_target': str(path), '_original': originals, **layers}, 0o600)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_json(path, merged, mode)
 

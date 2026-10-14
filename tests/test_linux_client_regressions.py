@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING, cast
 import certifi
 import pytest
 
+from fleasion.gui import modifications_tab as mod_tab_module
 from fleasion.gui.settings_tab import SettingsTab
 from fleasion.modifications import manager as modification_module
+from fleasion.modifications.fflag_manager import FastFlagManager
 from fleasion.proxy import master
 from fleasion.proxy.addons import custom_fflags
 from fleasion.utils import mocktail_config, platform_linux
@@ -26,7 +28,12 @@ from fleasion.utils.linux_clients import (
     SOBER_CLIENT,
     LinuxClientInstallation,
 )
-from fleasion.utils.linux_fflags import set_linux_flag_layer
+from fleasion.utils.linux_fflags import (
+    FlagLayer,
+    linux_flag_stash_paths,
+    managed_linux_flag_paths,
+    set_linux_flag_layer,
+)
 
 if TYPE_CHECKING:
     from fleasion.utils.linux_clients import LinuxClientDescriptor
@@ -677,3 +684,189 @@ def test_cordial_launcher_without_engine_is_not_running_roblox(
     assert not platform_linux.is_roblox_running()
     processes['cordial-run'] = [302]
     assert platform_linux.is_roblox_running()
+
+
+@pytest.mark.parametrize('layer', ['presets', 'custom'])
+@pytest.mark.parametrize('original_exists', [False, True])
+def test_native_flag_restoration_preserves_unrelated_external_edits(
+    tmp_path: Path, layer: FlagLayer, *, original_exists: bool
+) -> None:
+    path = tmp_path / 'flags.json'
+    stash = tmp_path / 'stash'
+    if original_exists:
+        path.write_text('{"FStringExisting":"keep","FFlagManaged":9}\n', encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, layer, {'FFlagManaged': 12})
+    edited = json.loads(path.read_text())
+    edited['FStringAdded'] = 'external'
+    edited['FStringExisting'] = 'edited' if original_exists else 'new'
+    path.write_text(json.dumps(edited), encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, layer, {})
+    result = json.loads(path.read_text())
+    assert result['FStringAdded'] == 'external'
+    assert result['FStringExisting'] == ('edited' if original_exists else 'new')
+    if original_exists:
+        assert result['FFlagManaged'] == 9
+    else:
+        assert 'FFlagManaged' not in result
+    assert not managed_linux_flag_paths(stash, layer)
+
+
+def test_native_flag_reapply_preserves_other_user_changes(tmp_path: Path) -> None:
+    path = tmp_path / 'flags.json'
+    stash = tmp_path / 'stash'
+    path.write_text('{"FStringOld":"preserve"}\n', encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, 'presets', {'FFlagA': 1})
+    edited = json.loads(path.read_text())
+    edited.pop('FStringOld')
+    edited['FFlagExternal'] = True
+    path.write_text(json.dumps(edited), encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, 'presets', {'FFlagB': 2})
+    assert json.loads(path.read_text()) == {'FFlagExternal': True, 'FFlagB': 2}
+    assert set_linux_flag_layer(path, stash, 'presets', {})
+    assert json.loads(path.read_text()) == {'FFlagExternal': True}
+
+
+def test_native_flag_conflicting_managed_edit_is_not_overwritten(tmp_path: Path) -> None:
+    path = tmp_path / 'flags.json'
+    stash = tmp_path / 'stash'
+    path.write_text('{"FFlagShared":7}\n', encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, 'presets', {'FFlagShared': 10})
+    edited = {'FFlagShared': 55, 'FStringAdded': 'leave alone'}
+    path.write_text(json.dumps(edited), encoding='utf-8')
+    assert not set_linux_flag_layer(path, stash, 'presets', {})
+    assert json.loads(path.read_text()) == edited
+    assert managed_linux_flag_paths(stash, 'presets') == {path}
+    assert not set_linux_flag_layer(path, stash, 'presets', {'FFlagShared': 33})
+    assert json.loads(path.read_text()) == edited
+
+    # Restoring the last Fleasion-managed value permits safe cleanup
+    edited['FFlagShared'] = 10
+    path.write_text(json.dumps(edited), encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, 'presets', {})
+    assert json.loads(path.read_text()) == {'FFlagShared': 7, 'FStringAdded': 'leave alone'}
+
+
+def test_native_flags_restore_external_value_when_later_managed(tmp_path: Path) -> None:
+    path = tmp_path / 'flags.json'
+    stash = tmp_path / 'stash'
+    path.write_text('{"FStringInitial":"base"}', encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, 'presets', {'FFlagA': 1})
+    updated = json.loads(path.read_text())
+    updated['FFlagB'] = 23
+    path.write_text(json.dumps(updated), encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, 'custom', {'FFlagB': 50})
+    assert set_linux_flag_layer(path, stash, 'custom', {})
+    assert json.loads(path.read_text())['FFlagB'] == 23
+    assert set_linux_flag_layer(path, stash, 'presets', {})
+    assert json.loads(path.read_text()) == {'FStringInitial': 'base', 'FFlagB': 23}
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_preset_cleanup_after_restart_visits_previous_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, legacy: bool
+) -> None:
+    monkeypatch.setenv('HOME', str(tmp_path))
+    mocktail = MOCKTAIL_CLIENT.paths(home=tmp_path, environ={})
+    cordial = CORDIAL_CLIENT.paths(home=tmp_path, environ={})
+    old = mocktail.config_root / 'fflags.json'
+    new = cordial.flatpak_root / 'data' / 'cordial' / 'profiles' / 'default' / 'flags.json'
+    old.parent.mkdir(parents=True)
+    new.parent.mkdir(parents=True)
+    old.write_text('{"FStringOriginal":"mocktail"}\n', encoding='utf-8')
+    new.write_text('{"FStringOriginal":"cordial"}\n', encoding='utf-8')
+    stash = tmp_path / 'stash'
+    manager = FastFlagManager([], stash)
+    monkeypatch.setattr(platform_linux, 'find_linux_fflag_files', lambda: [old])
+    assert manager._write_linux_flag_file(old, {'FFlagDebugSkyGray': 'True'})  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+    if legacy:
+        manifest = linux_flag_stash_paths(stash, old)[0].with_suffix('.layers.json')
+        payload = json.loads(manifest.read_text())
+        payload.pop('_target')
+        payload.pop('_original')
+        manifest.write_text(json.dumps(payload), encoding='utf-8')
+
+    monkeypatch.setattr(platform_linux, 'find_linux_fflag_files', lambda: [new])
+    assert manager._restore_linux_flag_files() == 0  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+    assert json.loads(old.read_text()) == {'FStringOriginal': 'mocktail'}
+    assert json.loads(new.read_text()) == {'FStringOriginal': 'cordial'}
+    assert not managed_linux_flag_paths(stash, 'presets')
+
+
+def test_proxy_certificate_discovery_does_not_select_cached_other_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cordial = _installation(CORDIAL_CLIENT, tmp_path)
+    sober = _installation(SOBER_CLIENT, tmp_path)
+    selected = cordial.paths.resource_roots[0]
+    foreign = sober.paths.resource_roots[0]
+    selected.mkdir(parents=True)
+    foreign.mkdir(parents=True)
+    saved: list[list[Path]] = []
+    monkeypatch.setattr(master, 'IS_LINUX', True)
+    monkeypatch.setattr(master, 'IS_MACOS', False)
+    monkeypatch.setattr(platform_linux, 'get_selected_linux_client_installation', lambda: cordial)
+
+    def selected_resource_dirs(*, include_studio: bool = True) -> list[Path]:
+        del include_studio
+        return [selected]
+
+    monkeypatch.setattr(platform_linux, 'find_roblox_resource_dirs', selected_resource_dirs)
+    monkeypatch.setattr(platform_linux, 'find_linux_ca_bundle_dirs', list)
+    monkeypatch.setattr(master, 'load_saved_roblox_dirs', lambda: [foreign])
+    monkeypatch.setattr(master, 'save_saved_roblox_dirs', saved.append)
+    assert master._find_roblox_dirs() == [selected]  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType]
+    assert saved == [[selected, foreign]]
+
+
+def test_mocktail_modification_warning_follows_selected_client(
+    modification_manager: modification_module.ModificationManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PyQt6.QtWidgets import QApplication
+
+    application = QApplication.instance() or QApplication([])
+    selected = ['cordial']
+    monkeypatch.setattr(mod_tab_module, '_selected_linux_client_key', lambda: selected[0])
+    tab = mod_tab_module.ModificationsTab(modification_manager)
+    try:
+        tab.show()
+        application.processEvents()
+        assert not tab._mocktail_note.isVisible()  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+        assert not tab._sober_mesh_warning.isVisible()  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+        tab.hide()
+        selected[0] = 'mocktail'
+        tab.show()
+        application.processEvents()
+        assert tab._mocktail_note.isVisible()  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+        assert not tab._sober_mesh_warning.isVisible()  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+        tab.hide()
+        selected[0] = 'sober'
+        tab.show()
+        application.processEvents()
+        assert not tab._mocktail_note.isVisible()  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+        assert tab._sober_mesh_warning.isVisible()  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+    finally:
+        tab.close()
+
+
+def test_native_flag_cleanup_preserves_external_json_type_changes(tmp_path: Path) -> None:
+    path = tmp_path / 'flags.json'
+    stash = tmp_path / 'stash'
+    path.write_text('{"FIntExisting":1}\n', encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, 'presets', {'FFlagOwned': True})
+    values = json.loads(path.read_text())
+    values['FIntExisting'] = True
+    path.write_text(json.dumps(values), encoding='utf-8')
+    assert set_linux_flag_layer(path, stash, 'presets', {})
+    assert json.loads(path.read_text()) == {'FIntExisting': True}
+    assert json.loads(path.read_text())['FIntExisting'] is True
+
+
+def test_native_flag_conflict_detects_json_type_change(tmp_path: Path) -> None:
+    path = tmp_path / 'flags.json'
+    stash = tmp_path / 'stash'
+    assert set_linux_flag_layer(path, stash, 'presets', {'FFlagOwned': 1})
+    path.write_text('{"FFlagOwned":true}', encoding='utf-8')
+    assert not set_linux_flag_layer(path, stash, 'presets', {})
+    assert json.loads(path.read_text())['FFlagOwned'] is True
+    assert managed_linux_flag_paths(stash, 'presets') == {path}

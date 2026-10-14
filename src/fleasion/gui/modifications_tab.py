@@ -4277,6 +4277,7 @@ class ModificationsTab(QWidget):
         self._custom_rows: list[ModRowWidget] = []
 
         self._setup_ui()
+        self.refresh_client_guidance()
         self._update_status_bar()
 
         # Connect for live status bar updates
@@ -4307,14 +4308,13 @@ class ModificationsTab(QWidget):
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
 
-        if _selected_linux_client_key() == 'mocktail':
-            mocktail_note = QLabel(tr('ui.gui.modifications_tab.mocktail_file_mods_unavailable'))
-            mocktail_note.setWordWrap(True)
-            mocktail_note.setStyleSheet(
-                'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
-                'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
-            )
-            self._container_layout.addWidget(mocktail_note)
+        self._mocktail_note = QLabel(tr('ui.gui.modifications_tab.mocktail_file_mods_unavailable'))
+        self._mocktail_note.setWordWrap(True)
+        self._mocktail_note.setStyleSheet(
+            'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
+            'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
+        )
+        self._container_layout.addWidget(self._mocktail_note)
 
         # Fast Flags
         self._fflag_toggle = QCheckBox(
@@ -4390,14 +4390,13 @@ class ModificationsTab(QWidget):
         self._mesh_section = CollapsibleSection(
             tr('modifications.section.r6_avatar_meshes'), expanded=True
         )
-        if _selected_linux_client_key() == 'sober':
-            sober_mesh_warning = QLabel(
-                tr('ui.gui.modifications_tab.b_linux_sober_limitation_b_r6_default')
-            )
-            sober_mesh_warning.setWordWrap(True)
-            sober_mesh_warning.setContentsMargins(8, 4, 8, 8)
-            sober_mesh_warning.setStyleSheet('color: #ffcc66;')
-            self._mesh_section.add_widget(sober_mesh_warning)
+        self._sober_mesh_warning = QLabel(
+            tr('ui.gui.modifications_tab.b_linux_sober_limitation_b_r6_default')
+        )
+        self._sober_mesh_warning.setWordWrap(True)
+        self._sober_mesh_warning.setContentsMargins(8, 4, 8, 8)
+        self._sober_mesh_warning.setStyleSheet('color: #ffcc66;')
+        self._mesh_section.add_widget(self._sober_mesh_warning)
         for name, path in AVATAR_MESHES:
             row = ModRowWidget(
                 self._manager,
@@ -4692,6 +4691,17 @@ class ModificationsTab(QWidget):
         row.setParent(None)
         row.deleteLater()
         self._update_status_bar()
+
+    def refresh_client_guidance(self) -> None:
+        """Update client-specific modification warnings after a client switch."""
+        selected = _selected_linux_client_key()
+        self._mocktail_note.setVisible(selected == 'mocktail')
+        self._sober_mesh_warning.setVisible(selected == 'sober')
+
+    def event(self, a0: QEvent | None) -> bool:
+        if a0 is not None and a0.type() == QEvent.Type.Show and hasattr(self, '_mocktail_note'):
+            self.refresh_client_guidance()
+        return super().event(a0)
 
     # Fast Flags toggle
 

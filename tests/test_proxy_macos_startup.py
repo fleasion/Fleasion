@@ -109,28 +109,37 @@ def test_linux_proxy_stop_clears_exact_owned_flatpak_env_override(monkeypatch):
     assert not proxy._env_proxy_ready.is_set()
 
 
-def test_linux_resource_discovery_keeps_saved_resource_dirs(tmp_path, monkeypatch):
+def test_linux_resource_discovery_keeps_only_selected_client_dirs(tmp_path, monkeypatch):
     from fleasion.utils import platform_linux
+    from fleasion.utils.linux_clients import (
+        CORDIAL_CLIENT,
+        SOBER_CLIENT,
+        LinuxClientInstallation,
+    )
 
-    discovered = tmp_path / 'discovered'
-    saved = tmp_path / 'saved'
+    selected = LinuxClientInstallation(
+        CORDIAL_CLIENT, CORDIAL_CLIENT.paths(home=tmp_path, environ={}), None
+    )
+    discovered = selected.paths.resource_roots[0]
+    saved = selected.paths.resource_roots[0] / 'content'
+    foreign = SOBER_CLIENT.paths(home=tmp_path, environ={}).resource_roots[0]
     persisted = []
     monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
     monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
     monkeypatch.setattr(
-        platform_linux,
-        'find_roblox_resource_dirs',
-        lambda **_kwargs: [discovered],
+        platform_linux, 'get_selected_linux_client_installation', lambda: selected
     )
-    monkeypatch.setattr(proxy_master, 'load_saved_roblox_dirs', lambda: [saved])
     monkeypatch.setattr(
-        proxy_master,
-        'save_saved_roblox_dirs',
-        lambda paths: persisted.append(list(paths)),
+        platform_linux, 'find_roblox_resource_dirs', lambda **_kwargs: [discovered]
     )
+    monkeypatch.setattr(proxy_master, 'load_saved_roblox_dirs', lambda: [saved, foreign])
+    monkeypatch.setattr(
+        proxy_master, 'save_saved_roblox_dirs', lambda paths: persisted.append(list(paths))
+    )
+    monkeypatch.setattr(platform_linux, 'find_linux_ca_bundle_dirs', list)
 
     assert proxy_master._find_roblox_dirs() == [discovered, saved]
-    assert persisted == [[discovered, saved]]
+    assert persisted == [[discovered, saved, foreign]]
 
 
 def test_privileged_relay_tls_self_test_retries_representative_host(monkeypatch):
