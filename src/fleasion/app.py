@@ -3101,6 +3101,50 @@ def _show_windows_upstream_firewall_dialog(details: dict) -> None:
         return
 
 
+_roblox_rejected_certificate_shown = False
+
+
+def _show_roblox_rejected_certificate_dialog(_details: dict) -> None:
+    """Explain that Roblox ignores the patched cacert.pem, once per run.
+
+    Fleasion does not change Roblox's FastFlags to work around this; it only
+    points the user at the official news and workaround so they can decide.
+    """
+    global _roblox_rejected_certificate_shown
+    if _roblox_rejected_certificate_shown:
+        return
+    _roblox_rejected_certificate_shown = True
+
+    discord_url = APP_DISCORD
+    if not discord_url.startswith(('http://', 'https://')):
+        discord_url = f'https://{discord_url}'
+
+    msg = QMessageBox(_visible_parent_widget())
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setWindowTitle(tr('app.roblox_rejected_certificate.title'))
+    msg.setText(tr('app.roblox_rejected_certificate.summary'))
+    msg.setTextFormat(Qt.TextFormat.RichText)
+    msg.setInformativeText(
+        tr(
+            'app.roblox_rejected_certificate.details',
+            value0=html.escape(discord_url),
+            value1=html.escape(APP_DISCORD),
+        )
+    )
+    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+
+        msg.setWindowIcon(QIcon(str(icon_path)))
+    for label in msg.findChildren(QLabel):
+        label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction
+            | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        label.setOpenExternalLinks(True)
+    msg.exec()
+
+
 def _show_tls_self_test_failed_dialog(details: dict) -> None:
     """Show a user-facing error when the proxy cannot pass startup TLS checks."""
     hosts = details.get('hosts') or []
@@ -3190,6 +3234,8 @@ class _ProxyErrorInvoker(QObject):
             _show_windows_upstream_firewall_dialog(details)
         elif code == 'tls_self_test_failed':
             _show_tls_self_test_failed_dialog(details)
+        elif code == 'roblox_rejected_certificate':
+            _show_roblox_rejected_certificate_dialog(details)
 
 
 def _manual_upstream_credentials_missing(config_manager) -> bool:
@@ -4447,7 +4493,7 @@ def main():
                 tr('app.linux_proxy_helper.start_denied')
             )
             return
-        if code == 'tls_self_test_failed':
+        if code in {'tls_self_test_failed', 'roblox_rejected_certificate'}:
             proxy_error_invoker.show_proxy_error.emit(code, dict(details))
             return
         if code not in (
