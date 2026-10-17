@@ -970,6 +970,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: False)
     proxy.custom_fflag_modifier = SimpleNamespace(
         is_enabled=lambda: True,
+        custom_flags_enabled=lambda: True,
         prime_windows_flag_cache=lambda: False,
     )
     proxy._module_interceptors = []
@@ -1154,6 +1155,7 @@ def test_linux_helper_custom_fflags_adds_only_clientsettings_endpoints(monkeypat
     proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: False)
     proxy.custom_fflag_modifier = SimpleNamespace(
         is_enabled=lambda: True,
+        custom_flags_enabled=lambda: True,
         prime_windows_flag_cache=lambda: False,
     )
     proxy._linux_sober_custom_fflag_routes_ready = lambda: True
@@ -1183,7 +1185,7 @@ def test_intercept_configuration_log_distinguishes_tls_coverage_from_active_rout
         SimpleNamespace(log=lambda category, message: logs.append((category, message))),
     )
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    proxy.custom_fflag_modifier = SimpleNamespace(is_enabled=lambda: False)
+    proxy.custom_fflag_modifier = SimpleNamespace(custom_flags_enabled=lambda: False)
     proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: True)
 
     proxy._log_intercept_configuration(
