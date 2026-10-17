@@ -23,6 +23,33 @@ def _qapp():
     return QApplication.instance() or QApplication([])
 
 
+@pytest.mark.parametrize('client', [None, 'mocktail', 'cordial'])
+def test_custom_flag_guidance_matches_windows(client, monkeypatch):
+    app = _qapp()
+    monkeypatch.setattr(modifications_tab, '_selected_linux_client_key', lambda: client)
+    editor = CustomFFlagEditor()
+    assert editor._delivery_guidance.text() == localization.tr(
+        'ui.gui.modifications_tab.custom_fastflag_delivery'
+    )
+    editor.close()
+    assert app is not None
+
+
+def test_custom_flag_guidance_updates_after_client_switch(monkeypatch):
+    app = _qapp()
+    selected = ['sober']
+    monkeypatch.setattr(modifications_tab, '_selected_linux_client_key', lambda: selected[0])
+    editor = CustomFFlagEditor()
+    assert 'Sober' in editor._delivery_guidance.text()
+    selected[0] = 'cordial'
+    editor.show()
+    app.processEvents()
+    assert editor._delivery_guidance.text() == localization.tr(
+        'ui.gui.modifications_tab.custom_fastflag_delivery'
+    )
+    editor.close()
+
+
 def test_fflag_browser_reports_retrieved_and_filtered_totals(monkeypatch):
     app = _qapp()
     monkeypatch.setattr(FFlagBrowserDialog, '_refresh', lambda _self: None)

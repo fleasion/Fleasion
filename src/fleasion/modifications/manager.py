@@ -23,6 +23,8 @@ from typing import Iterable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from fleasion.utils import platform_linux
+
 from ..cache.tools.ktx_to_png import strip_prefixed_ktx
 from ..utils import (
     CONFIG_DIR,
@@ -171,9 +173,18 @@ def _find_roblox_dirs() -> list[Path]:
 
         for roblox_dir in find_roblox_resource_dirs(include_studio=False):
             _add(roblox_dir)
-        for cached_dir in load_saved_roblox_dirs():
-            _add(cached_dir)
-        save_saved_roblox_dirs(found)
+        cached_dirs = load_saved_roblox_dirs()
+        if sys.platform.startswith('linux'):
+            installation = platform_linux.get_selected_linux_client_installation()
+            for cached_dir in cached_dirs:
+                if installation is not None and installation.owns_resource_path(cached_dir):
+                    _add(cached_dir)
+            # Preserve other clients' history without applying to their resource roots
+            save_saved_roblox_dirs(list(dict.fromkeys([*found, *cached_dirs])))
+        else:
+            for cached_dir in cached_dirs:
+                _add(cached_dir)
+            save_saved_roblox_dirs(found)
         if sys.platform == 'darwin':
             from ..utils.platform_macos import find_bootstrapper_restore_resource_dirs
 
@@ -413,6 +424,12 @@ class PendingModificationsQueue:
 # ModificationManager
 
 
+def _native_fflag_targets() -> set[Path]:
+    if not sys.platform.startswith('linux'):
+        return set()
+    return {path.resolve() for path in platform_linux.find_linux_fflag_files()}
+
+
 class ModificationManager(QObject):
     """Core engine for modification entries: eager-write, stash, restore."""
 
@@ -425,6 +442,7 @@ class ModificationManager(QObject):
         super().__init__()
         self._cache_scraper = cache_scraper
         self._roblox_dirs: list[Path] = _find_roblox_dirs()
+        self._linux_fflag_targets = _native_fflag_targets()
         self._stash_dir = MOD_ORIGINALS_DIR
 
         log_buffer.log(
@@ -1345,8 +1363,9 @@ class ModificationManager(QObject):
 
     # Bulk operations
 
-    def restore_all(self) -> None:
-        """Restore every applied modification and fast-flags."""
+    def restore_all(self) -> bool:
+        """Restore applied modifications; return whether native flags were restored."""
+        preset_flags_restored = True
         self.clear_managed_file_read_only()
 
         try:
@@ -1362,8 +1381,10 @@ class ModificationManager(QObject):
 
             if self._data.get('fast_flags_enabled'):
                 try:
-                    self.fflag_manager.restore()
+                    if not self.fflag_manager.restore():
+                        preset_flags_restored = False
                 except Exception as exc:
+                    preset_flags_restored = False
                     log_buffer.log('FastFlags', f'Restore failed: {exc}')
 
             # Restore global settings
@@ -1375,7 +1396,11 @@ class ModificationManager(QObject):
             self.clear_managed_file_read_only()
 
         self.restore_finished.emit()
-        log_buffer.log('Modifications', 'All modifications restored')
+        if not preset_flags_restored:
+            log_buffer.log('Modifications', 'Native preset FastFlag restoration is incomplete')
+        else:
+            log_buffer.log('Modifications', 'All modifications restored')
+        return preset_flags_restored
 
     def reapply_all(self) -> None:
         """Re-apply all entries (crash recovery on startup)."""
@@ -1473,7 +1498,7 @@ class ModificationManager(QObject):
         """Handle an explicit UI request to return Roblox to its default cap."""
         self.global_settings_manager.reset_framerate_cap()
 
-    def write_fast_flags(self, settings: dict) -> None:
+    def write_fast_flags(self, settings: dict[str, object]) -> None:
         """Update and write fast-flags to disk."""
         self._data['fast_flags'] = {k: v for k, v in settings.items() if k != 'framerate_cap'}
         self._data['fast_flags_enabled'] = True
@@ -1501,15 +1526,17 @@ class ModificationManager(QObject):
     def refresh_roblox_dirs(self, *, reapply_if_changed: bool = False) -> bool:
         """Re-discover Roblox directories (e.g. after an update)."""
         previous = {str(path.resolve()).lower() for path in self._roblox_dirs}
+        previous_native = getattr(self, '_linux_fflag_targets', set[Path]())
         self._roblox_dirs = _find_roblox_dirs()
         self.fflag_manager._roblox_dirs = self._roblox_dirs
         self.global_settings_manager.refresh_roblox_dirs()
         current = {str(path.resolve()).lower() for path in self._roblox_dirs}
+        self._linux_fflag_targets = _native_fflag_targets()
         log_buffer.log(
             'Modifications',
             f'Refreshed: {format_count(self._roblox_dirs, "Roblox dir")}',
         )
-        changed = current != previous
+        changed = current != previous or self._linux_fflag_targets != previous_native
         if changed and reapply_if_changed:
             self.reapply_all()
         return changed

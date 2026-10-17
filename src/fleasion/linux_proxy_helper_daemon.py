@@ -942,7 +942,7 @@ def _repair_config_ownership(config_dir: Path, uid: int, gid: int) -> None:
 
 
 def _repair_sober_cert_ownership(uid: int, gid: int) -> None:
-    """Return Sober cert bundle paths to the interactive user if needed."""
+    """Return Sober and Cordial cert bundle paths to the interactive user if needed."""
     if uid <= 0 or gid < 0:
         return
     try:
@@ -952,8 +952,20 @@ def _repair_sober_cert_ownership(uid: int, gid: int) -> None:
         return
 
     sober_data = user_home / '.var' / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober'
+    # Kept in step with the Cordial descriptor in utils/linux_clients.py; this
+    # helper is a standalone binary and does not import the client registry
+    cordial = user_home / '.var' / 'app' / 'io.github.luohoa97.Cordial'
+    resource_dirs = [
+        sober_data / 'asset_overlay',
+        sober_data / 'exe',
+        cordial / 'config' / 'cordial' / 'overlay',
+        cordial / 'cache' / 'cordial' / 'assets',
+        cordial / 'cache' / 'cordial' / 'assets-arm64-v8a',
+    ]
+    with contextlib.suppress(OSError):
+        resource_dirs.extend(sorted((cordial / 'data' / 'cordial' / 'builds').glob('*/assets')))
     candidates = []
-    for resource_dir in (sober_data / 'asset_overlay', sober_data / 'exe'):
+    for resource_dir in resource_dirs:
         candidates.extend((resource_dir, resource_dir / 'ssl', resource_dir / 'ssl' / 'cacert.pem'))
 
     repaired = 0
@@ -973,7 +985,7 @@ def _repair_sober_cert_ownership(uid: int, gid: int) -> None:
         except OSError:
             pass
     if repaired:
-        _log(f'Repaired ownership for {repaired} Sober cert paths')
+        _log(f'Repaired ownership for {repaired} Linux client cert paths')
 
 
 async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

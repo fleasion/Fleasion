@@ -1331,6 +1331,7 @@ GERMAN: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Mesh-LOD-Überschreibung',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Fehler bei der Mesh-Vorschau: {value0}',
     'ui.gui.modifications_tab.missing': 'Fehlt',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Modifikation',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Modifikatortaste erfasst. Lassen Sie sie los, um nur diese Taste zu binden, oder drücken Sie für eine Kombination eine weitere Taste.',
     'ui.gui.modifications_tab.msaa_level': 'MSAA-Stufe',
@@ -1872,4 +1873,7 @@ GERMAN: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': 'Ein FastFlag namens „{value0}“ ist bereits vorhanden.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Ungültiger FastFlag-Name',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': 'Ein FastFlag-Ordner namens „{value0}“ ist bereits vorhanden. Verwenden Sie stattdessen „Auswahl in Ordner verschieben“.',
+    'app.linux_client_proxy_setup_failed_title': 'Linux Roblox Client Setup Failed',
+    'app.linux_client_proxy_setup_failed_body': 'Fleasion could not prepare {client} for {mode} proxy mode. The proxy was stopped before becoming ready. Check the Launcher log for the configuration, certificate, or Flatpak error, then retry.',
+    'ui.gui.modifications_tab.custom_fastflag_delivery': 'Dynamic FastFlags can update during play after Roblox fetches the changed settings. Non-dynamic FastFlags take effect on the next Roblox launch. Keep the proxy enabled to deliver custom flags.',
 }

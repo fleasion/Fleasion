@@ -11,6 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -74,6 +75,9 @@ from ..utils.http import http_get
 from ..utils.threading import run_in_thread
 from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
+
+if TYPE_CHECKING:
+    from fleasion.proxy.master import ProxyMaster
 
 # Built-in entry definitions
 
@@ -391,6 +395,18 @@ _STATUS_STYLES = {
 
 # _RichTextButton — QPushButton-like label that renders HTML/rich text
 
+
+
+def _selected_linux_client_key() -> str | None:
+    """Key of the Linux client Fleasion targets, or ``None`` off Linux."""
+    if not sys.platform.startswith('linux'):
+        return None
+    try:
+        from ..utils.platform_linux import selected_linux_client_key
+
+        return selected_linux_client_key()
+    except Exception:
+        return None
 
 class _RichTextButton(QPushButton):
     """QPushButton that draws a label and a larger suffix character, each independently
@@ -2779,7 +2795,13 @@ class CustomFFlagEditor(QWidget):
 
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
 
-    def __init__(self, config_manager=None, proxy_master=None, parent=None, hotkey_controller=None):
+    def __init__(
+        self,
+        config_manager=None,
+        proxy_master: ProxyMaster | None = None,
+        parent=None,
+        hotkey_controller=None,
+    ) -> None:
         super().__init__(parent)
         self._config = config_manager
         self._proxy_master = proxy_master
@@ -2835,16 +2857,10 @@ class CustomFFlagEditor(QWidget):
         )
         layout.addWidget(warning)
 
-        if sys.platform.startswith('linux'):
-            sober_delay_warning = QLabel(
-                tr('ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security')
-            )
-            sober_delay_warning.setWordWrap(True)
-            sober_delay_warning.setStyleSheet(
-                'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
-                'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
-            )
-            layout.addWidget(sober_delay_warning)
+        self._delivery_guidance = QLabel()
+        self._delivery_guidance.setWordWrap(True)
+        layout.addWidget(self._delivery_guidance)
+        self.refresh_client_guidance()
 
         self._enable_toggle = QCheckBox(tr('ui.gui.modifications_tab.enable_custom_fastflags'))
         self._enable_toggle.setChecked(
@@ -2971,6 +2987,26 @@ class CustomFFlagEditor(QWidget):
             )
         else:
             self._update_status()
+
+    def refresh_client_guidance(self) -> None:
+        if _selected_linux_client_key() == 'sober':
+            self._delivery_guidance.setText(
+                tr('ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security')
+            )
+            self._delivery_guidance.setStyleSheet(
+                'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
+                'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
+            )
+        else:
+            self._delivery_guidance.setText(
+                tr('ui.gui.modifications_tab.custom_fastflag_delivery')
+            )
+            self._delivery_guidance.setStyleSheet('')
+
+    def event(self, a0: QEvent | None) -> bool:
+        if a0 is not None and a0.type() == QEvent.Type.Show:
+            self.refresh_client_guidance()
+        return super().event(a0)
 
     def _load_flags(self, sync_hotkeys: bool = True):
         flags = dict(getattr(self._config, 'custom_fflags', {}) or {}) if self._config else {}
@@ -3417,6 +3453,7 @@ class CustomFFlagEditor(QWidget):
             return
         self._config.custom_fflags = self._flags_from_table()
         self._prune_hotkey_settings(set(self._config.custom_fflags))
+        self._prime_startup_flags()
         self._update_status()
         self._filter_rows(self._search.text())
 
@@ -3447,6 +3484,14 @@ class CustomFFlagEditor(QWidget):
                 )
             )
             self._status.setStyleSheet('color: #999;')
+
+    def _prime_startup_flags(self) -> None:
+        prime = getattr(self._proxy_master, 'prime_custom_fflag_cache', None)
+        if callable(prime):
+            try:
+                prime()
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                log_buffer.log('CustomFFlags', f'Could not prepare startup flags: {exc}')
 
     def _refresh_proxy_hosts(self):
         if self._proxy_master is None:
@@ -3538,6 +3583,7 @@ class CustomFFlagEditor(QWidget):
         # Flag values are consumed directly from settings; only the master
         # enable toggle changes the interception route set.
         self._load_flags()
+        self._prime_startup_flags()
 
     def _import_mapping(self, payload):
         from ..proxy.addons.custom_fflags import normalize_custom_fflags
@@ -4231,6 +4277,7 @@ class ModificationsTab(QWidget):
         self._custom_rows: list[ModRowWidget] = []
 
         self._setup_ui()
+        self.refresh_client_guidance()
         self._update_status_bar()
 
         # Connect for live status bar updates
@@ -4260,6 +4307,14 @@ class ModificationsTab(QWidget):
         self._container_layout = QVBoxLayout()
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
+
+        self._mocktail_note = QLabel(tr('ui.gui.modifications_tab.mocktail_file_mods_unavailable'))
+        self._mocktail_note.setWordWrap(True)
+        self._mocktail_note.setStyleSheet(
+            'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
+            'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
+        )
+        self._container_layout.addWidget(self._mocktail_note)
 
         # Fast Flags
         self._fflag_toggle = QCheckBox(
@@ -4335,14 +4390,13 @@ class ModificationsTab(QWidget):
         self._mesh_section = CollapsibleSection(
             tr('modifications.section.r6_avatar_meshes'), expanded=True
         )
-        if sys.platform.startswith('linux'):
-            sober_mesh_warning = QLabel(
-                tr('ui.gui.modifications_tab.b_linux_sober_limitation_b_r6_default')
-            )
-            sober_mesh_warning.setWordWrap(True)
-            sober_mesh_warning.setContentsMargins(8, 4, 8, 8)
-            sober_mesh_warning.setStyleSheet('color: #ffcc66;')
-            self._mesh_section.add_widget(sober_mesh_warning)
+        self._sober_mesh_warning = QLabel(
+            tr('ui.gui.modifications_tab.b_linux_sober_limitation_b_r6_default')
+        )
+        self._sober_mesh_warning.setWordWrap(True)
+        self._sober_mesh_warning.setContentsMargins(8, 4, 8, 8)
+        self._sober_mesh_warning.setStyleSheet('color: #ffcc66;')
+        self._mesh_section.add_widget(self._sober_mesh_warning)
         for name, path in AVATAR_MESHES:
             row = ModRowWidget(
                 self._manager,
@@ -4637,6 +4691,17 @@ class ModificationsTab(QWidget):
         row.setParent(None)
         row.deleteLater()
         self._update_status_bar()
+
+    def refresh_client_guidance(self) -> None:
+        """Update client-specific modification warnings after a client switch."""
+        selected = _selected_linux_client_key()
+        self._mocktail_note.setVisible(selected == 'mocktail')
+        self._sober_mesh_warning.setVisible(selected == 'sober')
+
+    def event(self, a0: QEvent | None) -> bool:
+        if a0 is not None and a0.type() == QEvent.Type.Show and hasattr(self, '_mocktail_note'):
+            self.refresh_client_guidance()
+        return super().event(a0)
 
     # Fast Flags toggle
 

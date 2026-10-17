@@ -3162,6 +3162,16 @@ class _ProxyErrorInvoker(QObject):
                 )
             else:
                 _show_roblox_ca_patch_failed_dialog(details)
+        elif code == 'linux_client_proxy_setup_failed':
+            QMessageBox.warning(
+                _visible_parent_widget(),
+                tr('app.linux_client_proxy_setup_failed_title'),
+                tr(
+                    'app.linux_client_proxy_setup_failed_body',
+                    client=verbatim(str(details.get('client', 'Roblox'))),
+                    mode=verbatim(str(details.get('mode', 'env'))),
+                ),
+            )
         elif code == 'macos_relay_failed':
             action = _show_macos_relay_failed_dialog(details)
             if action == 'retry':
@@ -4451,6 +4461,7 @@ def main():
             proxy_error_invoker.show_proxy_error.emit(code, dict(details))
             return
         if code not in (
+            'linux_client_proxy_setup_failed',
             'port_bind_failed',
             'hosts_write_exhausted',
             'hosts_entries_would_exceed_limit',

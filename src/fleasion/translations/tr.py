@@ -1331,6 +1331,7 @@ TURKISH: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Mesh LOD Geçersiz Kılma',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Mesh önizleme hatası: {value0}',
     'ui.gui.modifications_tab.missing': 'Eksik',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Değişiklik',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Değiştirici yakalandı. Tek başına atamak için bırakın veya kombinasyon için başka bir tuşa basın.',
     'ui.gui.modifications_tab.msaa_level': 'MSAA Seviyesi',
@@ -1872,4 +1873,7 @@ TURKISH: dict[str, str] = {
     'ui.gui.modifications_tab.fastflag_name_already_exists': '“{value0}” adlı bir FastFlag zaten var.',
     'ui.gui.modifications_tab.invalid_fastflag_name': 'Geçersiz FastFlag Adı',
     'ui.gui.modifications_tab.fastflag_folder_already_exists': '“{value0}” adlı bir FastFlag klasörü zaten var. Bunun yerine “Seçilenleri klasöre taşı” seçeneğini kullanın.',
+    'app.linux_client_proxy_setup_failed_title': 'Linux Roblox Client Setup Failed',
+    'app.linux_client_proxy_setup_failed_body': 'Fleasion could not prepare {client} for {mode} proxy mode. The proxy was stopped before becoming ready. Check the Launcher log for the configuration, certificate, or Flatpak error, then retry.',
+    'ui.gui.modifications_tab.custom_fastflag_delivery': 'Dynamic FastFlags can update during play after Roblox fetches the changed settings. Non-dynamic FastFlags take effect on the next Roblox launch. Keep the proxy enabled to deliver custom flags.',
 }
