@@ -4904,7 +4904,9 @@ class ProxyMaster:
         log reports the routes that were actually tested and selected.
         """
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
-        custom_fflags_enabled = custom_modifier is not None and custom_modifier.is_enabled()
+        custom_fflags_enabled = (
+            custom_modifier is not None and custom_modifier.custom_flags_enabled()
+        )
         spoofer = getattr(self, 'username_spoofer', None)
         username_spoofer_enabled = spoofer is not None and spoofer.is_enabled()
         log_buffer.log(
@@ -4999,18 +5001,12 @@ class ProxyMaster:
             )
             previous_process: tuple[int, float] | None = None
             previous_ready: bool | None = None
-            previous_custom_fflags_enabled: bool | None = None
             while not stop_event.is_set():
                 process = linux_client_main_process(installation)
-                custom_fflags_enabled = bool(
-                    getattr(self.config_manager, 'custom_fflags_enabled', False)
-                )
                 ready = False
                 if process is not None:
                     _pid, started_at = process
-                    ready = (
-                        custom_fflags_enabled and self._sober_boottime() - started_at >= route_delay
-                    )
+                    ready = self._sober_boottime() - started_at >= route_delay
 
                 if process != previous_process:
                     if process is None and previous_process is not None:
@@ -5030,20 +5026,17 @@ class ProxyMaster:
                         )
                     previous_process = process
 
-                if (
-                    ready != previous_ready
-                    or custom_fflags_enabled != previous_custom_fflags_enabled
-                ):
+                if ready != previous_ready:
                     if ready:
                         log_buffer.log(
                             'CustomFFlags',
-                            'Linux ClientSettings interception armed; custom FastFlags will '
+                            'Linux ClientSettings interception armed; compatibility and custom '
+                            'FastFlags will '
                             f"arrive on {client_name}'s 120-second dynamic refresh",
                         )
                     self._set_linux_sober_clientsettings_passthrough(not ready)
                     self.refresh_username_spoofer_interception()
                     previous_ready = ready
-                    previous_custom_fflags_enabled = custom_fflags_enabled
                 stop_event.wait(_SOBER_CUSTOM_FFLAG_POLL_SECONDS)
 
         self._sober_fflag_timer_thread = threading.Thread(

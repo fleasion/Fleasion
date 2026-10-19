@@ -1341,6 +1341,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
         'custom_fflag_modifier',
         SimpleNamespace(
             is_enabled=_callback0(lambda: True),
+            custom_flags_enabled=_callback0(lambda: True),
             prime_windows_flag_cache=_callback0(lambda: False),
         ),
     )
@@ -1587,6 +1588,7 @@ def test_linux_helper_custom_fflags_adds_only_clientsettings_endpoints(
         'custom_fflag_modifier',
         SimpleNamespace(
             is_enabled=_callback0(lambda: True),
+            custom_flags_enabled=_callback0(lambda: True),
             prime_windows_flag_cache=_callback0(lambda: False),
         ),
     )
@@ -1625,7 +1627,11 @@ def test_intercept_configuration_log_distinguishes_tls_coverage_from_active_rout
         SimpleNamespace(log=_collect_log(logs)),
     )
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    setattr(proxy, 'custom_fflag_modifier', SimpleNamespace(is_enabled=_callback0(lambda: False)))
+    setattr(
+        proxy,
+        'custom_fflag_modifier',
+        SimpleNamespace(custom_flags_enabled=_callback0(lambda: False)),
+    )
     setattr(proxy, 'username_spoofer', SimpleNamespace(is_enabled=_callback0(lambda: True)))
 
     getattr(proxy, '_log_intercept_configuration')(
