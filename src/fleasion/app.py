@@ -3939,6 +3939,35 @@ def _request_other_fleasion_instances_exit(
     return _wait_for_other_fleasion_instances_to_exit(timeout_seconds)
 
 
+_MACOS_REOPEN_ARM_DELAY_MS = 2000
+
+
+def _has_visible_windows(app: QApplication) -> bool:
+    """Whether a real window is showing; menus and tooltips do not count."""
+    return any(
+        widget.isVisible() and widget.windowType() in {Qt.WindowType.Window, Qt.WindowType.Dialog}
+        for widget in app.topLevelWidgets()
+    )
+
+
+def _install_macos_reopen_handler(app: QApplication, tray: SystemTray) -> None:
+    """Show the dashboard when Fleasion is reopened with no windows open.
+
+    Clicking the Dock icon or opening Fleasion.app again while it runs only in
+    the menu bar sends the running instance a reopen event, which Qt reports
+    as a forced ApplicationActive state change. Without this, nothing appears.
+    """
+
+    def _on_state_changed(state: Qt.ApplicationState) -> None:
+        if state != Qt.ApplicationState.ApplicationActive or tray._exiting:
+            return
+        if _has_visible_windows(app):
+            return
+        tray._show_replacer_config()
+
+    app.applicationStateChanged.connect(_on_state_changed)
+
+
 def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray):
     try:
         command = bytes(socket.readAll()).decode('utf-8', errors='replace').strip()
@@ -4953,6 +4982,13 @@ def main():
     elif not _suppress_dashboard and config_manager.open_dashboard_on_launch:
         # Open dashboard on launch if enabled (suppressed when started by autostart task)
         tray._show_replacer_config()
+
+    if sys.platform == 'darwin':
+        # Wait out the activation that comes with launching, so a launch that
+        # should stay in the menu bar (autostart, dashboard-on-launch off) does
+        QTimer.singleShot(
+            _MACOS_REOPEN_ARM_DELAY_MS, lambda: _install_macos_reopen_handler(app, tray)
+        )
 
     _auth_prompt_shown = False
     auth_check_invoker = _AuthCheckInvoker()

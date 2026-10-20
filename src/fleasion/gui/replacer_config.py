@@ -17,6 +17,7 @@ from PyQt6.QtGui import (
     QColor,
     QFontMetrics,
     QIcon,
+    QKeyEvent,
     QPainter,
     QPalette,
     QPen,
@@ -697,6 +698,17 @@ class ReplacerConfigWindow(QDialog):
         geometry_hex = self.config_manager.window_geometry
         if geometry_hex:
             self.restoreGeometry(QByteArray.fromHex(geometry_hex.encode('utf-8')))
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Keep a stray Escape from dismissing the dashboard.
+
+        QDialog treats Escape as reject(), which hides this main window and
+        leaves Fleasion running with nothing on screen.
+        """
+        if event.key() == Qt.Key.Key_Escape and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event):
         """Save window geometry on close."""
