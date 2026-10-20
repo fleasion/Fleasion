@@ -1664,6 +1664,18 @@ class ModificationManager(QObject):
         self._data['global_settings'] = settings
         self._save_json()
 
+    def _saved_framerate_cap(self) -> int:
+        """The cap the user chose in Fleasion; 0 when they left it at Default."""
+        value = self.global_settings.get('framerate_cap')
+        if value is None:
+            value = self.fast_flags.get('framerate_cap')
+        if value is None or value in {'', 'Default'}:
+            return 0
+        try:
+            return int(value)
+        except TypeError, ValueError:
+            return 0
+
     @property
     def framerate_cap(self) -> int:
         value = self.global_settings.get('framerate_cap')
@@ -1690,8 +1702,13 @@ class ModificationManager(QObject):
         self.global_settings = settings
 
     def sync_saved_global_settings(self) -> None:
-        """Write the saved global settings to Roblox, or restore defaults."""
-        framerate = self.framerate_cap
+        """Write the saved global settings to Roblox, or restore defaults.
+
+        Only a cap chosen in Fleasion is written. ``framerate_cap`` falls back
+        to the value Roblox already has for display, and writing that back
+        would make Fleasion take over the user's own in-game setting.
+        """
+        framerate = self._saved_framerate_cap()
         if framerate:
             self.global_settings_manager.write(framerate)
         else:
