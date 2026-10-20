@@ -100,6 +100,7 @@ from fleasion.utils.roblox_dirs import (
 )
 
 from .addons import CacheScraper, CustomFFlagModifier, TextureStripper, UsernameSpoofer
+from .ca_rejection import CertificateRejectionMonitor
 from .server import (
     ASSET_DELIVERY_HOST,
     BASE_INTERCEPT_HOSTS,
@@ -5254,6 +5255,26 @@ class ProxyMaster:
             return False
         return bool(seed_startup_flags())
 
+    def _certificate_rejection_recorder(self) -> Callable[[str], None] | None:
+        """Watch for Roblox refusing Fleasion's CA during this proxy session.
+
+        Only Windows and macOS clients can ignore the patched cacert.pem; on
+        Linux every supported client trusts it, so nothing is watched there.
+        """
+        if not (IS_WINDOWS or IS_MACOS):
+            return None
+
+        def report(hosts: list[str]) -> None:
+            log_buffer.log(
+                'Certificate',
+                "[ALERT] Roblox is refusing Fleasion's certificate "
+                f'({", ".join(hosts)}). Roblox is not using the patched cacert.pem, '
+                'so replacements will not load.',
+            )
+            self._emit_proxy_start_error('roblox_rejected_certificate', {'hosts': list(hosts)})
+
+        return CertificateRejectionMonitor(report).record
+
     def _emit_proxy_start_error(self, code: str, details: _ErrorDetails) -> None:
         """Forward startup failures to the app layer for user-facing dialogs."""
         if self._on_proxy_start_error is None:
@@ -6284,6 +6305,7 @@ class ProxyMaster:
             vpn_compat_max_assetdelivery_connections=asset_connection_limit,
             vpn_compat_max_cdn_connections=cdn_connection_limit,
             custom_fflag_modifier=getattr(self, 'custom_fflag_modifier', None),
+            on_client_certificate_rejected=self._certificate_rejection_recorder(),
             on_upstream_connect_failure=on_upstream_connect_failure,
             upstream_endpoint_refresher=_refresh_real_upstream_endpoints,
         )
