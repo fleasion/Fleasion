@@ -88,7 +88,9 @@ def _linux_resource_client_key(resource_dir: Path) -> str | None:
         from ..utils.platform_linux import is_sober_resource_dir
 
         for descriptor in LINUX_CLIENTS:
-            if descriptor.paths(home=USER_HOME).owns_resource_path(root):
+            if any(
+                paths.owns_resource_path(root) for paths in descriptor.all_paths(home=USER_HOME)
+            ):
                 return descriptor.key
         # Preserve the narrow legacy Sober adapter used by tests and existing
         # installations whose Flatpak metadata is temporarily unavailable.
@@ -248,7 +250,11 @@ def _client_original_asset_dirs(client_key: str) -> tuple[Path, ...]:
         from ..utils.linux_clients import get_linux_client
         from ..utils.paths import USER_HOME
 
-        return get_linux_client(client_key).paths(home=USER_HOME).original_asset_dirs()
+        return tuple(
+            directory
+            for paths in get_linux_client(client_key).all_paths(home=USER_HOME)
+            for directory in paths.original_asset_dirs()
+        )
     except Exception:
         return ()
 

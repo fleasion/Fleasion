@@ -25,6 +25,15 @@ _FILE_LOCK = threading.RLock()
 _MOCKTAIL_MAX_FLAGS_BYTES = 64 * 1024
 
 
+def _is_mocktail_flag_file(path: Path) -> bool:
+    """Whether ``path`` is the flags file of a Flatpak or native Mocktail."""
+    if path.name != 'fflags.json' or path.parent.name != 'mocktail':
+        return False
+    if MOCKTAIL_CLIENT.app_id in path.parts and path.parent.parent.name == 'config':
+        return True
+    return path == MOCKTAIL_CLIENT.paths(kind='native').config_root / 'fflags.json'
+
+
 def linux_flag_stash_paths(stash_dir: Path, path: Path) -> tuple[Path, Path]:
     digest = hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:16]
     base = stash_dir / 'linux_client_fflags' / f'{path.parent.name}-{digest}'
@@ -222,13 +231,7 @@ def _synchronize_layer(
                 merged.pop(key, None)
             originals.pop(key)
 
-    if (
-        layers
-        and path.name == 'fflags.json'
-        and path.parent.name == 'mocktail'
-        and path.parent.parent.name == 'config'
-        and MOCKTAIL_CLIENT.app_id in path.parts
-    ):
+    if layers and _is_mocktail_flag_file(path):
         serialized_size = len((json.dumps(merged, indent=2) + '\n').encode('utf-8'))
         if serialized_size > _MOCKTAIL_MAX_FLAGS_BYTES:
             msg = (

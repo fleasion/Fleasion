@@ -319,7 +319,12 @@ class FastFlagManager:
 
     def _restore_linux_flag_files(self) -> int:
         """Put each client flags file back as it was; return the failure count."""
-        legacy_paths = (path for client in LINUX_CLIENTS for path in client.paths().fflag_files())
+        legacy_paths = (
+            path
+            for client in LINUX_CLIENTS
+            for paths in client.all_paths()
+            for path in paths.fflag_files()
+        )
         paths = set(_linux_client_fflag_files()) | managed_linux_flag_paths(
             self._stash_dir, 'presets', legacy_candidates=legacy_paths
         )

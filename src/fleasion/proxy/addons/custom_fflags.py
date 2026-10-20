@@ -486,7 +486,10 @@ class CustomFFlagModifier:
 
     def _managed_linux_flags(self) -> set[Path]:
         legacy_paths = (
-            path for client in LINUX_CLIENTS for path in client.paths().fflag_files()
+            path
+            for client in LINUX_CLIENTS
+            for paths in client.all_paths()
+            for path in paths.fflag_files()
         )
         return self._linux_seeded_paths | managed_linux_flag_paths(
             MOD_ORIGINALS_DIR, 'custom', legacy_candidates=legacy_paths

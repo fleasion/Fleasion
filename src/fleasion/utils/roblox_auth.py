@@ -1657,8 +1657,8 @@ def set_roblosecurity(cookie: str, path: Path | None = None) -> bool:
         if candidate is None:
             error = LinuxAuthWriteError(
                 'linux_client_not_installed',
-                'The selected Linux Roblox client is not installed as a Flatpak, or Flatpak '
-                'could not confirm the installation. Fleasion did not change any account data.',
+                'The selected Linux Roblox client is not installed, or Fleasion could not '
+                'confirm the installation. Fleasion did not change any account data.',
             )
             _log_auth_failure(
                 'linux-cookie-write-provider-missing',
