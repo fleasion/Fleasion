@@ -313,6 +313,12 @@ class _ModuleInterceptor(Protocol):
     def response(self, flow: ProxyFlow) -> None: ...
 
 
+class _AssetFilter(Protocol):
+    def is_active(self) -> bool: ...
+
+    def process(self, data: bytes) -> bytes | None: ...
+
+
 class _TextureBatchProcessor(Protocol):
     def process_batch_request(
         self,
@@ -1600,6 +1606,8 @@ class FleasionProxy:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
         self.custom_fflag_modifier = custom_fflag_modifier
+        # Game-wide texture filter; set by ProxyMaster after construction
+        self.asset_filter: _AssetFilter | None = None
         self.port = port
         self._module_interceptors: list[_ModuleInterceptor] = []
         if upstream_endpoints is None:
@@ -2991,6 +2999,20 @@ class FleasionProxy:
                 )
                 ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
                 self.cache_scraper.process_cdn_response(full_url, path, resp_body_for_cache, ct)
+
+            # Filter after scraping so the cache keeps the original texture
+            asset_filter = self.asset_filter
+            if asset_filter is not None and resp_body_raw and asset_filter.is_active():
+                plain = (
+                    resp_body_raw
+                    if response_modified
+                    else _decompress_body(resp_body_raw, resp_headers)
+                )
+                filtered = await asyncio.get_event_loop().run_in_executor(
+                    self._executor, asset_filter.process, plain
+                )
+                if filtered is not None:
+                    return filtered, True
             return resp_body_raw, response_modified
 
         async def run_session_loop() -> None:

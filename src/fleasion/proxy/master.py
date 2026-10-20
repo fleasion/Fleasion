@@ -66,7 +66,15 @@ else:
 import contextlib
 
 from fleasion.cache.cache_manager import CacheManager
+from fleasion.rules.asset_filters import (
+    AssetFilterEngine,
+    FilterSettings,
+    default_filter_settings,
+    normalize_filter_settings,
+)
+from fleasion.rules.game_profiles import GameProfileTracker
 from fleasion.utils import (
+    APP_CACHE_DIR,
     LOCAL_APPDATA,
     MACOS_PROXY_BACKEND_PORT,
     PROXY_CA_DIR,
@@ -4434,6 +4442,10 @@ class ProxyMaster:
         self.custom_fflag_modifier = CustomFFlagModifier(
             config_manager, reload_settings_from_disk=True
         )
+        self.asset_filter_engine = AssetFilterEngine(
+            self._effective_asset_filters, APP_CACHE_DIR / 'filtered'
+        )
+        self.game_profile_tracker = GameProfileTracker(self._on_place_joined)
 
         self._texture_stripper: TextureStripper | None = None
 
@@ -4471,13 +4483,37 @@ class ProxyMaster:
         self._watchdog_thread: threading.Thread | None = None
         self._sober_fflag_timer_stop: threading.Event | None = None
         self._sober_fflag_timer_thread: threading.Thread | None = None
-        self._module_interceptors: list[_ModuleInterceptor] = [self.username_spoofer]
+        self._module_interceptors: list[_ModuleInterceptor] = [
+            self.username_spoofer,
+            self.game_profile_tracker,
+        ]
         self._cert_refresh_lock = threading.Lock()
         self._last_cert_refresh_by_exe: dict[Path, tuple[float, str]] = {}
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def _effective_asset_filters(self) -> FilterSettings:
+        provider = getattr(self.config_manager, 'effective_asset_filters', None)
+        if not callable(provider):
+            return default_filter_settings()
+        return normalize_filter_settings(provider())
+
+    def _on_place_joined(self, place_id: int) -> None:
+        """Switch to the joined game's profile for the assets it loads next."""
+        previous = self.config_manager.active_game_profile
+        profile = self.config_manager.set_active_place(place_id)
+        if profile is not None:
+            log_buffer.log(
+                'GameProfiles',
+                f'Joined place {place_id}: using profile "{profile["name"]}" '
+                f'({len(profile["configs"])} configs)',
+            )
+        elif previous is not None:
+            log_buffer.log(
+                'GameProfiles', f'Joined place {place_id}: back to the normally enabled configs'
+            )
 
     def hosts_intercepts_host(self, host: str) -> bool:
         """Return whether managed hosts routing currently sends *host* through Fleasion."""
@@ -5072,6 +5108,10 @@ class ProxyMaster:
             if self._roblox_player_running == running:
                 return
             self._roblox_player_running = running
+        set_active_place = getattr(self.config_manager, 'set_active_place', None)
+        if not running and callable(set_active_place):
+            # A new Roblox session starts outside any game profile
+            set_active_place(None)
         self.refresh_username_spoofer_interception()
 
     def _refresh_env_proxy_interception_locked(
@@ -6287,6 +6327,7 @@ class ProxyMaster:
             on_upstream_connect_failure=on_upstream_connect_failure,
             upstream_endpoint_refresher=_refresh_real_upstream_endpoints,
         )
+        proxy.asset_filter = getattr(self, 'asset_filter_engine', None)
         self._proxy = proxy
         with self._lock:
             interceptors = list(self._module_interceptors)

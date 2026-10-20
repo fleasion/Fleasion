@@ -15,7 +15,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeIs
 
 from fleasion.appearance import accent_name, appearance_style, color_mode
-from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object, is_json_value
+from fleasion.rules.asset_filters import (
+    FilterSettings,
+    normalize_filter_settings,
+)
+from fleasion.rules.game_profiles import GameProfile, normalize_game_profiles
+from fleasion.utils.json_types import (
+    JsonObject,
+    JsonValue,
+    as_json_object,
+    is_json_value,
+    require_json_value,
+)
 from fleasion.utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
 
 if TYPE_CHECKING:
@@ -460,6 +471,8 @@ DEFAULT_SETTINGS: JsonObject = {
     'language': 'en',
     'audio_volume': 70,  # 0-100
     'always_on_top': False,
+    'asset_filters': {'enabled': False, 'include_materials': False, 'steps': []},
+    'game_profiles': [],
     'open_dashboard_on_launch': True,
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
@@ -725,6 +738,9 @@ class ConfigManager:
         self._all_replacements_cache_signature: ReplacementsSignature | None = None
         self._all_replacements_cache: ReplacementMaps | None = None
         self._replacements_generation = 0
+        # The place Roblox last joined; runtime only, so profiles never stick
+        # across launches.
+        self._active_place_id: int | None = None
         self.settings = self._load_settings()
         self._ensure_default_config()
         self.reconcile_configs(save=False)
@@ -1123,6 +1139,68 @@ class ConfigManager:
         """Set always on top setting."""
         self.settings['always_on_top'] = value
         self._save_settings()
+
+    @property
+    def asset_filters(self) -> FilterSettings:
+        """Global texture filter settings."""
+        return normalize_filter_settings(self.settings.get('asset_filters'))
+
+    @asset_filters.setter
+    def asset_filters(self, value: FilterSettings) -> None:
+        self.settings['asset_filters'] = require_json_value(normalize_filter_settings(value))
+        self._save_settings()
+
+    @property
+    def game_profiles(self) -> list[GameProfile]:
+        """Per-game profiles, at most one per place."""
+        return normalize_game_profiles(self.settings.get('game_profiles'))
+
+    @game_profiles.setter
+    def game_profiles(self, value: list[GameProfile]) -> None:
+        self.settings['game_profiles'] = require_json_value(normalize_game_profiles(value))
+        self._save_settings()
+        self._mark_replacements_dirty()
+
+    def game_profile_for(self, place_id: int | None) -> GameProfile | None:
+        """Return the enabled profile for ``place_id``, if any."""
+        if place_id is None:
+            return None
+        for profile in self.game_profiles:
+            if profile['place_id'] == place_id and profile['enabled']:
+                return profile
+        return None
+
+    @property
+    def active_place_id(self) -> int | None:
+        """The place Roblox most recently joined in this session."""
+        return self._active_place_id
+
+    def set_active_place(self, place_id: int | None) -> GameProfile | None:
+        """Record the joined place and return the profile that now applies."""
+        with self._lock:
+            if place_id != self._active_place_id:
+                self._active_place_id = place_id
+                self._mark_replacements_dirty()
+        return self.game_profile_for(place_id)
+
+    @property
+    def active_game_profile(self) -> GameProfile | None:
+        return self.game_profile_for(self._active_place_id)
+
+    def effective_enabled_configs(self) -> list[str]:
+        """Configs the proxy applies: the active game profile's, else the enabled ones."""
+        profile = self.active_game_profile
+        if profile is None:
+            return self.enabled_configs
+        existing = set(self.config_names)
+        return [name for name in profile['configs'] if name in existing]
+
+    def effective_asset_filters(self) -> FilterSettings:
+        """Filters the proxy applies: the active game profile's, else the global ones."""
+        profile = self.active_game_profile
+        if profile is not None and profile['filters'] is not None:
+            return profile['filters']
+        return self.asset_filters
 
     @property
     def open_dashboard_on_launch(self) -> bool:
@@ -2071,7 +2149,7 @@ class ConfigManager:
             - local_replacements: dict mapping asset IDs/types to local file paths
 
         """
-        enabled_configs = tuple(self.enabled_configs)
+        enabled_configs = tuple(self.effective_enabled_configs())
         signature = tuple(
             (config_name, self._file_signature(self._get_config_path(config_name)))
             for config_name in enabled_configs

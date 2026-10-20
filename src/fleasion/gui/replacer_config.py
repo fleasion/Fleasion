@@ -1576,6 +1576,11 @@ class ReplacerConfigWindow(QDialog):
         configs_btn.clicked.connect(self._open_configs_folder)
         footer_layout.addWidget(configs_btn)
 
+        game_rules_btn = QPushButton(tr('ui.gui.replacer_config.game_rules'))
+        game_rules_btn.setToolTip(tr('ui.gui.replacer_config.game_rules_tooltip'))
+        game_rules_btn.clicked.connect(self._open_game_rules)
+        footer_layout.addWidget(game_rules_btn)
+
         undo_btn = QPushButton(tr('ui.gui.replacer_config.undo_ctrl_z'))
         undo_btn.clicked.connect(self._do_undo)
         footer_layout.addWidget(undo_btn)
@@ -1589,6 +1594,18 @@ class ReplacerConfigWindow(QDialog):
             tr('ui.gui.replacer_config.configs_value', value0=configs_folder)
         )
         open_folder(configs_folder)
+
+    def _open_game_rules(self) -> None:
+        """Open texture filters, per-game profiles and mod packs."""
+        from . import game_rules_dialog
+
+        dialog = game_rules_dialog.GameRulesDialog(self.config_manager, self)
+        dialog.finished.connect(self._on_game_rules_closed)
+        dialog.show()
+
+    def _on_game_rules_closed(self, *_args: object) -> None:
+        # A mod pack install can add and enable configs
+        self.config_manager.refresh_config_names()
 
     def _clear_roblox_cache(self) -> None:
         from . import delete_cache
