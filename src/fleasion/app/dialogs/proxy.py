@@ -34,7 +34,7 @@ from fleasion.app.error_details import (
     is_error_details as _is_error_details,
     is_object_list as _is_object_list,
 )
-from fleasion.localization import tr
+from fleasion.localization import tr, verbatim
 from fleasion.utils import (
     APP_DISCORD,
     get_icon_path,
@@ -417,6 +417,16 @@ class ProxyErrorInvoker(QObject):
                 )
             else:
                 show_roblox_ca_patch_failed_dialog(details)
+        elif code == 'linux_client_proxy_setup_failed':
+            QMessageBox.warning(
+                visible_parent_widget(),
+                tr('app.linux_client_proxy_setup_failed_title'),
+                tr(
+                    'app.linux_client_proxy_setup_failed_body',
+                    client=verbatim(str(details.get('client', 'Roblox'))),
+                    mode=verbatim(str(details.get('mode', 'env'))),
+                ),
+            )
         elif code == 'macos_relay_failed':
             action = show_macos_relay_failed_dialog(details)
             if action == 'retry':

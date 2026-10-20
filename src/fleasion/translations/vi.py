@@ -1366,6 +1366,7 @@ VIETNAMESE: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Ghi đè LOD của lưới',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Lỗi xem trước lưới: {value0}',
     'ui.gui.modifications_tab.missing': 'Bị thiếu',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: không thể sửa đổi tệp (texture, phông chữ, âm thanh, mesh và con trỏ) vì Mocktail kiểm tra các tệp Roblox của nó để phát hiện thay đổi. FastFlags và thay thế asset qua proxy vẫn hoạt động.',
     'ui.gui.modifications_tab.modification': 'Chỉnh sửa',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Đã nhận phím bổ trợ. Thả phím để chỉ gán phím đó hoặc nhấn phím khác để tạo tổ hợp.',
     'ui.gui.modifications_tab.msaa_level': 'Mức MSAA',
@@ -1916,4 +1917,7 @@ VIETNAMESE: dict[str, str] = {
     'settings.appearance.opacity_value': '{value0}%',
     'settings.appearance.tint_strength': 'Độ đậm màu',
     'settings.appearance.window_opacity_tooltip': 'Độ đục của nền; giá trị thấp hơn sẽ hiển thị nhiều hơn cửa sổ bên dưới',
+    'app.linux_client_proxy_setup_failed_title': 'Thiết lập ứng dụng Roblox trên Linux thất bại',
+    'app.linux_client_proxy_setup_failed_body': 'Fleasion không thể chuẩn bị {client} cho chế độ proxy {mode}. Proxy đã dừng trước khi sẵn sàng. Hãy kiểm tra nhật ký Launcher để tìm lỗi cấu hình, chứng chỉ hoặc Flatpak, rồi thử lại.',
+    'ui.gui.modifications_tab.custom_fastflag_delivery': 'FastFlags động có thể cập nhật trong lúc chơi sau khi Roblox tải về cài đặt đã thay đổi. FastFlags không động sẽ có hiệu lực ở lần khởi chạy Roblox tiếp theo. Hãy giữ proxy bật để áp dụng các flag tùy chỉnh.',
 }

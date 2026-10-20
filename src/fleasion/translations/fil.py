@@ -1366,6 +1366,7 @@ FILIPINO: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Pag-override sa Mesh LOD',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Error sa pag-preview ng mesh: {value0}',
     'ui.gui.modifications_tab.missing': 'Nawawala',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: hindi magagamit ang pagbabago ng mga file (texture, font, tunog, mesh at cursor) dahil sinusuri ng Mocktail ang mga Roblox file nito para sa mga pagbabago. Gumagana pa rin ang FastFlags at ang pagpapalit ng asset sa pamamagitan ng proxy.',
     'ui.gui.modifications_tab.modification': 'Pagbabago',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Nakuha ang modifier. Bitawan ito upang italaga nang mag-isa, o pindutin ang ibang key para sa kumbinasyon.',
     'ui.gui.modifications_tab.msaa_level': 'Antas ng MSAA',
@@ -1916,4 +1917,7 @@ FILIPINO: dict[str, str] = {
     'settings.appearance.opacity_value': '{value0}%',
     'settings.appearance.tint_strength': 'Lakas ng tint',
     'settings.appearance.window_opacity_tooltip': 'Opacity ng background; mas mababang halaga para mas makita ang window sa ilalim',
+    'app.linux_client_proxy_setup_failed_title': 'Nabigo ang Pag-setup ng Linux Roblox Client',
+    'app.linux_client_proxy_setup_failed_body': 'Hindi naihanda ng Fleasion ang {client} para sa {mode} na proxy mode. Itinigil ang proxy bago ito naging handa. Tingnan ang Launcher log para sa error sa configuration, certificate o Flatpak, pagkatapos ay subukang muli.',
+    'ui.gui.modifications_tab.custom_fastflag_delivery': 'Maaaring mag-update ang mga dynamic na FastFlag habang naglalaro pagkatapos kunin ng Roblox ang binagong settings. Magkakabisa ang mga hindi dynamic na FastFlag sa susunod na paglunsad ng Roblox. Panatilihing naka-enable ang proxy para maihatid ang mga custom na flag.',
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import os
 import subprocess
@@ -531,6 +532,17 @@ _STATUS_STYLES = {
 
 
 # _RichTextButton — QPushButton-like label that renders HTML/rich text
+
+
+def _selected_linux_client_key() -> str | None:
+    """Key of the Linux client Fleasion targets, or ``None`` off Linux."""
+    if not sys.platform.startswith('linux'):
+        return None
+    try:
+        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+        return str(platform_linux.selected_linux_client_key())
+    except Exception:  # ruff: ignore[blind-except]
+        return None
 
 
 class _RichTextButton(QPushButton):
@@ -3064,16 +3076,10 @@ class CustomFFlagEditor(QWidget):
         )
         layout.addWidget(warning)
 
-        if sys.platform.startswith('linux'):
-            sober_delay_warning = QLabel(
-                tr('ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security')
-            )
-            sober_delay_warning.setWordWrap(True)
-            sober_delay_warning.setStyleSheet(
-                'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
-                'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
-            )
-            layout.addWidget(sober_delay_warning)
+        self._delivery_guidance = QLabel()
+        self._delivery_guidance.setWordWrap(True)
+        layout.addWidget(self._delivery_guidance)
+        self.refresh_client_guidance()
 
         self._enable_toggle = QCheckBox(tr('ui.gui.modifications_tab.enable_custom_fastflags'))
         self._enable_toggle.setChecked(
@@ -3200,6 +3206,25 @@ class CustomFFlagEditor(QWidget):
             )
         else:
             self._update_status()
+
+    def refresh_client_guidance(self) -> None:
+        if _selected_linux_client_key() == 'sober':
+            self._delivery_guidance.setText(
+                tr('ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security')
+            )
+            self._delivery_guidance.setStyleSheet(
+                'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
+                'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
+            )
+        else:
+            self._delivery_guidance.setText(tr('ui.gui.modifications_tab.custom_fastflag_delivery'))
+            self._delivery_guidance.setStyleSheet('')
+
+    @override
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Show:
+            self.refresh_client_guidance()
+        return super().event(event)
 
     def _load_flags(self, sync_hotkeys: bool = True) -> None:
         flags = dict(getattr(self._config, 'custom_fflags', {}) or {}) if self._config else {}
@@ -3661,6 +3686,7 @@ class CustomFFlagEditor(QWidget):
             return
         self._config.custom_fflags = self._flags_from_table()
         self._prune_hotkey_settings(set(self._config.custom_fflags))
+        self._prime_startup_flags()
         self._update_status()
         self._filter_rows(self._search.text())
 
@@ -3691,6 +3717,14 @@ class CustomFFlagEditor(QWidget):
                 )
             )
             self._status.setStyleSheet('color: #999;')
+
+    def _prime_startup_flags(self) -> None:
+        prime = getattr(self._proxy_master, 'prime_custom_fflag_cache', None)
+        if callable(prime):
+            try:
+                prime()
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                log_buffer.log('CustomFFlags', f'Could not prepare startup flags: {exc}')
 
     def _refresh_proxy_hosts(self) -> None:
         if self._proxy_master is None:
@@ -3781,6 +3815,7 @@ class CustomFFlagEditor(QWidget):
         # Flag values are consumed directly from settings; only the master
         # enable toggle changes the interception route set.
         self._load_flags()
+        self._prime_startup_flags()
 
     def _import_mapping(self, payload: object) -> None:
         from fleasion.proxy.addons.custom_fflags import normalize_custom_fflags
@@ -4520,6 +4555,14 @@ class ModificationsTab(QWidget):
         outer.addWidget(scroll)
         self._update_container_bg()
 
+        self._mocktail_note = QLabel(tr('ui.gui.modifications_tab.mocktail_file_mods_unavailable'))
+        self._mocktail_note.setWordWrap(True)
+        self._mocktail_note.setStyleSheet(
+            'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
+            'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
+        )
+        self._container_layout.addWidget(self._mocktail_note)
+
         # Fast Flags
         self._fflag_toggle = QCheckBox(
             tr('ui.gui.modifications_tab.enable_allowlisted_fastflag_presets')
@@ -4602,14 +4645,13 @@ class ModificationsTab(QWidget):
         self._mesh_section = CollapsibleSection(
             tr('modifications.section.r6_avatar_meshes'), expanded=True
         )
-        if sys.platform.startswith('linux'):
-            sober_mesh_warning = QLabel(
-                tr('ui.gui.modifications_tab.b_linux_sober_limitation_b_r6_default')
-            )
-            sober_mesh_warning.setWordWrap(True)
-            sober_mesh_warning.setContentsMargins(8, 4, 8, 8)
-            sober_mesh_warning.setStyleSheet('color: #ffcc66;')
-            self._mesh_section.add_widget(sober_mesh_warning)
+        self._sober_mesh_warning = QLabel(
+            tr('ui.gui.modifications_tab.b_linux_sober_limitation_b_r6_default')
+        )
+        self._sober_mesh_warning.setWordWrap(True)
+        self._sober_mesh_warning.setContentsMargins(8, 4, 8, 8)
+        self._sober_mesh_warning.setStyleSheet('color: #ffcc66;')
+        self._mesh_section.add_widget(self._sober_mesh_warning)
         for name, path in AVATAR_MESHES:
             row = ModRowWidget(
                 self._manager,
@@ -4892,6 +4934,20 @@ class ModificationsTab(QWidget):
         row.setParent(None)
         row.deleteLater()
         self._update_status_bar()
+
+    def refresh_client_guidance(self) -> None:
+        """Update client-specific modification warnings after a client switch."""
+        if not hasattr(self, '_sober_mesh_warning'):
+            return  # the deferred UI build has not reached the warnings yet
+        selected = _selected_linux_client_key()
+        self._mocktail_note.setVisible(selected == 'mocktail')
+        self._sober_mesh_warning.setVisible(selected == 'sober')
+
+    @override
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Show:
+            self.refresh_client_guidance()
+        return super().event(event)
 
     # Fast Flags toggle
 

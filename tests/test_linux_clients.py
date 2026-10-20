@@ -7,8 +7,10 @@ from typing import Literal, cast
 import pytest
 
 from fleasion.utils.linux_clients import (
+    CORDIAL_CLIENT,
     LINUX_CLIENTS,
     LINUX_CLIENTS_BY_KEY,
+    MOCKTAIL_CLIENT,
     SOBER_CLIENT,
     CommandRunner,
     LinuxClientDescriptor,
@@ -41,10 +43,15 @@ def _no_which(_name: str) -> None:
     return None
 
 
-def test_registry_contains_only_sober() -> None:
-    assert LINUX_CLIENTS == (SOBER_CLIENT,)
-    assert dict(LINUX_CLIENTS_BY_KEY) == {'sober': SOBER_CLIENT}
+def test_registry_contains_sober_mocktail_and_cordial() -> None:
+    assert LINUX_CLIENTS == (SOBER_CLIENT, MOCKTAIL_CLIENT, CORDIAL_CLIENT)
+    assert dict(LINUX_CLIENTS_BY_KEY) == {
+        'sober': SOBER_CLIENT,
+        'mocktail': MOCKTAIL_CLIENT,
+        'cordial': CORDIAL_CLIENT,
+    }
     assert get_linux_client('SOBER') is SOBER_CLIENT
+    assert get_linux_client('Cordial') is CORDIAL_CLIENT
     assert SOBER_CLIENT.app_id == 'org.vinegarhq.Sober'
     assert SOBER_CLIENT.desktop_id == 'org.vinegarhq.Sober.desktop'
 
@@ -97,8 +104,12 @@ def test_detect_installed_clients_uses_flatpak_info(tmp_path: Path) -> None:
         run=cast('CommandRunner', run),
     )
 
-    assert [item.key for item in installed] == ['sober']
-    assert commands == [['/usr/bin/flatpak', 'info', 'org.vinegarhq.Sober']]
+    assert [item.key for item in installed] == ['sober', 'mocktail', 'cordial']
+    assert commands == [
+        ['/usr/bin/flatpak', 'info', 'org.vinegarhq.Sober'],
+        ['/usr/bin/flatpak', 'info', 'space.bigrat.mocktail'],
+        ['/usr/bin/flatpak', 'info', 'io.github.luohoa97.Cordial'],
+    ]
     assert installed[0].launch_command('roblox://experiences/start?placeId=1818') == [
         '/usr/bin/flatpak',
         'run',
@@ -137,7 +148,7 @@ def test_detect_installed_clients_strips_pyinstaller_library_path(
         run=cast('CommandRunner', run),
     )
 
-    assert [item.key for item in installed] == ['sober']
+    assert [item.key for item in installed] == ['sober', 'mocktail', 'cordial']
     assert calls[0][1]['HOME'] == str(tmp_path)
     assert calls[0][1]['LD_LIBRARY_PATH'] == str(host_libs)
 

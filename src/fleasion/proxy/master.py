@@ -2995,9 +2995,27 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
 
         for roblox_dir in find_roblox_resource_dirs(include_studio=not IS_MACOS):
             _add_posix(roblox_dir)
-        for cached_dir in load_saved_roblox_dirs():
-            _add_posix(cached_dir)
-        save_saved_roblox_dirs(found)
+        cached_dirs = load_saved_roblox_dirs()
+        if IS_LINUX:
+            installation = _selected_linux_client_installation()
+            for cached_dir in cached_dirs:
+                if installation is not None and installation.owns_resource_path(cached_dir):
+                    _add_posix(cached_dir)
+            # Keep other clients' cached roots for later, but never patch their CA
+            save_saved_roblox_dirs(list(dict.fromkeys([*found, *cached_dirs])))
+        else:
+            for cached_dir in cached_dirs:
+                _add_posix(cached_dir)
+            save_saved_roblox_dirs(found)
+        if IS_LINUX:
+            find_ca_bundle_dirs = cast(
+                'Callable[[], list[Path]]',
+                _lazy_attr('fleasion.utils.platform_linux', 'find_linux_ca_bundle_dirs'),
+            )
+            # Bundles a client reads outside its overlay are certificate
+            # targets only, so they are never saved as Roblox dirs
+            for bundle_dir in find_ca_bundle_dirs():
+                _add_posix(bundle_dir)
         return found
 
     if TYPE_CHECKING:
@@ -3655,6 +3673,35 @@ def _normalize_bootstrapper_ca_backup(
     }
 
 
+def _patch_linux_extra_ca_bundles(ca_pem: str) -> bool:
+    """Add the CA to bundles the selected Linux client reads outside its overlay.
+
+    Cordial hands curl a symlink to the ``ssl/cacert.pem`` it extracted from the
+    APK, and re-extracts it whenever Roblox updates, so these are re-checked on
+    every launch. Returns True if any bundle changed.
+    """
+    if not IS_LINUX:
+        return False
+    find_ca_bundle_dirs = cast(
+        'Callable[[], list[Path]]',
+        _lazy_attr('fleasion.utils.platform_linux', 'find_linux_ca_bundle_dirs'),
+    )
+    changed_any = False
+    for bundle_dir in find_ca_bundle_dirs():
+        ca_file = bundle_dir / 'ssl' / 'cacert.pem'
+        try:
+            changed, _fleasion_count, _current_count = _upsert_fleasion_ca_in_cacert(
+                ca_file, ca_pem
+            )
+        except (OSError, UnicodeDecodeError) as exc:
+            log_buffer.log('Certificate', f'Could not add Fleasion CA to {ca_file}: {exc}')
+            continue
+        if changed:
+            changed_any = True
+            log_buffer.log('Certificate', f'Added Fleasion CA to {ca_file}')
+    return changed_any
+
+
 def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[_ErrorDetails]]:
     """Normalize bootstrapper snapshots that may restore managed Roblox files."""
     if not IS_MACOS:
@@ -4295,6 +4342,24 @@ def _patch_running_roblox_ca_file(
     return pre_state, post_state, changed, fleasion_count, current_count
 
 
+def _running_roblox_ca_root(exe_path: Path, ca_pem: str) -> tuple[Path | None, bool]:
+    """Return the running client's resource root and whether extra Linux bundles changed.
+
+    A ``None`` root means the selected Linux client has no overlay to patch.
+    """
+    if IS_MACOS:
+        return _macos_resource_root_from_executable(exe_path) or exe_path.parent, False
+    if not IS_LINUX:
+        return exe_path.parent, False
+    find_roblox_resource_dirs = cast(
+        'Callable[..., list[Path]]',
+        _lazy_attr('fleasion.utils.platform_linux', 'find_roblox_resource_dirs'),
+    )
+    extra_changed = _patch_linux_extra_ca_bundles(ca_pem)
+    dirs = find_roblox_resource_dirs(include_studio=False)
+    return (dirs[0] if dirs else None), extra_changed
+
+
 def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
@@ -4317,18 +4382,10 @@ def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
     ca_pem = get_ca_pem(ca_cert_path)
     if IS_MACOS:
         _patch_bootstrapper_ca_backups(ca_pem)
-    if IS_MACOS:
-        roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
-    elif IS_LINUX:
-        find_roblox_resource_dirs = cast(
-            'Callable[..., list[Path]]',
-            _lazy_attr('fleasion.utils.platform_linux', 'find_roblox_resource_dirs'),
-        )
-
-        dirs = find_roblox_resource_dirs(include_studio=False)
-        roblox_dir = dirs[0] if dirs else exe_path.parent
-    else:
-        roblox_dir = exe_path.parent
+    roblox_dir, extra_changed = _running_roblox_ca_root(exe_path, ca_pem)
+    if roblox_dir is None:
+        # The client trusts Fleasion through its own integration
+        return extra_changed
     ssl_dir = roblox_dir / 'ssl'
     ca_file = ssl_dir / 'cacert.pem'
 
@@ -4336,7 +4393,7 @@ def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
         patch_result = _patch_running_roblox_ca_file(ca_file, ca_pem, roblox_dir)
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
-        return False
+        patch_result = None
     if patch_result is None:
         return False
     pre_state, post_state, changed, fleasion_count, current_count = patch_result
@@ -4349,7 +4406,7 @@ def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
             'Certificate',
             f'Roblox launch detected: cacert.pem already launch-healthy for {roblox_dir.name}',
         )
-        return False
+        return extra_changed
 
     stale_count = max(fleasion_count - current_count, 0)
     duplicate_current = max(current_count - 1, 0)
@@ -4380,7 +4437,7 @@ def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
             f'CA injected into running Roblox instance: {roblox_dir.name}',
         )
 
-    return changed or not was_launch_healthy or not is_launch_healthy
+    return changed or not was_launch_healthy or not is_launch_healthy or extra_changed
 
 
 # ProxyMaster
@@ -4586,11 +4643,44 @@ class ProxyMaster:
         armed = set_env_proxy_override(
             self.roblox_env_proxy_url(),
             client_key=client_key,
+            ca_cert_path=_current_proxy_ca_dir() / 'ca.crt',
         )
         if armed:
             self._linux_env_proxy_override_client_key = client_key
             self._sober_env_proxy_override_active = client_key == 'sober'
         return bool(armed)
+
+    def _linux_client_uses_integrated_trust(self) -> bool:
+        return (
+            IS_LINUX
+            and not IS_MACOS
+            and not IS_WINDOWS
+            and getattr(self._linux_client_descriptor(), 'proxy_integration', None)
+            == 'mocktail_config'
+        )
+
+    def _arm_linux_hosts_client_trust(self) -> bool:
+        """Let clients with their own Fleasion integration trust the CA in hosts mode."""
+        if not self._linux_client_uses_integrated_trust():
+            return True
+        client_key = self._linux_client_key()
+        if client_key is None:
+            return True
+        set_env_proxy_override = cast(
+            'Callable[..., bool]',
+            _lazy_attr('fleasion.utils.platform_linux', 'set_linux_client_env_proxy_override'),
+        )
+        if set_env_proxy_override(
+            self.roblox_env_proxy_url(),
+            client_key=client_key,
+            ca_cert_path=_current_proxy_ca_dir() / 'ca.crt',
+            proxy_mode='hosts',
+        ):
+            descriptor = self._linux_client_descriptor()
+            if getattr(descriptor, 'proxy_integration', 'flatpak_env') != 'flatpak_env':
+                self._linux_env_proxy_override_client_key = client_key
+            return True
+        return False
 
     def _clear_linux_env_proxy_override(self) -> bool:
         """Clear only the client override armed by this proxy instance."""
@@ -4613,6 +4703,13 @@ class ProxyMaster:
         """Restore selected-client state after any proxy shutdown path."""
         if IS_LINUX:
             self._clear_linux_env_proxy_override()
+            self.restore_linux_custom_fflags()
+
+    def restore_linux_custom_fflags(self) -> bool:
+        """Restore tracked native custom flags before changing the selected client."""
+        modifier = getattr(self, 'custom_fflag_modifier', None)
+        restore_flags = getattr(modifier, 'restore_linux_client_flags', None)
+        return bool(restore_flags()) if callable(restore_flags) else True
 
     def wait_for_env_proxy_ready(
         self, timeout: float = 15.0, *, cancelled: _CancelCheck | None = None
@@ -4660,22 +4757,56 @@ class ProxyMaster:
                 _lazy_attr('fleasion.utils.platform_linux', 'find_roblox_resource_dirs'),
             )
             dirs = find_roblox_resource_dirs(include_studio=False)
-            roblox_dir = dirs[0] if dirs else exe_path.parent
+            if not dirs:
+                return None
+            roblox_dir = dirs[0]
         else:
             roblox_dir = exe_path.parent
         return roblox_dir / 'ssl' / 'cacert.pem', ca_pem
 
     def inspect_env_proxy_roblox_ca(self, exe_path: Path, reason: str) -> _CacertInspection:
+        if self._linux_client_uses_integrated_trust():
+            installation = self._linux_client_installation()
+            if installation is None:
+                return {'healthy': False, 'error': 'Linux client installation is unavailable'}
+            inspect_integration_ca = cast(
+                'Callable[[LinuxClientInstallation, Path], _ErrorDetails]',
+                _lazy_attr('fleasion.utils.platform_linux', 'inspect_mocktail_integration_ca'),
+            )
+            return inspect_integration_ca(installation, _current_proxy_ca_dir() / 'ca.crt')
         target = self._roblox_ca_target(exe_path)
         if target is None:
             return {'healthy': False, 'error': 'Roblox CA target is unavailable'}
         ca_file, ca_pem = target
-        return _log_cacert_state(ca_file, ca_pem, reason)
+        state: _ErrorDetails = dict(_log_cacert_state(ca_file, ca_pem, reason))
+        if IS_LINUX:
+            find_ca_bundle_dirs = cast(
+                'Callable[[], list[Path]]',
+                _lazy_attr('fleasion.utils.platform_linux', 'find_linux_ca_bundle_dirs'),
+            )
+            states: list[_ErrorDetails] = [state]
+            states.extend(
+                dict(_log_cacert_state(bundle_dir / 'ssl' / 'cacert.pem', ca_pem, reason))
+                for bundle_dir in find_ca_bundle_dirs()
+            )
+            unhealthy = next((item for item in states if not item.get('healthy')), None)
+            if unhealthy is not None:
+                return unhealthy
+            if len(states) > 1:
+                state['sha256'] = hashlib.sha256(
+                    '|'.join(str(item.get('sha256', '')) for item in states).encode('utf-8')
+                ).hexdigest()
+        return state
 
     def ensure_env_proxy_roblox_ca(self, exe_path: Path, *, settle: bool = False) -> _ErrorDetails:
         """Settle, directly repair, and fully verify Player's CA bundle."""
         if settle:
             time.sleep(_CACERT_LAUNCH_SETTLE_SECONDS)
+        extra_changed = False
+        if IS_LINUX:
+            ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
+            if ca_cert_path.exists():
+                extra_changed = _patch_linux_extra_ca_bundles(get_ca_pem(ca_cert_path))
         before = self.inspect_env_proxy_roblox_ca(
             exe_path, f'Env Proxy cacert.pem before launch preparation for {Path(exe_path).name}'
         )
@@ -4687,7 +4818,7 @@ class ProxyMaster:
         return {
             'success': bool(after.get('healthy')),
             'healthy': bool(after.get('healthy')),
-            'changed': before.get('sha256') != after.get('sha256'),
+            'changed': extra_changed or before.get('sha256') != after.get('sha256'),
             'path': after.get('path'),
             'error': after.get('error'),
             'state': after,
@@ -5245,7 +5376,13 @@ class ProxyMaster:
     def prime_custom_fflag_cache(self, *, allow_running: bool = False) -> bool:
         """Preload startup-only custom FastFlags for the next Player launch."""
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
-        if custom_modifier is None or (is_roblox_running() and not allow_running):
+        if custom_modifier is None:
+            return False
+        if is_roblox_running() and not allow_running:
+            # Native flag files prepare the next launch while the current engine runs
+            seed_linux_flags = getattr(custom_modifier, 'prime_linux_client_flags', None)
+            if IS_LINUX and callable(seed_linux_flags):
+                return bool(seed_linux_flags())
             return False
         seed_startup_flags = getattr(custom_modifier, 'prime_startup_flag_cache', None)
         if not callable(seed_startup_flags):
@@ -5410,6 +5547,7 @@ class ProxyMaster:
             )
             return
         ca_pem = get_ca_pem(ca_cert_path)
+        extra_changed = False
         if IS_MACOS:
             roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
         elif IS_LINUX:
@@ -5417,8 +5555,11 @@ class ProxyMaster:
                 'Callable[..., list[Path]]',
                 _lazy_attr('fleasion.utils.platform_linux', 'find_roblox_resource_dirs'),
             )
+            extra_changed = _patch_linux_extra_ca_bundles(ca_pem)
             dirs = find_roblox_resource_dirs(include_studio=False)
-            roblox_dir = dirs[0] if dirs else exe_path.parent
+            if not dirs:
+                return
+            roblox_dir = dirs[0]
         else:
             roblox_dir = exe_path.parent
         ca_file = roblox_dir / 'ssl' / 'cacert.pem'
@@ -5439,7 +5580,7 @@ class ProxyMaster:
             now = time.monotonic()
             last_refresh = self._last_cert_refresh_by_exe.get(exe_path)
             initial_sha = str(initial_state.get('sha256') or '')
-            if last_refresh is not None:
+            if last_refresh is not None and not extra_changed:
                 last_time, last_sha = last_refresh
                 if now - last_time < _CACERT_RESTART_DEDUP_SECONDS and initial_sha == last_sha:
                     log_buffer.log(
@@ -5469,6 +5610,8 @@ class ProxyMaster:
             stable_unhealthy_samples = 0
             while time.monotonic() < deadline:
                 if bool(last_state.get('healthy')):
+                    if extra_changed:
+                        break
                     log_buffer.log(
                         'Certificate',
                         f'Roblox launch detected: stable patched cert confirmed for {exe_path.parent.name}',
@@ -5950,9 +6093,14 @@ class ProxyMaster:
         ca_cert_path = certificates['ca_cert_path']
         ca_pem = get_ca_pem(ca_cert_path)
         selected_linux_client_key = self._linux_client_key()
-        ca_patch_ok, ca_patch_details = _install_ca_into_roblox(
-            ca_pem, include_studio=not env_proxy_mode
-        )
+        if self._linux_client_uses_integrated_trust():
+            # Mocktail builds its trust bundle from the sandbox CA when it launches
+            ca_patch_ok = True
+            ca_patch_details: dict[str, object] = {}
+        else:
+            ca_patch_ok, ca_patch_details = _install_ca_into_roblox(
+                ca_pem, include_studio=not env_proxy_mode
+            )
         if IS_MACOS and not ca_patch_ok:
             log_buffer.log(
                 'Certificate',
@@ -6455,8 +6603,8 @@ class ProxyMaster:
                 'Linux Env Proxy startup aborted because the selected client override could not be armed',
             )
             self._emit_proxy_start_error(
-                'linux_env_proxy_override_failed',
-                {'client': startup['selected_linux_client_key'] or 'unknown'},
+                'linux_client_proxy_setup_failed',
+                {'client': startup['selected_linux_client_key'] or 'unknown', 'mode': 'env'},
             )
             await proxy.stop()
             self._running = False
@@ -6519,6 +6667,15 @@ class ProxyMaster:
         listen_port = server['listen_port']
         ca_patch_ok = startup['ca_patch_ok']
 
+        if IS_LINUX and not self._arm_linux_hosts_client_trust():
+            self._emit_proxy_start_error(
+                'linux_client_proxy_setup_failed',
+                {'client': startup['selected_linux_client_key'] or 'unknown', 'mode': 'hosts'},
+            )
+            await proxy.stop()
+            _set_active_hosts_loopbacks(None)
+            self._running = False
+            return
         if use_linux_helper:
             last_start_error_details = cast(
                 'Callable[[], Mapping[str, object]]',

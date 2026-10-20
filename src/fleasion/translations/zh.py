@@ -1366,6 +1366,7 @@ CHINESE: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': '网格 LOD 覆盖',
     'ui.gui.modifications_tab.mesh_preview_error_value': '网格预览错误：{value0}',
     'ui.gui.modifications_tab.missing': '缺失',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': '修改',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': '已捕获修饰键。松开它即可单独绑定，或按下另一个键组成组合键。',
     'ui.gui.modifications_tab.msaa_level': 'MSAA 级别',
@@ -1916,4 +1917,7 @@ CHINESE: dict[str, str] = {
     'settings.appearance.opacity_value': '{value0}%',
     'settings.appearance.tint_strength': '色调强度',
     'settings.appearance.window_opacity_tooltip': '背景不透明度；数值越低，越能看清下方的窗口',
+    'app.linux_client_proxy_setup_failed_title': 'Linux Roblox Client Setup Failed',
+    'app.linux_client_proxy_setup_failed_body': 'Fleasion could not prepare {client} for {mode} proxy mode. The proxy was stopped before becoming ready. Check the Launcher log for the configuration, certificate, or Flatpak error, then retry.',
+    'ui.gui.modifications_tab.custom_fastflag_delivery': 'Dynamic FastFlags can update during play after Roblox fetches the changed settings. Non-dynamic FastFlags take effect on the next Roblox launch. Keep the proxy enabled to deliver custom flags.',
 }

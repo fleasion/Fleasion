@@ -460,6 +460,7 @@ def run_application() -> None:
             proxy_error_invoker.show_proxy_error.emit(code, dict(details))
             return
         if code not in {
+            'linux_client_proxy_setup_failed',
             'port_bind_failed',
             'hosts_write_exhausted',
             'hosts_entries_would_exceed_limit',

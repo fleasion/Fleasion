@@ -14,7 +14,7 @@ from typing import Protocol, TypeIs
 if sys.platform == 'darwin':
     from fleasion.utils.platform_macos import find_roblox_resource_dirs
 
-from fleasion.utils import log_buffer
+from fleasion.utils import log_buffer, platform_linux
 from fleasion.utils.json_types import (
     JsonObject,
     JsonValue,
@@ -22,7 +22,9 @@ from fleasion.utils.json_types import (
     as_json_object,
     as_object_dict,
 )
-from fleasion.utils.paths import CONFIG_FILE, LOCAL_APPDATA
+from fleasion.utils.linux_clients import LINUX_CLIENTS
+from fleasion.utils.linux_fflags import managed_linux_flag_paths, set_linux_flag_layer
+from fleasion.utils.paths import CONFIG_FILE, LOCAL_APPDATA, MOD_ORIGINALS_DIR
 
 
 class _CustomFFlagConfig(Protocol):
@@ -109,6 +111,8 @@ class CustomFFlagModifier:
         )
         self._macos_seeded_flag_names: set[str] = set()
         self._windows_seeded_flag_names: set[str] = set()
+        self._linux_seeded_paths: set[Path] = set()
+        self._linux_flag_lock = threading.RLock()
         self._last_fresh_response_flags: tuple[tuple[str, str], ...] | None = None
         self._delivery_generation = 0
         self._delivery_state_lock = threading.Lock()
@@ -533,12 +537,69 @@ class CustomFFlagModifier:
             )
         return bool(updated_paths)
 
+    def prime_linux_client_flags(self) -> bool:
+        """Seed custom flags into the selected client's native startup files."""
+        if not sys.platform.startswith('linux'):
+            return False
+        with self._linux_flag_lock:
+            return self._synchronize_linux_flags()
+
+    def _managed_linux_flags(self) -> set[Path]:
+        legacy_paths = (
+            path
+            for client in LINUX_CLIENTS
+            for paths in client.all_paths()
+            for path in paths.fflag_files()
+        )
+        return self._linux_seeded_paths | managed_linux_flag_paths(
+            MOD_ORIGINALS_DIR, 'custom', legacy_candidates=legacy_paths
+        )
+
+    def _synchronize_linux_flags(self) -> bool:
+        # Native flag files belong to the user's custom-flag toggle. is_enabled()
+        # is always true now that it also covers certificate compatibility
+        flags = self.runtime_flags() if self.custom_flags_enabled() else {}
+        current_paths = set(platform_linux.find_linux_fflag_files())
+        managed_paths = self._managed_linux_flags()
+        stale_paths = managed_paths - current_paths if flags else managed_paths
+        cleanup_failed = False
+        for path in tuple(stale_paths):
+            if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', {}):
+                self._linux_seeded_paths.discard(path)
+            else:
+                cleanup_failed = True
+        written = False
+        for path in current_paths:
+            if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', flags):
+                written = True
+                if flags:
+                    self._linux_seeded_paths.add(path)
+                else:
+                    self._linux_seeded_paths.discard(path)
+        return written and not cleanup_failed
+
+    def restore_linux_client_flags(self) -> bool:
+        """Remove the custom layer from files seeded by this modifier."""
+        with self._linux_flag_lock:
+            return self._restore_linux_flags()
+
+    def _restore_linux_flags(self) -> bool:
+        restored = True
+        for path in self._managed_linux_flags():
+            if set_linux_flag_layer(path, MOD_ORIGINALS_DIR, 'custom', {}):
+                self._linux_seeded_paths.discard(path)
+            else:
+                restored = False
+        return restored
+
     def prime_startup_flag_cache(self) -> bool:
         """Seed the platform-specific local flag source used before networking."""
         # Explicit resource-dir injection is also the cross-platform test and
         # helper contract for macOS; it must take precedence over the host OS.
         if self._macos_resource_dirs is not None or sys.platform == 'darwin':
             return self.prime_macos_client_settings()
+        if self._flag_cache_path is None and not IS_WINDOWS and sys.platform.startswith('linux'):
+            return self.prime_linux_client_flags()
         return self.prime_windows_flag_cache()
 
     @staticmethod
