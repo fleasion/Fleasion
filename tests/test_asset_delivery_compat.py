@@ -25,6 +25,7 @@ from fleasion.proxy.asset_delivery import (
 )
 from fleasion.proxy.server import FleasionProxy
 from fleasion.proxy.upstream import UpstreamConnectResult
+from fleasion.utils.replacement_filters import FilteredRoute, ReplacementFilter
 from fleasion.utils.certs import (
     generate_ca,
     generate_host_cert,
@@ -50,6 +51,21 @@ class _Config:
 
     def get_all_replacements(self) -> ReplacementMaps:
         return {}, set(), {}, {_SOURCE: self.local} if self.local is not None else {}
+
+
+class _FilteredConfig(_Config):
+    def __init__(self, local: str, *, max_kb: float = 1) -> None:
+        super().__init__(local)
+        self.max_kb = max_kb
+
+    def get_all_replacements(self) -> ReplacementMaps:
+        return {}, set(), {}, {}
+
+    def get_filtered_replacements(self) -> dict[int | str, tuple[FilteredRoute, ...]]:
+        assert self.local is not None
+        return {
+            _SOURCE: (FilteredRoute(ReplacementFilter(max_kb=self.max_kb), 'local', self.local),)
+        }
 
 
 class _Writer:
@@ -181,7 +197,7 @@ def test_scraper_reads_v2_locations_without_http_fetch(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize('version', ('v1', 'v2', 'v3'))
-@pytest.mark.parametrize('kind', ('v2_local', 'gzip_passthrough', 'zstd_passthrough', 'br_passthrough', 'dcz_passthrough', 'gzip_modified', 'zstd_modified', 'gzip_response_local'))
+@pytest.mark.parametrize('kind', ('v2_local', 'gzip_passthrough', 'zstd_passthrough', 'br_passthrough', 'dcz_passthrough', 'gzip_modified', 'zstd_modified', 'gzip_response_local', 'filtered_only', 'filtered_cached', 'filtered_nomatch'))
 def test_proxy_batch_transport_compat(
     version: str, kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -193,16 +209,33 @@ def test_proxy_batch_transport_compat(
         TextureStripper.reset_routes()
         local = tmp_path / 'replacement.png'
         local.write_bytes(b'LOCAL-IMAGE-REPLACEMENT')
-        config = _Config(str(local) if kind in {'v2_local', 'gzip_response_local'} else None)
+        config = (
+            _FilteredConfig(str(local), max_kb=0.001 if kind == 'filtered_nomatch' else 1)
+            if kind.startswith('filtered_')
+            else _Config(str(local) if kind in {'v2_local', 'gzip_response_local'} else None)
+        )
         if kind in {'gzip_modified', 'zstd_modified'}:
             config.get_all_replacements = lambda: ({_SOURCE: 123456}, set(), {}, {})  # type: ignore[method-assign]
         stripper = TextureStripper(cast('ConfigManager', config))
         ca, key = generate_ca(tmp_path)
         certs = {h: generate_host_cert(h, ca, key, tmp_path) for h in (_HOST, _CDN)}
         default = generate_multi_host_cert('asset-batch', {_HOST, _CDN}, ca, key, tmp_path)
+        cached_cdn: list[bytes] = []
+
+        def no_cache_batch(_request: bytes, _response: bytes) -> None:
+            return None
+
+        def record_cache_cdn(_url: str, _path: str, body: bytes, _ct: str) -> None:
+            cached_cdn.append(body)
+
+        fake_cache = SimpleNamespace(
+            enabled=kind == 'filtered_cached',
+            process_batch_response=no_cache_batch,
+            process_cdn_response=record_cache_cdn,
+        )
         proxy = FleasionProxy(
             texture_stripper=stripper,
-            cache_scraper=cast('CacheScraper', SimpleNamespace(enabled=False)),
+            cache_scraper=cast('CacheScraper', fake_cache),
             host_certs=certs,
             default_cert=default,
             upstream_endpoints={},
@@ -311,10 +344,10 @@ def test_proxy_batch_transport_compat(
                     forwarded_v3 = json.loads(forwarded_body)
                     assert forwarded_v3['extra'] == {'preserved': True}
                     assert forwarded_v3['assets'][0]['asset'] == {'assetId': 123456}
-                if kind in {'v2_local', 'gzip_response_local'}:
+                if kind in {'v2_local', 'gzip_response_local', 'filtered_only', 'filtered_cached', 'filtered_nomatch'}:
                     client_response = json.loads(response.partition(b'\r\n\r\n')[2])
                     assert client_response['extra'] == {'preserved': True}
-            if kind in {'v2_local', 'gzip_response_local'}:
+            if kind in {'v2_local', 'gzip_response_local', 'filtered_only', 'filtered_cached', 'filtered_nomatch'}:
                 response_body = response.partition(b'\r\n\r\n')[2]
                 assert b'content-encoding:' not in response.partition(b'\r\n\r\n')[0].lower()
                 if kind == 'gzip_response_local':
@@ -330,8 +363,15 @@ def test_proxy_batch_transport_compat(
                     f'GET {target_path}?other-sig=1 HTTP/1.1\r\nHost: {_CDN}\r\n'
                     'Connection: close\r\n\r\n'.encode(),
                 )
-                assert cdn.endswith(b'\r\n\r\nLOCAL-IMAGE-REPLACEMENT')
-                assert len(upstream_writes) == 1
+                expected = (
+                    b'ROBLOX-ORIGINAL-IMAGE'
+                    if kind == 'filtered_nomatch'
+                    else b'LOCAL-IMAGE-REPLACEMENT'
+                )
+                assert cdn.endswith(b'\r\n\r\n' + expected)
+                assert len(upstream_writes) == (2 if kind.startswith('filtered_') else 1)
+                if kind == 'filtered_cached':
+                    assert cached_cdn == [b'ROBLOX-ORIGINAL-IMAGE']
         finally:
             await proxy.stop()
             TextureStripper.reset_routes()
