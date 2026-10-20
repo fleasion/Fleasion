@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, overload
 
+import certifi
+
 from fleasion.localization import tr
 
 from .linux_clients import (
@@ -923,6 +925,64 @@ def _proxy_environment_for_installation(
     }
 
 
+# OpenSSL and libcurl read these to pick a CA bundle; both are set so a client
+# built against either is covered
+_ENV_CA_BUNDLE_NAMES = ('SSL_CERT_FILE', 'CURL_CA_BUNDLE')
+_ENV_CA_BUNDLE_FILENAME = 'fleasion-ca-bundle.pem'
+
+
+def _env_ca_bundle_path(installation: LinuxClientInstallation) -> Path:
+    # The client's own data dir keeps its path identical inside the Flatpak
+    # sandbox, so the host path is a valid value for an in-sandbox env var
+    return installation.paths.data_root / _ENV_CA_BUNDLE_FILENAME
+
+
+def _prepare_env_ca_bundle(
+    installation: LinuxClientInstallation, ca_cert_path: Path
+) -> Path | None:
+    """Write a CA bundle of the public roots plus Fleasion's CA for the client.
+
+    A client's bootstrapper verifies TLS with the Flatpak runtime's OpenSSL or
+    libcurl and does not consult the engine's patched ``cacert.pem``, so it
+    rejects the Fleasion proxy's certificate on its first ClientSettings fetch.
+    Pointing ``SSL_CERT_FILE``/``CURL_CA_BUNDLE`` at this bundle makes it trust
+    the proxy without patching the client. The public roots are kept so every
+    non-intercepted request still validates normally.
+    """
+    try:
+        fleasion_ca = ca_cert_path.read_text(encoding='utf-8').strip()
+    except OSError as exc:
+        log_buffer.log(
+            'Launcher', f'Could not read Fleasion CA for {installation.display_name}: {exc}'
+        )
+        return None
+    if 'BEGIN CERTIFICATE' not in fleasion_ca:
+        log_buffer.log('Launcher', f'Fleasion CA at {ca_cert_path} is not a certificate')
+        return None
+    try:
+        public_roots = Path(certifi.where()).read_text(encoding='utf-8')
+    except OSError as exc:
+        log_buffer.log('Launcher', f'Could not read the public CA bundle: {exc}')
+        return None
+
+    destination = _env_ca_bundle_path(installation)
+    payload = f'{public_roots.rstrip()}\n{fleasion_ca}\n'
+    temporary = destination.with_name(f'.{destination.name}.{os.getpid()}.tmp')
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(payload, encoding='utf-8')
+        temporary.chmod(0o644)
+        temporary.replace(destination)
+    except OSError as exc:
+        log_buffer.log(
+            'Launcher', f'Could not write CA bundle for {installation.display_name}: {exc}'
+        )
+        with contextlib.suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        return None
+    return destination
+
+
 def _read_linux_proxy_override_state() -> str | None:
     try:
         if LINUX_PROXY_OVERRIDE_STATE.is_symlink():
@@ -970,9 +1030,6 @@ def set_linux_client_env_proxy_override(
     ca_cert_path: Path | None = None,
 ) -> bool:
     """Arm Env Proxy for exactly one selected Linux client."""
-    # Retained for call-site compatibility; registered clients currently need
-    # no client-specific certificate-bundle preparation here.
-    _ = ca_cert_path
     installation = (
         _installation_for_client_key(client_key)
         if client_key is not None
@@ -996,6 +1053,12 @@ def set_linux_client_env_proxy_override(
         installation,
         proxy_url,
     )
+    if ca_cert_path is not None:
+        bundle = _prepare_env_ca_bundle(installation, ca_cert_path)
+        if bundle is not None:
+            # So the client's bootstrapper trusts the proxy for its first
+            # ClientSettings fetch, which the engine's cacert.pem does not cover
+            proxy_env.update(dict.fromkeys(_ENV_CA_BUNDLE_NAMES, str(bundle)))
 
     flatpak = shutil.which('flatpak')
     if not flatpak:
@@ -1044,7 +1107,7 @@ def clear_linux_client_env_proxy_override(*, client_key: str | None = None) -> b
     installation = _installation_for_client_key(key)
     if installation is None:
         return False
-    names = installation.client.proxy_environment_names
+    names = (*installation.client.proxy_environment_names, *_ENV_CA_BUNDLE_NAMES)
     flatpak = shutil.which('flatpak')
     if not flatpak:
         log_buffer.log(
@@ -1052,6 +1115,8 @@ def clear_linux_client_env_proxy_override(*, client_key: str | None = None) -> b
             f'Cannot disarm {installation.display_name} Env Proxy: flatpak command not found',
         )
         return False
+    with contextlib.suppress(OSError):
+        _env_ca_bundle_path(installation).unlink(missing_ok=True)
     try:
         result = _standard_user_run(
             [
