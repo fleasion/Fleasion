@@ -2,7 +2,7 @@
 
 Smart App Control and other Windows Defender Application Control policies
 check every native module as it loads. Fleasion's bundled modules are not
-code-signed, so a policy can block one (``PyQt6\\sip``, ``PIL\\_imaging``, ...)
+code-signed, so a policy can block one (Qt's ``sip``, Pillow's ``_imaging``, ...)
 before Fleasion has a window, which otherwise surfaces as a bare traceback.
 
 This runs before settings, and with them the chosen language, are loaded, and
