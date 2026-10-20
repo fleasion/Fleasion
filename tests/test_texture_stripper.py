@@ -465,3 +465,66 @@ def test_orm_composite_resolves_normal_asset_id_for_variance_mips(monkeypatch, t
     assert seen['baseline'] == orm_baseline
     assert seen['normal_source'] == downloaded
     assert seen['normal_baseline'] == normal_baseline
+
+
+def _unavailable_batch(stripper, replacements):
+    body = json.dumps(
+        [
+            {'assetId': 1234, 'assetType': 'Audio', 'requestId': 'a'},
+            {'assetId': 5678, 'assetType': 'Audio', 'requestId': 'b'},
+        ]
+    ).encode()
+    modified, _scraper_body = stripper.process_batch_request(body, {}, replacements, 'batch')
+    error = {'code': 403, 'message': 'User is not authorized to access Asset.'}
+    response = json.dumps(
+        [{'requestId': 'a', 'errors': [error]}, {'requestId': 'b', 'errors': [error]}]
+    ).encode()
+    return stripper.process_batch_response(modified, response, {}, 'batch')
+
+
+def test_unavailable_asset_with_local_replacement_is_served_locally(tmp_path):
+    replacement = tmp_path / 'gothic.ogg'
+    replacement.write_bytes(b'OggS')
+
+    class _LocalConfig:
+        def get_all_replacements(self):
+            return {}, set(), {}, {1234: str(replacement)}
+
+    stripper = TextureStripper(_LocalConfig())
+    rewritten = _unavailable_batch(stripper, _LocalConfig().get_all_replacements())
+
+    assert rewritten is not None
+    items = json.loads(rewritten)
+    assert 'errors' not in items[0]
+    assert items[0]['assetTypeId'] == 3
+    location = items[0]['location']
+    assert location.startswith('https://fts.rbxcdn.com/fleasion/unavailable/')
+    # Assets without a replacement keep Roblox's error
+    assert 'location' not in items[1]
+    assert items[1]['errors'][0]['code'] == 403
+
+    path = location.removeprefix('https://fts.rbxcdn.com')
+    assert stripper.check_cdn_request('fts.rbxcdn.com', path) == ('local', str(replacement))
+    assert not stripper.has_pending()
+
+
+def test_unavailable_asset_with_cdn_replacement_is_redirected():
+    class _CdnConfig:
+        def get_all_replacements(self):
+            return {}, set(), {1234: 'https://example.com/gothic.ogg'}, {}
+
+    stripper = TextureStripper(_CdnConfig())
+    rewritten = _unavailable_batch(stripper, _CdnConfig().get_all_replacements())
+
+    location = json.loads(rewritten)[0]['location']
+    path = location.removeprefix('https://fts.rbxcdn.com')
+    assert stripper.check_cdn_request('fts.rbxcdn.com', path) == (
+        'cdn',
+        'https://example.com/gothic.ogg',
+    )
+
+
+def test_unavailable_assets_without_routes_leave_the_response_alone():
+    stripper = TextureStripper(_Config())
+
+    assert _unavailable_batch(stripper, _Config().get_all_replacements()) is None

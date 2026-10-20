@@ -2824,7 +2824,7 @@ class FleasionProxy:
                     # (strip_textures, removal rules), using req_body_raw causes every index
                     # after a removed item to map to the wrong response item, producing wrong
                     # assetTypeId values (the root cause of SolidModel/Mesh being typed as Image).
-                    self.texture_stripper.process_batch_response(
+                    rewritten_batch = self.texture_stripper.process_batch_response(
                         req_body_modified,
                         resp_body_plain,
                         req_headers,
@@ -2835,6 +2835,10 @@ class FleasionProxy:
                             scraper_body,
                             resp_body_plain,
                         )
+                    if rewritten_batch is not None:
+                        # Unavailable assets now point at their replacements
+                        resp_body_raw = rewritten_batch
+                        response_modified = True
 
                 elif host == ASSET_DELIVERY_HOST and not is_batch:
                     # Non-batch assetdelivery response (confirmed rare/non-existent

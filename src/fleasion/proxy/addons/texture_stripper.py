@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Dict, Optional, Tuple
@@ -38,6 +39,10 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+# Host of the locations given to replaced assets that Roblox will not serve. It
+# must be a CDN host the proxy always intercepts, so check_cdn_request sees it.
+_UNAVAILABLE_ASSET_HOST = 'fts.rbxcdn.com'
 
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC = b'\x1f\x8b'
@@ -1679,18 +1684,58 @@ class TextureStripper:
 
     # Batch response (called from server MITM thread)
 
+    def _route_unavailable_asset(
+        self, item: dict, req_item: dict, aid: int | str | None, pending_key: str
+    ) -> str | None:
+        """Turn an error item for a replaced asset into a Fleasion-served location.
+
+        Roblox answers moderated, private and archived assets with an error and
+        no location, so the client never requests the CDN URL a local or CDN
+        replacement is attached to. Pointing the item at a URL that only
+        Fleasion serves lets the replacement load anyway. Routes that need the
+        original bytes (SolidModel injection) cannot be served this way.
+        Called with ``self._lock`` held.
+        """
+        route = self._pending.get(pending_key)
+        if route is None or route[0] not in {'local', 'cdn'}:
+            return None
+        with self._anim_lock:
+            # Rig detection reads the original animation, which is unavailable
+            self._anim_local_pending.pop(pending_key, None)
+        location = f'https://{_UNAVAILABLE_ASSET_HOST}/fleasion/unavailable/{uuid.uuid4().hex}'
+        errors = item.pop('errors', None)
+        item['location'] = location
+        if 'assetTypeId' not in item:
+            type_id = req_item.get('assetTypeId') or self._REVERSE.get(
+                str(req_item.get('assetType', '')).lower()
+            )
+            if type_id is not None:
+                item['assetTypeId'] = type_id
+        reason = ''
+        if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+            reason = f' ({errors[0].get("code")}: {errors[0].get("message")})'
+        log_buffer.log(
+            'Replacer',
+            f'Asset {aid} is unavailable upstream{reason}; serving its replacement anyway',
+        )
+        return location
+
     def process_batch_response(
         self, req_body: bytes, resp_body: bytes, req_headers: dict, batch_id: str = ''
-    ) -> None:
-        """Commit CDN URL -> redirect/local/solid mappings from batch response."""
+    ) -> bytes | None:
+        """Commit CDN URL -> redirect/local/solid mappings from batch response.
+
+        Returns a rewritten response body when an unavailable asset was routed
+        to its replacement (see ``_route_unavailable_asset``), otherwise None.
+        """
         if not resp_body:
-            return
+            return None
         try:
             resp_data = _loads(resp_body)
         except Exception:
-            return
+            return None
         if not isinstance(resp_data, list):
-            return
+            return None
 
         # Roblox may renumber response requestIds after the request body has
         # been filtered/rewritten. Keep an index-aligned copy of outbound
@@ -1758,10 +1803,11 @@ class TextureStripper:
                     _slot_target_ids.add(int(_pk))
         _texpack_request_slots = self._build_texpack_request_slot_map(req_data, _slot_target_ids)
 
+        rewritten = False
         with self._lock:
             batch_generation = self._batch_generations.pop(batch_id, None)
             if batch_generation is None or batch_generation != self._routes_generation:
-                return
+                return None
             for idx, item in enumerate(resp_data):
                 if not isinstance(item, dict):
                     continue
@@ -1842,6 +1888,11 @@ class TextureStripper:
                             )
                             continue
 
+                if not location and pending_key and item.get('errors'):
+                    location = self._route_unavailable_asset(item, req_item, aid, pending_key)
+                    base_loc = location or ''
+                    rewritten = rewritten or location is not None
+
                 if not location or not pending_key:
                     continue
                 url_type, url_value = self._pending.pop(pending_key)
@@ -1869,6 +1920,7 @@ class TextureStripper:
                     self._solidmodel_injections[base_loc] = url_value
                     self._solidmodel_force_v3.add(base_loc)
                     log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
+        return _dumps(resp_data) if rewritten else None
 
     # CDN request check (called from server MITM thread for Roblox CDN hosts)
 
