@@ -89,6 +89,16 @@ Linux client identity, paths, launch behavior, process detection, and proxy capa
 - **Creator name column** in configuration list (off by default)
 - **Asset name display** next to preview button
 
+### Game Rules
+
+Open **Game Rules** from the Replacer footer.
+
+- **Texture filters** recolour every texture a game downloads (tint, grayscale, hue shift, saturation, pixelate, posterize, invert, or presets such as Purple Haze and Retro Pixels) without a rule per asset. A live before/after preview shows the result. Your own replacement files are never filtered. 3D material textures are opt-in, and normal maps are always skipped.
+- **Game profiles** switch to a game's own configs and filters when Roblox joins that place, then switch back when you join another game or close Roblox.
+- **Mod packs** bundle configs, their local replacement files, filters and game profiles into one `.fleasionpack` file. Installing shows what the pack contains first, refuses unsafe paths and file types, and never overwrites your existing configs or profiles.
+
+Filters and profiles apply to assets Roblox downloads after the change; clear the Roblox cache to re-download assets it already has.
+
 ### Custom FastFlags
 
 Fleasion can override Roblox ClientSettings FastFlags through the proxy while Roblox is running. Open the **Fast Flags** section in the Dashboard's **Modifications** tab to:
