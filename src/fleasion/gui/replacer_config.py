@@ -34,6 +34,7 @@ from PySide6.QtGui import (
     QEnterEvent,
     QFontMetrics,
     QIcon,
+    QKeyEvent,
     QKeySequence,
     QMouseEvent,
     QPainter,
@@ -961,6 +962,18 @@ class ReplacerConfigWindow(QDialog):
             self._first_paint = True
             self.first_painted.emit()
             self._preload.start(self._preload_tabs())
+
+    @override
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Keep a stray Escape from dismissing the dashboard.
+
+        QDialog treats Escape as reject(), which hides this main window and
+        leaves Fleasion running with nothing on screen.
+        """
+        if event.key() == Qt.Key.Key_Escape and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     @override
     def closeEvent(self, event: QCloseEvent) -> None:
