@@ -693,3 +693,69 @@ def test_orm_composite_resolves_normal_asset_id_for_variance_mips(
     assert seen['baseline'] == orm_baseline
     assert seen['normal_source'] == downloaded
     assert seen['normal_baseline'] == normal_baseline
+
+
+def _unavailable_batch(stripper: TextureStripper, replacements: ReplacementMaps) -> bytes | None:
+    body = json.dumps(
+        [
+            {'assetId': 1234, 'assetType': 'Audio', 'requestId': 'a'},
+            {'assetId': 5678, 'assetType': 'Audio', 'requestId': 'b'},
+        ]
+    ).encode()
+    modified, _scraper_body = _process_batch_request(stripper, body, {}, replacements, 'batch')
+    error = {'code': 403, 'message': 'User is not authorized to access Asset.'}
+    response = json.dumps(
+        [{'requestId': 'a', 'errors': [error]}, {'requestId': 'b', 'errors': [error]}]
+    ).encode()
+    return stripper.process_batch_response(modified, response, {}, 'batch')
+
+
+class _ReplacementConfig:
+    def __init__(self, replacements: ReplacementMaps) -> None:
+        self._replacements = replacements
+
+    def get_all_replacements(self) -> ReplacementMaps:
+        return self._replacements
+
+
+def test_unavailable_asset_with_local_replacement_is_served_locally(tmp_path: Path) -> None:
+    replacement = tmp_path / 'gothic.ogg'
+    replacement.write_bytes(b'OggS')
+    config = _ReplacementConfig(({}, set(), {}, {1234: str(replacement)}))
+    stripper = _make_stripper(config)
+    rewritten = _unavailable_batch(stripper, config.get_all_replacements())
+
+    assert rewritten is not None
+    items = cast('list[_JsonObject]', json.loads(rewritten))
+    assert 'errors' not in items[0]
+    assert items[0]['assetTypeId'] == 3
+    location = cast('str', items[0]['location'])
+    assert location.startswith('https://fts.rbxcdn.com/fleasion/unavailable/')
+    # Assets without a replacement keep Roblox's error
+    assert 'location' not in items[1]
+    errors = cast('list[_JsonObject]', items[1]['errors'])
+    assert errors[0]['code'] == 403
+
+    path = location.removeprefix('https://fts.rbxcdn.com')
+    assert stripper.check_cdn_request('fts.rbxcdn.com', path) == ('local', str(replacement))
+    assert not stripper.has_pending()
+
+
+def test_unavailable_asset_with_cdn_replacement_is_redirected() -> None:
+    config = _ReplacementConfig(({}, set(), {1234: 'https://example.com/gothic.ogg'}, {}))
+    stripper = _make_stripper(config)
+    rewritten = _unavailable_batch(stripper, config.get_all_replacements())
+
+    assert rewritten is not None
+    location = cast('str', cast('list[_JsonObject]', json.loads(rewritten))[0]['location'])
+    path = location.removeprefix('https://fts.rbxcdn.com')
+    assert stripper.check_cdn_request('fts.rbxcdn.com', path) == (
+        'cdn',
+        'https://example.com/gothic.ogg',
+    )
+
+
+def test_unavailable_assets_without_routes_leave_the_response_alone() -> None:
+    stripper = _make_stripper(_Config())
+
+    assert _unavailable_batch(stripper, _Config().get_all_replacements()) is None
