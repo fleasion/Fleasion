@@ -3,6 +3,5 @@
     "ms-python.python",
     "ms-python.vscode-pylance",
     "charliermarsh.ruff",
-    "repowise-dev.repowise"
   ]
 }
