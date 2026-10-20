@@ -41,6 +41,17 @@ def _global_settings_stash_path(stash_dir: Path, roblox_dir: Path) -> Path:
     return destination
 
 
+def _written_cap_path(stash: Path) -> Path:
+    return stash.with_name(f'{stash.name}.fleasion-cap')
+
+
+def _read_int(path: Path) -> int | None:
+    try:
+        return int(path.read_text(encoding='utf-8').strip())
+    except OSError, ValueError:
+        return None
+
+
 class GlobalSettingsManager:
     """Manage GlobalBasicSettings_13.xml for the current platform/client roots."""
 
@@ -241,6 +252,10 @@ class GlobalSettingsManager:
             # Write the framerate cap
             if dst.exists():
                 self._write_framerate_cap(dst, framerate)
+                if stash.exists():
+                    # Remember Fleasion's value so restore can tell it from a
+                    # cap the user picked in Roblox afterwards
+                    _written_cap_path(stash).write_text(str(framerate), encoding='utf-8')
 
         log_buffer.log(
             'GlobalSettings',
@@ -264,6 +279,7 @@ class GlobalSettingsManager:
             if stash.exists():
                 self._remove_read_only(stash)
                 stash.unlink()
+            _written_cap_path(stash).unlink(missing_ok=True)
 
             if dst.exists():
                 self._write_framerate_cap(dst, DEFAULT_FRAMERATE_CAP)
@@ -275,20 +291,36 @@ class GlobalSettingsManager:
         )
 
     def restore(self) -> None:
-        """Restore GlobalBasicSettings_13.xml in all user Roblox dirs from stash."""
+        """Put back the FramerateCap Fleasion replaced, and nothing else.
+
+        Roblox saves every in-game setting to this file, so copying the whole
+        stashed file back would revert anything the user changed since it was
+        taken. A cap the user changed in Roblox after Fleasion wrote its own is
+        theirs and is kept.
+        """
         for roblox_dir in self._user_roblox_dirs:
             dst = roblox_dir / GLOBAL_SETTINGS_REL
             stash = _global_settings_stash_path(self._stash_dir, roblox_dir)
+            written_path = _written_cap_path(stash)
+            if not stash.exists():
+                written_path.unlink(missing_ok=True)
+                continue
 
-            if stash.exists():
-                # Make sure destination is writable before restoring
-                self._remove_read_only(dst)
-                shutil.copy2(stash, dst)
+            original = self._read_framerate_cap(stash)
+            written = _read_int(written_path)
+            current = self._read_framerate_cap(dst) if dst.exists() else None
+            if current is None or original is None:
+                pass
+            elif written is not None and current != written:
+                log_buffer.log(
+                    'GlobalSettings',
+                    f'Kept FramerateCap={current} set in Roblox instead of restoring {original}',
+                )
+            elif current != original:
+                self._write_framerate_cap(dst, original)
 
-                # Restore the read-only state
-                if self._get_read_only_state(stash):
-                    self._set_read_only(dst, True)
-
-                stash.unlink()
+            self._remove_read_only(stash)
+            stash.unlink()
+            written_path.unlink(missing_ok=True)
 
         log_buffer.log('GlobalSettings', 'Restored GlobalBasicSettings_13.xml')

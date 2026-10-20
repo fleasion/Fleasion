@@ -64,3 +64,62 @@ def test_read_framerate_cap_reports_the_active_persisted_value(tmp_path):
     _write_settings(roblox_dir / 'GlobalBasicSettings_13.xml', 55)
 
     assert _manager(tmp_path, roblox_dir).read_framerate_cap() == 55
+
+
+def _write_full_settings(path, cap: int, *, fullscreen: str = 'false') -> None:
+    path.write_text(
+        (
+            '<roblox><Item class="UserGameSettings"><Properties>'
+            f'<int name="FramerateCap">{cap}</int>'
+            f'<bool name="Fullscreen">{fullscreen}</bool>'
+            '</Properties></Item></roblox>'
+        ),
+        encoding='utf-8',
+    )
+
+
+def test_restore_puts_back_only_the_cap_and_keeps_other_in_game_changes(tmp_path):
+    roblox_dir = tmp_path / 'Library' / 'Roblox'
+    roblox_dir.mkdir(parents=True)
+    settings = roblox_dir / 'GlobalBasicSettings_13.xml'
+    _write_full_settings(settings, 144)
+    manager = _manager(tmp_path, roblox_dir)
+
+    manager.write(240)
+    # The user changes another setting in Roblox while Fleasion's cap is active
+    _write_full_settings(settings, 240, fullscreen='true')
+    manager.restore()
+
+    assert manager._read_framerate_cap(settings) == 144
+    assert '<bool name="Fullscreen">true</bool>' in settings.read_text(encoding='utf-8')
+    assert not _global_settings_stash_path(manager._stash_dir, roblox_dir).exists()
+
+
+def test_restore_keeps_a_cap_the_user_chose_in_roblox(tmp_path):
+    roblox_dir = tmp_path / 'Library' / 'Roblox'
+    roblox_dir.mkdir(parents=True)
+    settings = roblox_dir / 'GlobalBasicSettings_13.xml'
+    _write_full_settings(settings, 60)
+    manager = _manager(tmp_path, roblox_dir)
+
+    manager.write(120)
+    _write_full_settings(settings, 240)  # raised in Roblox's own settings
+    manager.restore()
+
+    assert manager._read_framerate_cap(settings) == 240
+
+
+def test_restore_never_makes_the_settings_file_read_only(tmp_path):
+    roblox_dir = tmp_path / 'Library' / 'Roblox'
+    roblox_dir.mkdir(parents=True)
+    settings = roblox_dir / 'GlobalBasicSettings_13.xml'
+    _write_full_settings(settings, 60)
+    manager = _manager(tmp_path, roblox_dir)
+    stash = _global_settings_stash_path(manager._stash_dir, roblox_dir)
+    stash.parent.mkdir(parents=True)
+    _write_full_settings(stash, 60)
+    manager._set_read_only(stash, True)  # stash from an older Fleasion
+
+    manager.restore()
+
+    assert not manager._get_read_only_state(settings)
