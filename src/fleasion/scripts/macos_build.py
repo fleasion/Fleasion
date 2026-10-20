@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 # Env defaults
 DEFAULT_TARGET_ARCHITECTURE = 'universal2'
-DEFAULT_DEPLOYMENT_TARGET = '11.0'
+DEFAULT_DEPLOYMENT_TARGET = '12.0'
 DEFAULT_X86_ENVIRONMENT_PATH = '.tools/venv-x86'
 ARM64_PYTHON_PLATFORM = 'aarch64-apple-darwin'
 X86_64_PYTHON_PLATFORM = 'x86_64-apple-darwin'

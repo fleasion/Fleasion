@@ -154,7 +154,7 @@ def _read_bones(data: bytes, offset: int, count: int) -> tuple[list[_BoneRecord]
     _require(data, offset, count * 60, 'bone table')
     records: list[_BoneRecord] = []
     for _ in range(count):
-        records.append(cast('_BoneRecord', struct.unpack_from('<IHHf12f', data, offset)))
+        records.append(struct.unpack_from('<IHHf12f', data, offset))
         offset += 60
     return records, offset
 

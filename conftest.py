@@ -7,6 +7,9 @@ from typing import Protocol
 
 import pytest
 
+# Before any test module imports PySide6 (see fleasion.lazy_imports)
+import fleasion  # ruff: ignore[unused-import]  # pyright: ignore[reportUnusedImport]
+
 _THREADED_ASYNCIO_MARKER = 'threaded_asyncio'
 
 

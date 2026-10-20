@@ -6,7 +6,7 @@ No openssl binary required - everything is done in-process.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import ipaddress
 import logging
 import os
@@ -70,16 +70,16 @@ def _write_private_key(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
-def _as_utc(dt: datetime.datetime) -> datetime.datetime:
+def _as_utc(value: dt.datetime) -> dt.datetime:
     """Normalize X.509 datetime values to timezone-aware UTC."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=datetime.UTC)
-    return dt.astimezone(datetime.UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=dt.UTC)
+    return value.astimezone(dt.UTC)
 
 
 def _cert_valid_for(cert: x509.Certificate, min_remaining_days: int) -> bool:
     """Return True if cert is currently valid and has enough time remaining."""
-    now = datetime.datetime.now(datetime.UTC)
+    now = dt.datetime.now(dt.UTC)
 
     not_before_utc = getattr(cert, 'not_valid_before_utc', None)
     not_after_utc = getattr(cert, 'not_valid_after_utc', None)
@@ -91,7 +91,7 @@ def _cert_valid_for(cert: x509.Certificate, min_remaining_days: int) -> bool:
     if not (not_before_utc <= now <= not_after_utc):
         return False
 
-    min_remaining = datetime.timedelta(days=min_remaining_days)
+    min_remaining = dt.timedelta(days=min_remaining_days)
     return (not_after_utc - now) > min_remaining
 
 
@@ -252,8 +252,8 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'Fleasion'),
         ]
     )
-    now = datetime.datetime.now(datetime.UTC)
-    not_valid_before = now - datetime.timedelta(minutes=NOT_VALID_BEFORE_SKEW_MINUTES)
+    now = dt.datetime.now(dt.UTC)
+    not_valid_before = now - dt.timedelta(minutes=NOT_VALID_BEFORE_SKEW_MINUTES)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -261,7 +261,7 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(not_valid_before)
-        .not_valid_after(now + datetime.timedelta(days=3650))
+        .not_valid_after(now + dt.timedelta(days=3650))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .add_extension(
@@ -356,8 +356,8 @@ def generate_host_cert(
 
     # Generate a fresh key for this leaf cert
     leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    now = datetime.datetime.now(datetime.UTC)
-    not_valid_before = now - datetime.timedelta(minutes=NOT_VALID_BEFORE_SKEW_MINUTES)
+    now = dt.datetime.now(dt.UTC)
+    not_valid_before = now - dt.timedelta(minutes=NOT_VALID_BEFORE_SKEW_MINUTES)
 
     san_entries = _san_entries_for_hosts([host])
 
@@ -368,7 +368,7 @@ def generate_host_cert(
         .public_key(leaf_key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(not_valid_before)
-        .not_valid_after(now + datetime.timedelta(days=LEAF_CERT_VALIDITY_DAYS))
+        .not_valid_after(now + dt.timedelta(days=LEAF_CERT_VALIDITY_DAYS))
         .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(
@@ -476,8 +476,8 @@ def generate_multi_host_cert(
     ca_signing_key = cast('CertificateIssuerPrivateKeyTypes', ca_key)
 
     leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    now = datetime.datetime.now(datetime.UTC)
-    not_valid_before = now - datetime.timedelta(minutes=NOT_VALID_BEFORE_SKEW_MINUTES)
+    now = dt.datetime.now(dt.UTC)
+    not_valid_before = now - dt.timedelta(minutes=NOT_VALID_BEFORE_SKEW_MINUTES)
 
     leaf_cert = (
         x509.CertificateBuilder()
@@ -486,7 +486,7 @@ def generate_multi_host_cert(
         .public_key(leaf_key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(not_valid_before)
-        .not_valid_after(now + datetime.timedelta(days=LEAF_CERT_VALIDITY_DAYS))
+        .not_valid_after(now + dt.timedelta(days=LEAF_CERT_VALIDITY_DAYS))
         .add_extension(
             x509.SubjectAlternativeName(_san_entries_for_hosts(normalized_hosts)),
             critical=False,

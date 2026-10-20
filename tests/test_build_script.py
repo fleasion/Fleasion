@@ -411,7 +411,7 @@ def test_universal_verification_ignores_helper_symlink_targets(
 
 def test_arm_build_resolves_for_the_deployment_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     builder = object.__new__(macos_build.MacOSBuilder)
-    builder.base_environment = {'MACOSX_DEPLOYMENT_TARGET': '11.0'}
+    builder.base_environment = {'MACOSX_DEPLOYMENT_TARGET': '12.0'}
     commands: list[tuple[list[str], dict[str, str] | None]] = []
     verified_slices: list[tuple[str, str]] = []
 
@@ -448,7 +448,7 @@ def test_arm_build_resolves_for_the_deployment_platform(monkeypatch: pytest.Monk
         '--clean',
     ]
     assert commands[1][1] == {
-        'MACOSX_DEPLOYMENT_TARGET': '11.0',
+        'MACOSX_DEPLOYMENT_TARGET': '12.0',
         'MACOS_TARGET_ARCH': 'arm64',
         _slice_build_env(): '1',
     }
