@@ -27,7 +27,9 @@ from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -62,6 +64,7 @@ from ..utils import (
     open_folder,
 )
 from ..utils.http import http_head_status
+from ..utils.replacement_filters import ReplacementFilter, describe as describe_filters
 from ..config.manager import (
     local_replacement_path_for_storage,
     resolve_local_replacement_path,
@@ -1404,6 +1407,9 @@ class ReplacerConfigWindow(QDialog):
             action = mode.upper()
             replace_with = '-'
 
+        if mode in {'cdn', 'local'} and (summary := describe_filters(rule.get('filters'))):
+            replace_with = f'{replace_with} [{summary}]'
+
         id_count = len(rule.get('replace_ids', []))
         if group_depth is None:
             group_depth = self._group_depth(path[:-1])
@@ -1929,6 +1935,11 @@ class ReplacerConfigWindow(QDialog):
                     tr('ui.gui.replacer_config.edit_replacement'),
                     lambda: self._edit_replacement(path),
                 )
+                if entry.get('mode') in {'cdn', 'local'}:
+                    menu.addAction(
+                        tr('ui.gui.replacer_config.filters_menu'),
+                        lambda: self._edit_filters(path),
+                    )
                 menu.addSeparator()
                 menu.addAction(
                     tr('ui.gui.replacer_config.create_group'), self._create_group_from_selected
@@ -2396,6 +2407,72 @@ class ReplacerConfigWindow(QDialog):
         # Set new mode and value
         rule_copy['mode'] = new_mode
         rule_copy.update(extra)
+        self._save_with_undo(rules_copy)
+        self._refresh_tree()
+
+    def _edit_filters(self, path: tuple[int, ...]) -> None:
+        """Limit a local/CDN rule by the original asset's audio length and size."""
+        rules = self.config_manager.replacement_rules
+        rule = self._entry_at_path(rules, path)
+        if not self._is_profile(rule):
+            return
+        current = ReplacementFilter.from_config(rule.get('filters')) or ReplacementFilter()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr('ui.gui.replacer_config.filters_title'))
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+        layout = QVBoxLayout(dialog)
+        help_label = QLabel(tr('ui.gui.replacer_config.filters_help'))
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+
+        form = QFormLayout()
+        spin_boxes: dict[str, QDoubleSpinBox] = {}
+        for key, label, decimals in (
+            ('min_seconds', tr('ui.gui.replacer_config.filters_min_length'), 2),
+            ('max_seconds', tr('ui.gui.replacer_config.filters_max_length'), 2),
+            ('min_kb', tr('ui.gui.replacer_config.filters_min_size'), 0),
+            ('max_kb', tr('ui.gui.replacer_config.filters_max_size'), 0),
+        ):
+            spin = QDoubleSpinBox()
+            spin.setDecimals(decimals)
+            spin.setRange(0, 10_000_000)
+            # 0 is shown as "No limit" and saved as no bound
+            spin.setSpecialValueText(tr('ui.gui.replacer_config.filters_no_limit'))
+            spin.setValue(getattr(current, key) or 0)
+            form.addRow(label, spin)
+            spin_boxes[key] = spin
+        layout.addLayout(form)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        ok_btn = QPushButton(tr('ui.gui.replacer_config.ok'))
+        _ensure_text_width(ok_btn, 80)
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dialog.accept)
+        btn_layout.addWidget(ok_btn)
+        cancel_btn = QPushButton(tr('ui.gui.replacer_config.cancel'))
+        _ensure_text_width(cancel_btn, 80)
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        if not dialog.exec():
+            return
+        filters = ReplacementFilter.from_config(
+            {key: spin.value() for key, spin in spin_boxes.items()}
+        )
+        rules_copy = deepcopy(rules)
+        rule_copy = self._entry_at_path(rules_copy, path)
+        if not self._is_profile(rule_copy):
+            return
+        if filters is None:
+            rule_copy.pop('filters', None)
+        else:
+            rule_copy['filters'] = filters.to_config()
         self._save_with_undo(rules_copy)
         self._refresh_tree()
 

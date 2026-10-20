@@ -2813,6 +2813,8 @@ class FleasionProxy:
                 # All other responses are forwarded raw (preserving content-encoding).
                 response_modified = False
                 modified_content_encoding: bytes | None = None
+                # A filtered CDN-URL replacement answers with a redirect instead
+                filtered_redirect: bytes | None = None
                 custom_fflag_delivered_signature: tuple[tuple[str, str], ...] | None = None
 
                 if is_batch:
@@ -2877,6 +2879,26 @@ class FleasionProxy:
                             _prefer_v3,
                         )
                         response_modified = True
+
+                    elif short_circuit is not None and short_circuit[0] == 'filtered':
+                        original_body = _decompress_body(resp_body_raw, resp_headers)
+                        filtered_route = await asyncio.get_event_loop().run_in_executor(
+                            self._executor,
+                            self.texture_stripper.choose_filtered_route,
+                            short_circuit[1],
+                            original_body,
+                            full_url,
+                        )
+                        if filtered_route is not None and filtered_route.mode == 'cdn':
+                            filtered_redirect = _make_redirect(filtered_route.value)
+                        elif filtered_route is not None:
+                            replacement_body = await asyncio.get_event_loop().run_in_executor(
+                                self._executor, _read_local_bytes, filtered_route.value
+                            )
+                            # A missing replacement file keeps the original
+                            if replacement_body:
+                                resp_body_raw = replacement_body
+                                response_modified = True
 
                     elif short_circuit is not None and short_circuit[0] == 'anim_rig':
                         # Auto-convert rig: read the original CDN bytes to detect the rig,
@@ -3117,7 +3139,9 @@ class FleasionProxy:
                             custom_fflag_delivered_signature = None
 
                 # Forward response to Roblox
-                if response_modified:
+                if filtered_redirect is not None:
+                    outgoing_response = filtered_redirect
+                elif response_modified:
                     outgoing_response = _build_modified_response(
                         resp_first,
                         resp_headers,

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
+from ..utils.replacement_filters import FilteredRoute, ReplacementFilter
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
@@ -485,6 +486,8 @@ class ConfigManager:
         self._config_names_signature: tuple[tuple[str, int, int], ...] | None = None
         self._config_data_cache: dict[str, tuple[tuple[int, int] | None, dict]] = {}
         self._all_replacements_cache_signature: tuple | None = None
+        # Built alongside _all_replacements_cache, under the same signature
+        self._filtered_replacements_cache: dict[int | str, tuple[FilteredRoute, ...]] = {}
         self._all_replacements_cache: (
             tuple[
                 dict[int | str, int],
@@ -1676,6 +1679,15 @@ class ConfigManager:
             else:
                 yield entry
 
+    def get_filtered_replacements(self) -> dict[int | str, tuple[FilteredRoute, ...]]:
+        """Local/CDN rules that carry filters, by asset ID or type key, in rule order.
+
+        These are excluded from ``get_all_replacements`` because whether they
+        apply depends on the original asset's bytes.
+        """
+        self.get_all_replacements()
+        return self._filtered_replacements_cache
+
     def get_all_replacements(
         self,
     ) -> tuple[dict[int | str, int], set[int | str], dict[int | str, str], dict[int | str, str]]:
@@ -1705,6 +1717,7 @@ class ConfigManager:
         removals: set[int | str] = set()
         cdn_replacements: dict[int | str, str] = {}
         local_replacements: dict[int | str, str] = {}
+        filtered: dict[int | str, list[FilteredRoute]] = {}
 
         for config_name in enabled_configs:
             for rule in self._iter_replacement_rules(self.get_replacement_rules(config_name)):
@@ -1760,6 +1773,21 @@ class ConfigManager:
                             numeric_id = _ASSET_TYPE_IDS[v_lower]
                             parsed_ids.append(numeric_id)
 
+                filters = ReplacementFilter.from_config(rule.get('filters'))
+                if filters is not None and mode in {'cdn', 'local'}:
+                    # Decided per download in the proxy, so these never enter
+                    # the unconditional maps below
+                    if mode == 'cdn' and rule.get('cdn_url'):
+                        route = FilteredRoute(filters, 'cdn', str(rule['cdn_url']))
+                    elif mode == 'local' and rule.get('local_path'):
+                        resolved = str(resolve_local_replacement_path(rule['local_path']))
+                        route = FilteredRoute(filters, 'local', resolved)
+                    else:
+                        continue
+                    for key in parsed_ids:
+                        filtered.setdefault(key, []).append(route)
+                    continue
+
                 if mode == 'remove':
                     removals.update(parsed_ids)
                 elif mode == 'cdn':
@@ -1791,6 +1819,7 @@ class ConfigManager:
                         removals.update(parsed_ids)
 
         self._all_replacements_cache_signature = signature
+        self._filtered_replacements_cache = {key: tuple(routes) for key, routes in filtered.items()}
         self._all_replacements_cache = (
             replacements,
             removals,
