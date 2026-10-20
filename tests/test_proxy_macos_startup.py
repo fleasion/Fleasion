@@ -5,7 +5,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Protocol, Self, cast
+from typing import TYPE_CHECKING, Never, Protocol, Self, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -50,10 +50,6 @@ class _LogCallback(Protocol):
 
 class _ProxyStartErrorCallback(Protocol):
     def __call__(self, code: str, details: dict[str, object]) -> None: ...
-
-
-class _EnvOverrideCallback(Protocol):
-    def __call__(self, url: str, *, client_key: str) -> bool: ...
 
 
 class _HostUpdateCallback(Protocol):
@@ -117,13 +113,6 @@ def _collect_proxy_errors(
 
     return on_error
 
-
-def _collect_env_overrides(calls: list[tuple[str, str]]) -> _EnvOverrideCallback:
-    def apply(url: str, *, client_key: str) -> bool:
-        calls.append((url, client_key))
-        return True
-
-    return apply
 
 
 def _collect_host_updates(calls: list[set[str]]) -> _HostUpdateCallback:
@@ -254,7 +243,9 @@ def test_linux_proxy_stop_clears_exact_owned_flatpak_env_override(
     assert not getattr(proxy, '_env_proxy_ready').is_set()
 
 
-def test_linux_resource_discovery_keeps_only_selected_client_dirs(tmp_path, monkeypatch):
+def test_linux_resource_discovery_keeps_only_selected_client_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from fleasion.utils import platform_linux
     from fleasion.utils.linux_clients import (
         CORDIAL_CLIENT,
@@ -268,22 +259,28 @@ def test_linux_resource_discovery_keeps_only_selected_client_dirs(tmp_path, monk
     discovered = selected.paths.resource_roots[0]
     saved = selected.paths.resource_roots[0] / 'content'
     foreign = SOBER_CLIENT.paths(home=tmp_path, environ={}).resource_roots[0]
-    persisted = []
+    persisted: list[list[Path]] = []
     monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
     monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
     monkeypatch.setattr(
-        platform_linux, 'get_selected_linux_client_installation', lambda: selected
+        platform_linux, 'get_selected_linux_client_installation', _callback0(lambda: selected)
     )
     monkeypatch.setattr(
-        platform_linux, 'find_roblox_resource_dirs', lambda **_kwargs: [discovered]
+        platform_linux,
+        'find_roblox_resource_dirs',
+        _callback_kwargs(lambda **_kwargs: [discovered]),
     )
-    monkeypatch.setattr(proxy_master, 'load_saved_roblox_dirs', lambda: [saved, foreign])
     monkeypatch.setattr(
-        proxy_master, 'save_saved_roblox_dirs', lambda paths: persisted.append(list(paths))
+        proxy_master, 'load_saved_roblox_dirs', _callback0(lambda: [saved, foreign])
     )
-    monkeypatch.setattr(platform_linux, 'find_linux_ca_bundle_dirs', list)
 
-    assert proxy_master._find_roblox_dirs() == [discovered, saved]
+    def save_dirs(paths: Iterable[Path]) -> None:
+        persisted.append(list(paths))
+
+    monkeypatch.setattr(proxy_master, 'save_saved_roblox_dirs', save_dirs)
+    monkeypatch.setattr(platform_linux, 'find_linux_ca_bundle_dirs', _callback0(list[Path]))
+
+    assert getattr(proxy_master, '_find_roblox_dirs')() == [discovered, saved]
     assert persisted == [[discovered, saved, foreign]]
 
 
@@ -1185,7 +1182,7 @@ def test_linux_sober_clientsettings_stays_tunneled_until_route_is_armed() -> Non
 
 
 @pytest.mark.parametrize(
-    'client_key, proxy_mode, armed',
+    ('client_key', 'proxy_mode', 'armed'),
     [
         ('sober', 'env', True),
         ('mocktail', 'env', True),
@@ -1194,195 +1191,242 @@ def test_linux_sober_clientsettings_stays_tunneled_until_route_is_armed() -> Non
     ],
 )
 def test_proxy_startup_self_tests_only_active_intercept_routes(
-    tmp_path, monkeypatch, client_key, proxy_mode, armed
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    client_key: str,
+    proxy_mode: str,
+    *,
+    armed: bool,
+) -> None:
     from fleasion.utils.linux_clients import get_linux_client
 
-    self_test_hosts = []
-    override_calls = []
-    hosts_calls = []
-    errors = []
-    logs = []
-    ca_cert = tmp_path / "ca.crt"
-    ca_key = tmp_path / "ca.key"
-    leaf_cert = tmp_path / "leaf.crt"
-    leaf_key = tmp_path / "leaf.key"
-    default_cert = (tmp_path / "default.crt", tmp_path / "default.key")
+    self_test_hosts: list[set[str]] = []
+    override_calls: list[tuple[str, str]] = []
+    hosts_calls: list[bool] = []
+    errors: list[tuple[str, dict[str, object]]] = []
+    logs: list[tuple[str, str]] = []
+    ca_cert = tmp_path / 'ca.crt'
+    ca_key = tmp_path / 'ca.key'
+    leaf_cert = tmp_path / 'leaf.crt'
+    leaf_key = tmp_path / 'leaf.key'
+    default_cert = (tmp_path / 'default.crt', tmp_path / 'default.key')
     for path in (ca_cert, ca_key, leaf_cert, leaf_key, *default_cert):
-        path.write_text("x", encoding="utf-8")
+        path.write_text('x', encoding='utf-8')
 
     class _TextureStripper:
-        def __init__(self, _config):
+        def __init__(self, _config: object) -> None:
             pass
 
-        def set_cache_scraper(self, _scraper):
+        def set_cache_scraper(self, _scraper: object) -> None:
             pass
 
-        def precheck_replacements(self):
+        def precheck_replacements(self) -> None:
             pass
 
     class _ProxyStub:
         port = proxy_master.MACOS_PROXY_BACKEND_PORT
 
-        async def log_upstream_self_test(self, _hosts):
+        async def log_upstream_self_test(self, _hosts: object) -> None:
             pass
 
-        def set_module_interceptors(self, _interceptors):
+        def set_module_interceptors(self, _interceptors: object) -> None:
             pass
 
-        def set_intercept_match(self, _match):
+        def set_intercept_match(self, _match: object) -> None:
             pass
 
-        async def start(self):
+        async def start(self) -> None:
             pass
 
-        async def stop(self):
+        async def stop(self) -> None:
             pass
 
-        def clear_request_log(self):
+        def clear_request_log(self) -> None:
             pass
 
-        async def serve_forever(self):
+        async def serve_forever(self) -> Never:
             raise asyncio.CancelledError
 
-    async def tls_self_test(hosts, *_args, **_kwargs):
+    async def tls_self_test(hosts: set[str], *_args: object, **_kwargs: object) -> bool:
         self_test_hosts.append(set(hosts))
         return True
 
-    monkeypatch.setattr(proxy_master, "IS_MACOS", False)
-    monkeypatch.setattr(proxy_master, "IS_WINDOWS", False)
-    monkeypatch.setattr(proxy_master, "IS_LINUX", True)
+    def set_override(
+        url: str,
+        *,
+        client_key: str,
+        ca_cert_path: Path | None = None,
+        proxy_mode: str = 'env',
+    ) -> bool:
+        del ca_cert_path, proxy_mode
+        override_calls.append((url, client_key))
+        return armed
+
+    monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
+    monkeypatch.setattr(proxy_master, 'IS_WINDOWS', False)
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
     monkeypatch.setattr(
         proxy_master,
-        "_selected_linux_client_installation",
-        lambda: SimpleNamespace(
-            key=client_key, display_name=client_key, client=get_linux_client(client_key)
+        '_selected_linux_client_installation',
+        _callback0(
+            lambda: SimpleNamespace(
+                key=client_key, display_name=client_key, client=get_linux_client(client_key)
+            )
         ),
     )
-    monkeypatch.setattr(proxy_master, "_use_linux_privileged_helper", lambda: False)
-    monkeypatch.setattr(proxy_master, "_is_admin", lambda: True)
-    monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_needs_install', lambda _path: False)
-    monkeypatch.setattr(linux_proxy_helper, 'install_ca_into_linux_trust', lambda *_a, **_kw: None)
-    monkeypatch.setattr(proxy_master, "generate_ca", lambda _dir: (ca_cert, ca_key))
+    monkeypatch.setattr(proxy_master, '_use_linux_privileged_helper', _callback0(lambda: False))
+    monkeypatch.setattr(proxy_master, '_is_admin', _callback0(lambda: True))
+    monkeypatch.setattr(
+        linux_proxy_helper, 'linux_system_ca_needs_install', _callback1(lambda _path: False)
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        'install_ca_into_linux_trust',
+        _callback_args_kwargs(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(proxy_master, 'generate_ca', _callback1(lambda _dir: (ca_cert, ca_key)))
     monkeypatch.setattr(
         proxy_master,
-        "generate_host_cert",
-        lambda *_args, **_kwargs: (leaf_cert, leaf_key),
+        'generate_host_cert',
+        _callback_args_kwargs(lambda *_args, **_kwargs: (leaf_cert, leaf_key)),
     )
     monkeypatch.setattr(
         proxy_master,
-        "generate_multi_host_cert",
-        lambda *_args, **_kwargs: default_cert,
+        'generate_multi_host_cert',
+        _callback_args_kwargs(lambda *_args, **_kwargs: default_cert),
     )
-    monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: "ca")
+    monkeypatch.setattr(proxy_master, 'get_ca_pem', _callback1(lambda _path: 'ca'))
     monkeypatch.setattr(
-        proxy_master, "_install_ca_into_roblox",
-        lambda _pem, **_kwargs: (
-            (False, {'error': 'no_roblox_installs', 'dirs': []})
-            if client_key == 'mocktail' else (True, {})
+        proxy_master,
+        '_install_ca_into_roblox',
+        _callback1_kwargs(
+            lambda _pem, **_kwargs: (
+                (False, dict[str, object](error='no_roblox_installs', dirs=list[str]()))
+                if client_key == 'mocktail'
+                else (True, dict[str, object]())
+            )
         ),
     )
-    monkeypatch.setattr(proxy_master, "_other_proxy_owner_alive", lambda: False)
-    monkeypatch.setattr(proxy_master, "_remove_hosts_entries", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(proxy_master, '_other_proxy_owner_alive', _callback0(lambda: False))
     monkeypatch.setattr(
-        proxy_master, "_add_hosts_entries",
-        lambda *_args, **_kwargs: hosts_calls.append(True) or True,
+        proxy_master, '_remove_hosts_entries', _callback_args_kwargs(lambda *_args, **_kwargs: True)
     )
-    monkeypatch.setattr(proxy_master, "_verify_hosts_entries", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(proxy_master, "_flush_dns", lambda: None)
-    monkeypatch.setattr(proxy_master, "_resolve_real_endpoints", lambda _hosts: {})
     monkeypatch.setattr(
         proxy_master,
-        "detect_windows_proxy",
-        lambda: SimpleNamespace(
-            wininet_enabled=False,
-            wininet_proxy_server="",
-            wininet_auto_config_url="",
-            winhttp_proxy_server="",
-            macos_http_enabled=False,
-            macos_https_enabled=False,
-            macos_http_proxy_server="",
-            macos_https_proxy_server="",
-            macos_auto_config_url="",
+        '_add_hosts_entries',
+        _callback_args_kwargs(lambda *_args, **_kwargs: hosts_calls.append(True) or True),
+    )
+    monkeypatch.setattr(
+        proxy_master, '_verify_hosts_entries', _callback_args_kwargs(lambda *_args, **_kwargs: True)
+    )
+    monkeypatch.setattr(proxy_master, '_flush_dns', _callback0(lambda: None))
+    monkeypatch.setattr(proxy_master, '_resolve_real_endpoints', _callback1(lambda _hosts: {}))
+    monkeypatch.setattr(
+        proxy_master,
+        'detect_windows_proxy',
+        _callback0(
+            lambda: SimpleNamespace(
+                wininet_enabled=False,
+                wininet_proxy_server='',
+                wininet_auto_config_url='',
+                winhttp_proxy_server='',
+                macos_http_enabled=False,
+                macos_https_enabled=False,
+                macos_http_proxy_server='',
+                macos_https_proxy_server='',
+                macos_auto_config_url='',
+            )
         ),
     )
-    monkeypatch.setattr(proxy_master, "detected_http_proxy", lambda _info: None)
-    monkeypatch.setattr(proxy_master, "TextureStripper", _TextureStripper)
-    monkeypatch.setattr(proxy_master, "FleasionProxy", lambda **_kwargs: _ProxyStub())
-    monkeypatch.setattr(proxy_master, "_run_tls_self_test", tls_self_test)
-    monkeypatch.setattr(proxy_master.ProxyMaster, "_start_watchdog", lambda _self: None)
+    monkeypatch.setattr(proxy_master, 'detected_http_proxy', _callback1(lambda _info: None))
+    monkeypatch.setattr(proxy_master, 'TextureStripper', _TextureStripper)
+    monkeypatch.setattr(
+        proxy_master, 'FleasionProxy', _callback_kwargs(lambda **_kwargs: _ProxyStub())
+    )
+    monkeypatch.setattr(proxy_master, '_run_tls_self_test', tls_self_test)
+    monkeypatch.setattr(proxy_master.ProxyMaster, '_start_watchdog', _callback1(lambda _self: None))
     monkeypatch.setattr(
         proxy_master.ProxyMaster,
-        "_start_linux_sober_custom_fflag_timer",
-        lambda _self: None,
+        '_start_linux_sober_custom_fflag_timer',
+        _callback1(lambda _self: None),
     )
     monkeypatch.setattr(
-        "fleasion.utils.platform_linux.set_linux_client_env_proxy_override",
-        lambda url, *, client_key, ca_cert_path=None, proxy_mode='env': (
-            override_calls.append((url, client_key)) or armed
-        ),
+        'fleasion.utils.platform_linux.set_linux_client_env_proxy_override',
+        set_override,
     )
     monkeypatch.setattr(
         proxy_master,
-        "log_buffer",
-        SimpleNamespace(log=lambda category, message: logs.append((category, message))),
+        'log_buffer',
+        SimpleNamespace(log=_collect_log(logs)),
     )
 
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    proxy.config_manager = SimpleNamespace(
-        proxy_mode=proxy_mode,
-        custom_fflags_enabled=True,
-        clear_cache_on_launch=False,
-        settings={},
-        upstream_transport_mode="direct",
-        vpn_compat_max_assetdelivery_connections=0,
-        vpn_compat_max_cdn_connections=0,
-        wire_preserving_passthrough=False,
+    setattr(
+        proxy,
+        'config_manager',
+        SimpleNamespace(
+            proxy_mode=proxy_mode,
+            custom_fflags_enabled=True,
+            clear_cache_on_launch=False,
+            settings={},
+            upstream_transport_mode='direct',
+            vpn_compat_max_assetdelivery_connections=0,
+            vpn_compat_max_cdn_connections=0,
+            wire_preserving_passthrough=False,
+        ),
     )
-    proxy.cache_scraper = SimpleNamespace(
-        set_real_ips=lambda _ips: None,
-        set_http_proxy_fallback=lambda _proxy: None,
+    setattr(
+        proxy,
+        'cache_scraper',
+        SimpleNamespace(
+            set_real_ips=_callback1(lambda _ips: None),
+            set_http_proxy_fallback=_callback1(lambda _proxy: None),
+        ),
     )
-    proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: False)
-    proxy.custom_fflag_modifier = SimpleNamespace(
-        is_enabled=lambda: True,
-        custom_flags_enabled=lambda: True,
-        prime_windows_flag_cache=lambda: False,
+    setattr(proxy, 'username_spoofer', SimpleNamespace(is_enabled=_callback0(lambda: False)))
+    setattr(
+        proxy,
+        'custom_fflag_modifier',
+        SimpleNamespace(
+            is_enabled=_callback0(lambda: True),
+            custom_flags_enabled=_callback0(lambda: True),
+            prime_windows_flag_cache=_callback0(lambda: False),
+        ),
     )
-    proxy._module_interceptors = []
-    proxy._on_proxy_start_error = lambda code, details: errors.append((code, details))
-    proxy._running = False
-    proxy._lock = threading.Lock()
-    proxy._loop = None
-    proxy._env_proxy_intercept_match = ""
-    proxy._env_proxy_intercept_all = False
-    proxy._active_intercept_hosts = set()
-    proxy._hosts_installed = False
-    proxy._active_env_proxy_mode = False
-    proxy._sober_env_proxy_override_active = False
-    proxy._sober_fflag_timer_stop = None
-    proxy._sober_fflag_timer_thread = None
-    proxy._hosts_proxy_ready = threading.Event()
-    proxy._active_proxy_port = None
+    setattr(proxy, '_module_interceptors', [])
+    setattr(proxy, '_on_proxy_start_error', _collect_proxy_errors(errors))
+    setattr(proxy, '_running', False)
+    setattr(proxy, '_lock', threading.Lock())
+    setattr(proxy, '_loop', None)
+    setattr(proxy, '_env_proxy_intercept_match', '')
+    setattr(proxy, '_env_proxy_intercept_all', False)
+    setattr(proxy, '_active_intercept_hosts', set())
+    setattr(proxy, '_hosts_installed', False)
+    setattr(proxy, '_active_env_proxy_mode', False)
+    setattr(proxy, '_sober_env_proxy_override_active', False)
+    setattr(proxy, '_sober_fflag_timer_stop', None)
+    setattr(proxy, '_sober_fflag_timer_thread', None)
+    setattr(proxy, '_hosts_proxy_ready', threading.Event())
+    setattr(proxy, '_active_proxy_port', None)
     monkeypatch.setattr(
         proxy_master.ProxyMaster,
-        "_startup_intercept_hosts",
-        lambda _self: set(proxy_master.BASE_INTERCEPT_HOSTS),
+        '_startup_intercept_hosts',
+        _callback1(lambda _self: set(proxy_master.BASE_INTERCEPT_HOSTS)),
     )
 
-    asyncio.run(proxy._run_proxy())
+    asyncio.run(getattr(proxy, '_run_proxy')())
 
     assert self_test_hosts == [set(proxy_master.BASE_INTERCEPT_HOSTS)]
     assert override_calls == [('http://127.0.0.1:58443', client_key)]
-    assert proxy._active_env_proxy_mode is armed
-    assert proxy._sober_env_proxy_override_active is (armed and client_key == 'sober')
+    assert getattr(proxy, '_active_env_proxy_mode') is armed
+    assert getattr(proxy, '_sober_env_proxy_override_active') is (armed and client_key == 'sober')
     assert hosts_calls == []
-    assert not proxy._hosts_proxy_ready.is_set()
+    hosts_ready = cast('threading.Event', getattr(proxy, '_hosts_proxy_ready'))
+    assert not hosts_ready.is_set()
     if not armed:
-        assert errors == [(
-            'linux_client_proxy_setup_failed',
-            {'client': client_key, 'mode': proxy_mode},
-        )]
+        assert errors == [
+            ('linux_client_proxy_setup_failed', {'client': client_key, 'mode': proxy_mode})
+        ]
 
 
 def test_linux_startup_treats_manual_profile_api_hosts_entry_as_active(

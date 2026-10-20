@@ -769,6 +769,14 @@ def test_native_flags_restore_external_value_when_later_managed(tmp_path: Path) 
     assert json.loads(path.read_text()) == {'FStringInitial': 'base', 'FFlagB': 23}
 
 
+def _find_mocktail_index(_key: object) -> int:
+    return 2
+
+
+def _ignore_signal_block(_blocked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    return None
+
+
 @pytest.mark.parametrize('legacy', [False, True])
 def test_preset_cleanup_after_restart_visits_previous_clients(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, legacy: bool
@@ -777,6 +785,7 @@ def test_preset_cleanup_after_restart_visits_previous_clients(
     mocktail = MOCKTAIL_CLIENT.paths(home=tmp_path, environ={})
     cordial = CORDIAL_CLIENT.paths(home=tmp_path, environ={})
     old = mocktail.config_root / 'fflags.json'
+    assert cordial.flatpak_root is not None
     new = cordial.flatpak_root / 'data' / 'cordial' / 'profiles' / 'default' / 'flags.json'
     old.parent.mkdir(parents=True)
     new.parent.mkdir(parents=True)
@@ -1033,7 +1042,7 @@ def test_preset_restore_conflict_blocks_client_switch_and_restarts_proxy(
     native.write_text('{"FFlagOriginal": true}', encoding='utf-8')
     monkeypatch.setattr(platform_linux, 'find_linux_fflag_files', lambda: [native])
     modification_manager._data['fast_flags_enabled'] = True  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
-    stash = modification_manager.fflag_manager._stash_dir  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
+    stash = cast('Path', getattr(modification_manager.fflag_manager, '_stash_dir'))  # ruff: ignore[get-attr-with-constant]
     assert set_linux_flag_layer(native, stash, 'presets', {'FFlagFirst': 1, 'FFlagSecond': 2})
     externally_modified = json.loads(native.read_text())
     externally_modified['FFlagFirst'] = 99
@@ -1058,9 +1067,9 @@ def test_preset_restore_conflict_blocks_client_switch_and_restarts_proxy(
             _tray=SimpleNamespace(proxy_master=proxy, mod_manager=modification_manager),
             _linux_client_combo=SimpleNamespace(
                 currentData=lambda: 'mocktail',
-                findData=lambda _key: 2,
+                findData=_find_mocktail_index,
                 setCurrentIndex=selected_indexes.append,
-                blockSignals=lambda _checked: None,
+                blockSignals=_ignore_signal_block,
             ),
             _refresh_linux_client_status=lambda: events.append('refresh'),
         ),

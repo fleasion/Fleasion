@@ -19,7 +19,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, Unpack, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, Unpack
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -200,10 +200,9 @@ class LinuxClientDescriptor:
         Native packages and AppImages share the host XDG directories, so they
         are listed once.
         """
-        kinds = dict.fromkeys(
-            cast('InstallKind', 'flatpak' if kind == 'flatpak' else 'native')
-            for kind in self.install_kinds
-        )
+        kinds: dict[InstallKind, None] = {}
+        for kind in self.install_kinds:
+            kinds['flatpak' if kind == 'flatpak' else 'native'] = None
         return tuple(self.paths(home=home, environ=environ, kind=kind) for kind in kinds)
 
     def paths(

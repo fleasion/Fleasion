@@ -1053,8 +1053,12 @@ def _read_linux_proxy_override_payload() -> tuple[str, InstallKind] | None:
     if not isinstance(key, str) or key not in LINUX_CLIENTS_BY_KEY:
         return None
     # State from before native installs were supported is always a Flatpak
-    kind = payload_map.get('install', 'flatpak')
-    return key, next((item for item in INSTALL_KINDS if item == kind), 'flatpak')
+    stored = payload_map.get('install', 'flatpak')
+    kind: InstallKind = 'flatpak'
+    for candidate in INSTALL_KINDS:
+        if candidate == stored:
+            kind = candidate
+    return key, kind
 
 
 def _read_linux_proxy_override_state() -> str | None:

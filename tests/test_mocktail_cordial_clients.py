@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -22,9 +22,47 @@ from fleasion.utils.linux_clients import (
 )
 
 if TYPE_CHECKING:
-    from fleasion.utils.linux_clients import LinuxClientDescriptor
+    from collections.abc import Callable, Sequence
+
+    from fleasion.utils.linux_clients import CommandRunner, LinuxClientDescriptor
 
 MocktailHome = tuple[LinuxClientInstallation, list[list[str]], Path]
+
+
+def _returning[T](value: T) -> Callable[..., T]:
+    def callback(*_args: object, **_kwargs: object) -> T:
+        return value
+
+    return callback
+
+
+def _recording_override(overrides: list[list[str]]) -> Callable[..., bool]:
+    def override(_installation: object, args: list[str], _action: str) -> bool:
+        overrides.append(args)
+        return True
+
+    return override
+
+
+def _capturing_log(captured: list[str]) -> Callable[[str, str], None]:
+    def log(_category: str, message: str) -> None:
+        captured.append(message)
+
+    return log
+
+
+def _cordial_pids(name: str) -> list[int]:
+    return [10, 11] if name == 'cordial-run' else []
+
+
+def _no_fleasion_cas(text: str, _ca: str) -> tuple[str, int, int]:
+    return text, 0, 0
+
+
+def _flatpak_root(installation: LinuxClientInstallation) -> Path:
+    root = installation.paths.flatpak_root
+    assert root is not None
+    return root
 
 MOCKTAIL_CONFIG = """\
 # Mocktail configuration.
@@ -59,7 +97,7 @@ def _installation(client: LinuxClientDescriptor, home: Path) -> LinuxClientInsta
 # Registry paths
 
 
-def test_cordial_overlay_lives_under_config_and_extracted_bundles_are_found(tmp_path):
+def test_cordial_overlay_lives_under_config_and_extracted_bundles_are_found(tmp_path: Path) -> None:
     root = tmp_path / '.var' / 'app' / 'io.github.luohoa97.Cordial'
     paths = CORDIAL_CLIENT.paths(home=tmp_path, environ={})
     assert paths.resource_roots == (root / 'config' / 'cordial' / 'overlay',)
@@ -81,7 +119,7 @@ def test_cordial_overlay_lives_under_config_and_extracted_bundles_are_found(tmp_
     )
 
 
-def test_cordial_profiles_supply_flags_settings_and_storage(tmp_path):
+def test_cordial_profiles_supply_flags_settings_and_storage(tmp_path: Path) -> None:
     root = tmp_path / '.var' / 'app' / 'io.github.luohoa97.Cordial'
     profiles = root / 'data' / 'cordial' / 'profiles'
     for name in ('default', 'alt'):
@@ -104,7 +142,7 @@ def test_cordial_profiles_supply_flags_settings_and_storage(tmp_path):
     }
 
 
-def test_mocktail_has_no_overlay_and_uses_its_own_files(tmp_path):
+def test_mocktail_has_no_overlay_and_uses_its_own_files(tmp_path: Path) -> None:
     root = tmp_path / '.var' / 'app' / 'space.bigrat.mocktail'
     (root / 'config' / 'mocktail').mkdir(parents=True)
     paths = MOCKTAIL_CLIENT.paths(home=tmp_path, environ={})
@@ -115,13 +153,15 @@ def test_mocktail_has_no_overlay_and_uses_its_own_files(tmp_path):
     assert MOCKTAIL_CLIENT.proxy_integration == 'mocktail_config'
 
 
-def test_auto_selection_follows_the_roblox_desktop_handler(tmp_path):
+def test_auto_selection_follows_the_roblox_desktop_handler(tmp_path: Path) -> None:
     installed = tuple(
         _installation(c, tmp_path) for c in (SOBER_CLIENT, MOCKTAIL_CLIENT, CORDIAL_CLIENT)
     )
 
-    def run(command, **_kwargs):
-        return subprocess.CompletedProcess(command, 0, 'io.github.luohoa97.Cordial.desktop\n', '')
+    def run(command: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            list(command), 0, 'io.github.luohoa97.Cordial.desktop\n', ''
+        )
 
     selected = select_linux_client(
         'auto',
@@ -129,7 +169,7 @@ def test_auto_selection_follows_the_roblox_desktop_handler(tmp_path):
         home=tmp_path,
         environ={},
         which=lambda name: f'/usr/bin/{name}',
-        run=run,
+        run=cast('CommandRunner', run),
     )
     assert selected is not None
     assert selected.key == 'cordial'
@@ -138,7 +178,7 @@ def test_auto_selection_follows_the_roblox_desktop_handler(tmp_path):
 # Mocktail config editing
 
 
-def test_mocktail_config_edit_keeps_comments_and_other_keys():
+def test_mocktail_config_edit_keeps_comments_and_other_keys() -> None:
     updated = mocktail_config.set_integration(
         MOCKTAIL_CONFIG, {'enabled': 'true', 'proxy_mode': 'env', 'proxy_port': '60001'}
     )
@@ -156,7 +196,7 @@ def test_mocktail_config_edit_keeps_comments_and_other_keys():
     assert restored == MOCKTAIL_CONFIG
 
 
-def test_mocktail_config_adds_missing_integration_block():
+def test_mocktail_config_adds_missing_integration_block() -> None:
     updated = mocktail_config.set_integration('version: 1\n', {'enabled': 'true'})
     assert updated == 'version: 1\nintegrations:\n  fleasion:\n    enabled: true\n'
 
@@ -171,7 +211,7 @@ def test_mocktail_config_adds_missing_integration_block():
         ('  use_system_proxy: false\n', 58443, None),
     ],
 )
-def test_mocktail_network_conflicts(network, port, conflict):
+def test_mocktail_network_conflicts(network: str, port: int | None, conflict: str | None) -> None:
     text = f'version: 1\nnetwork:\n{network}'
     assert mocktail_config.conflicting_network_setting(text, port) == conflict
 
@@ -185,7 +225,7 @@ def mocktail_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> MocktailHo
     monkeypatch.setattr(
         platform_linux,
         '_flatpak_override',
-        lambda _installation, args, _action: overrides.append(args) or True,
+        _recording_override(overrides),
     )
     monkeypatch.setattr(
         platform_linux, 'MOCKTAIL_INTEGRATION_STATE', tmp_path / 'fleasion' / 'mocktail.json'
@@ -200,7 +240,7 @@ def mocktail_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> MocktailHo
 
     monkeypatch.setattr(platform_linux, '_read_mocktail_proxy_environment', environment)
     installation = _installation(MOCKTAIL_CLIENT, tmp_path)
-    monkeypatch.setattr(platform_linux, '_installation_for_client_key', lambda _key: installation)
+    monkeypatch.setattr(platform_linux, '_installation_for_client_key', _returning(installation))
     ca_file = tmp_path / 'proxy_ca' / 'ca.crt'
     ca_file.parent.mkdir()
     ca_file.write_text(CA_PEM, encoding='utf-8')
@@ -217,7 +257,7 @@ def test_mocktail_arm_and_disarm_round_trip(mocktail_home: MocktailHome) -> None
     assert platform_linux.set_linux_client_env_proxy_override(
         'http://127.0.0.1:60001', client_key='mocktail', ca_cert_path=ca_file
     )
-    sandbox_ca = installation.paths.flatpak_root / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt'
+    sandbox_ca = _flatpak_root(installation) / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt'
     assert sandbox_ca.read_text(encoding='utf-8') == CA_PEM
     assert mocktail_config.read_integration(config.read_text(encoding='utf-8')) == {
         'enabled': 'true',
@@ -259,13 +299,13 @@ def test_mocktail_hosts_mode_drops_the_port(mocktail_home: MocktailHome) -> None
         'proxy_mode': 'hosts',
         'proxy_port': None,
         'ca_certificate': json.dumps(
-            str(installation.paths.flatpak_root / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt')
+            str(_flatpak_root(installation) / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt')
         ),
     }
     assert '--env=MOCKTAIL_FLEASION_PROXY_MODE=hosts' in overrides[-1]
 
 
-def test_mocktail_arm_refuses_a_conflicting_proxy(mocktail_home):
+def test_mocktail_arm_refuses_a_conflicting_proxy(mocktail_home: MocktailHome) -> None:
     installation, overrides, ca_file = mocktail_home
     config = installation.paths.config_file
     config.parent.mkdir(parents=True)
@@ -279,7 +319,7 @@ def test_mocktail_arm_refuses_a_conflicting_proxy(mocktail_home):
     assert overrides == []
 
 
-def test_mocktail_first_launch_uses_environment_only(mocktail_home):
+def test_mocktail_first_launch_uses_environment_only(mocktail_home: MocktailHome) -> None:
     installation, overrides, ca_file = mocktail_home
     assert platform_linux.set_linux_client_env_proxy_override(
         'http://127.0.0.1:60001', client_key='mocktail', ca_cert_path=ca_file
@@ -288,17 +328,17 @@ def test_mocktail_first_launch_uses_environment_only(mocktail_home):
     assert '--env=MOCKTAIL_FLEASION_ENABLED=true' in overrides[-1]
 
 
-def test_cordial_uses_standard_proxy_environment(tmp_path, monkeypatch):
+def test_cordial_uses_standard_proxy_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     overrides: list[list[str]] = []
     monkeypatch.setattr(
         platform_linux,
         '_flatpak_override',
-        lambda _installation, args, _action: overrides.append(args) or True,
+        _recording_override(overrides),
     )
     monkeypatch.setattr(platform_linux, 'LINUX_PROXY_OVERRIDE_STATE', tmp_path / 'override.json')
     monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', None)
     installation = _installation(CORDIAL_CLIENT, tmp_path)
-    monkeypatch.setattr(platform_linux, '_installation_for_client_key', lambda _key: installation)
+    monkeypatch.setattr(platform_linux, '_installation_for_client_key', _returning(installation))
 
     assert platform_linux.set_linux_client_env_proxy_override(
         'http://127.0.0.1:60001', client_key='cordial', proxy_mode='hosts'
@@ -314,7 +354,7 @@ def test_cordial_uses_standard_proxy_environment(tmp_path, monkeypatch):
 # Engine process detection
 
 
-def test_engine_process_is_scoped_to_the_client_cgroup(tmp_path, monkeypatch):
+def test_engine_process_is_scoped_to_the_client_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for pid, cgroup in (
         (10, 'app-flatpak-org.vinegarhq.Sober-1.scope'),
         (11, 'app-flatpak-io.github.luohoa97.Cordial-2.scope'),
@@ -326,7 +366,7 @@ def test_engine_process_is_scoped_to_the_client_cgroup(tmp_path, monkeypatch):
         (process / 'stat').write_text(f'{pid} (cordial-run) {fields}', encoding='utf-8')
     monkeypatch.setattr(platform_linux, 'PROC_ROOT', tmp_path)
     monkeypatch.setattr(
-        platform_linux, '_process_pids', lambda name: [10, 11] if name == 'cordial-run' else []
+        platform_linux, '_process_pids', _cordial_pids
     )
 
     engine = platform_linux.linux_client_main_process(_installation(CORDIAL_CLIENT, tmp_path))
@@ -344,7 +384,7 @@ def _private_file(path: Path, text: str) -> Path:
     return path
 
 
-def test_mocktail_cookie_is_read_and_switched(tmp_path, monkeypatch):
+def test_mocktail_cookie_is_read_and_switched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     installation = _installation(MOCKTAIL_CLIENT, tmp_path)
     provider = roblox_auth.MOCKTAIL_LOCAL_AUTH_PROVIDER
     cookie_path = provider.cookie_path(installation)
@@ -357,7 +397,7 @@ def test_mocktail_cookie_is_read_and_switched(tmp_path, monkeypatch):
     assert cookie_path.stat().st_mode & 0o777 == 0o600
 
 
-def test_mocktail_cookie_writer_rejects_unknown_formats(tmp_path):
+def test_mocktail_cookie_writer_rejects_unknown_formats(tmp_path: Path) -> None:
     installation = _installation(MOCKTAIL_CLIENT, tmp_path)
     provider = roblox_auth.MOCKTAIL_LOCAL_AUTH_PROVIDER
     cookie_path = _private_file(provider.cookie_path(installation), 'something else\n')
@@ -368,7 +408,7 @@ def test_mocktail_cookie_writer_rejects_unknown_formats(tmp_path):
     assert cookie_path.read_text(encoding='utf-8') == 'something else\n'
 
 
-def test_cordial_cookie_is_read_from_most_recent_profile_and_never_written(tmp_path):
+def test_cordial_cookie_is_read_from_most_recent_profile_and_never_written(tmp_path: Path) -> None:
     installation = _installation(CORDIAL_CLIENT, tmp_path)
     provider = roblox_auth.CORDIAL_LOCAL_AUTH_PROVIDER
     profiles = installation.paths.data_root / 'profiles'
@@ -389,7 +429,7 @@ def test_cordial_cookie_is_read_from_most_recent_profile_and_never_written(tmp_p
     assert '.ROBLOSECURITY=newest' in new.read_text(encoding='utf-8')
 
 
-def test_cordial_without_file_store_falls_back_to_default_profile_path(tmp_path):
+def test_cordial_without_file_store_falls_back_to_default_profile_path(tmp_path: Path) -> None:
     installation = _installation(CORDIAL_CLIENT, tmp_path)
     provider = roblox_auth.CORDIAL_LOCAL_AUTH_PROVIDER
     expected = installation.paths.data_root / 'profiles' / 'default' / 'cookies'
@@ -400,7 +440,7 @@ def test_cordial_without_file_store_falls_back_to_default_profile_path(tmp_path)
 # FastFlags
 
 
-def test_client_flag_files_merge_over_user_flags_and_restore(tmp_path, monkeypatch):
+def test_client_flag_files_merge_over_user_flags_and_restore(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     existing = tmp_path / 'profiles' / 'default' / 'flags.json'
     existing.parent.mkdir(parents=True)
     existing.write_text('{"FFlagUserChoice": true, "FIntShared": 1}', encoding='utf-8')
@@ -410,7 +450,7 @@ def test_client_flag_files_merge_over_user_flags_and_restore(tmp_path, monkeypat
 
     manager = fflag_module.FastFlagManager([], tmp_path / 'stash')
     monkeypatch.setattr(
-        manager, 'build_json', lambda _settings: {'FIntShared': '60', 'FFlagX': 'false'}
+        manager, 'build_json', _returning({'FIntShared': '60', 'FFlagX': 'false'})
     )
     assert manager.write({}) == set()
 
@@ -432,7 +472,7 @@ def test_client_flag_files_merge_over_user_flags_and_restore(tmp_path, monkeypat
 # Asset modifications
 
 
-def test_cordial_shares_sobers_android_target_mapping(tmp_path, monkeypatch):
+def test_cordial_shares_sobers_android_target_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / '.var' / 'app' / 'io.github.luohoa97.Cordial'
     overlay = root / 'config' / 'cordial' / 'overlay'
     overlay.mkdir(parents=True)
@@ -457,7 +497,7 @@ def test_cordial_shares_sobers_android_target_mapping(tmp_path, monkeypatch):
 # Certificates
 
 
-def test_extracted_cordial_bundles_get_the_fleasion_ca(tmp_path, monkeypatch):
+def test_extracted_cordial_bundles_get_the_fleasion_ca(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bundle_dir = tmp_path / 'assets'
     (bundle_dir / 'ssl').mkdir(parents=True)
     bundle = bundle_dir / 'ssl' / 'cacert.pem'
@@ -467,10 +507,13 @@ def test_extracted_cordial_bundles_get_the_fleasion_ca(tmp_path, monkeypatch):
     monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
     monkeypatch.setattr(platform_linux, 'find_linux_ca_bundle_dirs', lambda: [bundle_dir])
     monkeypatch.setattr(
-        proxy_master, '_analyze_and_strip_fleasion_cas', lambda text, _ca: (text, 0, 0)
+        proxy_master, '_analyze_and_strip_fleasion_cas', _no_fleasion_cas
     )
 
-    assert proxy_master._patch_linux_extra_ca_bundles(CA_PEM) is True
+    patch_bundles = cast(
+        'Callable[[str], bool]', getattr(proxy_master, '_patch_linux_extra_ca_bundles')
+    )
+    assert patch_bundles(CA_PEM) is True
     text = bundle.read_text(encoding='utf-8')
     assert text.startswith('-----BEGIN CERTIFICATE-----\nAAAA')
     assert 'ZmxlYXNpb24=' in text
@@ -513,12 +556,12 @@ def test_mocktail_arm_rejects_conflicting_flatpak_proxy_environment(
     config.write_text(MOCKTAIL_CONFIG, encoding='utf-8')
     captured: list[str] = []
     monkeypatch.setattr(
-        platform_linux.log_buffer, 'log', lambda _category, message: captured.append(message)
+        platform_linux.log_buffer, 'log', _capturing_log(captured)
     )
     monkeypatch.setattr(
         platform_linux,
         '_read_mocktail_proxy_environment',
-        lambda _installation: dict(overrides),
+        _returning(dict(overrides)),
     )
     assert not platform_linux.set_linux_client_env_proxy_override(
         'http://127.0.0.1:60001', client_key='mocktail', ca_cert_path=ca_file
@@ -526,7 +569,7 @@ def test_mocktail_arm_rejects_conflicting_flatpak_proxy_environment(
     assert any(conflict in message for message in captured)
     assert not platform_linux.MOCKTAIL_INTEGRATION_STATE.exists()
     assert not (
-        installation.paths.flatpak_root / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt'
+        _flatpak_root(installation) / 'config' / 'Fleasion' / 'proxy_ca' / 'ca.crt'
     ).exists()
     assert config.read_text(encoding='utf-8') == MOCKTAIL_CONFIG
     assert applied == []
@@ -538,7 +581,7 @@ def test_mocktail_flatpak_proxy_override_compatible_only_in_env_mode(
     monkeypatch: pytest.MonkeyPatch,
     proxy_mode: str,
 ) -> None:
-    installation, applied, ca_file = mocktail_home
+    _installation, applied, ca_file = mocktail_home
     network = {
         'MOCKTAIL_USE_SYSTEM_PROXY': '0',
         'MOCKTAIL_HTTP_PROXY_HOST': '127.0.0.1',
@@ -546,7 +589,7 @@ def test_mocktail_flatpak_proxy_override_compatible_only_in_env_mode(
         'MOCKTAIL_HTTP_PROXY_SCHEME': 'http',
     }
     monkeypatch.setattr(
-        platform_linux, '_read_mocktail_proxy_environment', lambda _installation: network
+        platform_linux, '_read_mocktail_proxy_environment', _returning(network)
     )
     armed = platform_linux.set_linux_client_env_proxy_override(
         'http://127.0.0.1:60001', client_key='mocktail', ca_cert_path=ca_file, proxy_mode=proxy_mode

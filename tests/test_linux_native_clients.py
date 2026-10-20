@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -13,6 +15,7 @@ from fleasion.utils.linux_clients import (
     CORDIAL_CLIENT,
     MOCKTAIL_CLIENT,
     SOBER_CLIENT,
+    CommandRunner,
     LinuxClientInstallation,
     detect_installed_clients,
 )
@@ -36,8 +39,27 @@ def _no_flatpak(command: list[str], **_kwargs: object) -> subprocess.CompletedPr
     return subprocess.CompletedProcess(command, 1, '', '')
 
 
-def _which(found: dict[str, str]):
-    return lambda name: found.get(name)
+NativeProxy = tuple[Path, Path, Path]
+
+
+def _which(found: dict[str, str]) -> Callable[[str], str | None]:
+    return found.get
+
+
+def _recording_popen(
+    launched: list[tuple[list[str], dict[str, str] | None]],
+) -> Callable[..., None]:
+    def popen(command: list[str], extra_env: dict[str, str] | None = None) -> None:
+        launched.append((command, extra_env))
+
+    return popen
+
+
+def _returning[T](value: T) -> Callable[..., T]:
+    def callback(*_args: object, **_kwargs: object) -> T:
+        return value
+
+    return callback
 
 
 def _appimage(path: Path) -> Path:
@@ -50,13 +72,13 @@ def _appimage(path: Path) -> Path:
 # Registry paths
 
 
-def test_sober_is_flatpak_only_and_the_others_ship_natively():
+def test_sober_is_flatpak_only_and_the_others_ship_natively() -> None:
     assert SOBER_CLIENT.install_kinds == ('flatpak',)
     assert MOCKTAIL_CLIENT.install_kinds == ('flatpak', 'native', 'appimage')
     assert CORDIAL_CLIENT.install_kinds == ('flatpak', 'native', 'appimage')
 
 
-def test_native_paths_use_the_host_xdg_directories(tmp_path):
+def test_native_paths_use_the_host_xdg_directories(tmp_path: Path) -> None:
     paths = CORDIAL_CLIENT.paths(home=tmp_path, environ={}, kind='native')
 
     assert paths.flatpak_root is None
@@ -70,7 +92,7 @@ def test_native_paths_use_the_host_xdg_directories(tmp_path):
     assert paths.fflag_files() == (profile / 'flags.json',)
 
 
-def test_native_paths_honour_absolute_xdg_overrides_only(tmp_path):
+def test_native_paths_honour_absolute_xdg_overrides_only(tmp_path: Path) -> None:
     environ = {
         'XDG_CONFIG_HOME': str(tmp_path / 'cfg'),
         'XDG_DATA_HOME': 'relative/data',
@@ -82,7 +104,7 @@ def test_native_paths_honour_absolute_xdg_overrides_only(tmp_path):
     assert paths.data_root == tmp_path / '.local' / 'share' / 'mocktail'
 
 
-def test_all_paths_lists_flatpak_and_host_layouts_once(tmp_path):
+def test_all_paths_lists_flatpak_and_host_layouts_once(tmp_path: Path) -> None:
     kinds = [paths.kind for paths in MOCKTAIL_CLIENT.all_paths(home=tmp_path, environ={})]
     assert kinds == ['flatpak', 'native']
     assert [paths.kind for paths in SOBER_CLIENT.all_paths(home=tmp_path, environ={})] == [
@@ -93,12 +115,12 @@ def test_all_paths_lists_flatpak_and_host_layouts_once(tmp_path):
 # Detection
 
 
-def test_detects_distro_packages_on_path(tmp_path):
+def test_detects_distro_packages_on_path(tmp_path: Path) -> None:
     installed = detect_installed_clients(
         home=tmp_path,
         environ={},
         which=_which({'mocktail': '/usr/bin/mocktail', 'cordial-shell': '/usr/bin/cordial-shell'}),
-        run=_no_flatpak,
+        run=cast('CommandRunner', _no_flatpak),
     )
 
     assert [(item.key, item.kind) for item in installed] == [
@@ -111,18 +133,18 @@ def test_detects_distro_packages_on_path(tmp_path):
     assert cordial.paths.data_root == tmp_path / '.local' / 'share' / 'cordial'
 
 
-def test_flatpak_exported_commands_are_not_native_installs(tmp_path):
+def test_flatpak_exported_commands_are_not_native_installs(tmp_path: Path) -> None:
     installed = detect_installed_clients(
         home=tmp_path,
         environ={},
         which=_which({'mocktail': '/var/lib/flatpak/exports/bin/mocktail'}),
-        run=_no_flatpak,
+        run=cast('CommandRunner', _no_flatpak),
     )
 
     assert installed == ()
 
 
-def test_detects_appimage_through_its_desktop_entry(tmp_path):
+def test_detects_appimage_through_its_desktop_entry(tmp_path: Path) -> None:
     appimage = _appimage(tmp_path / 'Games' / 'Cordial-0.34.0-0-gfe20025-x86_64.AppImage')
     applications = tmp_path / '.local' / 'share' / 'applications'
     applications.mkdir(parents=True)
@@ -130,7 +152,7 @@ def test_detects_appimage_through_its_desktop_entry(tmp_path):
     entry.write_text(f'[Desktop Entry]\nType=Application\nExec="{appimage}" %u\n', encoding='utf-8')
 
     (cordial,) = detect_installed_clients(
-        home=tmp_path, environ={}, which=_which({}), run=_no_flatpak
+        home=tmp_path, environ={}, which=_which({}), run=cast('CommandRunner', _no_flatpak)
     )
 
     assert cordial.kind == 'appimage'
@@ -140,14 +162,14 @@ def test_detects_appimage_through_its_desktop_entry(tmp_path):
     assert cordial.launch_command('roblox://x') == [str(appimage), 'roblox://x']
 
 
-def test_detects_newest_appimage_in_conventional_folders(tmp_path):
+def test_detects_newest_appimage_in_conventional_folders(tmp_path: Path) -> None:
     old = _appimage(tmp_path / 'Applications' / 'Mocktail-1.0.3-x86_64.AppImage')
     new = _appimage(tmp_path / 'Applications' / 'Mocktail-1.0.4-x86_64.AppImage')
     os.utime(old, (1, 1))
     _appimage(tmp_path / 'Applications' / 'Unrelated-x86_64.AppImage')
 
     (mocktail,) = detect_installed_clients(
-        home=tmp_path, environ={}, which=_which({}), run=_no_flatpak
+        home=tmp_path, environ={}, which=_which({}), run=cast('CommandRunner', _no_flatpak)
     )
 
     assert (mocktail.key, mocktail.kind, mocktail.executable) == ('mocktail', 'appimage', new)
@@ -159,12 +181,12 @@ def _flatpak_cordial_only(command: list[str], **_kwargs: object):
     return subprocess.CompletedProcess(command, 0 if installed else 1, '', '')
 
 
-def test_flatpak_wins_when_installed_both_ways_without_a_desktop_hint(tmp_path):
+def test_flatpak_wins_when_installed_both_ways_without_a_desktop_hint(tmp_path: Path) -> None:
     (cordial,) = detect_installed_clients(
         home=tmp_path,
         environ={'XDG_DATA_DIRS': str(tmp_path / 'empty')},
         which=_which({'flatpak': '/usr/bin/flatpak', 'cordial-shell': '/usr/bin/cordial-shell'}),
-        run=_flatpak_cordial_only,
+        run=cast('CommandRunner', _flatpak_cordial_only),
     )
 
     assert cordial.kind == 'flatpak'
@@ -177,7 +199,7 @@ def test_flatpak_wins_when_installed_both_ways_without_a_desktop_hint(tmp_path):
         ('/usr/bin/flatpak run io.github.luohoa97.Cordial %u', 'flatpak'),
     ],
 )
-def test_the_desktop_entry_that_handles_links_picks_the_install(tmp_path, exec_line, kind):
+def test_the_desktop_entry_that_handles_links_picks_the_install(tmp_path: Path, exec_line: str, kind: str) -> None:
     system = tmp_path / 'system'
     (system / 'applications').mkdir(parents=True)
     (system / 'applications' / CORDIAL_CLIENT.desktop_id).write_text(
@@ -188,13 +210,13 @@ def test_the_desktop_entry_that_handles_links_picks_the_install(tmp_path, exec_l
         home=tmp_path,
         environ={'XDG_DATA_DIRS': str(system)},
         which=_which({'flatpak': '/usr/bin/flatpak', 'cordial-shell': '/usr/bin/cordial-shell'}),
-        run=_flatpak_cordial_only,
+        run=cast('CommandRunner', _flatpak_cordial_only),
     )
 
     assert cordial.kind == kind
 
 
-def test_native_processes_are_those_outside_the_flatpak_scope(tmp_path):
+def test_native_processes_are_those_outside_the_flatpak_scope(tmp_path: Path) -> None:
     flatpak = CORDIAL_CLIENT.paths(home=tmp_path, environ={})
     native = CORDIAL_CLIENT.paths(home=tmp_path, environ={}, kind='native')
     in_scope = '0::/user.slice/app-flatpak-io.github.luohoa97.Cordial-2.scope\n'
@@ -213,7 +235,7 @@ def test_native_processes_are_those_outside_the_flatpak_scope(tmp_path):
 
 
 @pytest.fixture
-def native_proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def native_proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> NativeProxy:
     applications = tmp_path / 'home' / '.local' / 'share' / 'applications'
     monkeypatch.setattr(platform_linux, 'LINUX_APPLICATIONS_DIR', applications)
     monkeypatch.setattr(
@@ -239,11 +261,11 @@ def native_proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return tmp_path, system / 'applications', applications
 
 
-def _use(monkeypatch, installation: LinuxClientInstallation) -> None:
-    monkeypatch.setattr(platform_linux, '_installation_for_client_key', lambda _key: installation)
+def _use(monkeypatch: pytest.MonkeyPatch, installation: LinuxClientInstallation) -> None:
+    monkeypatch.setattr(platform_linux, '_installation_for_client_key', _returning(installation))
 
 
-def test_native_cordial_env_proxy_wraps_and_restores_the_desktop_entry(native_proxy, monkeypatch):
+def test_native_cordial_env_proxy_wraps_and_restores_the_desktop_entry(native_proxy: NativeProxy, monkeypatch: pytest.MonkeyPatch) -> None:
     tmp_path, system_apps, user_apps = native_proxy
     (system_apps / CORDIAL_CLIENT.desktop_id).write_text(CORDIAL_DESKTOP_ENTRY, encoding='utf-8')
     installation = LinuxClientInstallation(
@@ -271,22 +293,24 @@ def test_native_cordial_env_proxy_wraps_and_restores_the_desktop_entry(native_pr
     monkeypatch.setattr(
         platform_linux,
         '_standard_user_popen',
-        lambda command, extra_env=None: launched.append((command, extra_env)),
+        _recording_popen(launched),
     )
     monkeypatch.setattr(
-        platform_linux, 'get_selected_linux_client_installation', lambda: installation
+        platform_linux, 'get_selected_linux_client_installation', _returning(installation)
     )
     assert platform_linux.launch_as_standard_user('roblox://x')
     assert launched[0][0] == ['/usr/bin/cordial-shell', 'roblox://x']
-    assert launched[0][1]['HTTPS_PROXY'] == 'http://127.0.0.1:60001'
+    extra_env = launched[0][1]
+    assert extra_env is not None
+    assert extra_env['HTTPS_PROXY'] == 'http://127.0.0.1:60001'
 
     assert platform_linux.clear_linux_client_env_proxy_override(client_key='cordial')
     assert not (user_apps / CORDIAL_CLIENT.desktop_id).exists()
     assert not platform_linux.LINUX_PROXY_OVERRIDE_STATE.exists()
-    assert platform_linux._active_linux_client_environment == {}
+    assert platform_linux._active_linux_client_environment == {}  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
 
 
-def test_a_users_own_desktop_entry_is_backed_up_and_put_back(native_proxy, monkeypatch):
+def test_a_users_own_desktop_entry_is_backed_up_and_put_back(native_proxy: NativeProxy, monkeypatch: pytest.MonkeyPatch) -> None:
     tmp_path, _system_apps, user_apps = native_proxy
     user_apps.mkdir(parents=True)
     own = '[Desktop Entry]\nType=Application\nName=My Cordial\nExec=cordial-shell --x %u\n'
@@ -312,7 +336,7 @@ def test_a_users_own_desktop_entry_is_backed_up_and_put_back(native_proxy, monke
     assert (user_apps / CORDIAL_CLIENT.desktop_id).read_text(encoding='utf-8') == own
 
 
-def test_an_entry_the_user_rewrote_while_armed_is_left_alone(native_proxy, monkeypatch):
+def test_an_entry_the_user_rewrote_while_armed_is_left_alone(native_proxy: NativeProxy, monkeypatch: pytest.MonkeyPatch) -> None:
     tmp_path, system_apps, user_apps = native_proxy
     (system_apps / CORDIAL_CLIENT.desktop_id).write_text(CORDIAL_DESKTOP_ENTRY, encoding='utf-8')
     _use(
@@ -333,7 +357,7 @@ def test_an_entry_the_user_rewrote_while_armed_is_left_alone(native_proxy, monke
     assert (user_apps / CORDIAL_CLIENT.desktop_id).read_text(encoding='utf-8') == rewritten
 
 
-def test_appimage_env_proxy_edits_its_own_entry_in_place(native_proxy, monkeypatch):
+def test_appimage_env_proxy_edits_its_own_entry_in_place(native_proxy: NativeProxy, monkeypatch: pytest.MonkeyPatch) -> None:
     tmp_path, _system_apps, user_apps = native_proxy
     appimage = _appimage(tmp_path / 'home' / 'Applications' / 'Cordial-x86_64.AppImage')
     user_apps.mkdir(parents=True)
@@ -362,7 +386,7 @@ def test_appimage_env_proxy_edits_its_own_entry_in_place(native_proxy, monkeypat
     assert entry.read_text(encoding='utf-8') == original
 
 
-def test_native_mocktail_gets_its_integration_without_a_flatpak(native_proxy, monkeypatch):
+def test_native_mocktail_gets_its_integration_without_a_flatpak(native_proxy: NativeProxy, monkeypatch: pytest.MonkeyPatch) -> None:
     tmp_path, system_apps, user_apps = native_proxy
     (system_apps / MOCKTAIL_CLIENT.desktop_id).write_text(
         '[Desktop Entry]\nType=Application\nExec=mocktail %u\n', encoding='utf-8'
@@ -399,7 +423,7 @@ def test_native_mocktail_gets_its_integration_without_a_flatpak(native_proxy, mo
     assert not (user_apps / MOCKTAIL_CLIENT.desktop_id).exists()
 
 
-def test_native_mocktail_refuses_a_conflicting_session_environment(native_proxy, monkeypatch):
+def test_native_mocktail_refuses_a_conflicting_session_environment(native_proxy: NativeProxy, monkeypatch: pytest.MonkeyPatch) -> None:
     tmp_path, _system_apps, _user_apps = native_proxy
     monkeypatch.setenv('MOCKTAIL_USE_SYSTEM_PROXY', '1')
     installation = LinuxClientInstallation(
@@ -416,9 +440,9 @@ def test_native_mocktail_refuses_a_conflicting_session_environment(native_proxy,
     )
 
 
-def test_cleanup_targets_the_install_kind_that_was_armed(native_proxy, monkeypatch):
+def test_cleanup_targets_the_install_kind_that_was_armed(native_proxy: NativeProxy, monkeypatch: pytest.MonkeyPatch) -> None:
     tmp_path, _system_apps, _user_apps = native_proxy
-    platform_linux._write_linux_proxy_override_state('cordial', 'native')
+    platform_linux._write_linux_proxy_override_state('cordial', 'native')  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
     flatpak = LinuxClientInstallation(
         CORDIAL_CLIENT,
         CORDIAL_CLIENT.paths(home=tmp_path / 'home', environ={}),
@@ -426,17 +450,17 @@ def test_cleanup_targets_the_install_kind_that_was_armed(native_proxy, monkeypat
     )
     _use(monkeypatch, flatpak)
 
-    cleanup = platform_linux._installation_for_cleanup('cordial')
+    cleanup = platform_linux._installation_for_cleanup('cordial')  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
 
     assert cleanup is not None
     assert cleanup.kind == 'native'
 
 
-def test_legacy_override_state_is_a_flatpak(native_proxy):
+def test_legacy_override_state_is_a_flatpak(native_proxy: NativeProxy) -> None:
     platform_linux.LINUX_PROXY_OVERRIDE_STATE.parent.mkdir(parents=True)
     platform_linux.LINUX_PROXY_OVERRIDE_STATE.write_text('{"client": "cordial"}\n')
 
-    assert platform_linux._read_linux_proxy_override_kind('cordial') == 'flatpak'
+    assert platform_linux._read_linux_proxy_override_kind('cordial') == 'flatpak'  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize(
@@ -447,5 +471,5 @@ def test_legacy_override_state_is_a_flatpak(native_proxy):
         ('X=$HOME"', '"X=\\\\$HOME\\\\""'),
     ],
 )
-def test_desktop_exec_arguments_are_quoted_per_the_spec(value, expected):
-    assert platform_linux._desktop_exec_argument(value) == expected
+def test_desktop_exec_arguments_are_quoted_per_the_spec(value: str, expected: str) -> None:
+    assert platform_linux._desktop_exec_argument(value) == expected  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
