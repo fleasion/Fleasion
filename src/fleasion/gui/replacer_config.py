@@ -1600,10 +1600,10 @@ class ReplacerConfigWindow(QDialog):
         from . import game_rules_dialog
 
         dialog = game_rules_dialog.GameRulesDialog(self.config_manager, self)
-        dialog.finished.connect(lambda _result: self._on_game_rules_closed())
+        dialog.finished.connect(self._on_game_rules_closed)
         dialog.show()
 
-    def _on_game_rules_closed(self) -> None:
+    def _on_game_rules_closed(self, *_args: object) -> None:
         # A mod pack install can add and enable configs
         self.config_manager.refresh_config_names()
 

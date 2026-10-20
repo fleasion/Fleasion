@@ -106,8 +106,14 @@ def test_oversized_images_are_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_material_textures_need_opt_in_and_skip_normal_maps(monkeypatch: pytest.MonkeyPatch) -> None:
     ktx = b'\xabKTX 20\xbb\r\n\x1a\n' + b'\x00' * 64
     decoded = {'png': _png((200, 60, 60, 255))}
-    monkeypatch.setattr(asset_filters, '_ktx_to_png', lambda _data: decoded['png'])
-    monkeypatch.setattr(asset_filters, '_encode_ktx2', lambda image: b'KTX2:' + image.tobytes()[:4])
+    def fake_decode(_data: bytes) -> bytes:
+        return decoded['png']
+
+    def fake_encode(image: Image.Image) -> bytes:
+        return b'KTX2:' + image.tobytes()[:4]
+
+    monkeypatch.setattr(asset_filters, '_ktx_to_png', fake_decode)
+    monkeypatch.setattr(asset_filters, '_encode_ktx2', fake_encode)
     assert filter_asset(ktx, _settings(make_step('invert'))) is None
     assert filter_asset(ktx, _settings(make_step('invert'), materials=True)) == b'KTX2:' + bytes((55, 195, 195, 255))
     decoded['png'] = _png((128, 128, 255, 255))

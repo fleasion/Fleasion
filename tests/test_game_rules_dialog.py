@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pytest
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
@@ -17,6 +17,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+def _ignore(*_args: object, **_kwargs: object) -> None:
+    return None
+
+
+def _accept(_self: QDialog) -> QDialog.DialogCode:
+    return QDialog.DialogCode.Accepted
+
+
 @pytest.fixture
 def app() -> Iterator[QApplication]:
     instance = QApplication.instance()
@@ -28,8 +36,8 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> manager.ConfigMan
     monkeypatch.setattr(manager, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(manager, 'CONFIG_FILE', tmp_path / 'settings.json')
     monkeypatch.setattr(manager, 'CONFIGS_FOLDER', tmp_path / 'configs')
-    monkeypatch.setattr(QMessageBox, 'information', lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(QMessageBox, 'warning', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(QMessageBox, 'information', _ignore)
+    monkeypatch.setattr(QMessageBox, 'warning', _ignore)
     return manager.ConfigManager()
 
 
@@ -95,9 +103,12 @@ def test_pack_export_and_import_buttons(
     config.set_replacement_rules('Sky', rules)
     config.enabled_configs = ['Sky']
     pack_path = tmp_path / 'out.fleasionpack'
-    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *_args, **_kwargs: (str(pack_path), ''))
-    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *_args, **_kwargs: (str(pack_path), ''))
-    monkeypatch.setattr(QDialog, 'exec', lambda _self: QDialog.DialogCode.Accepted)
+    def choose_pack(*_args: object, **_kwargs: object) -> tuple[str, str]:
+        return str(pack_path), ''
+
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose_pack)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', choose_pack)
+    monkeypatch.setattr(QDialog, 'exec', _accept)
 
     dialog = GameRulesDialog(config)
     packs = dialog.packs_tab
@@ -105,7 +116,6 @@ def test_pack_export_and_import_buttons(
     packs._export()  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
     assert pack_path.exists()
 
-    packs = cast('game_rules_dialog._PacksTab', dialog.packs_tab)  # pyright: ignore[reportPrivateUsage]
     packs._import()  # ruff: ignore[private-member-access]  # pyright: ignore[reportPrivateUsage]
     assert 'Sky (Sky Pack)' in config.config_names
     assert 'Sky (Sky Pack)' in config.enabled_configs

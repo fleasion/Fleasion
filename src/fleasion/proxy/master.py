@@ -70,6 +70,7 @@ from fleasion.rules.asset_filters import (
     AssetFilterEngine,
     FilterSettings,
     default_filter_settings,
+    normalize_filter_settings,
 )
 from fleasion.rules.game_profiles import GameProfileTracker
 from fleasion.utils import (
@@ -4495,7 +4496,9 @@ class ProxyMaster:
 
     def _effective_asset_filters(self) -> FilterSettings:
         provider = getattr(self.config_manager, 'effective_asset_filters', None)
-        return provider() if callable(provider) else default_filter_settings()
+        if not callable(provider):
+            return default_filter_settings()
+        return normalize_filter_settings(provider())
 
     def _on_place_joined(self, place_id: int) -> None:
         """Switch to the joined game's profile for the assets it loads next."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -171,7 +172,7 @@ class _FiltersTab(QWidget):
         add_menu = QMenu(add_button)
         for effect in FILTER_EFFECTS:
             action = add_menu.addAction(_effect_label(effect))
-            action.triggered.connect(lambda _checked=False, value=effect: self._add_step(value))
+            action.triggered.connect(partial(self._add_step, effect))
         add_button.setMenu(add_menu)
         step_buttons.addWidget(add_button)
         for label, handler in (
@@ -281,9 +282,7 @@ class _FiltersTab(QWidget):
         if step['effect'] in EFFECT_AMOUNT_RANGES:
             scale = 10 if step['effect'] == 'saturation' else 1
             step['amount'] = self.amount_slider.value() / scale
-        item = self.steps_list.currentItem()
-        if item is not None:
-            item.setText(_step_label(step))
+        self.steps_list.currentItem().setText(_step_label(step))
         self._update_preview()
 
     def _on_enabled(self, checked: bool) -> None:
@@ -300,7 +299,7 @@ class _FiltersTab(QWidget):
         self.enabled_box.setChecked(True)
         self._refresh_steps(select=0)
 
-    def _add_step(self, effect: FilterEffect) -> None:
+    def _add_step(self, effect: FilterEffect, *_args: object) -> None:
         self._settings['steps'].append(make_step(effect))
         self._refresh_steps(select=len(self._settings['steps']) - 1)
 
@@ -451,7 +450,7 @@ class _ProfilesTab(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.itemChanged.connect(self._on_item_changed)
-        self.table.doubleClicked.connect(lambda _index: self._edit_selected())
+        self.table.doubleClicked.connect(self._edit_selected)
         layout.addWidget(self.table, 1)
 
         buttons = QHBoxLayout()
@@ -558,7 +557,7 @@ class _ProfilesTab(QWidget):
         rows = self.table.selectionModel().selectedRows()
         return rows[0].row() if rows else None
 
-    def _edit_selected(self) -> None:
+    def _edit_selected(self, *_args: object) -> None:
         row = self._selected_row()
         if row is not None:
             self._open_editor(self._profiles[row], row)
@@ -788,7 +787,7 @@ class GameRulesDialog(QDialog):
         super().__init__(parent)
         self._config = config_manager
         self._live_dialogs.add(self)
-        self.finished.connect(lambda _result: self._live_dialogs.discard(self))
+        self.finished.connect(self._forget)
         self.setWindowTitle(tr('ui.gui.game_rules.title'))
         if icon_path := get_icon_path():
             self.setWindowIcon(QIcon(str(icon_path)))
@@ -804,6 +803,9 @@ class GameRulesDialog(QDialog):
         buttons.rejected.connect(self.reject)
         self._layout.addWidget(buttons)
         self._build_tabs()
+
+    def _forget(self, _result: int = 0) -> None:
+        self._live_dialogs.discard(self)
 
     def _build_tabs(self) -> None:
         current = self._tabs.currentIndex()
