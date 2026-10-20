@@ -23,7 +23,7 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 
 from .json_types import JsonObject, as_json_object
-from .linux_clients import SOBER_CLIENT, LinuxClientInstallation
+from .linux_clients import CORDIAL_CLIENT, MOCKTAIL_CLIENT, SOBER_CLIENT, LinuxClientInstallation
 from .logging import log_buffer
 from .paths import CONFIG_DIR, CONFIG_FILE, LOCAL_APPDATA, USER_HOME
 from .secure_tokens import decrypt_token, encrypt_token
@@ -337,68 +337,68 @@ def _sober_use_libsecret(config_path: Path) -> bool:
     return value
 
 
-def _linux_auth_os_error(exc: OSError) -> LinuxAuthWriteError:
+def _linux_auth_os_error(exc: OSError, name: str = 'Sober') -> LinuxAuthWriteError:
     if exc.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
         return LinuxAuthWriteError(
             'cookie_store_permission_denied',
-            "Sober's local cookie store is read-only or Fleasion does not have permission "
+            f"{name}'s local cookie store is read-only or Fleasion does not have permission "
             'to replace it.',
         )
     if exc.errno in {errno.ENOSPC, getattr(errno, 'EDQUOT', -1)}:
         return LinuxAuthWriteError(
             'cookie_store_full',
-            "Sober's local cookie store could not be updated because the filesystem has "
+            f"{name}'s local cookie store could not be updated because the filesystem has "
             'no free space available.',
         )
     return LinuxAuthWriteError(
         'cookie_store_write_failed',
-        f"Sober's local cookie store could not be updated ({type(exc).__name__}).",
+        f"{name}'s local cookie store could not be updated ({type(exc).__name__}).",
     )
 
 
-def _validate_linux_cookie_file(path: Path) -> os.stat_result:
+def _validate_linux_cookie_file(path: Path, name: str = 'Sober') -> os.stat_result:
     try:
         metadata = path.lstat()
     except FileNotFoundError as exc:
         msg = 'cookie_store_not_initialized'
         raise LinuxAuthWriteError(
             msg,
-            'Sober is installed, but its local cookie store does not exist yet. '
-            'Launch Sober and sign in once first.',
+            f'{name} is installed, but its local cookie store does not exist yet. '
+            f'Launch {name} and sign in once first.',
         ) from exc
     except OSError as exc:
-        raise _linux_auth_os_error(exc) from exc
+        raise _linux_auth_os_error(exc, name) from exc
 
     if stat.S_ISLNK(metadata.st_mode):
         msg = 'cookie_store_unsafe_path'
         raise LinuxAuthWriteError(
             msg,
-            "Fleasion refused to switch accounts because Sober's cookie store is a symbolic link.",
+            f"Fleasion refused to switch accounts because {name}'s cookie store is a symbolic link.",
         )
     if not stat.S_ISREG(metadata.st_mode):
         msg = 'cookie_store_unsafe_path'
         raise LinuxAuthWriteError(
             msg,
-            "Fleasion refused to switch accounts because Sober's cookie store is not a regular file.",
+            f"Fleasion refused to switch accounts because {name}'s cookie store is not a regular file.",
         )
     if metadata.st_nlink != 1:
         msg = 'cookie_store_unsafe_path'
         raise LinuxAuthWriteError(
             msg,
-            "Fleasion refused to switch accounts because Sober's cookie store has multiple hard links.",
+            f"Fleasion refused to switch accounts because {name}'s cookie store has multiple hard links.",
         )
     getuid = getattr(os, 'getuid', None)
     if getuid is not None and metadata.st_uid != getuid():
         msg = 'cookie_store_wrong_owner'
         raise LinuxAuthWriteError(
             msg,
-            "Fleasion refused to switch accounts because Sober's cookie store is owned by another user.",
+            f"Fleasion refused to switch accounts because {name}'s cookie store is owned by another user.",
         )
     if metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
         msg = 'cookie_store_insecure_permissions'
         raise LinuxAuthWriteError(
             msg,
-            "Fleasion refused to place a Roblox session token in Sober's cookie store because "
+            f"Fleasion refused to place a Roblox session token in {name}'s cookie store because "
             'the file is accessible by other users.',
         )
     return metadata
@@ -516,7 +516,9 @@ def _write_linux_cookie_temp_file(path: Path, payload: bytes, original: os.stat_
     return temp_path
 
 
-def _replace_linux_cookie_temp_file(path: Path, temp_path: Path, original: os.stat_result) -> None:
+def _replace_linux_cookie_temp_file(
+    path: Path, temp_path: Path, original: os.stat_result, name: str = 'Sober'
+) -> None:
     current = path.lstat()
     if _linux_cookie_write_identity(current) != _linux_cookie_write_identity(
         original
@@ -524,7 +526,7 @@ def _replace_linux_cookie_temp_file(path: Path, temp_path: Path, original: os.st
         msg = 'cookie_store_changed_during_write'
         raise LinuxAuthWriteError(
             msg,
-            "Sober's cookie store changed while Fleasion was preparing the account switch. "
+            f"{name}'s cookie store changed while Fleasion was preparing the account switch. "
             'Nothing was replaced; try again.',
         )
 
@@ -534,24 +536,48 @@ def _replace_linux_cookie_temp_file(path: Path, temp_path: Path, original: os.st
     except OSError as exc:
         _log_auth_failure(
             f'linux-cookie-directory-fsync:{path}:{type(exc).__name__}',
-            f'Updated Sober cookie store but could not fsync its directory: {type(exc).__name__}',
+            f'Updated {name} cookie store but could not fsync its directory: {type(exc).__name__}',
         )
+
+
+def _rewrite_sober_cookie_store(cookie_text: str, cookie: str) -> str:
+    # Resolved at call time so the header rewriter stays patchable in tests
+    return _rewrite_sober_cookie_header(cookie_text, cookie)
+
+
+def _rewrite_mocktail_cookie_file(cookie_text: str, cookie: str) -> str:
+    """Rewrite Mocktail's one-line ``.ROBLOSECURITY=<value>`` cookie file."""
+    if not cookie or re.search(r'[\s;\x00]', cookie):
+        msg = 'invalid_cookie_value'
+        raise LinuxAuthWriteError(
+            msg,
+            'The selected account has an invalid Roblox session token and was not switched.',
+        )
+    body = cookie_text.rstrip('\r\n')
+    if not body.startswith('.ROBLOSECURITY=') or re.search(r'[\s;\x00]', body):
+        msg = 'cookie_store_unknown_format'
+        raise LinuxAuthWriteError(
+            msg,
+            "Mocktail's cookie store has an unknown format. Fleasion did not modify it.",
+        )
+    return f'.ROBLOSECURITY={cookie}\n'
 
 
 def _atomic_replace_linux_cookie_file(
     path: Path,
     payload: bytes,
     original: os.stat_result,
+    name: str = 'Sober',
 ) -> None:
     temp_path: Path | None = None
     try:
         temp_path = _write_linux_cookie_temp_file(path, payload, original)
-        _replace_linux_cookie_temp_file(path, temp_path, original)
+        _replace_linux_cookie_temp_file(path, temp_path, original, name)
         temp_path = None
     except LinuxAuthWriteError:
         raise
     except OSError as exc:
-        raise _linux_auth_os_error(exc) from exc
+        raise _linux_auth_os_error(exc, name) from exc
     finally:
         if temp_path is not None:
             _unlink_if_present(temp_path)
@@ -588,6 +614,7 @@ def _linux_cookie_file_identity(metadata: os.stat_result) -> tuple[int, int, int
 def _read_linux_cookie_payload_for_write_unchecked(
     path: Path,
     metadata: os.stat_result,
+    name: str = 'Sober',
 ) -> tuple[bytes, os.stat_result]:
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
     fd = os.open(path, flags)
@@ -597,7 +624,7 @@ def _read_linux_cookie_payload_for_write_unchecked(
             msg = 'cookie_store_changed_during_read'
             raise LinuxAuthWriteError(
                 msg,
-                "Sober's cookie store changed while Fleasion was opening it. "
+                f"{name}'s cookie store changed while Fleasion was opening it. "
                 'Nothing was modified; try again.',
             )
         return handle.read(), opened
@@ -606,13 +633,14 @@ def _read_linux_cookie_payload_for_write_unchecked(
 def _read_linux_cookie_payload_for_write(
     path: Path,
     metadata: os.stat_result,
+    name: str = 'Sober',
 ) -> tuple[bytes, os.stat_result]:
     try:
-        return _read_linux_cookie_payload_for_write_unchecked(path, metadata)
+        return _read_linux_cookie_payload_for_write_unchecked(path, metadata, name)
     except LinuxAuthWriteError:
         raise
     except OSError as exc:
-        raise _linux_auth_os_error(exc) from exc
+        raise _linux_auth_os_error(exc, name) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -624,9 +652,28 @@ class LinuxLocalAuthProvider:
     cookie_relative_path: Path
     parse_payload: Callable[[bytes], str | None]
     config_relative_path: Path | None = None
+    rewrite_payload: Callable[[str, str], str] | None = None
+    """Rewrites the store for account switching; ``None`` makes it read-only."""
+    read_only_reason: str = ''
+    cookie_path_patterns: tuple[str, ...] = ()
+    """Per-profile stores under the data root; the most recently used one wins."""
 
     def cookie_path(self, installation: LinuxClientInstallation) -> Path:
-        return installation.paths.data_root / self.cookie_relative_path
+        data_root = installation.paths.data_root
+        matches: list[tuple[float, Path]] = []
+        for pattern in self.cookie_path_patterns:
+            try:
+                candidates = list(data_root.glob(pattern))
+            except OSError, ValueError:
+                continue
+            for candidate in candidates:
+                try:
+                    matches.append((candidate.lstat().st_mtime, candidate))
+                except OSError:
+                    continue
+        if matches:
+            return max(matches)[1]
+        return data_root / self.cookie_relative_path
 
     def config_path(self, cookie_path: Path) -> Path | None:
         if self.config_relative_path is None:
@@ -660,7 +707,7 @@ class LinuxLocalAuthProvider:
             return None
 
         try:
-            metadata = _validate_linux_cookie_file(path)
+            metadata = _validate_linux_cookie_file(path, self.source_name)
             return _read_linux_cookie_payload(path, metadata, self.source_name)
         except LinuxAuthWriteError as exc:
             _log_auth_failure(
@@ -697,6 +744,12 @@ class LinuxLocalAuthProvider:
         return cookie
 
     def _write_roblosecurity_unlocked(self, path: Path, cookie: str) -> None:
+        if self.rewrite_payload is None:
+            msg = 'account_switching_unsupported'
+            raise LinuxAuthWriteError(
+                msg,
+                self.read_only_reason or f'Fleasion cannot switch {self.source_name} accounts.',
+            )
         if not self._plaintext_storage_allowed(path):
             msg = 'libsecret_enabled'
             raise LinuxAuthWriteError(
@@ -706,19 +759,22 @@ class LinuxLocalAuthProvider:
                 'to the plaintext cookie file.',
             )
 
-        metadata = _validate_linux_cookie_file(path)
-        payload, opened = _read_linux_cookie_payload_for_write(path, metadata)
+        metadata = _validate_linux_cookie_file(path, self.source_name)
+        payload, opened = _read_linux_cookie_payload_for_write(path, metadata, self.source_name)
         try:
             cookie_text = payload.decode('utf-8')
         except UnicodeDecodeError as exc:
             msg = 'cookie_store_unknown_format'
             raise LinuxAuthWriteError(
                 msg,
-                "Sober's cookie store has an unknown format. Fleasion did not modify it.",
+                f"{self.source_name}'s cookie store has an unknown format. "
+                'Fleasion did not modify it.',
             ) from exc
 
-        updated_text = _rewrite_sober_cookie_header(cookie_text, cookie)
-        _atomic_replace_linux_cookie_file(path, updated_text.encode('utf-8'), opened)
+        updated_text = self.rewrite_payload(cookie_text, cookie)
+        _atomic_replace_linux_cookie_file(
+            path, updated_text.encode('utf-8'), opened, self.source_name
+        )
 
     def write_roblosecurity(self, path: Path, cookie: str) -> bool:
         """Safely replace this client's plaintext .ROBLOSECURITY value."""
@@ -740,9 +796,42 @@ SOBER_LOCAL_AUTH_PROVIDER = LinuxLocalAuthProvider(
     cookie_relative_path=_SOBER_LOCAL_COOKIE_RELATIVE_PATH,
     parse_payload=_parse_plaintext_roblosecurity,
     config_relative_path=_SOBER_CONFIG_RELATIVE_PATH,
+    rewrite_payload=_rewrite_sober_cookie_store,
+)
+# Mocktail keeps the session in auth/roblox.cookie as one `.ROBLOSECURITY=`
+# line (mode 0600) and reads it back on every launch
+MOCKTAIL_LOCAL_AUTH_PROVIDER = LinuxLocalAuthProvider(
+    client_key=MOCKTAIL_CLIENT.key,
+    source_name=MOCKTAIL_CLIENT.display_name,
+    cookie_relative_path=Path('auth') / 'roblox.cookie',
+    parse_payload=_parse_plaintext_roblosecurity,
+    rewrite_payload=_rewrite_mocktail_cookie_file,
+)
+# Cordial's file store holds one `host<TAB>name=value; ...` jar per line in
+# each profile. It also restores a separate identity record, so swapping only
+# the cookie would not switch accounts; with a desktop keyring available the
+# file does not exist at all and Fleasion falls back to browser logins.
+CORDIAL_LOCAL_AUTH_PROVIDER = LinuxLocalAuthProvider(
+    client_key=CORDIAL_CLIENT.key,
+    source_name=CORDIAL_CLIENT.display_name,
+    cookie_relative_path=Path('profiles') / 'default' / 'cookies',
+    parse_payload=_parse_plaintext_roblosecurity,
+    rewrite_payload=None,
+    read_only_reason=(
+        'Cordial account switching is not supported: Cordial restores a separate '
+        'signed-in identity alongside its cookies. Switch accounts inside Cordial instead.'
+    ),
+    cookie_path_patterns=('profiles/*/cookies',),
 )
 LINUX_LOCAL_AUTH_PROVIDERS_BY_KEY: Mapping[str, LinuxLocalAuthProvider] = MappingProxyType(
-    {SOBER_LOCAL_AUTH_PROVIDER.client_key: SOBER_LOCAL_AUTH_PROVIDER}
+    {
+        provider.client_key: provider
+        for provider in (
+            SOBER_LOCAL_AUTH_PROVIDER,
+            MOCKTAIL_LOCAL_AUTH_PROVIDER,
+            CORDIAL_LOCAL_AUTH_PROVIDER,
+        )
+    }
 )
 
 
@@ -1838,8 +1927,8 @@ def set_roblosecurity(cookie: str, path: Path | None = None) -> bool:
         if candidate is None:
             error = LinuxAuthWriteError(
                 'linux_client_not_installed',
-                'Sober is not installed as a Flatpak, or Flatpak could not confirm the installation. '
-                'Fleasion did not change any Sober account data.',
+                'The selected Linux Roblox client is not installed, or Fleasion could not '
+                'confirm the installation. Fleasion did not change any account data.',
             )
             _log_auth_failure(
                 'linux-cookie-write-provider-missing',

@@ -1366,6 +1366,7 @@ SPANISH: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Anulación de LOD de malla',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Error de vista previa de malla: {value0}',
     'ui.gui.modifications_tab.missing': 'Ausente',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: file modifications (textures, fonts, sounds, meshes and the cursor) are unavailable because Mocktail checks its Roblox files for changes. FastFlags and asset replacement through the proxy still work.',
     'ui.gui.modifications_tab.modification': 'Modificación',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Modificador capturado. Suéltalo para vincularlo solo o presiona otra tecla para obtener una combinación.',
     'ui.gui.modifications_tab.msaa_level': 'Nivel MSAA',
@@ -1916,4 +1917,7 @@ SPANISH: dict[str, str] = {
     'settings.appearance.opacity_value': '{value0}%',
     'settings.appearance.tint_strength': 'Intensidad del tinte',
     'settings.appearance.window_opacity_tooltip': 'Opacidad del fondo; los valores bajos muestran más de la ventana que está debajo',
+    'app.linux_client_proxy_setup_failed_title': 'Linux Roblox Client Setup Failed',
+    'app.linux_client_proxy_setup_failed_body': 'Fleasion could not prepare {client} for {mode} proxy mode. The proxy was stopped before becoming ready. Check the Launcher log for the configuration, certificate, or Flatpak error, then retry.',
+    'ui.gui.modifications_tab.custom_fastflag_delivery': 'Dynamic FastFlags can update during play after Roblox fetches the changed settings. Non-dynamic FastFlags take effect on the next Roblox launch. Keep the proxy enabled to deliver custom flags.',
 }

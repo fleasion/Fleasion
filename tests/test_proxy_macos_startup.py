@@ -52,10 +52,6 @@ class _ProxyStartErrorCallback(Protocol):
     def __call__(self, code: str, details: dict[str, object]) -> None: ...
 
 
-class _EnvOverrideCallback(Protocol):
-    def __call__(self, url: str, *, client_key: str) -> bool: ...
-
-
 class _HostUpdateCallback(Protocol):
     def __call__(self, hosts: set[str]) -> bool: ...
 
@@ -117,13 +113,6 @@ def _collect_proxy_errors(
 
     return on_error
 
-
-def _collect_env_overrides(calls: list[tuple[str, str]]) -> _EnvOverrideCallback:
-    def apply(url: str, *, client_key: str) -> bool:
-        calls.append((url, client_key))
-        return True
-
-    return apply
 
 
 def _collect_host_updates(calls: list[set[str]]) -> _HostUpdateCallback:
@@ -254,34 +243,45 @@ def test_linux_proxy_stop_clears_exact_owned_flatpak_env_override(
     assert not getattr(proxy, '_env_proxy_ready').is_set()
 
 
-def test_linux_resource_discovery_keeps_saved_resource_dirs(
+def test_linux_resource_discovery_keeps_only_selected_client_dirs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from fleasion.utils import platform_linux
+    from fleasion.utils.linux_clients import (
+        CORDIAL_CLIENT,
+        SOBER_CLIENT,
+        LinuxClientInstallation,
+    )
 
-    discovered = tmp_path / 'discovered'
-    saved = tmp_path / 'saved'
+    selected = LinuxClientInstallation(
+        CORDIAL_CLIENT, CORDIAL_CLIENT.paths(home=tmp_path, environ={}), None
+    )
+    discovered = selected.paths.resource_roots[0]
+    saved = selected.paths.resource_roots[0] / 'content'
+    foreign = SOBER_CLIENT.paths(home=tmp_path, environ={}).resource_roots[0]
     persisted: list[list[Path]] = []
     monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
     monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
+    monkeypatch.setattr(
+        platform_linux, 'get_selected_linux_client_installation', _callback0(lambda: selected)
+    )
     monkeypatch.setattr(
         platform_linux,
         'find_roblox_resource_dirs',
         _callback_kwargs(lambda **_kwargs: [discovered]),
     )
-    monkeypatch.setattr(proxy_master, 'load_saved_roblox_dirs', _callback0(lambda: [saved]))
+    monkeypatch.setattr(
+        proxy_master, 'load_saved_roblox_dirs', _callback0(lambda: [saved, foreign])
+    )
 
     def save_dirs(paths: Iterable[Path]) -> None:
         persisted.append(list(paths))
 
-    monkeypatch.setattr(
-        proxy_master,
-        'save_saved_roblox_dirs',
-        save_dirs,
-    )
+    monkeypatch.setattr(proxy_master, 'save_saved_roblox_dirs', save_dirs)
+    monkeypatch.setattr(platform_linux, 'find_linux_ca_bundle_dirs', _callback0(list[Path]))
 
     assert getattr(proxy_master, '_find_roblox_dirs')() == [discovered, saved]
-    assert persisted == [[discovered, saved]]
+    assert persisted == [[discovered, saved, foreign]]
 
 
 def test_privileged_relay_tls_self_test_retries_representative_host(
@@ -1181,13 +1181,29 @@ def test_linux_sober_clientsettings_stays_tunneled_until_route_is_armed() -> Non
     assert 'sober.vinegarhq.org' in excluded_updates[-1]
 
 
+@pytest.mark.parametrize(
+    ('client_key', 'proxy_mode', 'armed'),
+    [
+        ('sober', 'env', True),
+        ('mocktail', 'env', True),
+        ('mocktail', 'env', False),
+        ('mocktail', 'hosts', False),
+    ],
+)
 def test_proxy_startup_self_tests_only_active_intercept_routes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    client_key: str,
+    proxy_mode: str,
+    *,
+    armed: bool,
 ) -> None:
-    from fleasion.utils.linux_clients import SOBER_CLIENT
+    from fleasion.utils.linux_clients import get_linux_client
 
     self_test_hosts: list[set[str]] = []
     override_calls: list[tuple[str, str]] = []
+    hosts_calls: list[bool] = []
+    errors: list[tuple[str, dict[str, object]]] = []
     logs: list[tuple[str, str]] = []
     ca_cert = tmp_path / 'ca.crt'
     ca_key = tmp_path / 'ca.key'
@@ -1235,15 +1251,39 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
         self_test_hosts.append(set(hosts))
         return True
 
+    def set_override(
+        url: str,
+        *,
+        client_key: str,
+        ca_cert_path: Path | None = None,
+        proxy_mode: str = 'env',
+    ) -> bool:
+        del ca_cert_path, proxy_mode
+        override_calls.append((url, client_key))
+        return armed
+
     monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
     monkeypatch.setattr(proxy_master, 'IS_WINDOWS', False)
     monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
     monkeypatch.setattr(
         proxy_master,
         '_selected_linux_client_installation',
-        _callback0(lambda: SimpleNamespace(key='sober', display_name='Sober', client=SOBER_CLIENT)),
+        _callback0(
+            lambda: SimpleNamespace(
+                key=client_key, display_name=client_key, client=get_linux_client(client_key)
+            )
+        ),
     )
     monkeypatch.setattr(proxy_master, '_use_linux_privileged_helper', _callback0(lambda: False))
+    monkeypatch.setattr(proxy_master, '_is_admin', _callback0(lambda: True))
+    monkeypatch.setattr(
+        linux_proxy_helper, 'linux_system_ca_needs_install', _callback1(lambda _path: False)
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        'install_ca_into_linux_trust',
+        _callback_args_kwargs(lambda *_args, **_kwargs: None),
+    )
     monkeypatch.setattr(proxy_master, 'generate_ca', _callback1(lambda _dir: (ca_cert, ca_key)))
     monkeypatch.setattr(
         proxy_master,
@@ -1259,14 +1299,22 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
     monkeypatch.setattr(
         proxy_master,
         '_install_ca_into_roblox',
-        _callback1_kwargs(lambda _pem, **_kwargs: (True, dict[str, object]())),
+        _callback1_kwargs(
+            lambda _pem, **_kwargs: (
+                (False, dict[str, object](error='no_roblox_installs', dirs=list[str]()))
+                if client_key == 'mocktail'
+                else (True, dict[str, object]())
+            )
+        ),
     )
     monkeypatch.setattr(proxy_master, '_other_proxy_owner_alive', _callback0(lambda: False))
     monkeypatch.setattr(
         proxy_master, '_remove_hosts_entries', _callback_args_kwargs(lambda *_args, **_kwargs: True)
     )
     monkeypatch.setattr(
-        proxy_master, '_add_hosts_entries', _callback_args_kwargs(lambda *_args, **_kwargs: True)
+        proxy_master,
+        '_add_hosts_entries',
+        _callback_args_kwargs(lambda *_args, **_kwargs: hosts_calls.append(True) or True),
     )
     monkeypatch.setattr(
         proxy_master, '_verify_hosts_entries', _callback_args_kwargs(lambda *_args, **_kwargs: True)
@@ -1304,7 +1352,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
     )
     monkeypatch.setattr(
         'fleasion.utils.platform_linux.set_linux_client_env_proxy_override',
-        _collect_env_overrides(override_calls),
+        set_override,
     )
     monkeypatch.setattr(
         proxy_master,
@@ -1317,7 +1365,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
         proxy,
         'config_manager',
         SimpleNamespace(
-            proxy_mode='env',
+            proxy_mode=proxy_mode,
             custom_fflags_enabled=True,
             clear_cache_on_launch=False,
             settings={},
@@ -1346,7 +1394,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
         ),
     )
     setattr(proxy, '_module_interceptors', [])
-    setattr(proxy, '_on_proxy_start_error', _callback_args(lambda *_args: None))
+    setattr(proxy, '_on_proxy_start_error', _collect_proxy_errors(errors))
     setattr(proxy, '_running', False)
     setattr(proxy, '_lock', threading.Lock())
     setattr(proxy, '_loop', None)
@@ -1358,6 +1406,8 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
     setattr(proxy, '_sober_env_proxy_override_active', False)
     setattr(proxy, '_sober_fflag_timer_stop', None)
     setattr(proxy, '_sober_fflag_timer_thread', None)
+    setattr(proxy, '_hosts_proxy_ready', threading.Event())
+    setattr(proxy, '_active_proxy_port', None)
     monkeypatch.setattr(
         proxy_master.ProxyMaster,
         '_startup_intercept_hosts',
@@ -1367,9 +1417,16 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
     asyncio.run(getattr(proxy, '_run_proxy')())
 
     assert self_test_hosts == [set(proxy_master.BASE_INTERCEPT_HOSTS)]
-    assert override_calls == [('http://127.0.0.1:58443', 'sober')]
-    assert getattr(proxy, '_active_env_proxy_mode') is True
-    assert getattr(proxy, '_sober_env_proxy_override_active') is True
+    assert override_calls == [('http://127.0.0.1:58443', client_key)]
+    assert getattr(proxy, '_active_env_proxy_mode') is armed
+    assert getattr(proxy, '_sober_env_proxy_override_active') is (armed and client_key == 'sober')
+    assert hosts_calls == []
+    hosts_ready = cast('threading.Event', getattr(proxy, '_hosts_proxy_ready'))
+    assert not hosts_ready.is_set()
+    if not armed:
+        assert errors == [
+            ('linux_client_proxy_setup_failed', {'client': client_key, 'mode': proxy_mode})
+        ]
 
 
 def test_linux_startup_treats_manual_profile_api_hosts_entry_as_active(
