@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Literal, TypeIs
 from fleasion.appearance import accent_name, appearance_style, color_mode
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object, is_json_value
 from fleasion.utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
+from fleasion.utils.replacement_filters import FilteredRoute, ReplacementFilter
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -381,6 +382,24 @@ def _apply_replacement_rule(rule: JsonObject, targets: ReplacementMaps) -> None:
     replacements.update(dict.fromkeys(parsed_ids, target_id))
 
 
+def _filtered_route(rule: JsonObject) -> tuple[bool, FilteredRoute | None]:
+    """Return whether ``rule`` is a filtered local/CDN rule, and its route if usable."""
+    filters = ReplacementFilter.from_config(rule.get('filters'))
+    mode = _replacement_mode(rule)
+    if filters is None or mode not in {'cdn', 'local'}:
+        return False, None
+    if mode == 'cdn':
+        cdn_url = rule.get('cdn_url')
+        if isinstance(cdn_url, str) and cdn_url:
+            return True, FilteredRoute(filters, 'cdn', cdn_url)
+        return True, None
+    local_path = rule.get('local_path')
+    if not local_path:
+        return True, None
+    resolved = str(resolve_local_replacement_path(_preserve_path_value(local_path)))
+    return True, FilteredRoute(filters, 'local', resolved)
+
+
 def replacement_rule_claims(rule: JsonObject) -> Iterator[tuple[ReplacementKey, ReplacementMode]]:
     """Return the normalized claims actually contributed to the proxy maps."""
     targets: ReplacementMaps = ({}, set(), {}, {})
@@ -724,6 +743,8 @@ class ConfigManager:
         self._config_data_cache: dict[str, tuple[FileSignature, JsonObject]] = {}
         self._all_replacements_cache_signature: ReplacementsSignature | None = None
         self._all_replacements_cache: ReplacementMaps | None = None
+        # Built alongside _all_replacements_cache, under the same signature
+        self._filtered_replacements_cache: dict[ReplacementKey, tuple[FilteredRoute, ...]] = {}
         self._replacements_generation = 0
         self.settings = self._load_settings()
         self._ensure_default_config()
@@ -2057,6 +2078,15 @@ class ConfigManager:
             else:
                 yield entry
 
+    def get_filtered_replacements(self) -> dict[ReplacementKey, tuple[FilteredRoute, ...]]:
+        """Local/CDN rules that carry filters, by asset ID or type key, in rule order.
+
+        These are excluded from ``get_all_replacements`` because whether they
+        apply depends on the original asset's bytes.
+        """
+        self.get_all_replacements()
+        return self._filtered_replacements_cache
+
     def get_all_replacements(
         self,
     ) -> ReplacementMaps:
@@ -2083,11 +2113,22 @@ class ConfigManager:
             return self._all_replacements_cache
 
         targets: ReplacementMaps = ({}, set(), {}, {})
+        filtered: dict[ReplacementKey, list[FilteredRoute]] = {}
         for config_name in enabled_configs:
             for rule in self._iter_replacement_rules(self.get_replacement_rules(config_name)):
-                if isinstance(rule, dict) and rule.get('enabled', True):
+                if not isinstance(rule, dict) or not rule.get('enabled', True):
+                    continue
+                is_filtered, route = _filtered_route(rule)
+                if not is_filtered:
                     _apply_replacement_rule(rule, targets)
+                elif route is not None:
+                    # Decided per download in the proxy, so these never enter
+                    # the unconditional maps
+                    keys = _parse_replacement_keys(_replacement_rules(rule.get('replace_ids', [])))
+                    for key in keys:
+                        filtered.setdefault(key, []).append(route)
 
         self._all_replacements_cache_signature = signature
+        self._filtered_replacements_cache = {key: tuple(routes) for key, routes in filtered.items()}
         self._all_replacements_cache = targets
         return self._all_replacements_cache
