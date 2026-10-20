@@ -19,11 +19,18 @@ def main() -> None:
         run_linux_proxy_helper()
         return
 
-    # Load NumPy before PySide6 on Windows so its native DLLs initialize first
-    if sys.platform == 'win32':
-        importlib.import_module('numpy')
+    try:
+        # Load NumPy before PySide6 on Windows so its native DLLs initialize first
+        if sys.platform == 'win32':
+            importlib.import_module('numpy')
 
-    from fleasion.app.core import run_application
+        from fleasion.app.core import run_application
+    except (ImportError, OSError) as exc:
+        from fleasion.startup_errors import report_blocked_startup
+
+        if not report_blocked_startup(exc):
+            raise
+        sys.exit(1)
 
     run_application()
 
