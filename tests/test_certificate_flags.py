@@ -145,12 +145,19 @@ def test_macos_seeds_trust_with_user_flags_off_and_preserves_other_settings(tmp_
 
 @pytest.mark.parametrize('platform', ['darwin', 'linux'])
 @pytest.mark.parametrize('enabled', [False, True])
-def test_other_platforms_receive_mandatory_trust_companions(
+def test_other_platforms_never_force_embedded_ca_flag_into_live_response(
     monkeypatch: pytest.MonkeyPatch,
     platform: str,
     *,
     enabled: bool,
 ) -> None:
+    """DFFlagHttpUseEmbeddedCaCerts is only forced into local startup files.
+
+    Forcing it into the live clientsettings.roblox.com response broke Player
+    launch for every user - Roblox refused the whole ClientSettings document
+    (see #115). ``runtime_flags`` (used for local pre-launch files) still
+    forces it; the live response always carries Roblox's own value untouched.
+    """
     monkeypatch.setattr(custom_fflags_module, 'IS_WINDOWS', False)
     monkeypatch.setattr(custom_fflags_module.sys, 'platform', platform)
     modifier = CustomFFlagModifier(
@@ -158,12 +165,13 @@ def test_other_platforms_receive_mandatory_trust_companions(
     )
     original = b'{"applicationSettings":{"DFFlagHttpUseEmbeddedCaCerts":"True"}}'
     modified = modifier.modify_response('/v2/settings/application/PCDesktopClient', original)
+    delivered = json.loads(modified)['applicationSettings']
 
     assert modifier.is_enabled()
     assert modifier.runtime_flags()[EXTERNAL_CA_FLAG] == 'False'
-    assert json.loads(modified)['applicationSettings'][EXTERNAL_CA_FLAG] == 'False'
-    assert json.loads(modified)['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
-    assert ('FFlagExample' in json.loads(modified)['applicationSettings']) is enabled
+    assert delivered[EXTERNAL_CA_FLAG] == 'True'
+    assert (DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG in delivered) is enabled
+    assert ('FFlagExample' in delivered) is enabled
 
 
 @pytest.mark.parametrize(

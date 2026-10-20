@@ -734,7 +734,15 @@ def test_modifier_passes_the_windows_bootstrapper_through_unchanged():
     )
 
 
-def test_modifier_keeps_compatibility_when_custom_flags_are_disabled():
+def test_modifier_is_true_passthrough_when_disabled():
+    """The live response is left untouched when custom flags are off (see #115).
+
+    DFFlagHttpUseEmbeddedCaCerts and the reload-interval companion are only
+    ever forced into the local pre-launch settings files (``runtime_flags``,
+    used by ``prime_windows_flag_cache``/``prime_macos_client_settings``), not
+    into Roblox's real ClientSettings network response - forcing them there
+    broke every Player launch once it applied unconditionally.
+    """
     config = SimpleNamespace(
         custom_fflags_enabled=False,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '20'},
@@ -742,15 +750,12 @@ def test_modifier_keeps_compatibility_when_custom_flags_are_disabled():
     modifier = CustomFFlagModifier(config)
     original = b'{"applicationSettings":{"Existing":"True"}}'
 
-    modified = modifier.modify_response('/v2/settings/application/PCDesktopClient', original)
-    assert json.loads(modified)['applicationSettings'] == {
-        'Existing': 'True',
-        EXTERNAL_CA_FLAG: 'False',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
-    }
+    assert modifier.modify_response('/v2/settings/application/PCDesktopClient', original) is (
+        original
+    )
 
 
-def test_proxy_delivers_trust_flag_with_custom_flags_off() -> None:
+def test_proxy_leaves_clientsettings_untouched_with_custom_flags_off() -> None:
     config = SimpleNamespace(custom_fflags_enabled=False, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = b'{"applicationSettings":{"DFFlagHttpUseEmbeddedCaCerts":"True","Existing":"True"}}'
@@ -765,12 +770,12 @@ def test_proxy_delivers_trust_flag_with_custom_flags_off() -> None:
 
     payload = json.loads(delivered.split(b'\r\n\r\n', 1)[1])['applicationSettings']
     assert payload == {
-        EXTERNAL_CA_FLAG: 'False',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        EXTERNAL_CA_FLAG: 'True',
         'Existing': 'True',
     }
-    assert b'if-none-match' not in forwarded.lower()
-    assert not modifier.requires_fresh_response()
+    # Flags are off, so the conditional request goes upstream exactly as the
+    # client sent it instead of being forced into an unconditional fetch.
+    assert b'if-none-match' in forwarded.lower()
     assert not config.custom_fflags_enabled
     assert config.custom_fflags == {'FFlagExample': 'True'}
 

@@ -2533,7 +2533,7 @@ class FleasionProxy:
                     else None
                 )
                 custom_fflag_request_enabled = (
-                    custom_fflag_request and self.custom_fflag_modifier.is_enabled()
+                    custom_fflag_request and self.custom_fflag_modifier.custom_flags_enabled()
                 )
                 if (
                     custom_fflag_request_enabled
@@ -2759,7 +2759,7 @@ class FleasionProxy:
 
                 status_code = _parse_status_code(resp_first)
                 custom_fflag_response_enabled = (
-                    custom_fflag_request and self.custom_fflag_modifier.is_enabled()
+                    custom_fflag_request and self.custom_fflag_modifier.custom_flags_enabled()
                 )
                 if custom_fflag_response_enabled and status_code >= 400:
                     self.custom_fflag_modifier.log_response_failure(
