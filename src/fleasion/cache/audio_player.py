@@ -98,7 +98,14 @@ def _import_sounddevice_with_preferred_portaudio():
     return sounddevice
 
 
-sd = _import_sounddevice_with_preferred_portaudio()
+# A missing or incompatible PortAudio library must not prevent Fleasion from
+# launching, so audio playback is disabled instead
+try:
+    sd = _import_sounddevice_with_preferred_portaudio()
+    _SOUNDDEVICE_IMPORT_ERROR: str | None = None
+except OSError as exc:
+    sd = None
+    _SOUNDDEVICE_IMPORT_ERROR = f'{type(exc).__name__}: {exc}'
 _AUDIO_BACKEND_LOGGED = False
 
 
@@ -108,6 +115,12 @@ def _log_audio_backend_once():
     if _AUDIO_BACKEND_LOGGED:
         return
     _AUDIO_BACKEND_LOGGED = True
+
+    if sd is None:
+        log_buffer.log(
+            'Audio', f'PortAudio unavailable, playback disabled: {_SOUNDDEVICE_IMPORT_ERROR}'
+        )
+        return
 
     try:
         preferred = _preferred_portaudio_path()
@@ -310,6 +323,9 @@ class AudioPlayerWidget(QWidget):
     def _play(self):
         """Start playback."""
         if self.audio_data is None:
+            return
+        if sd is None:
+            log_buffer.log('Audio', f'Playback unavailable: {_SOUNDDEVICE_IMPORT_ERROR}')
             return
 
         # Reset if at end

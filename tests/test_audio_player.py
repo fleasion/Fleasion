@@ -117,3 +117,20 @@ def test_playback_callback_outputs_nonzero_float32_audio(monkeypatch):
     assert captured["outdata"].dtype == np.float32
     assert np.any(captured["outdata"] != 0)
     player.deleteLater()
+
+
+def test_play_is_noop_when_portaudio_unavailable(monkeypatch):
+    _qapp()
+    monkeypatch.setattr(AudioPlayerWidget, "_load_audio", _stub_loaded_audio)
+    monkeypatch.setattr("fleasion.cache.audio_player.sd", None)
+    monkeypatch.setattr(
+        "fleasion.cache.audio_player._SOUNDDEVICE_IMPORT_ERROR",
+        "OSError: cannot load library 'libportaudioarm64.dll': error 0x7e",
+    )
+    player = AudioPlayerWidget("unused")
+
+    player._play()
+
+    assert not player.is_playing
+    assert player.playback_thread is None
+    player.deleteLater()
