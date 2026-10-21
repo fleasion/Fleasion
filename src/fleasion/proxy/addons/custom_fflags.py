@@ -20,7 +20,6 @@ CLIENT_SETTINGS_COMPRESSED_PATH = '/settings-compressed/application/'
 BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM = 'PCClientBootstrapper'
 DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG = 'DFIntSecondsBetweenDynamicVariableReloading'
 DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS = '1'
-EXTERNAL_CA_FLAG = 'DFFlagHttpUseEmbeddedCaCerts'
 IS_WINDOWS = sys.platform == 'win32'
 WINDOWS_FLAG_CACHE_PATH = LOCAL_APPDATA / 'Temp' / 'Roblox' / 'cache' / 'flag_cache.dat'
 MACOS_CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
@@ -118,7 +117,7 @@ class CustomFFlagModifier:
         generation are ignored after a relaunch has armed the next Player.
         """
         if delivered_signature is None:
-            delivered_signature = self._flag_signature(self._live_response_flags())
+            delivered_signature = self._flag_signature(self.runtime_flags())
         with self._delivery_state_lock:
             if generation is not None and generation != self._delivery_generation:
                 return False
@@ -182,13 +181,8 @@ class CustomFFlagModifier:
                 disabled_folders if isinstance(disabled_folders, list) else []
             )
 
-    @staticmethod
-    def is_enabled() -> bool:
-        """Keep proxy certificate compatibility active independently of user flags."""
-        return True
-
-    def custom_flags_enabled(self) -> bool:
-        """Return the user's custom FastFlag toggle independently of compatibility."""
+    def is_enabled(self) -> bool:
+        """Return the user's custom FastFlag toggle."""
         self._refresh_settings_from_disk()
         if self._disk_enabled is not None:
             return self._disk_enabled
@@ -214,21 +208,15 @@ class CustomFFlagModifier:
             and BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM not in path_only
         )
 
-    def _filtered_custom_flags(self) -> dict[str, str]:
-        """Return the user's own custom FastFlags, without Fleasion's compatibility flags.
-
-        This is the set Roblox's real ClientSettings servers never echo back
-        unprompted, so it is safe to merge into a live network response - Roblox
-        has no server-side expectation about these values. Use ``runtime_flags``
-        instead for anything written to a local, pre-launch settings file.
-        """
+    def runtime_flags(self) -> dict[str, str]:
+        """Return saved flags plus Fleasion's non-persisted refresh companion."""
         self._refresh_settings_from_disk()
         saved_flags = (
             self._disk_flags
             if self._disk_flags is not None
             else getattr(self.config_manager, 'custom_fflags', {})
         )
-        flags = normalize_custom_fflags(saved_flags) if self.custom_flags_enabled() else {}
+        flags = normalize_custom_fflags(saved_flags)
         disabled = (
             self._disk_disabled
             if self._disk_disabled is not None
@@ -250,38 +238,7 @@ class CustomFFlagModifier:
             members = folder_mapping.get(folder_name, [])
             if isinstance(members, list | tuple | set):
                 disabled_names.update(str(name).strip() for name in members)
-        return {name: value for name, value in flags.items() if name not in disabled_names}
-
-    def _live_response_flags(self) -> dict[str, str]:
-        """Return the flags merged into a live ClientSettings network response.
-
-        Excludes the embedded-CA compatibility flag. Roblox's real
-        ClientSettings service never signs off on that value for a given
-        client, so a client-injected override tripped its validation and
-        Roblox refused the entire document (every launch failed with
-        "Failed to download or apply critical settings" - see #115). The
-        dynamic-reload companion is kept: it has shipped in this live path
-        for as long as custom FastFlags have existed and only speeds up
-        delivery of the user's own flags, which Roblox has no earlier
-        expectation about. See ``runtime_flags`` for the local pre-launch
-        settings files, where the embedded-CA flag is still forced.
-        """
-        flags = dict(self._filtered_custom_flags())
-        flags[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] = DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS
-        return flags
-
-    def runtime_flags(self) -> dict[str, str]:
-        """Return enabled custom flags and mandatory, non-persisted companions.
-
-        Only for local, pre-launch settings files (the Windows flag cache and
-        the macOS ClientSettings file) - Roblox reads those before it ever
-        talks to the network, so seeding them cannot be flagged as a tampered
-        live response. See ``_live_response_flags`` for the live-response set.
-        """
-        flags = dict(self._filtered_custom_flags())
-        # Player must use the cacert.pem bundle containing Fleasion's CA
-        # Apply this after user filters so a saved value or folder cannot disable it
-        flags[EXTERNAL_CA_FLAG] = 'False'
+        flags = {name: value for name, value in flags.items() if name not in disabled_names}
         # Roblox/Sober reads the reloader interval before applying the response
         # it has just fetched. Therefore, when this companion flag first
         # arrives through Sober's 120-second dynamic fetch, its next wait can
@@ -300,7 +257,7 @@ class CustomFFlagModifier:
         headers until a response carrying the active override set is actually
         delivered to Roblox; ``note_response_success`` commits that delivery.
         """
-        active_flags = self._flag_signature(self._live_response_flags())
+        active_flags = self._flag_signature(self.runtime_flags())
         with self._delivery_state_lock:
             return active_flags != self._last_fresh_response_flags
 
@@ -328,8 +285,8 @@ class CustomFFlagModifier:
         layout is a four-byte signature length, that many signature bytes, one
         compression byte, then the ClientSettings JSON.  We preserve the header,
         remove stale overrides when disabled, and replace the JSON atomically
-        only for the known uncompressed layout.  Turning custom flags off clears
-        their seeded values while retaining the mandatory compatibility flags.
+        only for the known uncompressed layout.  Disabled mode never adds flags;
+        it only clears values previously seeded by Fleasion.
         """
         if self._flag_cache_path is None and not IS_WINDOWS:
             return False
@@ -445,7 +402,7 @@ class CustomFFlagModifier:
         flags = self.runtime_flags() if enabled else {}
         desired_names = set(flags)
         saved_names = set()
-        if not self.custom_flags_enabled():
+        if not enabled:
             self._refresh_settings_from_disk()
             saved_flags = (
                 self._disk_flags
@@ -558,10 +515,10 @@ class CustomFFlagModifier:
         Roblox, so freshness is never acknowledged merely because processing
         began.
         """
-        if not self.custom_flags_enabled() or not self.handles_path(path):
+        if not self.is_enabled() or not self.handles_path(path):
             return body, None
 
-        flags = self._live_response_flags()
+        flags = self.runtime_flags()
         delivered_signature = self._flag_signature(flags)
 
         try:
