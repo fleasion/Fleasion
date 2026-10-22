@@ -1,11 +1,14 @@
 > [!CAUTION]
-> Official Fleasion downloads are published only through this repository's [GitHub Releases](https://github.com/fleasion/Fleasion/releases). The official project website is [fleasion.github.io](https://fleasion.github.io/), and the official community is our [Discord server](https://discord.gg/hXyhKehEZF).
+> Roblox has patched Fleasion. It now runs on an older Roblox version that it installs for you, and that version will likely stop working within days. Always install and launch Roblox **from Fleasion**, not from a bootstrapper or the official Roblox app.
+
+> [!IMPORTANT]
+> Official Fleasion downloads are published only on this repository's [Releases](https://github.com/fleasion/Fleasion/releases) page. The official website is [fleasion.github.io](https://fleasion.github.io/), and the official community is our [Discord server](https://discord.gg/hXyhKehEZF).
 
 # Fleasion
 
-A Windows, macOS, and Linux/Sober application for intercepting and replacing Roblox game assets in real time. Fleasion runs a local proxy that sits between Roblox and its servers, letting you swap textures, audio, meshes, animations, and other assets before they reach the game client.
+Fleasion replaces Roblox game assets in real time on Windows, macOS and Linux (Sober). It runs a local proxy between Roblox and its servers, so you can swap textures, audio, meshes, animations and other assets before they reach the game client.
 
-To request help or request content, join our community <a href="https://discord.com/invite/pdtce585f6">Discord server!</a>
+For help or content requests, join our Discord server.
 
 <a href="https://discord.gg/hXyhKehEZF">
     <img src="https://invidget.switchblade.xyz/hXyhKehEZF" alt="Join our Discord server">
@@ -13,183 +16,236 @@ To request help or request content, join our community <a href="https://discord.
 
 ## Installation
 
-### Standalone Executable
+Download the latest build from the [Releases](https://github.com/fleasion/Fleasion/releases) page. Python is not required.
 
-Download the current standalone build from the [Releases](https://github.com/fleasion/Fleasion/releases) page. No Python installation required.
+To run Fleasion from source, build it, or contribute code, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-If the `.exe` fails to launch on startup with a `DLL load failed` error, move the executable to a different folder, such as your Documents directory. Windows can sometimes pick up bad DLLs from the same directory as the `.exe`, and placing it elsewhere avoids that conflict. Also clear your windows `%temp%` directory to remove any stale MEI files.
+<details>
+<summary><b>Troubleshooting installation</b></summary>
 
-If you're on Linux and having issues with launching the GUI, please install `PortAudio` on your distro. How? Look it up.
+- **`DLL load failed` on Windows:** move the `.exe` to a different folder, such as Documents. Windows can load incompatible DLLs from the folder the `.exe` is in. Also clear your `%temp%` folder to remove stale `_MEI` folders.
+- **The GUI does not start on Linux:** install PortAudio using your distribution's package manager.
+- **Arch based distributions** also need Qt's native widgets package:
 
-Arch-based Linux systems also require Qt's native Widgets/runtime package:
+  ```bash
+  sudo pacman -S --needed qt6-base
+  ```
 
-```bash
-sudo pacman -S --needed qt6-base
-```
-
-Want to run Fleasion from source, build it, or contribute code? See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## System Tray
-
-Fleasion runs in the background as a system tray application. Right-click the tray icon to access:
-
-- **Dashboard** &mdash; configure asset replacements
-- **Delete Cache** &mdash; manually clear cached assets
-- **Logs** &mdash; view real-time proxy logs
-- **About** &mdash; application information
-- **Settings** &mdash; theme (System/Light/Dark), auto-delete cache on exit, clear cache on launch, run on boot, and more
-
-Left-click the tray icon to hide/unhide Fleasion window.
-
-## Important
-
-After applying any changes in the Dashboard, you must **clear your Roblox cache** (or restart Roblox) so assets get re-downloaded through the proxy. Fleasion can handle this automatically:
-
-- **Clear Cache on Launch** (on by default) &mdash; terminates Roblox and deletes `rbx-storage.db` when the proxy starts
-- **Auto Delete Cache on Exit** (on by default) &mdash; deletes the cache database when Roblox closes
-- Manual cache deletion is available from the tray menu
-
-## How It Works
-
-Fleasion runs a lightweight custom asyncio HTTPS proxy and supports two routing modes:
-
-- **Roblox Env Proxy** normally listens only on the loopback high port `58443` and relaunches Roblox Player with proxy environment variables. If Windows has reserved or excluded that port, Fleasion automatically selects another free loopback port and passes it to Player. It does not modify the system hosts file or bind privileged port 443. Roblox Player's own `ssl/cacert.pem` still receives Fleasion's local CA so Player trusts the intercepted TLS traffic. Microsoft Store/Xbox (GDK) Roblox uses package-aware activation with a scoped environment block; if that activation is unavailable, Fleasion leaves the activated client untouched and reports the fallback rather than directly relaunching it. Roblox Studio is not relaunched, intercepted, patched, or closed by this mode.
-- **Hosts File** is the legacy compatibility path. It redirects the intercepted Roblox hosts to localhost and uses local port 443, so it still requires the platform's administrator/helper path.
-
-Fleasion forces `DFFlagHttpUseEmbeddedCaCerts=False` on every platform so Roblox trusts the patched `ssl/cacert.pem` bundle. This compatibility override and its dynamic refresh interval apply through ClientSettings responses even when custom FastFlags are off. Windows and macOS also receive these flags in their startup settings. Sober's pinned bootstrap requests remain tunneled; Linux interception begins after its existing bootstrap delay. These internal overrides do not appear in your saved custom flag list, and certificate verification stays enabled.
-
-When custom FastFlags are enabled, Fleasion also merges your overrides into ClientSettings responses and pre-seeds platform startup settings so overrides needed early in Player startup are available immediately. When Roblox requests assets from its CDN, Fleasion can:
-
-- **Replace** assets by ID &mdash; swap one asset for another (different texture, audio, etc.)
-- **Remove** assets &mdash; strip textures from the batch request entirely
-- **Redirect** to CDN URLs or local files &mdash; serve your own content
-- **Cache** original assets &mdash; browse, preview, and export everything Roblox downloads
-
-All interception happens locally on your machine. Env Proxy runs the Fleasion GUI and proxy as the normal user on Windows, macOS, and Linux. A one-time administrator prompt can still be needed to repair an unusually protected Player installation or an inaccessible legacy Windows autostart task. Hosts File mode retains its existing administrator/helper requirements.
-
-### Linux client
-
-Fleasion currently supports the Sober Flatpak (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FastFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`.
-
-Linux client identity, paths, launch behavior, process detection, and proxy capabilities are routed through a client registry so another backend can be added without spreading platform-specific assumptions throughout Fleasion. Sober is the only registered implementation today.
-
-**VPN compatibility:** Env Proxy is scoped to the Player process and normally coexists with system VPN settings. Hosts File mode depends on the VPN respecting local hosts-file resolution.
-
-**Roblox policy and moderation:** Fleasion's normal asset replacement is client-side, so only you see the changes. The project has no known detections or reported warnings/bans for local asset replacement at the time of writing, but Roblox has stated that these modifications are not permitted and game moderators may still take action. Use your own judgment.
-
-## Features
-
-### Asset Replacement
-
-- Configure replacement rules through the Dashboard GUI
-- Replace assets by ID, redirect to external URLs, or serve local files
-- Multiple configuration profiles &mdash; switch between different setups
-- Import/export configurations as JSON
-- Community preset support via PreJsons
-- **Creator name column** in configuration list (off by default)
-- **Asset name display** next to preview button
-
-### Custom FastFlags
-
-Fleasion can override Roblox ClientSettings FastFlags through the proxy while Roblox is running. Open the **Fast Flags** section in the Dashboard's **Modifications** tab to:
-
-- Edit custom FastFlags live, with changes refreshed through the proxy
-- Import and export FastFlags as JSON
-- Save named JSON profiles, then load them by replacing or merging with the current editor
-- Prime the Windows Roblox FastFlag cache so startup-sensitive flags can apply before the first dynamic refresh
-
-**Important:** Custom FastFlags bypass Roblox's small allowlist of locally permitted flags. Roblox can ban your account for using them. Fleasion shows a risk confirmation before enabling the feature; use custom FastFlags entirely at your own risk.
-
-### Cache Scraper
-
-The cache scraper is a live interception system that captures every asset Roblox downloads during gameplay. Enable it from the Dashboard and it works automatically in the background while you play.
-
-**Two-stage interception:**
-
-1. **Asset tracking** &mdash; intercepts batch requests to `assetdelivery.roblox.com/v1/assets/batch` to discover asset IDs, their CDN locations, and asset types before anything is downloaded
-2. **CDN capture** &mdash; intercepts the actual downloads from `fts.rbxcdn.com`, caching the raw content with full metadata (URL, content type, hash, size, timestamp)
-
-**Features:**
-
-- **Column filtering** &mdash; right-click column headers to show/hide categories (Creator name and Roblox CDN link off by default)
-- **Resizable columns** with saved preferences in settings
-- **Sortable columns** with persistent adjustment storage
-
-**Automatic format conversion:**
-
-- **KTX textures** (Images, Decals) &mdash; converts KTX textures locally on device into usable PNGs
-- **TexturePacks** &mdash; fetches the XML manifest that maps Color, Normal, Metalness, and Roughness texture IDs, then resolves each individual texture
-- **3D Models** (SolidModels and Meshes) &mdash; Converts every single Mesh and SolidModel type into .obj files in both directions
-
-**Performance:**
-
-- All API conversion calls run in a background thread pool (4 workers) so the proxy never blocks waiting on network requests
-- Connection pooling via persistent HTTP sessions reduces overhead on repeated API calls
-- O(1) URL-to-asset lookups using hash maps instead of scanning every tracked asset
-
-**What gets cached:**
-
-Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (dozens of types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp.
-
-### 3D Viewers & Preview
-
-- **Mesh Viewer** (OpenGL-based):
-  - 3D mesh preview with orbit and FPS camera modes
-  - Wireframe and grid visualization (grid on by default for new users)
-  - Optimized rendering with display list caching
-  - Vertex color support
-  - Auto-rotation capability
-
-- **Animation Viewer**:
-  - Live 3D animation playback with R15/R6 rig support
-  - **Freecam movement** for better viewing angles
-  - **Timescale controls** for slowing down or speeding up animations
-  - Grid visualization (on by default)
-
-- **Asset Conversion Support**:
-  - **Mesh to CSG** &mdash; auto-convert `.mesh` files to `.obj` before injecting as CSG
-  - **CSG to Mesh** &mdash; auto-convert CSG models to `.obj` before mesh replacement
-  - **CSG to CSG** &mdash; replace CSG models directly via CDN links
-  - **CDN OBJ Support** &mdash; download and convert OBJ files from CDN links (Discord, Cloudflare, etc.)
-
-### Cache Viewer
-
-- Browse all intercepted assets organized by type (dozens of Roblox asset types)
-- Search and filter by ID, name, type, hash, or URL
-- **Live preview** for images, meshes (3D viewer), audio (playback), animations (3D rig), texture packs, and Jsons.
-- Asset name resolution via Roblox API
-- Export assets in multiple formats (converted, binary, raw)
-- Copy converted files directly to clipboard
-- **Category filtering** with clickable column header menu
+</details>
 
 ## Usage
 
-1. **Launch Fleasion** &mdash; the application starts in the system tray and automatically begins the proxy
-2. **Open the Dashboard** &mdash; right-click the tray icon and select "Dashboard"
-3. **Configure replacements** &mdash; add asset IDs you want to replace and specify replacement assets
-4. **Launch Roblox** &mdash; the game's traffic will route through the proxy
-5. **Clear cache** when changing replacements so Roblox re-downloads assets through the proxy
+1. **Launch Fleasion.** It starts in the system tray and starts the proxy automatically.
+2. **Open the Dashboard** by right clicking the tray icon and selecting **Dashboard**.
+3. **Install Roblox** by clicking **Install**, then use **Save and Launch** to start it.
+4. **Add replacements** in the Replacer tab.
+5. **Clear the cache** whenever you change replacements, so Roblox downloads the assets again through the proxy.
 
-### First Launch
+> [!NOTE]
+> After changing anything in the Dashboard, clear your Roblox cache or restart Roblox. Fleasion can do this for you:
+>
+> - **Clear Cache on Launch** (on by default) closes Roblox and deletes `rbx-storage.db` when the proxy starts.
+> - **Auto Delete Cache on Exit** (on by default) deletes the cache database when Roblox closes.
+> - You can also clear the cache manually from the tray menu.
 
-On first launch, Fleasion will:
+<details>
+<summary><b>What happens on first launch</b></summary>
 
-- Generate a local CA certificate and install it into Roblox's SSL trust bundle
-- In Env Proxy mode, run as the normal user and relaunch only Roblox Player with the local proxy environment
-- In Hosts File mode, request the existing Windows elevation, macOS helper, or Linux Polkit helper needed for hosts-file and port-443 access
-- Show a welcome dialog explaining how the proxy works
-- Open the Dashboard automatically
+On first launch, Fleasion:
 
-### macOS Notes
+- Generates a local CA certificate and adds it to Roblox's SSL trust bundle.
+- In Env Proxy mode, runs as your normal user and relaunches only Roblox Player with the local proxy settings.
+- In Hosts File mode, requests the Windows administrator prompt, macOS helper or Linux Polkit helper needed to edit the hosts file and use port 443.
+- Shows a welcome dialog explaining how the proxy works.
+- Opens the Dashboard.
 
-- Fleasion discovers normal Roblox, Froststrap-managed `RobloxPlayer.app` versions, and AppleBlox custom Roblox paths. It mirrors managed files and CA state into Froststrap/AppleBlox restore snapshots. Because AppleBlox recreates `Contents/MacOS/ClientSettings` immediately before launch, Fleasion also merges its allowlisted FastFlags into that launch file before Roblox consumes it; conflicting Fleasion values take precedence.
-- Fleasion must verify the helper-patched Roblox `ssl/cacert.pem` before it writes hosts entries. If verification fails, the proxy will not start.
-- Account Manager selected-account launches use Roblox auth-ticket `roblox-player:` URIs on macOS. Place, private-server, job-id, and plain app launches are attempted, but Roblox may still reject some app-launch flows; opening Roblox normally can use the account already signed in to Roblox.
-- On first macOS launch, Fleasion asks which browser is signed in to roblox.com. It reads that browser directly when account-aware features need a Roblox login token, so macOS may ask for browser-data access; choose **Always Allow** if you do not want to approve it every time. Fleasion can also reuse a valid encrypted Chrome-family cache when present; if cache recovery is ambiguous, startup preserves it and skips surprise repeat prompts. Change the browser or store a manually imported encrypted token from **Settings -> Roblox Login**, or use **Miscellaneous -> Account Manager -> Import Browser Login** to re-import a browser login explicitly.
+</details>
 
-### Run on Boot
+<details>
+<summary><b>System tray</b></summary>
 
-Fleasion can be configured to launch automatically via **Settings -> Run on Boot**. Windows creates a per-user Task Scheduler task with `InteractiveToken` and `LeastPrivilege`; macOS creates an unprivileged per-user LaunchAgent; Linux creates a per-user XDG autostart entry. Env Proxy boot launches do not elevate the GUI. If a user selects Hosts File mode, Fleasion can still request the platform-specific helper or administrator access after launch. **Settings -> Create desktop/start menu integration on boot** adds or refreshes the OS launcher entry on Windows, macOS, and Linux.
+Fleasion runs in the background from the system tray. Left click the icon to show or hide the window. Right click it to open:
+
+- **Dashboard:** configure asset replacements.
+- **Delete Cache:** clear cached assets manually.
+- **Logs:** view live proxy logs.
+- **About:** application information.
+- **Settings:** theme (System, Light or Dark), cache options, run on boot and more.
+
+</details>
+
+<details>
+<summary><b>Run on boot</b></summary>
+
+Turn on **Settings > Run on Boot** to start Fleasion automatically:
+
+- **Windows** creates a per user Task Scheduler task that runs with your normal permissions.
+- **macOS** creates a per user LaunchAgent.
+- **Linux** creates a per user XDG autostart entry.
+
+Env Proxy launches at boot never ask for administrator access. In Hosts File mode, Fleasion may still request the platform helper or administrator access after it starts. **Settings > Create desktop/start menu integration on boot** adds or refreshes the launcher entry on every platform.
+
+</details>
+
+## How it works
+
+Fleasion runs a lightweight HTTPS proxy on your machine and supports two routing modes. When Roblox requests assets, Fleasion can:
+
+- **Replace** assets by ID, swapping one texture, sound or model for another.
+- **Remove** assets, such as stripping textures from a request entirely.
+- **Redirect** assets to your own CDN URLs or local files.
+- **Cache** the original assets so you can browse, preview and export everything Roblox downloads.
+
+Everything happens locally on your machine.
+
+<details>
+<summary><b>Proxy modes</b></summary>
+
+- **Roblox Env Proxy** (default) listens on the loopback port `58443` and relaunches Roblox Player with proxy environment variables. If Windows has reserved that port, Fleasion picks another free loopback port automatically. This mode does not change your hosts file or use port 443. Roblox Player's `ssl/cacert.pem` still receives Fleasion's local CA so the Player trusts the intercepted traffic.
+  - Microsoft Store and Xbox (GDK) Roblox is started through package aware activation with a scoped environment. If that is not available, Fleasion leaves the client alone and reports it instead of relaunching it.
+  - Roblox Studio is never relaunched, intercepted, patched or closed in this mode.
+- **Hosts File** is the older compatibility mode. It points the intercepted Roblox hosts to localhost and uses port 443, so it still needs administrator access or the platform helper.
+
+Env Proxy runs the Fleasion app and proxy as your normal user on every platform. A one time administrator prompt may still appear to repair an unusually protected Roblox Player install or an old Windows autostart task.
+
+</details>
+
+<details>
+<summary><b>Certificates and FastFlags</b></summary>
+
+Fleasion sets `DFFlagHttpUseEmbeddedCaCerts=False` on every platform so Roblox trusts the patched `ssl/cacert.pem` bundle. This override and its refresh interval are delivered through ClientSettings responses even when custom FastFlags are off. Windows and macOS also receive them in their startup settings.
+
+Sober's pinned bootstrap requests stay tunneled, and Linux interception starts after Sober's existing bootstrap delay. These internal overrides do not appear in your saved FastFlag list, and certificate verification stays on.
+
+When custom FastFlags are on, Fleasion merges your overrides into ClientSettings responses and pre-fills the platform startup settings, so flags that Roblox reads early in startup apply immediately.
+
+</details>
+
+<details>
+<summary><b>Linux client</b></summary>
+
+Fleasion supports the Sober Flatpak (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FastFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`.
+
+Client paths, launch behavior, process detection and proxy support all go through a client registry, so other Linux clients can be added later without platform specific code spreading through Fleasion. Sober is currently the only supported client.
+
+</details>
+
+<details>
+<summary><b>macOS notes</b></summary>
+
+- Fleasion finds standard Roblox, Froststrap managed `RobloxPlayer.app` versions and AppleBlox custom Roblox paths. It copies managed files and certificate state into Froststrap and AppleBlox restore snapshots. AppleBlox recreates `Contents/MacOS/ClientSettings` right before launch, so Fleasion also merges its allowed FastFlags into that file before Roblox reads it. Fleasion's values win when they conflict.
+- Fleasion verifies the helper patched `ssl/cacert.pem` before writing hosts entries. If verification fails, the proxy does not start.
+- Account Manager launches use Roblox auth ticket `roblox-player:` links on macOS. Place, private server, job ID and plain app launches are attempted, but Roblox may reject some of them. Opening Roblox normally uses the account already signed in to Roblox.
+- On first launch, Fleasion asks which browser is signed in to roblox.com. It reads that browser when a feature needs your Roblox login, so macOS may ask for permission to access browser data. Choose **Always Allow** to avoid approving it every time. Fleasion can also reuse a valid encrypted Chrome based cache. If the cache is ambiguous, Fleasion keeps it and skips repeat prompts at startup. To change browsers or import a login manually, use **Settings > Roblox Login** or **Miscellaneous > Account Manager > Import Browser Login**.
+
+</details>
+
+> [!WARNING]
+> **VPNs:** Env Proxy only affects the Roblox Player process and normally works alongside a VPN. Hosts File mode only works if your VPN respects the local hosts file.
+>
+> **Roblox rules:** asset replacement happens on your client, so only you see the changes. There are no known detections or reported bans for local asset replacement at the time of writing, but Roblox does not allow these modifications and game moderators may still take action. Use your own judgment.
+
+## Features
+
+<details>
+<summary><b>Asset replacement</b></summary>
+
+- Set up replacement rules in the Dashboard.
+- Replace assets by ID, redirect them to external URLs or serve local files.
+- Keep multiple configuration profiles and switch between them.
+- Import and export configurations as JSON.
+- Use community presets through PreJsons.
+- Show a **creator name** column in the configuration list (off by default).
+- See the **asset name** next to the preview button.
+
+</details>
+
+<details>
+<summary><b>Custom FastFlags</b></summary>
+
+Fleasion can override Roblox FastFlags through the proxy while Roblox is running. Open **Fast Flags** in the Dashboard's **Modifications** tab to:
+
+- Edit custom FastFlags live, with changes applied through the proxy.
+- Import and export FastFlags as JSON.
+- Save named profiles and load them by replacing or merging with the current editor.
+- Pre-fill the Windows FastFlag cache so flags read at startup apply before the first refresh.
+
+> [!CAUTION]
+> Custom FastFlags bypass Roblox's small list of locally allowed flags, and **Roblox can ban your account for using them**. Fleasion asks you to confirm the risk before turning them on. Use them entirely at your own risk.
+
+</details>
+
+<details>
+<summary><b>Cache scraper</b></summary>
+
+The cache scraper captures every asset Roblox downloads while you play. Turn it on in the Dashboard and it runs in the background.
+
+**How it captures assets**
+
+1. **Asset tracking:** reads asset batch requests to `assetdelivery.roblox.com` to learn each asset's ID, type and download location before anything downloads.
+2. **CDN capture:** reads the actual downloads from Roblox's CDN and caches the content with its URL, content type, hash, size and timestamp.
+
+**Table**
+
+- Right click column headers to show or hide columns. Creator name and Roblox CDN link are hidden by default.
+- Columns can be resized and sorted, and your layout is saved.
+
+**Automatic conversion**
+
+- **KTX textures** (images and decals) are converted to PNG on your device.
+- **TexturePacks** are resolved through their XML manifest into separate Color, Normal, Metalness and Roughness textures.
+- **3D models** (meshes and SolidModels) are converted to and from `.obj`.
+
+**Performance**
+
+- Conversions run on a background pool of 4 threads, so the proxy never waits on network calls.
+- Reused HTTP sessions reduce overhead on repeated API calls.
+- Asset lookups use hash maps instead of scanning every tracked asset.
+
+**What gets cached**
+
+Every asset type Roblox uses, including images, decals, audio, meshes, animations, clothing and accessories. Each asset is stored with its type, original URL, content hash, file size and capture time.
+
+</details>
+
+<details>
+<summary><b>3D viewers and previews</b></summary>
+
+**Mesh viewer** (OpenGL)
+
+- Orbit and first person camera modes.
+- Wireframe and grid display (grid is on by default).
+- Cached rendering for smooth performance.
+- Vertex color support and auto rotation.
+
+**Animation viewer**
+
+- Live 3D playback on R15 and R6 rigs.
+- Free camera for better viewing angles.
+- Playback speed controls.
+- Grid display (on by default).
+
+**Conversion support**
+
+- **Mesh to CSG:** converts `.mesh` files to `.obj` before injecting them as CSG.
+- **CSG to mesh:** converts CSG models to `.obj` before replacing a mesh.
+- **CSG to CSG:** replaces CSG models directly through CDN links.
+- **CDN OBJ files:** downloads and converts OBJ files from links such as Discord or Cloudflare.
+
+</details>
+
+<details>
+<summary><b>Cache viewer</b></summary>
+
+- Browse every captured asset, grouped by type.
+- Search and filter by ID, name, type, hash or URL.
+- Preview images, meshes, audio, animations, texture packs and JSON files.
+- Look up asset names through the Roblox API.
+- Export assets as converted, binary or raw files.
+- Copy converted files straight to your clipboard.
+- Filter by category from the column header menu.
+
+</details>
 
 ## Configuration
 
@@ -199,7 +255,10 @@ Settings are stored in:
 - `~/Library/Application Support/FleasionNT/` on macOS
 - `~/.config/Fleasion/` on Linux
 
-| File / Directory | Purpose |
+<details>
+<summary><b>Files and folders</b></summary>
+
+| File or folder | Purpose |
 | --- | --- |
 | `settings.json` | Application settings |
 | `configs/` | Replacement configuration profiles (JSON) |
@@ -207,14 +266,16 @@ Settings are stored in:
 | `Cache/` | Cached asset files and index |
 | `Exports/` | Exported assets |
 | `PreJsons/` | Community preset data |
-| `proxy_ca/` | Generated CA certificate and per-host leaf certificates |
-| `logs/fleasion.log` | Persistent application and proxy log |
-| `Temp/ConvertedMeshes/` | Temporary directory for OBJ/mesh conversions |
+| `proxy_ca/` | Generated CA certificate and per host certificates |
+| `logs/fleasion.log` | Application and proxy log |
+| `Temp/ConvertedMeshes/` | Temporary OBJ and mesh conversions |
 
-### Sharing Configs with Files
+</details>
 
-Replacement config JSON files live directly inside `configs/`. If a config needs its own files,
-such as an OBJ model, put those files in a folder inside `configs/`:
+<details>
+<summary><b>Sharing configs with files</b></summary>
+
+Config JSON files go directly inside `configs/`. If a config needs its own files, such as an OBJ model, put them in a folder inside `configs/`:
 
 ```text
 configs/
@@ -223,21 +284,19 @@ configs/
     └── stick.obj
 ```
 
-In the replacement field, `/StickObj/stick.obj` means “use `stick.obj` from the `StickObj`
-folder inside Fleasion's Configs folder.” This notation works unchanged on Windows, macOS, and
-Linux. The **Browse** button and drag-and-drop automatically use this shareable notation when
-the selected file is inside a Configs subfolder.
+In the replacement field, `/StickObj/stick.obj` means "use `stick.obj` from the `StickObj` folder inside Fleasion's configs folder". This works the same on Windows, macOS and Linux. The **Browse** button and drag and drop use this format automatically when the file is inside a configs subfolder.
 
-Asset folders may be nested up to 10 folders deep. Config JSON files remain at the root of
-`configs/`; JSON files inside asset subfolders are not listed as configs. Normal operating-system
-file paths remain supported. On macOS and Linux, when both a Configs asset and an absolute path
-could match the same `/Folder/file` text, the file inside Configs takes priority.
+- Asset folders can be nested up to 10 levels deep.
+- Config JSON files must stay at the root of `configs/`. JSON files inside asset folders are not listed as configs.
+- Normal file paths still work. On macOS and Linux, if a `/Folder/file` path matches both a configs asset and an absolute path, the file inside configs is used.
+
+</details>
 
 ## Community
 
-- **Discord**: [discord.gg/hXyhKehEZF](https://discord.gg/hXyhKehEZF)
-- **Donate**: [ko-fi.com/fleasion](https://ko-fi.com/fleasion)
+- **Discord:** [discord.gg/hXyhKehEZF](https://discord.gg/hXyhKehEZF)
+- **Donate:** [ko-fi.com/fleasion](https://ko-fi.com/fleasion)
 
 ## License
 
-This project is provided as-is for educational and personal use.
+This project is provided as is for educational and personal use.
