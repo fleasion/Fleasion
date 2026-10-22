@@ -340,6 +340,12 @@ def _find_roblox_dirs() -> list[Path]:
     if running_player is not None:
         _add(running_player.parent)
 
+    from ..utils.roblox_installer import get_forced_version_exe_path
+
+    forced_exe = get_forced_version_exe_path()
+    if forced_exe is not None:
+        _add(forced_exe.parent)
+
     for cached_dir in load_saved_roblox_dirs():
         _add(cached_dir)
 

@@ -829,6 +829,69 @@ class ReplacerConfigWindow(QDialog):
         escape_shortcut = QShortcut(QKeySequence('Escape'), self)
         escape_shortcut.activated.connect(self.close)
 
+    def _apply_accent_style(self, button: QPushButton, reference: QPushButton):
+        accent = self.palette().color(QPalette.ColorRole.Accent)
+        if not accent.isValid():
+            accent = self.palette().color(QPalette.ColorRole.Highlight)
+        text = '#000000' if accent.lightnessF() > 0.6 else '#ffffff'
+        button.setStyleSheet(
+            'QPushButton {'
+            f' background-color: {accent.name()};'
+            f' color: {text};'
+            f' border: 1px solid {accent.darker(120).name()};'
+            ' border-radius: 4px;'
+            ' padding: 0 8px;'
+            '}'
+            f'QPushButton:hover {{ background-color: {accent.lighter(110).name()}; }}'
+            f'QPushButton:pressed {{ background-color: {accent.darker(110).name()}; }}'
+            'QPushButton:disabled { background-color: palette(mid); color: palette(dark); border-color: palette(mid); }'
+        )
+        button.setFixedHeight(reference.sizeHint().height())
+
+    def _update_install_launch_button(self):
+        if not hasattr(self, 'install_launch_button') or sys.platform.startswith('linux'):
+            return
+        from ..utils.roblox_installer import is_forced_version_installed
+        if is_forced_version_installed():
+            self.install_launch_button.setText(tr('ui.gui.replacer_config.save_and_launch'))
+        else:
+            self.install_launch_button.setText(tr('ui.gui.replacer_config.install_roblox'))
+
+    def _on_install_launch_clicked(self):
+        from ..utils import launch_as_standard_user
+        from ..utils.roblox_installer import get_forced_version_exe_path
+
+        exe = get_forced_version_exe_path()
+        if exe is None:
+            from .roblox_install_dialog import RobloxInstallDialog
+            dialog = RobloxInstallDialog(self)
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            exe = dialog.installed_exe if accepted else None
+            dialog.deleteLater()
+            self._update_install_launch_button()
+            if exe is None:
+                return
+
+        self._save_config_now()
+        self.install_launch_button.setEnabled(False)
+        try:
+            if not launch_as_standard_user(exe):
+                QMessageBox.warning(
+                    self,
+                    tr('ui.gui.replacer_config.launch_failed_title'),
+                    tr('ui.gui.replacer_config.launch_failed', path=str(exe)),
+                )
+        finally:
+            self.install_launch_button.setEnabled(True)
+            self._update_install_launch_button()
+
+    def _save_config_now(self):
+        try:
+            self.config_manager.window_geometry = self.saveGeometry().toHex().data().decode('utf-8')
+            self.config_manager.save()
+        except Exception as exc:
+            log_buffer.log('Config', f'Failed to save configuration: {exc}')
+
     def _proxy_required(self, widget: QWidget) -> ProxyGate:
         gate = ProxyGate(widget)
         self._proxy_gates.append(gate)
@@ -1145,6 +1208,18 @@ class ReplacerConfigWindow(QDialog):
         undo_btn = QPushButton(tr('ui.gui.replacer_config.undo_ctrl_z'))
         undo_btn.clicked.connect(self._do_undo)
         footer_layout.addWidget(undo_btn)
+
+        if not sys.platform.startswith('linux'):
+            self.install_launch_button = QPushButton()
+            self.install_launch_button.clicked.connect(self._on_install_launch_clicked)
+            footer_layout.addWidget(self.install_launch_button)
+
+            self.footer_close_button = QPushButton(tr('ui.gui.replacer_config.close'))
+            self.footer_close_button.clicked.connect(self.close)
+            footer_layout.addWidget(self.footer_close_button)
+
+            self._apply_accent_style(self.install_launch_button, undo_btn)
+            self._update_install_launch_button()
 
         parent_layout.addWidget(footer_widget)
 

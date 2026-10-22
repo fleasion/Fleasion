@@ -92,6 +92,8 @@ else:
 
 # Application directories
 CONFIG_DIR = _get_config_dir()
+FORCED_ROBLOX_VERSION = 'version-11f155f3450f4c8e'
+DOWNLOADS_DIR = CONFIG_DIR / 'Downloads'
 APP_CACHE_DIR = CONFIG_DIR / 'cache'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 CONFIGS_FOLDER = CONFIG_DIR / 'configs'

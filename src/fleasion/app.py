@@ -4954,6 +4954,15 @@ def main():
         # Open dashboard on launch if enabled (suppressed when started by autostart task)
         tray._show_replacer_config()
 
+    if not _suppress_dashboard and not config_manager.patch_notice_shown:
+        from .gui.roblox_install_dialog import PatchNoticeDialog
+
+        _notice_parent = next((w for w in QApplication.topLevelWidgets() if w.isVisible()), None)
+        patch_notice = PatchNoticeDialog(_notice_parent)
+        patch_notice.exec()
+        patch_notice.deleteLater()
+        config_manager.patch_notice_shown = True
+
     _auth_prompt_shown = False
     auth_check_invoker = _AuthCheckInvoker()
 

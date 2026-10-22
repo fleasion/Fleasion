@@ -2768,6 +2768,12 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
         f'  Running Roblox process path: {int((time.perf_counter() - t) * 1000)} ms ({running_found} found)',
     )
 
+    from ..utils.roblox_installer import get_forced_version_exe_path
+
+    forced_exe = get_forced_version_exe_path()
+    if forced_exe is not None:
+        _add(forced_exe.parent, 'Fleasion pinned Roblox version')
+
     for cached_dir in load_saved_roblox_dirs():
         _add(cached_dir, 'Saved Roblox directory')
 

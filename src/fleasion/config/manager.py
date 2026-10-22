@@ -299,6 +299,7 @@ DEFAULT_SETTINGS = {
     'run_on_boot': True,
     'desktop_integration': True,
     'close_to_tray': True,
+    'patch_notice_shown': False,
     'close_scraped_games_menu_on_open': True,
     'close_viewer_on_replace': True,
     'show_replacer_notifications': True,
@@ -1244,6 +1245,15 @@ class ConfigManager:
     @desktop_integration.setter
     def desktop_integration(self, value: bool):
         self.settings['desktop_integration'] = value
+        self._save_settings()
+
+    @property
+    def patch_notice_shown(self) -> bool:
+        return bool(self.settings.get('patch_notice_shown', False))
+
+    @patch_notice_shown.setter
+    def patch_notice_shown(self, value: bool):
+        self.settings['patch_notice_shown'] = bool(value)
         self._save_settings()
 
     @property

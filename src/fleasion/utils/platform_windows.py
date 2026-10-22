@@ -1941,6 +1941,10 @@ def _resolve_roblox_player_exe_for_launch() -> Optional[Path]:
         candidates_by_path[key] = candidate
         return True
 
+    forced_exe = _forced_version_exe()
+    if forced_exe is not None:
+        _add(forced_exe, 1000, 'forced Roblox version')
+
     # 1) Running client path. Useful for custom installs, but do not let a stale
     # running version outrank the current LocalAppData install.
     running_exe = get_roblox_player_exe_path()
@@ -2280,6 +2284,16 @@ def _wait_for_roblox_process_start(timeout: float = 6.0) -> bool:
     return is_roblox_running()
 
 
+def _forced_version_exe() -> Optional[Path]:
+    import importlib
+
+    if not hasattr(importlib.import_module('.paths', __package__), 'FORCED_ROBLOX_VERSION'):
+        return None
+    from .roblox_installer import get_forced_version_exe_path
+
+    return get_forced_version_exe_path(Path(LOCAL_APPDATA))
+
+
 def launch_as_standard_user(target: str | Path) -> bool:
     """Launch a URI/path as a standard user when Fleasion is elevated."""
     target_str = str(target).strip()
@@ -2312,6 +2326,15 @@ def launch_as_standard_user(target: str | Path) -> bool:
         return False
 
     if is_roblox_uri:
+        if _forced_version_exe() is not None:
+            if _is_process_elevated():
+                direct_started = _launch_with_shell_token(target_str, prefer_direct_roblox_uri=True)
+                if _roblox_launch_confirmed(direct_started, 'Direct executable launch (shell token)'):
+                    return True
+            direct_started = _launch_roblox_uri_direct(target_str)
+            if _roblox_launch_confirmed(direct_started, 'Direct executable launch'):
+                return True
+
         # Protocol first, raw executable fallback only if protocol launch does not start Roblox.
         if _is_process_elevated():
             protocol_started = _launch_with_shell_token(target_str, prefer_direct_roblox_uri=False)
