@@ -6,7 +6,6 @@ Thanks for contributing to Fleasion. This document covers the development enviro
 
 - **Windows 10+, macOS 11+, or Linux with the Sober Flatpak**
 - [**uv**](https://docs.astral.sh/uv/) package manager
-- **Python 3.14+**
 - Linux desktop installs need `pkexec`/Polkit available (installed by default on Mint and most desktop distributions)
 
 ## Running from Source
@@ -25,9 +24,9 @@ Run the checks relevant to your change before submitting it:
 
 ```bash
 uv run pytest
+uv run pyright
 uv run ruff check .
 uv run ruff format --check .
-uv run pyright
 ```
 
 ## Building Standalone Releases
@@ -112,6 +111,7 @@ The repository changes frequently; use the source tree itself as the authoritati
 - Add or update tests for behavior changes and regressions.
 - Keep generated build artifacts out of hand-edited source changes.
 - Keep user-facing documentation in `README.md`; keep contributor/development details here.
+
 ## Contributors and Acknowledgements
 
 Project credits and acknowledgements are maintained in [CONTRIBUTORS.md](CONTRIBUTORS.md).
