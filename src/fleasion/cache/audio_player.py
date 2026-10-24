@@ -157,14 +157,23 @@ def _import_sounddevice_with_preferred_portaudio() -> _SoundDeviceModule:
     return sounddevice
 
 
-sd = _import_sounddevice_with_preferred_portaudio()
+def _load_sounddevice() -> tuple[_SoundDeviceModule | None, str | None]:
+    # Disable playback when PortAudio is missing or incompatible so Fleasion can start
+    try:
+        return _import_sounddevice_with_preferred_portaudio(), None
+    except OSError as exc:
+        return None, f'{type(exc).__name__}: {exc}'
+
+
+sd, _SOUNDDEVICE_IMPORT_ERROR = _load_sounddevice()
+_PORTAUDIO_ERROR: type[Exception] = sd.PortAudioError if sd is not None else RuntimeError
 _audio_backend_logged = threading.Event()
 
 
 def _audio_diagnostic_value(callback: Callable[[], object]) -> object:
     try:
         return callback()
-    except (OSError, RuntimeError, sd.PortAudioError) as exc:
+    except (OSError, RuntimeError, _PORTAUDIO_ERROR) as exc:
         return f'unavailable ({type(exc).__name__}: {exc})'
 
 
@@ -174,12 +183,19 @@ def _log_audio_backend_once() -> None:
         return
     _audio_backend_logged.set()
 
+    sounddevice = sd
+    if sounddevice is None:
+        log_buffer.log(
+            'Audio', f'PortAudio unavailable, playback disabled: {_SOUNDDEVICE_IMPORT_ERROR}'
+        )
+        return
+
     preferred = _audio_diagnostic_value(_preferred_portaudio_path)
-    loaded = getattr(sd, '_libname', None)
-    version = getattr(sd, '__version__', 'unknown')
-    portaudio_version = _audio_diagnostic_value(sd.get_portaudio_version)
-    default_device = _audio_diagnostic_value(lambda: sd.default.device)
-    device_count = _audio_diagnostic_value(lambda: len(sd.query_devices()))
+    loaded = getattr(sounddevice, '_libname', None)
+    version = getattr(sounddevice, '__version__', 'unknown')
+    portaudio_version = _audio_diagnostic_value(sounddevice.get_portaudio_version)
+    default_device = _audio_diagnostic_value(lambda: sounddevice.default.device)
+    device_count = _audio_diagnostic_value(lambda: len(sounddevice.query_devices()))
     log_buffer.log(
         'Audio',
         'Backend '
@@ -368,6 +384,9 @@ class AudioPlayerWidget(QWidget):
         """Start playback."""
         if self.audio_data is None or self.sample_rate is None:
             return
+        if sd is None:
+            log_buffer.log('Audio', f'Playback unavailable: {_SOUNDDEVICE_IMPORT_ERROR}')
+            return
 
         # Reset if at end
         with self.position_lock:
@@ -437,6 +456,11 @@ class AudioPlayerWidget(QWidget):
             self.playback_position = end_pos
 
     def _create_output_stream(self, stop_event: threading.Event) -> _OutputStreamLike:
+        sounddevice = sd
+        if sounddevice is None:
+            msg = f'Playback unavailable: {_SOUNDDEVICE_IMPORT_ERROR}'
+            raise RuntimeError(msg)
+
         def callback(
             outdata: AudioArray,
             frames: int,
@@ -446,7 +470,7 @@ class AudioPlayerWidget(QWidget):
             self._write_audio_callback(stop_event, outdata, frames, status)
 
         _audio_data, sample_rate = self._loaded_audio()
-        return sd.OutputStream(
+        return sounddevice.OutputStream(
             samplerate=sample_rate,
             channels=2,
             dtype='float32',
@@ -467,11 +491,11 @@ class AudioPlayerWidget(QWidget):
     def _close_output_stream(stream: _OutputStreamLike) -> None:
         try:
             stream.stop()
-        except (RuntimeError, sd.PortAudioError) as exc:
+        except (RuntimeError, _PORTAUDIO_ERROR) as exc:
             log_buffer.log('Audio', f'Error stopping audio stream: {exc}')
         try:
             stream.close()
-        except (RuntimeError, sd.PortAudioError) as exc:
+        except (RuntimeError, _PORTAUDIO_ERROR) as exc:
             log_buffer.log('Audio', f'Error closing audio stream: {exc}')
 
     def _finish_playback(
@@ -503,7 +527,7 @@ class AudioPlayerWidget(QWidget):
                 self.stream = stream
             stream.start()
             self._wait_for_playback_stop(stop_event)
-        except (RuntimeError, TypeError, ValueError, sd.PortAudioError) as exc:
+        except (RuntimeError, TypeError, ValueError, _PORTAUDIO_ERROR) as exc:
             log_buffer.log('Audio', f'Playback error: {exc}')
         finally:
             if stream is not None:

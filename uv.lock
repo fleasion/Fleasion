@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 resolution-markers = [
     "sys_platform == 'darwin'",
@@ -298,7 +298,7 @@ wheels = [
 
 [[package]]
 name = "fleasion"
-version = "2.4.1b1"
+version = "2.4.2b1"
 source = { editable = "." }
 dependencies = [
     { name = "browser-cookie3", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -357,7 +357,7 @@ requires-dist = [
     { name = "python-dateutil", specifier = ">=2.9.0" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=307" },
     { name = "requests", specifier = ">=2.32.0" },
-    { name = "sounddevice", specifier = ">=0.5.3" },
+    { name = "sounddevice", specifier = ">=0.5.6" },
     { name = "soundfile", specifier = ">=0.13.1" },
     { name = "win11toast", marker = "sys_platform == 'win32'", specifier = ">=0.36.3" },
     { name = "zstandard", specifier = ">=0.21.0" },

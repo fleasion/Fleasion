@@ -1,4 +1,9 @@
+from __future__ import annotations
+
 import os
+import subprocess
+import sys
+import textwrap
 import threading
 from collections.abc import Callable
 from typing import cast
@@ -152,3 +157,61 @@ def test_playback_callback_outputs_nonzero_float32_audio(monkeypatch: pytest.Mon
     assert outdata.dtype == np.float32
     assert np.any(outdata != 0)
     player.deleteLater()
+
+
+def test_play_is_noop_when_portaudio_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _qapp()
+    monkeypatch.setattr(AudioPlayerWidget, '_load_audio', _stub_loaded_audio)
+    monkeypatch.setattr('fleasion.cache.audio_player.sd', None)
+    monkeypatch.setattr(
+        'fleasion.cache.audio_player._SOUNDDEVICE_IMPORT_ERROR',
+        "OSError: cannot load library 'libportaudioarm64.dll': error 0x7e",
+    )
+    player = AudioPlayerWidget('unused')
+
+    _play(player)
+
+    assert not player.is_playing
+    assert player.playback_thread is None
+    player.deleteLater()
+
+
+def test_player_starts_when_portaudio_import_fails() -> None:
+    script = textwrap.dedent('''\
+        import builtins
+        from unittest.mock import patch
+
+        import numpy as np
+        from PySide6.QtWidgets import QApplication
+
+        original_import = builtins.__import__
+
+        def import_without_portaudio(name, *args, **kwargs):
+            if name == 'sounddevice':
+                raise OSError('PortAudio unavailable for test')
+            return original_import(name, *args, **kwargs)
+
+        with patch('builtins.__import__', side_effect=import_without_portaudio):
+            from fleasion.cache import audio_player
+
+        assert audio_player.sd is None
+        assert 'PortAudio unavailable for test' in audio_player._SOUNDDEVICE_IMPORT_ERROR
+
+        app = QApplication([])
+        with patch.object(audio_player.AudioPlayerWidget, '_load_audio'):
+            player = audio_player.AudioPlayerWidget('unused')
+        player.audio_data = np.zeros((4096, 2), dtype=np.float32)
+        player.sample_rate = 44100
+        player._play()
+        assert not player.is_playing
+        assert player.playback_thread is None
+        player.close()
+    ''')
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
