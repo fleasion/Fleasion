@@ -32,6 +32,7 @@ from fleasion.utils.json_types import (
     as_json_object,
     require_json_value,
 )
+from fleasion.utils.replacement_filters import ALWAYS, FilteredRoute, choose_route
 
 if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
@@ -46,7 +47,7 @@ type _ReplacementKey = int | str
 type _AnimRequiredRig = str | frozenset[str]
 type _PendingValue = tuple[str, str]
 type _AnimPendingValue = tuple[str, _AnimRequiredRig]
-type _CdnMatch = tuple[str, str | _AnimPendingValue]
+type _CdnMatch = tuple[str, str | _AnimPendingValue | tuple[FilteredRoute, ...]]
 type _MipmapMode = Literal['color', 'normal', 'linear']
 
 _MIPMAP_MODES: dict[int | None, _MipmapMode] = {
@@ -1094,9 +1095,12 @@ class TextureStripper:
                 'local': len(cls._local_redirects),
                 'cdn': len(cls._cdn_redirects),
                 'solid': len(cls._solidmodel_injections),
+                'filtered': len(cls._filtered_cdn_routes) + len(cls._filtered_pending),
                 'batches': len(cls._batch_generations),
             }
             cls._pending.clear()
+            cls._filtered_pending.clear()
+            cls._filtered_cdn_routes.clear()
             cls._local_redirects.clear()
             cls._cdn_redirects.clear()
             cls._solidmodel_injections.clear()
@@ -1135,6 +1139,15 @@ class TextureStripper:
             if generation is None or generation != self._routes_generation:
                 return False
             self._pending[req_id] = value
+            return True
+
+    def _queue_filtered_pending(self, req_id: str, routes: tuple[FilteredRoute, ...]) -> bool:
+        batch_id = req_id.split('_', 1)[0]
+        with self._lock:
+            generation = self._batch_generations.get(batch_id)
+            if generation is None or generation != self._routes_generation:
+                return False
+            self._filtered_pending[req_id] = routes
             return True
 
     def _queue_anim_pending(self, req_id: str, value: _AnimPendingValue) -> bool:
@@ -1188,6 +1201,10 @@ class TextureStripper:
     ] = {}  # base_cdn_url -> (local_path, required_rig)
     # pending_key -> (local_path, required_rig)
     _anim_local_pending: ClassVar[dict[str, _AnimPendingValue]] = {}
+    # requestId -> candidate routes decided from the original's bytes
+    _filtered_pending: ClassVar[dict[str, tuple[FilteredRoute, ...]]] = {}
+    # base_cdn_url -> candidate routes decided from the original's bytes
+    _filtered_cdn_routes: ClassVar[dict[str, tuple[FilteredRoute, ...]]] = {}
     # separate lock for rig-conversion state (avoids holding _lock during file I/O)
     _anim_lock: Lock = Lock()
 
@@ -1756,6 +1773,7 @@ class TextureStripper:
             replacements_tuple = self.config_manager.get_all_replacements()
 
         replacements, removals, cdn_replacements, local_replacements = replacements_tuple
+        filtered_routes = self._filtered_replacements()
         replacements = {
             key: value
             for key, value in replacements.items()
@@ -2027,6 +2045,19 @@ class TextureStripper:
                 (key for key in winning_keys if key in local_replacements), None
             )
             winning_cdn_key = next((key for key in winning_keys if key in cdn_replacements), None)
+            if filtered_routes and req_id and aid and map_index is None and not is_solidmodel:
+                candidates = self._filtered_candidates(
+                    replacement_key_groups,
+                    winning_keys,
+                    filtered_routes,
+                    local_replacements.get(winning_local_key)
+                    if winning_local_key is not None
+                    else None,
+                    cdn_replacements.get(winning_cdn_key) if winning_cdn_key is not None else None,
+                )
+                if candidates:
+                    self._queue_filtered_pending(f'{batch_id}_{req_id}', candidates)
+                    continue
             matched = None
             if winning_local_key is None and winning_cdn_key is None:
                 matched = next((key for key in winning_keys if key in replacements), None)
@@ -2214,7 +2245,7 @@ class TextureStripper:
         pending_key = ''
         if req_id_raw:
             by_response_id = f'{batch_id}_{req_id_raw}'
-            if by_response_id in self._pending:
+            if by_response_id in self._pending or by_response_id in self._filtered_pending:
                 pending_key = by_response_id
 
         # Fallback: map by response index to the outbound requestId.
@@ -2222,7 +2253,7 @@ class TextureStripper:
         mapped_req_id = req_ids_by_index[idx] if idx < len(req_ids_by_index) else ''
         if not pending_key and mapped_req_id:
             by_request_index = f'{batch_id}_{mapped_req_id}'
-            if by_request_index in self._pending:
+            if by_request_index in self._pending or by_request_index in self._filtered_pending:
                 pending_key = by_request_index
 
         req_item = as_json_object(req_data[idx]) if idx < len(req_data) else None
@@ -2284,6 +2315,11 @@ class TextureStripper:
                 return
 
         if not location or not pending_key:
+            return
+        filtered = self._filtered_pending.pop(pending_key, None)
+        if filtered is not None:
+            self._filtered_cdn_routes[base_loc] = filtered
+            log_buffer.log('Replacer', f'Will filter replacement for {base_loc[:60]}...')
             return
         url_type, url_value = self._pending.pop(pending_key)
         if url_type == 'cdn':
@@ -2446,22 +2482,84 @@ class TextureStripper:
             return ('anim_rig', anim_entry)
 
         with self._lock:
-            if base_url in self._local_redirects:
-                value = self._local_redirects.pop(base_url)
-                _log_cdn_match('local', value)
-                return ('local', value)
-            if base_url in self._cdn_redirects:
-                value = self._cdn_redirects.pop(base_url)
-                return ('cdn', value)
-            if base_url in self._solidmodel_injections:
-                if base_url in self._solidmodel_force_v3:
-                    value = self._solidmodel_injections[base_url]
-                    _log_cdn_match('solid_v3', value)
-                    return ('solid_v3', value)
-                value = self._solidmodel_injections[base_url]
-                _log_cdn_match('solid', value)
-                return ('solid', value)
+            match = self._pop_cdn_route_locked(base_url)
+        if match is not None and match[0] in {'local', 'solid', 'solid_v3'}:
+            _log_cdn_match(match[0], cast('str', match[1]))
+        return match
+
+    def _pop_cdn_route_locked(self, base_url: str) -> _CdnMatch | None:
+        """Take the route registered for a CDN URL. Called with ``self._lock`` held."""
+        if base_url in self._filtered_cdn_routes:
+            return ('filtered', self._filtered_cdn_routes.pop(base_url))
+        if base_url in self._local_redirects:
+            return ('local', self._local_redirects.pop(base_url))
+        if base_url in self._cdn_redirects:
+            return ('cdn', self._cdn_redirects.pop(base_url))
+        if base_url in self._solidmodel_injections:
+            action = 'solid_v3' if base_url in self._solidmodel_force_v3 else 'solid'
+            return (action, self._solidmodel_injections[base_url])
         return None
+
+    def _filtered_replacements(self) -> dict[_ReplacementKey, tuple[FilteredRoute, ...]]:
+        getter = getattr(self.config_manager, 'get_filtered_replacements', None)
+        if not callable(getter):
+            return {}
+        return cast('dict[_ReplacementKey, tuple[FilteredRoute, ...]]', getter())
+
+    @staticmethod
+    def _filtered_candidates(
+        key_groups: tuple[list[_ReplacementKey], ...],
+        winning_keys: list[_ReplacementKey],
+        filtered_routes: dict[_ReplacementKey, tuple[FilteredRoute, ...]],
+        unconditional_local: str | None,
+        unconditional_cdn: str | None,
+    ) -> tuple[FilteredRoute, ...]:
+        """Filtered routes for one asset, ending with its unfiltered fallback.
+
+        Specificity works as for unfiltered rules: a filtered type rule never
+        overrides an unfiltered rule for the asset's own ID. At equal
+        specificity the filtered rules are tried first, and the unfiltered
+        local/CDN rule serves whatever they do not match. ID rules at that
+        level are not applied, since the request must keep the original ID.
+        """
+        filtered_level = next(
+            (i for i, keys in enumerate(key_groups) if any(k in filtered_routes for k in keys)),
+            None,
+        )
+        if filtered_level is None:
+            return ()
+        winning_level = next(
+            (i for i, keys in enumerate(key_groups) if keys is winning_keys and keys),
+            len(key_groups),
+        )
+        if winning_level < filtered_level:
+            return ()
+        candidates = [
+            route for key in key_groups[filtered_level] for route in filtered_routes.get(key, ())
+        ]
+        if winning_level == filtered_level:
+            if unconditional_local is not None:
+                candidates.append(FilteredRoute(ALWAYS, 'local', unconditional_local))
+            elif unconditional_cdn is not None:
+                candidates.append(FilteredRoute(ALWAYS, 'cdn', unconditional_cdn))
+        return tuple(candidates)
+
+    @staticmethod
+    def choose_filtered_route(
+        routes: tuple[FilteredRoute, ...], original: bytes, url: str
+    ) -> FilteredRoute | None:
+        """Pick the route for a downloaded original; ``None`` keeps the original."""
+        route = choose_route(routes, original)
+        if route is None:
+            outcome = 'no filter matched, kept original'
+        elif route.mode == 'local':
+            outcome = f'serving {Path(route.value).name}'
+        else:
+            outcome = f'redirecting to {route.value[:60]}'
+        log_buffer.log(
+            'Replacer', f'Filtered replacement for {url[:60]}... ({len(original)} bytes): {outcome}'
+        )
+        return route
 
     def has_pending(self) -> bool:
         """Return True if any batch req_ids are awaiting CDN URL mapping.
@@ -2471,7 +2569,7 @@ class TextureStripper:
         """
         self._sync_replacements_generation()
         with self._lock:
-            return bool(self._pending)
+            return bool(self._pending or self._filtered_pending)
 
     # SolidModel response injection (called from server MITM thread)
 

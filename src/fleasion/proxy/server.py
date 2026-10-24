@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 
     from fleasion.utils.logging import LogBuffer
+    from fleasion.utils.replacement_filters import FilteredRoute
 
     from .addons.cache_scraper import CacheScraper
     from .addons.custom_fflags import CustomFFlagModifier
@@ -2955,9 +2956,11 @@ class FleasionProxy:
             resp_headers: dict[bytes, bytes],
             resp_body_raw: bytes,
             short_circuit: tuple[str, object] | None,
-        ) -> tuple[bytes, bool]:
+        ) -> tuple[bytes, bool, bytes | None]:
+            """Return the body, whether it changed, and a redirect to send instead."""
             full_url = f'https://{host}{path}'
             response_modified = False
+            redirect: bytes | None = None
             if short_circuit is not None and short_circuit[0] in {'solid', 'solid_v3'}:
                 resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
                 cdn_base_url = full_url.partition('?')[0]
@@ -2971,6 +2974,25 @@ class FleasionProxy:
                     prefer_v3,
                 )
                 response_modified = True
+            elif short_circuit is not None and short_circuit[0] == 'filtered':
+                original_body = _decompress_body(resp_body_raw, resp_headers)
+                filtered_route = await asyncio.get_event_loop().run_in_executor(
+                    self._executor,
+                    self.texture_stripper.choose_filtered_route,
+                    cast('tuple[FilteredRoute, ...]', short_circuit[1]),
+                    original_body,
+                    full_url,
+                )
+                if filtered_route is not None and filtered_route.mode == 'cdn':
+                    redirect = _make_redirect(filtered_route.value)
+                elif filtered_route is not None:
+                    replacement_body = await asyncio.get_event_loop().run_in_executor(
+                        self._executor, _read_local_bytes, filtered_route.value
+                    )
+                    # A missing replacement file keeps the original
+                    if replacement_body:
+                        resp_body_raw = replacement_body
+                        response_modified = True
             elif short_circuit is not None and short_circuit[0] == 'anim_rig':
                 anim_repl_path, required_rig = cast('_AnimPendingValue', short_circuit[1])
                 orig_bytes = _decompress_body(resp_body_raw, resp_headers)
@@ -2991,7 +3013,7 @@ class FleasionProxy:
                 )
                 ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
                 self.cache_scraper.process_cdn_response(full_url, path, resp_body_for_cache, ct)
-            return resp_body_raw, response_modified
+            return resp_body_raw, response_modified, redirect
 
         async def run_session_loop() -> None:
             nonlocal pending_req
@@ -3320,6 +3342,8 @@ class FleasionProxy:
                 response_modified = False
                 modified_content_encoding: bytes | None = None
                 custom_fflag_delivered_signature: tuple[tuple[str, str], ...] | None = None
+                # A filtered CDN-URL replacement answers with a redirect instead
+                filtered_redirect: bytes | None = None
 
                 if is_batch:
                     # Batch response: forward raw to Roblox, decompress only for addon hooks
@@ -3364,7 +3388,7 @@ class FleasionProxy:
                             )
 
                 elif host in CDN_HOSTS:
-                    resp_body_raw, response_modified = await modify_cdn_response(
+                    resp_body_raw, response_modified, filtered_redirect = await modify_cdn_response(
                         path, resp_headers, resp_body_raw, short_circuit
                     )
 
@@ -3443,7 +3467,9 @@ class FleasionProxy:
                             custom_fflag_delivered_signature = None
 
                 # Forward response to Roblox
-                if response_modified:
+                if filtered_redirect is not None:
+                    outgoing_response = filtered_redirect
+                elif response_modified:
                     outgoing_response = _build_modified_response(
                         resp_first,
                         resp_headers,
