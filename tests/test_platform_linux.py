@@ -1,13 +1,14 @@
+import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-pytest.importorskip('pwd', reason='Linux platform tests require the POSIX pwd module')
-
 from fleasion.utils import platform_linux
 from fleasion.utils.linux_clients import SOBER_CLIENT, LinuxClientInstallation
 from fleasion.utils.roblox_dirs import _normalise_roblox_dir
+
+pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='Linux-only platform tests')
 
 
 def _flatpak_installation(

@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from fleasion.utils.linux_clients import (
     query_default_roblox_handlers,
     select_linux_client,
 )
+
+pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='Linux-only client registry tests')
 
 
 def _installation(client, tmp_path: Path) -> LinuxClientInstallation:

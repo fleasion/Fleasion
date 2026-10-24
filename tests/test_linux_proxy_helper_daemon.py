@@ -3,11 +3,10 @@ from datetime import datetime, timedelta, timezone
 import errno
 import json
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
-
-pytest.importorskip('pwd', reason='Linux helper tests require the POSIX pwd module')
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -15,6 +14,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from fleasion import linux_proxy_helper_daemon as daemon
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'linux', reason='Linux-only proxy helper daemon tests'
+)
 
 
 def _make_ca_pem(

@@ -16,7 +16,7 @@ from fleasion import macos_proxy_helper_daemon as daemon
 from fleasion.utils import macos_proxy_helper
 
 
-pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='macOS-only proxy helper tests')
+pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='macOS-only proxy helper tests')
 
 
 def test_client_and_daemon_require_the_same_exact_helper_identity():

@@ -13,6 +13,8 @@ import pytest
 from fleasion.gui import rando_stuff_tab
 from fleasion.utils import roblox_auth
 
+linux_only = pytest.mark.skipif(sys.platform != 'linux', reason='Linux-only cookie storage tests')
+
 
 class _FakeRequest:
     def __init__(self, url: str, body: dict):
@@ -313,6 +315,7 @@ def _select_sober_cookie(monkeypatch, cookie_path):
     )
 
 
+@linux_only
 def test_linux_sober_cookie_storage_replaces_plaintext_cookie_header(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -330,6 +333,7 @@ def test_linux_sober_cookie_storage_replaces_plaintext_cookie_header(tmp_path, m
     assert stat.S_IMODE(cookie_path.stat().st_mode) == 0o600
 
 
+@linux_only
 def test_linux_sober_cookie_storage_preserves_owner_read_only_mode(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -344,6 +348,7 @@ def test_linux_sober_cookie_storage_preserves_owner_read_only_mode(tmp_path, mon
     assert stat.S_IMODE(cookie_path.stat().st_mode) == 0o400
 
 
+@linux_only
 def test_linux_sober_cookie_storage_collapses_duplicate_auth_cookies(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -361,6 +366,7 @@ def test_linux_sober_cookie_storage_collapses_duplicate_auth_cookies(tmp_path, m
     assert 'A=1' in text and 'B=2' in text
 
 
+@linux_only
 def test_linux_sober_cookie_storage_refuses_missing_auth_cookie(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -376,6 +382,7 @@ def test_linux_sober_cookie_storage_refuses_missing_auth_cookie(tmp_path, monkey
     assert cookie_path.read_bytes() == before
 
 
+@linux_only
 def test_linux_sober_cookie_storage_refuses_unknown_format(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -391,6 +398,7 @@ def test_linux_sober_cookie_storage_refuses_unknown_format(tmp_path, monkeypatch
     assert cookie_path.read_bytes() == before
 
 
+@linux_only
 def test_linux_sober_cookie_storage_refuses_control_characters_in_cookie_names(
     tmp_path, monkeypatch
 ):
@@ -408,6 +416,7 @@ def test_linux_sober_cookie_storage_refuses_control_characters_in_cookie_names(
     assert cookie_path.read_bytes() == before
 
 
+@linux_only
 def test_linux_sober_cookie_storage_blocks_libsecret_without_touching_plaintext(
     tmp_path, monkeypatch
 ):
@@ -428,6 +437,7 @@ def test_linux_sober_cookie_storage_blocks_libsecret_without_touching_plaintext(
     assert roblox_auth.SOBER_LOCAL_AUTH_PROVIDER.read_roblosecurity(cookie_path) is None
 
 
+@linux_only
 def test_linux_sober_cookie_storage_defaults_to_plaintext_when_libsecret_key_missing(
     tmp_path, monkeypatch
 ):
@@ -442,6 +452,7 @@ def test_linux_sober_cookie_storage_defaults_to_plaintext_when_libsecret_key_mis
     assert '.ROBLOSECURITY=new-cookie' in cookie_path.read_text(encoding='utf-8')
 
 
+@linux_only
 def test_linux_sober_cookie_storage_parses_commented_libsecret_config(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -462,6 +473,7 @@ def test_linux_sober_cookie_storage_parses_commented_libsecret_config(tmp_path, 
     assert cookie_path.read_bytes() == before
 
 
+@linux_only
 def test_linux_sober_cookie_storage_fails_closed_on_malformed_config(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -478,6 +490,7 @@ def test_linux_sober_cookie_storage_fails_closed_on_malformed_config(tmp_path, m
     assert cookie_path.read_bytes() == before
 
 
+@linux_only
 def test_linux_sober_cookie_storage_refuses_insecure_permissions(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -494,6 +507,7 @@ def test_linux_sober_cookie_storage_refuses_insecure_permissions(tmp_path, monke
     assert cookie_path.read_bytes() == before
 
 
+@linux_only
 def test_linux_sober_cookie_storage_refuses_symlink(tmp_path, monkeypatch):
     real_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -511,6 +525,7 @@ def test_linux_sober_cookie_storage_refuses_symlink(tmp_path, monkeypatch):
     assert real_path.read_bytes() == before
 
 
+@linux_only
 def test_linux_sober_cookie_storage_refuses_wrong_owner(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -526,6 +541,7 @@ def test_linux_sober_cookie_storage_refuses_wrong_owner(tmp_path, monkeypatch):
     assert exc_info.value.code == 'cookie_store_wrong_owner'
 
 
+@linux_only
 def test_linux_sober_cookie_storage_reports_not_initialized(tmp_path, monkeypatch):
     cookie_path = (
         tmp_path / '.var' / 'app' / roblox_auth.SOBER_CLIENT.app_id / 'data' / 'sober' / 'cookies'
@@ -539,6 +555,7 @@ def test_linux_sober_cookie_storage_reports_not_initialized(tmp_path, monkeypatc
     assert 'Launch Sober and sign in once first' in str(exc_info.value)
 
 
+@linux_only
 def test_linux_sober_cookie_storage_keeps_original_on_replace_permission_error(
     tmp_path, monkeypatch
 ):
@@ -562,6 +579,7 @@ def test_linux_sober_cookie_storage_keeps_original_on_replace_permission_error(
     assert not list(cookie_path.parent.glob('.cookies.fleasion-*'))
 
 
+@linux_only
 def test_linux_sober_cookie_storage_detects_concurrent_change(tmp_path, monkeypatch):
     cookie_path, _config_path = _sober_cookie_fixture(
         tmp_path,
@@ -590,6 +608,7 @@ def test_linux_sober_cookie_storage_detects_concurrent_change(tmp_path, monkeypa
     assert 'new-cookie' not in text
 
 
+@linux_only
 def test_linux_set_roblosecurity_refuses_uninstalled_client(monkeypatch):
     monkeypatch.setattr(roblox_auth.sys, 'platform', 'linux')
     monkeypatch.setattr(roblox_auth, '_selected_linux_local_auth_candidate', lambda: None)
@@ -600,6 +619,7 @@ def test_linux_set_roblosecurity_refuses_uninstalled_client(monkeypatch):
     assert exc_info.value.code == 'linux_client_not_installed'
 
 
+@linux_only
 def test_linux_write_cookie_to_dat_uses_sober_local_auth_storage(monkeypatch):
     owner = _account_manager_owner()
     written = []
@@ -617,6 +637,7 @@ def test_linux_write_cookie_to_dat_uses_sober_local_auth_storage(monkeypatch):
     assert owner._account_switched is True
 
 
+@linux_only
 def test_linux_switch_account_writes_selected_cookie_to_sober_storage(monkeypatch):
     owner = _account_manager_owner()
     account = {'username': 'LinuxUser', 'cookie': 'encrypted-cookie'}
@@ -647,6 +668,7 @@ def test_linux_switch_account_writes_selected_cookie_to_sober_storage(monkeypatc
     assert selected == ['LinuxUser']
 
 
+@linux_only
 def test_linux_switch_account_explains_libsecret_and_does_not_select_account(monkeypatch):
     owner = _account_manager_owner()
     account = {'username': 'LinuxUser', 'cookie': 'encrypted-cookie'}

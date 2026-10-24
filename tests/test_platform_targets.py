@@ -1,10 +1,16 @@
+import sys
 import zipfile
+
+import pytest
 
 from fleasion.modifications import platform_targets
 from fleasion.modifications.manager import ModificationManager
 from fleasion.utils import platform_linux
 
+linux_only = pytest.mark.skipif(sys.platform != 'linux', reason='Linux-only platform target tests')
 
+
+@linux_only
 def test_linux_sober_resource_target_maps_pc_sky_to_android(tmp_path, monkeypatch):
     monkeypatch.setattr(platform_targets.sys, "platform", "linux")
     monkeypatch.setattr(
@@ -19,6 +25,7 @@ def test_linux_sober_resource_target_maps_pc_sky_to_android(tmp_path, monkeypatc
     ) == "android/textures/sky/sky512_bk.tex"
 
 
+@linux_only
 def test_linux_resource_target_seam_preserves_logical_content_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(platform_targets.sys, 'platform', 'linux')
     monkeypatch.setattr(
@@ -44,6 +51,7 @@ def test_non_linux_target_path_keeps_existing_storage_form(monkeypatch):
     ) == r"PlatformContent\pc\textures\sky\sky512_bk.tex"
 
 
+@linux_only
 def test_read_linux_sober_original_asset_from_apk(tmp_path, monkeypatch):
     sober_data = tmp_path / "sober"
     apk = sober_data / "packages" / "x86_64" / "com.roblox.client" / "base.apk"
@@ -78,6 +86,7 @@ def test_modification_manager_migrates_saved_sober_path_to_logical_target(monkey
     )
 
 
+@linux_only
 def test_read_linux_sober_original_directory_from_apk(tmp_path, monkeypatch):
     sober_data = tmp_path / 'sober'
     apk = sober_data / 'packages' / 'x86_64' / 'com.roblox.client' / 'base.apk'
