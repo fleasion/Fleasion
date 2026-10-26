@@ -1019,11 +1019,42 @@ class SettingsTab(QWidget):
         # Stop first so the old client's app-scoped Flatpak override is disarmed.
         if proxy_master is not None and proxy_was_running:
             proxy_master.stop()
+        if proxy_master is not None:
+            restore_flags = getattr(proxy_master, 'restore_linux_custom_fflags', None)
+            if callable(restore_flags) and not restore_flags():
+                log_buffer.log(
+                    'CustomFFlags', 'Client switch deferred: native flags could not be restored'
+                )
+                index = self._linux_client_combo.findData(previous_client)
+                # Qt's blockSignals requires a positional boolean
+                self._linux_client_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+                self._linux_client_combo.setCurrentIndex(max(0, index))
+                self._linux_client_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+                if proxy_was_running and proxy_master is not None:
+                    proxy_master.start()
+                self._refresh_linux_client_status()
+                return
 
         mod_manager = getattr(self._tray, 'mod_manager', None) if self._tray else None
         if mod_manager is not None:
             # Restore the old client's files before changing the selection.
-            mod_manager.restore_all()
+            try:
+                presets_restored = mod_manager.restore_all()
+            except Exception as exc:  # ruff: ignore[blind-except]
+                log_buffer.log('FastFlags', f'Client preset restoration failed: {exc}')
+                presets_restored = False
+            if presets_restored is False:
+                log_buffer.log(
+                    'FastFlags', 'Client switch deferred: native preset flags could not be restored'
+                )
+                index = self._linux_client_combo.findData(previous_client)
+                self._linux_client_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
+                self._linux_client_combo.setCurrentIndex(max(0, index))
+                self._linux_client_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
+                if proxy_was_running and proxy_master is not None:
+                    proxy_master.start()
+                self._refresh_linux_client_status()
+                return
 
         self._config.linux_client = new_client
         from fleasion.utils import platform_linux
@@ -1031,8 +1062,11 @@ class SettingsTab(QWidget):
         platform_linux.set_linux_client_preference(new_client)
 
         if mod_manager is not None:
-            mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
-        if proxy_master is not None and proxy_was_running:
+            mod_manager.refresh_roblox_dirs()
+            mod_manager.reapply_all()
+        if proxy_master is not None:
+            proxy_master.prime_custom_fflag_cache()
+        if proxy_was_running and proxy_master is not None:
             proxy_master.start()
         self._refresh_linux_client_status()
 

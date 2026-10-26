@@ -1368,6 +1368,7 @@ ARABIC: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'فرض مستوى تفاصيل الشبكة الهندسية',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'خطأ في معاينة الشبكة الهندسية: {value0}',
     'ui.gui.modifications_tab.missing': 'مفقود',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: تعديلات الملفات (الخامات والخطوط والأصوات والمجسمات والمؤشر) غير متاحة لأن Mocktail يتحقق من ملفات Roblox الخاصة به بحثًا عن تغييرات. لا تزال FastFlags واستبدال الأصول عبر الوكيل تعمل.',
     'ui.gui.modifications_tab.modification': 'تعديل',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'التُقط مفتاح معدّل. حرّره لتعيينه وحده، أو اضغط مفتاحًا آخر لتكوين مجموعة.',
     'ui.gui.modifications_tab.msaa_level': 'مستوى MSAA',
@@ -1918,4 +1919,7 @@ ARABIC: dict[str, str] = {
     'settings.appearance.opacity_value': '{value0}%',
     'settings.appearance.tint_strength': 'شدة التظليل',
     'settings.appearance.window_opacity_tooltip': 'تعتيم الخلفية؛ تكشف القيم الأقل المزيد من النافذة الموجودة أسفل التطبيق',
+    'app.linux_client_proxy_setup_failed_title': 'فشل إعداد عميل Roblox على Linux',
+    'app.linux_client_proxy_setup_failed_body': 'تعذّر على Fleasion تجهيز {client} لوضع الوكيل {mode}. تم إيقاف الوكيل قبل أن يصبح جاهزًا. راجع سجل Launcher لمعرفة خطأ الإعداد أو الشهادة أو Flatpak، ثم أعد المحاولة.',
+    'ui.gui.modifications_tab.custom_fastflag_delivery': 'يمكن تحديث FastFlags الديناميكية أثناء اللعب بعد أن يجلب Roblox الإعدادات المعدّلة. أما FastFlags غير الديناميكية فتسري عند تشغيل Roblox التالي. أبقِ الوكيل مفعّلًا لتسليم العلامات المخصصة.',
 }

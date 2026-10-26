@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import configparser
+import hashlib
 import json
 import os
 
@@ -16,15 +18,21 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, overload
+from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, cast, overload
+from urllib.parse import urlsplit
 
 from fleasion.localization import tr
 
+from . import mocktail_config
 from .linux_clients import (
+    INSTALL_KINDS,
     LINUX_CLIENTS_BY_KEY,
     SOBER_CLIENT,
+    InstallKind,
     LinuxClientDescriptor,
     LinuxClientInstallation,
+    desktop_data_dirs,
+    desktop_entry_program,
     detect_installed_clients,
     get_linux_client,
     select_linux_client,
@@ -43,9 +51,13 @@ from .paths import (
     APP_CACHE_DIR,
     CONFIG_DIR,
     CONFIG_FILE,
+    PROXY_CA_DIR,
     USER_HOME,
     get_icon_path,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 
 class DetachedPopenKwargs(TypedDict):
@@ -145,6 +157,27 @@ SOBER_ASSET_OVERLAY_DIR = SOBER_DATA_DIR / 'asset_overlay'
 SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
 SOBER_CGROUP_MARKER = SOBER_CLIENT.cgroup_marker
 LINUX_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'linux_proxy_override.json'
+# The user's own desktop entries that Fleasion replaced to give a native or
+# AppImage client its environment, restored when the environment is cleared
+LINUX_CLIENT_DESKTOP_BACKUP_DIR = CONFIG_DIR / 'client_desktop_entries'
+_FLEASION_DESKTOP_ENVIRONMENT_KEY = 'X-Fleasion-Environment'
+# Raw integrations.fleasion values found in Mocktail's config.yaml before
+# Fleasion enabled the integration, so disarming puts the user's values back
+MOCKTAIL_INTEGRATION_STATE = CONFIG_DIR / 'mocktail_integration.json'
+# Mocktail reads these when its config.yaml does not exist yet (first launch)
+MOCKTAIL_INTEGRATION_ENV_NAMES = (
+    'MOCKTAIL_FLEASION_ENABLED',
+    'MOCKTAIL_FLEASION_PROXY_MODE',
+    'MOCKTAIL_FLEASION_PROXY_PORT',
+    'MOCKTAIL_FLEASION_CA_CERTIFICATE',
+)
+# Existing Flatpak proxy overrides take precedence over config.yaml
+MOCKTAIL_NETWORK_PROXY_ENV_NAMES = (
+    'MOCKTAIL_USE_SYSTEM_PROXY',
+    'MOCKTAIL_HTTP_PROXY_HOST',
+    'MOCKTAIL_HTTP_PROXY_PORT',
+    'MOCKTAIL_HTTP_PROXY_SCHEME',
+)
 # Sober fetches its update/feature manifest before the Roblox engine starts.
 # That bootstrap client uses certificate pinning and does not trust Fleasion's
 # generated CA, so these connections must remain tunneled when the Proxy tab's
@@ -154,6 +187,9 @@ PROC_ROOT = Path('/proc')
 _ROBLOX_URI_SCHEMES = ('x-scheme-handler/roblox', 'x-scheme-handler/roblox-player')
 _linux_client_preference: str | None = None
 _active_linux_proxy_client_key: str | None = None
+# Environment a native or AppImage client gets while armed, also passed to
+# launches Fleasion makes itself; Flatpaks get theirs from `flatpak override`
+_active_linux_client_environment: dict[str, str] = {}
 _FLEASION_ROBLOX_URI_HANDLER_IDS = frozenset(
     {
         'fleasion.desktop',
@@ -358,11 +394,11 @@ def _process_pids(name: str) -> list[int]:
     return pids
 
 
-def _sober_process_start_ticks(pid: int) -> int | None:
+def _process_start_ticks(pid: int, owns_cgroup: Callable[[str], bool]) -> int | None:
     process_dir = PROC_ROOT / str(pid)
     try:
         cgroup = (process_dir / 'cgroup').read_text(encoding='utf-8', errors='replace')
-        if SOBER_CGROUP_MARKER not in cgroup:
+        if not owns_cgroup(cgroup):
             return None
         stat_text = (process_dir / 'stat').read_text(encoding='utf-8', errors='replace')
         # Field 2 (comm) is parenthesized and can contain spaces. The remaining
@@ -373,12 +409,12 @@ def _sober_process_start_ticks(pid: int) -> int | None:
         return None
 
 
-def sober_main_process() -> tuple[int, float] | None:
-    """Return the Sober Roblox engine PID and its boot-time start timestamp.
+def _engine_process(name: str, owns_cgroup: Callable[[str], bool]) -> tuple[int, float] | None:
+    """Return the first ``name`` process whose cgroup passes ``owns_cgroup``.
 
-    ``Main`` is the Android/Roblox engine process created by Sober. Pairing
-    the PID with the kernel start timestamp makes a close/reopen detectable
-    even when the process monitor does not observe a moment with no process.
+    Pairing the PID with the kernel start timestamp makes a close/reopen
+    detectable even when the process monitor does not observe a moment with
+    no process.
     """
     try:
         ticks_per_second = float(os.sysconf('SC_CLK_TCK'))
@@ -387,38 +423,50 @@ def sober_main_process() -> tuple[int, float] | None:
     if ticks_per_second <= 0:
         return None
 
-    for pid in _process_pids('Main'):
-        if (start_ticks := _sober_process_start_ticks(pid)) is not None:
+    for pid in _process_pids(name):
+        if (start_ticks := _process_start_ticks(pid, owns_cgroup)) is not None:
             return pid, start_ticks / ticks_per_second
     return None
+
+
+def sober_main_process() -> tuple[int, float] | None:
+    """Return the Sober Roblox engine PID and its boot-time start timestamp.
+
+    ``Main`` is the Android/Roblox engine process created by Sober.
+    """
+    return _engine_process('Main', lambda cgroup: SOBER_CGROUP_MARKER in cgroup)
 
 
 def linux_client_main_process(
     installation: LinuxClientInstallation | None = None,
 ) -> tuple[int, float] | None:
+    """Return the selected client's engine PID and start time, if running."""
     installation = installation or get_selected_linux_client_installation()
-    if installation is None or installation.key != SOBER_CLIENT.key:
+    if installation is None:
         return None
-    return sober_main_process()
+    for name in installation.client.engine_process_names:
+        engine = _engine_process(name, installation.owns_process_cgroup)
+        if engine is not None:
+            return engine
+    return None
 
 
 def _client_pids(installation: LinuxClientInstallation) -> list[int]:
-    """Return only process IDs owned by the installation's Flatpak cgroup."""
+    """Return only process IDs owned by the installation (see ``owns_process_cgroup``)."""
     found: list[int] = []
     seen: set[int] = set()
     for name in installation.client.process_names:
         for pid in _process_pids(name):
             if pid in seen:
                 continue
-            marker = installation.client.cgroup_marker
-            if marker:
+            if installation.client.cgroup_marker:
                 try:
                     cgroup = (PROC_ROOT / str(pid) / 'cgroup').read_text(
                         encoding='utf-8', errors='replace'
                     )
                 except OSError:
                     continue
-                if marker not in cgroup:
+                if not installation.owns_process_cgroup(cgroup):
                     continue
             seen.add(pid)
             found.append(pid)
@@ -468,7 +516,7 @@ def is_studio_running() -> bool:
 def get_roblox_player_exe_path() -> Path | None:
     """Linux clients do not expose a stable RobloxPlayerBeta.exe path.
 
-    The running process is the Flatpak launcher or wrapper, not the resource
+    The running process is the client's launcher or wrapper, not the resource
     root that callers need for cert/modification discovery. Returning a
     fabricated path would send downstream code to the wrong directory, so we
     intentionally return ``None`` and let callers use the Linux resource-root
@@ -491,7 +539,7 @@ def terminate_roblox() -> bool:
     if not pids:
         return False
 
-    flatpak = shutil.which('flatpak')
+    flatpak = shutil.which('flatpak') if installation.is_flatpak else None
     if flatpak:
         try:
             result = _run_subprocess(
@@ -604,6 +652,8 @@ def delete_cache() -> list[str]:
     cache_storage = installation.paths.cache_storage_dir
     if cache_storage is not None and cache_storage != storage_folder:
         _delete_path(cache_storage, messages, 'Cache storage folder')
+    for storage_path in installation.paths.storage_paths():
+        _delete_path(storage_path, messages, f'Storage {storage_path.name}')
 
     if APP_CACHE_DIR.exists():
         _clear_fleasion_obj_cache(messages)
@@ -631,7 +681,7 @@ def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
         return found
 
     resource_roots = installation.paths.resource_roots
-    if installation.paths.data_root.exists() and resource_roots:
+    if installation.paths.resource_base_root.exists() and resource_roots:
         resource_roots[0].mkdir(parents=True, exist_ok=True)
     for resource_root in resource_roots:
         _add(resource_root)
@@ -650,16 +700,37 @@ def is_sober_resource_dir(path: Path) -> bool:
         return False
 
 
-def find_linux_global_settings_dirs() -> list[Path]:
-    """Return the selected client's data root for Roblox settings XML."""
+def find_linux_ca_bundle_dirs() -> list[Path]:
+    """Return the selected client's extra ssl/cacert.pem roots.
+
+    These are bundles the client reads directly (Cordial's extracted APK
+    assets) rather than through its overlay. They are certificate targets
+    only and must never receive file modifications or be saved as Roblox dirs.
+    """
     installation = get_selected_linux_client_installation()
-    if installation is None or not installation.paths.data_root.exists():
+    if installation is None:
         return []
-    return [installation.paths.data_root]
+    return list(installation.paths.ca_bundle_dirs())
+
+
+def find_linux_fflag_files() -> list[Path]:
+    """Return the selected client's flat FastFlag JSON files."""
+    installation = get_selected_linux_client_installation()
+    if installation is None:
+        return []
+    return list(installation.paths.fflag_files())
+
+
+def find_linux_global_settings_dirs() -> list[Path]:
+    """Return the selected client's directories for Roblox settings XML."""
+    installation = get_selected_linux_client_installation()
+    if installation is None:
+        return []
+    return list(installation.paths.settings_dirs())
 
 
 def resolve_roblox_player_exe_for_launch() -> Path | None:
-    """Return the selected client's Flatpak launcher path."""
+    """Return the selected client's launcher (flatpak, its binary, or AppImage)."""
     installation = get_selected_linux_client_installation()
     return installation.executable if installation is not None else None
 
@@ -711,8 +782,11 @@ def _desktop_user_context() -> tuple[Path, int, int, str] | None:
     return user_home, stat_result.st_uid, stat_result.st_gid, pw_entry.pw_name
 
 
-def _standard_user_popen(args: list[str]) -> subprocess.Popen[bytes]:
+def _standard_user_popen(
+    args: list[str], extra_env: Mapping[str, str] | None = None
+) -> subprocess.Popen[bytes]:
     env = _host_subprocess_env()
+    env.update(extra_env or {})
     kwargs: StandardUserPopenKwargs = {**_DETACHED_POPEN_KWARGS, 'env': env}
     if os.geteuid() == 0 and (user_context := _desktop_user_context()) is not None:
         user_home, uid, gid, username = user_context
@@ -856,7 +930,7 @@ def _launch_roblox_uri(target: str) -> bool:
     if command is None:
         log_buffer.log('Launch', 'Cannot launch Roblox URI: launcher not found')
         return False
-    _standard_user_popen(command)
+    _launch_client(installation, command)
     return True
 
 
@@ -868,14 +942,14 @@ def _launch_standard_user_target(target: str) -> bool | None:
 
     path = Path(target)
     installation = get_selected_linux_client_installation()
-    flatpak = shutil.which('flatpak')
-    if (
-        installation is not None
-        and flatpak
-        and (path.name == 'flatpak' or target == installation.app_id)
+    if installation is not None and (
+        target == installation.app_id
+        or (installation.executable is not None and path.name == installation.executable.name)
     ):
-        _standard_user_popen([flatpak, 'run', installation.app_id])
-        return True
+        command = installation.launch_command()
+        if command is not None:
+            _launch_client(installation, command)
+            return True
     if path.exists():
         return _open_with_desktop_handler(str(path), 'path')
     return None
@@ -898,18 +972,60 @@ def launch_as_standard_user(target: str | Path) -> bool:
     return False
 
 
+def _launch_client(installation: LinuxClientInstallation, command: list[str]) -> None:
+    """Start ``command``, adding the armed environment for a native or AppImage client.
+
+    A Flatpak gets the same environment from its ``flatpak override``.
+    """
+    if installation.is_flatpak or installation.key != _active_linux_proxy_client_key:
+        _standard_user_popen(command)
+    else:
+        _standard_user_popen(command, dict(_active_linux_client_environment))
+
+
+def _installation_of_kind(
+    client: LinuxClientDescriptor, kind: InstallKind
+) -> LinuxClientInstallation:
+    """Build an installation deterministically, without probing the system."""
+    flatpak = shutil.which('flatpak') if kind == 'flatpak' else None
+    return LinuxClientInstallation(
+        client=client,
+        paths=client.paths(home=USER_HOME, kind=kind),
+        executable=Path(flatpak) if flatpak else None,
+    )
+
+
 def _installation_for_client_key(key: str) -> LinuxClientInstallation | None:
-    """Build a deterministic installation for scoped override cleanup."""
+    """Return the installation to arm or clear for ``key``.
+
+    A Flatpak-only client is built deterministically. Otherwise the detected
+    install is used, so a native or AppImage client keeps its own launcher and
+    desktop entry.
+    """
     try:
         client = get_linux_client(key)
     except ValueError:
         return None
-    flatpak = shutil.which('flatpak')
-    return LinuxClientInstallation(
-        client=client,
-        paths=client.paths(home=USER_HOME),
-        executable=Path(flatpak) if flatpak else None,
-    )
+    if len(client.install_kinds) > 1:
+        detected = next(
+            (item for item in linux_client_installations() if item.key == client.key), None
+        )
+        if detected is not None:
+            return detected
+    return _installation_of_kind(client, 'flatpak')
+
+
+def _installation_for_cleanup(key: str) -> LinuxClientInstallation | None:
+    """Like ``_installation_for_client_key``, but for the install that was armed.
+
+    The client may have been reinstalled another way since it was armed; the
+    persisted install kind says which override is actually in place.
+    """
+    installation = _installation_for_client_key(key)
+    kind = _read_linux_proxy_override_kind(key)
+    if installation is None or kind is None or installation.kind == kind:
+        return installation
+    return _installation_of_kind(installation.client, kind)
 
 
 def _proxy_environment_for_installation(
@@ -923,7 +1039,7 @@ def _proxy_environment_for_installation(
     }
 
 
-def _read_linux_proxy_override_state() -> str | None:
+def _read_linux_proxy_override_payload() -> tuple[str, InstallKind] | None:
     try:
         if LINUX_PROXY_OVERRIDE_STATE.is_symlink():
             return None
@@ -931,30 +1047,49 @@ def _read_linux_proxy_override_state() -> str | None:
     except OSError, UnicodeError, json.JSONDecodeError:
         return None
     payload_map = as_json_object(payload)
-    client_value = payload_map.get('client') if payload_map is not None else None
-    key = client_value if isinstance(client_value, str) else None
-    return key if key in LINUX_CLIENTS_BY_KEY else None
+    if payload_map is None:
+        return None
+    key = payload_map.get('client')
+    if not isinstance(key, str) or key not in LINUX_CLIENTS_BY_KEY:
+        return None
+    # State from before native installs were supported is always a Flatpak
+    stored = payload_map.get('install', 'flatpak')
+    kind: InstallKind = 'flatpak'
+    for candidate in INSTALL_KINDS:
+        if candidate == stored:
+            kind = candidate
+    return key, kind
 
 
-def _persist_linux_proxy_override_state(key: str) -> None:
+def _read_linux_proxy_override_state() -> str | None:
+    state = _read_linux_proxy_override_payload()
+    return state[0] if state is not None else None
+
+
+def _read_linux_proxy_override_kind(key: str) -> InstallKind | None:
+    state = _read_linux_proxy_override_payload()
+    return state[1] if state is not None and state[0] == key else None
+
+
+def _persist_linux_proxy_override_state(key: str, kind: InstallKind = 'flatpak') -> None:
     LINUX_PROXY_OVERRIDE_STATE.parent.mkdir(parents=True, exist_ok=True)
     temporary = LINUX_PROXY_OVERRIDE_STATE.with_name(
         f'.{LINUX_PROXY_OVERRIDE_STATE.name}.{os.getpid()}.tmp'
     )
     try:
-        temporary.write_text(json.dumps({'client': key}) + '\n', encoding='utf-8')
+        temporary.write_text(json.dumps({'client': key, 'install': kind}) + '\n', encoding='utf-8')
         temporary.chmod(0o600)
         temporary.replace(LINUX_PROXY_OVERRIDE_STATE)
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def _write_linux_proxy_override_state(key: str | None) -> None:
+def _write_linux_proxy_override_state(key: str | None, kind: InstallKind = 'flatpak') -> None:
     try:
         if key is None:
             LINUX_PROXY_OVERRIDE_STATE.unlink(missing_ok=True)
         else:
-            _persist_linux_proxy_override_state(key)
+            _persist_linux_proxy_override_state(key, kind)
     except OSError as exc:
         log_buffer.log('Launcher', f'Could not persist Linux Env Proxy ownership: {exc}')
 
@@ -963,16 +1098,550 @@ def _set_active_linux_proxy_client_key(value: str | None) -> None:
     globals()['_active_linux_proxy_client_key'] = value
 
 
+def _flatpak_override(installation: LinuxClientInstallation, args: list[str], action: str) -> bool:
+    """Run ``flatpak override --user <args> <app>`` as the desktop user."""
+    flatpak = shutil.which('flatpak')
+    if not flatpak:
+        log_buffer.log(
+            'Launcher',
+            f'Cannot {action} {installation.display_name}: flatpak command not found',
+        )
+        return False
+    try:
+        result: subprocess.CompletedProcess[str] = _standard_user_run(
+            [flatpak, 'override', '--user', *args, installation.app_id],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_buffer.log('Launcher', f'Could not {action} {installation.display_name}: {exc}')
+        return False
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        log_buffer.log(
+            'Launcher',
+            f'Could not {action} {installation.display_name}' + (f': {detail}' if detail else ''),
+        )
+        return False
+    return True
+
+
+# Characters the desktop entry spec requires an Exec argument to be quoted for
+_DESKTOP_EXEC_RESERVED = frozenset(' \t\n"\'\\><~|&;$*?#()`')
+
+
+def _desktop_exec_argument(value: str) -> str:
+    """Quote ``value`` as one Exec argument, then escape it for a string key."""
+    if any(char in _DESKTOP_EXEC_RESERVED for char in value):
+        escaped = ''.join(f'\\{char}' if char in '"`$\\' else char for char in value)
+        value = f'"{escaped}"'
+    return value.replace('\\', '\\\\')
+
+
+def _client_desktop_target(installation: LinuxClientInstallation) -> Path:
+    """The user desktop entry that gives a native or AppImage client its environment.
+
+    A user entry shadows the system one with the same ID, so a browser's Play
+    button runs it; an AppImage's own entry is already a user entry.
+    """
+    if installation.desktop_entry is not None:
+        return installation.desktop_entry
+    return LINUX_APPLICATIONS_DIR / installation.desktop_id
+
+
+def _is_fleasion_desktop_entry(text: str) -> bool:
+    return any(
+        line.strip().startswith(f'{_FLEASION_DESKTOP_ENVIRONMENT_KEY}=')
+        for line in text.splitlines()
+    )
+
+
+def _pristine_client_desktop_entry(installation: LinuxClientInstallation, target: Path) -> str:
+    """The entry to wrap: the user's own, else the package's, else a minimal one."""
+    backup = LINUX_CLIENT_DESKTOP_BACKUP_DIR / target.name
+    for candidate in (backup, target):
+        try:
+            text = candidate.read_text(encoding='utf-8')
+        except OSError:
+            continue
+        if not _is_fleasion_desktop_entry(text):
+            return text
+    for data_dir in desktop_data_dirs(installation.paths, os.environ):
+        entry = data_dir / 'applications' / installation.client.desktop_id
+        if entry == target:
+            continue
+        program = desktop_entry_program(entry)
+        if program is None or program.name == 'flatpak':
+            continue
+        try:
+            return entry.read_text(encoding='utf-8')
+        except OSError:
+            continue
+    executable = installation.executable or Path(installation.client.native_commands[0])
+    return (
+        '[Desktop Entry]\n'
+        'Type=Application\n'
+        f'Name={installation.display_name}\n'
+        f'Exec={_desktop_exec_argument(str(executable))} %u\n'
+        'Terminal=false\n'
+        'NoDisplay=true\n'
+        f'MimeType={";".join(scheme for scheme in _ROBLOX_URI_SCHEMES)};\n'
+    )
+
+
+def _wrap_desktop_entry_environment(text: str, environment: Mapping[str, str]) -> str:
+    """Prefix every Exec line with ``env`` and mark the entry as Fleasion's."""
+    prefix = ' '.join(
+        ['env', *(_desktop_exec_argument(f'{name}={value}') for name, value in environment.items())]
+    )
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        # D-Bus activation would start the client without running Exec
+        if stripped.startswith('DBusActivatable='):
+            continue
+        lines.append(
+            f'Exec={prefix} {stripped.removeprefix("Exec=")}'
+            if stripped.startswith('Exec=')
+            else line
+        )
+        if stripped == '[Desktop Entry]':
+            lines.append(f'{_FLEASION_DESKTOP_ENVIRONMENT_KEY}=true')
+    return '\n'.join(lines) + '\n'
+
+
+def _back_up_user_desktop_entry(target: Path) -> None:
+    """Keep the user's own entry at ``target`` before Fleasion replaces it."""
+    backup = LINUX_CLIENT_DESKTOP_BACKUP_DIR / target.name
+    if not target.is_file() or backup.exists():
+        return
+    current = target.read_text(encoding='utf-8')
+    if not _is_fleasion_desktop_entry(current):
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        _write_text_atomically(backup, current, mode=0o600)
+
+
+def _write_client_desktop_environment(
+    installation: LinuxClientInstallation, environment: Mapping[str, str], action: str
+) -> bool:
+    """Give a native or AppImage client ``environment`` for desktop launches."""
+    target = _client_desktop_target(installation)
+    try:
+        text = _pristine_client_desktop_entry(installation, target)
+        _back_up_user_desktop_entry(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_text_atomically(
+            target, _wrap_desktop_entry_environment(text, environment), mode=0o644
+        )
+    except OSError as exc:
+        log_buffer.log('Launcher', f'Could not {action} {installation.display_name}: {exc}')
+        return False
+    return True
+
+
+def _restore_user_desktop_entry(target: Path, backup: Path) -> None:
+    if backup.is_file():
+        _write_text_atomically(target, backup.read_text(encoding='utf-8'), mode=0o644)
+    else:
+        target.unlink()
+
+
+def _remove_client_desktop_environment(installation: LinuxClientInstallation) -> bool:
+    """Undo ``_write_client_desktop_environment``, leaving entries Fleasion did not write."""
+    target = _client_desktop_target(installation)
+    backup = LINUX_CLIENT_DESKTOP_BACKUP_DIR / target.name
+    try:
+        current = target.read_text(encoding='utf-8') if target.is_file() else ''
+        if _is_fleasion_desktop_entry(current):
+            _restore_user_desktop_entry(target, backup)
+        backup.unlink(missing_ok=True)
+    except OSError as exc:
+        log_buffer.log(
+            'Launcher', f'Could not restore the {installation.display_name} desktop entry: {exc}'
+        )
+        return False
+    return True
+
+
+def _arm_client_environment(
+    installation: LinuxClientInstallation, environment: dict[str, str], action: str
+) -> bool:
+    """Set ``environment`` for every launch of ``installation``."""
+    if installation.is_flatpak:
+        return _flatpak_override(
+            installation,
+            [f'--env={name}={value}' for name, value in environment.items()],
+            action,
+        )
+    if not _write_client_desktop_environment(installation, environment, action):
+        return False
+    _active_linux_client_environment.clear()
+    _active_linux_client_environment.update(environment)
+    return True
+
+
+def _mocktail_ca_destination(installation: LinuxClientInstallation) -> Path:
+    """Mocktail's default CA path, as seen from inside its sandbox (if any)."""
+    return installation.paths.config_home / 'Fleasion' / 'proxy_ca' / 'ca.crt'
+
+
+def _mocktail_effective_ca_path(installation: LinuxClientInstallation) -> Path | None:
+    """The CA path Mocktail will actually load: its env override, else ``config.yaml``."""
+    environment = _read_mocktail_proxy_environment(installation)
+    effective = environment.get('MOCKTAIL_FLEASION_CA_CERTIFICATE')
+    if effective is None and installation.paths.config_file.is_file():
+        effective = mocktail_config.read_certificate_path(
+            installation.paths.config_file.read_text(encoding='utf-8')
+        )
+    if effective is None:
+        return None
+    path = Path(effective)
+    if not path.is_absolute():
+        msg = 'Mocktail certificate path must be absolute'
+        raise ValueError(msg)
+    return path
+
+
+def inspect_mocktail_integration_ca(
+    installation: LinuxClientInstallation, ca_cert_path: Path
+) -> dict[str, object]:
+    """Validate the public CA and ownership of Mocktail's launch integration."""
+    destination = _mocktail_ca_destination(installation)
+    state: dict[str, object] = {'healthy': False, 'path': str(destination)}
+    if installation.key != (_active_linux_proxy_client_key or _read_linux_proxy_override_state()):
+        state['error'] = 'Mocktail proxy integration is not armed'
+        return state
+    try:
+        destination = _mocktail_effective_ca_path(installation) or destination
+        state['path'] = str(destination)
+        installed_ca = destination.read_bytes()
+        expected_ca = ca_cert_path.read_bytes()
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
+        state['error'] = str(exc)
+        return state
+    state['sha256'] = hashlib.sha256(installed_ca).hexdigest()
+    state['healthy'] = bool(expected_ca) and installed_ca == expected_ca
+    if not state['healthy']:
+        state['error'] = 'Mocktail sandbox CA does not match the current Fleasion CA'
+    return state
+
+
+def _write_text_atomically(path: Path, text: str, *, mode: int) -> None:
+    temporary = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
+    try:
+        temporary.write_text(text, encoding='utf-8')
+        temporary.chmod(mode)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_mocktail_state_payload() -> dict[str, object] | None:
+    try:
+        if MOCKTAIL_INTEGRATION_STATE.is_symlink():
+            return None
+        payload = json.loads(MOCKTAIL_INTEGRATION_STATE.read_text(encoding='utf-8'))
+    except OSError, UnicodeError, json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return cast('dict[str, object]', payload)
+
+
+def _read_mocktail_integration_state() -> dict[str, str | None] | None:
+    payload = _read_mocktail_state_payload()
+    if payload is None:
+        return None
+    original = payload.get('original')
+    if not isinstance(original, dict):
+        return None
+    values = cast('dict[str, object]', original)
+    return {
+        key: value if isinstance(value := values.get(key), str) else None
+        for key in mocktail_config.INTEGRATION_KEYS
+        if key in values
+    }
+
+
+def _read_mocktail_proxy_environment(
+    installation: LinuxClientInstallation,
+) -> dict[str, str | None]:
+    environment: dict[str, str | None] = dict.fromkeys(
+        (*MOCKTAIL_INTEGRATION_ENV_NAMES, *MOCKTAIL_NETWORK_PROXY_ENV_NAMES)
+    )
+    if not installation.is_flatpak:
+        # A native Mocktail inherits the session environment, which Fleasion's
+        # own environment is the best available view of
+        return {name: os.environ.get(name) for name in environment}
+    flatpak = shutil.which('flatpak')
+    if flatpak is None:
+        return environment
+    result = _standard_user_run(
+        [flatpak, 'override', '--user', '--show', installation.app_id],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode:
+        msg = f'Could not read {installation.display_name} Flatpak environment'
+        raise OSError(msg)
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = lambda optionstr: optionstr
+    try:
+        parser.read_string(result.stdout)
+    except configparser.Error as exc:
+        msg = 'Could not parse Mocktail Flatpak environment'
+        raise OSError(msg) from exc
+    if parser.has_section('Environment'):
+        environment.update(
+            {name: parser.get('Environment', name, fallback=None) for name in environment}
+        )
+    return environment
+
+
+def _mocktail_network_environment_conflict(
+    environment: dict[str, str | None], proxy_port: int | None
+) -> str | None:
+    """Identify effective Mocktail network overrides incompatible with Fleasion."""
+    system_proxy = environment.get('MOCKTAIL_USE_SYSTEM_PROXY')
+    # Mocktail treats any nonempty value other than '0' as enabled
+    if system_proxy and system_proxy != '0':
+        return 'MOCKTAIL_USE_SYSTEM_PROXY'
+
+    host = environment.get('MOCKTAIL_HTTP_PROXY_HOST')
+    port = environment.get('MOCKTAIL_HTTP_PROXY_PORT')
+    scheme = environment.get('MOCKTAIL_HTTP_PROXY_SCHEME') or 'http'
+    if host or port:
+        if not host:
+            return 'MOCKTAIL_HTTP_PROXY_PORT'
+        if host != '127.0.0.1':
+            return 'MOCKTAIL_HTTP_PROXY_HOST'
+        if proxy_port is None or port != str(proxy_port):
+            return 'MOCKTAIL_HTTP_PROXY_PORT'
+        if scheme not in {'http', 'https'}:
+            return 'MOCKTAIL_HTTP_PROXY_SCHEME'
+    return None
+
+
+def _arm_mocktail_integration(
+    installation: LinuxClientInstallation,
+    *,
+    proxy_mode: str,
+    proxy_port: int | None,
+    ca_cert_path: Path | None,
+) -> bool:
+    """Turn on Mocktail's built-in Fleasion integration.
+
+    Mocktail never reads Fleasion's private key: it builds its own CA bundle
+    from the public ``ca.crt``, which has to be inside its sandbox. Explicit
+    environment values take precedence over ``config.yaml``. Both
+    sources use the copied CA while armed; their original values are saved
+    before editing, including for a first launch with no config file.
+    """
+    name = installation.display_name
+    source = ca_cert_path or (PROXY_CA_DIR / 'ca.crt')
+    try:
+        ca_pem = source.read_bytes()
+    except OSError as exc:
+        log_buffer.log('Launcher', f'Cannot set up {name}: Fleasion CA is unreadable ({exc})')
+        return False
+    try:
+        environment = _read_mocktail_proxy_environment(installation)
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
+        log_buffer.log('Launcher', f'Cannot inspect {name} proxy overrides: {exc}')
+        return False
+    conflict = _mocktail_network_environment_conflict(environment, proxy_port)
+    if conflict is not None:
+        log_buffer.log(
+            'Launcher',
+            f'{name} would refuse the Fleasion integration with Flatpak override '
+            f'{conflict}={environment.get(conflict)!r}; remove or correct that override first',
+        )
+        return False
+
+    destination = _mocktail_ca_destination(installation)
+    try:
+        _install_mocktail_ca(destination, ca_pem)
+    except OSError as exc:
+        log_buffer.log('Launcher', f'Could not copy Fleasion CA into {name}: {exc}')
+        return False
+
+    values: dict[str, str | None] = {
+        'enabled': 'true',
+        'proxy_mode': proxy_mode,
+        'proxy_port': str(proxy_port) if proxy_port is not None else None,
+        'ca_certificate': json.dumps(str(destination)),
+    }
+    if not _enable_mocktail_config_integration(installation, values, proxy_port):
+        return False
+
+    env = {
+        'MOCKTAIL_FLEASION_ENABLED': 'true',
+        'MOCKTAIL_FLEASION_PROXY_MODE': proxy_mode,
+        'MOCKTAIL_FLEASION_CA_CERTIFICATE': str(destination),
+    }
+    if proxy_port is not None:
+        env['MOCKTAIL_FLEASION_PROXY_PORT'] = str(proxy_port)
+    return _arm_client_environment(installation, env, 'arm the Fleasion integration for')
+
+
+def _install_mocktail_ca(destination: Path, ca_pem: bytes) -> None:
+    """Copy the public CA into Mocktail's sandbox, replacing it only when it changed."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_file() and destination.read_bytes() == ca_pem:
+        return
+    temporary = destination.with_name(f'.{destination.name}.{os.getpid()}.tmp')
+    try:
+        temporary.write_bytes(ca_pem)
+        temporary.chmod(0o644)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _enable_mocktail_config_integration(
+    installation: LinuxClientInstallation,
+    values: Mapping[str, str | None],
+    proxy_port: int | None,
+) -> bool:
+    """Record Mocktail's original settings, then switch ``config.yaml`` to the integration."""
+    name = installation.display_name
+    config_file = installation.paths.config_file
+    if not config_file.is_file():
+        try:
+            _save_mocktail_integration_state('', installation)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            log_buffer.log('Launcher', f'Could not record {name} integration settings: {exc}')
+            return False
+        return True
+    try:
+        text = config_file.read_text(encoding='utf-8')
+        conflict = mocktail_config.conflicting_network_setting(text, proxy_port)
+        if conflict is None:
+            _save_mocktail_integration_state(text, installation)
+            _write_mocktail_integration_config(config_file, text, values)
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
+        log_buffer.log('Launcher', f'Could not enable the Fleasion integration in {name}: {exc}')
+        return False
+    if conflict is not None:
+        log_buffer.log(
+            'Launcher',
+            f'{name} would refuse to start with both its {conflict} setting and '
+            f'the Fleasion integration; remove {conflict} from {config_file} first',
+        )
+        return False
+    return True
+
+
+def _write_mocktail_integration_config(
+    config_file: Path, text: str, values: Mapping[str, str | None]
+) -> None:
+    updated = mocktail_config.set_integration(text, dict(values))
+    if updated != text:
+        _write_text_atomically(config_file, updated, mode=config_file.stat().st_mode & 0o777)
+
+
+def _save_mocktail_integration_state(text: str, installation: LinuxClientInstallation) -> None:
+    payload = _read_mocktail_state_payload()
+    original = _read_mocktail_integration_state()
+    if original is None and (
+        MOCKTAIL_INTEGRATION_STATE.exists() or MOCKTAIL_INTEGRATION_STATE.is_symlink()
+    ):
+        msg = 'Existing Mocktail recovery state is unreadable; it was left unchanged'
+        raise mocktail_config.MocktailConfigError(msg)
+    if original is not None and payload is not None and 'environment' in payload:
+        return
+    environment = {
+        name: value
+        for name, value in _read_mocktail_proxy_environment(installation).items()
+        if name in MOCKTAIL_INTEGRATION_ENV_NAMES
+    }
+    if original is None:
+        original = mocktail_config.read_integration(text)
+    else:
+        # Older snapshots did not manage the CA path or preserve environment overrides
+        original.setdefault(
+            'ca_certificate', mocktail_config.read_integration(text)['ca_certificate']
+        )
+        for name in MOCKTAIL_INTEGRATION_ENV_NAMES:
+            if name != 'MOCKTAIL_FLEASION_CA_CERTIFICATE':
+                environment[name] = None
+    MOCKTAIL_INTEGRATION_STATE.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_atomically(
+        MOCKTAIL_INTEGRATION_STATE,
+        json.dumps({'original': original, 'environment': environment}) + '\n',
+        mode=0o600,
+    )
+
+
+def _disarm_mocktail_integration(installation: LinuxClientInstallation) -> bool:
+    """Put Mocktail's integration settings back the way the user had them."""
+    name = installation.display_name
+    original = _read_mocktail_integration_state()
+    if original is None and MOCKTAIL_INTEGRATION_STATE.exists():
+        log_buffer.log('Launcher', f'Could not read {name} original integration settings')
+        return False
+    config_file = installation.paths.config_file
+    restored = True
+    if config_file.is_file():
+        try:
+            text = config_file.read_text(encoding='utf-8')
+            values: dict[str, str | None] = (
+                original if original is not None else {'enabled': 'false'}
+            )
+            updated = mocktail_config.set_integration(text, values)
+            if updated != text:
+                _write_text_atomically(
+                    config_file, updated, mode=config_file.stat().st_mode & 0o777
+                )
+        except (OSError, UnicodeError, mocktail_config.MocktailConfigError) as exc:
+            log_buffer.log('Launcher', f'Could not restore {name} integration settings: {exc}')
+            restored = False
+    payload = _read_mocktail_state_payload() or {}
+    stored_environment = payload.get('environment')
+    environment = (
+        cast('dict[str, object]', stored_environment)
+        if isinstance(stored_environment, dict)
+        else {}
+    )
+    names = MOCKTAIL_INTEGRATION_ENV_NAMES
+    if original is not None and 'ca_certificate' not in original:
+        # Legacy snapshots did not own the CA environment variable
+        names = tuple(name for name in names if name != 'MOCKTAIL_FLEASION_CA_CERTIFICATE')
+    args = [
+        f'--env={name}={value}'
+        if isinstance(value := environment.get(name), str)
+        else f'--unset-env={name}'
+        for name in names
+    ]
+    unset = (
+        _flatpak_override(installation, args, 'disarm the Fleasion integration for')
+        if installation.is_flatpak
+        else _remove_client_desktop_environment(installation)
+    )
+    if restored and unset:
+        try:
+            MOCKTAIL_INTEGRATION_STATE.unlink(missing_ok=True)
+        except OSError as exc:
+            log_buffer.log('Launcher', f'Could not remove {name} recovery state: {exc}')
+            return False
+    return restored and unset
+
+
 def set_linux_client_env_proxy_override(
     proxy_url: str,
     *,
     client_key: str | None = None,
     ca_cert_path: Path | None = None,
+    proxy_mode: str = 'env',
 ) -> bool:
-    """Arm Env Proxy for exactly one selected Linux client."""
-    # Retained for call-site compatibility; registered clients currently need
-    # no client-specific certificate-bundle preparation here.
-    _ = ca_cert_path
+    """Route exactly one Linux client through Fleasion.
+
+    Flatpak-environment clients get the standard proxy variables in env mode
+    and need nothing here in hosts mode. Mocktail enables its own Fleasion
+    integration in either mode, which also makes it trust Fleasion's CA.
+    """
     installation = (
         _installation_for_client_key(client_key)
         if client_key is not None
@@ -981,6 +1650,9 @@ def set_linux_client_env_proxy_override(
     if installation is None:
         log_buffer.log('Launcher', 'Cannot arm Linux Env Proxy: selected client not installed')
         return False
+    integration = installation.client.proxy_integration
+    if integration == 'flatpak_env' and proxy_mode != 'env':
+        return True
     previous_key = _active_linux_proxy_client_key or _read_linux_proxy_override_state()
     if previous_key not in {None, installation.key} and not clear_linux_client_env_proxy_override(
         client_key=previous_key
@@ -992,44 +1664,30 @@ def set_linux_client_env_proxy_override(
         )
         return False
 
-    proxy_env = _proxy_environment_for_installation(
-        installation,
-        proxy_url,
-    )
-
-    flatpak = shutil.which('flatpak')
-    if not flatpak:
-        log_buffer.log(
-            'Launcher',
-            f'Cannot arm {installation.display_name} Env Proxy: flatpak command not found',
+    if integration == 'mocktail_config':
+        port = urlsplit(proxy_url).port if proxy_mode == 'env' else None
+        armed = _arm_mocktail_integration(
+            installation,
+            proxy_mode=proxy_mode,
+            proxy_port=port,
+            ca_cert_path=ca_cert_path,
         )
-        return False
-    try:
-        result = _standard_user_run(
-            [
-                flatpak,
-                'override',
-                '--user',
-                *(f'--env={key}={value}' for key, value in proxy_env.items()),
-                installation.app_id,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
+    else:
+        armed = _arm_client_environment(
+            installation,
+            _proxy_environment_for_installation(installation, proxy_url),
+            'arm Env Proxy for',
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_buffer.log('Launcher', f'Could not arm {installation.display_name} Env Proxy: {exc}')
-        return False
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        log_buffer.log(
-            'Launcher',
-            f'Could not arm {installation.display_name} Env Proxy'
-            + (f': {detail}' if detail else ''),
-        )
+    if not armed:
+        if (
+            integration == 'mocktail_config'
+            and MOCKTAIL_INTEGRATION_STATE.exists()
+            and not clear_linux_client_env_proxy_override(client_key=installation.key)
+        ):
+            log_buffer.log('Launcher', 'Mocktail rollback is pending startup recovery')
         return False
     _set_active_linux_proxy_client_key(installation.key)
-    _write_linux_proxy_override_state(installation.key)
+    _write_linux_proxy_override_state(installation.key, installation.kind)
     log_buffer.log(
         'Launcher', f'Armed {installation.display_name} Env Proxy for normal browser launches'
     )
@@ -1037,47 +1695,28 @@ def set_linux_client_env_proxy_override(
 
 
 def clear_linux_client_env_proxy_override(*, client_key: str | None = None) -> bool:
-    """Clear only the exact client environment names managed by Fleasion."""
+    """Undo only the client settings Fleasion changed to route it."""
     key = client_key or _active_linux_proxy_client_key or _read_linux_proxy_override_state()
     if key is None:
         return True
-    installation = _installation_for_client_key(key)
+    installation = _installation_for_cleanup(key)
     if installation is None:
         return False
-    names = installation.client.proxy_environment_names
-    flatpak = shutil.which('flatpak')
-    if not flatpak:
-        log_buffer.log(
-            'Launcher',
-            f'Cannot disarm {installation.display_name} Env Proxy: flatpak command not found',
+    if installation.client.proxy_integration == 'mocktail_config':
+        cleared = _disarm_mocktail_integration(installation)
+    elif installation.is_flatpak:
+        cleared = _flatpak_override(
+            installation,
+            [f'--unset-env={name}' for name in installation.client.proxy_environment_names],
+            'disarm Env Proxy for',
         )
-        return False
-    try:
-        result = _standard_user_run(
-            [
-                flatpak,
-                'override',
-                '--user',
-                *(f'--unset-env={name}' for name in names),
-                installation.app_id,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_buffer.log('Launcher', f'Could not disarm {installation.display_name} Env Proxy: {exc}')
-        return False
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        log_buffer.log(
-            'Launcher',
-            f'Could not disarm {installation.display_name} Env Proxy'
-            + (f': {detail}' if detail else ''),
-        )
+    else:
+        cleared = _remove_client_desktop_environment(installation)
+    if not cleared:
         return False
     if _active_linux_proxy_client_key == key:
         _set_active_linux_proxy_client_key(None)
+        _active_linux_client_environment.clear()
     if _read_linux_proxy_override_state() == key:
         _write_linux_proxy_override_state(None)
     log_buffer.log('Launcher', f'Disarmed {installation.display_name} Env Proxy')
@@ -1088,6 +1727,12 @@ def recover_stale_linux_client_env_proxy_override() -> bool:
     """Clear a persisted Env Proxy override left by an earlier Fleasion process."""
     if _active_linux_proxy_client_key is not None:
         return True
+    if MOCKTAIL_INTEGRATION_STATE.exists():
+        if _read_mocktail_integration_state() is None:
+            log_buffer.log('Launcher', 'Mocktail recovery state is unreadable; recovery deferred')
+            return False
+        if not clear_linux_client_env_proxy_override(client_key='mocktail'):
+            return False
     key = _read_linux_proxy_override_state()
     if key is None:
         return True

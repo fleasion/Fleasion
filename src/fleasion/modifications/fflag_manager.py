@@ -22,6 +22,11 @@ if TYPE_CHECKING:
 
 from fleasion.utils import format_count, log_buffer
 from fleasion.utils.json_types import JsonObject, as_json_object
+from fleasion.utils.linux_clients import LINUX_CLIENTS
+from fleasion.utils.linux_fflags import (
+    managed_linux_flag_paths,
+    set_linux_flag_layer,
+)
 
 from .stash_paths import resource_stash_dir
 
@@ -135,6 +140,17 @@ def client_settings_targets_for_resource_dir(
 
 def client_settings_paths_for_resource_dir(roblox_dir: Path) -> list[Path]:
     return [path for path, _stash_rel in client_settings_targets_for_resource_dir(roblox_dir)]
+
+
+def _linux_client_fflag_files() -> list[Path]:
+    """Flat FastFlag files of the selected Linux client (Mocktail, Cordial)."""
+    if not sys.platform.startswith('linux'):
+        return []
+    try:
+        return platform_linux.find_linux_fflag_files()
+    except Exception as exc:  # ruff: ignore[blind-except]
+        log_buffer.log('FastFlags', f'Could not discover Linux client FastFlag files: {exc}')
+        return []
 
 
 def _sober_flag_value(value: str) -> FlagValue:
@@ -371,11 +387,40 @@ class FastFlagManager:
             if wrote_dir:
                 written_dirs += 1
 
+        for flag_file in _linux_client_fflag_files():
+            if self._write_linux_flag_file(flag_file, flags):
+                written_dirs += 1
+            else:
+                failed += 1
+                failed_dirs.add(flag_file.parent)
+
         message = f'Wrote {format_count(len(flags), "flag")} to {format_count(written_dirs, "Roblox dir")}'
         if failed:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
         log_buffer.log('FastFlags', message)
         return failed_dirs
+
+    def _write_linux_flag_file(self, path: Path, flags: dict[str, str]) -> bool:
+        """Merge Fleasion's flags over the user's own in a client flags file."""
+        values = {key: _sober_flag_value(value) for key, value in flags.items()}
+        return set_linux_flag_layer(path, self._stash_dir, 'presets', values)
+
+    def _restore_linux_flag_files(self) -> int:
+        """Put each client flags file back as it was; return the failure count."""
+        legacy_paths = (
+            path
+            for client in LINUX_CLIENTS
+            for paths in client.all_paths()
+            for path in paths.fflag_files()
+        )
+        paths = set(_linux_client_fflag_files()) | managed_linux_flag_paths(
+            self._stash_dir, 'presets', legacy_candidates=legacy_paths
+        )
+        failed = 0
+        for path in paths:
+            if not set_linux_flag_layer(path, self._stash_dir, 'presets', {}):
+                failed += 1
+        return failed
 
     def reassert_macos_bootstrapper_flags(self, settings: Mapping[str, object]) -> int:
         """Merge Fleasion flags into settings rewritten just before a macOS launch.
@@ -425,8 +470,8 @@ class FastFlagManager:
             )
         return updated_count
 
-    def restore(self) -> None:
-        """Restore (or delete) ``ClientAppSettings.json`` in every Roblox dir."""
+    def restore(self) -> bool:
+        """Restore native flags and report whether every target was restored."""
         restored = 0
         failed = 0
 
@@ -463,7 +508,12 @@ class FastFlagManager:
                         f'Failed restoring Sober config {sober_config}: {exc}',
                     )
 
+        failed += self._restore_linux_flag_files()
         message = 'Restored ClientAppSettings.json'
         if failed:
-            message += f' in {format_count(restored, "Roblox dir")}; skipped {format_count(failed, "Roblox dir")} due to permission errors'
+            message += (
+                f' in {format_count(restored, "Roblox dir")}; '
+                f'{format_count(failed, "target")} could not be restored'
+            )
         log_buffer.log('FastFlags', message)
+        return failed == 0

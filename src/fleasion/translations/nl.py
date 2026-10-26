@@ -1366,6 +1366,7 @@ DUTCH: dict[str, str] = {
     'ui.gui.modifications_tab.mesh_lod_override': 'Mesh-LOD-overschrijving',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Fout bij meshvoorbeeld: {value0}',
     'ui.gui.modifications_tab.missing': 'Ontbreekt',
+    'ui.gui.modifications_tab.mocktail_file_mods_unavailable': '⚠ Mocktail: bestandsaanpassingen (texturen, lettertypen, geluiden, meshes en de cursor) zijn niet beschikbaar, omdat Mocktail zijn Roblox-bestanden op wijzigingen controleert. FastFlags en het vervangen van assets via de proxy werken nog steeds.',
     'ui.gui.modifications_tab.modification': 'Aanpassing',
     'ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it': 'Modificatietoets vastgelegd. Laat los om deze afzonderlijk te koppelen of druk op een andere toets voor een combinatie.',
     'ui.gui.modifications_tab.msaa_level': 'MSAA-niveau',
@@ -1916,4 +1917,7 @@ DUTCH: dict[str, str] = {
     'settings.appearance.opacity_value': '{value0}%',
     'settings.appearance.tint_strength': 'Tintsterkte',
     'settings.appearance.window_opacity_tooltip': 'Achtergronddekking; lagere waarden tonen meer van het onderliggende venster',
+    'app.linux_client_proxy_setup_failed_title': 'Instellen van Linux Roblox-client mislukt',
+    'app.linux_client_proxy_setup_failed_body': 'Fleasion kon {client} niet voorbereiden op de proxymodus {mode}. De proxy is gestopt voordat deze gereed was. Controleer het Launcher-logboek op de configuratie-, certificaat- of Flatpak-fout en probeer het opnieuw.',
+    'ui.gui.modifications_tab.custom_fastflag_delivery': 'Dynamische FastFlags kunnen tijdens het spelen worden bijgewerkt nadat Roblox de gewijzigde instellingen heeft opgehaald. Niet-dynamische FastFlags worden actief bij de volgende start van Roblox. Laat de proxy ingeschakeld om aangepaste flags te leveren.',
 }
