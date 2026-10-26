@@ -55,7 +55,8 @@ def test_glass_sections_match_scraper_surface_and_restore_dark(app: QApplication
         dialog.show()
         QTest.qWait(30)
         dark_colors = ThemeManager.panel_colors()
-        dark_pixel = section.grab().toImage().pixelColor(30, 31)
+        dark_image = section.grab().toImage()
+        dark_pixel = dark_image.pixelColor(30, dark_image.height() - 8)
         assert dark_colors.section_background.red() == dark_colors.section_background.blue()
         assert dark_pixel.alpha() == 255
 
@@ -66,17 +67,22 @@ def test_glass_sections_match_scraper_surface_and_restore_dark(app: QApplication
         assert glass_colors.section_background.alpha() < 255
         assert glass_colors.section_border == QColor(255, 255, 255, 20)
         assert glass_colors.container_background_css == 'background-color: transparent;'
-        glass_pixel = section.grab().toImage().pixelColor(30, 31)
+        glass_image = section.grab().toImage()
+        glass_pixel = glass_image.pixelColor(30, glass_image.height() - 8)
         assert glass_pixel.blue() > glass_pixel.red()
         assert glass_pixel.red() < dark_pixel.red()
         assert glass_pixel.alpha() < 255
 
         ThemeManager.apply_theme('Dark')
         QTest.qWait(35)
-        after = section.grab().toImage().pixelColor(30, 31)
+        after_image = section.grab().toImage()
+        after = after_image.pixelColor(30, after_image.height() - 8)
         assert after.alpha() == 255
         assert after.red() == after.blue()
-        assert ThemeManager.panel_colors().container_background_css.startswith('background-color: rgb(')
+        assert (
+            ThemeManager.panel_colors().container_background_css
+            == 'background-color: palette(window);'
+        )
     finally:
         ThemeManager.apply_theme('Dark')
         dialog.close()

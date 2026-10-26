@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from .style import icon_path
+from .transparency import enable_transparency
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -312,5 +313,7 @@ def apply_chrome(window: QWidget, *, enabled: bool) -> None:
         visible = window.isVisible()
         window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=enabled)
         window.setWindowFlag(Qt.WindowType.FramelessWindowHint, on=enabled)
+        if enabled:
+            enable_transparency(window)
         if visible:
             window.show()

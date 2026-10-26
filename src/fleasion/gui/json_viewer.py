@@ -44,6 +44,8 @@ from fleasion.localization import tr, tr_count
 from fleasion.utils import get_icon_path
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 from fleasion.utils.json_types import JsonValue, require_object_dict, require_object_list
+from fleasion.widgets.image_preview import ImagePreviewLabel
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
 
 if TYPE_CHECKING:
     from fleasion.cache.audio_player import AudioPlayerWidget
@@ -608,7 +610,7 @@ class JsonTreeViewer(QDialog):
         self.texturepack_widget: QWidget | None = None
         self._texturepack_data: dict[str, dict[str, str | bytes]] = {}  # map_name -> {id, data}
         self._texturepack_xml: str = ''
-        self._tp_image_labels: dict[str, QLabel] = {}
+        self._tp_image_labels: dict[str, ImagePreviewLabel] = {}
         self._tp_pixmaps: dict[str, QPixmap] = {}
         self._tp_fetchers: list[AssetFetcherThread] = []  # active AssetFetcherThread instances
 
@@ -624,7 +626,7 @@ class JsonTreeViewer(QDialog):
     def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(*PANEL_MARGINS)
 
         # Search debounce timer
         self._search_debounce = QTimer(self)
@@ -867,7 +869,7 @@ class JsonTreeViewer(QDialog):
         self.preview_group = QWidget()
         preview_group_layout = QVBoxLayout()
         preview_group_layout.setContentsMargins(0, 0, 0, 0)
-        preview_group_layout.setSpacing(4)
+        preview_group_layout.setSpacing(GAP)
 
         self.preview_title_label = QLabel(tr('ui.gui.json_viewer.preview'))
         preview_group_layout.addWidget(self.preview_title_label)
@@ -879,7 +881,7 @@ class JsonTreeViewer(QDialog):
 
         self.preview_container = QWidget()
         self.preview_container_layout = QVBoxLayout()
-        self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
+        self.preview_container_layout.setContentsMargins(*PANEL_MARGINS)
 
         # 3D viewer for meshes
         self.obj_viewer = ObjViewerPanel(config_manager=self.config_manager)
@@ -896,7 +898,9 @@ class JsonTreeViewer(QDialog):
         self.loading_label.hide()
 
         # Image viewer
-        self.image_label = QLabel(tr('ui.gui.json_viewer.select_a_single_asset_id_or_url'))
+        self.image_label = ImagePreviewLabel(
+            tr('ui.gui.json_viewer.select_a_single_asset_id_or_url')
+        )
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; }')
         self.image_label.setScaledContents(False)
@@ -1125,19 +1129,7 @@ class JsonTreeViewer(QDialog):
         self.stop_preview_btn.show()
 
     def _scale_and_show_image(self, pixmap: QPixmap) -> None:
-        container_w = self.preview_scroll.viewport().width() - 20
-        container_h = self.preview_scroll.viewport().height() - 20
-        if container_w < 100:
-            container_w = 400
-        if container_h < 100:
-            container_h = 400
-        scaled = pixmap.scaled(
-            container_w,
-            container_h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.image_label.setPixmap(scaled)
+        self.image_label.set_image(pixmap)
 
     def _preview_mesh(self, data: bytes) -> None:
         self._mesh_loader = MeshLoaderThread(data)
@@ -1362,7 +1354,7 @@ class JsonTreeViewer(QDialog):
             header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             tp_layout.addWidget(header)
 
-            img_label = QLabel(tr('ui.gui.json_viewer.loading'))
+            img_label = ImagePreviewLabel(tr('ui.gui.json_viewer.loading'), fit_height=False)
             img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             img_label.setStyleSheet(
                 'background-color: palette(base); padding: 10px; min-height: 100px;'
@@ -1444,20 +1436,8 @@ class JsonTreeViewer(QDialog):
         pixmap = QPixmap.fromImage(qimage)
         self._tp_pixmaps[map_name] = pixmap
 
-        # Scale to fit container
-        container_width = self.preview_scroll.viewport().width() - 30
-        if container_width < 100:
-            container_width = 400
-
-        if pixmap.width() > container_width:
-            scaled = pixmap.scaledToWidth(
-                container_width, Qt.TransformationMode.SmoothTransformation
-            )
-        else:
-            scaled = pixmap
-
-        img_label.setPixmap(scaled)
         img_label.setStyleSheet('')
+        img_label.set_image(pixmap)
 
     def _on_texturepack_texture_fetched(self, map_name: str, map_id: str, data: bytes) -> None:
         """Handle fetched texture data for a texture pack map."""
@@ -1577,6 +1557,7 @@ class JsonTreeViewer(QDialog):
     def _hide_all_preview_widgets(self) -> None:
         self.obj_viewer.hide()
         self.image_label.hide()
+        self.image_label.clear()
         self.audio_wrapper.hide()
         self.animation_viewer.hide()
         self.text_viewer.hide()

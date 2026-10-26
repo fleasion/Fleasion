@@ -480,7 +480,7 @@ def test_preloaded_tab_background_respects_theme(
         container = tab.findChild(QWidget, container_name)
         assert container is not None
         container.ensurePolished()
-        expected = QColor('#404040') if theme == 'Dark' else QColor('#202433')
+        expected = QColor('#2c3040')
         assert container.autoFillBackground()
         assert container.palette().color(container.backgroundRole()) == expected
         parent.setEnabled(True)
@@ -489,10 +489,11 @@ def test_preloaded_tab_background_respects_theme(
         assert container.autoFillBackground()
         assert container.palette().color(container.backgroundRole()) == expected
 
+        palette.setColor(QPalette.ColorRole.Window, QColor('#303848'))
         palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#182030'))
         app.setPalette(palette)
         app.processEvents()
-        expected = QColor('#404040') if theme == 'Dark' else QColor('#182030')
+        expected = QColor('#303848')
         assert container.autoFillBackground()
         assert container.palette().color(container.backgroundRole()) == expected
     finally:

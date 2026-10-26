@@ -98,6 +98,8 @@ from fleasion.utils import APP_CACHE_DIR, log_buffer, open_folder
 from fleasion.utils.http import http_get
 from fleasion.utils.json_types import JsonValue, require_json_value
 from fleasion.utils.threading import run_in_thread
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
+from fleasion.widgets.tab_footer import TabFooter
 
 from . import glass
 from .file_drop import FileDropLineEdit, local_file_path_example
@@ -698,7 +700,7 @@ class CollapsibleSection(QWidget):
             QSizePolicy.Policy.Fixed,
         )
         header_layout = QHBoxLayout(self._header_widget)
-        header_layout.setContentsMargins(4, 4, 4, 4)
+        header_layout.setContentsMargins(PANEL_PADDING, GAP, PANEL_PADDING, GAP)
 
         self._arrow = QPushButton()
         self._arrow.setFixedSize(22, 22)
@@ -721,8 +723,8 @@ class CollapsibleSection(QWidget):
         # --- Content container ---
         self._content = QWidget()
         self._content_layout = QVBoxLayout()
-        self._content_layout.setContentsMargins(12, 12, 12, 12)
-        self._content_layout.setSpacing(4)
+        self._content_layout.setContentsMargins(*PANEL_MARGINS)
+        self._content_layout.setSpacing(GAP)
         self._content.setLayout(self._content_layout)
 
         if not expanded:
@@ -758,13 +760,12 @@ class CollapsibleSection(QWidget):
         painter.fillPath(path, colors.section_background)
         if glass.theme.active:
             # Match the table header overlay in both light and dark Glass
-            painter.save()
-            painter.setClipPath(path)
             header = QRectF(rect.left(), rect.top(), rect.width(), self._header_widget.height())
+            header_path = QPainterPath()
+            header_path.addRect(header)
             header_color = QColor(colors.section_border)
             header_color.setAlpha(11)
-            painter.fillRect(header, header_color)
-            painter.restore()
+            painter.fillPath(path.intersected(header_path), header_color)
         painter.setPen(colors.section_border)
         painter.drawPath(path)
         painter.end()
@@ -1036,8 +1037,8 @@ class ModRowWidget(QWidget):
 
     def _setup_ui(self) -> None:
         layout = QHBoxLayout()
-        layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(GAP)
 
         # Display name
         self._name_label = QLabel(self._display_name)
@@ -4502,20 +4503,19 @@ class ModificationsTab(QWidget):
     def _build_ui(self) -> Generator[None]:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         container = QWidget()
-        # Explicitly paint with the AlternateBase palette colour (the same
-        # grey used by QTreeWidget / QGroupBox content in the Replacer and
-        # Scraper tabs).  Without this, Fusion paints through to Window (#202020).
+        # Use the same window background as the other tabs
         container.setObjectName('_FleasionModContainer')
         self._mod_container = container
         self._container_layout = QVBoxLayout(container)
-        self._container_layout.setSpacing(10)
-        self._container_layout.setContentsMargins(10, 10, 10, 10)
+        self._container_layout.setSpacing(PANEL_PADDING)
+        self._container_layout.setContentsMargins(*PANEL_MARGINS)
         scroll.setWidget(container)
         outer.addWidget(scroll)
         self._update_container_bg()
@@ -4723,11 +4723,9 @@ class ModificationsTab(QWidget):
         # Stretch at bottom
         self._container_layout.addStretch()
 
-        footer_widget = QWidget()
-        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        footer_widget = TabFooter()
         self._footer_widget = footer_widget
-        footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(8, 4, 8, 4)
+        footer_layout = footer_widget.content_layout
         self._status_label = QLabel()
         self._status_label.setStyleSheet('color: #888;')
         footer_layout.addWidget(self._status_label)

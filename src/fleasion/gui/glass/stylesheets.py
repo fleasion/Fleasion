@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from weakref import WeakKeyDictionary
 
+from PySide6.QtCore import Qt
 from shiboken6 import isValid
 
 if TYPE_CHECKING:
@@ -24,10 +25,13 @@ class WindowStyles:
     def polish(self, widget: QWidget) -> None:
         if not isValid(widget):
             return
-        if widget.parentWidget() is not None:
+        combo_popup = widget.metaObject().className() == 'QComboBoxPrivateContainer'
+        tooltip = widget.windowType() == Qt.WindowType.ToolTip
+        if widget.parentWidget() is not None and not (combo_popup or tooltip):
             # Parented dialogs and menus inherit their root's rules, too
             self._restore(widget)
             return
+        # Native combo and tooltip panels need their own QSS to suppress square fills
         if not self._stylesheet:
             return
         if widget not in self._originals:

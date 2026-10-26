@@ -55,6 +55,7 @@ from fleasion.utils.json_types import (
     require_object_dict,
     require_object_list,
 )
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
 
 from .file_drop import FileDropLineEdit
 
@@ -592,12 +593,10 @@ class GameCard(QFrame):
 
         self.assets_btn = QPushButton(tr('ui.gui.prejsons_dialog.assets'))
         self.assets_btn.setVisible(False)
-        self.assets_btn.setFixedHeight(22)
         btn_row.addWidget(self.assets_btn)
 
         self.replacements_btn = QPushButton(tr('ui.gui.prejsons_dialog.replacements'))
         self.replacements_btn.setVisible(False)
-        self.replacements_btn.setFixedHeight(22)
         btn_row.addWidget(self.replacements_btn)
 
         layout.addLayout(btn_row)
@@ -765,8 +764,8 @@ class PreJsonsDialog(QDialog):
 
     def _setup_ui(self) -> None:
         root = QVBoxLayout()
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root.setContentsMargins(*PANEL_MARGINS)
+        root.setSpacing(GAP)
 
         bar = QHBoxLayout()
         bar.addWidget(QLabel(tr('ui.gui.prejsons_dialog.search')))
@@ -794,7 +793,7 @@ class PreJsonsDialog(QDialog):
         self.container.setAutoFillBackground(True)
         self.container.setBackgroundRole(QPalette.ColorRole.Base)
         self.grid = QGridLayout()
-        self.grid.setSpacing(10)
+        self.grid.setSpacing(PANEL_PADDING)
         self.grid.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.container.setLayout(self.grid)
         scroll_area.setWidget(self.container)
@@ -967,7 +966,13 @@ class PreJsonsDialog(QDialog):
     def _get_cols(self) -> int:
         vp = self.scroll_area.viewport()
         available = vp.width() if vp else (self.width() - 30)
-        return max(1, available // (CARD_WIDTH + self.grid.spacing()))
+        margins = self.grid.contentsMargins()
+        available -= margins.left() + margins.right()
+        card_width = max(
+            CARD_WIDTH,
+            max((card.minimumSizeHint().width() for card in self._cards), default=0),
+        )
+        return max(1, (available + self.grid.spacing()) // (card_width + self.grid.spacing()))
 
     def _place_all(self) -> None:
         """Layout all cards, respecting the current search filter."""

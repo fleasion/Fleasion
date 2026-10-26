@@ -7,7 +7,16 @@ from typing import TYPE_CHECKING, Final, override
 from weakref import WeakKeyDictionary, WeakSet
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QRegion
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QRegion,
+    QTransform,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -21,8 +30,10 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from .desktop_blur import blur
+from .itemview import RoundedItemViewEffect
 from .state import state
 from .style import RADIUS, glass_colors
+from .transparency import enable_transparency, has_alpha
 from .wallpaper import wallpapers
 
 if TYPE_CHECKING:
@@ -75,11 +86,9 @@ def _paint_wallpaper(painter: QPainter, window: QWidget, path: QPainterPath) -> 
         painter.fillPath(path, _fallback_color())
         return
     origin = _origin_in_screen(window, width, height)
-    source = QRectF(origin.x(), origin.y(), window.width(), window.height())
-    painter.save()
-    painter.setClipPath(path)
-    painter.drawImage(QRectF(window.rect()), image, source)
-    painter.restore()
+    wallpaper = QBrush(image)
+    wallpaper.setTransform(QTransform.fromTranslate(-origin.x(), -origin.y()))
+    painter.fillPath(path, wallpaper)
 
 
 # ---------------------------------------------------------------- surface
@@ -148,21 +157,16 @@ class GlassWindows(QObject):
     def __init__(
         self,
         app: QApplication,
-        original_combo_masks: dict[QWidget, QRegion] | None = None,
-        original_itemview_masks: dict[QWidget, QRegion] | None = None,
+        original_popup_masks: dict[QWidget, QRegion] | None = None,
         stylesheets: WindowStyles | None = None,
     ) -> None:
         super().__init__(app)
         self._app = app
-        self._active = True
         self._stylesheets = stylesheets
-        self._original_combo_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary(
-            original_combo_masks or {}
+        self._original_popup_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary(
+            original_popup_masks or {}
         )
-        self._original_itemview_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary(
-            original_itemview_masks or {}
-        )
-        self._clipped_itemviews: WeakSet[QWidget] = WeakSet()
+        self._rounded_itemviews: WeakSet[QAbstractItemView] = WeakSet()
         self._attributes: WeakKeyDictionary[QWidget, tuple[bool, bool]] = WeakKeyDictionary()
         self._button_properties: WeakKeyDictionary[QPushButton, set[str]] = WeakKeyDictionary()
         self._original_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary()
@@ -184,7 +188,6 @@ class GlassWindows(QObject):
                 window.update()
 
     def restore(self) -> None:
-        self._active = False
         self._wallpaper_timer.stop()
         blur.stop_polling()
         wallpapers.close()
@@ -202,29 +205,20 @@ class GlassWindows(QObject):
                 else:
                     widget.setMask(original_mask)
         self._original_masks.clear()
-        for widget in list(self._clipped_itemviews):
-            if not isValid(widget):
+        for view in list(self._rounded_itemviews):
+            if isValid(view) and isinstance(view.graphicsEffect(), RoundedItemViewEffect):
+                view.setGraphicsEffect(None)  # pyright: ignore[reportArgumentType]
+        self._rounded_itemviews.clear()
+        # QSS removal does not always undo the masks Qt adds to native popups
+        for widget in self._app.allWidgets():
+            if not isValid(widget) or not self.is_rounded_popup(widget):
                 continue
-            original = self._original_itemview_masks.get(widget)
+            original = self._original_popup_masks.get(widget)
             if original is None or original.isEmpty():
                 widget.clearMask()
             else:
                 widget.setMask(original)
-        self._clipped_itemviews.clear()
-        self._original_itemview_masks.clear()
-        # Qt sets the combo popup's native mask from QSS independently of our
-        # event filter. QSS removal does not always undo that native mask, so
-        # return popups to the exact shape they had before Glass was enabled.
-        if QApplication.platformName() == 'xcb':
-            for widget in self._app.allWidgets():
-                if not isValid(widget) or not self.is_combo_popup(widget):
-                    continue
-                original = self._original_combo_masks.get(widget)
-                if original is None or original.isEmpty():
-                    widget.clearMask()
-                else:
-                    widget.setMask(original)
-        self._original_combo_masks.clear()
+        self._original_popup_masks.clear()
         for button, names in list(self._button_properties.items()):
             if not isValid(button):
                 continue
@@ -248,6 +242,14 @@ class GlassWindows(QObject):
         return widget.isWindow() and widget.metaObject().className() == 'QComboBoxPrivateContainer'
 
     @staticmethod
+    def is_rounded_popup(widget: QWidget) -> bool:
+        return widget.isWindow() and (
+            isinstance(widget, QMenu)
+            or GlassWindows.is_combo_popup(widget)
+            or widget.windowType() == Qt.WindowType.ToolTip
+        )
+
+    @staticmethod
     def _mask_radius(widget: QWidget) -> int:
         if widget.property('glassOwnSurface') or widget.isMaximized():
             return 0
@@ -258,12 +260,26 @@ class GlassWindows(QObject):
                 return 12
             if GlassWindows.is_combo_popup(widget):
                 return 10
+        if widget.isWindow() and widget.windowType() == Qt.WindowType.ToolTip:
+            return 8
         return 0
 
     def update_window_shape(self, widget: QWidget) -> None:
         # On X11, switching a shown window to translucent commonly retains its
         # original 24-bit visual. QSS border-radius alone does not clip it.
-        if QApplication.platformName() != 'xcb' or widget.depth() >= 32:
+        if not widget.isWindow():
+            return
+        if has_alpha(widget):
+            if widget in self._original_masks:
+                original = self._original_masks.pop(widget)
+                if original.isEmpty():
+                    widget.clearMask()
+                else:
+                    widget.setMask(original)
+            if self.is_rounded_popup(widget):
+                widget.clearMask()
+            return
+        if QApplication.platformName() != 'xcb':
             return
         if not widget.isWindow() or (radius := self._mask_radius(widget)) <= 0:
             if widget in self._original_masks:
@@ -282,63 +298,14 @@ class GlassWindows(QObject):
         path.addRoundedRect(rect, min(radius, widget.width() / 2), min(radius, widget.height() / 2))
         widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
-    @staticmethod
-    def is_itemview_chrome(widget: QWidget) -> bool:
-        if not isValid(widget):
-            return False
-        try:
-            view = widget.parentWidget()
-            return (
-                isinstance(view, QAbstractItemView)
-                and not isinstance(view, QHeaderView)
-                and (
-                    isinstance(widget, QHeaderView)
-                    or widget.metaObject().className() == 'QTableCornerButton'
-                    or widget.objectName() == 'qt_scrollarea_viewport'
-                )
-            )
-        except RuntimeError:
-            # Qt may dispatch widget events during native popup destruction
-            return False
-
-    def update_itemview_shape(self, widget: QWidget) -> None:
-        """Clip Qt viewports and headers against their parent's rounded Glass frame."""
-        if QApplication.platformName() != 'xcb' or not self.is_itemview_chrome(widget):
-            return
-        try:
-            view = widget.parentWidget()
-        except RuntimeError:
-            return
-        if not isinstance(view, QAbstractItemView) or not isValid(view):
-            return
-        if min(widget.width(), widget.height(), view.width(), view.height()) < 2:
-            return
-
-        # Qt child viewports and header cells paint rectangular backgrounds
-        # independently of the parent's rounded border
-        frame = QPainterPath()
-        frame.addRoundedRect(QRectF(view.rect()).adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
-        view_region = QRegion(frame.toFillPolygon().toPolygon())
-        child_region = view_region.intersected(QRegion(widget.geometry())).translated(-widget.pos())
-        self._clipped_itemviews.add(widget)
-        # Do not intersect a stale Qt stylesheet mask: on resize it still has
-        # the old header width and would clip newly exposed header cells
-        if child_region != widget.mask():
-            widget.setMask(child_region)
-
-    def _refresh_itemview_children(self, view: QAbstractItemView) -> None:
-        if not self._active or not isValid(view):
-            return
-        for child in view.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly):
-            self.update_itemview_shape(child)
-
-    def _schedule_itemview_refresh(self, widget: QWidget) -> None:
-        if QApplication.platformName() != 'xcb':
-            return
+    def polish_itemview(self, widget: QWidget) -> None:
         if not isinstance(widget, QAbstractItemView) or isinstance(widget, QHeaderView):
             return
-        # Qt may reposition headers *after* notifying the parent of its resize
-        QTimer.singleShot(0, widget, lambda: self._refresh_itemview_children(widget))
+        if widget.graphicsEffect() is None:
+            popup = self.is_combo_popup(widget.window())
+            radius = 10 if popup else RADIUS
+            widget.setGraphicsEffect(RoundedItemViewEffect(widget, radius=radius, popup=popup))
+            self._rounded_itemviews.add(widget)
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -347,16 +314,20 @@ class GlassWindows(QObject):
         kind = event.type()
         if kind == QEvent.Type.Polish:
             self.polish(watched)
-            self.update_itemview_shape(watched)
+            self.polish_itemview(watched)
         elif kind == QEvent.Type.ParentChange and self._stylesheets is not None:
             self._stylesheets.polish(watched)
         elif kind in {QEvent.Type.Show, QEvent.Type.Resize, QEvent.Type.WindowStateChange}:
+            if (
+                kind == QEvent.Type.Show
+                and self._stylesheets is not None
+                and self.is_rounded_popup(watched)
+            ):
+                self._stylesheets.polish(watched)
             self.update_window_shape(watched)
-            self.update_itemview_shape(watched)
-            if kind in {QEvent.Type.Show, QEvent.Type.Resize}:
-                self._schedule_itemview_refresh(watched)
+            self.polish_itemview(watched)
         elif kind in {QEvent.Type.Move, QEvent.Type.StyleChange}:
-            self.update_itemview_shape(watched)
+            self.polish_itemview(watched)
         elif kind == QEvent.Type.Paint and self._paints(watched):
             painter = QPainter(watched)
             framed = bool(watched.property('glassChrome')) and not watched.isMaximized()
@@ -397,9 +368,14 @@ class GlassWindows(QObject):
         if _is_window(widget):
             self.remember_window(widget)
             translucent = not _opaque_fallback(widget)
-            widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=translucent)
-            if not translucent:
+            if translucent:
+                enable_transparency(widget)
+            else:
+                widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=False)
                 widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, on=False)
+        elif self.is_rounded_popup(widget):
+            self.remember_window(widget)
+            enable_transparency(widget)
         elif not isinstance(widget, QPushButton):
             return
         elif (

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QStyle, QWidget
 
 from fleasion.appearance import accent_name
 from fleasion.appearance.colors import apply_accent, luminance
+from fleasion.widgets.style import LayoutStyle
 
 from .appearance_events import AppearanceEvents
 
@@ -36,7 +37,7 @@ class PanelThemeColors:
     @property
     def container_background_css(self) -> str:
         if self.container_background is None:
-            return 'background-color: palette(alternate-base);'
+            return 'background-color: palette(window);'
         if self.container_background.alpha() == 0:
             return 'background-color: transparent;'
         color = self.container_background
@@ -88,8 +89,15 @@ class ThemeManager:
     @staticmethod
     def ensure_widget_style(app: QApplication, name: str) -> None:
         if ThemeManager._widget_style_name(app).casefold() == name.casefold():
-            return
-        app.setStyle(name)
+            current = app.style()
+            if name.casefold() != 'fusion' or isinstance(current, LayoutStyle):
+                return
+            if current.findChild(LayoutStyle) is not None:
+                return
+        if name.casefold() == 'fusion':
+            app.setStyle(LayoutStyle())
+        else:
+            app.setStyle(name)
 
     @staticmethod
     def events() -> AppearanceEvents:
@@ -215,7 +223,8 @@ class ThemeManager:
 
     @staticmethod
     def remember_native_palette(palette: QPalette) -> bool:
-        if ThemeManager._applying:
+        # Qt can deliver Glass palette changes after the synchronous apply guard ends
+        if ThemeManager._applying or palette.window().color().alpha() == 0:
             return False
         ThemeManager._system_palette = QPalette(palette)
         return ThemeManager.follows_system()
@@ -474,7 +483,6 @@ class ThemeManager:
         return PanelThemeColors(
             section_background=QColor('#272727') if is_dark else QColor('#f0f0f0'),
             section_border=QColor('#3a3a3a') if is_dark else QColor('#d0d0d0'),
-            container_background=QColor(64, 64, 64) if is_dark else None,
         )
 
     @staticmethod
@@ -482,9 +490,8 @@ class ThemeManager:
         """Paint the panel without a local stylesheet that freezes inherited colors."""
         color = ThemeManager.panel_colors().container_background
         palette = QPalette()
-        role = QPalette.ColorRole.AlternateBase
+        role = QPalette.ColorRole.Window
         if color is not None:
-            role = QPalette.ColorRole.Window
             palette.setColor(role, color)
         widget.setPalette(palette)
         widget.setBackgroundRole(role)

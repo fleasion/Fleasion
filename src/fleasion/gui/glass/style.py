@@ -1,4 +1,4 @@
-"""Glass palette, stylesheet, font and the SVG glyphs the stylesheet uses."""
+"""Glass palette, stylesheet and the SVG glyphs the stylesheet uses."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from string import Template
 from typing import TYPE_CHECKING, Final
 
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
+from PySide6.QtGui import QColor, QPalette
 
 from fleasion.appearance.colors import accent_color, apply_accent, on_accent
 from fleasion.utils.paths import CONFIG_DIR
+from fleasion.widgets.spacing import CONTROL_HEIGHT, CONTROL_PADDING
 
 from .state import state
 
@@ -71,14 +72,6 @@ _ICONS: Final[dict[str, str]] = {
     f'stroke="{TEXT}" stroke-width="1.5"/>',
     'win-close': f'<path d="M5 5l6 6M11 5l-6 6" {_STROKE} stroke="{TEXT}" stroke-width="1.6"/>',
 }
-_PREFERRED_FONTS: Final = (
-    'Inter',
-    'Adwaita Sans',
-    'Geist',
-    'Segoe UI Variable Text',
-    'SF Pro Text',
-    'Segoe UI',
-)
 
 
 def icon_path(name: str) -> str:
@@ -131,17 +124,6 @@ def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) ->
     return pal
 
 
-def pick_font() -> QFont | None:
-    families = set(QFontDatabase.families())
-    for name in _PREFERRED_FONTS:
-        if name in families:
-            font = QFont(name)
-            font.setPointSizeF(10)
-            font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
-            return font
-    return None
-
-
 # Pane: brighter at the top, like light hitting glass. Rim: bright top edge.
 # Well: recessed input field with its highlight along the bottom edge.
 _PANE: Final = (
@@ -162,6 +144,7 @@ _STYLESHEET: Final = Template("""
 QMainWindow, QDialog { background: transparent; }
 QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget, QTabWidget > QWidget,
 QSplitter, QStatusBar, QLabel { background: transparent; }
+QComboBoxPrivateContainer { background: transparent; border: 0; }
 
 QToolTip {
     background: rgba($popup_rgb,0.96); color: $tooltip_text;
@@ -180,11 +163,10 @@ QPushButton#GlassWinBtn[role="close"]:hover {
 }
 
 QTabWidget::pane { border: 0; top: 0; }
-QTabWidget::tab-bar { left: 10px; }
 QTabBar { qproperty-drawBase: 0; background: transparent; }
 QTabBar::tab {
-    background: transparent; border: 1px solid transparent; border-radius: 13px;
-    padding: 5px 15px; margin: 6px 2px; color: $muted; font-weight: 600;
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    padding: 4px 11px; margin: 0; color: $muted;
 }
 QTabBar::tab:hover { color: $text; background: rgba($ink_rgb,0.06); }
 QTabBar::tab:selected { color: $text; background: $pane_hover; $rim }
@@ -206,44 +188,41 @@ QFrame#SubplaceGameCard:hover {
     background: rgba($ink_rgb,0.11); border-color: rgba($ink_rgb,0.30);
 }
 QPushButton#SubplaceSidebarButton {
-    padding: 5px 10px; border-radius: 11px; font-weight: 500;
+    padding: 4px 10px; border-radius: 8px;
 }
 QPushButton#SubplaceSidebarButton:hover {
     background: rgba($ink_rgb,0.16);
 }
 QWidget#SubplaceFooter { background: transparent; border: 0; }
-QPushButton#SubplaceClearCacheButton {
-    padding: 3px 10px; min-height: 18px; border-radius: 12px;
-}
-
 QGroupBox {
     background: $pane; $rim border-radius: ${radius}px;
-    margin-top: 24px; padding: 12px 10px 10px 10px;
+    margin-top: 1.4em; padding: 0;
 }
 QGroupBox::title {
     subcontrol-origin: margin; left: 8px; top: 3px; padding: 0 4px;
-    color: $muted; font-size: 9pt; font-weight: 700; letter-spacing: 0.5px;
+    color: $muted;
 }
 
 QPushButton, QToolButton {
     color: $button_text;
-    background: $pane; $rim border-radius: 14px; padding: 5px 14px; min-height: 18px;
-    font-weight: 600;
+    background: $pane; $rim border-radius: 8px;
+    padding: ${control_padding}px 10px; min-height: ${control_content_height}px;
 }
+QPushButton { min-width: 58px; }
 QPushButton[glassArrow="true"] {
-    background: transparent; border: 0; padding: 0; color: $muted; font-size: 8pt;
+    background: transparent; border: 0; padding: 0; min-width: 0; color: $muted;
 }
 QPushButton[glassArrow="true"]:hover { color: $text; background: rgba($ink_rgb,0.08); }
-QPushButton[compact="true"] { padding: 0; border-radius: 9px; }
+QPushButton[compact="true"] { padding: 0; min-width: 0; border-radius: 9px; }
 QPushButton:hover, QToolButton:hover {
     background: $pane_hover; border-top-color: rgba($ink_rgb,0.45);
 }
 QPushButton:focus, QToolButton:focus {
-    border: 2px solid rgba($accent_rgb,0.95);
+    border-color: rgba($accent_rgb,0.95);
 }
-QTabBar::tab:focus { border: 2px solid rgba($accent_rgb,0.95); }
+QTabBar::tab:focus { border-color: rgba($accent_rgb,0.95); }
 QCheckBox:focus, QRadioButton:focus {
-    border: 1px dotted rgba($accent_rgb,0.95); border-radius: 4px;
+    outline: 1px dotted rgba($accent_rgb,0.95);
 }
 QPushButton:pressed, QPushButton:checked, QToolButton:pressed, QToolButton:checked {
     background: rgba($accent_rgb,0.30); border-color: rgba($accent_rgb,0.55);
@@ -269,8 +248,14 @@ QPushButton#ConflictBadge[clean="true"] {
 
 QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     color: $input_text;
-    $well border-radius: 10px; padding: 5px 10px;
+    $well border-radius: 8px; padding: 4px 8px;
     selection-background-color: $accent; selection-color: $accent_text;
+}
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+    padding: ${input_padding}px 8px; min-height: ${input_content_height}px;
+}
+QAbstractSpinBox > QLineEdit, QComboBox > QLineEdit {
+    background: transparent; border: 0; border-radius: 0; padding: 0; min-height: 0;
 }
 QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: rgba($ink_rgb,0.14); }
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus,
@@ -281,11 +266,11 @@ QComboBox::drop-down {
 }
 QComboBox::down-arrow { image: url($chevron_down); width: 14px; height: 14px; }
 QComboBox QAbstractItemView {
-    background: rgba($popup_rgb,0.98); border: 1px solid rgba($ink_rgb,0.14);
+    background: rgba($popup_rgb,0.98); border: 1px solid transparent;
     border-radius: 10px; padding: 4px; selection-background-color: rgba($accent_rgb,0.35);
     selection-color: $text;
 }
-QSpinBox, QDoubleSpinBox { padding-right: 22px; }
+QSpinBox, QDoubleSpinBox { padding-right: 24px; }
 QSpinBox::up-button, QDoubleSpinBox::up-button,
 QSpinBox::down-button, QDoubleSpinBox::down-button {
     subcontrol-origin: border; width: 20px; border: 0; background: transparent;
@@ -308,16 +293,17 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
     image: url($chevron_down); width: 11px; height: 11px;
 }
 
+/* The item-view effect paints the rim after clipping child backgrounds */
 QAbstractItemView {
     color: $input_text;
     background: rgba($well_rgb,0.30); alternate-background-color: rgba($ink_rgb,0.025);
-    border: 1px solid rgba($ink_rgb,0.08); border-top-color: rgba($ink_rgb,0.18);
+    border: 1px solid transparent;
     border-radius: ${radius}px; selection-background-color: rgba($accent_rgb,0.24);
     selection-color: $text;
 }
 /* Preserve all four rounded outer corners; the separate QHeaderView reset
    below prevents duplicate header outlines without flattening the view */
-QTreeView::item, QListView::item, QTableView::item { padding: 6px 4px; border: 0; }
+QTreeView::item, QListView::item, QTableView::item { padding: 2px 4px; border: 0; }
 QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
     background: rgba($ink_rgb,0.05);
 }
@@ -328,12 +314,11 @@ QTableView::item:selected { background: rgba($accent_rgb,0.11); }
 QHeaderView { background: transparent; border: 0; border-radius: 0; }
 QHeaderView::section {
     background: rgba($ink_rgb,0.045); color: $muted; border: 0;
-    border-bottom: 1px solid rgba($ink_rgb,0.10); padding: 8px;
-    font-size: 8.5pt; font-weight: 700;
+    border-bottom: 1px solid rgba($ink_rgb,0.10); padding: 4px;
 }
 QTableCornerButton::section { background: transparent; border: 0; }
 
-QCheckBox, QRadioButton { spacing: 8px; }
+QCheckBox, QRadioButton { spacing: 6px; }
 QCheckBox::indicator, QRadioButton::indicator { width: 16px; height: 16px; $well }
 QCheckBox::indicator { border-radius: 5px; }
 QRadioButton::indicator { border-radius: 8px; }
@@ -417,6 +402,10 @@ def stylesheet(settings: GlassSettings) -> str:
     return _STYLESHEET.substitute(
         **values,
         radius=RADIUS,
+        control_padding=CONTROL_PADDING,
+        control_content_height=CONTROL_HEIGHT - CONTROL_PADDING * 2 - 2,
+        input_padding=CONTROL_PADDING - 1,
+        input_content_height=CONTROL_HEIGHT - (CONTROL_PADDING - 1) * 2 - 2,
         pane=Template(_PANE).substitute(values),
         pane_hover=Template(_PANE_HOVER).substitute(values),
         rim=Template(_RIM).substitute(values),

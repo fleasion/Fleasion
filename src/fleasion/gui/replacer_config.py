@@ -87,6 +87,8 @@ from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
 from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.http import http_head_status
 from fleasion.utils.json_types import require_json_value
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.tab_footer import TabFooter
 
 from . import command_palette, glass
 from .command_palette import Command
@@ -891,6 +893,7 @@ class ReplacerConfigWindow(QDialog):
         hotkey_controller: CustomFFlagHotkeyController | None = None,
     ) -> None:
         super().__init__()
+        self.setAutoFillBackground(True)
         self.config_manager = config_manager
         self.proxy_master = proxy_master
         self._mod_manager = mod_manager
@@ -1010,10 +1013,11 @@ class ReplacerConfigWindow(QDialog):
     def _setup_ui(self) -> None:
         """Setup the UI with tabs."""
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setContentsMargins(4, 0, 4, 4)
 
         # Create tab widget
         self.tab_widget = QTabWidget()
+        self.tab_widget.setObjectName('DashboardTabs')
 
         # Create Replacer tab
         replacer_tab = self._create_replacer_tab()
@@ -1287,11 +1291,18 @@ class ReplacerConfigWindow(QDialog):
         replacer_widget = QWidget()
         replacer_layout = QVBoxLayout()
         replacer_layout.setContentsMargins(0, 0, 0, 0)
+        replacer_layout.setSpacing(0)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(*PANEL_MARGINS)
+        content_layout.setSpacing(GAP)
+        replacer_layout.addWidget(content, 1)
 
         top_section_widget = QWidget()
         top_section_layout = QVBoxLayout(top_section_widget)
         top_section_layout.setContentsMargins(0, 0, 0, 0)
-        top_section_layout.setSpacing(6)
+        top_section_layout.setSpacing(GAP)
 
         # Config selector section
         self._create_config_section(top_section_layout)
@@ -1300,10 +1311,10 @@ class ReplacerConfigWindow(QDialog):
         self._create_tree_section(top_section_layout)
 
         self._replacer_top_proxy_gate = self._proxy_required(top_section_widget)
-        replacer_layout.addWidget(self._replacer_top_proxy_gate)
+        content_layout.addWidget(self._replacer_top_proxy_gate, 1)
 
         # Edit section
-        self._create_edit_section(replacer_layout)
+        self._create_edit_section(content_layout)
 
         # Footer
         self._create_footer(replacer_layout)
@@ -1335,7 +1346,6 @@ class ReplacerConfigWindow(QDialog):
     def _create_config_section(self, parent_layout: QVBoxLayout) -> None:
         """Create the configuration selector section."""
         config_group = QGroupBox(tr('ui.gui.replacer_config.configuration'))
-        config_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         config_layout = QVBoxLayout()
 
         # Row 1: Configuration controls
@@ -1375,7 +1385,6 @@ class ReplacerConfigWindow(QDialog):
         row1.addSpacing(8)
 
         separator = QLabel(tr('ui.gui.replacer_config.text'))
-        separator.setStyleSheet('padding-bottom: 6px;')
         row1.addWidget(separator)
 
         row1.addSpacing(8)
@@ -1387,6 +1396,7 @@ class ReplacerConfigWindow(QDialog):
             (tr('replacer.config.delete'), 'delete'),
         ]:
             btn = QPushButton(text)
+            _ensure_text_width(btn)
 
             def run_config_action(_checked: bool = False, action_name: str = action) -> None:
                 self._config_action(action_name)
@@ -1407,7 +1417,7 @@ class ReplacerConfigWindow(QDialog):
         # Label
         label_layout = QHBoxLayout()
         title_label = QLabel(tr('ui.gui.replacer_config.replacement_profiles'))
-        title_label.setStyleSheet('font-weight: bold; padding-left: 5px;')
+        title_label.setStyleSheet('font-weight: bold;')
         label_layout.addWidget(title_label)
 
         label_layout.addStretch()
@@ -1456,9 +1466,8 @@ class ReplacerConfigWindow(QDialog):
     def _create_edit_section(self, parent_layout: QVBoxLayout) -> None:
         """Create the add/edit profile section."""
         edit_group = QGroupBox(tr('ui.gui.replacer_config.add_edit_profile'))
-        edit_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         edit_layout = QVBoxLayout()
-        edit_layout.setSpacing(4)
+        edit_layout.setSpacing(GAP)
 
         field_labels = [
             QLabel(tr('ui.gui.replacer_config.profile_name_2')),
@@ -1472,7 +1481,7 @@ class ReplacerConfigWindow(QDialog):
 
         # Profile name
         name_layout = QHBoxLayout()
-        name_layout.setSpacing(5)
+        name_layout.setSpacing(GAP)
         name_layout.addWidget(name_label)
         self.name_entry = QLineEdit()
         self.name_entry.setPlaceholderText(tr('ui.gui.replacer_config.optional_profile_name'))
@@ -1481,7 +1490,7 @@ class ReplacerConfigWindow(QDialog):
 
         # Asset IDs
         ids_layout = QHBoxLayout()
-        ids_layout.setSpacing(5)
+        ids_layout.setSpacing(GAP)
         ids_layout.addWidget(asset_ids_label)
         self.replace_entry = QLineEdit()
         self.replace_entry.setPlaceholderText(
@@ -1504,7 +1513,7 @@ class ReplacerConfigWindow(QDialog):
 
         # Replacement field (auto-detects mode)
         replace_layout = QHBoxLayout()
-        replace_layout.setSpacing(5)
+        replace_layout.setSpacing(GAP)
         replace_layout.addWidget(replacement_label)
         self.replacement_entry = FileDropLineEdit()
         self.replacement_entry.setPlaceholderText(
@@ -1545,10 +1554,8 @@ class ReplacerConfigWindow(QDialog):
 
     def _create_footer(self, parent_layout: QVBoxLayout) -> None:
         """Create the footer section with buttons snapped to the right."""
-        footer_widget = QWidget()
-        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(8, 4, 8, 4)
+        footer_widget = TabFooter()
+        footer_layout = footer_widget.content_layout
 
         self._configs_path_label = _ElidedLabel(
             tr('ui.gui.replacer_config.configs_value', value0=self.config_manager.configs_folder)
@@ -1666,6 +1673,7 @@ class ReplacerConfigWindow(QDialog):
         enabled = self.config_manager.enabled_configs
         if not enabled:
             self.enabled_menu_btn.setText(tr('ui.gui.replacer_config.no_configs_enabled'))
+            _ensure_text_width(self.enabled_menu_btn)
         elif len(enabled) == 1:
             self.enabled_menu_btn.setText(enabled[0])
         else:

@@ -92,6 +92,9 @@ from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.json_types import JsonValue, require_json_value
 from fleasion.utils.roblox_auth import get_roblosecurity as _get_roblosecurity
+from fleasion.widgets.image_preview import ImagePreviewLabel
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.tab_footer import TabFooter
 
 from . import asset_type_filter as _asset_type_filter, mesh_processing
 from .asset_type_filter import CategoryFilterPopup
@@ -1497,8 +1500,8 @@ class ColumnFilterPopup(QMenu):
         container = QWidget()
         container.setObjectName('ColContainer')
         vbox = QVBoxLayout(container)
-        vbox.setContentsMargins(10, 10, 10, 10)
-        vbox.setSpacing(4)
+        vbox.setContentsMargins(*PANEL_MARGINS)
+        vbox.setSpacing(GAP)
 
         self.checkboxes: dict[str, QCheckBox] = {}
         for key, label, _default in _search_columns():
@@ -1514,10 +1517,8 @@ class ColumnFilterPopup(QMenu):
 
         btn_row = QHBoxLayout()
         all_btn = QPushButton(tr('ui.cache.cache_viewer.all'))
-        all_btn.setFixedHeight(22)
         all_btn.clicked.connect(self._select_all)
         none_btn = QPushButton(tr('ui.cache.cache_viewer.none'))
-        none_btn.setFixedHeight(22)
         none_btn.clicked.connect(self._select_none)
         btn_row.addWidget(all_btn)
         btn_row.addWidget(none_btn)
@@ -2140,9 +2141,16 @@ class CacheViewerTab(QWidget):
         """Setup the UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(*PANEL_MARGINS)
+        content_layout.setSpacing(GAP)
+        layout.addWidget(content, 1)
 
         # Filters (includes scraper toggle and stats)
-        self._create_filters(layout)
+        self._create_filters(content_layout)
         yield
 
         # Splitter for table and preview
@@ -2171,7 +2179,7 @@ class CacheViewerTab(QWidget):
         # Connect splitter moved to rescale image
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
 
-        layout.addWidget(self.splitter, stretch=1)
+        content_layout.addWidget(self.splitter, stretch=1)
 
         # Actions
         self._create_actions(layout)
@@ -2183,7 +2191,6 @@ class CacheViewerTab(QWidget):
     def _create_filters(self, parent_layout: QVBoxLayout) -> None:
         """Create filter controls."""
         filter_group = QGroupBox(tr('ui.cache.cache_viewer.filters'))
-        filter_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         filter_layout = QHBoxLayout()
 
         # Search box first
@@ -2207,7 +2214,6 @@ class CacheViewerTab(QWidget):
         filter_layout.addStretch()
 
         sep1 = QLabel(tr('ui.cache.cache_viewer.text'))
-        sep1.setStyleSheet('padding-bottom: 6px;')
         filter_layout.addWidget(sep1)
 
         # Cache scraper toggle - reflect actual scraper state
@@ -2218,7 +2224,6 @@ class CacheViewerTab(QWidget):
         filter_layout.addWidget(self.scraper_toggle)
 
         sep2 = QLabel(tr('ui.cache.cache_viewer.text'))
-        sep2.setStyleSheet('padding-bottom: 6px;')
         filter_layout.addWidget(sep2)
 
         # Stats labels
@@ -2226,7 +2231,6 @@ class CacheViewerTab(QWidget):
         filter_layout.addWidget(self.stats_total_label)
 
         sep3 = QLabel(tr('ui.cache.cache_viewer.text'))
-        sep3.setStyleSheet('padding-bottom: 6px;')
         filter_layout.addWidget(sep3)
 
         self.stats_size_label = QLabel(tr('ui.cache.cache_viewer.size_0_b'))
@@ -2454,7 +2458,7 @@ class CacheViewerTab(QWidget):
         self.preview_group = QWidget()
         preview_group_layout = QVBoxLayout()
         preview_group_layout.setContentsMargins(0, 0, 0, 0)
-        preview_group_layout.setSpacing(4)
+        preview_group_layout.setSpacing(GAP)
 
         self.preview_title_label = QLabel(tr('ui.cache.cache_viewer.preview'))
         preview_group_layout.addWidget(self.preview_title_label)
@@ -2468,7 +2472,7 @@ class CacheViewerTab(QWidget):
         # Container widget inside scroll area
         self.preview_container = QWidget()
         self.preview_container_layout = QVBoxLayout()
-        self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
+        self.preview_container_layout.setContentsMargins(*PANEL_MARGINS)
 
         # Loading indicator
         self.loading_label = QLabel(tr('ui.cache.cache_viewer.loading'))
@@ -2480,7 +2484,7 @@ class CacheViewerTab(QWidget):
         self.loading_label.hide()
 
         # Image viewer (will show/hide as needed)
-        self.image_label = QLabel(tr('ui.cache.cache_viewer.select_an_asset_to_preview'))
+        self.image_label = ImagePreviewLabel(tr('ui.cache.cache_viewer.select_an_asset_to_preview'))
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; }')
         self.image_label.setScaledContents(False)
@@ -2594,8 +2598,8 @@ class CacheViewerTab(QWidget):
 
     def _create_actions(self, parent_layout: QVBoxLayout) -> None:
         """Create action buttons."""
-        actions_layout = QHBoxLayout()
-        actions_layout.setContentsMargins(8, 4, 8, 4)
+        footer_widget = TabFooter()
+        actions_layout = footer_widget.content_layout
 
         delete_db_btn = QPushButton(tr('ui.cache.cache_viewer.delete_db'))
         delete_db_btn.clicked.connect(self._clear_cache)
@@ -2633,7 +2637,7 @@ class CacheViewerTab(QWidget):
         open_export_btn.clicked.connect(lambda: open_folder(self.cache_manager.export_dir))
         actions_layout.addWidget(open_export_btn)
 
-        parent_layout.addLayout(actions_layout)
+        parent_layout.addWidget(footer_widget)
 
     def _check_for_updates(self) -> None:
         """Check if cache has new assets and update stats only."""
@@ -5598,24 +5602,7 @@ class CacheViewerTab(QWidget):
         self.stop_preview_btn.show()
 
     def _scale_and_show_image(self, pixmap: QPixmap) -> None:
-        """Scale pixmap to fit container and display it."""
-        container_width = self.preview_scroll.viewport().width() - 20
-        container_height = self.preview_scroll.viewport().height() - 20
-
-        if container_width < 100:
-            container_width = 400
-        if container_height < 100:
-            container_height = 400
-
-        # Scale to fit within container while maintaining aspect ratio
-        scaled = pixmap.scaled(
-            container_width,
-            container_height,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-
-        self.image_label.setPixmap(scaled)
+        self.image_label.set_image(pixmap)
 
     def _show_image_context_menu(self, pos: QPoint) -> None:
         """Show context menu for image preview."""
@@ -5714,7 +5701,7 @@ class CacheViewerTab(QWidget):
         tp_layout.setSpacing(10)
 
         # Store references for async loading
-        self._tp_image_labels: dict[str, QLabel] = {}
+        self._tp_image_labels: dict[str, ImagePreviewLabel] = {}
         self._tp_pixmaps: dict[str, QPixmap] = {}  # Store pixmaps for copy
 
         # Create placeholder for each texture map
@@ -5735,7 +5722,7 @@ class CacheViewerTab(QWidget):
             tp_layout.addWidget(header)
 
             # Image placeholder with context menu
-            img_label = QLabel(tr('ui.cache.cache_viewer.loading'))
+            img_label = ImagePreviewLabel(tr('ui.cache.cache_viewer.loading'), fit_height=False)
             img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             img_label.setStyleSheet(
                 'background-color: palette(base); padding: 10px; min-height: 100px;'
@@ -5824,20 +5811,8 @@ class CacheViewerTab(QWidget):
         # Store original pixmap for copy
         self._tp_pixmaps[map_name] = pixmap
 
-        # Scale to fit container
-        container_width = self.preview_scroll.viewport().width() - 30
-        if container_width < 100:
-            container_width = 400
-
-        if pixmap.width() > container_width:
-            scaled = pixmap.scaledToWidth(
-                container_width, Qt.TransformationMode.SmoothTransformation
-            )
-        else:
-            scaled = pixmap
-
-        img_label.setPixmap(scaled)
         img_label.setStyleSheet('')
+        img_label.set_image(pixmap)
 
     def _on_texturepack_texture_loaded(
         self, map_name: str, map_id: str, hash_val: str, data: bytes

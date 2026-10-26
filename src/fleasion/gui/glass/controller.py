@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtGui import QFont, QRegion
+from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QWidget
 
 from fleasion.localization import tr
@@ -12,7 +12,7 @@ from fleasion.localization import tr
 from .chrome import apply_chrome, register, registered_windows
 from .desktop_blur import APP_ID, blur
 from .state import ACCENTS, Backdrop, state
-from .style import palette, pick_font, stylesheet
+from .style import palette, stylesheet
 from .stylesheets import WindowStyles
 from .surface import GlassWindows
 
@@ -63,7 +63,6 @@ class GlassTheme:
 
     def __init__(self) -> None:
         self._filter: GlassWindows | None = None
-        self._previous_font: QFont | None = None
         self._stylesheets = WindowStyles()
 
     @property
@@ -89,42 +88,27 @@ class GlassTheme:
             app.setDesktopFileName(APP_ID)
         ThemeManager.ensure_widget_style(app, 'Fusion')
         app.setPalette(palette(state.settings, base_palette=base_palette))
-        if self._previous_font is None:
-            self._previous_font = QFont(app.font())
-            if (font := pick_font()) is not None:
-                app.setFont(font)
-        original_combo_masks = (
+        original_popup_masks = (
             {
                 widget: QRegion(widget.mask())
                 for widget in app.allWidgets()
-                if GlassWindows.is_combo_popup(widget)
+                if GlassWindows.is_rounded_popup(widget)
             }
-            if self._filter is None and QApplication.platformName() == 'xcb'
-            else {}
-        )
-        original_itemview_masks = (
-            {
-                widget: QRegion(widget.mask())
-                for widget in app.allWidgets()
-                if GlassWindows.is_itemview_chrome(widget)
-            }
-            if self._filter is None and QApplication.platformName() == 'xcb'
+            if self._filter is None
             else {}
         )
         # Application QSS repolishes cached descendants repeatedly. Root QSS
         # keeps the same inherited rules while visiting each window tree once
         self._stylesheets.apply(app, stylesheet(state.settings))
         if self._filter is None:
-            self._filter = GlassWindows(
-                app, original_combo_masks, original_itemview_masks, self._stylesheets
-            )
+            self._filter = GlassWindows(app, original_popup_masks, self._stylesheets)
             self._filter.blur_status_changed.connect(self._sync_blur_controls)
             app.installEventFilter(self._filter)
         if entering:
             # Existing widgets predate the filter; Qt styles them through QSS
             for widget in app.allWidgets():
                 self._filter.polish(widget)
-                self._filter.update_itemview_shape(widget)
+                self._filter.polish_itemview(widget)
             for window in registered_windows():
                 apply_chrome(window, enabled=True)
                 self._filter.update_window_shape(window)
@@ -135,9 +119,6 @@ class GlassTheme:
         window_filter = self._filter
         app.removeEventFilter(window_filter)
         self._filter = None
-        if self._previous_font is not None:
-            app.setFont(self._previous_font)
-            self._previous_font = None
         self._stylesheets.restore()
         for window in registered_windows():
             apply_chrome(window, enabled=False)

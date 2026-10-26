@@ -36,7 +36,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
-    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -56,6 +55,8 @@ from fleasion.utils.roblox_auth import (
     set_roblosecurity,
 )
 from fleasion.utils.secure_tokens import decrypt_token, encrypt_token
+from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
+from fleasion.widgets.tab_footer import TabFooter
 
 from .modifications_tab import CollapsibleSection
 from .proxy_gate import ProxyGate
@@ -1015,8 +1016,8 @@ class RandoStuffTab(QWidget):
         container.setObjectName('_FleasionMiscContainer')
         self._misc_container = container
         root = QVBoxLayout(container)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(10)
+        root.setContentsMargins(*PANEL_MARGINS)
+        root.setSpacing(PANEL_PADDING)
         scroll.setWidget(container)
         outer.addWidget(scroll)
         self._update_container_bg()
@@ -1342,10 +1343,8 @@ class RandoStuffTab(QWidget):
         # giant empty bodies instead of shrinking to their headers.
         root.addStretch(1)
 
-        footer_widget = QWidget()
-        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(8, 4, 8, 4)
+        footer_widget = TabFooter()
+        footer_layout = footer_widget.content_layout
         footer_layout.addStretch()
         clear_cache_btn = QPushButton(tr('ui.gui.rando_stuff_tab.clear_cache'))
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)

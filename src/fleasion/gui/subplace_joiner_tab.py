@@ -46,6 +46,8 @@ from fleasion.utils.roblox_auth import (
     wait_for_roblosecurity as _wait_for_roblosecurity,
 )
 from fleasion.utils.windows import launch_as_standard_user
+from fleasion.widgets.spacing import CONTROL_HEIGHT, GAP, PANEL_MARGINS
+from fleasion.widgets.tab_footer import TabFooter
 
 from .prejsons_dialog import (
     THUMB_HEIGHT,
@@ -286,7 +288,7 @@ class _JobIdEdit(QLineEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setPlaceholderText(tr('ui.gui.subplace_joiner_tab.jobid_optional'))
-        self.setMinimumHeight(30)
+        self.setMinimumHeight(CONTROL_HEIGHT)
         self.setStyleSheet('font-size: 9pt;')
 
     def get_job_id(self) -> str:
@@ -444,15 +446,15 @@ class SubplaceGameCard(QFrame):
         btn_row.setSpacing(4)
 
         self.join_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.join'))
-        self.join_btn.setMinimumHeight(30)
+        self.join_btn.setMinimumHeight(CONTROL_HEIGHT)
         btn_row.addWidget(self.join_btn)
 
         self.open_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.browser'))
-        self.open_btn.setMinimumHeight(30)
+        self.open_btn.setMinimumHeight(CONTROL_HEIGHT)
         btn_row.addWidget(self.open_btn)
 
         self.fetch_jobs_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.jobids'))
-        self.fetch_jobs_btn.setMinimumHeight(30)
+        self.fetch_jobs_btn.setMinimumHeight(CONTROL_HEIGHT)
         btn_row.addWidget(self.fetch_jobs_btn)
 
         layout.addLayout(btn_row)
@@ -869,16 +871,22 @@ class SubplaceJoinerTab(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(*PANEL_MARGINS)
+        content_layout.setSpacing(GAP)
+        root.addWidget(content, 1)
+
         top_frame = QFrame(self)
         top_frame.setObjectName('SubplaceSearchPanel')
         top_frame.setFrameShape(QFrame.Shape.StyledPanel)
         top_frame.setFrameShadow(QFrame.Shadow.Raised)
         top_layout = QVBoxLayout(top_frame)
-        top_layout.setContentsMargins(4, 4, 4, 4)
-        top_layout.setSpacing(4)
+        top_layout.setContentsMargins(*PANEL_MARGINS)
+        top_layout.setSpacing(GAP)
 
         row0 = QHBoxLayout()
-        row0.setSpacing(4)
+        row0.setSpacing(GAP)
         placeid_lbl = QLabel(tr('ui.gui.subplace_joiner_tab.placeid'))
         row0.addWidget(placeid_lbl, 0)
         self.PlaceID_search = QLineEdit()
@@ -893,7 +901,7 @@ class SubplaceJoinerTab(QWidget):
         yield
 
         row1 = QHBoxLayout()
-        row1.setSpacing(4)
+        row1.setSpacing(GAP)
         search_lbl = QLabel(tr('ui.gui.subplace_joiner_tab.search_2'))
         search_lbl.setMinimumWidth(placeid_lbl.sizeHint().width())
         row1.addWidget(search_lbl, 0)
@@ -919,7 +927,7 @@ class SubplaceJoinerTab(QWidget):
         row1.addWidget(sort_combo, 0)
         top_layout.addLayout(row1)
 
-        root.addWidget(top_frame)
+        content_layout.addWidget(top_frame)
         yield
 
         main_layout = QHBoxLayout()
@@ -991,14 +999,12 @@ class SubplaceJoinerTab(QWidget):
         self.results_scroll.setWidget(self.results_container)
         main_layout.addWidget(self.results_scroll, 1)
 
-        root.addLayout(main_layout, 1)
+        content_layout.addLayout(main_layout, 1)
         yield
 
-        footer_widget = QWidget()
+        footer_widget = TabFooter()
         footer_widget.setObjectName('SubplaceFooter')
-        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(8, 2, 8, 2)
+        footer_layout = footer_widget.content_layout
         self._selected_label = QLabel(tr('ui.gui.subplace_joiner_tab.selected_none'))
         self._selected_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
         footer_layout.addWidget(self._selected_label)

@@ -126,7 +126,7 @@ def test_native_palette_updates_reach_settings_background_and_controls(
     try:
         for color, accent in (('#123456', 'Rose'), ('#876543', 'Teal')):
             native = QPalette(app.palette())
-            native.setColor(QPalette.ColorRole.AlternateBase, QColor(color))
+            native.setColor(QPalette.ColorRole.Window, QColor(color))
             monkeypatch.setattr(ThemeManager, '_system_palette', native)
             ThemeManager.apply_appearance('Fusion', 'System', accent)
             app.processEvents()

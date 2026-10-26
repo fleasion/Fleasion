@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QCloseEvent
@@ -303,8 +304,8 @@ class AudioPlayerWidget(QWidget):
     def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(*PANEL_MARGINS)
+        layout.setSpacing(GAP)
         layout.addStretch()
 
         # Central container for all controls (centered)
@@ -314,7 +315,7 @@ class AudioPlayerWidget(QWidget):
 
         # Volume slider row
         volume_layout = QHBoxLayout()
-        volume_layout.setSpacing(8)
+        volume_layout.setSpacing(GAP)
         volume_layout.addStretch()
         volume_layout.addWidget(QLabel(tr('ui.cache.audio_player.volume')))
 
@@ -344,7 +345,7 @@ class AudioPlayerWidget(QWidget):
 
         # Play/Replay buttons and time label row
         button_time_layout = QHBoxLayout()
-        button_time_layout.setSpacing(8)
+        button_time_layout.setSpacing(GAP)
         button_time_layout.addStretch()
 
         self.play_pause_btn = QPushButton(tr('ui.cache.audio_player.text'))

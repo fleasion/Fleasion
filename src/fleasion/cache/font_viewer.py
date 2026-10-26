@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from fleasion.localization import tr
 from fleasion.utils import log_buffer
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
 
 
 class FontViewerWidget(QWidget):
@@ -76,8 +77,8 @@ class FontViewerWidget(QWidget):
     def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(*PANEL_MARGINS)
+        layout.setSpacing(GAP)
 
         # Font info section
         info_group = QGroupBox(tr('ui.cache.font_viewer.font_information'))

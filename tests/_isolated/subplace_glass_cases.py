@@ -123,8 +123,8 @@ def test_subplace_buttons_fit_sidebar_and_cards_never_change_size(
         assert footer is not None and clear_button is not None
         footer_layout = footer.layout()
         assert footer_layout is not None
-        assert footer_layout.contentsMargins().top() == 2
-        assert footer_layout.contentsMargins().bottom() == 2
+        assert footer_layout.contentsMargins().top() == 4
+        assert footer_layout.contentsMargins().bottom() == 4
         for theme in ('Dark', 'Glass', 'Dark', 'Glass', 'System'):
             ThemeManager.apply_theme(theme)
             for width in (950, 1370, 730, 950):
@@ -149,7 +149,7 @@ def test_subplace_buttons_fit_sidebar_and_cards_never_change_size(
                         assert button.x() >= 6
                         assert button.geometry().right() < viewport_width - 4
                         assert button.toolTip().startswith('The Backrooms')
-                assert footer.height() <= clear_button.height() + 6
+                assert footer.height() == clear_button.height() + 8
                 assert clear_button.geometry().right() < footer.width()
                 for card in cards:
                     assert card.width() == card.minimumWidth() == card.maximumWidth() == 286

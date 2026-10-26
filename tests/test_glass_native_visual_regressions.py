@@ -119,7 +119,7 @@ def test_existing_registered_dialog_preserves_custom_mask_after_glass(
 
 
 @pytest.mark.parametrize('popup_type', ['menu', 'combo'])
-def test_x11_rounded_popup_mask_is_real_and_restored(
+def test_x11_rounded_popups_use_alpha_and_restore_native_shape(
     app: QApplication, popup_type: str
 ) -> None:
     if QApplication.platformName() != 'xcb':
@@ -143,9 +143,8 @@ def test_x11_rounded_popup_mask_is_real_and_restored(
     try:
         QTest.qWait(80)
         assert window.isVisible()
-        assert not window.mask().isEmpty()
-        assert not window.mask().contains(QPoint(0, 0))
-        assert window.mask().contains(QPoint(window.width() // 2, window.height() // 2))
+        assert window.windowHandle().format().alphaBufferSize() > 0
+        assert window.mask().isEmpty()
         ThemeManager.apply_theme('System')
         app.processEvents()
         assert window.mask().isEmpty()

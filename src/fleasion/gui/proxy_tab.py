@@ -25,21 +25,22 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QVBoxLayout,
     QWidget,
 )
 
 from fleasion.localization import tr
 from fleasion.utils.paths import PROXY_TRAFFIC_FILE
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.tab_footer import TabFooter
 
 from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
 from .rules_dialog_ui import UiDialog as UiRulesDialog
@@ -694,12 +695,26 @@ class ProxyTrafficTab(QWidget):
 
         self.ui = Ui_ProxyTab()
         self.ui.setupUi(self)
-        # The .ui-generated root layout never had its margins zeroed, unlike
-        # every other tab (e.g. RandoStuffTab's root layout explicitly sets
-        # (0, 0, 0, 0)) - left at Qt's default (9, 9, 9, 9), the whole tab's
-        # content (including the footer button below) sat inset from every
-        # edge instead of flush like the other tabs.
+        # Inset the generated content while keeping the footer flush with other tabs
         self.ui.verticalLayout_3.setContentsMargins(0, 0, 0, 0)
+        self.ui.verticalLayout_3.setSpacing(0)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(*PANEL_MARGINS)
+        content_layout.setSpacing(GAP)
+        while self.ui.verticalLayout_3.count():
+            item = self.ui.verticalLayout_3.takeAt(0)
+            if item is None:
+                continue
+            if (child_layout := item.layout()) is not None:
+                child_layout.setParent(None)
+                child_layout.setSpacing(GAP)
+                content_layout.addLayout(child_layout)
+            elif (child_widget := item.widget()) is not None:
+                content_layout.addWidget(child_widget)
+        self.ui.verticalLayout_3.addWidget(content, 1)
+        self.ui.tableGroupSplitter.setHandleWidth(GAP)
+        self.ui.groupsSplitter.setHandleWidth(GAP)
 
         self.ui.trafficTable.setColumnCount(len(_TABLE_COLUMN_KEYS))
         self.ui.trafficTable.setHorizontalHeaderLabels(_table_headers())
@@ -842,10 +857,8 @@ class ProxyTrafficTab(QWidget):
         # "Clear Cache" button (settings/subplace/modifications/rando_stuff
         # tabs) - a Fixed-height footer row, right-aligned via addStretch(),
         # appended as the LAST item of the tab's root layout.
-        footer_widget = QWidget()
-        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(8, 4, 8, 4)
+        footer_widget = TabFooter()
+        footer_layout = footer_widget.content_layout
         warning_label = QLabel(tr('ui.gui.proxy_tab.warning_this_tab_may_expose_your_roblox'))
         warning_label.setStyleSheet('color: #ffcc66;')
         footer_layout.addWidget(warning_label)

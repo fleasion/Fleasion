@@ -1,5 +1,7 @@
 """Logs window."""
 
+from __future__ import annotations
+
 import sys
 from typing import override
 
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
 from fleasion.localization import tr
 from fleasion.utils import LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
 from fleasion.utils.macos_proxy_helper import HELPER_LOG_DIR
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
 
 
 class LogsWindow(QDialog):
@@ -58,7 +61,8 @@ class LogsWindow(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(*PANEL_MARGINS)
+        layout.setSpacing(GAP)
 
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
@@ -67,43 +71,32 @@ class LogsWindow(QDialog):
 
         bottom = QHBoxLayout()
         bottom.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        bottom.setSpacing(GAP)
 
         copy_btn = QPushButton(tr('ui.gui.logs.copy_all'))
         copy_btn.setMinimumWidth(max(80, copy_btn.sizeHint().width()))
-        copy_btn.setFixedHeight(22)
         copy_btn.clicked.connect(self._copy_all)
         bottom.addWidget(copy_btn)
 
-        bottom.addSpacing(6)
-
         open_folder_btn = QPushButton(tr('ui.gui.logs.open_log_folder'))
         open_folder_btn.setMinimumWidth(max(110, open_folder_btn.sizeHint().width()))
-        open_folder_btn.setFixedHeight(22)
         open_folder_btn.clicked.connect(lambda: open_folder(LOGS_DIR))
         bottom.addWidget(open_folder_btn)
 
         if sys.platform == 'darwin':
-            bottom.addSpacing(6)
-
             open_helper_logs_btn = QPushButton(tr('ui.gui.logs.open_helper_logs'))
             open_helper_logs_btn.setMinimumWidth(max(118, open_helper_logs_btn.sizeHint().width()))
-            open_helper_logs_btn.setFixedHeight(22)
             open_helper_logs_btn.setToolTip(
                 tr('ui.gui.logs.open_the_root_owned_macos_proxy_helper')
             )
             open_helper_logs_btn.clicked.connect(lambda: open_folder(HELPER_LOG_DIR))
             bottom.addWidget(open_helper_logs_btn)
 
-        bottom.addSpacing(6)
-
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText(tr('ui.gui.logs.search'))
-        self._search_input.setFixedHeight(22)
         self._search_input.setClearButtonEnabled(True)
         self._search_input.textChanged.connect(self._on_search)
         bottom.addWidget(self._search_input, 1)
-
-        bottom.addSpacing(6)
 
         self.time_label = QLabel()
         self.time_label.setStyleSheet('color: #888; font-size: 9pt;')

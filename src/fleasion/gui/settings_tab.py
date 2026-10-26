@@ -51,6 +51,8 @@ from fleasion.utils.roblox_auth import (
     store_manual_roblosecurity,
     validate_roblosecurity_for_import,
 )
+from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
+from fleasion.widgets.tab_footer import TabFooter
 
 from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpinBox
 
@@ -203,8 +205,8 @@ class SettingsTab(QWidget):
         container.setObjectName('_FleasionSettingsContainer')
         self._settings_container = container
         self._container_layout = QVBoxLayout(container)
-        self._container_layout.setSpacing(10)
-        self._container_layout.setContentsMargins(10, 10, 10, 10)
+        self._container_layout.setSpacing(PANEL_PADDING)
+        self._container_layout.setContentsMargins(*PANEL_MARGINS)
         self._update_container_bg()
         scroll.setWidget(container)
         outer.addWidget(scroll)
@@ -231,11 +233,9 @@ class SettingsTab(QWidget):
         yield
         self._container_layout.addStretch()
 
-        footer_widget = QWidget()
-        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        footer_widget = TabFooter()
         self._footer_widget = footer_widget
-        footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(8, 4, 8, 4)
+        footer_layout = footer_widget.content_layout
         self._status_label = QLabel('')
         self._status_label.setStyleSheet('color: #888;')
         footer_layout.addWidget(self._status_label)

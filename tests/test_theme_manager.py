@@ -96,7 +96,7 @@ def test_panel_colors_keep_forced_dark_palette_independent_colors(
 
     assert colors.section_background == QColor('#272727')
     assert colors.section_border == QColor('#3a3a3a')
-    assert colors.container_background_css == 'background-color: rgb(64, 64, 64);'
+    assert colors.container_background_css == 'background-color: palette(window);'
 
 
 def test_panel_colors_use_qpalette_for_system_theme(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -110,7 +110,21 @@ def test_panel_colors_use_qpalette_for_system_theme(monkeypatch: pytest.MonkeyPa
 
     assert colors.section_background == QColor('#123456')
     assert colors.section_border == QColor('#abcdef')
-    assert colors.container_background_css == 'background-color: palette(alternate-base);'
+    assert colors.container_background_css == 'background-color: palette(window);'
+
+
+def test_transparent_palette_does_not_replace_saved_native_palette(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = QPalette()
+    native.setColor(QPalette.ColorRole.Window, QColor('#323232'))
+    transparent = QPalette(native)
+    transparent.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))
+    monkeypatch.setattr(ThemeManager, '_applying', False)
+    monkeypatch.setattr(ThemeManager, '_system_palette', native)
+
+    assert not ThemeManager.remember_native_palette(transparent)
+    assert ThemeManager._system_palette is native  # pyright: ignore[reportPrivateUsage]
 
 
 def test_apply_forced_dark_sets_explicit_dark_palette(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -273,7 +287,7 @@ def test_windows_system_theme_routes_dark_to_fleasion_dark_palette(
     assert app.applied_palette.color(QPalette.ColorRole.Base) == QColor('#242424')
     colors = ThemeManager.panel_colors(app.applied_palette)
     assert colors.section_background == QColor('#272727')
-    assert colors.container_background_css == 'background-color: rgb(64, 64, 64);'
+    assert colors.container_background_css == 'background-color: palette(window);'
 
 
 def test_windows_system_theme_routes_light_to_fleasion_light_palette(
