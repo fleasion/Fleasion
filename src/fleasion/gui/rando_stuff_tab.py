@@ -520,6 +520,81 @@ def _build_place_launcher_url(
     return 'https://www.roblox.com/Game/PlaceLauncher.ashx?' + urlencode(params)
 
 
+_PROFILE_LINK_USER_ID_RE = re.compile(r'roblox\.com/users/(\d+)', re.IGNORECASE)
+# userPresenceType from presence.roblox.com: 0 offline, 1 website, 2 in game,
+# 3 in Studio, 4 invisible
+_PRESENCE_IN_GAME = 2
+
+
+def _resolve_user_id(target: str) -> tuple[int, str] | None:
+    """Resolve a username, profile link or numeric user ID to ``(id, name)``."""
+    raw = target.strip().removeprefix('@')
+    if match := _PROFILE_LINK_USER_ID_RE.search(raw):
+        return int(match.group(1)), raw
+    if raw.isdigit():
+        return int(raw), raw
+    if not raw:
+        return None
+    try:
+        resp = _requests.post(
+            'https://users.roblox.com/v1/usernames/users',
+            json={'usernames': [raw], 'excludeBannedUsers': True},
+            timeout=10,
+        )
+        users = resp.json().get('data') if resp.status_code == 200 else None
+    except _requests.RequestException, ValueError:
+        return None
+    if not users:
+        return None
+    return int(users[0]['id']), str(users[0].get('name') or raw)
+
+
+def _get_user_presence_type(user_id: int, cookie: str) -> int | None:
+    """Return the user's presence type as seen by ``cookie``'s account, if known."""
+    url = 'https://presence.roblox.com/v1/presence/users'
+    headers = {'Cookie': f'.ROBLOSECURITY={cookie}', 'Content-Type': 'application/json'}
+    try:
+        resp = _requests.post(url, headers=headers, json={'userIds': [user_id]}, timeout=10)
+        if resp.status_code == 403 and 'x-csrf-token' in resp.headers:
+            headers['X-CSRF-TOKEN'] = resp.headers['x-csrf-token']
+            resp = _requests.post(url, headers=headers, json={'userIds': [user_id]}, timeout=10)
+        presences = resp.json().get('userPresences') if resp.status_code == 200 else None
+    except _requests.RequestException, ValueError:
+        return None
+    if not presences:
+        return None
+    presence_type = presences[0].get('userPresenceType')
+    return presence_type if isinstance(presence_type, int) else None
+
+
+def _build_auth_ticket_follow_uri(
+    ticket: str,
+    user_id: int,
+    *,
+    tracker_id: int | None = None,
+    join_attempt_id: str | None = None,
+    launch_time_ms: int | None = None,
+) -> str:
+    """Build a launch that joins whichever server ``user_id`` is playing in."""
+    tracker = (
+        tracker_id if tracker_id is not None else 10_000_000_000 + secrets.randbelow(90_000_000_000)
+    )
+    params = {
+        'request': 'RequestFollowUser',
+        'browserTrackerId': str(tracker),
+        'userId': str(user_id),
+        'joinAttemptId': join_attempt_id or str(uuid.uuid4()),
+        'joinAttemptOrigin': 'followUser',
+    }
+    return _build_roblox_player_uri(
+        ticket,
+        launch_mode='play',
+        place_launcher_url='https://www.roblox.com/Game/PlaceLauncher.ashx?' + urlencode(params),
+        tracker_id=tracker,
+        launch_time_ms=launch_time_ms,
+    )
+
+
 def _build_auth_ticket_app_uri(ticket: str, *, launch_time_ms: int | None = None) -> str:
     return _build_roblox_player_uri(ticket, launch_mode='app', launch_time_ms=launch_time_ms)
 
@@ -1144,6 +1219,18 @@ class RandoStuffTab(QWidget):
         self._job_id_input = QLineEdit()
         self._job_id_input.setPlaceholderText(tr('ui.gui.rando_stuff_tab.jobid_optional'))
         account_details_layout.addWidget(self._job_id_input)
+
+        follow_row = QHBoxLayout()
+        self._follow_user_input = QLineEdit()
+        self._follow_user_input.setPlaceholderText(
+            tr('ui.gui.rando_stuff_tab.follow_user_placeholder')
+        )
+        self._follow_user_input.returnPressed.connect(self._on_follow_user)
+        follow_row.addWidget(self._follow_user_input, 1)
+        self._follow_user_btn = QPushButton(tr('ui.gui.rando_stuff_tab.follow'))
+        self._follow_user_btn.clicked.connect(self._on_follow_user)
+        follow_row.addWidget(self._follow_user_btn)
+        account_details_layout.addLayout(follow_row)
 
         am_btns = QHBoxLayout()
         self._add_acct_btn = QPushButton(tr('ui.gui.rando_stuff_tab.add_account'))
@@ -2088,6 +2175,72 @@ class RandoStuffTab(QWidget):
             args=(cookie, username, link, job_id, subplace_id or ''),
             daemon=True,
         ).start()
+
+    def _on_follow_user(self) -> None:
+        """Join the server another user is playing in, as the switched account."""
+        acc = self._last_switched_account
+        if acc is None:
+            QMessageBox.information(
+                self,
+                tr('ui.gui.rando_stuff_tab.no_account_switched'),
+                tr('ui.gui.rando_stuff_tab.use_switch_to_selected_first_to_pick'),
+            )
+            return
+        target = self._follow_user_input.text().strip()
+        if not target:
+            QMessageBox.information(
+                self,
+                tr('ui.gui.rando_stuff_tab.follow_failed'),
+                tr('ui.gui.rando_stuff_tab.follow_enter_user'),
+            )
+            return
+        cookie = _decrypt_cookie(acc.get('cookie', ''))
+        if not cookie:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.rando_stuff_tab.error'),
+                tr('ui.gui.rando_stuff_tab.could_not_decrypt_the_stored_cookie'),
+            )
+            return
+        self._follow_user_btn.setEnabled(False)
+        threading.Thread(
+            target=self._follow_user_thread, args=(cookie, target), daemon=True
+        ).start()
+
+    def _follow_user_thread(self, cookie: str, target: str) -> None:
+        def _fail(message: str) -> None:
+            def _show() -> None:
+                self._follow_user_btn.setEnabled(True)
+                QMessageBox.warning(self, tr('ui.gui.rando_stuff_tab.follow_failed'), message)
+
+            self._on_main(_show)
+
+        resolved = _resolve_user_id(target)
+        if resolved is None:
+            log_buffer.log('accounts', 'Follow aborted: user not found')
+            _fail(tr('ui.gui.rando_stuff_tab.follow_user_not_found', value0=target))
+            return
+        user_id, name = resolved
+        # Presence is only a pre-check: if it is unavailable, Roblox's own join
+        # flow still reports privacy and full-server failures
+        presence = _get_user_presence_type(user_id, cookie)
+        if presence is not None and presence != _PRESENCE_IN_GAME:
+            log_buffer.log('accounts', f'Follow aborted: user {user_id} presence={presence}')
+            _fail(tr('ui.gui.rando_stuff_tab.follow_user_not_in_game', value0=name))
+            return
+        if IS_WINDOWS:
+            _run_contained_action(
+                lambda: self._write_cookie_to_dat(cookie),
+                lambda exc: log_buffer.log('accounts', f'Failed to write cookie file: {exc}'),
+            )
+        ticket = self._get_launch_auth_ticket(cookie, 'follow')
+        if not ticket:
+            _fail(tr('ui.gui.rando_stuff_tab.follow_ticket_failed', value0=name))
+            return
+        log_buffer.log('accounts', f'Launching Roblox URI to follow userId={user_id}')
+        if not launch_as_standard_user(_build_auth_ticket_follow_uri(ticket, user_id)):
+            log_buffer.log('accounts', 'Failed to launch Roblox follow URI without elevation')
+        self._on_main(lambda: self._follow_user_btn.setEnabled(True))
 
     def _on_switch_account(self) -> None:
         idx = self._account_list.currentRow()
