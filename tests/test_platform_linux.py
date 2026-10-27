@@ -646,6 +646,8 @@ def test_recover_stale_linux_env_proxy_override_clears_persisted_owner(
             'override',
             '--user',
             *(f'--unset-env={name}' for name in SOBER_CLIENT.proxy_environment_names),
+            '--unset-env=SSL_CERT_FILE',
+        '--unset-env=CURL_CA_BUNDLE',
             platform_linux.SOBER_APP_ID,
         ]
     ]
@@ -719,6 +721,8 @@ def test_sober_env_proxy_override_keeps_sober_as_browser_uri_handler(
         'override',
         '--user',
         *(f'--unset-env={name}' for name in SOBER_CLIENT.proxy_environment_names),
+        '--unset-env=SSL_CERT_FILE',
+        '--unset-env=CURL_CA_BUNDLE',
         platform_linux.SOBER_APP_ID,
     ]
     assert not state_file.exists()
