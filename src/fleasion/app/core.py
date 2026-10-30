@@ -48,6 +48,7 @@ from fleasion.app.dialogs.startup import (
     show_run_on_boot_failure,
 )
 from fleasion.app.elevation import is_admin, relaunch_as_admin
+from fleasion.app.macos_reopen import REOPEN_ARM_DELAY_MS, install_macos_reopen_handler
 from fleasion.app.process_control import (
     SINGLE_INSTANCE_CONTROL_SERVER as _SINGLE_INSTANCE_CONTROL_SERVER,
     kill_other_fleasion_instances,
@@ -820,6 +821,11 @@ def run_application() -> None:
     elif not suppress_dashboard and config_manager.open_dashboard_on_launch:
         # Open dashboard on launch if enabled (suppressed when started by autostart task)
         tray.show_replacer_config()
+
+    if sys.platform == 'darwin':
+        # Wait out the activation that comes with launching, so a launch that
+        # should stay in the menu bar (autostart, dashboard-on-launch off) does
+        QTimer.singleShot(REOPEN_ARM_DELAY_MS, lambda: install_macos_reopen_handler(app, tray))
 
     if tray.dashboard_window is not None:
         tray.dashboard_window.first_painted.connect(startup_tasks.start)
