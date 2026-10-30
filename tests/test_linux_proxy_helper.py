@@ -5,7 +5,7 @@ import pytest
 from fleasion.utils import linux_proxy_helper
 
 
-pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='Linux-only proxy helper tests')
+pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='Linux-only proxy helper tests')
 
 
 def test_start_helper_requires_ca_cert_when_system_trust_is_required(monkeypatch, tmp_path):

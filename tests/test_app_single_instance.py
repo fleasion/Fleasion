@@ -1969,6 +1969,7 @@ def test_restart_handoff_credentials_are_stripped_before_nested_relaunch():
 def test_env_to_hosts_live_switch_avoids_process_restart(monkeypatch):
     from fleasion.gui import settings_tab
 
+    monkeypatch.setattr(settings_tab.sys, 'platform', 'linux')
     events = []
     proxy_master = SimpleNamespace(
         can_live_switch_to_hosts=lambda: True,
@@ -2104,6 +2105,7 @@ def test_env_to_hosts_with_proxy_disabled_only_persists_mode():
 def test_env_to_hosts_failed_replacement_rolls_back_mode_and_autostart(monkeypatch):
     from fleasion.gui import settings_tab
 
+    monkeypatch.setattr(settings_tab.sys, 'platform', 'linux')
     sync_modes = []
     warnings = []
     selected_indexes = []
@@ -2150,6 +2152,7 @@ def test_env_to_hosts_failed_replacement_rolls_back_mode_and_autostart(monkeypat
 def test_env_to_hosts_uncertain_replacement_does_not_reclaim_or_rewrite_state(monkeypatch):
     from fleasion.gui import settings_tab
 
+    monkeypatch.setattr(settings_tab.sys, 'platform', 'linux')
     sync_modes = []
     criticals = []
     proxy_master = SimpleNamespace(can_live_switch_to_hosts=lambda: False)

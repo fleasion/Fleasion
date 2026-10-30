@@ -8,7 +8,7 @@ from fleasion.utils import platform_linux
 
 
 pytestmark = pytest.mark.skipif(
-    sys.platform == 'win32', reason='Linux-only desktop integration tests'
+    sys.platform != 'linux', reason='Linux-only desktop integration tests'
 )
 
 

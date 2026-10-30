@@ -20,7 +20,7 @@ from fleasion.gui.windows_hotkeys import binding_text as windows_binding_text
 
 
 pytestmark = pytest.mark.skipif(
-    sys.platform == 'win32', reason='Linux-only hotkey translation tests'
+    sys.platform != 'linux', reason='Linux-only hotkey translation tests'
 )
 
 
