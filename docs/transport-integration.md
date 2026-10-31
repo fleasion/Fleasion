@@ -48,7 +48,9 @@ outbound bodies, and handles stream resets and connection termination.
 Important limitations of this experimental adapter:
 
 - It buffers full request/response bodies with a 64 MiB aggregate
-  connection-level budget; large streaming and server-sent events are not supported
+  connection-level budget and caps active request streams at 64 per connection;
+  excess streams are reset rather than dispatched to additional feature tasks.
+  Large streaming and server-sent events are not supported
 - Discarded request DATA explicitly restores HTTP/2 connection flow-control
   credit; local and remote stream resets wake blocked outbound body senders
 - HTTP/2 request/response trailers, unsupported CONNECT and interim
@@ -56,6 +58,9 @@ Important limitations of this experimental adapter:
   discarded; these features are not translated by the HTTP/1 engine
 - HTTP/2 server push and extended CONNECT are not supported
 - No TLS 0-RTT integration or transport negotiation is implemented here
+- When the upstream connection ends, active request tasks have a one-second
+  drain grace period, after which the bridge cancels tasks still blocked on
+  flow-control or incomplete responses instead of hanging indefinitely
 - Resets and GOAWAY are handled on a best-effort, fail-closed basis; detailed
   behavior for every cancellation race is not yet proven
 - It has not been exercised against actual Roblox live traffic, protected

@@ -41,6 +41,8 @@ type H2Headers = list[tuple[bytes, bytes]]
 
 log = logging.getLogger(__name__)
 _MAX_BUFFERED_BODY = 64 * 1024 * 1024
+_MAX_ACTIVE_STREAMS = 64
+_UPSTREAM_DRAIN_GRACE_SECONDS = 1.0
 _HOP_HEADERS = frozenset(
     {b'connection', b'keep-alive', b'proxy-connection', b'transfer-encoding', b'upgrade'}
 )
@@ -375,7 +377,8 @@ class H2FeatureBridge:
                     and pseudo.get(b':method') != b'CONNECT'
                     and bool(pseudo.get(b':path'))
                 )
-                if not valid_request:
+                if not valid_request or len(self.requests) >= _MAX_ACTIVE_STREAMS:
+                    # One overloaded stream cannot starve the connection or other streams
                     await self.client.reset(event.stream_id)
                 else:
                     self.requests[event.stream_id] = _Request(headers)
@@ -505,7 +508,9 @@ class H2FeatureBridge:
             for task in done:
                 task.result()
             if pumps[1] in done and self.tasks:
-                await asyncio.gather(*self.tasks)
+                # Upstream EOF cannot justify an indefinite feature-task wait
+                # Give completed streams time to flush, then cancel stalled tasks
+                await asyncio.wait(self.tasks, timeout=_UPSTREAM_DRAIN_GRACE_SECONDS)
         finally:
             self.client.terminate()
             self.server.terminate()

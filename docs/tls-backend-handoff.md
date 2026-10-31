@@ -32,11 +32,15 @@ Sharing the Android-community slot does not imply identical runtime layouts.
    explicit provider readiness check, bounded acquisition time, and session
    metadata validation. Missing, timed-out, or invalid sessions raise
    `BackendUnavailableError`; there is no automatic fallback to a different
-   provider or less strict TLS trust source
+   provider or less strict TLS trust source. Streams returned by a provider
+   that fails validation are closed with bounded `wait_closed()` calls
 4. `dispatch_authenticated_session()` routes `http/1.1` and `h2` to the
    existing feature engine, preserving replacements, cache, and request logs
-5. The calling transport owns connection shutdown and cleanup. Stream
-   cancellation must not leave the game with a half-open tunnel
+5. Prefer `run_managed_backend_session()` for provider lifecycle management:
+   it acquires, validates, dispatches, and closes both stream pairs even on
+   cancellation or transport failure. Direct callers of `acquire_verified_session()`
+   still own successful session cleanup. Stream cancellation must not leave
+   the game with a half-open tunnel
 6. The provider must remain unavailable until actual client compatibility is
    established. A stub or a port-listening test is never a readiness success
 
