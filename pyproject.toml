@@ -33,6 +33,7 @@ dependencies = [
     'DracoPy>=1.3.0',
     'orjson>=3.9.0',
     'lz4>=4.4.5',
+    'h2>=4.2,<5',
 ]
 
 [project.urls]

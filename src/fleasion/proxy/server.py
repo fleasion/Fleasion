@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from .addons.custom_fflags import CustomFFlagModifier
     from .addons.texture_stripper import TextureStripper
 
+from .h2_transport import H2FeatureBridge
 from .roblox_metadata import strip_roblox_metadata
 from .upstream import (
     AutoConnector,
@@ -2642,6 +2643,28 @@ class FleasionProxy:
             msg = 'Request Host does not match authenticated session host'
             raise ValueError(msg)
         await self._http_session(first, reader, writer, normalized_host, upstream=upstream)
+
+    async def serve_decrypted_h2_session(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        host: str,
+        upstream: UpstreamConnectResult,
+        *,
+        initial_client_data: bytes = b'',
+    ) -> None:
+        """Run multiplexed HTTP/2 features on already authenticated plaintext streams.
+
+        The caller must verify both TLS peers and negotiate HTTP/2 before entry.
+        No production listener calls this experimental adapter yet.
+        """
+        normalized_host = host.strip().lower().rstrip('.')
+        if not self._should_intercept_explicit_host(normalized_host, 443):
+            msg = 'Host is not enabled for HTTP interception'
+            raise ValueError(msg)
+        await H2FeatureBridge(self, normalized_host, reader, writer, upstream).run(
+            initial_client_data=initial_client_data
+        )
 
     async def _http_session(
         self,

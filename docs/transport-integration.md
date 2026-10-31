@@ -1,42 +1,71 @@
-# Transport integration boundary
+# Decrypted-stream transport integration
 
-`FleasionProxy.serve_decrypted_http_session()` is an HTTP/1.x adapter for
-**already authenticated and decrypted** byte streams. It lets a transport
-implementation reuse Fleasion's existing asset, gamejoin, profile, request
-replacement, response replacement, scraper, and Proxy-tab processing without
-creating a second TLS connection for the same session.
+The existing Fleasion feature engine can be driven by streams for which another
+component has **already established authenticated TLS**. The adapters do not
+acquire TLS traffic secrets, access client process memory, change a CA bundle,
+or intercept the Roblox client by themselves.
 
-It is not an active TLS-splicing backend. In particular, this adapter does not
-perform TLS handshakes, obtain traffic secrets, handle TLS records, read process
-memory, change a trust store, or implement HTTP/2.
+The two transport-independent entry points are:
 
-## Ownership and constraints
+- `FleasionProxy.serve_decrypted_http_session()` for HTTP/1.x
+- `FleasionProxy.serve_decrypted_h2_session()` for HTTP/2
 
-- The caller must authenticate both peers and verify that the upstream session
-  corresponds to the requested host before supplying streams to the adapter
-- Only hosts configured for interception are accepted, and the HTTP Host header
-  must match the authenticated host
-- The upstream streams must be the original already-established connection;
-  the adapter will never silently redial it after it has been consumed
-- The existing HTTP/1 feature engine owns the accepted upstream connection and
-  closes it when the session ends; callers own rejected or unconsumed streams
-- HTTP/2 input is rejected rather than misparsed as HTTP/1
-- Existing production certificate-proxy behavior remains unchanged
+Both use the existing HTTP feature engine for request/response replacements,
+asset scraping, gamejoin and profile modifications, custom FastFlags, and
+Proxy-tab request logging. Neither entry point is called by the existing
+production listeners; the certificate-proxy transport remains unchanged.
 
-## Requirements before enabling another production transport
+## Caller responsibilities
 
-1. Verify the server certificate and hostname, negotiated protocol and
-   connection provenance before passing streams into the feature engine
-2. Independently test HTTP/1 and HTTP/2, multiplexed requests, flow-control,
-   early EOF, cancellation, and response framing
-3. Confirm feature parity for asset cache/scraper, all replacement types,
-   gamejoin/subplace handling, custom FastFlags, and the interactive Proxy tab
-4. Make startup checks validate an actual end-to-end request, not merely that
-   the local port is listening
-5. Preserve the original connection or fail closed when either side is lost;
-   never silently downgrade authentication or switch trust sources
-6. Do not log session secrets or sensitive headers in diagnostics
+- Verify both TLS peers, server hostname and ALPN before delivering decrypted
+  streams to an adapter
+- Ensure the upstream stream pair belongs to the actual authenticated session;
+  never silently redial a session after it is lost
+- Pass only approved hosts and maintain the same host identity for each request
+- Handle terminal exceptions and close both sides without downgrading TLS
+- Never log TLS keys, credentials, or sensitive headers
 
-`tests/test_decrypted_transport_adapter.py` covers the transport-independent
-HTTP/1 behavior with controlled localhost peers. These tests provide no
-assurance about third-party client memory access or anti-cheat compatibility.
+## HTTP/1.x adapter
+
+- Reuses the complete feature engine with an already established upstream
+  connection, which the engine closes when it finishes
+- Validates HTTP Host against the session host, including keep-alive requests
+- Handles `Content-Length` and close-delimited upstream response bodies
+- Rejects HTTP/2 input; no speculative retry on a new upstream TLS session
+
+## HTTP/2 adapter
+
+`h2_transport.py` uses `hyper-h2` to adapt each complete HTTP/2 request to an
+isolated HTTP/1 feature-engine session and translate the output back to HTTP/2.
+It preserves multiplexing and HTTP/2 stream IDs, applies flow-control to
+outbound bodies, and handles stream resets and connection termination.
+
+Important limitations of this experimental adapter:
+
+- It buffers full request bodies and the response within a 64 MiB bridge limit;
+  large streaming and server-sent events are not supported
+- HTTP/2 request trailers, response trailers, server push, CONNECT, extended
+  CONNECT, and interim informational responses are not handled
+- No TLS 0-RTT integration or transport negotiation is implemented here
+- Resets and GOAWAY are handled on a best-effort, fail-closed basis; detailed
+  behavior for every cancellation race is not yet proven
+- It has not been exercised against actual Roblox live traffic, protected
+  process memory, or anti-cheat checks
+
+## Required verification before a production transport
+
+1. Authenticate both peers, enforce negotiated ALPN, and establish session
+   provenance before handing streams to either adapter
+2. Verify HTTP/1 and HTTP/2 feature parity, including large bodies, parallel
+   requests, cancellations, trailers, streaming, and existing request modifiers
+3. Confirm asset cache, all replacement types, gamejoin/subplace handling,
+   custom FastFlags, and interactive Proxy-tab behavior
+4. Verify that startup probes validate a real end-to-end request rather than
+   just opening a local listener socket
+5. Enforce reasonable memory bounds and guarantee cleanup on upstream failure
+6. Test current client versions separately for each supported platform
+
+`tests/test_decrypted_transport_adapter.py` and
+`tests/test_decrypted_h2_transport.py` use controlled localhost peers,
+including locally authenticated TLS/ALPN in the HTTP/2 tests. They do not
+establish real-client compatibility or anti-cheat detection risk.
