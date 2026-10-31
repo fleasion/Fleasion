@@ -35,9 +35,11 @@ session and provided traffic secrets from a **controlled test session**.
 - Bounded record-length checks and explicit incomplete-record errors at EOF
 - Localhost TCP lifecycle tests for KeyUpdate, fragmentation across socket
   reads, two-way close_notify, tampering, EOF truncation and task cancellation
-- A controlled loopback integration test where generated TLS record traffic
-  traverses the existing Fleasion HTTP/1 feature engine and is encrypted again
-  on the way back. All three cipher suites pass the same replacement flow
+- Controlled localhost loopback integration tests where synthetic encrypted
+  TLS records traverse Fleasion's HTTP/1.1 **and HTTP/2** adapters, pass through
+  request/response replacement rules, and return an encrypted modified response
+  for all three cipher suites. HTTP/2 additionally exercises fragmented TCP
+  records, multiplexed protocol setup, and flow-control acknowledgments
 
 ## Current API
 
