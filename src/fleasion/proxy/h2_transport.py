@@ -17,11 +17,13 @@ from h2.connection import H2Connection
 from h2.events import (
     ConnectionTerminated,
     DataReceived,
+    InformationalResponseReceived,
     RemoteSettingsChanged,
     RequestReceived,
     ResponseReceived,
     StreamEnded,
     StreamReset,
+    TrailersReceived,
     WindowUpdated,
 )
 from h2.exceptions import H2Error
@@ -163,6 +165,9 @@ class _Request:
     upstream_id: int | None = None
     response_bytes: int = 0
     upstream_ended: bool = False
+    response_headers: H2Headers | None = None
+    response_body: bytearray = field(default_factory=bytearray)
+    response_rejected: bool = False
 
 
 class _Peer:
@@ -316,14 +321,16 @@ class H2FeatureBridge:
             await self.proxy.serve_decrypted_http_session(
                 request_reader, response_writer, self.host, upstream
             )
-        except OSError, ValueError, H2Error, ConnectionError:
+        except OSError, ValueError, H2Error:
             # Malformed or cancelled streams are reset, not forwarded elsewhere
             pass
         finally:
             if not response_writer.sent:
-                await self.client.reset(stream)
+                with contextlib.suppress(OSError, H2Error):
+                    await self.client.reset(stream)
             if request.upstream_id is not None:
-                await self.server.reset(request.upstream_id)
+                with contextlib.suppress(OSError, H2Error):
+                    await self.server.reset(request.upstream_id)
                 self.upstream_requests.pop(request.upstream_id, None)
             self.requests.pop(stream, None)
 
@@ -364,6 +371,15 @@ class H2FeatureBridge:
                     request.task = task
                     self.tasks.add(task)
                     task.add_done_callback(self.tasks.discard)
+            elif isinstance(event, TrailersReceived):
+                # The HTTP/1 feature adapter cannot preserve request trailers
+                request = self.requests.pop(event.stream_id, None)
+                if request is not None:
+                    if request.task is not None:
+                        request.task.cancel()
+                    else:
+                        self.buffered_request_bytes -= len(request.body)
+                await self.client.reset(event.stream_id)
             elif isinstance(event, StreamReset):
                 request = self.requests.pop(event.stream_id, None)
                 if request is not None:
@@ -378,27 +394,52 @@ class H2FeatureBridge:
 
     async def _receive_upstream(self, data: bytes) -> None:
         for event in await self.server.receive(data):
-            if isinstance(event, ResponseReceived):
+            if isinstance(event, InformationalResponseReceived):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None:
-                    # Response framing is established by an H2 END_STREAM event
-                    request.upstream_reader.feed_data(
-                        _as_http1(list(event.headers), b'', request=False)
+                    request.response_rejected = True
+                    request.upstream_reader.set_exception(
+                        ConnectionError('HTTP/2 informational responses are not supported')
                     )
+            elif isinstance(event, ResponseReceived):
+                request = self.upstream_requests.get(event.stream_id)
+                if request is not None:
+                    request.response_headers = list(event.headers)
             elif isinstance(event, DataReceived):
                 request = self.upstream_requests.get(event.stream_id)
-                if request is not None:
+                if request is not None and not request.response_rejected:
                     request.response_bytes += len(event.data)
                     if request.response_bytes > _MAX_BUFFERED_BODY:
                         msg = 'HTTP/2 response buffer limit exceeded'
                         raise ValueError(msg)
-                    request.upstream_reader.feed_data(event.data)
+                    request.response_body.extend(event.data)
                 await self.server.acknowledge(event.stream_id, event.flow_controlled_length)
-            elif isinstance(event, StreamEnded):
+            elif isinstance(event, TrailersReceived):
+                # Do not forward an incomplete response with silently dropped trailers
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None:
-                    request.upstream_ended = True
-                    request.upstream_reader.feed_eof()
+                    request.response_rejected = True
+                    request.upstream_reader.set_exception(
+                        ConnectionError('HTTP/2 response trailers are not supported')
+                    )
+            elif isinstance(event, StreamEnded):
+                request = self.upstream_requests.get(event.stream_id)
+                if request is not None and not request.response_rejected:
+                    if request.response_headers is None:
+                        request.upstream_reader.set_exception(
+                            ConnectionError('HTTP/2 response missing final headers')
+                        )
+                    else:
+                        request.upstream_reader.feed_data(
+                            _as_http1(
+                                request.response_headers,
+                                bytes(request.response_body),
+                                request=False,
+                            )
+                        )
+                        request.upstream_ended = True
+                        request.upstream_reader.feed_eof()
+                    request.response_body.clear()
             elif isinstance(event, StreamReset):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None:

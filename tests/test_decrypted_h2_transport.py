@@ -460,7 +460,8 @@ def test_h2_bridge_large_client_upload_respects_flow_control(tmp_path: Path) -> 
     asyncio.run(run())
 
 
-def test_h2_bridge_rejects_cross_authority_stream(tmp_path: Path) -> None:
+@pytest.mark.parametrize("invalid_type", ["cross-host", "http-scheme", "connect", "reset"])
+def test_h2_bridge_rejects_cross_authority_stream(tmp_path: Path, invalid_type: str) -> None:
     async def run() -> None:
         proxy = _proxy(tmp_path)
         upstream_paths: list[bytes] = []
@@ -518,28 +519,52 @@ def test_h2_bridge_rejects_cross_authority_stream(tmp_path: Path) -> None:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             h2 = H2Connection()
             h2.initiate_connection()
-            for authority, path in [
-                (b"evil.example", b"/blocked"),
-                (b"apis.roblox.com", b"/accepted"),
-            ]:
-                stream = h2.get_next_available_stream_id()
+            invalid_headers = [
+                (b":method", b"GET"),
+                (b":scheme", b"http" if invalid_type == "http-scheme" else b"https"),
+                (
+                    b":authority",
+                    b"evil.example" if invalid_type == "cross-host" else b"apis.roblox.com",
+                ),
+                (b":path", b"/blocked"),
+            ]
+            if invalid_type == "connect":
+                invalid_headers = [
+                    (b":method", b"CONNECT"),
+                    (b":authority", b"apis.roblox.com"),
+                ]
+            first_stream = h2.get_next_available_stream_id()
+            if invalid_type == "reset":
                 h2.send_headers(
-                    stream,
+                    first_stream,
                     [
-                        (b":method", b"GET"),
+                        (b":method", b"POST"),
                         (b":scheme", b"https"),
-                        (b":authority", authority),
-                        (b":path", path),
+                        (b":authority", b"apis.roblox.com"),
+                        (b":path", b"/cancelled"),
                     ],
-                    end_stream=True,
                 )
+                h2.send_data(first_stream, b"original")
+                h2.reset_stream(first_stream)
+            else:
+                h2.send_headers(first_stream, invalid_headers, end_stream=True)
+            h2.send_headers(
+                h2.get_next_available_stream_id(),
+                [
+                    (b":method", b"GET"),
+                    (b":scheme", b"https"),
+                    (b":authority", b"apis.roblox.com"),
+                    (b":path", b"/accepted"),
+                ],
+                end_stream=True,
+            )
             writer.write(h2.data_to_send())
             await writer.drain()
             resets: set[int] = set()
             completed: set[int] = set()
 
             async def collect() -> None:
-                while not (1 in resets and 3 in completed):
+                while not (3 in completed and (invalid_type == "reset" or 1 in resets)):
                     data = await reader.read(65536)
                     assert data, "HTTP/2 bridge closed without rejecting invalid authority"
                     for event in h2.receive_data(data):
@@ -658,6 +683,119 @@ def test_h2_bridge_rejects_truncated_upstream_response(tmp_path: Path) -> None:
             server.close()
             await bridge_server.wait_closed()
             await server.wait_closed()
+            await proxy.stop()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("trailer_direction", ["request", "response", "informational"])
+def test_h2_bridge_rejects_unsupported_trailers(tmp_path: Path, trailer_direction: str) -> None:
+    async def run() -> None:
+        proxy = _proxy(tmp_path)
+        upstream_paths: list[bytes] = []
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            h2 = H2Connection(H2Configuration(client_side=False))
+            h2.initiate_connection()
+            writer.write(h2.data_to_send())
+            await writer.drain()
+            try:
+                while data := await reader.read(65536):
+                    for event in h2.receive_data(data):
+                        if isinstance(event, RequestReceived):
+                            upstream_paths.append(dict(event.headers)[b":path"])
+                        elif isinstance(event, StreamEnded):
+                            if trailer_direction == "informational":
+                                h2.send_headers(
+                                    event.stream_id,
+                                    [(b":status", b"103"), (b"link", b"</early>; rel=preload")],
+                                )
+                            h2.send_headers(event.stream_id, [(b":status", b"200")])
+                            h2.send_data(event.stream_id, b"upstream-original")
+                            if trailer_direction == "response":
+                                h2.send_headers(
+                                    event.stream_id, [(b"x-integrity", b"example")], end_stream=True
+                                )
+                            else:
+                                h2.end_stream(event.stream_id)
+                    writer.write(h2.data_to_send())
+                    await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        upstream_server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        upstream_port = upstream_server.sockets[0].getsockname()[1]
+        assert isinstance(upstream_port, int)
+
+        async def bridge_handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            up_reader, up_writer = await asyncio.open_connection("127.0.0.1", upstream_port)
+            try:
+                await proxy.serve_decrypted_h2_session(
+                    reader,
+                    writer,
+                    "apis.roblox.com",
+                    UpstreamConnectResult(
+                        reader=up_reader,
+                        writer=up_writer,
+                        method="controlled_local_test",
+                        endpoint="127.0.0.1",
+                    ),
+                )
+            finally:
+                writer.close()
+                up_writer.close()
+                await writer.wait_closed()
+                await up_writer.wait_closed()
+
+        bridge_server = await asyncio.start_server(bridge_handler, "127.0.0.1", 0)
+        bridge_port = bridge_server.sockets[0].getsockname()[1]
+        assert isinstance(bridge_port, int)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", bridge_port)
+            h2 = H2Connection()
+            h2.initiate_connection()
+            h2.send_headers(
+                1,
+                [
+                    (b":method", b"POST"),
+                    (b":scheme", b"https"),
+                    (b":authority", b"apis.roblox.com"),
+                    (b":path", b"/with-trailers"),
+                ],
+                end_stream=trailer_direction != "request",
+            )
+            if trailer_direction == "request":
+                h2.send_data(1, b"original")
+                h2.send_headers(1, [(b"x-integrity", b"example")], end_stream=True)
+            writer.write(h2.data_to_send())
+            await writer.drain()
+            events: list[str] = []
+
+            async def collect() -> None:
+                while not events:
+                    data = await reader.read(65536)
+                    assert data, "HTTP/2 bridge closed before resetting unsupported trailers"
+                    for event in h2.receive_data(data):
+                        if isinstance(event, StreamReset):
+                            events.append("reset")
+                        elif isinstance(event, StreamEnded):
+                            events.append("completed")
+                    writer.write(h2.data_to_send())
+                    await writer.drain()
+
+            await asyncio.wait_for(collect(), timeout=6)
+            assert events == ["reset"]
+            assert upstream_paths == ([] if trailer_direction == "request" else [b"/with-trailers"])
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            bridge_server.close()
+            upstream_server.close()
+            await bridge_server.wait_closed()
+            await upstream_server.wait_closed()
             await proxy.stop()
 
     asyncio.run(run())

@@ -44,8 +44,10 @@ Important limitations of this experimental adapter:
 
 - It buffers full request bodies and the response within a 64 MiB bridge limit;
   large streaming and server-sent events are not supported
-- HTTP/2 request trailers, response trailers, server push, CONNECT, extended
-  CONNECT, and interim informational responses are not handled
+- HTTP/2 request/response trailers, unsupported CONNECT and interim
+  informational responses cause stream resets instead of being silently
+  discarded; these features are not translated by the HTTP/1 engine
+- HTTP/2 server push and extended CONNECT are not supported
 - No TLS 0-RTT integration or transport negotiation is implemented here
 - Resets and GOAWAY are handled on a best-effort, fail-closed basis; detailed
   behavior for every cancellation race is not yet proven
