@@ -79,3 +79,6 @@ health check, while negative tests reject fake success conditions.
 
 For protocol limitations and the current 64 MiB HTTP/2 buffer budget, see
 `docs/transport-integration.md`.
+
+For cross-protocol feature coverage and the remaining real-client validation
+gaps, see `docs/tls-feature-parity.md` and `tests/test_tls_feature_parity.py`.
