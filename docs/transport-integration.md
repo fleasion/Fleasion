@@ -10,6 +10,11 @@ The two transport-independent entry points are:
 - `FleasionProxy.serve_decrypted_http_session()` for HTTP/1.x
 - `FleasionProxy.serve_decrypted_h2_session()` for HTTP/2
 
+A five-slot optional provider registry and synthetic readiness checks are now
+available under `tls_backends/`. All real providers remain inactive and
+unimplemented. See `docs/tls-backend-handoff.md` for the platform matrix,
+interface contract, and contributor requirements.
+
 Both use the existing HTTP feature engine for request/response replacements,
 asset scraping, gamejoin and profile modifications, custom FastFlags, and
 Proxy-tab request logging. Neither entry point is called by the existing

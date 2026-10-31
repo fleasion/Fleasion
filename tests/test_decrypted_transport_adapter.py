@@ -10,6 +10,12 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from fleasion.proxy.server import FleasionProxy
+from fleasion.proxy.tls_backends import (
+    AuthenticatedSession,
+    BackendId,
+    dispatch_authenticated_session,
+)
+from fleasion.proxy.tls_backends.health import HealthPhase, http1_roundtrip_health
 from fleasion.proxy.types import AutoReplaceRule
 from fleasion.proxy.upstream import UpstreamConnectResult
 from fleasion.utils.certs import generate_ca, generate_multi_host_cert
@@ -109,16 +115,22 @@ def test_decrypted_http_session_reuses_existing_replacement_engine(
                 '127.0.0.1', upstream_port
             )
             try:
-                await proxy.serve_decrypted_http_session(
-                    reader,
-                    writer,
-                    'apis.roblox.com',
-                    UpstreamConnectResult(
-                        reader=upstream_reader,
-                        writer=upstream_writer,
-                        method='controlled_local_test',
-                        endpoint='127.0.0.1',
+                await dispatch_authenticated_session(
+                    proxy,
+                    AuthenticatedSession(
+                        hostname='apis.roblox.com',
+                        alpn='http/1.1',
+                        client_reader=reader,
+                        client_writer=writer,
+                        upstream=UpstreamConnectResult(
+                            reader=upstream_reader,
+                            writer=upstream_writer,
+                            method='controlled_local_test',
+                            endpoint='127.0.0.1',
+                        ),
+                        server_authenticated=True,
                     ),
+                    expected_hostname='apis.roblox.com',
                 )
             finally:
                 writer.close()
@@ -142,6 +154,27 @@ def test_decrypted_http_session_reuses_existing_replacement_engine(
             await writer.wait_closed()
             assert response.startswith(b'HTTP/1.1 200 OK\r\n')
             assert response.endswith(b'client-original')
+            # The positive health proof comes from this real localhost proxy exchange
+            health = http1_roundtrip_health(
+                BackendId.WINDOWS,
+                AuthenticatedSession(
+                    hostname='apis.roblox.com',
+                    alpn='http/1.1',
+                    client_reader=reader,
+                    client_writer=writer,
+                    upstream=UpstreamConnectResult(
+                        reader=asyncio.StreamReader(),
+                        writer=writer,
+                        method='synthetic_loopback',
+                        endpoint='127.0.0.1',
+                    ),
+                    server_authenticated=True,
+                ),
+                hostname='apis.roblox.com',
+                expected_challenge=b'client-original',
+                raw_response=response,
+            )
+            assert health.phase is HealthPhase.END_TO_END_VERIFIED
             assert upstream_requests == [b'modified']
             requests = proxy.get_request_log()
             assert len(requests) == 1

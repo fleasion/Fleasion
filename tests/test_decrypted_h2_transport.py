@@ -14,6 +14,12 @@ from h2.connection import H2Connection
 from h2.events import DataReceived, RequestReceived, ResponseReceived, StreamEnded, StreamReset
 
 from fleasion.proxy.server import FleasionProxy
+from fleasion.proxy.tls_backends import (
+    AuthenticatedSession,
+    BackendId,
+    dispatch_authenticated_session,
+)
+from fleasion.proxy.tls_backends.health import HealthPhase, http2_roundtrip_health
 from fleasion.proxy.upstream import UpstreamConnectResult
 from fleasion.utils.certs import generate_ca, generate_host_cert, generate_multi_host_cert
 
@@ -127,9 +133,23 @@ def test_h2_bridge_reuses_feature_engine_for_multiplexed_streams(
                 endpoint="127.0.0.1",
             )
             try:
-                await proxy.serve_decrypted_h2_session(
-                    reader, writer, "apis.roblox.com", upstream_connection
-                )
+                if authenticated_tls:
+                    await dispatch_authenticated_session(
+                        proxy,
+                        AuthenticatedSession(
+                            hostname='apis.roblox.com',
+                            alpn='h2',
+                            client_reader=reader,
+                            client_writer=writer,
+                            upstream=upstream_connection,
+                            server_authenticated=True,
+                        ),
+                        expected_hostname='apis.roblox.com',
+                    )
+                else:
+                    await proxy.serve_decrypted_h2_session(
+                        reader, writer, 'apis.roblox.com', upstream_connection
+                    )
             finally:
                 writer.close()
                 upstream_writer.close()
@@ -152,6 +172,7 @@ def test_h2_bridge_reuses_feature_engine_for_multiplexed_streams(
             conn = H2Connection()
             conn.initiate_connection()
             streams: dict[int, bytearray] = {}
+            statuses: dict[int, int] = {}
             ended: set[int] = set()
             for _ in range(parallel):
                 stream = conn.get_next_available_stream_id()
@@ -183,12 +204,39 @@ def test_h2_bridge_reuses_feature_engine_for_multiplexed_streams(
                         elif isinstance(event, StreamEnded):
                             ended.add(event.stream_id)
                         elif isinstance(event, ResponseReceived):
-                            assert dict(event.headers)[b":status"] == b"200"
+                            statuses[event.stream_id] = int(dict(event.headers)[b":status"])
+                            assert statuses[event.stream_id] == 200
                     writer.write(conn.data_to_send())
                     await writer.drain()
 
             await asyncio.wait_for(collect(), timeout=9)
             assert all(bytes(body) == b"client-original" for body in streams.values())
+            if authenticated_tls:
+                # Only authenticated loopback connections qualify as health evidence
+                session = AuthenticatedSession(
+                    hostname='apis.roblox.com',
+                    alpn='h2',
+                    client_reader=reader,
+                    client_writer=writer,
+                    upstream=UpstreamConnectResult(
+                        reader=reader,
+                        writer=writer,
+                        method='authenticated_local_loopback',
+                        endpoint='127.0.0.1',
+                    ),
+                    server_authenticated=True,
+                )
+                for stream, body in streams.items():
+                    health = http2_roundtrip_health(
+                        BackendId.WINDOWS,
+                        session,
+                        hostname='apis.roblox.com',
+                        expected_challenge=b'client-original',
+                        response_status=statuses[stream],
+                        response_body=bytes(body),
+                        stream_ended=stream in ended,
+                    )
+                    assert health.phase is HealthPhase.END_TO_END_VERIFIED
             await asyncio.wait_for(completed.wait(), timeout=3)
             assert received == [b"modified"] * parallel
             assert len(proxy.get_request_log()) == parallel
