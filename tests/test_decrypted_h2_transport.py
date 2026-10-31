@@ -620,6 +620,11 @@ def test_h2_bridge_rejects_cross_authority_stream(tmp_path: Path, invalid_type: 
                             resets.add(event.stream_id)
                         elif isinstance(event, StreamEnded):
                             completed.add(event.stream_id)
+                        elif isinstance(event, ResponseReceived) and event.stream_id == 3:
+                            # A 204 response must not synthesize Content-Length: 0
+                            response_headers = dict(event.headers)
+                            assert response_headers[b':status'] == b'204'
+                            assert b'content-length' not in response_headers
                     writer.write(h2.data_to_send())
                     await writer.drain()
 
