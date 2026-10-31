@@ -2602,12 +2602,55 @@ class FleasionProxy:
                 with contextlib.suppress(Exception):
                     tunnel_writer.close()
 
+    async def serve_decrypted_http_session(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        host: str,
+        upstream: UpstreamConnectResult,
+    ) -> None:
+        """Run Fleasion's existing HTTP/1 feature engine on externally verified streams.
+
+        The caller owns TLS authentication and stream decryption. This method
+        does not extract session secrets, negotiate TLS, or authenticate either peer.
+        It never creates a replacement upstream connection if the supplied
+        authenticated connection becomes unusable.
+        """
+        normalized_host = host.strip().lower().rstrip('.')
+        if not self._should_intercept_explicit_host(normalized_host, 443):
+            msg = 'Host is not enabled for HTTP interception'
+            raise ValueError(msg)
+        if upstream.reader is None or upstream.writer is None:
+            msg = 'Authenticated upstream streams are required'
+            raise ValueError(msg)
+
+        first = await asyncio.wait_for(_read_headers_raw(reader), timeout=15.0)
+        if first is None:
+            return
+        if b' HTTP/1.' not in first.first_line:
+            msg = 'Only HTTP/1.x is supported by this stream adapter'
+            raise ValueError(msg)
+        request_host = (
+            first.headers.get(b'host', b'')
+            .decode('ascii', errors='replace')
+            .strip()
+            .lower()
+            .split(':', 1)[0]
+            .rstrip('.')
+        )
+        if request_host != normalized_host:
+            msg = 'Request Host does not match authenticated session host'
+            raise ValueError(msg)
+        await self._http_session(first, reader, writer, normalized_host, upstream=upstream)
+
     async def _http_session(
         self,
         first_req: RawHeaders,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         host: str,
+        *,
+        upstream: UpstreamConnectResult | None = None,
     ) -> None:
         log_buffer = _get_log_buffer()
 
@@ -2621,14 +2664,22 @@ class FleasionProxy:
         up_reader: asyncio.StreamReader | None = None
         up_writer: asyncio.StreamWriter | None = None
         upstream_failure_hint_logged = False
+        supplied_upstream_used = False
 
         async def ensure_upstream(path_for_log: str) -> bool:
-            nonlocal up_reader, up_writer, upstream_failure_hint_logged
+            nonlocal up_reader, up_writer, upstream_failure_hint_logged, supplied_upstream_used
 
             if up_reader is not None and up_writer is not None and not up_writer.is_closing():
                 return True
 
-            connect_result = await self._connect_upstream(host)
+            if upstream is not None:
+                if supplied_upstream_used:
+                    # Do not silently replace a previously authenticated TLS session
+                    return False
+                connect_result = upstream
+                supplied_upstream_used = True
+            else:
+                connect_result = await self._connect_upstream(host)
             up_reader = connect_result.reader
             up_writer = connect_result.writer
 
@@ -3013,6 +3064,19 @@ class FleasionProxy:
                     req_raw = result
 
                 req_first, req_headers = req_raw.first_line, req_raw.headers
+                if upstream is not None:
+                    # Every request on the existing TLS session must use its verified host
+                    request_host = (
+                        req_headers.get(b'host', b'')
+                        .decode('ascii', errors='replace')
+                        .strip()
+                        .lower()
+                        .split(':', 1)[0]
+                        .rstrip('.')
+                    )
+                    if request_host != host:
+                        msg = 'Request Host does not match authenticated session host'
+                        raise ValueError(msg)
 
                 # Read request body. payload is dechunked; wire preserves chunk framing.
                 req_body = await _read_body_wire(reader, req_headers)
@@ -3260,12 +3324,28 @@ class FleasionProxy:
                     break
                 resp_raw = resp_result
                 resp_first, resp_headers = resp_raw.first_line, resp_raw.headers
-                resp_body = await _read_body_wire(
-                    cast('asyncio.StreamReader', up_reader), resp_headers
+                status_code = _parse_status_code(resp_first)
+                response_has_body = (
+                    method.upper() != 'HEAD'
+                    and status_code not in {204, 304}
+                    and not 100 <= status_code < 200
                 )
+                close_delimited = (
+                    upstream is not None
+                    and response_has_body
+                    and b'content-length' not in resp_headers
+                    and b'transfer-encoding' not in resp_headers
+                )
+                if close_delimited:
+                    # HTTP/1 responses without framing end at upstream EOF
+                    payload = await cast('asyncio.StreamReader', up_reader).read()
+                    resp_body = RawBody(wire=payload, payload=payload, was_chunked=False)
+                else:
+                    resp_body = await _read_body_wire(
+                        cast('asyncio.StreamReader', up_reader), resp_headers
+                    )
                 resp_body_raw = resp_body.payload
 
-                status_code = _parse_status_code(resp_first)
                 custom_fflag_response_enabled = (
                     custom_fflag_request and custom_fflag_modifier.is_enabled()
                 )
