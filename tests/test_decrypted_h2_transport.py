@@ -820,3 +820,158 @@ def test_h2_bridge_connection_wide_buffer_budget() -> None:
         bridge._reserve_body_bytes(10)  # pyright: ignore[reportPrivateUsage]
 
     asyncio.run(run())
+
+
+def test_rejected_h2_request_restores_connection_flow_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Discarded HTTP/2 DATA must explicitly return flow-control credit."""
+    from fleasion.proxy.h2_transport import _Peer  # pyright: ignore[reportPrivateUsage]
+
+    original = _Peer.acknowledge
+    discarded_credits: list[int] = []
+
+    async def recorded_acknowledge(self: _Peer, stream: int, amount: int) -> None:
+        if not self.h2.config.client_side and stream == 1:
+            discarded_credits.append(amount)
+        await original(self, stream, amount)
+
+    monkeypatch.setattr(_Peer, 'acknowledge', recorded_acknowledge)
+
+    async def run() -> None:
+        proxy = _proxy(tmp_path)
+        forwarded: list[bytes] = []
+        valid_body = b'original' * 3072
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            h2 = H2Connection(H2Configuration(client_side=False))
+            h2.initiate_connection()
+            writer.write(h2.data_to_send())
+            await writer.drain()
+            received = bytearray()
+            try:
+                while packet := await reader.read(65536):
+                    for event in h2.receive_data(packet):
+                        if isinstance(event, DataReceived):
+                            received.extend(event.data)
+                            h2.acknowledge_received_data(
+                                event.flow_controlled_length, event.stream_id
+                            )
+                        elif isinstance(event, StreamEnded):
+                            forwarded.append(bytes(received))
+                            h2.send_headers(event.stream_id, [(b':status', b'200')])
+                            h2.send_data(event.stream_id, b'upstream-original', end_stream=True)
+                    writer.write(h2.data_to_send())
+                    await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        upstream_server = await asyncio.start_server(upstream, '127.0.0.1', 0)
+        upstream_port = upstream_server.sockets[0].getsockname()[1]
+        assert isinstance(upstream_port, int)
+
+        async def bridge_handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            up_reader, up_writer = await asyncio.open_connection('127.0.0.1', upstream_port)
+            try:
+                await proxy.serve_decrypted_h2_session(
+                    reader,
+                    writer,
+                    'apis.roblox.com',
+                    UpstreamConnectResult(
+                        reader=up_reader,
+                        writer=up_writer,
+                        method='controlled_local_test',
+                        endpoint='127.0.0.1',
+                    ),
+                )
+            finally:
+                writer.close()
+                up_writer.close()
+                await writer.wait_closed()
+                await up_writer.wait_closed()
+
+        bridge_server = await asyncio.start_server(bridge_handler, '127.0.0.1', 0)
+        port = bridge_server.sockets[0].getsockname()[1]
+        assert isinstance(port, int)
+        try:
+            reader, writer = await asyncio.open_connection('127.0.0.1', port)
+            h2 = H2Connection()
+            h2.initiate_connection()
+            rejected = h2.get_next_available_stream_id()
+            h2.send_headers(
+                rejected,
+                [
+                    (b':method', b'POST'),
+                    (b':scheme', b'https'),
+                    (b':authority', b'rejected.example'),
+                    (b':path', b'/discard'),
+                ],
+            )
+            for index in range(4):
+                amount = 16383 if index == 3 else 16384
+                h2.send_data(rejected, b'X' * amount, end_stream=index == 3)
+            accepted = h2.get_next_available_stream_id()
+            h2.send_headers(
+                accepted,
+                [
+                    (b':method', b'POST'),
+                    (b':scheme', b'https'),
+                    (b':authority', b'apis.roblox.com'),
+                    (b':path', b'/accepted'),
+                ],
+            )
+            writer.write(h2.data_to_send())
+            await writer.drain()
+            position = 0
+            result = bytearray()
+            completed = False
+
+            async def exchange() -> None:
+                nonlocal position, completed
+                while not completed:
+                    while position < len(valid_body):
+                        size = min(
+                            h2.local_flow_control_window(accepted),
+                            h2.max_outbound_frame_size,
+                            len(valid_body) - position,
+                        )
+                        if not size:
+                            break
+                        end = position + size
+                        h2.send_data(
+                            accepted,
+                            valid_body[position:end],
+                            end_stream=end == len(valid_body),
+                        )
+                        position = end
+                    writer.write(h2.data_to_send())
+                    await writer.drain()
+                    packet = await reader.read(65536)
+                    assert packet, 'Connection closed before valid request completed'
+                    for event in h2.receive_data(packet):
+                        if isinstance(event, DataReceived):
+                            result.extend(event.data)
+                            h2.acknowledge_received_data(
+                                event.flow_controlled_length, event.stream_id
+                            )
+                        elif isinstance(event, StreamEnded) and event.stream_id == accepted:
+                            completed = True
+
+            await asyncio.wait_for(exchange(), timeout=4)
+            assert position == len(valid_body)
+            assert bytes(result) == b'client-original'
+            assert forwarded == [b'modified' * 3072]
+            writer.close()
+            await writer.wait_closed()
+            assert sum(discarded_credits) >= 32768
+        finally:
+            bridge_server.close()
+            upstream_server.close()
+            await bridge_server.wait_closed()
+            await upstream_server.wait_closed()
+            await proxy.stop()
+
+    asyncio.run(run())

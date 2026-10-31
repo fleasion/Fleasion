@@ -190,6 +190,14 @@ class _Peer:
     async def receive(self, data: bytes) -> list[object]:
         async with self.lock:
             events: list[object] = list(self.h2.receive_data(data))
+            if any(
+                isinstance(
+                    event, (StreamReset, ConnectionTerminated, WindowUpdated, RemoteSettingsChanged)
+                )
+                for event in events
+            ):
+                # Wake blocked sends even when the peer resets a stream without updating its window
+                self.window.set()
             self.writer.write(self.h2.data_to_send())
         await self.writer.drain()
         return events
@@ -235,6 +243,10 @@ class _Peer:
                 if self.terminated:
                     msg = 'HTTP/2 peer has terminated'
                     raise ConnectionError(msg)
+                peer_stream = self.h2.streams.get(stream)
+                if peer_stream is None or peer_stream.closed:
+                    msg = 'HTTP/2 stream closed during outbound flow-control wait'
+                    raise ConnectionError(msg)
                 count = min(
                     len(body) - offset,
                     self.h2.local_flow_control_window(stream),
@@ -257,6 +269,7 @@ class _Peer:
             with contextlib.suppress(H2Error):
                 self.h2.reset_stream(stream, error_code=8)
                 self.writer.write(self.h2.data_to_send())
+            self.window.set()
         await self.writer.drain()
 
     def terminate(self) -> None:
@@ -369,6 +382,8 @@ class H2FeatureBridge:
             elif isinstance(event, DataReceived):
                 request = self.requests.get(event.stream_id)
                 if request is None:
+                    # Discarded streams still consume the connection's receive window
+                    await self.client.acknowledge(event.stream_id, event.flow_controlled_length)
                     continue
                 self._reserve_body_bytes(len(event.data))
                 self.buffered_request_bytes += len(event.data)

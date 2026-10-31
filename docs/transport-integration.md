@@ -44,6 +44,8 @@ Important limitations of this experimental adapter:
 
 - It buffers full request/response bodies with a 64 MiB aggregate
   connection-level budget; large streaming and server-sent events are not supported
+- Discarded request DATA explicitly restores HTTP/2 connection flow-control
+  credit; local and remote stream resets wake blocked outbound body senders
 - HTTP/2 request/response trailers, unsupported CONNECT and interim
   informational responses cause stream resets instead of being silently
   discarded; these features are not translated by the HTTP/1 engine
