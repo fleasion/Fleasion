@@ -799,3 +799,24 @@ def test_h2_bridge_rejects_unsupported_trailers(tmp_path: Path, trailer_directio
             await proxy.stop()
 
     asyncio.run(run())
+
+
+def test_h2_bridge_connection_wide_buffer_budget() -> None:
+    from fleasion.proxy.h2_transport import H2FeatureBridge, _Request  # pyright: ignore[reportPrivateUsage]
+
+    async def run() -> None:
+        bridge = object.__new__(H2FeatureBridge)
+        bridge.buffered_request_bytes = 64 * 1024 * 1024 - 10
+        bridge.buffered_response_bytes = 8
+        bridge._reserve_body_bytes(2)  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(ValueError, match="connection body buffer limit"):
+            bridge._reserve_body_bytes(3)  # pyright: ignore[reportPrivateUsage]
+
+        request = _Request([])
+        request.response_body.extend(b"payload!")
+        bridge._release_response_body(request)  # pyright: ignore[reportPrivateUsage]
+        assert bridge.buffered_response_bytes == 0
+        assert not request.response_body
+        bridge._reserve_body_bytes(10)  # pyright: ignore[reportPrivateUsage]
+
+    asyncio.run(run())

@@ -288,6 +288,17 @@ class H2FeatureBridge:
         self.upstream_requests: dict[int, _Request] = {}
         self.tasks: set[asyncio.Task[None]] = set()
         self.buffered_request_bytes = 0
+        self.buffered_response_bytes = 0
+
+    def _reserve_body_bytes(self, size: int) -> None:
+        # Enforce a total bridge buffer budget, not 64 MiB per HTTP/2 stream
+        if self.buffered_request_bytes + self.buffered_response_bytes + size > _MAX_BUFFERED_BODY:
+            msg = 'HTTP/2 connection body buffer limit exceeded'
+            raise ValueError(msg)
+
+    def _release_response_body(self, request: _Request) -> None:
+        self.buffered_response_bytes -= len(request.response_body)
+        request.response_body.clear()
 
     async def _run_request(self, stream: int, request: _Request) -> None:
         async def send_request(message: bytes) -> None:
@@ -332,6 +343,7 @@ class H2FeatureBridge:
                 with contextlib.suppress(OSError, H2Error):
                     await self.server.reset(request.upstream_id)
                 self.upstream_requests.pop(request.upstream_id, None)
+            self._release_response_body(request)
             self.requests.pop(stream, None)
 
     async def _receive_client(self, data: bytes) -> None:
@@ -358,10 +370,8 @@ class H2FeatureBridge:
                 request = self.requests.get(event.stream_id)
                 if request is None:
                     continue
+                self._reserve_body_bytes(len(event.data))
                 self.buffered_request_bytes += len(event.data)
-                if self.buffered_request_bytes > _MAX_BUFFERED_BODY:
-                    msg = 'HTTP/2 request buffer limit exceeded'
-                    raise ValueError(msg)
                 request.body.extend(event.data)
                 await self.client.acknowledge(event.stream_id, event.flow_controlled_length)
             elif isinstance(event, StreamEnded):
@@ -408,10 +418,9 @@ class H2FeatureBridge:
             elif isinstance(event, DataReceived):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None and not request.response_rejected:
+                    self._reserve_body_bytes(len(event.data))
+                    self.buffered_response_bytes += len(event.data)
                     request.response_bytes += len(event.data)
-                    if request.response_bytes > _MAX_BUFFERED_BODY:
-                        msg = 'HTTP/2 response buffer limit exceeded'
-                        raise ValueError(msg)
                     request.response_body.extend(event.data)
                 await self.server.acknowledge(event.stream_id, event.flow_controlled_length)
             elif isinstance(event, TrailersReceived):
@@ -439,10 +448,11 @@ class H2FeatureBridge:
                         )
                         request.upstream_ended = True
                         request.upstream_reader.feed_eof()
-                    request.response_body.clear()
+                    self._release_response_body(request)
             elif isinstance(event, StreamReset):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None:
+                    self._release_response_body(request)
                     request.upstream_reader.set_exception(ConnectionError('HTTP/2 stream reset'))
             elif isinstance(event, (WindowUpdated, RemoteSettingsChanged)):
                 self.server.window.set()
