@@ -80,13 +80,20 @@ def _as_http1(headers: H2Headers, body: bytes, *, request: bool) -> bytes:
     return b'\r\n'.join(lines) + b'\r\n\r\n' + body
 
 
-def _as_http2(message: bytes, *, request: bool, host: str) -> tuple[H2Headers, bytes]:
+def _as_http2(
+    message: bytes,
+    *,
+    request: bool,
+    host: str,
+    request_method: bytes | None = None,
+) -> tuple[H2Headers, bytes]:
     raw, sep, body = message.partition(b'\r\n\r\n')
     if not sep:
         msg = 'Feature engine produced incomplete HTTP/1 message'
         raise ValueError(msg)
     first, *lines = raw.split(b'\r\n')
     parts = first.split(b' ', 2)
+    body_forbidden = False
     if request:
         if len(parts) < 3 or not parts[2].startswith(b'HTTP/1.'):
             msg = 'Feature engine produced an invalid HTTP/1 request'
@@ -100,6 +107,11 @@ def _as_http2(message: bytes, *, request: bool, host: str) -> tuple[H2Headers, b
     else:
         if len(parts) < 2 or not parts[1].isdigit():
             msg = 'Feature engine produced an invalid HTTP/1 response'
+            raise ValueError(msg)
+        status = int(parts[1])
+        body_forbidden = request_method == b'HEAD' or status in {204, 304} or 100 <= status < 200
+        if body_forbidden and body:
+            msg = 'Feature engine produced a body for a bodyless HTTP response'
             raise ValueError(msg)
         headers = [(b':status', parts[1])]
     for line in lines:
@@ -115,7 +127,8 @@ def _as_http2(message: bytes, *, request: bool, host: str) -> tuple[H2Headers, b
             msg = 'Feature engine produced a malformed header name'
             raise ValueError(msg)
         headers.append((name, value))
-    headers.append((b'content-length', str(len(body)).encode('ascii')))
+    if not body_forbidden:
+        headers.append((b'content-length', str(len(body)).encode('ascii')))
     return headers, body
 
 
@@ -326,7 +339,8 @@ class H2FeatureBridge:
             await self.server.open_request(headers, body, register)
 
         async def send_response(message: bytes) -> None:
-            headers, body = _as_http2(message, request=False, host=self.host)
+            method = dict(request.headers).get(b':method')
+            headers, body = _as_http2(message, request=False, host=self.host, request_method=method)
             await self.client.send(stream, headers, body)
 
         upstream_writer = _MessageWriter(send_request)
@@ -388,7 +402,18 @@ class H2FeatureBridge:
                     # Discarded streams still consume the connection's receive window
                     await self.client.acknowledge(event.stream_id, event.flow_controlled_length)
                     continue
-                self._reserve_body_bytes(len(event.data))
+                try:
+                    self._reserve_body_bytes(len(event.data))
+                except ValueError:
+                    # Reject only the stream exceeding the aggregate buffer budget
+                    self.buffered_request_bytes -= len(request.body)
+                    request.body.clear()
+                    self.requests.pop(event.stream_id, None)
+                    if request.task is not None:
+                        request.task.cancel()
+                    await self.client.acknowledge(event.stream_id, event.flow_controlled_length)
+                    await self.client.reset(event.stream_id)
+                    continue
                 self.buffered_request_bytes += len(event.data)
                 request.body.extend(event.data)
                 await self.client.acknowledge(event.stream_id, event.flow_controlled_length)
@@ -403,18 +428,19 @@ class H2FeatureBridge:
                 # The HTTP/1 feature adapter cannot preserve request trailers
                 request = self.requests.pop(event.stream_id, None)
                 if request is not None:
+                    # The task may have been cancelled before its coroutine started
+                    self.buffered_request_bytes -= len(request.body)
+                    request.body.clear()
                     if request.task is not None:
                         request.task.cancel()
-                    else:
-                        self.buffered_request_bytes -= len(request.body)
                 await self.client.reset(event.stream_id)
             elif isinstance(event, StreamReset):
                 request = self.requests.pop(event.stream_id, None)
                 if request is not None:
+                    self.buffered_request_bytes -= len(request.body)
+                    request.body.clear()
                     if request.task is not None:
                         request.task.cancel()
-                    else:
-                        self.buffered_request_bytes -= len(request.body)
             elif isinstance(event, (WindowUpdated, RemoteSettingsChanged)):
                 self.client.window.set()
             elif isinstance(event, ConnectionTerminated):
@@ -436,7 +462,18 @@ class H2FeatureBridge:
             elif isinstance(event, DataReceived):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None and not request.response_rejected:
-                    self._reserve_body_bytes(len(event.data))
+                    try:
+                        self._reserve_body_bytes(len(event.data))
+                    except ValueError:
+                        # Discard oversized upstream data without harming other streams
+                        request.response_rejected = True
+                        self._release_response_body(request)
+                        request.upstream_reader.set_exception(
+                            ConnectionError('HTTP/2 response exceeds connection buffer budget')
+                        )
+                        await self.server.acknowledge(event.stream_id, event.flow_controlled_length)
+                        await self.server.reset(event.stream_id)
+                        continue
                     self.buffered_response_bytes += len(event.data)
                     request.response_bytes += len(event.data)
                     request.response_body.extend(event.data)

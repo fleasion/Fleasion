@@ -16,6 +16,11 @@ acquisition, game client compatibility, or any production rollback path.
 | More than 64 active HTTP/2 streams | Reset excess streams without ending the whole connection | `test_connection_rejects_excessive_http2_streams_without_terminating_peer` |
 | Stream reset during blocked HTTP/2 DATA send | Wake sender and fail instead of waiting indefinitely | `test_reset_terminates_sender_waiting_on_http2_window` |
 | Rejected DATA on an invalid request stream | Restore connection flow-control credit | `test_rejected_h2_request_restores_connection_flow_control` |
+| One request exceeds the aggregate body budget | Reset only that request and retain unrelated pending streams | `test_oversized_request_resets_only_offending_stream` |
+| One response exceeds the aggregate body budget | Reset only the oversized response and complete a smaller independent response | `test_oversized_upstream_response_resets_only_offending_stream` |
+| Two requests compete for the shared buffer | Preserve the earlier accepted request, reset the over-budget newcomer | `test_connection_budget_exhaustion_keeps_previously_buffered_stream` |
+| RST_STREAM arrives immediately after request END_STREAM | Release request-body accounting even if its feature task never starts | `test_reset_immediately_after_request_end_releases_pending_body` |
+| HEAD / HTTP 204 / HTTP 304 bodyless HTTP/2 responses | Do not synthesize Content-Length and reject unexpected response bodies | `tests/test_h2_bodyless_semantics.py` |
 | Provider returns a session with invalid authentication metadata | Reject and close both acquired stream writers | `test_backend_cannot_return_unauthenticated_session` |
 | Provider acquisition timeout | Report failure without silent fallback | `test_backend_open_times_out_without_fallback` |
 | Provider session dispatch succeeds, fails, or is cancelled | Close both stream writers using bounded waits | `test_managed_dispatch_always_closes_both_stream_pairs`, `test_cancelled_managed_session_closes_both_writers` |

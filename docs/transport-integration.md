@@ -49,8 +49,12 @@ Important limitations of this experimental adapter:
 
 - It buffers full request/response bodies with a 64 MiB aggregate
   connection-level budget and caps active request streams at 64 per connection;
-  excess streams are reset rather than dispatched to additional feature tasks.
-  Large streaming and server-sent events are not supported
+  excess or oversized streams are reset individually without failing unrelated
+  streams. Large streaming and server-sent events are not supported
+- Requests cancelled immediately after END_STREAM release their buffered bytes
+  even if the feature task never had a chance to start
+- Complete HEAD, HTTP 204, and HTTP 304 responses omit automatically generated
+  Content-Length and reject invalid response bodies
 - Discarded request DATA explicitly restores HTTP/2 connection flow-control
   credit; local and remote stream resets wake blocked outbound body senders
 - HTTP/2 request/response trailers, unsupported CONNECT and interim
