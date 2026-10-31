@@ -86,3 +86,7 @@ For protocol limitations and the current 64 MiB HTTP/2 buffer budget, see
 
 For cross-protocol feature coverage and the remaining real-client validation
 gaps, see `docs/tls-feature-parity.md` and `tests/test_tls_feature_parity.py`.
+
+A read-only, version-specific inspection of a locally installed Sober client is
+recorded in `docs/sober-compatibility-baseline.md`. It does not establish a
+working Sober transport or authorize production activation.
