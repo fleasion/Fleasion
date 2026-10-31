@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import chain, combinations
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -38,9 +38,9 @@ from fleasion.localization import tr
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-type Mode = Literal['remove', 'id', 'cdn', 'local']
-type Rule = dict[str, Any]
-type Signature = tuple[tuple[str, tuple[int, int] | None], ...]
+    from fleasion.config.types import ReplacementMode as Mode, ReplacementsSignature as Signature
+    from fleasion.utils.json_types import JsonObject as Rule
+
 type AnimationRig = Literal['R6', 'R15', 'unknown']
 
 _RANK: Final[dict[Mode, int]] = {'remove': 0, 'id': 1, 'cdn': 2, 'local': 3}

@@ -1,9 +1,14 @@
 """Logging utilities."""
 
+from __future__ import annotations
+
 import contextlib
 import threading
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from .paths import LOG_FILE, LOGS_DIR
 
@@ -15,7 +20,7 @@ class LogBuffer:
 
     def __init__(self) -> None:
         self._buffer: list[str] = []
-        self._callbacks: list[Any] = []
+        self._callbacks: list[Callable[[], None]] = []
         self._lock = threading.Lock()
         # Batching state
         self._pending_notifications = False
@@ -84,11 +89,11 @@ class LogBuffer:
         """Get all logs as a single text string."""
         return '\n'.join(self._buffer) if self._buffer else 'No logs yet.'
 
-    def add_callback(self, callback: Any) -> None:
+    def add_callback(self, callback: Callable[[], None]) -> None:
         """Add a callback to be notified when new logs are added."""
         self._callbacks.append(callback)
 
-    def remove_callback(self, callback: Any) -> None:
+    def remove_callback(self, callback: Callable[[], None]) -> None:
         """Remove a callback."""
         if callback in self._callbacks:
             self._callbacks.remove(callback)

@@ -33,9 +33,10 @@ class _LazyArrayInfo(TypedDict):
     loaded: bool
 
 
-def _preserve_tree_item(item: QTreeWidgetItem | None) -> QTreeWidgetItem:
-    if TYPE_CHECKING:
-        assert item is not None
+def _tree_item(item: QTreeWidgetItem | None) -> QTreeWidgetItem:
+    if item is None:
+        msg = 'Expected an existing tree item'
+        raise IndexError(msg)
     return item
 
 
@@ -381,7 +382,7 @@ class CacheJsonViewer(QWidget):
             return
         array_info['loaded'] = True
         if item.childCount() > 0:
-            item.removeChild(_preserve_tree_item(item.child(0)))
+            item.removeChild(_tree_item(item.child(0)))
         for index, value in enumerate(array_info['array_data']):
             self._add_node(item, f'[{index}]', value)
 
@@ -389,7 +390,7 @@ class CacheJsonViewer(QWidget):
     def _remove_loading_placeholder(item: QTreeWidgetItem) -> bool:
         if item.childCount() != 1:
             return False
-        first_child = _preserve_tree_item(item.child(0))
+        first_child = _tree_item(item.child(0))
         if first_child.text(0) != tr('cache_json.loading'):
             return False
         item.removeChild(first_child)
@@ -435,12 +436,12 @@ class CacheJsonViewer(QWidget):
             # Trigger expansion signal to load lazy children
             item.setExpanded(True)
             for i in range(item.childCount()):
-                expand_recursive(_preserve_tree_item(item.child(i)))
+                expand_recursive(_tree_item(item.child(i)))
 
         self.tree.setUpdatesEnabled(False)
         try:
             for i in range(self.tree.topLevelItemCount()):
-                expand_recursive(_preserve_tree_item(self.tree.topLevelItem(i)))
+                expand_recursive(_tree_item(self.tree.topLevelItem(i)))
         finally:
             self.tree.setUpdatesEnabled(True)
 
@@ -450,12 +451,12 @@ class CacheJsonViewer(QWidget):
         def collapse_recursive(item: QTreeWidgetItem) -> None:
             item.setExpanded(False)
             for i in range(item.childCount()):
-                collapse_recursive(_preserve_tree_item(item.child(i)))
+                collapse_recursive(_tree_item(item.child(i)))
 
         self.tree.setUpdatesEnabled(False)
         try:
             for i in range(self.tree.topLevelItemCount()):
-                collapse_recursive(_preserve_tree_item(self.tree.topLevelItem(i)))
+                collapse_recursive(_tree_item(self.tree.topLevelItem(i)))
         finally:
             self.tree.setUpdatesEnabled(True)
 
@@ -488,10 +489,10 @@ class CacheJsonViewer(QWidget):
             if query in item.text(0).lower():
                 self._search_matches.append(item)
             for i in range(item.childCount()):
-                search_item(_preserve_tree_item(item.child(i)))
+                search_item(_tree_item(item.child(i)))
 
         for i in range(self.tree.topLevelItemCount()):
-            search_item(_preserve_tree_item(self.tree.topLevelItem(i)))
+            search_item(_tree_item(self.tree.topLevelItem(i)))
 
         if self._search_matches:
             # Show nav buttons when matches found
@@ -570,12 +571,12 @@ class CacheJsonViewer(QWidget):
                 paths.add(path)
                 # Only recurse when expanded — lazy-unloaded children are dummies
                 for i in range(item.childCount()):
-                    child = _preserve_tree_item(item.child(i))
+                    child = _tree_item(item.child(i))
                     key = child.text(0).split(':')[0].strip().strip('[]')
                     walk(child, (*path, key))
 
         for i in range(self.tree.topLevelItemCount()):
-            item = _preserve_tree_item(self.tree.topLevelItem(i))
+            item = _tree_item(self.tree.topLevelItem(i))
             key = item.text(0).split(':')[0].strip().strip('[]')
             walk(item, (key,))
 
@@ -589,13 +590,13 @@ class CacheJsonViewer(QWidget):
                 # setExpanded(True) fires itemExpanded → _on_item_expanded → loads real children
                 item.setExpanded(True)
                 for i in range(item.childCount()):
-                    child = _preserve_tree_item(item.child(i))
+                    child = _tree_item(item.child(i))
                     key = child.text(0).split(':')[0].strip().strip('[]')
                     walk(child, (*path, key))
             # If path is not in saved set, leave collapsed (children are still dummy nodes)
 
         for i in range(self.tree.topLevelItemCount()):
-            item = _preserve_tree_item(self.tree.topLevelItem(i))
+            item = _tree_item(self.tree.topLevelItem(i))
             key = item.text(0).split(':')[0].strip().strip('[]')
             walk(item, (key,))
 
@@ -608,10 +609,10 @@ class CacheJsonViewer(QWidget):
             item_id = id(item)
             expansion_state[item_id] = item.isExpanded()
             for i in range(item.childCount()):
-                store_expansion(_preserve_tree_item(item.child(i)))
+                store_expansion(_tree_item(item.child(i)))
 
         for i in range(self.tree.topLevelItemCount()):
-            store_expansion(_preserve_tree_item(self.tree.topLevelItem(i)))
+            store_expansion(_tree_item(self.tree.topLevelItem(i)))
 
         # Walk tree and toggle visibility based on filtering
         def apply_filtering(item: QTreeWidgetItem) -> None:
@@ -626,10 +627,10 @@ class CacheJsonViewer(QWidget):
                 item.setHidden(should_skip)
 
             for i in range(item.childCount()):
-                apply_filtering(_preserve_tree_item(item.child(i)))
+                apply_filtering(_tree_item(item.child(i)))
 
         for i in range(self.tree.topLevelItemCount()):
-            apply_filtering(_preserve_tree_item(self.tree.topLevelItem(i)))
+            apply_filtering(_tree_item(self.tree.topLevelItem(i)))
 
         # Restore expansion state for visible items
         def restore_expansion(item: QTreeWidgetItem) -> None:
@@ -637,7 +638,7 @@ class CacheJsonViewer(QWidget):
             if item_id in expansion_state and not item.isHidden():
                 item.setExpanded(expansion_state[item_id])
             for i in range(item.childCount()):
-                restore_expansion(_preserve_tree_item(item.child(i)))
+                restore_expansion(_tree_item(item.child(i)))
 
         for i in range(self.tree.topLevelItemCount()):
-            restore_expansion(_preserve_tree_item(self.tree.topLevelItem(i)))
+            restore_expansion(_tree_item(self.tree.topLevelItem(i)))

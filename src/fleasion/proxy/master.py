@@ -53,6 +53,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, Self, TypedDict, TypeIs, cast
 
 if TYPE_CHECKING:
+    from .types import (
+        AutoReplaceRule as AutoReplaceRule,
+        ModuleInterceptor as _ModuleInterceptor,
+        ProxyRequestLogEntry as ProxyRequestLogEntry,
+    )
+
     winreg: _WinregLike
 
     from fleasion.config.manager import ConfigManager
@@ -109,10 +115,7 @@ from .server import (
     INTERCEPT_HOSTS,
     PROXY_TLS_MAX_VERSION,
     USERNAME_SPOOFER_INTERCEPT_HOSTS,
-    AutoReplaceRule,
     FleasionProxy,
-    ProxyFlow,
-    ProxyRequestLogEntry,
 )
 from .upstream import HttpProxyConfig, Socks5ProxyConfig, UpstreamEndpoint, UpstreamMode
 from .windows_proxy import WindowsProxyInfo, detect_windows_proxy, detected_http_proxy
@@ -249,12 +252,6 @@ class _ProxyServerState(TypedDict):
     use_linux_helper: bool
     env_proxy_intercept_excluded_hosts: set[str]
     listen_port: int
-
-
-class _ModuleInterceptor(Protocol):
-    def request(self, flow: ProxyFlow) -> None: ...
-
-    def response(self, flow: ProxyFlow) -> None: ...
 
 
 class _BinaryLineFile(Protocol):
@@ -897,24 +894,19 @@ def _endpoint_ip_candidates(
 def _set_proxy_upstream_endpoints(
     proxy: FleasionProxy, endpoints: dict[str, list[UpstreamEndpoint]]
 ) -> None:
-    proxy.set_upstream_endpoints(cast('dict[str, Sequence[UpstreamEndpoint | str]]', endpoints))
+    proxy.set_upstream_endpoints(endpoints)
 
 
 def _set_cache_scraper_real_ips(
     scraper: CacheScraper, real_ips: dict[str, tuple[str, ...]]
 ) -> None:
-    setter = cast(
-        'Callable[[dict[str, tuple[str, ...]]], None]',
-        scraper.set_real_ips,
-    )
-    setter(real_ips)
+    scraper.set_real_ips(real_ips)
 
 
 def _set_cache_scraper_http_proxy_fallback(
     scraper: CacheScraper, proxy: HttpProxyConfig | None
 ) -> None:
-    setter = cast('Callable[[HttpProxyConfig | None], None]', scraper.set_http_proxy_fallback)
-    setter(proxy)
+    scraper.set_http_proxy_fallback(proxy)
 
 
 def _log_system_proxy_info(info: WindowsProxyInfo, system_proxy: HttpProxyConfig | None) -> None:

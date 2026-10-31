@@ -69,7 +69,7 @@ from fleasion.utils import (
 if TYPE_CHECKING:
     from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.config.manager import ConfigManager
-    from fleasion.gui.modifications_tab import CustomFFlagHotkeyController
+    from fleasion.gui.hotkeys.types import CustomFFlagHotkeyController
     from fleasion.modifications.manager import ModificationManager
     from fleasion.proxy.addons.cache_scraper import CacheScraper
     from fleasion.proxy.env_lifecycle import EnvProxyLifecycleController

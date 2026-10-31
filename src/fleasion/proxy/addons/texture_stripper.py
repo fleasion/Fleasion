@@ -38,7 +38,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from fleasion.cache.tools.solidmodel_converter.rbxm.types import RbxDocument, RbxProperty
-    from fleasion.config.manager import ConfigManager, ReplacementMaps
+    from fleasion.config.manager import ConfigManager
+    from fleasion.config.types import ReplacementMaps
     from fleasion.utils.r15_to_r6 import JointMap, PartMap
 
 type _BuildType = int | str | None
@@ -544,30 +545,6 @@ def _composite_orm(
         normal_source=normal_source,
         normal_baseline=normal_baseline,
     )
-
-
-def _preserve_replacement_key(value: object) -> _ReplacementKey:
-    if TYPE_CHECKING:
-        assert isinstance(value, str | int)
-    return value
-
-
-def _preserve_asset_id(value: object) -> _ReplacementKey | None:
-    if TYPE_CHECKING:
-        assert value is None or isinstance(value, str | int)
-    return value
-
-
-def _preserve_location(value: object) -> str | None:
-    if TYPE_CHECKING:
-        assert value is None or isinstance(value, str)
-    return value
-
-
-def _preserve_optional_str(value: object) -> str | None:
-    if TYPE_CHECKING:
-        assert value is None or isinstance(value, str)
-    return value
 
 
 def _mipmap_mode(map_index: int | None) -> _MipmapMode:
@@ -1466,8 +1443,10 @@ class TextureStripper:
         if isinstance(key, str) and ':' in key:
             return False
         # Numeric asset ID — look up via economy API
+        if not isinstance(key, int | str) or isinstance(key, bool):
+            return False
         try:
-            aid = int(_preserve_replacement_key(key))
+            aid = int(key)
         except TypeError, ValueError:
             return False
         return self._is_anim_asset_id(aid)
@@ -1970,11 +1949,9 @@ class TextureStripper:
                 continue
             # KTX2/KTX paths (e.g. blank placeholder) are not valid scalar PNG
             # sources; treat them as None = zero out the requested ORM channel.
-            cv_value = _preserve_optional_str(cv)
+            cv_value = cv
             cv_resolved: str | None = (
-                None
-                if (cv_value is not None and cv_value.lower().endswith(('.ktx2', '.ktx')))
-                else cv_value
+                None if (cv_value.lower().endswith(('.ktx2', '.ktx'))) else cv_value
             )
             orm_overrides.setdefault(pk_key, {})[ch] = cv_resolved
         for idx, e in enumerate(data):
@@ -2208,7 +2185,8 @@ class TextureStripper:
         normal_overrides: dict[int | str, str | int | None],
     ) -> None:
         req_id_raw = str(item.get('requestId', ''))
-        location = _preserve_location(item.get('location'))
+        location_value = item.get('location')
+        location = location_value if isinstance(location_value, str) else None
         base_loc = location.split('?')[0] if location else ''
 
         pending_key = ''
@@ -2373,11 +2351,9 @@ class TextureStripper:
             ch = global_index_channel.get(gi)
             if not ch:
                 continue
-            cv_value = _preserve_optional_str(cv)
+            cv_value = cv
             cv_resolved: str | None = (
-                None
-                if (cv_value is not None and str(cv_value).lower().endswith(('.ktx2', '.ktx')))
-                else cv_value
+                None if (cv_value.lower().endswith(('.ktx2', '.ktx'))) else cv_value
             )
             orm_overrides.setdefault(pk_key, {})[ch] = cv_resolved
 
@@ -3019,11 +2995,11 @@ class TextureStripper:
     def _get_type_keys(self, e: _JsonObject) -> list[_ReplacementKey]:
         keys: list[_ReplacementKey] = []
         at_id = e.get('assetTypeId')
-        if at_id is not None:
-            keys.append(_preserve_replacement_key(at_id))
+        if isinstance(at_id, int | str) and not isinstance(at_id, bool):
+            keys.append(at_id)
         at_name = e.get('assetType')
-        if at_name:
-            keys.append(_preserve_replacement_key(at_name))
+        if isinstance(at_name, int | str) and not isinstance(at_name, bool) and at_name:
+            keys.append(at_name)
             mapped = self._REVERSE.get(str(at_name).lower())
             if mapped is not None:
                 keys.append(mapped)
@@ -3033,7 +3009,7 @@ class TextureStripper:
     def _normalize_asset_id(asset_id: object) -> _ReplacementKey | None:
         """Normalize JSON numeric-string asset IDs to ints for config matching."""
         if isinstance(asset_id, bool):
-            return asset_id
+            return None
         if isinstance(asset_id, int):
             return asset_id
         if isinstance(asset_id, str) and asset_id.isdigit():
@@ -3041,7 +3017,7 @@ class TextureStripper:
                 return int(asset_id)
             except ValueError:
                 return asset_id
-        return _preserve_asset_id(asset_id)
+        return asset_id if isinstance(asset_id, str) else None
 
     @staticmethod
     def _get_texpack_map_index(e: _JsonObject) -> int | None:

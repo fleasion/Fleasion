@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Protocol, TypeIs
+from typing import Protocol, TypeGuard
 
 if sys.platform == 'darwin':
     from fleasion.utils.platform_macos import find_roblox_resource_dirs
@@ -33,7 +33,7 @@ class _CustomFFlagConfig(Protocol):
     def custom_fflags(self) -> object: ...
 
 
-def _is_custom_fflag_config(value: object) -> TypeIs[_CustomFFlagConfig]:
+def _is_custom_fflag_config(value: object) -> TypeGuard[_CustomFFlagConfig]:
     return isinstance(getattr(value, 'custom_fflags_enabled', None), bool) and isinstance(
         getattr(value, 'custom_fflags', None), dict
     )

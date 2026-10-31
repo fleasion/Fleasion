@@ -5,7 +5,8 @@ from typing import Never, cast
 import pytest
 
 from fleasion.cache import cache_manager as cache_manager_module, mesh_rig
-from fleasion.cache.cache_manager import AssetEntry, CacheManager
+from fleasion.cache.cache_manager import CacheManager
+from fleasion.cache.types import AssetEntry
 
 MODEL_XML = b"""<roblox version="4">
 <Item class="Folder" referent="RBX0">

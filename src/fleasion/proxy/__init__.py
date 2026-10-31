@@ -1,7 +1,7 @@
 """Proxy package."""
 
 import importlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .master import (
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 __all__ = ['ProxyMaster', 'check_and_patch_running_roblox_ca']
 
 
-def __getattr__(name: str) -> object:
+def __getattr__(name: str) -> Any:
     if name in __all__:
         master = importlib.import_module('.master', __name__)
         values = {

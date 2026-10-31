@@ -75,7 +75,7 @@ class _SoundDeviceModule(Protocol):
 
 
 def _import_sounddevice_runtime() -> _SoundDeviceModule:
-    import sounddevice  # pyright: ignore[reportMissingTypeStubs]  # ruff: ignore[import-outside-top-level]
+    import sounddevice  # pyright: ignore[reportMissingTypeStubs]
 
     return sounddevice  # pyright: ignore[reportReturnType]
 
@@ -349,7 +349,7 @@ class AudioPlayerWidget(QWidget):
         button_time_layout.addStretch()
 
         self.play_pause_btn = QPushButton(tr('ui.cache.audio_player.text'))
-        self.play_pause_btn.clicked.connect(self._toggle_play_pause)
+        self.play_pause_btn.clicked.connect(self.toggle_play_pause)
         self.play_pause_btn.setFixedSize(32, 32)
         self.play_pause_btn.setToolTip(tr('ui.cache.audio_player.play_pause'))
         button_time_layout.addWidget(self.play_pause_btn)
@@ -374,7 +374,7 @@ class AudioPlayerWidget(QWidget):
 
         self.setLayout(layout)
 
-    def _toggle_play_pause(self) -> None:
+    def toggle_play_pause(self) -> None:
         """Toggle play/pause state."""
         if not self.is_playing:
             self._play()

@@ -1,7 +1,7 @@
 """Cache module for storing and viewing intercepted Roblox assets."""
 
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .cache_manager import CacheManager
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 __all__ = ['CacheManager', 'CacheViewerTab']
 
 
-def __getattr__(name: str) -> object:
+def __getattr__(name: str) -> Any:
     if name == 'CacheManager':
         return import_module('.cache_manager', __name__).CacheManager
     if name == 'CacheViewerTab':

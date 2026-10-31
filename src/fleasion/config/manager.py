@@ -12,16 +12,27 @@ from copy import deepcopy
 from dataclasses import dataclass
 from operator import itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeIs
+from typing import TYPE_CHECKING, Literal, TypeGuard, TypeIs
 
 from fleasion.appearance import accent_name, appearance_style, color_mode
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object, is_json_value
 from fleasion.utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
 
+from .values import bool_value, int_value, parse_int, str_value, string_list
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from fleasion.appearance import AppearanceStyle, ColorMode
+
+    from .types import (
+        FileSignature,
+        ReplacementKey,
+        ReplacementMaps,
+        ReplacementMode,
+        ReplacementRules,
+        ReplacementsSignature,
+    )
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
@@ -39,17 +50,6 @@ _MOUSE_WHEEL_DIRECTIONS = ('up', 'down')
 _LINUX_MOUSE_BUTTON_CODES = frozenset({0x110, 0x111, 0x112, 0x113, 0x114})
 _WINDOWS_MOUSE_BUTTON_CODES = frozenset({1, 2, 4, 5, 6})
 _WINDOWS_HOTKEY_PLATFORMS = (None, 'windows')
-type ReplacementRules = list[JsonValue]
-type ReplacementKey = int | str
-type ReplacementMode = Literal['remove', 'id', 'cdn', 'local']
-type ReplacementMaps = tuple[
-    dict[ReplacementKey, int],
-    set[ReplacementKey],
-    dict[ReplacementKey, str],
-    dict[ReplacementKey, str],
-]
-type FileSignature = tuple[int, int] | None
-type ReplacementsSignature = tuple[tuple[str, FileSignature], ...]
 type ObjectCollection = list[object] | tuple[object, ...] | set[object]
 
 
@@ -61,41 +61,8 @@ def _is_object_collection(value: object) -> TypeIs[ObjectCollection]:
     return isinstance(value, list | tuple | set)
 
 
-def _is_object_list(value: object) -> TypeIs[list[object]]:
-    return isinstance(value, list)
-
-
-def _preserve_runtime_type[T](value: object, expected_type: type[T]) -> T:
-    """Describe an existing runtime contract without coercing its value."""
-    if TYPE_CHECKING:
-        assert isinstance(value, expected_type)
-    return value
-
-
-def _preserve_int_convertible(value: object) -> str | int | float:
-    if TYPE_CHECKING:
-        assert isinstance(value, str | int | float)
-    return value
-
-
-def _preserve_path_value(value: object) -> str | Path:
-    if TYPE_CHECKING:
-        assert isinstance(value, str | Path)
-    return value
-
-
 def _replacement_rules(value: JsonValue) -> ReplacementRules:
     return value if isinstance(value, list) else []
-
-
-def _is_str_list(value: object) -> TypeIs[list[str]]:
-    return _is_object_list(value) and all(isinstance(item, str) for item in value)
-
-
-def _preserve_str_list(value: object) -> list[str]:
-    if TYPE_CHECKING:
-        assert _is_str_list(value)
-    return value
 
 
 _FALLBACK_JSON_ENCODINGS = (
@@ -355,15 +322,15 @@ def _apply_replacement_rule(rule: JsonObject, targets: ReplacementMaps) -> None:
         return
     if mode == 'cdn':
         cdn_url = rule.get('cdn_url')
-        if cdn_url:
-            cdn_replacements.update(dict.fromkeys(parsed_ids, _preserve_runtime_type(cdn_url, str)))
+        if isinstance(cdn_url, str) and cdn_url:
+            cdn_replacements.update(dict.fromkeys(parsed_ids, cdn_url))
         else:
             removals.update(parsed_ids)
         return
     if mode == 'local':
         local_path = rule.get('local_path')
-        if local_path:
-            resolved_path = str(resolve_local_replacement_path(_preserve_path_value(local_path)))
+        if isinstance(local_path, str) and local_path:
+            resolved_path = str(resolve_local_replacement_path(local_path))
             local_replacements.update(dict.fromkeys(parsed_ids, resolved_path))
         else:
             removals.update(parsed_ids)
@@ -595,7 +562,7 @@ def _normalize_custom_fflag_folders(value: object) -> dict[str, list[str]]:
     return normalized
 
 
-def _valid_scan_code(value: object, maximum: int) -> TypeIs[int]:
+def _valid_scan_code(value: object, maximum: int) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= maximum
 
 
@@ -604,12 +571,17 @@ def _normalize_mouse_wheel_binding(
     direction: object,
     modifiers: int,
 ) -> dict[str, int | str] | None:
-    if platform not in _MOUSE_WHEEL_PLATFORMS or direction not in _MOUSE_WHEEL_DIRECTIONS:
+    if (
+        not isinstance(platform, str)
+        or not isinstance(direction, str)
+        or platform not in _MOUSE_WHEEL_PLATFORMS
+        or direction not in _MOUSE_WHEEL_DIRECTIONS
+    ):
         return None
     return {
-        'platform': _preserve_runtime_type(platform, str),
+        'platform': platform,
         'kind': 'mouse_wheel',
-        'direction': _preserve_runtime_type(direction, str),
+        'direction': direction,
         'modifiers': modifiers,
     }
 
@@ -1011,7 +983,7 @@ class ConfigManager:
     @property
     def strip_textures(self) -> bool:
         """Get strip textures setting."""
-        return _preserve_runtime_type(self.settings.get('strip_textures', False), bool)
+        return bool_value(self.settings.get('strip_textures', False), default=False)
 
     @strip_textures.setter
     def strip_textures(self, value: bool) -> None:
@@ -1093,7 +1065,7 @@ class ConfigManager:
     def language(self) -> str:
         """Return a supported language code, falling back to English."""
         normalize_language = importlib.import_module('fleasion.localization').normalize_language
-        return normalize_language(_preserve_runtime_type(self.settings.get('language', 'en'), str))
+        return normalize_language(str_value(self.settings.get('language', 'en'), 'en'))
 
     @language.setter
     def language(self, value: str) -> None:
@@ -1105,7 +1077,7 @@ class ConfigManager:
     @property
     def audio_volume(self) -> int:
         """Get audio volume setting (0-100)."""
-        return _preserve_runtime_type(self.settings.get('audio_volume', 70), int)
+        return int_value(self.settings.get('audio_volume', 70), 70)
 
     @audio_volume.setter
     def audio_volume(self, value: int) -> None:
@@ -1116,7 +1088,7 @@ class ConfigManager:
     @property
     def always_on_top(self) -> bool:
         """Get always on top setting."""
-        return _preserve_runtime_type(self.settings.get('always_on_top', False), bool)
+        return bool_value(self.settings.get('always_on_top', False), default=False)
 
     @always_on_top.setter
     def always_on_top(self, value: bool) -> None:
@@ -1127,7 +1099,7 @@ class ConfigManager:
     @property
     def open_dashboard_on_launch(self) -> bool:
         """Get open dashboard on launch setting."""
-        return _preserve_runtime_type(self.settings.get('open_dashboard_on_launch', True), bool)
+        return bool_value(self.settings.get('open_dashboard_on_launch', True), default=True)
 
     @open_dashboard_on_launch.setter
     def open_dashboard_on_launch(self, value: bool) -> None:
@@ -1138,7 +1110,7 @@ class ConfigManager:
     @property
     def first_time_setup_complete(self) -> bool:
         """Get first time setup complete flag."""
-        return _preserve_runtime_type(self.settings.get('first_time_setup_complete', False), bool)
+        return bool_value(self.settings.get('first_time_setup_complete', False), default=False)
 
     @first_time_setup_complete.setter
     def first_time_setup_complete(self, value: bool) -> None:
@@ -1149,7 +1121,7 @@ class ConfigManager:
     @property
     def auto_delete_cache_on_exit(self) -> bool:
         """Get auto delete cache on Roblox exit setting."""
-        return _preserve_runtime_type(self.settings.get('auto_delete_cache_on_exit', True), bool)
+        return bool_value(self.settings.get('auto_delete_cache_on_exit', True), default=True)
 
     @auto_delete_cache_on_exit.setter
     def auto_delete_cache_on_exit(self, value: bool) -> None:
@@ -1160,7 +1132,7 @@ class ConfigManager:
     @property
     def clear_cache_on_launch(self) -> bool:
         """Get clear cache on launch setting."""
-        return _preserve_runtime_type(self.settings.get('clear_cache_on_launch', True), bool)
+        return bool_value(self.settings.get('clear_cache_on_launch', True), default=True)
 
     @clear_cache_on_launch.setter
     def clear_cache_on_launch(self, value: bool) -> None:
@@ -1171,7 +1143,7 @@ class ConfigManager:
     @property
     def proxy_features_enabled(self) -> bool:
         """Get proxy feature toggle."""
-        return _preserve_runtime_type(self.settings.get('proxy_features_enabled', True), bool)
+        return bool_value(self.settings.get('proxy_features_enabled', True), default=True)
 
     @proxy_features_enabled.setter
     def proxy_features_enabled(self, value: bool) -> None:
@@ -1443,11 +1415,7 @@ class ConfigManager:
                 0,
                 min(
                     65535,
-                    int(
-                        _preserve_int_convertible(
-                            self.settings.get('upstream_http_connect_port', 0) or 0
-                        )
-                    ),
+                    parse_int(self.settings.get('upstream_http_connect_port', 0) or 0, 0),
                 ),
             )
         except TypeError, ValueError:
@@ -1492,9 +1460,7 @@ class ConfigManager:
                 0,
                 min(
                     65535,
-                    int(
-                        _preserve_int_convertible(self.settings.get('upstream_socks5_port', 0) or 0)
-                    ),
+                    parse_int(self.settings.get('upstream_socks5_port', 0) or 0, 0),
                 ),
             )
         except TypeError, ValueError:
@@ -1530,10 +1496,8 @@ class ConfigManager:
                 1,
                 min(
                     128,
-                    int(
-                        _preserve_int_convertible(
-                            self.settings.get('vpn_compat_max_assetdelivery_connections', 16) or 16
-                        )
+                    parse_int(
+                        self.settings.get('vpn_compat_max_assetdelivery_connections', 16) or 16, 16
                     ),
                 ),
             )
@@ -1554,11 +1518,7 @@ class ConfigManager:
                 1,
                 min(
                     256,
-                    int(
-                        _preserve_int_convertible(
-                            self.settings.get('vpn_compat_max_cdn_connections', 32) or 32
-                        )
-                    ),
+                    parse_int(self.settings.get('vpn_compat_max_cdn_connections', 32) or 32, 32),
                 ),
             )
         except TypeError, ValueError:
@@ -1571,7 +1531,7 @@ class ConfigManager:
 
     @property
     def run_on_boot(self) -> bool:
-        return _preserve_runtime_type(self.settings.get('run_on_boot', False), bool)
+        return bool_value(self.settings.get('run_on_boot', False), default=False)
 
     @run_on_boot.setter
     def run_on_boot(self, value: bool) -> None:
@@ -1580,7 +1540,7 @@ class ConfigManager:
 
     @property
     def desktop_integration(self) -> bool:
-        return _preserve_runtime_type(self.settings.get('desktop_integration', True), bool)
+        return bool_value(self.settings.get('desktop_integration', True), default=True)
 
     @desktop_integration.setter
     def desktop_integration(self, value: bool) -> None:
@@ -1590,7 +1550,7 @@ class ConfigManager:
     @property
     def close_to_tray(self) -> bool:
         """Get close to tray setting."""
-        return _preserve_runtime_type(self.settings.get('close_to_tray', True), bool)
+        return bool_value(self.settings.get('close_to_tray', True), default=True)
 
     @close_to_tray.setter
     def close_to_tray(self, value: bool) -> None:
@@ -1601,7 +1561,7 @@ class ConfigManager:
     @property
     def multi_instance_launching(self) -> bool:
         """Get multi-instance launching setting."""
-        return _preserve_runtime_type(self.settings.get('multi_instance_launching', False), bool)
+        return bool_value(self.settings.get('multi_instance_launching', False), default=False)
 
     @multi_instance_launching.setter
     def multi_instance_launching(self, value: bool) -> None:
@@ -1611,7 +1571,7 @@ class ConfigManager:
 
     @property
     def close_scraped_games_on_open(self) -> bool:
-        return _preserve_runtime_type(self.settings.get('close_scraped_games_on_open', True), bool)
+        return bool_value(self.settings.get('close_scraped_games_on_open', True), default=True)
 
     @close_scraped_games_on_open.setter
     def close_scraped_games_on_open(self, value: bool) -> None:
@@ -1620,9 +1580,7 @@ class ConfigManager:
 
     @property
     def close_scraped_games_menu_on_open(self) -> bool:
-        return _preserve_runtime_type(
-            self.settings.get('close_scraped_games_menu_on_open', True), bool
-        )
+        return bool_value(self.settings.get('close_scraped_games_menu_on_open', True), default=True)
 
     @close_scraped_games_menu_on_open.setter
     def close_scraped_games_menu_on_open(self, value: bool) -> None:
@@ -1631,7 +1589,7 @@ class ConfigManager:
 
     @property
     def close_viewer_on_replace(self) -> bool:
-        return _preserve_runtime_type(self.settings.get('close_viewer_on_replace', True), bool)
+        return bool_value(self.settings.get('close_viewer_on_replace', True), default=True)
 
     @close_viewer_on_replace.setter
     def close_viewer_on_replace(self, value: bool) -> None:
@@ -1641,7 +1599,7 @@ class ConfigManager:
     @property
     def show_replacer_notifications(self) -> bool:
         """Get show replacer notifications setting."""
-        return _preserve_runtime_type(self.settings.get('show_replacer_notifications', True), bool)
+        return bool_value(self.settings.get('show_replacer_notifications', True), default=True)
 
     @show_replacer_notifications.setter
     def show_replacer_notifications(self, value: bool) -> None:
@@ -1652,7 +1610,7 @@ class ConfigManager:
     @property
     def window_geometry(self) -> str:
         """Get the saved window geometry (hex string)."""
-        return _preserve_runtime_type(self.settings.get('window_geometry', ''), str)
+        return str_value(self.settings.get('window_geometry', ''), '')
 
     @window_geometry.setter
     def window_geometry(self, value: str) -> None:
@@ -1671,9 +1629,7 @@ class ConfigManager:
 
     @property
     def skip_non_player_anim_replace(self) -> bool:
-        return _preserve_runtime_type(
-            self.settings.get('skip_non_player_anim_replace', False), bool
-        )
+        return bool_value(self.settings.get('skip_non_player_anim_replace', False), default=False)
 
     @skip_non_player_anim_replace.setter
     def skip_non_player_anim_replace(self, value: bool) -> None:
@@ -1682,7 +1638,7 @@ class ConfigManager:
 
     @property
     def scraper_blacklist(self) -> list[str]:
-        return _preserve_str_list(self.settings.get('scraper_blacklist', []))
+        return string_list(self.settings.get('scraper_blacklist', []))
 
     @scraper_blacklist.setter
     def scraper_blacklist(self, value: list[str]) -> None:
@@ -1692,7 +1648,7 @@ class ConfigManager:
 
     @property
     def subplace_blacklist(self) -> list[str]:
-        return _preserve_str_list(self.settings.get('subplace_blacklist', []))
+        return string_list(self.settings.get('subplace_blacklist', []))
 
     @subplace_blacklist.setter
     def subplace_blacklist(self, value: list[str]) -> None:
@@ -1754,7 +1710,7 @@ class ConfigManager:
 
     @property
     def show_names(self) -> bool:
-        return _preserve_runtime_type(self.settings.get('show_names', True), bool)
+        return bool_value(self.settings.get('show_names', True), default=True)
 
     @show_names.setter
     def show_names(self, value: bool) -> None:
@@ -1763,7 +1719,7 @@ class ConfigManager:
 
     @property
     def show_creator_id(self) -> bool:
-        return _preserve_runtime_type(self.settings.get('show_creator_id', False), bool)
+        return bool_value(self.settings.get('show_creator_id', False), default=False)
 
     @show_creator_id.setter
     def show_creator_id(self, value: bool) -> None:
@@ -1773,7 +1729,7 @@ class ConfigManager:
     @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
-        return _preserve_str_list(self.settings.get('export_naming', ['name', 'id']))
+        return string_list(self.settings.get('export_naming', ['name', 'id']), ('name', 'id'))
 
     @export_naming.setter
     def export_naming(self, value: list[str]) -> None:
@@ -1804,7 +1760,7 @@ class ConfigManager:
         current_configs = set(self.config_names)
         return [
             name
-            for name in _preserve_str_list(self.settings.get('enabled_configs', []))
+            for name in string_list(self.settings.get('enabled_configs', []))
             if name in current_configs
         ]
 
@@ -1863,14 +1819,14 @@ class ConfigManager:
         current_configs = self.config_names
         changed = False
 
-        enabled = _preserve_str_list(self.settings.get('enabled_configs', []))
+        enabled = string_list(self.settings.get('enabled_configs', []))
         cleaned_enabled = [name for name in enabled if name in current_configs]
         if cleaned_enabled != enabled:
             values: list[JsonValue] = [*cleaned_enabled]
             self.settings['enabled_configs'] = values
             changed = True
 
-        last_config = _preserve_runtime_type(self.settings.get('last_config', 'Default'), str)
+        last_config = str_value(self.settings.get('last_config', 'Default'), 'Default')
         if last_config not in current_configs:
             self.settings['last_config'] = current_configs[0] if current_configs else 'Default'
             changed = True
@@ -1883,7 +1839,7 @@ class ConfigManager:
     def last_config(self) -> str:
         """Get the last displayed config."""
         self.reconcile_configs()
-        return _preserve_runtime_type(self.settings.get('last_config', 'Default'), str)
+        return str_value(self.settings.get('last_config', 'Default'), 'Default')
 
     @last_config.setter
     def last_config(self, value: str) -> None:
@@ -1947,7 +1903,7 @@ class ConfigManager:
     @property
     def time_wasted_seconds(self) -> int:
         """Get total time wasted in seconds (cumulative across sessions)."""
-        return _preserve_runtime_type(self.settings.get('time_wasted_seconds', 0), int)
+        return int_value(self.settings.get('time_wasted_seconds', 0), 0)
 
     @time_wasted_seconds.setter
     def time_wasted_seconds(self, value: int) -> None:

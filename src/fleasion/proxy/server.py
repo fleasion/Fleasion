@@ -41,7 +41,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 from fleasion.utils.json_types import JsonValue, require_json_value
@@ -49,11 +49,19 @@ from fleasion.utils.json_types import JsonValue, require_json_value
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 
+    from fleasion.config.types import (
+        ReplacementMaps as _ReplacementMaps,
+    )
     from fleasion.utils.logging import LogBuffer
 
     from .addons.cache_scraper import CacheScraper
     from .addons.custom_fflags import CustomFFlagModifier
     from .addons.texture_stripper import TextureStripper
+    from .types import (
+        AutoReplaceRule as AutoReplaceRule,
+        ModuleInterceptor as _ModuleInterceptor,
+        ProxyRequestLogEntry as ProxyRequestLogEntry,
+    )
 
 from .roblox_metadata import strip_roblox_metadata
 from .upstream import (
@@ -105,13 +113,6 @@ _DCZ_DICTIONARY_PATH_RE = re.compile(r'/([0-9a-f]{64})\.dcz(?:$|[?])', re.IGNORE
 type _JsonPathTarget = tuple[list[JsonValue], int] | tuple[dict[str, JsonValue], str]
 type _AnimRequiredRig = str | frozenset[str]
 type _AnimPendingValue = tuple[str, _AnimRequiredRig]
-type _ReplacementKey = int | str
-type _ReplacementMaps = tuple[
-    dict[_ReplacementKey, int],
-    set[_ReplacementKey],
-    dict[_ReplacementKey, str],
-    dict[_ReplacementKey, str],
-]
 
 _CREATE_PENDING_ATTR = '_create_pending'
 _RESOLVE_PENDING_ATTR = '_resolve_pending'
@@ -276,41 +277,6 @@ def _get_anim_converter() -> _AnimConverterModule:
         '_AnimConverterModule',
         importlib.import_module('fleasion.utils.anim_converter'),
     )
-
-
-class AutoReplaceRule(TypedDict, total=False):
-    enabled: bool
-    direction: str
-    host_filter: str
-    path_filter: str
-    type: str
-    match: str
-    replacement: str
-
-
-class ProxyRequestLogEntry(TypedDict):
-    id: int
-    time: float
-    host: str
-    port: int
-    method: str
-    path: str
-    intercepted: bool
-    status: int | None
-    size: int
-    ms: int | None
-    request_raw: bytes | bytearray | None
-    response_raw: bytes | bytearray | None
-    pending_stage: str | None
-    was_intercepted: bool
-    dropped_request: NotRequired[bool]
-    dropped_response: NotRequired[bool]
-
-
-class _ModuleInterceptor(Protocol):
-    def request(self, flow: ProxyFlow) -> None: ...
-
-    def response(self, flow: ProxyFlow) -> None: ...
 
 
 class _TextureBatchProcessor(Protocol):
@@ -1059,7 +1025,7 @@ class _ResponseTrackingWriter:
     def is_closing(self) -> bool:
         return self._writer.is_closing()
 
-    def __getattr__(self, name: str) -> object:
+    def __getattr__(self, name: str) -> Any:
         return getattr(self._writer, name)
 
 
@@ -1834,7 +1800,7 @@ class FleasionProxy:
         self._module_interceptors = list(interceptors)
 
     def set_upstream_endpoints(
-        self, endpoints: dict[str, Sequence[UpstreamEndpoint | str]]
+        self, endpoints: Mapping[str, Sequence[UpstreamEndpoint | str]]
     ) -> None:
         self._upstream_endpoints = normalize_endpoints(endpoints)
 

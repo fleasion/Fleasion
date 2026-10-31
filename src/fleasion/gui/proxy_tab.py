@@ -46,7 +46,7 @@ from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
 from .rules_dialog_ui import UiDialog as UiRulesDialog
 
 if TYPE_CHECKING:
-    from fleasion.proxy.server import (
+    from fleasion.proxy.types import (
         AutoReplaceRule as _AutoReplaceRule,
         ProxyRequestLogEntry as _TrafficEntry,
     )

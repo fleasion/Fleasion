@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import gzip as gzip_module
-import importlib
 import io
 import json
 import os
@@ -107,14 +106,10 @@ from .roblox_document import export_roblox_document, get_roblox_document_export_
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Generator, Iterator, Sequence
-    from types import TracebackType
 
-    from fleasion.config.manager import ConfigManager
     from fleasion.gui.replacer_config import ReplacerConfigWindow
-    from fleasion.utils.r15_to_r6 import JointMap, PartMap
 
     from .animation_viewer import AnimationViewerPanel
-    from .cache_manager import CacheIndex
     from .obj_viewer import ObjViewerPanel
     from .rbxm_preview import PreviewDocument
 
@@ -208,7 +203,7 @@ class CacheScraperSource(Protocol):
     def clear_tracking(self) -> None: ...
 
     @overload
-    def _https_get(
+    def https_get(
         self,
         hostname: str,
         path: str,
@@ -220,7 +215,7 @@ class CacheScraperSource(Protocol):
     ) -> bytes | None: ...
 
     @overload
-    def _https_get(
+    def https_get(
         self,
         hostname: str,
         path: str,
@@ -231,8 +226,8 @@ class CacheScraperSource(Protocol):
         return_status: Literal[True],
     ) -> tuple[bytes | None, int | None]: ...
 
-    def _fetch_asset_with_place_id_retry(
-        self, asset_id: str, extra_headers: dict[str, str] | None = None
+    def fetch_asset_with_place_id_retry(
+        self, asset_id: str, *, extra_headers: dict[str, str] | None = None
     ) -> tuple[bytes | None, int | None]: ...
 
 
@@ -270,36 +265,6 @@ class _ConstrainablePopup(Protocol):
     ) -> None: ...
 
 
-class _LockContext(Protocol):
-    def __enter__(self) -> object: ...
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> bool | None: ...
-
-
-class _HttpsGetCallable(Protocol):
-    def __call__(
-        self,
-        hostname: str,
-        path: str,
-        extra_headers: dict[str, str] | None = None,
-    ) -> bytes | None: ...
-
-
-class _FetchAssetRetryCallable(Protocol):
-    def __call__(
-        self, asset_id: str, extra_headers: dict[str, str] | None = None
-    ) -> tuple[bytes | None, int | None]: ...
-
-
-class _ExportObjCallable(Protocol):
-    def __call__(self, doc: object, output_path: Path, *, decompose: bool = False) -> None: ...
-
-
 def _set_tray_cache_scraper_enabled(tray: object, enabled: bool) -> bool:
     """Use the tray's compatibility hook without exposing private-member access at call sites."""
     setter = getattr(tray, '_set_cache_scraper_enabled', None)
@@ -307,12 +272,6 @@ def _set_tray_cache_scraper_enabled(tray: object, enabled: bool) -> bool:
         return False
     cast('Callable[[bool], None]', setter)(enabled)
     return True
-
-
-def _lazy_attr(module_name: str, attr_name: str) -> object:
-    """Load a deliberately lazy module attribute without importing it at startup."""
-    module = importlib.import_module(module_name, package=__package__)
-    return getattr(module, attr_name)
 
 
 def _optional_int(value: object) -> int | None:
@@ -401,65 +360,7 @@ def _open_export_path(target: Path, *, select_file: bool, export_dir: Path) -> N
     open_folder(target if target.is_dir() else export_dir)
 
 
-def _object_attribute(obj: object, name: str) -> object:
-    return cast('object', getattr(obj, name))
-
-
-def _cache_lock(cache_manager: CacheManager) -> _LockContext:
-    return cast('_LockContext', _object_attribute(cache_manager, '_lock'))
-
-
-def _schedule_cache_index_commit(cache_manager: CacheManager) -> None:
-    cast('Callable[[], None]', _object_attribute(cache_manager, '_schedule_index_commit'))()
-
-
-def _save_cache_index(cache_manager: CacheManager) -> None:
-    cast('Callable[[], None]', _object_attribute(cache_manager, '_save_index'))()
-
-
-def _detect_cache_extension(cache_manager: CacheManager, data: bytes, asset_type: int) -> str:
-    detector = cast(
-        'Callable[[bytes, int], str]', _object_attribute(cache_manager, '_detect_extension')
-    )
-    return detector(data, asset_type)
-
-
-def _scraper_https_get(
-    scraper: CacheScraperSource,
-    hostname: str,
-    path: str,
-    extra_headers: dict[str, str] | None,
-) -> bytes | None:
-    getter = cast('_HttpsGetCallable', _object_attribute(scraper, '_https_get'))
-    return getter(hostname, path, extra_headers=extra_headers)
-
-
-def _scraper_fetch_asset_with_place_id_retry(
-    scraper: CacheScraperSource,
-    asset_id: str,
-    extra_headers: dict[str, str] | None,
-) -> tuple[bytes | None, int | None]:
-    fetcher = cast(
-        '_FetchAssetRetryCallable',
-        _object_attribute(scraper, '_fetch_asset_with_place_id_retry'),
-    )
-    return fetcher(asset_id, extra_headers=extra_headers)
-
-
-def _set_rbxm_dirty(viewer: RbxmPreviewWidget, *, dirty: bool) -> None:
-    setter = cast('Callable[[bool], None]', _object_attribute(viewer, '_set_dirty'))
-    setter(dirty)
-
-
-def _toggle_audio_play_pause(player: AudioPlayerWidget) -> None:
-    toggle = cast('Callable[[], None]', _object_attribute(player, '_toggle_play_pause'))
-    toggle()
-
-
-asset_type_display_name = cast(
-    'Callable[[_AssetTypeFilter], str]',
-    _asset_type_filter.__dict__['asset_type_display_name'],
-)
+asset_type_display_name = _asset_type_filter.asset_type_display_name
 
 
 def _localized_asset_type_name(asset_type: int | str | None, raw_name: str | None = None) -> str:
@@ -743,14 +644,8 @@ class ImageLoaderThread(QThread):
     def _load_rgba(self) -> tuple[bytes, int, int] | None:
         log_buffer.log('Preview', f'Loading image ({len(self.data)} bytes)')
         data = self.data
-        ktx_convert = cast(
-            'Callable[[bytes], bytes | None]',
-            _lazy_attr('.tools.ktx_to_png', 'convert'),
-        )
-        strip_prefixed_ktx = cast(
-            'Callable[[bytes], bytes | None]',
-            _lazy_attr('.tools.ktx_to_png', 'strip_prefixed_ktx'),
-        )
+        from .tools.ktx_to_png import convert as ktx_convert, strip_prefixed_ktx
+
         ktx_payload = strip_prefixed_ktx(data)
         if ktx_payload is not None:
             log_buffer.log('Preview', 'KTX detected, converting to PNG...')
@@ -849,14 +744,8 @@ class SolidModelLoaderThread(QThread):
         if self._stop_requested:
             return None
 
-        deserialize_rbxm = cast(
-            'Callable[[bytes], object]',
-            _lazy_attr('.tools.solidmodel_converter.converter', 'deserialize_rbxm'),
-        )
-        export_obj_from_doc = cast(
-            '_ExportObjCallable',
-            _lazy_attr('.tools.solidmodel_converter.converter', 'export_obj_from_doc'),
-        )
+        from .tools.solidmodel_converter.converter import deserialize_rbxm, export_obj_from_doc
+
         decompressed = self.data
         if self.data.startswith(b'\x1f\x8b'):
             decompressed = gzip_module.decompress(self.data)
@@ -964,11 +853,10 @@ class TexturePackLoaderThread(QThread):
             extra: dict[str, str] = {}
             if cookie:
                 extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
-            data = _scraper_https_get(
-                self._cache_scraper,
+            data = self._cache_scraper.https_get(
                 'assetdelivery.roblox.com',
                 f'/v1/asset/?id={map_id}',
-                extra or None,
+                extra_headers=extra or None,
             )
             if not data:
                 self.texture_error.emit(map_name, tr('cache.texturepack.api_no_data'))
@@ -1042,24 +930,17 @@ class AssetLoaderThread(QThread):
         creator_id: int,
         creator_type: int,
     ) -> Iterator[int]:
-        creator_game_max_scan = cast(
-            'int',
-            _lazy_attr('fleasion.proxy.addons.cache_scraper', 'CREATOR_GAME_MAX_SCAN'),
-        )
-        creator_game_page_limits = cast(
-            'tuple[int, ...]',
-            _lazy_attr('fleasion.proxy.addons.cache_scraper', 'CREATOR_GAME_PAGE_LIMITS'),
-        )
-        creator_game_base_paths = cast(
-            'Callable[[int, int, int], list[str]]',
-            _lazy_attr('fleasion.proxy.addons.cache_scraper', 'creator_game_base_paths'),
+        from fleasion.proxy.addons.cache_scraper import (
+            CREATOR_GAME_MAX_SCAN,
+            CREATOR_GAME_PAGE_LIMITS,
+            creator_game_base_paths,
         )
 
         seen_pids: set[int] = set()
         attempted_paths: set[str] = set()
-        for limit in creator_game_page_limits:
+        for limit in CREATOR_GAME_PAGE_LIMITS:
             found_before_limit = len(seen_pids)
-            max_pages = max(1, (creator_game_max_scan + limit - 1) // limit)
+            max_pages = max(1, (CREATOR_GAME_MAX_SCAN + limit - 1) // limit)
             for game_path in creator_game_base_paths(creator_id, creator_type, limit):
                 if game_path in attempted_paths:
                     continue
@@ -1131,10 +1012,9 @@ class AssetLoaderThread(QThread):
             extra: dict[str, str] = {}
             if cookie:
                 extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
-            data, _status = _scraper_fetch_asset_with_place_id_retry(
-                self._cache_scraper,
+            data, _status = self._cache_scraper.fetch_asset_with_place_id_retry(
                 asset_id,
-                extra or None,
+                extra_headers=extra or None,
             )
             return data
 
@@ -1355,17 +1235,13 @@ class AssetLoaderThread(QThread):
         #   last ID in list   → latest timestamp   → top of descending sort
 
         base_time = datetime.now(UTC).astimezone().replace(tzinfo=None)
-        assets_index = cast('dict[str, _AssetRecord]', self.cache_manager.index['assets'])
-        with _cache_lock(self.cache_manager):
-            for order_idx, aid_str in enumerate(str_ids):
-                meta = asset_metadata.get(aid_str)
-                asset_type = meta['type'] if meta else 1
-                asset_key = f'{asset_type}_{aid_str}'
-                entry = assets_index.get(asset_key)
-                if entry is not None:
-                    # Offset: first ID gets base_time, last ID gets base_time + N ms
-                    entry['cached_at'] = (base_time + timedelta(milliseconds=order_idx)).isoformat()
-            _schedule_cache_index_commit(self.cache_manager)
+        timestamps: dict[str, str] = {}
+        for order_idx, aid_str in enumerate(str_ids):
+            meta = asset_metadata.get(aid_str)
+            asset_type = meta['type'] if meta else 1
+            asset_key = f'{asset_type}_{aid_str}'
+            timestamps[asset_key] = (base_time + timedelta(milliseconds=order_idx)).isoformat()
+        self.cache_manager.update_asset_timestamps(timestamps)
 
         # Store resolved metadata so the name resolver picks it up
         self._resolved_metadata = asset_metadata
@@ -2561,15 +2437,10 @@ class CacheViewerTab(QWidget):
     def _ensure_obj_viewer(self) -> ObjViewerPanel:
         """Create the mesh OpenGL widget only when a mesh is actually previewed."""
         if self.obj_viewer is None:
-            obj_viewer_panel = cast(
-                'type[ObjViewerPanel]',
-                _lazy_attr('.obj_viewer', 'ObjViewerPanel'),
-            )
+            from .obj_viewer import ObjViewerPanel
 
             log_buffer.log('OpenGL', 'Creating OBJ preview widget on demand')
-            viewer = obj_viewer_panel(
-                config_manager=cast('ConfigManager | None', self.config_manager)
-            )
+            viewer = ObjViewerPanel(config_manager=self.config_manager)
             viewer.clear_requested.connect(self._clear_preview)
             viewer.hide()
             self.preview_container_layout.insertWidget(0, viewer)
@@ -2579,15 +2450,10 @@ class CacheViewerTab(QWidget):
     def _ensure_animation_viewer(self) -> AnimationViewerPanel:
         """Create the animation OpenGL widget only when an animation is previewed."""
         if self.animation_viewer is None:
-            animation_viewer_panel = cast(
-                'type[AnimationViewerPanel]',
-                _lazy_attr('.animation_viewer', 'AnimationViewerPanel'),
-            )
+            from .animation_viewer import AnimationViewerPanel
 
             log_buffer.log('OpenGL', 'Creating animation preview widget on demand')
-            viewer = animation_viewer_panel(
-                config_manager=cast('ConfigManager | None', self.config_manager)
-            )
+            viewer = AnimationViewerPanel(config_manager=self.config_manager)
             viewer.hide()
             index = self.preview_container_layout.indexOf(self.text_viewer)
             self.preview_container_layout.insertWidget(
@@ -3830,7 +3696,7 @@ class CacheViewerTab(QWidget):
 
             # Save index after batch update (less frequent saves)
             try:
-                _save_cache_index(self.cache_manager)
+                self.cache_manager.save_index()
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 log_buffer.log('Scraper', f'[Name Resolver] Failed to save index: {exc}')
 
@@ -4155,8 +4021,8 @@ class CacheViewerTab(QWidget):
         if cache_dir.exists():
             shutil.rmtree(cache_dir)
             cache_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_manager.index = cast('CacheIndex', {'assets': {}})
-        _save_cache_index(self.cache_manager)
+        self.cache_manager.index = {'assets': {}, 'version': '1.0'}
+        self.cache_manager.save_index()
         self._last_asset_count = 0
         self._asset_info.clear()
         self._refresh_assets()
@@ -4191,11 +4057,9 @@ class CacheViewerTab(QWidget):
 
     def _delete_roblox_cache(self) -> None:
         """Delete Roblox cache using system tray method."""
-        delete_cache_window = cast(
-            'Callable[[], QWidget]',
-            _lazy_attr('fleasion.gui', 'DeleteCacheWindow'),
-        )
-        window = delete_cache_window()
+        from fleasion.gui.delete_cache import DeleteCacheWindow
+
+        window = DeleteCacheWindow()
         window.show()
 
     def _redirect_counter_focus(
@@ -4486,10 +4350,7 @@ class CacheViewerTab(QWidget):
                 )
                 if convert_anim_asset:
                     with contextlib.suppress(Exception):
-                        detect_rig = cast(
-                            'Callable[[bytes], str]',
-                            _lazy_attr('fleasion.utils.anim_converter', 'detect_rig'),
-                        )
+                        from fleasion.utils.anim_converter import detect_rig
 
                         anim_data = self.cache_manager.get_asset(
                             convert_anim_asset['id'], convert_anim_asset['type']
@@ -4586,14 +4447,13 @@ class CacheViewerTab(QWidget):
 
         def _do_convert() -> None:
             try:
-                rbxm_to_rbxmx = cast(
-                    'Callable[[bytes], bytes]',
-                    _lazy_attr('fleasion.utils.anim_converter', 'rbxm_to_rbxmx'),
+                from fleasion.utils.anim_converter import rbxm_to_rbxmx
+                from fleasion.utils.rig_data import (
+                    R6_JOINTS,
+                    R6_PARTS,
+                    R15_JOINTS,
+                    R15_PARTS,
                 )
-                r6_joints = cast('JointMap', _lazy_attr('fleasion.utils.rig_data', 'R6_JOINTS'))
-                r6_parts = cast('PartMap', _lazy_attr('fleasion.utils.rig_data', 'R6_PARTS'))
-                r15_joints = cast('JointMap', _lazy_attr('fleasion.utils.rig_data', 'R15_JOINTS'))
-                r15_parts = cast('PartMap', _lazy_attr('fleasion.utils.rig_data', 'R15_PARTS'))
             except (AttributeError, ImportError) as exc:
                 self._conversion_warning_requested.emit(
                     tr('ui.cache.cache_viewer.failed_to_load_converter_value', value0=exc)
@@ -4625,18 +4485,12 @@ class CacheViewerTab(QWidget):
                     return
 
             def _write_converted_xml() -> None:
-                convert_keyframe_r6_to_r15 = cast(
-                    'Callable[[object, PartMap, JointMap, PartMap, JointMap], None]',
-                    _lazy_attr('fleasion.utils.r15_to_r6', 'convert_keyframe_r6_to_r15'),
+                from fleasion.utils.r15_to_r6 import (
+                    convert_keyframe_r6_to_r15,
+                    convert_keyframe_r15_to_r6,
+                    sanitize_xml,
                 )
-                convert_keyframe_r15_to_r6 = cast(
-                    'Callable[[object, PartMap, JointMap, PartMap, JointMap], None]',
-                    _lazy_attr('fleasion.utils.r15_to_r6', 'convert_keyframe_r15_to_r6'),
-                )
-                sanitize_xml = cast(
-                    'Callable[[bytes], str]',
-                    _lazy_attr('fleasion.utils.r15_to_r6', 'sanitize_xml'),
-                )
+
                 root = DefusedElementTree.fromstring(sanitize_xml(anim_data))
                 ks = root.find("Item[@class='KeyframeSequence']")
                 if ks is None:
@@ -4654,7 +4508,7 @@ class CacheViewerTab(QWidget):
                     convert_keyframe_r15_to_r6 if target == 'R6' else convert_keyframe_r6_to_r15
                 )
                 for keyframe in keyframes:
-                    converter(keyframe, r6_parts, r6_joints, r15_parts, r15_joints)
+                    converter(keyframe, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
                 Path(out_str).write_bytes(
                     DefusedElementTree.tostring(root, encoding='utf-8', xml_declaration=True)
                 )
@@ -4889,10 +4743,8 @@ class CacheViewerTab(QWidget):
             b'\xabKTX 20\xbb\r\n\x1a\n',
         }:
             return data
-        ktx_convert = cast(
-            'Callable[[bytes], bytes | None]',
-            _lazy_attr('.tools.ktx_to_png', 'convert'),
-        )
+        from .tools.ktx_to_png import convert as ktx_convert
+
         return ktx_convert(data) or data
 
     def _copy_image_temp(self, data: bytes, temp_dir: Path, safe_base: str) -> Path | None:
@@ -4952,14 +4804,8 @@ class CacheViewerTab(QWidget):
 
     @staticmethod
     def _solidmodel_obj_content(data: bytes) -> str:
-        deserialize_rbxm = cast(
-            'Callable[[bytes], object]',
-            _lazy_attr('.tools.solidmodel_converter.converter', 'deserialize_rbxm'),
-        )
-        export_obj_from_doc = cast(
-            '_ExportObjCallable',
-            _lazy_attr('.tools.solidmodel_converter.converter', 'export_obj_from_doc'),
-        )
+        from .tools.solidmodel_converter.converter import deserialize_rbxm, export_obj_from_doc
+
         decompressed = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
         doc = deserialize_rbxm(decompressed)
         with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as handle:
@@ -5208,7 +5054,7 @@ class CacheViewerTab(QWidget):
                 self._rbxm_preview_asset_key = None
                 self._rbxm_preview_cached_at = ''
                 with contextlib.suppress(Exception):
-                    _set_rbxm_dirty(self.rbxm_viewer, dirty=False)
+                    self.rbxm_viewer.set_dirty(dirty=False)
             return None
         return draft.get('document')
 
@@ -5451,7 +5297,7 @@ class CacheViewerTab(QWidget):
                     if self.audio_player and self.audio_wrapper.isVisible():
                         with contextlib.suppress(Exception):
                             # Toggle play/pause on the audio widget
-                            _toggle_audio_play_pause(self.audio_player)
+                            self.audio_player.toggle_play_pause()
                         return True
         return super().eventFilter(obj, event)
 
@@ -5977,7 +5823,7 @@ class CacheViewerTab(QWidget):
         temp_dir.mkdir(exist_ok=True)
 
         # Determine file extension.
-        ext = _detect_cache_extension(self.cache_manager, data, 3)
+        ext = self.cache_manager.detect_extension(data, 3)
         if ext not in {'.ogg', '.mp3', '.wav', '.flac'}:
             ext = '.mp3'
         temp_file = temp_dir / f'{asset_id}{ext}'
@@ -6611,7 +6457,7 @@ class CacheViewerTab(QWidget):
 
             # Save index once
             with contextlib.suppress(Exception):
-                _save_cache_index(self.cache_manager)
+                self.cache_manager.save_index()
 
         # Re-enable UI
         load_btn.setEnabled(True)

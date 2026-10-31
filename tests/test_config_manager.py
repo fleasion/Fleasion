@@ -16,11 +16,11 @@ class ConfigManagerEncodingTests(unittest.TestCase):
         config_dir = root / 'FleasionNT'
 
         fleasion_pkg = types.ModuleType('fleasion')
-        fleasion_pkg.__path__ = []
+        fleasion_pkg.__path__ = [str(_MANAGER_PATH.parent.parent)]
         config_pkg = types.ModuleType('fleasion.config')
-        config_pkg.__path__ = []
+        config_pkg.__path__ = [str(_MANAGER_PATH.parent)]
         utils_pkg = types.ModuleType('fleasion.utils')
-        utils_pkg.__path__ = []
+        utils_pkg.__path__ = [str(_MANAGER_PATH.parent.parent / 'utils')]
         paths_module = types.ModuleType('fleasion.utils.paths')
         setattr(paths_module, 'CONFIG_DIR', config_dir)
         setattr(paths_module, 'CONFIG_FILE', config_dir / 'settings.json')

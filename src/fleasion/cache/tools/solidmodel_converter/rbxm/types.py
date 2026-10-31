@@ -1,5 +1,7 @@
 """Data types for the Roblox binary model format."""
 
+from __future__ import annotations
+
 import enum
 from dataclasses import dataclass, field
 from typing import Any
@@ -90,6 +92,7 @@ class RbxProperty:
 
     name: str
     fmt: PropertyFormat
+    # The payload shape depends on fmt and is interpreted by the matching codec
     value: Any
 
 

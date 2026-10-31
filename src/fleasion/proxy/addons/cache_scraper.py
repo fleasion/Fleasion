@@ -18,7 +18,7 @@ import socket
 import ssl
 import struct
 import zlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
@@ -147,26 +147,6 @@ def _ktx_converter_module() -> _KtxConverterModule:
 
 def _roblox_auth_module() -> _RobloxAuthModule:
     return cast('_RobloxAuthModule', importlib.import_module('fleasion.utils.roblox_auth'))
-
-
-def _preserve_asset_id(value: object) -> AssetId:
-    if TYPE_CHECKING:
-        assert isinstance(value, (int, str))
-        assert not isinstance(value, bool)
-    return value
-
-
-def _preserve_str(value: object) -> str:
-    if TYPE_CHECKING:
-        assert isinstance(value, str)
-    return value
-
-
-def _preserve_int(value: object) -> int:
-    if TYPE_CHECKING:
-        assert isinstance(value, int)
-        assert not isinstance(value, bool)
-    return value
 
 
 _TEXPACK_SLOT_NAMES = {
@@ -660,7 +640,9 @@ class CacheScraper:
                 item = item_value
                 if 'assetId' not in item:
                     continue
-                asset_id = _preserve_asset_id(item['assetId'])
+                asset_id = item['assetId']
+                if not isinstance(asset_id, int | str) or isinstance(asset_id, bool):
+                    continue
                 if idx >= len(res_items):
                     continue
                 res_item_value = res_items[idx]
@@ -669,8 +651,12 @@ class CacheScraper:
                 res_item = res_item_value
                 location_value = res_item.get('location')
                 asset_type_value = res_item.get('assetTypeId')
-                location = None if location_value is None else _preserve_str(location_value)
-                asset_type = None if asset_type_value is None else _preserve_int(asset_type_value)
+                location = location_value if isinstance(location_value, str) else None
+                asset_type = (
+                    asset_type_value
+                    if isinstance(asset_type_value, int) and not isinstance(asset_type_value, bool)
+                    else None
+                )
                 if location is None:
                     continue
                 # Roblox often omits assetTypeId on the 2nd and 3rd slots of a
@@ -873,7 +859,7 @@ class CacheScraper:
     # Background workers
 
     @staticmethod
-    def _normalize_real_ips(real_ips: dict[str, object]) -> dict[str, tuple[str, ...]]:
+    def _normalize_real_ips(real_ips: Mapping[str, object]) -> dict[str, tuple[str, ...]]:
         normalized: dict[str, tuple[str, ...]] = {}
         for host, candidates in real_ips.items():
             host_key = str(host).strip().lower().rstrip('.')
@@ -891,7 +877,7 @@ class CacheScraper:
                 normalized[host_key] = unique_values
         return normalized
 
-    def set_real_ips(self, real_ips: dict[str, object]) -> None:
+    def set_real_ips(self, real_ips: Mapping[str, object]) -> None:
         """Called by ProxyMaster after DNS resolution (before hosts file is written).
         Stores real IP candidates so API calls can bypass our hosts file redirect.
         """
@@ -900,7 +886,7 @@ class CacheScraper:
             self._real_ips = normalized
         log_buffer.log('Cache', f'API bypass configured for: {list(normalized.keys())}')
 
-    def update_real_ips(self, real_ips: dict[str, object]) -> None:
+    def update_real_ips(self, real_ips: Mapping[str, object]) -> None:
         """Prefer refreshed candidates without dropping routes for other hosts."""
         refreshed = self._normalize_real_ips(real_ips)
         if not refreshed:

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import importlib
 import json
 import threading
 import zlib
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, ClassVar, NotRequired, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, ClassVar, Protocol, cast
 
 import requests
 from defusedxml import ElementTree as DefusedElementTree
@@ -26,8 +25,10 @@ from .roblox_document import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from pathlib import Path
+
+    from .types import AssetEntry, CacheIndex, CacheStats
 
 
 def _export_boundary[T](action: Callable[[], T], *, category: str, message: str, fallback: T) -> T:
@@ -38,66 +39,18 @@ def _export_boundary[T](action: Callable[[], T], *, category: str, message: str,
         return fallback
 
 
-class AssetEntry(TypedDict):
-    id: str
-    type: int
-    type_name: str
-    url: str
-    size: int
-    compressed: bool
-    hash: str
-    cached_at: str
-    metadata: dict[str, object]
-    detected_type: NotRequired[str]
-    raw_size: NotRequired[int]
-
-
-class CacheIndex(TypedDict):
-    assets: dict[str, AssetEntry]
-    version: str
-
-
-class CacheStats(TypedDict):
-    total_assets: int
-    total_size: int
-    types_count: dict[str, int]
-
-
 class _ExportConfig(Protocol):
     export_naming: list[str]
 
 
-class _ExportObjCallable(Protocol):
-    def __call__(self, doc: object, output_path: Path, *, decompose: bool = False) -> None: ...
-
-
-def _lazy_attr(module_name: str, attr_name: str) -> object:
-    """Load a deliberately lazy module attribute without importing it at startup."""
-    module = importlib.import_module(module_name, package=__package__)
-    return getattr(module, attr_name)
-
-
 def _solidmodel_rbxmx_bytes(data: bytes) -> bytes:
-    deserialize_rbxm = cast(
-        'Callable[[bytes], object]',
-        _lazy_attr('.tools.solidmodel_converter.converter', 'deserialize_rbxm'),
+    from .tools.solidmodel_converter.converter import (
+        deserialize_rbxm,
+        get_top_level_mesh_data,
+        inject_mesh_data,
+        try_extract_child_data,
     )
-    get_top_level_mesh_data = cast(
-        'Callable[[object], bytes | None]',
-        _lazy_attr('.tools.solidmodel_converter.converter', 'get_top_level_mesh_data'),
-    )
-    inject_mesh_data = cast(
-        'Callable[[object, bytes], None]',
-        _lazy_attr('.tools.solidmodel_converter.converter', 'inject_mesh_data'),
-    )
-    try_extract_child_data = cast(
-        'Callable[[object], object | None]',
-        _lazy_attr('.tools.solidmodel_converter.converter', 'try_extract_child_data'),
-    )
-    write_rbxmx = cast(
-        'Callable[[object], bytes]',
-        _lazy_attr('.tools.solidmodel_converter.rbxm.xml_writer', 'write_rbxmx'),
-    )
+    from .tools.solidmodel_converter.rbxm.xml_writer import write_rbxmx
 
     decompressed = gzip.decompress(data) if data.startswith(b'\x1f\x8b') else data
     doc = deserialize_rbxm(decompressed)
@@ -113,24 +66,18 @@ def _solidmodel_rbxmx_bytes(data: bytes) -> bytes:
 def _converted_animation_bytes(data: bytes, *, curve: bool) -> bytes:
     anim_data = gzip.decompress(data) if data.startswith(b'\x1f\x8b') else data
     if anim_data.startswith(b'<roblox!'):
-        rbxm_to_rbxmx = cast(
-            'Callable[[bytes], bytes]',
-            _lazy_attr('fleasion.utils.anim_converter', 'rbxm_to_rbxmx'),
-        )
+        from fleasion.utils.anim_converter import rbxm_to_rbxmx
+
         anim_data = rbxm_to_rbxmx(anim_data)
 
     if curve:
         if b'CurveAnimation' not in anim_data:
-            keyframe_to_curve_anim = cast(
-                'Callable[[bytes], bytes]',
-                _lazy_attr('fleasion.utils.r15_to_r6', 'keyframe_to_curve_anim'),
-            )
+            from fleasion.utils.r15_to_r6 import keyframe_to_curve_anim
+
             anim_data = keyframe_to_curve_anim(anim_data)
     elif b'CurveAnimation' in anim_data:
-        curve_anim_to_keyframe_xml = cast(
-            'Callable[[bytes], bytes]',
-            _lazy_attr('fleasion.utils.r15_to_r6', 'curve_anim_to_keyframe_xml'),
-        )
+        from fleasion.utils.r15_to_r6 import curve_anim_to_keyframe_xml
+
         anim_data = curve_anim_to_keyframe_xml(anim_data)
     return anim_data
 
@@ -292,6 +239,20 @@ class CacheManager:
             ):  # ValueError for orjson, JSONDecodeError for json
                 pass
         return {'assets': {}, 'version': '1.0'}
+
+    def update_asset_timestamps(self, timestamps: Mapping[str, str]) -> None:
+        with self._lock:
+            for asset_key, cached_at in timestamps.items():
+                entry = self.index['assets'].get(asset_key)
+                if entry is not None:
+                    entry['cached_at'] = cached_at
+            self._schedule_index_commit()
+
+    def save_index(self) -> None:
+        self._save_index()
+
+    def detect_extension(self, data: bytes, asset_type: int) -> str:
+        return self._detect_extension(data, asset_type)
 
     def _save_index(self) -> None:
         """Save cache index to disk (called by debounced timer)."""
@@ -811,10 +772,8 @@ class CacheManager:
             return formats
 
         if effective_type == 4:
-            has_embedded_rig = cast(
-                'Callable[[bytes], bool]',
-                _lazy_attr('.mesh_rig', 'has_embedded_rig'),
-            )
+            from .mesh_rig import has_embedded_rig
+
             if has_embedded_rig(data) and 'converted_rigged_glb' not in formats:
                 formats.insert(0, 'converted_rigged_glb')
 
@@ -904,10 +863,8 @@ class CacheManager:
                 result.write_bytes(data)
             handled = True
         elif export_format == 'converted_rigged_glb':
-            export_glb = cast(
-                'Callable[[bytes], bytes]',
-                _lazy_attr('.mesh_rig', 'export_glb'),
-            )
+            from .mesh_rig import export_glb
+
             result = export_type_dir / f'{filename}.glb'
             result.write_bytes(export_glb(data))
             handled = True
@@ -915,14 +872,8 @@ class CacheManager:
 
     @staticmethod
     def _export_solidmodel_obj(data: bytes, output_path: Path) -> None:
-        deserialize_rbxm = cast(
-            'Callable[[bytes], object]',
-            _lazy_attr('.tools.solidmodel_converter.converter', 'deserialize_rbxm'),
-        )
-        export_obj_from_doc = cast(
-            '_ExportObjCallable',
-            _lazy_attr('.tools.solidmodel_converter.converter', 'export_obj_from_doc'),
-        )
+        from .tools.solidmodel_converter.converter import deserialize_rbxm, export_obj_from_doc
+
         doc = deserialize_rbxm(data)
         export_obj_from_doc(doc, output_path, decompose=False)
 
@@ -1001,10 +952,8 @@ class CacheManager:
             )
             export_data = data
             if data[:12] in ktx_magic:
-                ktx_convert = cast(
-                    'Callable[[bytes], bytes | None]',
-                    _lazy_attr('.tools.ktx_to_png', 'convert'),
-                )
+                from .tools.ktx_to_png import convert as ktx_convert
+
                 converted = ktx_convert(data)
                 if converted:
                     export_data = converted
