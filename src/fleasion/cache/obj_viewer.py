@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import importlib
 import math
 import time
-from typing import TYPE_CHECKING, Literal, TypedDict, cast, override
+from typing import TYPE_CHECKING, Literal, TypedDict, override
 
 import numpy as np
 import numpy.typing as npt
 from OpenGL import GL
+from OpenGL.error import Error as OpenGLError
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QCloseEvent,
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fleasion.config.values import bool_value
 from fleasion.localization import tr
 from fleasion.utils.logging import log_buffer
 
@@ -52,15 +53,13 @@ from .gl_format import legacy_gl_format, set_perspective
 from .offscreen_gl_widget import OffscreenOpenGLWidget
 
 if TYPE_CHECKING:
-    from fleasion.config.manager import ConfigManager
+    from fleasion.config.types import SettingsSource
 
 
 type Vec3 = list[float]
 type CameraMode = Literal['orbit', 'fps']
 type FloatVector = npt.NDArray[np.float64]
 type PixelReadback = bytes | bytearray | memoryview | npt.NDArray[np.uint8]
-
-_OPENGL_ERROR = cast('type[Exception]', vars(importlib.import_module('OpenGL.error'))['Error'])
 
 
 class ObjFace(TypedDict):
@@ -72,13 +71,6 @@ class ObjFace(TypedDict):
 
 def _screen_refresh_rate(screen: QScreen | None) -> float:
     return float(screen.refreshRate()) if screen is not None else 60.0
-
-
-def _preserve_bool(value: object) -> bool:
-    """Describe the existing boolean settings contract without coercing values."""
-    if TYPE_CHECKING:
-        assert isinstance(value, bool)
-    return value
 
 
 def _invalid_vertex_index(index: object, vertex_count: int) -> bool:
@@ -377,7 +369,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         self._gl_context_logged = True
         try:
             details = self._gl_context_details()
-        except (RuntimeError, _OPENGL_ERROR) as exc:
+        except (RuntimeError, OpenGLError) as exc:
             log_buffer.log('OpenGL', f'Could not read OBJ viewer context details: {exc}')
         else:
             log_buffer.log('OpenGL', f'OBJ viewer context: {details}')
@@ -414,7 +406,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         """Sample one rendered pixel so logs can separate rendering from presentation."""
         try:
             return self._center_pixel_description()
-        except (RuntimeError, TypeError, ValueError, _OPENGL_ERROR) as exc:
+        except (RuntimeError, TypeError, ValueError, OpenGLError) as exc:
             return f'readback_failed={type(exc).__name__}: {exc}'
 
     def _schedule_presentation_watchdog(self) -> None:
@@ -486,14 +478,14 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             self._paint_scene()
             if first_paint:
                 self._log_first_paint_complete()
-        except (RuntimeError, TypeError, ValueError, _OPENGL_ERROR) as exc:
+        except (RuntimeError, TypeError, ValueError, OpenGLError) as exc:
             if not self._paint_error_logged:
                 self._paint_error_logged = True
                 log_buffer.log('OpenGL', f'OBJ viewer paint failed: {type(exc).__name__}: {exc}')
             try:
                 GL.glClearColor(0.08, 0.08, 0.10, 1.0)
                 GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-            except _OPENGL_ERROR:
+            except OpenGLError:
                 pass
 
     def _paint_scene(self) -> None:
@@ -542,7 +534,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
                     try:
                         GL.glLineWidth(0.5)
-                    except _OPENGL_ERROR:
+                    except OpenGLError:
                         pass  # Some drivers don't support width < 1.0
 
                     GL.glCallList(self.mesh_display_list)
@@ -937,7 +929,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                 self.makeCurrent()
                 made_current = True
             GL.glDeleteLists(display_list, 1)
-        except (RuntimeError, _OPENGL_ERROR):
+        except RuntimeError, OpenGLError:
             pass
         finally:
             if made_current:
@@ -960,7 +952,7 @@ class ObjViewerPanel(QWidget):
     clear_requested = Signal()
 
     def __init__(
-        self, parent: QWidget | None = None, config_manager: ConfigManager | None = None
+        self, parent: QWidget | None = None, config_manager: SettingsSource | None = None
     ) -> None:
         super().__init__(parent)
         self.config_manager = config_manager
@@ -986,11 +978,11 @@ class ObjViewerPanel(QWidget):
             if updated:
                 self.config_manager.save()
 
-            self.viewer.show_wireframe = _preserve_bool(
+            self.viewer.show_wireframe = bool_value(
                 self.config_manager.settings.get('obj_show_wireframe', False)
             )
-            self.viewer.show_grid = _preserve_bool(
-                self.config_manager.settings.get('obj_show_grid', True)
+            self.viewer.show_grid = bool_value(
+                self.config_manager.settings.get('obj_show_grid', True), default=True
             )
         layout.addWidget(self.viewer, stretch=1)
 

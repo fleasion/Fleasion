@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from typing import Any
 
 if sys.platform == 'win32':
     from .platform_windows import (
@@ -83,6 +84,6 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str) -> object:
+def __getattr__(name: str) -> Any:
     """Forward less-common compatibility attributes to the active platform backend."""
     return getattr(_backend, name)

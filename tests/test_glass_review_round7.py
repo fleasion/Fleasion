@@ -22,7 +22,7 @@ from fleasion.proxy.addons.texture_stripper import TextureStripper
 from fleasion.utils.json_types import JsonValue
 
 if TYPE_CHECKING:
-    from fleasion.config.manager import ReplacementMaps
+    from fleasion.config.types import ReplacementMaps
 
 
 @pytest.fixture

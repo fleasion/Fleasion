@@ -81,12 +81,13 @@ from fleasion.config.manager import (
     local_replacement_path_for_storage,
     resolve_local_replacement_path,
 )
+from fleasion.config.rules import is_group_rule, is_profile_rule, is_rule_entry as _is_rule_entry
 from fleasion.gui.appearance_controls import choice_label
 from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
 from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.http import http_head_status
-from fleasion.utils.json_types import require_json_value
+from fleasion.utils.json_types import as_object_list, require_json_value
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
 
@@ -110,7 +111,13 @@ if TYPE_CHECKING:
     from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.app.tray import SystemTray
     from fleasion.config.manager import ConfigManager
-    from fleasion.gui.modifications_tab import CustomFFlagHotkeyController
+    from fleasion.config.types import (
+        GroupRule as _GroupRule,
+        ProfileRule as _ProfileRule,
+        RuleEntry as _RuleEntry,
+        RuleList as _RuleList,
+    )
+    from fleasion.gui.hotkeys.types import CustomFFlagHotkeyController
     from fleasion.modifications.manager import ModificationManager
     from fleasion.proxy.master import ProxyMaster
 
@@ -178,29 +185,6 @@ class _BestEffortExceptionGuard:
         return True
 
 
-class _ProfileRule(TypedDict, total=False):
-    type: Literal['profile']
-    name: str
-    enabled: bool
-    replace_ids: list[int | str]
-    mode: str
-    remove: bool
-    with_id: int
-    cdn_url: str
-    local_path: str
-
-
-class _GroupRule(TypedDict):
-    type: Literal['group']
-    name: str
-    children: list[_RuleEntry]
-    expanded: NotRequired[bool]
-
-
-type _RuleEntry = _ProfileRule | _GroupRule
-type _RuleList = list[_RuleEntry]
-
-
 class _ModeFields(TypedDict, total=False):
     with_id: int
     cdn_url: str
@@ -249,15 +233,11 @@ def _group_ancestors(value: object) -> tuple[tuple[int, ...], ...]:
     return tuple(path for item in items if (path := _item_path(item)) is not None)
 
 
-def _is_rule_entry(value: object) -> TypeGuard[_RuleEntry]:
-    return isinstance(value, dict)
-
-
 def _required_profile(value: _RuleEntry) -> _ProfileRule:
-    if value.get('type') == 'group':
-        msg = 'Expected a profile rule'
-        raise TypeError(msg)
-    return cast('_ProfileRule', value)
+    if is_profile_rule(value):
+        return value
+    msg = 'Expected a profile rule'
+    raise TypeError(msg)
 
 
 def _required_entry(value: _RuleEntry | None) -> _RuleEntry:
@@ -271,11 +251,9 @@ def _optional_widget(value: QWidget) -> QWidget | None:
     return value
 
 
-def _children_if_present(entry: _RuleEntry) -> _RuleList:
-    if not _is_rule_entry(entry) or entry.get('type') != _KIND_GROUP:
-        return []
-    children = entry.get('children')
-    return cast('_RuleList', children) if isinstance(children, list) else []
+def _children_if_present(entry: object) -> _RuleList:
+    children = as_object_list(entry.get('children')) if is_group_rule(entry) else None
+    return children if children is not None else []
 
 
 _ROLE_PATH = Qt.ItemDataRole.UserRole
@@ -987,8 +965,8 @@ class ReplacerConfigWindow(QDialog):
 
     @property
     def _replacement_rules(self) -> _RuleList:
-        # ConfigManager normalizes persisted rules before exposing them
-        return cast('_RuleList', self.config_manager.replacement_rules)
+        # Preserve unknown imported entries and their positions
+        return list(self.config_manager.replacement_rules)
 
     @_replacement_rules.setter
     def _replacement_rules(self, rules: _RuleList) -> None:
@@ -1693,17 +1671,17 @@ class ReplacerConfigWindow(QDialog):
         self._update_editing_button_style()
 
     @staticmethod
-    def _is_group(entry: _RuleEntry | None) -> TypeGuard[_GroupRule]:
-        return isinstance(entry, dict) and entry.get('type') == _KIND_GROUP
+    def _is_group(entry: object) -> TypeGuard[_GroupRule]:
+        return is_group_rule(entry)
 
     @staticmethod
-    def _is_profile(entry: _RuleEntry | None) -> TypeGuard[_ProfileRule]:
-        return isinstance(entry, dict) and entry.get('type') != _KIND_GROUP
+    def _is_profile(entry: object) -> TypeGuard[_ProfileRule]:
+        return is_profile_rule(entry)
 
     def _iter_profiles(self, entries: _RuleList) -> Iterator[_ProfileRule]:
         for entry in entries:
             if self._is_group(entry):
-                yield from self._iter_profiles(entry.get('children', []))
+                yield from self._iter_profiles(_children_if_present(entry))
             elif self._is_profile(entry):
                 yield entry
 
@@ -1724,8 +1702,8 @@ class ReplacerConfigWindow(QDialog):
             if index < 0 or index >= len(current_entries):
                 return None
             entry = current_entries[index]
-            current_entries = entry.get('children', []) if self._is_group(entry) else []
-        return entry
+            current_entries = _children_if_present(entry)
+        return entry if _is_rule_entry(entry) else None
 
     def _entries_at_parent_path(
         self, entries: _RuleList, parent_path: tuple[int, ...]
@@ -1735,7 +1713,11 @@ class ReplacerConfigWindow(QDialog):
         parent = self._entry_at_path(entries, parent_path)
         if not self._is_group(parent):
             return None
-        return parent.setdefault('children', [])
+        children = as_object_list(parent.get('children'))
+        if children is None:
+            children = []
+            parent['children'] = children
+        return children
 
     def _set_entry_at_path(
         self, entries: _RuleList, path: tuple[int, ...], entry: _RuleEntry
@@ -1757,7 +1739,7 @@ class ReplacerConfigWindow(QDialog):
             kept_entry = deepcopy(entry) if self._is_group(entry) else entry
             if self._is_group(kept_entry):
                 kept_entry['children'] = self._remove_paths(
-                    kept_entry.get('children', []), paths, path
+                    _children_if_present(kept_entry), paths, path
                 )
             kept.append(kept_entry)
         return kept
@@ -1775,7 +1757,9 @@ class ReplacerConfigWindow(QDialog):
         return sum(1 for _ in self._iter_profiles(self._replacement_rules))
 
     def _group_summary(self, group: _GroupRule) -> tuple[int, int, str, int]:
-        profile_count, id_count, enabled_count = self._summarize_entries(group.get('children', []))
+        profile_count, id_count, enabled_count = self._summarize_entries(
+            _children_if_present(group)
+        )
         if profile_count == 0 or 0 < enabled_count < profile_count:
             status = _MIXED_STATUS
         elif enabled_count == profile_count:
@@ -1792,7 +1776,7 @@ class ReplacerConfigWindow(QDialog):
         for entry in entries:
             if self._is_group(entry):
                 child_profiles, child_ids, child_enabled = self._summarize_entries(
-                    entry.get('children', [])
+                    _children_if_present(entry)
                 )
                 profile_count += child_profiles
                 id_count += child_ids
@@ -2459,7 +2443,7 @@ class ReplacerConfigWindow(QDialog):
             return
 
         changed = 0
-        for profile in self._iter_profiles(group.get('children', [])):
+        for profile in self._iter_profiles(_children_if_present(group)):
             if profile.get('enabled', True) != enabled:
                 profile['enabled'] = enabled
                 changed += 1

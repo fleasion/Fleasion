@@ -149,6 +149,7 @@ unfixable = [
 [tool.ruff.lint.per-file-ignores]
 # GUI actions defer optional viewers and platform dependencies until they are used
 'src/fleasion/gui/*.py' = ['import-outside-top-level']
+'src/fleasion/cache/*.py' = ['import-outside-top-level']
 
 [tool.ruff.format]
 quote-style = "single"

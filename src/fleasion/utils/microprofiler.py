@@ -20,7 +20,7 @@ import time
 import traceback
 from ctypes import wintypes
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -61,7 +61,7 @@ class _CFunction(Protocol):
     argtypes: list[object]
     restype: object
 
-    def __call__(self, *args: object) -> object: ...
+    def __call__(self, *args: object) -> Any: ...
 
 
 class _Kernel32Library(Protocol):

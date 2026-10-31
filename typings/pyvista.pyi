@@ -1,0 +1,19 @@
+class DataObject: ...
+
+class PolyData(DataObject):
+    def triangulate(self) -> PolyData: ...
+    def clean(self) -> PolyData: ...
+    def compute_normals(
+        self,
+        *,
+        cell_normals: bool,
+        point_normals: bool,
+        split_vertices: bool,
+        auto_orient_normals: bool,
+        consistent_normals: bool,
+    ) -> PolyData: ...
+
+def read(path: str) -> DataObject: ...
+def Cube(  # ruff: ignore[invalid-function-name]
+    *, center: tuple[float, float, float], x_length: float, y_length: float, z_length: float
+) -> PolyData: ...

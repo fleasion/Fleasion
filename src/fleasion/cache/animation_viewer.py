@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import importlib
 import math
 import re
 import struct
@@ -16,16 +15,17 @@ import sys
 import time
 import traceback
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast, override
+from typing import TYPE_CHECKING, TypedDict, cast, override
 
 import numpy as np
 from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import ParseError
 from OpenGL import GL
+from OpenGL.error import Error as OpenGLError
 from OpenGL.GL import glDeleteLists
 from PySide6.QtCore import QPoint, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import (
@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
+from fleasion.config.values import bool_value
 from fleasion.localization import tr
 from fleasion.utils import log_buffer
 
@@ -73,17 +74,16 @@ if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
     from collections.abc import Callable
 
-    from fleasion.config.manager import ConfigManager
+    from numpy.typing import NDArray
 
+    from fleasion.config.types import SettingsSource
+
+    from .rbxm_parser import RbxmInstance
     from .tools.solidmodel_converter.rbxm.types import RbxDocument, RbxInstance
 
-    class OpenGLError(Exception):
-        """Typing-only stand-in for the dynamically exposed PyOpenGL error base."""
-else:
-    OpenGLError = GL.error.Error
 
-
-type PartRef = str | int
+type PartRef = str
+type FloatArray = NDArray[np.float32] | NDArray[np.float64]
 type CurveSample = tuple[float, float]
 type CurveSamples = list[CurveSample]
 type Rotation3 = list[list[float]]
@@ -106,19 +106,14 @@ def _animation_boundary[T](
         return fallback
 
 
-class ParsedCFrame(TypedDict):
-    position: tuple[float, float, float]
-    rotation: list[float]
-
-
 class MeshFace(TypedDict):
     v: list[int]
     n: list[int] | None
 
 
 class MeshData(TypedDict):
-    vertices: np.ndarray
-    normals: np.ndarray | None
+    vertices: FloatArray
+    normals: FloatArray | None
     faces: list[MeshFace]
 
 
@@ -129,80 +124,6 @@ class BoneCurve(TypedDict):
     rx: CurveSamples
     ry: CurveSamples
     rz: CurveSamples
-
-
-class _ParsedInstanceLike(Protocol):
-    class_name: str
-    properties: dict[str, object]
-    children: list[_ParsedInstanceLike]
-
-
-class _RbxmParserModule(Protocol):
-    def parse_rbxm(self, data: bytes) -> dict[int, _ParsedInstanceLike]: ...
-
-    def find_by_class(
-        self, instances: dict[int, _ParsedInstanceLike], class_name: str
-    ) -> list[_ParsedInstanceLike]: ...
-
-
-class _RbxmDeserializer(Protocol):
-    def deserialize(self, data: bytes) -> RbxDocument: ...
-
-
-class _RbxmDeserializerFactory(Protocol):
-    def __call__(self) -> _RbxmDeserializer: ...
-
-
-if TYPE_CHECKING:
-
-    def _preserve_parsed_cframe(value: object) -> ParsedCFrame: ...
-
-    def _preserve_rig_parts(
-        value: dict[str, Part] | dict[int, Part],
-    ) -> dict[str, Part]: ...
-
-    def _preserve_bool(value: object) -> bool: ...
-
-    def _as_object(value: object) -> object: ...
-else:
-
-    def _preserve_parsed_cframe(value: object) -> ParsedCFrame:
-        return value
-
-    def _preserve_rig_parts(
-        value: dict[str, Part] | dict[int, Part],
-    ) -> dict[str, Part]:
-        return value
-
-    def _preserve_bool(value: object) -> bool:
-        return value
-
-    def _as_object(value: object) -> object:
-        return value
-
-
-def _preserve_str(value: object) -> str:
-    if TYPE_CHECKING:
-        assert isinstance(value, str)
-    return value
-
-
-def _preserve_curve_raw(value: object) -> str | bytes:
-    if TYPE_CHECKING:
-        assert isinstance(value, str | bytes)
-    return value
-
-
-def _preserve_motor_list(value: list[Motor6D] | dict[str, Motor6D]) -> list[Motor6D]:
-    if TYPE_CHECKING:
-        assert isinstance(value, list)
-    return value
-
-
-def _preserve_motor_inverse(value: np.ndarray | None) -> np.ndarray:
-    if TYPE_CHECKING:
-        assert value is not None
-    return value
 
 
 def _optional_screen(value: QScreen) -> QScreen | None:
@@ -222,15 +143,13 @@ def _load_rbxm_curve_data(
     decode_values: Callable[[bytes], CurveSamples],
 ) -> dict[str, BoneCurve] | None:
     """Collect bone curves from a binary CurveAnimation RBXM payload."""
+
     def load_tree() -> RbxDocument:
-        deserializer_module = importlib.import_module(
-            '.tools.solidmodel_converter.rbxm.deserializer', package=__package__
+        from .tools.solidmodel_converter.rbxm.deserializer import (
+            RbxmDeserializer,
         )
-        deserializer_factory = cast(
-            '_RbxmDeserializerFactory',
-            deserializer_module.RbxmDeserializer,
-        )
-        return deserializer_factory().deserialize(anim_data)
+
+        return RbxmDeserializer().deserialize(anim_data)
 
     tree = _animation_boundary(
         load_tree,
@@ -253,8 +172,8 @@ def _load_rbxm_curve_data(
         for prop_name, prop_value in inst.properties.items():
             if prop_name != 'ValuesAndTimes':
                 continue
-            raw = _preserve_curve_raw(prop_value.value)
-            if not raw:
+            raw = prop_value.value
+            if not isinstance(raw, str | bytes) or not raw:
                 return []
             raw_bytes = raw.encode('latin-1') if isinstance(raw, str) else bytes(raw)
             return decode_values(raw_bytes)
@@ -268,8 +187,8 @@ def _load_rbxm_curve_data(
         if inst.class_name != 'Folder':
             return
 
-        name = _preserve_str(_prop(inst, 'Name') or '')
-        if not name:
+        name = _prop(inst, 'Name')
+        if not isinstance(name, str) or not name:
             return
 
         curve = _empty_bone_curve()
@@ -284,7 +203,10 @@ def _load_rbxm_curve_data(
             for float_curve in child.children:
                 if float_curve.class_name != 'FloatCurve':
                     continue
-                axis = _preserve_str(_prop(float_curve, 'Name') or '').upper()
+                axis_value = _prop(float_curve, 'Name')
+                if not isinstance(axis_value, str):
+                    continue
+                axis = axis_value.upper()
                 values = _values_and_times(float_curve)
                 if child_class == 'Vector3Curve':
                     if axis == 'X':
@@ -317,7 +239,7 @@ def _load_xml_curve_data(
         text = anim_data.decode('utf-8-sig', errors='replace')
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
         root = DefusedElementTree.fromstring(text)
-    except (ParseError, DefusedXmlException):
+    except ParseError, DefusedXmlException:
         return None
 
     bone_curves: dict[str, BoneCurve] = {}
@@ -481,12 +403,12 @@ def quat_slerp(
 # Matrix operations using numpy
 
 
-def mat_identity() -> np.ndarray:
+def mat_identity() -> FloatArray:
     """Create identity 4x4 matrix."""
     return np.eye(4, dtype=np.float32)
 
 
-def mat_from_cframe(pos: tuple[float, float, float], r: list[float]) -> np.ndarray:
+def mat_from_cframe(pos: tuple[float, float, float], r: list[float]) -> FloatArray:
     """Create 4x4 matrix from CFrame position and rotation values."""
     m = np.eye(4, dtype=np.float32)
     m[0, 0:3] = r[0:3]
@@ -498,29 +420,29 @@ def mat_from_cframe(pos: tuple[float, float, float], r: list[float]) -> np.ndarr
     return m
 
 
-def mat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def mat_mul(a: FloatArray, b: FloatArray) -> FloatArray:
     """Multiply two 4x4 matrices."""
     return np.matmul(a, b)
 
 
-def mat_inv(a: np.ndarray) -> np.ndarray:
+def mat_inv(a: FloatArray) -> FloatArray:
     """Invert 4x4 matrix."""
     return np.linalg.inv(a)
 
 
-def mat_get_translation(m: np.ndarray) -> tuple[float, float, float]:
+def mat_get_translation(m: FloatArray) -> tuple[float, float, float]:
     """Get translation from 4x4 matrix."""
     return (float(m[0, 3]), float(m[1, 3]), float(m[2, 3]))
 
 
-def mat_set_translation(m: np.ndarray, t: tuple[float, float, float]) -> None:
+def mat_set_translation(m: FloatArray, t: tuple[float, float, float]) -> None:
     """Set translation in 4x4 matrix."""
     m[0, 3] = t[0]
     m[1, 3] = t[1]
     m[2, 3] = t[2]
 
 
-def mat_get_rot3(m: np.ndarray) -> Rotation3:
+def mat_get_rot3(m: FloatArray) -> Rotation3:
     """Get 3x3 rotation from 4x4 matrix."""
     return [
         [float(m[0, 0]), float(m[0, 1]), float(m[0, 2])],
@@ -529,14 +451,14 @@ def mat_get_rot3(m: np.ndarray) -> Rotation3:
     ]
 
 
-def mat_set_rot3(m: np.ndarray, r: Rotation3) -> None:
+def mat_set_rot3(m: FloatArray, r: Rotation3) -> None:
     """Set 3x3 rotation in 4x4 matrix."""
     m[0, 0:3] = r[0]
     m[1, 0:3] = r[1]
     m[2, 0:3] = r[2]
 
 
-def matrix_trs_lerp(m0: np.ndarray, m1: np.ndarray, t: float) -> np.ndarray:
+def matrix_trs_lerp(m0: FloatArray, m1: FloatArray, t: float) -> FloatArray:
     """Interpolate between two matrices using TRS decomposition and slerp."""
     t0 = mat_get_translation(m0)
     t1 = mat_get_translation(m1)
@@ -563,7 +485,7 @@ class Part:
     referent: str
     name: str
     size: tuple[float, float, float]
-    cframe: np.ndarray
+    cframe: FloatArray
     mesh_data: MeshData | None = None
 
 
@@ -574,14 +496,13 @@ class Motor6D:
     name: str
     part0_ref: str
     part1_ref: str
-    c0: np.ndarray
-    c1: np.ndarray
-    c1_inv: np.ndarray | None = None  # Cached inverse of c1
+    c0: FloatArray
+    c1: FloatArray
+    c1_inv: FloatArray = field(init=False)  # Cached inverse of c1
 
     def __post_init__(self) -> None:
         """Cache the inverse of c1 for performance."""
-        if self.c1_inv is None:
-            self.c1_inv = mat_inv(self.c1)
+        self.c1_inv = mat_inv(self.c1)
 
 
 @dataclass
@@ -589,7 +510,7 @@ class Keyframe:
     """Animation keyframe."""
 
     time: float
-    pose_by_part_name: dict[str, np.ndarray]
+    pose_by_part_name: dict[str, FloatArray]
 
 
 def _fill_sparse_pose_tracks(keys: list[Keyframe]) -> list[Keyframe]:
@@ -604,7 +525,7 @@ def _fill_sparse_pose_tracks(keys: list[Keyframe]) -> list[Keyframe]:
     if len(keys) < 2:
         return keys
 
-    tracks: dict[str, list[tuple[int, np.ndarray]]] = {}
+    tracks: dict[str, list[tuple[int, FloatArray]]] = {}
     for index, keyframe in enumerate(keys):
         for name, transform in keyframe.pose_by_part_name.items():
             tracks.setdefault(name, []).append((index, transform))
@@ -737,7 +658,7 @@ def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:
         text = anim_data.decode('utf-8-sig', errors='replace')
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
         root = DefusedElementTree.fromstring(text)
-    except (ParseError, DefusedXmlException):
+    except ParseError, DefusedXmlException:
         return []
 
     keys: list[Keyframe] = []
@@ -753,7 +674,7 @@ def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:
             continue
         t = float(_text(t_elem, '0'))
 
-        poses: dict[str, np.ndarray] = {}
+        poses: dict[str, FloatArray] = {}
         for pose_item in item.iter('Item'):
             if pose_item.attrib.get('class') != 'Pose':
                 continue
@@ -778,7 +699,9 @@ def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:
     return keys
 
 
-def _parse_rbxm_keyframes(parser: _RbxmParserModule, anim_data: bytes) -> list[Keyframe]:
+def _parse_rbxm_keyframes(anim_data: bytes) -> list[Keyframe]:
+    from . import rbxm_parser as parser
+
     instances = parser.parse_rbxm(anim_data)
     keyframe_instances = parser.find_by_class(instances, 'Keyframe')
     if not keyframe_instances:
@@ -789,7 +712,7 @@ def _parse_rbxm_keyframes(parser: _RbxmParserModule, anim_data: bytes) -> list[K
     for kf_inst in keyframe_instances:
         time_val = kf_inst.properties.get('Time', 0.0)
         t = float(time_val) if isinstance(time_val, (int, float)) else 0.0
-        poses: dict[str, np.ndarray] = {}
+        poses: dict[str, FloatArray] = {}
         _collect_poses(kf_inst, poses)
         if poses:
             keys.append(Keyframe(t, poses))
@@ -800,24 +723,15 @@ def _parse_rbxm_keyframes(parser: _RbxmParserModule, anim_data: bytes) -> list[K
 
 def load_animation_from_rbxm(anim_data: bytes) -> list[Keyframe]:
     """Load animation from binary RBXM format."""
-    try:
-        parser = cast(
-            '_RbxmParserModule',
-            importlib.import_module('.rbxm_parser', package=__package__),
-        )
-    except ImportError:
-        log_buffer.log('AnimationViewer', 'RBXM parser not available')
-        return []
-
     return _animation_boundary(
-        lambda: _parse_rbxm_keyframes(parser, anim_data),
+        lambda: _parse_rbxm_keyframes(anim_data),
         message='Error parsing RBXM animation',
         fallback=[],
         include_traceback=True,
     )
 
 
-def _collect_poses(instance: _ParsedInstanceLike, poses: dict[str, np.ndarray]) -> None:
+def _collect_poses(instance: RbxmInstance, poses: dict[str, FloatArray]) -> None:
     """Recursively collect Pose instances from a Keyframe."""
     for child in instance.children:
         if child.class_name == 'Pose':
@@ -827,10 +741,12 @@ def _collect_poses(instance: _ParsedInstanceLike, poses: dict[str, np.ndarray]) 
 
             if name and cframe and isinstance(weight, int | float) and weight > 0:
                 # CFrame is a dict with 'position' and 'rotation'
-                parsed_cframe = _preserve_parsed_cframe(cframe)
+                if not isinstance(cframe, dict) or not isinstance(name, str):
+                    continue
+                parsed_cframe = cframe
                 pos = parsed_cframe.get('position', (0, 0, 0))
                 rot = parsed_cframe.get('rotation', [1, 0, 0, 0, 1, 0, 0, 0, 1])
-                poses[_preserve_str(name)] = mat_from_cframe(pos, rot)
+                poses[name] = mat_from_cframe(pos, rot)
 
             # Recursively check for nested poses
             _collect_poses(child, poses)
@@ -921,7 +837,7 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
     all_times = sorted(times_set)
     keyframes: list[Keyframe] = []
     for t in all_times:
-        poses: dict[str, np.ndarray] = {}
+        poses: dict[str, FloatArray] = {}
         for name, bc in bone_curves.items():
             px = _lerp(bc['px'], t)
             py = _lerp(bc['py'], t)
@@ -980,7 +896,7 @@ def load_animation_from_file(anim_path: str) -> list[Keyframe]:
             continue
         t = float(_text(t_elem, '0'))
 
-        poses: dict[str, np.ndarray] = {}
+        poses: dict[str, FloatArray] = {}
         for pose_item in item.iter('Item'):
             if pose_item.attrib.get('class') != 'Pose':
                 continue
@@ -1153,12 +1069,9 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         # Keep the animation renderer on the same offscreen-raster path as OBJ
         # previews so Windows never has to present a native OpenGL child surface.
-        if TYPE_CHECKING:
-            QWidget.__init__(self, parent)
-        else:
-            super().__init__(parent)
-        self.parts: dict[str, Part] | dict[int, Part] = {}
-        self.motors: list[Motor6D] | dict[str, Motor6D] = []
+        super().__init__(parent)
+        self.parts: dict[str, Part] = {}
+        self.motors: list[Motor6D] = []
         self.keyframes: list[Keyframe] = []
         self.current_time = 0.0
         self.duration = 0.0
@@ -1166,10 +1079,10 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         # Root tracking
         self.root_ref: PartRef | None = None
         self.root_name: str = ''
-        self.base_root_world: np.ndarray | None = None
+        self.base_root_world: FloatArray | None = None
 
         # World transforms for each part
-        self.world_transforms: dict[PartRef, np.ndarray] = {}
+        self.world_transforms: dict[PartRef, FloatArray] = {}
 
         # Camera
         self.rotation_x = 20
@@ -1215,7 +1128,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             refresh = float(screen.refreshRate()) if screen is not None else 60.0
             if not refresh or refresh <= 0:
                 refresh = 60.0
-        except (RuntimeError, TypeError, ValueError):
+        except RuntimeError, TypeError, ValueError:
             refresh = 60.0
         interval_ms = max(1, round(1000.0 / refresh))
         self.timer.start(interval_ms)
@@ -1227,16 +1140,16 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             refresh = float(screen.refreshRate()) if screen is not None else 60.0
             if not refresh or refresh <= 0:
                 refresh = 60.0
-        except (RuntimeError, TypeError, ValueError):
+        except RuntimeError, TypeError, ValueError:
             refresh = 60.0
         return max(1, round(1000.0 / refresh))
 
     def _create_placeholder_rig(
         self, pose_names: set[str]
-    ) -> tuple[dict[int, Part], dict[str, Motor6D]]:
+    ) -> tuple[dict[str, Part], list[Motor6D]]:
         """Create placeholder rig with simple cubes for unsupported animation types."""
-        parts: dict[int, Part] = {}
-        motors: dict[str, Motor6D] = {}
+        parts: dict[str, Part] = {}
+        motors: list[Motor6D] = []
 
         # Create a cube for each unique part in the animation
         for idx, part_name in enumerate(sorted(pose_names)):
@@ -1249,7 +1162,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             )
             # Create a simple cube mesh
             part.mesh_data = create_cube_mesh(0.5, 0.5, 0.5)
-            parts[idx] = part
+            parts[str(idx)] = part
 
             # Position blocks in a grid
             grid_x = idx % 5
@@ -1306,14 +1219,10 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             self.parts = placeholder_parts
             self.motors = placeholder_motors
             self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
-            self.root_ref = next(iter(placeholder_parts), 0)
-            self.root_name = (
-                placeholder_parts[self.root_ref].name if placeholder_parts else 'Root'
-            )
+            self.root_ref = next(iter(placeholder_parts), '0')
+            self.root_name = placeholder_parts[self.root_ref].name if placeholder_parts else 'Root'
             self.base_root_world = (
-                placeholder_parts[self.root_ref].cframe.copy()
-                if placeholder_parts
-                else np.eye(4)
+                placeholder_parts[self.root_ref].cframe.copy() if placeholder_parts else np.eye(4)
             )
             self.current_time = 0
             self.update()
@@ -1361,7 +1270,6 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         self.current_time = 0
         self.update()
 
-
         return True
 
     @staticmethod
@@ -1382,17 +1290,12 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         except (RuntimeError, TypeError, ValueError) as exc:
             return f'state_unavailable={type(exc).__name__}: {exc}'
 
-    def _read_center_pixel_values(self) -> np.ndarray:
+    def _read_center_pixel_values(self) -> NDArray[np.uint8]:
         size = self.size()
         x = max(0, size.width() // 2)
         y = max(0, size.height() // 2)
-        pixel = _as_object(GL.glReadPixels(x, y, 1, 1, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE))
-        if isinstance(pixel, (bytes, bytearray, memoryview)):
-            return np.frombuffer(
-                pixel,  # pyright: ignore[reportUnknownArgumentType]
-                dtype=np.uint8,
-            )
-        return np.asarray(pixel, dtype=np.uint8).reshape(-1)
+        pixel = GL.glReadPixels(x, y, 1, 1, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+        return np.frombuffer(pixel, dtype=np.uint8)
 
     def _sample_center_pixel(self) -> str:
         """Sample one rendered pixel so logs can separate rendering from presentation."""
@@ -1619,7 +1522,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             kf_a, kf_b, alpha = sample_keyframes(self.keyframes, self.current_time)
 
             # Interpolate poses
-            pose: dict[str, np.ndarray] = {}
+            pose: dict[str, FloatArray] = {}
             all_names = set(kf_a.pose_by_part_name.keys()) | set(kf_b.pose_by_part_name.keys())
             ident = mat_identity()
 
@@ -1634,7 +1537,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                     pose[name] = matrix_trs_lerp(a, b, alpha)
 
             # Apply pose to each part independently (no hierarchy)
-            world: dict[PartRef, np.ndarray] = {}
+            world: dict[PartRef, FloatArray] = {}
             for ref, part in self.parts.items():
                 part_pose = pose.get(part.name, ident)
                 world[ref] = mat_mul(part.cframe, part_pose)
@@ -1646,7 +1549,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         kf_a, kf_b, alpha = sample_keyframes(self.keyframes, self.current_time)
 
         # Interpolate poses
-        pose: dict[str, np.ndarray] = {}
+        pose: dict[str, FloatArray] = {}
         all_names = set(kf_a.pose_by_part_name.keys()) | set(kf_b.pose_by_part_name.keys())
         ident = mat_identity()
 
@@ -1662,15 +1565,15 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         # Start with root
         root_pose = pose.get(self.root_name, ident)
-        world: dict[PartRef, np.ndarray] = {}
+        world: dict[PartRef, FloatArray] = {}
         if self.base_root_world is not None:
             world[self.root_ref] = mat_mul(self.base_root_world, root_pose)
         else:
             world[self.root_ref] = root_pose
 
         # Propagate through motor hierarchy (limited passes)
-        rig_parts = _preserve_rig_parts(self.parts)
-        motors = _preserve_motor_list(self.motors)
+        rig_parts = self.parts
+        motors = self.motors
         num_motors = len(motors)
         max_passes = min(num_motors + 2, 15)  # Limit iterations
 
@@ -1692,7 +1595,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                 # Use cached c1_inv for performance
                 part1_world = mat_mul(
                     mat_mul(mat_mul(world[motor.part0_ref], motor.c0), transform),
-                    _preserve_motor_inverse(motor.c1_inv),
+                    motor.c1_inv,
                 )
 
                 world[motor.part1_ref] = part1_world
@@ -1765,10 +1668,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         """Release GPU resources before Qt destroys this widget's context."""
         self.timer.stop()
         self.release_display_lists()
-        if TYPE_CHECKING:
-            QWidget.closeEvent(self, event)
-        else:
-            super().closeEvent(event)
+        super().closeEvent(event)
 
     def _draw_grid(self) -> None:
         """Draw a subtle floor grid to provide spatial context."""
@@ -2071,7 +1971,7 @@ class AnimationViewerPanel(QWidget):
     """Animation viewer with playback controls."""
 
     def __init__(
-        self, parent: QWidget | None = None, config_manager: ConfigManager | None = None
+        self, parent: QWidget | None = None, config_manager: SettingsSource | None = None
     ) -> None:
         super().__init__(parent)
         self.config_manager = config_manager
@@ -2084,8 +1984,8 @@ class AnimationViewerPanel(QWidget):
                 updated = True
             if updated:
                 self.config_manager.save()
-            self.gl_widget.show_grid = _preserve_bool(
-                self.config_manager.settings.get('obj_show_grid', True)
+            self.gl_widget.show_grid = bool_value(
+                self.config_manager.settings.get('obj_show_grid', True), default=True
             )
 
         self.is_playing = False
@@ -2223,7 +2123,7 @@ class AnimationViewerPanel(QWidget):
             # Start playback timer at monitor refresh rate for smooth sync
             try:
                 interval = self.gl_widget.get_refresh_interval_ms()
-            except (RuntimeError, TypeError, ValueError):
+            except RuntimeError, TypeError, ValueError:
                 interval = 33
             self.timer.start(interval)
 

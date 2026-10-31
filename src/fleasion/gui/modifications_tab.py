@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, override
+from typing import TYPE_CHECKING, override
 
 from PySide6.QtCore import (
     QAbstractItemModel,
@@ -111,11 +111,17 @@ if TYPE_CHECKING:
 
     from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.config.manager import ConfigManager
-    from fleasion.gui.linux_hotkeys import LinuxCustomFFlagHotkeyController, LinuxHotkeyService
-    from fleasion.gui.windows_hotkeys import (
-        WindowsCustomFFlagHotkeyController,
-        WindowsHotkeyService,
+    from fleasion.config.types import (
+        FastFlagAction as _FastFlagAction,
+        FastFlagActions as _FastFlagActions,
+        HotkeyBinding as _HotkeyBinding,
+        HotkeyBindings as _HotkeyBindings,
     )
+    from fleasion.gui.hotkeys.types import (
+        CustomFFlagHotkeyController,
+        HotkeyService as _HotkeyService,
+    )
+    from fleasion.gui.linux_hotkeys import LinuxHotkeyService
     from fleasion.modifications.manager import ModificationManager
     from fleasion.modifications.types import (
         FastFlagSettings as _FastFlagSettings,
@@ -124,21 +130,7 @@ if TYPE_CHECKING:
     from fleasion.proxy.master import ProxyMaster
 
 
-type _HotkeyBinding = dict[str, int | bool | str]
-type _HotkeyBindings = dict[str, _HotkeyBinding]
-
-
-class _FastFlagAction(TypedDict, total=False):
-    flags: dict[str, str]
-    keybind: _HotkeyBinding
-
-
-type _FastFlagActions = dict[str, _FastFlagAction]
 type _HotkeyCapture = Callable[[str], tuple[bool, _HotkeyBinding | None]]
-type CustomFFlagHotkeyController = (
-    WindowsCustomFFlagHotkeyController | LinuxCustomFFlagHotkeyController
-)
-type _HotkeyService = WindowsHotkeyService | LinuxHotkeyService
 
 
 _FFLAG_ROW_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
@@ -3029,6 +3021,7 @@ class CustomFFlagEditor(QWidget):
         elif self._linux_keybinds:
             from fleasion.gui.linux_hotkeys import (
                 LinuxCustomFFlagHotkeyController,
+                LinuxHotkeyService,
             )
 
             self._hotkey_controller = hotkey_controller
@@ -3038,8 +3031,8 @@ class CustomFFlagEditor(QWidget):
                 )
                 self._owns_hotkey_controller = True
             self._hotkey_service = self._hotkey_controller.service
-            if isinstance(self._hotkey_controller, LinuxCustomFFlagHotkeyController):
-                self._linux_hotkey_service = self._hotkey_controller.service
+            if isinstance(self._hotkey_service, LinuxHotkeyService):
+                self._linux_hotkey_service = self._hotkey_service
             self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         self._loading = False
         self._sort_column: int | None = 0

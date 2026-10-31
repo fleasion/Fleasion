@@ -33,10 +33,9 @@ if TYPE_CHECKING:
 
     from PySide6.QtCore import SignalInstance
 
+    from fleasion.config.types import HotkeyBinding
+
     from .hotkey_config import HotkeyConfig, HotkeyProxy
-
-
-type HotkeyBinding = dict[str, int | str]
 
 
 # ``struct input_event`` on Linux.  Native alignment keeps this correct for

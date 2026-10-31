@@ -25,10 +25,9 @@ from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_v
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from fleasion.config.types import HotkeyBinding
+
     from .hotkey_config import HotkeyConfig, HotkeyProxy
-
-
-type HotkeyBinding = dict[str, int | bool | str]
 
 
 class _WinFunction(Protocol):

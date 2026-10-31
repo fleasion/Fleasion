@@ -9,8 +9,7 @@ import importlib
 import re
 import struct
 import zlib
-from collections.abc import Buffer, Callable
-from typing import TYPE_CHECKING, Literal, SupportsFloat, SupportsIndex, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
@@ -18,6 +17,7 @@ from defusedxml.ElementTree import ParseError
 
 if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
+    from collections.abc import Callable
 
 from .tools.solidmodel_converter.rbxm import deserializer as rbxm_deserializer
 from .tools.solidmodel_converter.rbxm.binary_reader import read_string
@@ -38,7 +38,6 @@ PLACE_ASSET_TYPE = 9
 
 type RobloxDocumentKind = Literal['rbxm', 'rbxmx', 'rbxl']
 type NumberCaster = type[int | float]
-type FloatConvertible = str | Buffer | SupportsFloat | SupportsIndex
 
 _decompress_chunk: Callable[[bytes, int], bytes] = vars(rbxm_deserializer)['_decompress_chunk']
 
@@ -80,7 +79,7 @@ def classify_roblox_document(data: bytes) -> RobloxDocumentKind | None:
     """Classify bytes as rbxm, rbxmx, rbxl, or not a Roblox document."""
     try:
         data = decompress_if_needed(data)
-    except (EOFError, OSError, zlib.error):
+    except EOFError, OSError, zlib.error:
         return None
 
     if data.startswith(RBXM_MAGIC):
@@ -250,7 +249,7 @@ def _xml_to_document(data: bytes) -> RbxDocument:
             if text:
                 try:
                     blob = base64.b64decode(text)
-                except (binascii.Error, ValueError):
+                except binascii.Error, ValueError:
                     blob = text.encode('utf-8', errors='replace')
             md5 = shared.get('md5') or ''
             if md5:
@@ -326,7 +325,7 @@ def _decode_binary_property(text: str) -> bytes:
         return b''
     try:
         return base64.b64decode(stripped)
-    except (binascii.Error, ValueError):
+    except binascii.Error, ValueError:
         return stripped.encode('utf-8', errors='replace')
 
 
@@ -334,7 +333,7 @@ def _xml_property_value(
     elem: ET.Element,
     type_name: str,
     shared_by_md5: dict[str, bytes],
-) -> object:
+) -> str | bytes | dict[str, str]:
     text = elem.text or ''
     if type_name == 'SharedString':
         return shared_by_md5.get(text.strip(), b'')
@@ -374,10 +373,10 @@ def _property_format_from_type_name(type_name: str) -> PropertyFormat | None:
     return tag_to_format.get(key, PropertyFormat.STRING)
 
 
-def _reference_value(value: object, ref_mapper: Callable[[str], int]) -> int | None:
+def _reference_value(value: Any, ref_mapper: Callable[[str], int]) -> int | None:
     if value is None:
         return None
-    value_map = _as_object_dict(value)
+    value_map = _as_property_dict(value)
     if value_map is not None:
         value = value_map.get('Ref') or value_map.get('referent') or value_map.get('id')
     text = str(value or '').strip()
@@ -388,8 +387,8 @@ def _reference_value(value: object, ref_mapper: Callable[[str], int]) -> int | N
     return ref_mapper(text)
 
 
-def _unique_id_value(value: object) -> object:
-    value_map = _as_object_dict(value)
+def _unique_id_value(value: Any) -> Any:
+    value_map = _as_property_dict(value)
     if value_map is not None:
         return value_map
     if isinstance(value, bytes):
@@ -409,8 +408,8 @@ def _unique_id_value(value: object) -> object:
     return {'Index': 0, 'Time': 0, 'Random': 0}
 
 
-def _content_value(value: object, ref_mapper: Callable[[str], int]) -> object:
-    value_map = _as_object_dict(value)
+def _content_value(value: Any, ref_mapper: Callable[[str], int]) -> Any:
+    value_map = _as_property_dict(value)
     if value_map is None:
         if value is None:
             return value
@@ -426,9 +425,7 @@ def _content_value(value: object, ref_mapper: Callable[[str], int]) -> object:
     return None if 'null' in value_map else value_map
 
 
-def _value_for_format(
-    value: object, fmt: PropertyFormat, ref_mapper: Callable[[str], int]
-) -> object:
+def _value_for_format(value: Any, fmt: PropertyFormat, ref_mapper: Callable[[str], int]) -> Any:
     if fmt in {
         PropertyFormat.INT,
         PropertyFormat.INT64,
@@ -436,7 +433,7 @@ def _value_for_format(
         PropertyFormat.BRICK_COLOR,
         PropertyFormat.SECURITY_CAPABILITIES,
     }:
-        result: object = _safe_int(value)
+        result: Any = _safe_int(value)
     elif fmt in {PropertyFormat.FLOAT, PropertyFormat.DOUBLE}:
         result = _safe_float(value)
     elif fmt == PropertyFormat.BOOL:
@@ -484,9 +481,9 @@ def _value_for_format(
     return result
 
 
-def _parse_udim_value(value: object) -> dict[str, float | int]:
-    value_map = _as_object_dict(value)
-    pairs: dict[str, object] | dict[str, str]
+def _parse_udim_value(value: Any) -> dict[str, float | int]:
+    value_map = _as_property_dict(value)
+    pairs: dict[str, Any]
     if value_map is not None:
         pairs = {str(key): item for key, item in value_map.items()}
     else:
@@ -503,9 +500,9 @@ def _parse_udim_value(value: object) -> dict[str, float | int]:
     }
 
 
-def _parse_udim2_value(value: object) -> dict[str, float | int]:
-    value_map = _as_object_dict(value)
-    pairs: dict[str, object] | dict[str, str]
+def _parse_udim2_value(value: Any) -> dict[str, float | int]:
+    value_map = _as_property_dict(value)
+    pairs: dict[str, Any]
     if value_map is not None:
         pairs = {str(key): item for key, item in value_map.items()}
     else:
@@ -527,10 +524,10 @@ def _parse_udim2_value(value: object) -> dict[str, float | int]:
 
 
 def _parse_vector_value(
-    value: object, keys: tuple[str, ...], caster: NumberCaster
+    value: Any, keys: tuple[str, ...], caster: NumberCaster
 ) -> dict[str, int | float]:
-    value_map = _as_object_dict(value)
-    pairs: dict[str, object] | dict[str, str]
+    value_map = _as_property_dict(value)
+    pairs: dict[str, Any]
     if value_map is not None:
         pairs = {str(key): item for key, item in value_map.items()}
     else:
@@ -544,8 +541,8 @@ def _parse_vector_value(
     }
 
 
-def _parse_ray_value(value: object) -> dict[str, dict[str, int | float]]:
-    value_map = _as_object_dict(value)
+def _parse_ray_value(value: Any) -> dict[str, dict[str, int | float]]:
+    value_map = _as_property_dict(value)
     if value_map is not None:
         return {
             'origin': _parse_vector_value(value_map.get('origin', {}), ('X', 'Y', 'Z'), float),
@@ -561,7 +558,7 @@ def _parse_ray_value(value: object) -> dict[str, dict[str, int | float]]:
     }
 
 
-def _parse_cframe_value(value: object) -> dict[str, float] | None:
+def _parse_cframe_value(value: Any) -> dict[str, float] | None:
     text = str(value).strip()
     if value is None or text.lower() in {'', 'none', 'null'}:
         return None
@@ -579,7 +576,7 @@ def _parse_cframe_value(value: object) -> dict[str, float] | None:
         'R21': 0.0,
         'R22': 1.0,
     }
-    value_map = _as_object_dict(value)
+    value_map = _as_property_dict(value)
     if value_map is not None:
         result.update({key: _safe_float(value_map.get(key, result[key])) for key in result})
         return result
@@ -597,8 +594,8 @@ def _parse_cframe_value(value: object) -> dict[str, float] | None:
     return result
 
 
-def _parse_number_range_value(value: object) -> dict[str, float]:
-    value_map = _as_object_dict(value)
+def _parse_number_range_value(value: Any) -> dict[str, float]:
+    value_map = _as_property_dict(value)
     if value_map is not None:
         return {
             'Min': _safe_float(value_map.get('Min', 0.0)),
@@ -617,8 +614,8 @@ def _parse_number_range_value(value: object) -> dict[str, float]:
     }
 
 
-def _parse_rect2d_value(value: object) -> dict[str, dict[str, int | float]]:
-    value_map = _as_object_dict(value)
+def _parse_rect2d_value(value: Any) -> dict[str, dict[str, int | float]]:
+    value_map = _as_property_dict(value)
     if value_map is not None:
         return {
             'min': _parse_vector_value(value_map.get('min', {}), ('X', 'Y'), float),
@@ -632,11 +629,11 @@ def _parse_rect2d_value(value: object) -> dict[str, dict[str, int | float]]:
     }
 
 
-def _parse_physical_properties_value(value: object) -> dict[str, bool | float] | None:
+def _parse_physical_properties_value(value: Any) -> dict[str, bool | float] | None:
     text = str(value).strip()
     if value is None or text.lower() in {'', 'none', 'null', 'default'}:
         return None
-    value_map = _as_object_dict(value)
+    value_map = _as_property_dict(value)
     if value_map is not None:
         return {
             'CustomPhysics': _safe_bool(value_map.get('CustomPhysics', True)),
@@ -666,8 +663,8 @@ def _parse_physical_properties_value(value: object) -> dict[str, bool | float] |
     return result
 
 
-def _parse_font_value(value: object) -> dict[str, str | int]:
-    value_map = _as_object_dict(value)
+def _parse_font_value(value: Any) -> dict[str, str | int]:
+    value_map = _as_property_dict(value)
     if value_map is not None:
         return {
             'Family': str(value_map.get('Family', '')),
@@ -710,44 +707,37 @@ def _parse_numbers(text: str) -> list[float]:
     ]
 
 
-def _cast_number(value: object, caster: NumberCaster) -> int | float:
-    number = _float_value(value)
+def _cast_number(value: Any, caster: NumberCaster) -> int | float:
+    number = float(value)
     if caster is int:
         return round(number)
     return number
 
 
-def _safe_int(value: object) -> int:
+def _safe_int(value: Any) -> int:
     try:
         return int(str(value).strip(), 0)
     except TypeError, ValueError:
         return 0
 
 
-def _safe_float(value: object) -> float:
+def _safe_float(value: Any) -> float:
     try:
-        return _float_value(value)
+        return float(value)
     except TypeError, ValueError:
         return 0.0
 
 
-def _safe_bool(value: object) -> bool:
+def _safe_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
-def _as_object_dict(value: object) -> dict[object, object] | None:
+def _as_property_dict(value: Any) -> dict[Any, Any] | None:
     if isinstance(value, dict):
-        return cast('dict[object, object]', value)
+        return cast('dict[Any, Any]', value)
     return None
-
-
-def _float_value(value: object) -> float:
-    if isinstance(value, (str, Buffer, SupportsFloat, SupportsIndex)):
-        return float(value)
-    msg = f'{type(value).__name__} cannot be converted to float'
-    raise TypeError(msg)
 
 
 def _find_child(parent: ET.Element, name: str) -> ET.Element | None:

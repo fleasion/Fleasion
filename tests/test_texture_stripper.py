@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 
     import pytest
 
-    from fleasion.config.manager import ConfigManager, ReplacementMaps
+    from fleasion.config.manager import ConfigManager
+    from fleasion.config.types import ReplacementMaps
 
 
 type _JsonScalar = str | int | float | bool | None

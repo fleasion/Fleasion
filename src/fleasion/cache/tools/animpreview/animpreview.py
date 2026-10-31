@@ -4,198 +4,29 @@ import math
 import pathlib
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, cast, override
+from typing import TYPE_CHECKING, cast, override
 
+import pyvista as pv  # pyright: ignore[reportMissingModuleSource]
+import vtk  # pyright: ignore[reportMissingModuleSource]
 from defusedxml import ElementTree
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from pyvistaqt import QtInteractor  # pyright: ignore[reportMissingModuleSource]
 
 type _Vec3 = tuple[float, float, float]
 type _Mat3 = list[list[float]]
 type _Quaternion = tuple[float, float, float, float]
-type _Bounds = tuple[float, float, float, float, float, float]
-
-
-class _Matrix4x4(Protocol):
-    pass
-
-
-class _Matrix4x4Factory(Protocol):
-    def __call__(self) -> _Matrix4x4: ...
-
-
-class _Light(Protocol):
-    pass
-
-
-class _LightFactory(Protocol):
-    def __call__(self) -> _Light: ...
-
-
-class _VtkModule(Protocol):
-    pass
-
-
-class _Mesh(Protocol):
-    def triangulate(self) -> _Mesh: ...
-
-    def clean(self) -> _Mesh: ...
-
-    def compute_normals(
-        self,
-        *,
-        cell_normals: bool,
-        point_normals: bool,
-        split_vertices: bool,
-        auto_orient_normals: bool,
-        consistent_normals: bool,
-    ) -> _Mesh: ...
-
-
-class _PyVistaModule(Protocol):
-    def read(self, path: str) -> _Mesh: ...
-
-
-class _Actor(Protocol):
-    pass
-
-
-class _Renderer(Protocol):
-    pass
-
-
-class _Camera(Protocol):
-    focal_point: _Vec3
-    position: _Vec3
-    up: _Vec3
-    view_angle: float
-
-
-class _Plotter(Protocol):
-    interactor: QWidget
-    renderer: _Renderer
-    bounds: _Bounds
-    camera: _Camera
-
-    def enable_anti_aliasing(self, mode: str) -> None: ...
-
-    def set_background(self, color: _Vec3) -> None: ...
-
-    def add_axes(self) -> object: ...
-
-    def add_mesh(
-        self,
-        mesh: _Mesh,
-        *,
-        opacity: float,
-        smooth_shading: bool,
-        color: _Vec3,
-        ambient: float,
-        diffuse: float,
-        specular: float,
-        specular_power: float,
-    ) -> _Actor: ...
-
-    def render(self) -> None: ...
-
-    def update(self) -> None: ...
-
-    def close(self) -> None: ...
-
-
-class _QtInteractorFactory(Protocol):
-    def __call__(self, parent: QWidget) -> _Plotter: ...
 
 
 if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
-    from collections.abc import Callable
 
     from PySide6.QtGui import QCloseEvent
-
-    def _pyvista_type_adapter() -> _PyVistaModule:
-        raise AssertionError
-
-    def _vtk_type_adapter() -> _VtkModule:
-        raise AssertionError
-
-    pv = _pyvista_type_adapter()
-    vtk = _vtk_type_adapter()
-else:
-    import pyvista as pv
-    import vtk
-
-if TYPE_CHECKING:
-
-    def _qt_interactor_type_adapter() -> _QtInteractorFactory:
-        raise AssertionError
-
-    QtInteractor = _qt_interactor_type_adapter()
-else:
-    from pyvistaqt import QtInteractor
 
 try:
     from fleasion.utils import log_buffer
 except ImportError:
     log_buffer = None
-
-
-_VTK_MATRIX_FACTORY = 'vtkMatrix4x4'
-_VTK_LIGHT_FACTORY = 'vtkLight'
-_MATRIX_IDENTITY = 'Identity'
-_MATRIX_SET_ELEMENT = 'SetElement'
-_MATRIX_GET_ELEMENT = 'GetElement'
-_MATRIX_MULTIPLY = 'Multiply4x4'
-_MATRIX_INVERT = 'Invert'
-_LIGHT_HEADLIGHT = 'SetLightTypeToHeadlight'
-_LIGHT_SCENE = 'SetLightTypeToSceneLight'
-_LIGHT_INTENSITY = 'SetIntensity'
-_LIGHT_POSITION = 'SetPosition'
-_LIGHT_FOCAL_POINT = 'SetFocalPoint'
-_PYVISTA_CUBE = 'Cube'
-_ACTOR_USER_MATRIX = 'SetUserMatrix'
-_RENDERER_REMOVE_LIGHTS = 'RemoveAllLights'
-_RENDERER_ADD_LIGHT = 'AddLight'
-_CAMERA_CLIPPING_RANGE = 'SetClippingRange'
-_CAMERA_AZIMUTH = 'Azimuth'
-
-
-def _call_void(target: object, method_name: str, *args: object) -> None:
-    method = cast('Callable[..., None]', getattr(target, method_name))
-    method(*args)
-
-
-def _call_float(target: object, method_name: str, *args: object) -> float:
-    method = cast('Callable[..., float]', getattr(target, method_name))
-    return method(*args)
-
-
-def _vtk_matrix_factory() -> _Matrix4x4Factory:
-    return cast('_Matrix4x4Factory', getattr(vtk, _VTK_MATRIX_FACTORY))
-
-
-def _vtk_light_factory() -> _LightFactory:
-    return cast('_LightFactory', getattr(vtk, _VTK_LIGHT_FACTORY))
-
-
-def _new_matrix() -> _Matrix4x4:
-    return _vtk_matrix_factory()()
-
-
-def _new_light() -> _Light:
-    return _vtk_light_factory()()
-
-
-def _cube(
-    *, center: _Vec3, x_length: float, y_length: float, z_length: float
-) -> _Mesh:
-    factory = cast('Callable[..., _Mesh]', getattr(pv, _PYVISTA_CUBE))
-    return factory(
-        center=center,
-        x_length=x_length,
-        y_length=y_length,
-        z_length=z_length,
-    )
 
 
 # XML helpers
@@ -241,33 +72,33 @@ def parse_cframe(elem: ET.Element) -> tuple[_Vec3, list[float]]:
     return (x, y, z), r
 
 
-def vtk_matrix_from_cframe(pos: _Vec3, r: list[float]) -> _Matrix4x4:
-    m = _new_matrix()
-    _call_void(m, _MATRIX_IDENTITY)
-    _call_void(m, _MATRIX_SET_ELEMENT, 0, 0, r[0])
-    _call_void(m, _MATRIX_SET_ELEMENT, 0, 1, r[1])
-    _call_void(m, _MATRIX_SET_ELEMENT, 0, 2, r[2])
-    _call_void(m, _MATRIX_SET_ELEMENT, 1, 0, r[3])
-    _call_void(m, _MATRIX_SET_ELEMENT, 1, 1, r[4])
-    _call_void(m, _MATRIX_SET_ELEMENT, 1, 2, r[5])
-    _call_void(m, _MATRIX_SET_ELEMENT, 2, 0, r[6])
-    _call_void(m, _MATRIX_SET_ELEMENT, 2, 1, r[7])
-    _call_void(m, _MATRIX_SET_ELEMENT, 2, 2, r[8])
-    _call_void(m, _MATRIX_SET_ELEMENT, 0, 3, pos[0])
-    _call_void(m, _MATRIX_SET_ELEMENT, 1, 3, pos[1])
-    _call_void(m, _MATRIX_SET_ELEMENT, 2, 3, pos[2])
+def vtk_matrix_from_cframe(pos: _Vec3, r: list[float]) -> vtk.vtkMatrix4x4:
+    m = vtk.vtkMatrix4x4()
+    m.Identity()
+    m.SetElement(0, 0, r[0])
+    m.SetElement(0, 1, r[1])
+    m.SetElement(0, 2, r[2])
+    m.SetElement(1, 0, r[3])
+    m.SetElement(1, 1, r[4])
+    m.SetElement(1, 2, r[5])
+    m.SetElement(2, 0, r[6])
+    m.SetElement(2, 1, r[7])
+    m.SetElement(2, 2, r[8])
+    m.SetElement(0, 3, pos[0])
+    m.SetElement(1, 3, pos[1])
+    m.SetElement(2, 3, pos[2])
     return m
 
 
-def mat_mul(a: _Matrix4x4, b: _Matrix4x4) -> _Matrix4x4:
-    out = _new_matrix()
-    _call_void(_vtk_matrix_factory(), _MATRIX_MULTIPLY, a, b, out)
+def mat_mul(a: vtk.vtkMatrix4x4, b: vtk.vtkMatrix4x4) -> vtk.vtkMatrix4x4:
+    out = vtk.vtkMatrix4x4()
+    vtk.vtkMatrix4x4.Multiply4x4(a, b, out)
     return out
 
 
-def mat_inv(a: _Matrix4x4) -> _Matrix4x4:
-    out = _new_matrix()
-    _call_void(_vtk_matrix_factory(), _MATRIX_INVERT, a, out)
+def mat_inv(a: vtk.vtkMatrix4x4) -> vtk.vtkMatrix4x4:
+    out = vtk.vtkMatrix4x4()
+    vtk.vtkMatrix4x4.Invert(a, out)
     return out
 
 
@@ -278,34 +109,34 @@ def lerp(a: float, b: float, t: float) -> float:
 # Some thing
 
 
-def mat_get_translation(m: _Matrix4x4) -> _Vec3:
-    return (_call_float(m, _MATRIX_GET_ELEMENT, 0, 3), _call_float(m, _MATRIX_GET_ELEMENT, 1, 3), _call_float(m, _MATRIX_GET_ELEMENT, 2, 3))
+def mat_get_translation(m: vtk.vtkMatrix4x4) -> _Vec3:
+    return (m.GetElement(0, 3), m.GetElement(1, 3), m.GetElement(2, 3))
 
 
-def mat_set_translation(m: _Matrix4x4, t: _Vec3) -> None:
-    _call_void(m, _MATRIX_SET_ELEMENT, 0, 3, t[0])
-    _call_void(m, _MATRIX_SET_ELEMENT, 1, 3, t[1])
-    _call_void(m, _MATRIX_SET_ELEMENT, 2, 3, t[2])
+def mat_set_translation(m: vtk.vtkMatrix4x4, t: _Vec3) -> None:
+    m.SetElement(0, 3, t[0])
+    m.SetElement(1, 3, t[1])
+    m.SetElement(2, 3, t[2])
 
 
-def mat_get_rot3(m: _Matrix4x4) -> _Mat3:
+def mat_get_rot3(m: vtk.vtkMatrix4x4) -> _Mat3:
     return [
-        [_call_float(m, _MATRIX_GET_ELEMENT, 0, 0), _call_float(m, _MATRIX_GET_ELEMENT, 0, 1), _call_float(m, _MATRIX_GET_ELEMENT, 0, 2)],
-        [_call_float(m, _MATRIX_GET_ELEMENT, 1, 0), _call_float(m, _MATRIX_GET_ELEMENT, 1, 1), _call_float(m, _MATRIX_GET_ELEMENT, 1, 2)],
-        [_call_float(m, _MATRIX_GET_ELEMENT, 2, 0), _call_float(m, _MATRIX_GET_ELEMENT, 2, 1), _call_float(m, _MATRIX_GET_ELEMENT, 2, 2)],
+        [m.GetElement(0, 0), m.GetElement(0, 1), m.GetElement(0, 2)],
+        [m.GetElement(1, 0), m.GetElement(1, 1), m.GetElement(1, 2)],
+        [m.GetElement(2, 0), m.GetElement(2, 1), m.GetElement(2, 2)],
     ]
 
 
-def mat_set_rot3(m: _Matrix4x4, r: _Mat3) -> None:
-    _call_void(m, _MATRIX_SET_ELEMENT, 0, 0, r[0][0])
-    _call_void(m, _MATRIX_SET_ELEMENT, 0, 1, r[0][1])
-    _call_void(m, _MATRIX_SET_ELEMENT, 0, 2, r[0][2])
-    _call_void(m, _MATRIX_SET_ELEMENT, 1, 0, r[1][0])
-    _call_void(m, _MATRIX_SET_ELEMENT, 1, 1, r[1][1])
-    _call_void(m, _MATRIX_SET_ELEMENT, 1, 2, r[1][2])
-    _call_void(m, _MATRIX_SET_ELEMENT, 2, 0, r[2][0])
-    _call_void(m, _MATRIX_SET_ELEMENT, 2, 1, r[2][1])
-    _call_void(m, _MATRIX_SET_ELEMENT, 2, 2, r[2][2])
+def mat_set_rot3(m: vtk.vtkMatrix4x4, r: _Mat3) -> None:
+    m.SetElement(0, 0, r[0][0])
+    m.SetElement(0, 1, r[0][1])
+    m.SetElement(0, 2, r[0][2])
+    m.SetElement(1, 0, r[1][0])
+    m.SetElement(1, 1, r[1][1])
+    m.SetElement(1, 2, r[1][2])
+    m.SetElement(2, 0, r[2][0])
+    m.SetElement(2, 1, r[2][1])
+    m.SetElement(2, 2, r[2][2])
 
 
 def quat_from_rot3(r: _Mat3) -> _Quaternion:
@@ -372,7 +203,7 @@ def quat_slerp(q0: _Quaternion, q1: _Quaternion, t: float) -> _Quaternion:
     return (w0 * s0 + w1 * s1, x0 * s0 + x1 * s1, y0 * s0 + y1 * s1, z0 * s0 + z1 * s1)
 
 
-def matrix_trs_lerp(m0: _Matrix4x4, m1: _Matrix4x4, t: float) -> _Matrix4x4:
+def matrix_trs_lerp(m0: vtk.vtkMatrix4x4, m1: vtk.vtkMatrix4x4, t: float) -> vtk.vtkMatrix4x4:
     t0 = mat_get_translation(m0)
     t1 = mat_get_translation(m1)
     tt = (lerp(t0[0], t1[0], t), lerp(t0[1], t1[1], t), lerp(t0[2], t1[2], t))
@@ -380,8 +211,8 @@ def matrix_trs_lerp(m0: _Matrix4x4, m1: _Matrix4x4, t: float) -> _Matrix4x4:
     q1 = quat_from_rot3(mat_get_rot3(m1))
     qt = quat_slerp(q0, q1, t)
     rt = rot3_from_quat(qt)
-    out = _new_matrix()
-    _call_void(out, _MATRIX_IDENTITY)
+    out = vtk.vtkMatrix4x4()
+    out.Identity()
     mat_set_rot3(out, rt)
     mat_set_translation(out, tt)
     return out
@@ -395,7 +226,7 @@ class Part:
     referent: str
     name: str
     size: tuple[float, float, float]
-    cframe: _Matrix4x4
+    cframe: vtk.vtkMatrix4x4
 
 
 @dataclass
@@ -403,14 +234,14 @@ class Motor6D:
     name: str
     part0_ref: str
     part1_ref: str
-    c0: _Matrix4x4
-    c1: _Matrix4x4
+    c0: vtk.vtkMatrix4x4
+    c1: vtk.vtkMatrix4x4
 
 
 @dataclass
 class Keyframe:
     time: float
-    pose_by_part_name: dict[str, _Matrix4x4]
+    pose_by_part_name: dict[str, vtk.vtkMatrix4x4]
 
 
 # Parse rig
@@ -487,7 +318,7 @@ def load_animation(anim_path: str) -> list[Keyframe]:
             continue
         t = float(_text(t_elem, '0'))
 
-        poses: dict[str, _Matrix4x4] = {}
+        poses: dict[str, vtk.vtkMatrix4x4] = {}
         for pose_item in item.iter('Item'):
             if pose_item.attrib.get('class') != 'Pose':
                 continue
@@ -556,7 +387,7 @@ def load_obj_mesh(
     prefix: str,
     part_name: str,
     fallback_size: _Vec3,
-) -> _Mesh:
+) -> pv.PolyData:
 
     candidates = [obj_path_for_part(mesh_dir, prefix, part_name)]
 
@@ -566,7 +397,10 @@ def load_obj_mesh(
     for path in candidates:
         if pathlib.Path(path).exists():
             try:
-                mesh = pv.read(path).triangulate().clean()
+                loaded = pv.read(path)
+                if not isinstance(loaded, pv.PolyData):
+                    continue
+                mesh = loaded.triangulate().clean()
                 return mesh.compute_normals(
                     cell_normals=False,
                     point_normals=True,
@@ -580,7 +414,7 @@ def load_obj_mesh(
                     log_buffer.log('AnimPreview', message)
 
     # Fallback cube if missing
-    return _cube(
+    return pv.Cube(
         center=(0, 0, 0),
         x_length=fallback_size[0],
         y_length=fallback_size[1],
@@ -601,7 +435,7 @@ class AnimPreviewWidget(QWidget):
     ) -> None:
         super().__init__(parent)
 
-        self.plotter: _Plotter = QtInteractor(self)
+        self.plotter: QtInteractor = QtInteractor(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -618,26 +452,26 @@ class AnimPreviewWidget(QWidget):
 
         # Lights
         ren = self.plotter.renderer
-        _call_void(ren, _RENDERER_REMOVE_LIGHTS)
+        ren.RemoveAllLights()
 
-        head = _new_light()
-        _call_void(head, _LIGHT_HEADLIGHT)
-        _call_void(head, _LIGHT_INTENSITY, 0.95)
-        _call_void(ren, _RENDERER_ADD_LIGHT, head)
+        head = vtk.vtkLight()
+        head.SetLightTypeToHeadlight()
+        head.SetIntensity(0.95)
+        ren.AddLight(head)
 
-        fill = _new_light()
-        _call_void(fill, _LIGHT_SCENE)
-        _call_void(fill, _LIGHT_POSITION, -6, 6, 10)
-        _call_void(fill, _LIGHT_FOCAL_POINT, 0, 0, 0)
-        _call_void(fill, _LIGHT_INTENSITY, 0.35)
-        _call_void(ren, _RENDERER_ADD_LIGHT, fill)
+        fill = vtk.vtkLight()
+        fill.SetLightTypeToSceneLight()
+        fill.SetPosition(-6, 6, 10)
+        fill.SetFocalPoint(0, 0, 0)
+        fill.SetIntensity(0.35)
+        ren.AddLight(fill)
 
-        rim = _new_light()
-        _call_void(rim, _LIGHT_SCENE)
-        _call_void(rim, _LIGHT_POSITION, 0, -8, 6)
-        _call_void(rim, _LIGHT_FOCAL_POINT, 0, 0, 0)
-        _call_void(rim, _LIGHT_INTENSITY, 0.20)
-        _call_void(ren, _RENDERER_ADD_LIGHT, rim)
+        rim = vtk.vtkLight()
+        rim.SetLightTypeToSceneLight()
+        rim.SetPosition(0, -8, 6)
+        rim.SetFocalPoint(0, 0, 0)
+        rim.SetIntensity(0.2)
+        ren.AddLight(rim)
 
         # Load data
         self.parts, self.motors = load_rig(rig_path)
@@ -654,7 +488,7 @@ class AnimPreviewWidget(QWidget):
             raise RuntimeError(msg)
 
         # Actors
-        self.actors_by_part_ref: dict[str, _Actor] = {}
+        self.actors_by_part_ref: dict[str, vtk.vtkActor] = {}
         for ref, p in self.parts.items():
             mesh = load_obj_mesh(mesh_dir, self.prefix, p.name, p.size)
             is_hrp = p.name.lower() == 'humanoidrootpart'
@@ -668,7 +502,7 @@ class AnimPreviewWidget(QWidget):
                 specular=0.08,
                 specular_power=20,
             )
-            _call_void(actor, _ACTOR_USER_MATRIX, p.cframe)
+            actor.SetUserMatrix(p.cframe)
             self.actors_by_part_ref[ref] = actor
 
         xmin, xmax, ymin, ymax, zmin, zmax = self.plotter.bounds
@@ -684,8 +518,8 @@ class AnimPreviewWidget(QWidget):
         cam.position = (cx, cy, cz + dist)
         cam.up = (0, 1, 0)
         cam.view_angle = 30
-        _call_void(cam, _CAMERA_CLIPPING_RANGE, 0.001, dist * 50)
-        _call_void(cam, _CAMERA_AZIMUTH, 205)
+        cam.SetClippingRange(0.001, dist * 50)
+        cam.Azimuth(205)
         self.plotter.render()
         # Root + timing
         self.root_ref = pick_root_ref(self.parts)
@@ -706,23 +540,25 @@ class AnimPreviewWidget(QWidget):
 
         k0, k1, alpha = sample_keys(self.keys, self.time)
 
-        pose: dict[str, _Matrix4x4] = {}
+        pose: dict[str, vtk.vtkMatrix4x4] = {}
         names = set(k0.pose_by_part_name.keys()) | set(k1.pose_by_part_name.keys())
-        ident = _new_matrix()
-        _call_void(ident, _MATRIX_IDENTITY)
+        ident = vtk.vtkMatrix4x4()
+        ident.Identity()
 
         for n in names:
             a = k0.pose_by_part_name.get(n)
             b = k1.pose_by_part_name.get(n)
             if a is None:
-                pose[n] = cast('_Matrix4x4', b)
+                pose[n] = cast('vtk.vtkMatrix4x4', b)
             elif b is None:
                 pose[n] = a
             else:
                 pose[n] = matrix_trs_lerp(a, b, alpha)
 
         root_pose = pose.get(self.root_name, ident)
-        world: dict[str, _Matrix4x4] = {self.root_ref: mat_mul(self.base_root_world, root_pose)}
+        world: dict[str, vtk.vtkMatrix4x4] = {
+            self.root_ref: mat_mul(self.base_root_world, root_pose)
+        }
 
         for _ in range(25):
             changed = False
@@ -746,7 +582,7 @@ class AnimPreviewWidget(QWidget):
         for ref, actor in self.actors_by_part_ref.items():
             w = world.get(ref)
             if w is not None:
-                _call_void(actor, _ACTOR_USER_MATRIX, w)
+                actor.SetUserMatrix(w)
 
         self.plotter.update()
 

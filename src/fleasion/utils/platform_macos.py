@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlsplit
 
 from .json_types import as_json_object
@@ -72,7 +72,7 @@ class _CFunction(Protocol):
     argtypes: list[object]
     restype: object
 
-    def __call__(self, *args: object) -> object: ...
+    def __call__(self, *args: object) -> Any: ...
 
 
 class _KeventLike(Protocol):
@@ -115,17 +115,6 @@ def _c_function(library: ctypes.CDLL, name: str) -> _CFunction:
     return cast('_CFunction', getattr(library, name))
 
 
-def _pointer_value(value: object) -> int | None:
-    return value if isinstance(value, int) else None
-
-
-def _int_value(value: object) -> int:
-    if not isinstance(value, int):
-        msg = 'Native function did not return an integer'
-        raise TypeError(msg)
-    return value
-
-
 def _new_kqueue() -> _KqueueLike:
     return _macos_select.kqueue()
 
@@ -161,7 +150,7 @@ def _cf_string(core_foundation: ctypes.CDLL, value: str) -> int | None:
     create = _c_function(core_foundation, 'CFStringCreateWithCString')
     create.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
     create.restype = ctypes.c_void_p
-    return _pointer_value(create(None, value.encode('utf-8'), _CF_STRING_ENCODING_UTF8))
+    return create(None, value.encode('utf-8'), _CF_STRING_ENCODING_UTF8)
 
 
 def _cf_string_value(core_foundation: ctypes.CDLL, value_ref: int | None) -> str | None:
@@ -190,7 +179,7 @@ def _default_url_handler_from_refs(
     copy_default = _c_function(launch_services, 'LSCopyDefaultHandlerForURLScheme')
     copy_default.argtypes = [ctypes.c_void_p]
     copy_default.restype = ctypes.c_void_p
-    handler_ref = _pointer_value(copy_default(scheme_ref))
+    handler_ref: int | None = copy_default(scheme_ref)
     try:
         return _cf_string_value(core_foundation, handler_ref)
     finally:
@@ -235,7 +224,7 @@ def set_default_url_handler(scheme: str, bundle_id: str) -> bool:
         set_default = _c_function(launch_services, 'LSSetDefaultHandlerForURLScheme')
         set_default.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         set_default.restype = ctypes.c_int32
-        return _int_value(set_default(scheme_ref, bundle_ref)) == 0
+        return set_default(scheme_ref, bundle_ref) == 0
     except AttributeError, OSError:
         return False
     finally:

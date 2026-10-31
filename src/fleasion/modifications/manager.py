@@ -24,7 +24,7 @@ import threading
 import uuid
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Self, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Protocol, Self, TypedDict, cast
 from urllib.error import URLError
 from urllib.parse import urlparse
 
@@ -325,7 +325,7 @@ def _set_read_only(path: Path) -> None:
         pass
 
 
-def _instance_attr(obj: object, name: str, default: object = None) -> object:
+def _instance_attr(obj: object, name: str, default: object = None) -> Any:
     """Read attributes safely on partially initialized QObject test doubles."""
     try:
         return getattr(obj, name)
@@ -703,7 +703,7 @@ class ModificationManager(QObject):
             path = roblox_dir.resolve()
         except OSError:
             path = roblox_dir
-        lock = cast('threading.Lock | None', _instance_attr(self, '_permission_denied_lock'))
+        lock: threading.Lock | None = _instance_attr(self, '_permission_denied_lock')
         if lock is None:
             self._permission_denied_lock = threading.Lock()
             lock = self._permission_denied_lock
@@ -712,10 +712,10 @@ class ModificationManager(QObject):
 
     def take_permission_denied_dirs(self) -> list[Path]:
         """Return and clear protected installs recorded since the last poll."""
-        lock = cast('threading.Lock | None', _instance_attr(self, '_permission_denied_lock'))
+        lock: threading.Lock | None = _instance_attr(self, '_permission_denied_lock')
         if lock is None:
             return []
-        denied_dirs = cast('set[Path] | None', _instance_attr(self, '_permission_denied_dirs'))
+        denied_dirs: set[Path] | None = _instance_attr(self, '_permission_denied_dirs')
         if denied_dirs is None:
             return []
         with lock:
@@ -787,7 +787,7 @@ class ModificationManager(QObject):
         return [path for path in files if path.is_file()] if existing_only else files
 
     def _load_read_only_original_modes(self) -> dict[Path, int]:
-        state_file = cast('Path | None', _instance_attr(self, '_read_only_state_file'))
+        state_file: Path | None = _instance_attr(self, '_read_only_state_file')
         if state_file is None:
             return {}
         try:
@@ -806,12 +806,10 @@ class ModificationManager(QObject):
         return modes
 
     def _save_read_only_original_modes_locked(self) -> None:
-        state_file = cast('Path | None', _instance_attr(self, '_read_only_state_file'))
+        state_file: Path | None = _instance_attr(self, '_read_only_state_file')
         if state_file is None:
             return
-        protected = (
-            cast('dict[Path, int] | None', _instance_attr(self, '_read_only_original_modes')) or {}
-        )
+        protected: dict[Path, int] = _instance_attr(self, '_read_only_original_modes') or {}
         path = Path(state_file)
         if not protected:
             with contextlib.suppress(OSError):
@@ -839,7 +837,7 @@ class ModificationManager(QObject):
         """Mark Fleasion-managed Roblox files read-only until Fleasion needs to write."""
         if not bool(_instance_attr(self, '_read_only_lock_enabled', default=False)):
             return
-        lock = cast('threading.Lock | None', _instance_attr(self, '_fs_lock'))
+        lock: threading.Lock | None = _instance_attr(self, '_fs_lock')
         if lock is None:
             self._protect_managed_files_locked(extra_paths)
             return
@@ -849,15 +847,11 @@ class ModificationManager(QObject):
     def _protect_managed_files_locked(self, extra_paths: Iterable[Path] = ()) -> None:
         if not bool(_instance_attr(self, '_read_only_lock_enabled', default=False)):
             return
-        protected = cast(
-            'dict[Path, int] | None', _instance_attr(self, '_read_only_original_modes')
-        )
+        protected: dict[Path, int] | None = _instance_attr(self, '_read_only_original_modes')
         if protected is None:
             protected = {}
             self._read_only_original_modes = protected
-        registered_extra_paths = cast(
-            'set[Path] | None', _instance_attr(self, '_read_only_extra_paths')
-        )
+        registered_extra_paths: set[Path] | None = _instance_attr(self, '_read_only_extra_paths')
         if registered_extra_paths is None:
             registered_extra_paths = set[Path]()
             self._read_only_extra_paths = registered_extra_paths
@@ -883,9 +877,7 @@ class ModificationManager(QObject):
 
     def _unlock_managed_files_locked(self) -> None:
         """Temporarily make guarded files writable without forgetting modes."""
-        protected = (
-            cast('dict[Path, int] | None', _instance_attr(self, '_read_only_original_modes')) or {}
-        )
+        protected: dict[Path, int] = _instance_attr(self, '_read_only_original_modes') or {}
         for path in protected:
             try:
                 if path.exists():
@@ -903,7 +895,7 @@ class ModificationManager(QObject):
         clear_untracked: bool = False,
     ) -> None:
         """Clear Fleasion's read-only guard from managed Roblox files."""
-        lock = cast('threading.Lock | None', _instance_attr(self, '_fs_lock'))
+        lock: threading.Lock | None = _instance_attr(self, '_fs_lock')
         if lock is None:
             self._clear_managed_file_read_only_locked(extra_paths, clear_untracked=clear_untracked)
             return
@@ -913,7 +905,7 @@ class ModificationManager(QObject):
     def set_read_only_lock_enabled(self, enabled: bool) -> None:
         """Apply or remove the optional persistent modification-file guard."""
         enabled = bool(enabled)
-        lock = cast('threading.Lock | None', _instance_attr(self, '_fs_lock'))
+        lock: threading.Lock | None = _instance_attr(self, '_fs_lock')
         if lock is None:
             self._read_only_lock_enabled = enabled
             if enabled:
@@ -934,15 +926,11 @@ class ModificationManager(QObject):
         *,
         clear_untracked: bool = False,
     ) -> None:
-        protected = cast(
-            'dict[Path, int] | None', _instance_attr(self, '_read_only_original_modes')
-        )
+        protected: dict[Path, int] | None = _instance_attr(self, '_read_only_original_modes')
         if protected is None:
             protected = {}
             self._read_only_original_modes = protected
-        registered_extra_paths = cast(
-            'set[Path] | None', _instance_attr(self, '_read_only_extra_paths')
-        )
+        registered_extra_paths: set[Path] | None = _instance_attr(self, '_read_only_extra_paths')
         if registered_extra_paths is None:
             registered_extra_paths = set[Path]()
             self._read_only_extra_paths = registered_extra_paths
@@ -1421,9 +1409,10 @@ class ModificationManager(QObject):
         if self._is_ktx(data):
             return data
 
+        roblox_dirs: list[Path] = _instance_attr(self, '_roblox_dirs', [])
         originals = [
             read_current_platform_original_asset(target_path, roblox_dir)
-            for roblox_dir in cast('list[Path]', _instance_attr(self, '_roblox_dirs', []))
+            for roblox_dir in roblox_dirs
         ]
         if not originals:
             originals.append(read_current_platform_original_asset(target_path))
