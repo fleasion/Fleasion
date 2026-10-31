@@ -90,3 +90,7 @@ gaps, see `docs/tls-feature-parity.md` and `tests/test_tls_feature_parity.py`.
 A read-only, version-specific inspection of a locally installed Sober client is
 recorded in `docs/sober-compatibility-baseline.md`. It does not establish a
 working Sober transport or authorize production activation.
+
+The independent synthetic TLS 1.3 record codec is documented in
+`docs/tls-record-foundation.md`. It is not part of the five platform backends
+and is not active on a production listener.
