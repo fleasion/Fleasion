@@ -92,5 +92,6 @@ recorded in `docs/sober-compatibility-baseline.md`. It does not establish a
 working Sober transport or authorize production activation.
 
 The independent synthetic TLS 1.3 record codec is documented in
-`docs/tls-record-foundation.md`. It is not part of the five platform backends
-and is not active on a production listener.
+`docs/tls-record-foundation.md`. It includes bounded ticket framing, key
+updates, and TLS close-notify state, but is not part of the five platform
+backends and is not active on a production listener.

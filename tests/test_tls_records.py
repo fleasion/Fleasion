@@ -205,7 +205,7 @@ def test_key_update_request_requires_response_before_new_application_data() -> N
 def test_unsupported_post_handshake_message_fails_closed() -> None:
     sender, receiver = _pair(CipherSuite.AES_128_GCM_SHA256)
     record = sender.encrypt_record(b'\x04\x00\x00\x00', content_type=22)
-    with pytest.raises(TLSRecordError, match='Only complete'):
+    with pytest.raises(TLSRecordError, match='NewSessionTicket'):
         receiver.decrypt_record(record)
     assert receiver.failed
 

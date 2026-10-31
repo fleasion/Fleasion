@@ -26,6 +26,8 @@ _TLS_MAX_CIPHERTEXT = _TLS_MAX_CONTENT + 256
 _TLS_TAG_LENGTH = 16
 _TLS_MAX_SEQUENCE = 1 << 64
 _TLS_KEY_UPDATE = b'\x18\x00\x00\x01'
+_TLS_NEW_SESSION_TICKET = 4
+_TLS_MAX_POST_HANDSHAKE_MESSAGE = 256 * 1024
 
 
 class TLSRecordError(ValueError):
@@ -116,6 +118,7 @@ class TLS13RecordCipher:
         self.sequence = 0
         self.generation = 0
         self.failed = False
+        self._post_handshake_pending = bytearray()
         self._derive_keys()
 
     def _expand_label(self, label: bytes, length: int) -> bytes:
@@ -155,6 +158,12 @@ class TLS13RecordCipher:
             _TLS_INNER_ALERT,
         }:
             msg = 'Unsupported TLS inner content type'
+            raise ValueError(msg)
+        if content_type in {_TLS_INNER_HANDSHAKE, _TLS_INNER_ALERT} and not content:
+            msg = 'TLS handshake and alert records cannot have empty content'
+            raise ValueError(msg)
+        if content_type == _TLS_INNER_ALERT and len(content) != 2:
+            msg = 'TLS alert must contain exactly two bytes'
             raise ValueError(msg)
         if not 0 <= padding <= 255 or len(content) + 1 + padding > _TLS_MAX_INNER:
             msg = 'TLS plaintext record length exceeds supported limit'
@@ -220,19 +229,112 @@ class TLS13RecordCipher:
             msg = 'Invalid TLS inner content type'
             raise TLSRecordError(msg)
         content = unpadded[:-1]
+        if content_type != _TLS_INNER_HANDSHAKE and self._post_handshake_pending:
+            self.failed = True
+            msg = 'TLS application data interleaved with fragmented handshake message'
+            raise TLSRecordError(msg)
+        if content_type in {_TLS_INNER_HANDSHAKE, _TLS_INNER_ALERT} and not content:
+            self.failed = True
+            msg = 'Empty TLS handshake or alert record'
+            raise TLSRecordError(msg)
+        if content_type == _TLS_INNER_ALERT and len(content) != 2:
+            self.failed = True
+            msg = 'Invalid TLS alert length'
+            raise TLSRecordError(msg)
         update_requested = False
         if content_type == _TLS_INNER_HANDSHAKE:
-            if not content.startswith(_TLS_KEY_UPDATE) or len(content) != 5:
-                self.failed = True
-                msg = 'Only complete post-handshake KeyUpdate records are supported'
-                raise TLSRecordError(msg)
-            if content[-1] not in {0, 1}:
-                self.failed = True
-                msg = 'Invalid TLS KeyUpdate request byte'
-                raise TLSRecordError(msg)
-            update_requested = content[-1] == 1
-            self._next_generation()
+            update_requested = self._receive_post_handshake(content)
         return DecryptedRecord(content_type, content, key_update_requested=update_requested)
+
+    def _receive_post_handshake(self, fragment: bytes) -> bool:
+        """Bounded reconstruction of ticket messages and record-aligned KeyUpdate."""
+        pending = self._post_handshake_pending
+        pending.extend(fragment)
+        if len(pending) > _TLS_MAX_POST_HANDSHAKE_MESSAGE + 4:
+            self.failed = True
+            pending.clear()
+            msg = 'TLS post-handshake message exceeds size limit'
+            raise TLSRecordError(msg)
+        offset = 0
+        requested = False
+        while offset < len(pending):
+            remaining = len(pending) - offset
+            kind = pending[offset]
+            if kind not in {_TLS_NEW_SESSION_TICKET, _TLS_KEY_UPDATE[0]}:
+                self.failed = True
+                pending.clear()
+                msg = 'Unsupported TLS post-handshake message type'
+                raise TLSRecordError(msg)
+            if remaining < 4:
+                if kind == _TLS_KEY_UPDATE[0]:
+                    self.failed = True
+                    pending.clear()
+                    msg = 'KeyUpdate must fit entirely within its final record'
+                    raise TLSRecordError(msg)
+                break
+            length = int.from_bytes(pending[offset + 1 : offset + 4], 'big')
+            if length > _TLS_MAX_POST_HANDSHAKE_MESSAGE:
+                self.failed = True
+                pending.clear()
+                msg = 'TLS post-handshake message exceeds size limit'
+                raise TLSRecordError(msg)
+            end = offset + 4 + length
+            if end > len(pending):
+                if kind == _TLS_KEY_UPDATE[0]:
+                    self.failed = True
+                    pending.clear()
+                    msg = 'KeyUpdate must fit entirely within its final record'
+                    raise TLSRecordError(msg)
+                break
+            if kind == _TLS_NEW_SESSION_TICKET:
+                ticket = bytes(pending[offset + 4 : end])
+                if not self._valid_ticket(ticket):
+                    self.failed = True
+                    pending.clear()
+                    msg = 'Invalid TLS NewSessionTicket structure'
+                    raise TLSRecordError(msg)
+            if kind == _TLS_KEY_UPDATE[0]:
+                if length != 1 or pending[offset + 4] not in {0, 1}:
+                    self.failed = True
+                    pending.clear()
+                    msg = 'Invalid TLS KeyUpdate request byte'
+                    raise TLSRecordError(msg)
+                if end != len(pending):
+                    self.failed = True
+                    pending.clear()
+                    msg = 'KeyUpdate must end at a TLS record boundary'
+                    raise TLSRecordError(msg)
+                requested = pending[offset + 4] == 1
+                self._next_generation()
+            offset = end
+        if offset:
+            del pending[:offset]
+        return requested
+
+    @staticmethod
+    def _valid_ticket(data: bytes) -> bool:
+        # Ticket lifetime, age, nonce, identity, and extensions are length-prefixed
+        if len(data) < 14 or int.from_bytes(data[:4], 'big') > 604800:
+            return False
+        index = 9 + data[8]
+        if index + 2 > len(data):
+            return False
+        identity_length = int.from_bytes(data[index : index + 2], 'big')
+        if not identity_length:
+            return False
+        index += 2 + identity_length
+        if index + 2 > len(data):
+            return False
+        extensions_length = int.from_bytes(data[index : index + 2], 'big')
+        return index + 2 + extensions_length == len(data)
+
+    def finish(self) -> None:
+        """Reject a final incomplete post-handshake message at connection EOF."""
+        if self._post_handshake_pending:
+            self._post_handshake_pending.clear()
+            self.failed = True
+            msg = 'TLS stream ended with unfinished post-handshake message'
+            raise TLSRecordError(msg)
 
     def _next_generation(self) -> None:
         self._traffic_secret = self._expand_label(
@@ -265,23 +367,43 @@ class TLS13RecordSession:
         self.outbound = TLS13RecordCipher(outbound_secret, suite)
         self.framer = EncryptedRecordFramer()
         self.key_update_response_pending = False
+        self.inbound_closed = False
+        self.outbound_closed = False
 
     def receive(self, chunk: bytes) -> list[DecryptedRecord]:
+        if self.inbound_closed and chunk:
+            msg = 'TLS inbound direction already closed'
+            raise TLSRecordError(msg)
         results: list[DecryptedRecord] = []
         for wire_record in self.framer.feed(chunk):
+            if self.inbound_closed:
+                msg = 'TLS record received after close_notify'
+                raise TLSRecordError(msg)
             decoded = self.inbound.decrypt_record(wire_record)
             if decoded.key_update_requested:
                 self.key_update_response_pending = True
+            if decoded.content_type == _TLS_INNER_ALERT:
+                if decoded.content != b'\x01\x00':
+                    self.inbound.failed = True
+                    msg = 'TLS peer sent a fatal or unsupported alert'
+                    raise TLSRecordError(msg)
+                self.inbound_closed = True
             results.append(decoded)
         return results
 
     def send_application(self, data: bytes) -> bytes:
+        if self.outbound_closed:
+            msg = 'TLS outbound direction already closed'
+            raise TLSRecordError(msg)
         if self.key_update_response_pending:
             msg = 'Peer requested KeyUpdate before further application data'
             raise TLSRecordError(msg)
         return self.outbound.encrypt_application(data)
 
     def send_key_update(self, *, request_peer_update: bool = False) -> bytes:
+        if self.outbound_closed:
+            msg = 'TLS outbound direction already closed'
+            raise TLSRecordError(msg)
         if self.key_update_response_pending and request_peer_update:
             msg = 'KeyUpdate response must not request another update'
             raise TLSRecordError(msg)
@@ -289,5 +411,18 @@ class TLS13RecordSession:
         self.key_update_response_pending = False
         return record
 
+    def send_close_notify(self) -> bytes:
+        """Close the sending direction with an authenticated TLS alert."""
+        if self.outbound_closed:
+            msg = 'TLS outbound direction already closed'
+            raise TLSRecordError(msg)
+        if self.key_update_response_pending:
+            msg = 'TLS KeyUpdate response must precede close_notify'
+            raise TLSRecordError(msg)
+        record = self.outbound.encrypt_record(b'\x01\x00', content_type=_TLS_INNER_ALERT)
+        self.outbound_closed = True
+        return record
+
     def finish(self) -> None:
         self.framer.finish()
+        self.inbound.finish()

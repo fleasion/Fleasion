@@ -20,6 +20,14 @@ session and provided traffic secrets from a **controlled test session**.
 - Post-handshake KeyUpdate rotation and sequence reset per direction. A
   requested update is surfaced to the duplex session, which requires an
   outbound response before further application data
+- Bounded NewSessionTicket message reconstruction across TLS records, including
+  multiple tickets in one record and record-aligned KeyUpdate after a ticket;
+  basic ticket field/length validation without storing resumption credentials
+- Strict rejection of interleaved handshake fragments and unfinished ticket
+  fragments at EOF, plus invalid alert lengths and unsupported fatal alerts
+- Directional close_notify handling: sending shuts down only outbound TLS
+  application data; receiving shuts down only inbound data, with authenticated
+  closure records and no application records accepted after close_notify
 - Bounded record-length checks and explicit incomplete-record errors at EOF
 - A controlled loopback integration test where generated TLS record traffic
   traverses the existing Fleasion HTTP/1 feature engine and is encrypted again
@@ -44,10 +52,14 @@ logged, cached in application settings, or exposed in GUI request logs.
 
 - TLS handshake negotiation, certificate verification, ALPN selection, or
   generation of application traffic secrets
-- Initial handshake/early-data records, 0-RTT, post-handshake NewSessionTicket,
-  or fragmented/coalesced KeyUpdate handshake messages: only complete
-  post-handshake KeyUpdate records are currently parsed, and other encrypted
-  handshake messages fail closed
+- Initial handshake/early-data records and 0-RTT, post-handshake certificate
+  authentication, or fragmented KeyUpdate messages: KeyUpdate must complete at
+  a TLS record boundary, and other unsupported handshake types fail closed
+- NewSessionTicket resumption processing: the decoder checks ticket structure
+  and message bounds but does not derive resumption PSKs, negotiate resumptions,
+  or interpret ticket extensions
+- Mandatory authenticated close_notify at EOF is not enforced by default;
+  callers may explicitly require it if their application protocol demands it
 - Automatic handshake-to-application key epoch switching or traffic-secret
   provenance checks; callers must not use this codec before the application
   epoch is authenticated and active
@@ -64,7 +76,8 @@ module is a separately testable building block for protocol correctness.
 Run tests with:
 
 ```sh
-uv run --no-sync pytest -q tests/test_tls_records.py tests/test_tls_record_loopback.py
+uv run --no-sync pytest -q tests/test_tls_records.py tests/test_tls_record_loopback.py \
+    tests/test_tls_post_handshake.py tests/test_tls_record_alerts.py
 ```
 
 References: RFC 8446 sections 4.6.3, 5.2–5.3 and 7.1–7.3; RFC 8448 section 3.
