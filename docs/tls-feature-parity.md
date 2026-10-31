@@ -19,6 +19,8 @@ read client process memory, or simulate a live session-secret extractor.
 | Direct asset scrape | Pass | Pass | The direct response body, status, and asset path reach the scraper |
 | Gamejoin request/response module interceptor | Pass | Pass | The module can modify both request and response payloads |
 | Gamejoin locally dropped request | Pass | Pass | The local response is returned without contacting upstream |
+| Proxy-tab manual request/response editing | Pass | Pass | An intercepted request pauses for editing; the edited request and response are forwarded |
+| Proxy-tab dropped request/response | Pass | Pass | Dropped requests never reach upstream; dropped responses do not reach the client |
 | ClientSettings modification and acknowledgment | Pass | Pass | The modified response and delivery acknowledgment reach the client side |
 
 These cases deliberately use controlled test addons or module callbacks.
@@ -35,7 +37,8 @@ unit tests and need real-client integration verification for a release.
 - Real subplace-join behavior and service-specific module transformations
 - HTTP/2 trailers, informational responses, streaming and CONNECT support
 - TLS resumption, key updates, upstream connection failure and restart recovery
-- Real Proxy-tab pause/edit/drop interactions via the production UI
+- Production Qt Proxy-tab pause/edit/drop UI wiring and actual user interactions;
+  the synthetic test submits decisions through the same Python methods
 - Server-side push and any protocol extensions the live Roblox client requires
 - User-facing recovery on unsupported or unverified backends without downgrading trust
 

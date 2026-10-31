@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from h2.config import H2Configuration
 from h2.connection import H2Connection
-from h2.events import DataReceived, RequestReceived, StreamEnded
+from h2.events import DataReceived, RequestReceived, StreamEnded, StreamReset
 
 from fleasion.proxy.server import FleasionProxy, ProxyFlow
 from fleasion.proxy.tls_backends import (
@@ -167,6 +167,8 @@ async def _exchange(
     body: bytes = b'',
     upstream_body: bytes = b'upstream-original',
     method: str = 'POST',
+    interactive_edit: bool = False,
+    drop_stage: str | None = None,
 ) -> tuple[bytes, list[tuple[bytes, bytes, bytes]]]:
     async def upstream_http1(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -268,12 +270,47 @@ async def _exchange(
     assert isinstance(bridge_port, int)
     try:
         reader, writer = await asyncio.open_connection('127.0.0.1', bridge_port)
+
+        async def edit_pending() -> None:
+            for stage in ('request', 'response'):
+
+                async def await_pending(target_stage: str = stage) -> bytes:
+                    while True:
+                        data = proxy.get_pending_data(0, target_stage)
+                        if data is not None:
+                            return data
+                        await asyncio.sleep(0.01)
+
+                raw = await asyncio.wait_for(await_pending(), timeout=5)
+                if stage == drop_stage:
+                    assert proxy.submit_pending(0, stage, 'drop')
+                    return
+                if interactive_edit:
+                    if stage == 'request':
+                        assert b'original' in raw
+                        edited = raw.replace(b'original', b'edited!!')
+                    else:
+                        assert b'upstream' in raw
+                        edited = raw.replace(b'upstream', b'changed!')
+                    assert proxy.submit_pending(
+                        0, stage, 'forward', edited.decode('utf-8').replace('\r\n', '\n')
+                    )
+                else:
+                    assert proxy.submit_pending(0, stage, 'forward')
+
+        edit_task = (
+            asyncio.create_task(edit_pending()) if (interactive_edit or drop_stage) else None
+        )
         if protocol == 'http/1.1':
             writer.write(_http1_message(f'{method} {path} HTTP/1.1'.encode(), host, body))
             await writer.drain()
             result = await asyncio.wait_for(reader.read(), timeout=5)
-            assert result.startswith(b'HTTP/1.1 ')
-            response = result.partition(b'\r\n\r\n')[2]
+            if drop_stage:
+                assert result == b''
+                response = b''
+            else:
+                assert result.startswith(b'HTTP/1.1 ')
+                response = result.partition(b'\r\n\r\n')[2]
         else:
             conn = H2Connection()
             conn.initiate_connection()
@@ -303,10 +340,18 @@ async def _exchange(
                             event.flow_controlled_length, event.stream_id
                         )
                     elif isinstance(event, StreamEnded) and event.stream_id == 1:
+                        assert not drop_stage
+                        done = True
+                    elif isinstance(event, StreamReset) and event.stream_id == 1:
+                        assert drop_stage
                         done = True
                 writer.write(conn.data_to_send())
                 await writer.drain()
             response = bytes(response_bytes)
+            if drop_stage:
+                assert response == b''
+        if edit_task is not None:
+            await asyncio.wait_for(edit_task, timeout=5)
         writer.close()
         await writer.wait_closed()
         return response, calls.upstream
@@ -628,5 +673,62 @@ def test_gamejoin_module_can_drop_request_without_upstream_access(
         assert response == b'local-blocked-gamejoin'
         assert upstream == []
         assert calls.gamejoin_stages == ['request']
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('protocol', ['http/1.1', 'h2'])
+def test_proxy_tab_manual_request_and_response_edit_parity(tmp_path: Path, protocol: str) -> None:
+    async def run() -> None:
+        calls = AddonCalls()
+        host = 'apis.roblox.com'
+        proxy = _proxy(tmp_path, host, calls)
+        proxy.set_intercept_match('/interactive-edit')
+        response, upstream = await _exchange(
+            proxy,
+            calls,
+            protocol=protocol,
+            host=host,
+            path='/interactive-edit',
+            body=b'original',
+            interactive_edit=True,
+        )
+        assert response == b'changed!-original'
+        assert len(upstream) == 1 and upstream[0][2] == b'edited!!'
+        assert proxy.get_pending_intercepts() == []
+        logged = proxy.get_request_log()
+        assert len(logged) == 1
+        assert logged[0]['was_intercepted'] is True
+        assert logged[0]['status'] == 200
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('protocol', ['http/1.1', 'h2'])
+@pytest.mark.parametrize('drop_stage', ['request', 'response'])
+def test_proxy_tab_drop_closes_stream_without_sending_dropped_content(
+    tmp_path: Path, protocol: str, drop_stage: str
+) -> None:
+    async def run() -> None:
+        calls = AddonCalls()
+        host = 'apis.roblox.com'
+        proxy = _proxy(tmp_path, host, calls)
+        proxy.set_intercept_match('/interactive-drop')
+        response, upstream = await _exchange(
+            proxy,
+            calls,
+            protocol=protocol,
+            host=host,
+            path='/interactive-drop',
+            body=b'original',
+            drop_stage=drop_stage,
+        )
+        assert response == b''
+        assert len(upstream) == (0 if drop_stage == 'request' else 1)
+        log = proxy.get_request_log()
+        assert len(log) == 1
+        assert log[0]['was_intercepted'] is True
+        assert log[0][f'dropped_{drop_stage}'] is True
+        assert proxy.get_pending_intercepts() == []
 
     asyncio.run(run())
