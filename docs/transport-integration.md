@@ -62,7 +62,10 @@ Important limitations of this experimental adapter:
   drain grace period, after which the bridge cancels tasks still blocked on
   flow-control or incomplete responses instead of hanging indefinitely
 - Resets and GOAWAY are handled on a best-effort, fail-closed basis; detailed
-  behavior for every cancellation race is not yet proven
+  behavior for every cancellation race is not yet proven. Malformed initial
+  HTTP/2 bytes also enter cleanup, and partial uploads are discarded on EOF
+- The tested GOAWAY/EOF shutdown cases and remaining limits are recorded in
+  `docs/tls-recovery-matrix.md`
 - It has not been exercised against actual Roblox live traffic, protected
   process memory, or anti-cheat checks
 

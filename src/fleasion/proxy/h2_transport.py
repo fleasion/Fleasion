@@ -495,15 +495,16 @@ class H2FeatureBridge:
 
     async def run(self, *, initial_client_data: bytes = b'') -> None:
         """Run the bridge until either HTTP/2 connection closes."""
-        await self.client.start()
-        await self.server.start(disable_push=True)
-        if initial_client_data:
-            await self._receive_client(initial_client_data)
-        pumps = [
-            asyncio.create_task(self._pump(self.client_reader, client=True)),
-            asyncio.create_task(self._pump(self.upstream_reader, client=False)),
-        ]
+        pumps: list[asyncio.Task[None]] = []
         try:
+            await self.client.start()
+            await self.server.start(disable_push=True)
+            if initial_client_data:
+                await self._receive_client(initial_client_data)
+            pumps = [
+                asyncio.create_task(self._pump(self.client_reader, client=True)),
+                asyncio.create_task(self._pump(self.upstream_reader, client=False)),
+            ]
             done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
@@ -522,5 +523,14 @@ class H2FeatureBridge:
                     request.upstream_reader.set_exception(
                         ConnectionError('HTTP/2 bridge shut down before END_STREAM')
                     )
+            # Release unfinished request/response buffers on either peer's EOF
+            # Tasks have already been cancelled and joined above
+            for request in self.requests.values():
+                request.body.clear()
+                request.response_body.clear()
+            for request in self.upstream_requests.values():
+                request.response_body.clear()
+            self.buffered_request_bytes = 0
+            self.buffered_response_bytes = 0
             self.requests.clear()
             self.upstream_requests.clear()
