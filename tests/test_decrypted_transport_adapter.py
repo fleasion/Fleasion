@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from fleasion.proxy.server import AutoReplaceRule, FleasionProxy
+from fleasion.proxy.server import FleasionProxy
+from fleasion.proxy.types import AutoReplaceRule
 from fleasion.proxy.upstream import UpstreamConnectResult
 from fleasion.utils.certs import generate_ca, generate_multi_host_cert
 

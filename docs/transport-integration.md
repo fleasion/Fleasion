@@ -42,8 +42,8 @@ outbound bodies, and handles stream resets and connection termination.
 
 Important limitations of this experimental adapter:
 
-- It buffers full request bodies and the response within a 64 MiB bridge limit;
-  large streaming and server-sent events are not supported
+- It buffers full request/response bodies with a 64 MiB aggregate
+  connection-level budget; large streaming and server-sent events are not supported
 - HTTP/2 request/response trailers, unsupported CONNECT and interim
   informational responses cause stream resets instead of being silently
   discarded; these features are not translated by the HTTP/1 engine
