@@ -46,11 +46,13 @@ def test_close_notify_blocks_further_application_from_that_direction() -> None:
         client.send_application(b'invalid-after-close')
     with pytest.raises(TLSRecordError, match='closed'):
         client.send_key_update()
-    with pytest.raises(TLSRecordError, match='closed'):
-        server.receive(client.outbound.encrypt_record(b'bad-after-close'))
     response = server.send_close_notify()
     assert client.receive(response)[0].content == b'\x01\x00'
     assert client.inbound_closed
+    with pytest.raises(TLSRecordError, match='closed'):
+        server.receive(client.outbound.encrypt_record(b'bad-after-close'))
+    with pytest.raises(TLSRecordError, match='failed'):
+        server.send_application(b'cannot-recover-after-close-violation')
     with pytest.raises(TLSRecordError, match='closed'):
         client.receive(server.outbound.encrypt_record(b'bad-after-close'))
 

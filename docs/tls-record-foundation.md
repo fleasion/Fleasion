@@ -28,7 +28,13 @@ session and provided traffic secrets from a **controlled test session**.
 - Directional close_notify handling: sending shuts down only outbound TLS
   application data; receiving shuts down only inbound data, with authenticated
   closure records and no application records accepted after close_notify
+- Terminal-session invalidation: malformed framing, failed AEAD authentication,
+  unsupported fatal alerts, and truncated records at EOF prevent further reads
+  **and** writes on the same duplex session; a valid record cannot silently
+  resume a failed session
 - Bounded record-length checks and explicit incomplete-record errors at EOF
+- Localhost TCP lifecycle tests for KeyUpdate, fragmentation across socket
+  reads, two-way close_notify, tampering, EOF truncation and task cancellation
 - A controlled loopback integration test where generated TLS record traffic
   traverses the existing Fleasion HTTP/1 feature engine and is encrypted again
   on the way back. All three cipher suites pass the same replacement flow
@@ -77,7 +83,8 @@ Run tests with:
 
 ```sh
 uv run --no-sync pytest -q tests/test_tls_records.py tests/test_tls_record_loopback.py \
-    tests/test_tls_post_handshake.py tests/test_tls_record_alerts.py
+    tests/test_tls_post_handshake.py tests/test_tls_record_alerts.py \
+    tests/test_tls_record_terminal_errors.py tests/test_tls_record_lifecycle.py
 ```
 
 References: RFC 8446 sections 4.6.3, 5.2–5.3 and 7.1–7.3; RFC 8448 section 3.

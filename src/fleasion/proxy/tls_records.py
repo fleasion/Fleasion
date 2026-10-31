@@ -141,7 +141,7 @@ class TLS13RecordCipher:
 
     def _nonce(self) -> bytes:
         if self.failed:
-            msg = 'TLS record cipher cannot be reused after an authentication failure'
+            msg = 'TLS record cipher cannot be reused after a terminal failure'
             raise TLSRecordError(msg)
         if self.sequence >= _TLS_MAX_SEQUENCE:
             msg = 'TLS record sequence number exhausted'
@@ -189,7 +189,11 @@ class TLS13RecordCipher:
         )
 
     def decrypt_record(self, record: bytes) -> DecryptedRecord:
+        if self.failed:
+            msg = 'TLS record cipher cannot be reused after a terminal failure'
+            raise TLSRecordError(msg)
         if len(record) < _TLS_HEADER_SIZE:
+            self.failed = True
             msg = 'Incomplete TLS record header'
             raise TLSRecordError(msg)
         header = record[:_TLS_HEADER_SIZE]
@@ -200,6 +204,7 @@ class TLS13RecordCipher:
             or not _TLS_TAG_LENGTH < size <= _TLS_MAX_CIPHERTEXT
             or size != len(record) - _TLS_HEADER_SIZE
         ):
+            self.failed = True
             msg = 'Invalid TLS 1.3 record framing'
             raise TLSRecordError(msg)
         nonce = self._nonce()
@@ -369,8 +374,24 @@ class TLS13RecordSession:
         self.key_update_response_pending = False
         self.inbound_closed = False
         self.outbound_closed = False
+        self.failed = False
+
+    def _require_healthy(self) -> None:
+        if self.failed or self.inbound.failed or self.outbound.failed:
+            self.failed = True
+            msg = 'TLS record session has failed and cannot continue'
+            raise TLSRecordError(msg)
 
     def receive(self, chunk: bytes) -> list[DecryptedRecord]:
+        self._require_healthy()
+        try:
+            return self._receive_records(chunk)
+        except TLSRecordError:
+            self.failed = True
+            self.inbound.failed = True
+            raise
+
+    def _receive_records(self, chunk: bytes) -> list[DecryptedRecord]:
         if self.inbound_closed and chunk:
             msg = 'TLS inbound direction already closed'
             raise TLSRecordError(msg)
@@ -384,7 +405,6 @@ class TLS13RecordSession:
                 self.key_update_response_pending = True
             if decoded.content_type == _TLS_INNER_ALERT:
                 if decoded.content != b'\x01\x00':
-                    self.inbound.failed = True
                     msg = 'TLS peer sent a fatal or unsupported alert'
                     raise TLSRecordError(msg)
                 self.inbound_closed = True
@@ -392,6 +412,7 @@ class TLS13RecordSession:
         return results
 
     def send_application(self, data: bytes) -> bytes:
+        self._require_healthy()
         if self.outbound_closed:
             msg = 'TLS outbound direction already closed'
             raise TLSRecordError(msg)
@@ -401,6 +422,7 @@ class TLS13RecordSession:
         return self.outbound.encrypt_application(data)
 
     def send_key_update(self, *, request_peer_update: bool = False) -> bytes:
+        self._require_healthy()
         if self.outbound_closed:
             msg = 'TLS outbound direction already closed'
             raise TLSRecordError(msg)
@@ -413,6 +435,7 @@ class TLS13RecordSession:
 
     def send_close_notify(self) -> bytes:
         """Close the sending direction with an authenticated TLS alert."""
+        self._require_healthy()
         if self.outbound_closed:
             msg = 'TLS outbound direction already closed'
             raise TLSRecordError(msg)
@@ -424,5 +447,11 @@ class TLS13RecordSession:
         return record
 
     def finish(self) -> None:
-        self.framer.finish()
-        self.inbound.finish()
+        self._require_healthy()
+        try:
+            self.framer.finish()
+            self.inbound.finish()
+        except TLSRecordError:
+            self.failed = True
+            self.inbound.failed = True
+            raise
