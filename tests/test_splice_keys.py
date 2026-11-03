@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import TYPE_CHECKING
 import pytest
 
@@ -100,3 +101,33 @@ def test_linux_splice_key_provider_scans_only_the_configured_client(
     monkeypatch.setattr(keys, 'find_android_community_pid', lambda _client: None)
     assert KeyProvider(linux_client_key='mocktail')._read('aa' * 32) == {}
     assert calls == []
+
+
+def test_slow_missing_key_does_not_starve_other_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing, available = 'aa' * 32, 'bb' * 32
+    label = 'CLIENT_TRAFFIC_SECRET_0'
+    started, release = threading.Event(), threading.Event()
+    provider = KeyProvider(linux_client_key='rosemary')
+
+    def fake_scan(client_random: str) -> dict[str, dict[str, bytes]]:
+        if client_random == missing:
+            started.set()
+            release.wait(timeout=2)
+            return {}
+        return {available: {label: b'c' * 32}}
+
+    monkeypatch.setattr(provider, '_read', fake_scan)
+
+    async def run() -> None:
+        blocked = asyncio.create_task(provider.get(missing, label, wait_seconds=0.4))
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            assert await provider.get(available, label, wait_seconds=0.25) == b'c' * 32
+        finally:
+            release.set()
+            await asyncio.gather(blocked, return_exceptions=True)
+            provider.clear()
+
+    asyncio.run(run())

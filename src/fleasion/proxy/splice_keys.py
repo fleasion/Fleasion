@@ -9,6 +9,8 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from fleasion.utils.logging import log_buffer
+
 from .android_community_keys import find_android_community_pid, scan as scan_android_community
 from .live_keys import find_roblox_pid, scan
 from .rosemary_keys import find_rosemary_pid, scan as scan_rosemary
@@ -50,8 +52,9 @@ class KeyProvider:
         self.keylog = keylog
         self.linux_client_key = linux_client_key
         self._keys: SecretMap = {}
-        self._lock = asyncio.Lock()
-        self._last_refresh = 0.0
+        self._scan_slots = asyncio.Semaphore(2)
+        self._inflight: dict[str, asyncio.Task[None]] = {}
+        self._last_refresh: dict[str, float] = {}
         self._stop = threading.Event()
 
     def _read(self, client_random: str) -> SecretMap:  # ruff: ignore[too-many-return-statements]
@@ -79,16 +82,26 @@ class KeyProvider:
                 )
             if self.linux_client_key == 'sober':
                 sober_pid = find_sober_pid()
-                return scan_sober(sober_pid, stop=self._stop, client_random=client_random) if sober_pid else {}
+                return (
+                    scan_sober(sober_pid, stop=self._stop, client_random=client_random)
+                    if sober_pid
+                    else {}
+                )
             if self.linux_client_key == 'rosemary':
                 rosemary_pid = find_rosemary_pid()
-                return scan_rosemary(rosemary_pid, stop=self._stop, client_random=client_random) if rosemary_pid else {}
+                return (
+                    scan_rosemary(rosemary_pid, stop=self._stop, client_random=client_random)
+                    if rosemary_pid
+                    else {}
+                )
             rosemary_pid = find_rosemary_pid()
             if rosemary_pid:
                 return scan_rosemary(rosemary_pid, stop=self._stop, client_random=client_random)
             android_match = find_android_community_pid()
             if android_match:
-                return scan_android_community(android_match[0], stop=self._stop, client_random=client_random)
+                return scan_android_community(
+                    android_match[0], stop=self._stop, client_random=client_random
+                )
             sober_pid = find_sober_pid()
             if sober_pid:
                 return scan_sober(sober_pid, stop=self._stop, client_random=client_random)
@@ -116,26 +129,55 @@ class KeyProvider:
         async with asyncio.timeout(wait_seconds):
             return await self._wait_for_secret(client_random, label)
 
-    async def _wait_for_secret(self, client_random: str, label: str) -> bytes:
-        while True:
-            secret = self._keys.get(client_random, {}).get(label)
-            if secret is not None:
-                return secret
-            async with self._lock:
-                if time.monotonic() - self._last_refresh >= MIN_REFRESH_INTERVAL:
-                    found = await asyncio.to_thread(self._read, client_random)
+    async def _scan_for_secret(self, client_random: str) -> None:
+        """Bound process scans without blocking unrelated TLS connections."""
+        started = time.monotonic()
+        try:
+            async with self._scan_slots:
+                if self._stop.is_set():
+                    return
+                found = await asyncio.to_thread(self._read, client_random)
+                if not self._stop.is_set():
                     if len(self._keys) >= MAX_CACHED_CONNECTIONS:
                         self._keys.clear()
                     self._keys.update(found)
-                    if self._stop.is_set():
-                        self._keys.clear()
-                        msg = 'Splice key provider has stopped'
-                        raise ConnectionAbortedError(msg)
-                    self._last_refresh = time.monotonic()
+                elapsed = time.monotonic() - started
+                if elapsed >= 1.0:
+                    log_buffer.log(
+                        'TLS',
+                        f'Slow TLS key lookup: client={self.linux_client_key or "default"} '
+                        f'elapsed_ms={int(elapsed * 1000)} found={bool(found)}',
+                    )
+        finally:
+            if len(self._last_refresh) >= MAX_CACHED_CONNECTIONS:
+                self._last_refresh.clear()
+            self._last_refresh[client_random] = time.monotonic()
+            self._inflight.pop(client_random, None)
+
+    async def _wait_for_secret(self, client_random: str, label: str) -> bytes:
+        while True:
+            if self._stop.is_set():
+                msg = 'Splice key provider has stopped'
+                raise ConnectionAbortedError(msg)
             secret = self._keys.get(client_random, {}).get(label)
             if secret is not None:
                 return secret
-            await asyncio.sleep(0.05)
+            scan_task = self._inflight.get(client_random)
+            if (
+                scan_task is None
+                and time.monotonic() - self._last_refresh.get(client_random, 0.0)
+                >= MIN_REFRESH_INTERVAL
+            ):
+                scan_task = asyncio.create_task(self._scan_for_secret(client_random))
+                self._inflight[client_random] = scan_task
+                # A timed-out caller must not abandon a still-running memory scan
+                scan_task.add_done_callback(
+                    lambda done: done.exception() if not done.cancelled() else None
+                )
+            if scan_task is not None:
+                await asyncio.shield(scan_task)
+            else:
+                await asyncio.sleep(0.05)
 
     def clear(self) -> None:
         """Signal provider to stop and clear cached keys."""

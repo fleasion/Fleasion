@@ -2573,7 +2573,9 @@ class FleasionProxy:
             await connection.run(self, host)
         except (OSError, ValueError, TimeoutError) as exc:
             log_buffer.log(
-                'Proxy', f'TLS splice failed for {host}: {type(exc).__name__}: {exc}'
+                'Proxy',
+                f'TLS splice failed for {host}: {type(exc).__name__}: {exc}; '
+                f'{connection.diagnostic_state()}',
             )
         finally:
             result.writer.close()

@@ -24,8 +24,10 @@ if TYPE_CHECKING:
 
 @pytest.mark.parametrize('goaway', [True, False])
 @pytest.mark.parametrize('explicit', [True, False])
+@pytest.mark.parametrize('stream_ids', [(1, 3), (1, 3, 5, 7)])
 def test_tls_h2_multiplexed_replacements_and_flow_control(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool, goaway: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool, goaway: bool,
+    stream_ids: tuple[int, ...],
 ) -> None:
     host = 'h2-splice.test'
     ca, key = generate_ca(tmp_path)
@@ -64,11 +66,11 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                             + ([(b'content-length', b'8')] if event.stream_id == 1 else []),
                         )
                         connection.send_data(event.stream_id, b'original', end_stream=True)
-                if goaway and len(incoming) == 2:
+                if goaway and len(incoming) == len(stream_ids):
                     connection.close_connection()
                 writer.write(connection.data_to_send())
                 await writer.drain()
-                if goaway and len(incoming) == 2:
+                if goaway and len(incoming) == len(stream_ids):
                     break
         finally:
             writer.close()
@@ -89,7 +91,7 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                 assert tls.selected_alpn_protocol() == 'h2'
                 connection = H2Connection()
                 connection.initiate_connection()
-                for stream in (1, 3):
+                for stream in stream_ids:
                     connection.send_headers(
                         stream,
                         [
@@ -100,11 +102,11 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                             (b'content-length', str(len(request_body)).encode()),
                         ],
                     )
-                offsets = {1: 0, 3: 0}
-                responses = {1: bytearray(), 3: bytearray()}
+                offsets = dict.fromkeys(stream_ids, 0)
+                responses = {stream: bytearray() for stream in stream_ids}
                 done: set[int] = set()
-                while len(done) < 2:
-                    for stream in (1, 3):
+                while len(done) < len(stream_ids):
+                    for stream in stream_ids:
                         remaining = len(request_body) - offsets[stream]
                         while remaining and connection.local_flow_control_window(stream) > 0:
                             size = min(
@@ -168,8 +170,8 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
         try:
             await proxy.start()
             responses = await asyncio.wait_for(asyncio.to_thread(client, proxy.port), timeout=15)
-            assert responses == {1: replacement.encode(), 3: replacement.encode()}
-            assert incoming == [b'rewritten' * 12000] * 2
+            assert responses == dict.fromkeys(stream_ids, replacement.encode())
+            assert incoming == [b'rewritten' * 12000] * len(stream_ids)
         finally:
             await proxy.stop()
             upstream_srv.close()

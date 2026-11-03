@@ -29,6 +29,8 @@ from h2.events import (
 from h2.exceptions import H2Error
 from h2.settings import SettingCodes
 
+from fleasion.utils.logging import log_buffer
+
 from .upstream import UpstreamConnectResult
 
 if TYPE_CHECKING:
@@ -361,9 +363,15 @@ class H2FeatureBridge:
             await self.proxy.serve_decrypted_http_session(
                 request_reader, response_writer, self.host, upstream
             )
-        except OSError, ValueError, H2Error:
-            # Malformed or cancelled streams are reset, not forwarded elsewhere
-            pass
+        except (OSError, ValueError, H2Error) as exc:
+            # A failing stream is reset, without leaking any request headers or body
+            log_buffer.log(
+                'TLS',
+                f'HTTP/2 stream failed for {self.host}: '
+                f'upstream_opened={request.upstream_id is not None} '
+                f'upstream_ended={request.upstream_ended} '
+                f'error={type(exc).__name__}',
+            )
         finally:
             if not response_writer.sent:
                 with contextlib.suppress(OSError, H2Error):
@@ -524,6 +532,17 @@ class H2FeatureBridge:
             else:
                 await self._receive_upstream(data)
         if not client:
+            unfinished = sum(
+                not request.upstream_ended for request in self.upstream_requests.values()
+            )
+            if unfinished:
+                log_buffer.log(
+                    'TLS',
+                    f'HTTP/2 upstream ended for {self.host}: '
+                    f'unfinished_streams={unfinished} '
+                    f'buffered_request_bytes={self.buffered_request_bytes} '
+                    f'buffered_response_bytes={self.buffered_response_bytes}',
+                )
             for request in self.upstream_requests.values():
                 if not request.upstream_ended:
                     request.upstream_reader.set_exception(

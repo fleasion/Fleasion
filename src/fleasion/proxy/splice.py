@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from cryptography.exceptions import InvalidTag
@@ -213,6 +214,9 @@ class SpliceConnection:
         self.cipher: int | None = None
         self.client_finished_relayed = False
         self._application_ready = asyncio.Event()
+        self._started_at = time.monotonic()
+        self._http_started = False
+        self._plain_bytes = {'CLIENT': 0, 'SERVER': 0}
 
     def _hello(self, direction: _Direction, record: bytes) -> None:
         for kind, body in direction.handshake.feed(record[5:]):
@@ -271,6 +275,7 @@ class SpliceConnection:
             await self._prepare_keys(self.server)
             self._application_ready.set()
         if content_type == APPLICATION:
+            self._plain_bytes[direction.name] += len(content)
             direction.plain.feed_data(content)
             await direction.flow.ready.wait()
         elif content_type == ALERT:
@@ -324,6 +329,19 @@ class SpliceConnection:
             if not await self._record(direction, record):
                 break
 
+    def diagnostic_state(self) -> str:
+        """Summarize connection phases without logging traffic or TLS secrets."""
+        return (
+            f'elapsed_ms={int((time.monotonic() - self._started_at) * 1000)} '
+            f'client_hello={bool(self.client_random)} server_hello={self.cipher is not None} '
+            f'client_finished={self.client_finished_relayed} '
+            f'client_keys={self.client.input_keys is not None} '
+            f'server_keys={self.server.input_keys is not None} '
+            f'client_plain_bytes={self._plain_bytes["CLIENT"]} '
+            f'server_plain_bytes={self._plain_bytes["SERVER"]} '
+            f'http_started={self._http_started}'
+        )
+
     async def run(self, proxy: FleasionProxy, host: str) -> None:
         """Run the duplex TLS splice and dispatch plaintext to the proxy engine.
 
@@ -334,8 +352,10 @@ class SpliceConnection:
         host : str
             Requested hostname.
         """
+
         async def session() -> None:
             await asyncio.wait_for(self._application_ready.wait(), timeout=20.0)
+            self._http_started = True
             if proxy.mark_splice_decrypted(host):
                 log_buffer.log(
                     'TLS',
@@ -361,9 +381,14 @@ class SpliceConnection:
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     task.result()
-            if self.server.close_alert is not None and self.server.writer.keys is not None:
-                self.server.wire.write(self.server.writer.keys.encrypt(self.server.close_alert, 21))
-                await self.server.wire.drain()
+            # Deliver a TLS close_notify after HTTP has flushed, in both directions
+            # Both peers otherwise see an abrupt EOF when the feature session ends
+            for direction in (self.server, self.client):
+                keys = direction.writer.keys
+                if keys is not None and not direction.wire.is_closing():
+                    alert = direction.close_alert or b'\x01\x00'
+                    direction.wire.write(keys.encrypt(alert, ALERT))
+                    await direction.wire.drain()
         finally:
             # Close wires before awaiting cancelled children
             for direction in (self.client, self.server):

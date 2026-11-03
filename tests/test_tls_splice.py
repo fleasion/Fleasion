@@ -246,3 +246,68 @@ def test_real_tls_reuses_existing_http_rules_and_logging(
             await server.wait_closed()
 
     asyncio.run(run())
+
+
+def test_splice_closes_both_tls_directions_with_notify() -> None:
+    from fleasion.proxy.splice import SpliceConnection
+
+    class MemoryWire:
+        def __init__(self) -> None:
+            self.data = bytearray()
+            self.closed = False
+
+        def write(self, payload: bytes) -> None:
+            self.data.extend(payload)
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+        def is_closing(self) -> bool:
+            return self.closed
+
+        async def wait_closed(self) -> None:
+            pass
+
+    class Session:
+        def mark_splice_decrypted(self, _host: str) -> bool:
+            return False
+
+        async def serve_spliced_session(
+            self,
+            reader: asyncio.StreamReader,
+            _writer: asyncio.StreamWriter,
+            _host: str,
+            _upstream: object,
+        ) -> None:
+            assert await reader.read() == b''
+
+    async def run() -> None:
+        client_reader, server_reader = asyncio.StreamReader(), asyncio.StreamReader()
+        client_wire, server_wire = MemoryWire(), MemoryWire()
+        connection = SpliceConnection(
+            client_reader,
+            cast('asyncio.StreamWriter', client_wire),
+            server_reader,
+            cast('asyncio.StreamWriter', server_wire),
+            keys=KeyProvider(),
+        )
+        secret = b'c' * 32
+        for direction in (connection.client, connection.server):
+            direction.input_keys = TrafficKeys(secret, 0x1301)
+            direction.writer.keys = TrafficKeys(secret, 0x1301)
+            direction.handshake_keys = TrafficKeys(secret, 0x1301)
+        connection.client_finished_relayed = True
+        connection._application_ready.set()  # pyright: ignore[reportPrivateUsage]
+        client_reader.feed_data(TrafficKeys(secret, 0x1301).encrypt(b'\x01\x00', 21))
+        await asyncio.wait_for(run_connection(connection), timeout=1.0)
+        for wire in (client_wire, server_wire):
+            assert wire.closed
+            assert TrafficKeys(secret, 0x1301).decrypt(bytes(wire.data)) == (21, b'\x01\x00')
+
+    async def run_connection(connection: SpliceConnection) -> None:
+        await connection.run(cast('FleasionProxy', Session()), 'splice.test')
+
+    asyncio.run(run())
