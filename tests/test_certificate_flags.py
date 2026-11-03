@@ -1,4 +1,4 @@
-"""Proxy trust overrides across platforms, startup, routing, and live settings."""
+"""ClientSettings refresh and certificate-flag passthrough across platforms."""
 
 # ruff: file-ignore[implicit-namespace-package, private-member-access]
 
@@ -15,7 +15,6 @@ from fleasion.proxy import master as proxy_master
 from fleasion.proxy.addons import custom_fflags as custom_fflags_module
 from fleasion.proxy.addons.custom_fflags import (
     DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG,
-    EXTERNAL_CA_FLAG,
     CustomFFlagModifier,
 )
 from fleasion.utils import platform_linux
@@ -23,6 +22,9 @@ from fleasion.utils.linux_clients import SOBER_CLIENT
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+EMBEDDED_CA_FLAG = 'DFFlagHttpUseEmbeddedCaCerts'
 
 
 pytestmark = pytest.mark.usefixtures('windows_compatibility')
@@ -34,23 +36,20 @@ def windows_compatibility(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize('custom_enabled', [False, True])
-def test_trust_override_cannot_be_disabled_or_saved(*, custom_enabled: bool) -> None:
-    saved_flags = {EXTERNAL_CA_FLAG: 'True', 'FFlagExample': 'True'}
+def test_legacy_ca_flag_is_not_forced_or_exempt_from_user_filters(*, custom_enabled: bool) -> None:
+    saved_flags = {EMBEDDED_CA_FLAG: 'True', 'FFlagExample': 'True'}
     config = SimpleNamespace(
         custom_fflags_enabled=custom_enabled,
         custom_fflags=saved_flags.copy(),
-        custom_fflag_disabled=[EXTERNAL_CA_FLAG, DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG],
-        custom_fflag_folders={'Disabled': [EXTERNAL_CA_FLAG]},
+        custom_fflag_disabled=[EMBEDDED_CA_FLAG, DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG],
+        custom_fflag_folders={'Disabled': [EMBEDDED_CA_FLAG]},
         custom_fflag_disabled_folders=['Disabled'],
     )
     modifier = CustomFFlagModifier(config)
 
     assert modifier.is_enabled()
     assert modifier.custom_flags_enabled() is custom_enabled
-    expected = {
-        EXTERNAL_CA_FLAG: 'False',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
-    }
+    expected = {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1'}
     if custom_enabled:
         expected['FFlagExample'] = 'True'
     assert modifier.runtime_flags() == expected
@@ -58,7 +57,7 @@ def test_trust_override_cannot_be_disabled_or_saved(*, custom_enabled: bool) -> 
     assert config.custom_fflags_enabled is custom_enabled
 
 
-def test_disabling_custom_flags_keeps_trust_in_startup_cache(
+def test_disabling_custom_flags_preserves_upstream_ca_flag_in_startup_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -70,7 +69,7 @@ def test_disabling_custom_flags_keeps_trust_in_startup_cache(
         header
         + json.dumps(
             {
-                'applicationSettings': {EXTERNAL_CA_FLAG: 'True', 'Existing': 'untouched'},
+                'applicationSettings': {EMBEDDED_CA_FLAG: 'True', 'Existing': 'untouched'},
                 'otherMetadata': 'untouched',
             }
         ).encode()
@@ -86,7 +85,7 @@ def test_disabling_custom_flags_keeps_trust_in_startup_cache(
     assert raw[: len(header)] == header
     assert json.loads(raw[len(header) :]) == {
         'applicationSettings': {
-            EXTERNAL_CA_FLAG: 'False',
+            EMBEDDED_CA_FLAG: 'True',
             DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
             'Existing': 'untouched',
         },
@@ -99,7 +98,7 @@ def test_startup_cache_is_seeded_when_saved_toggle_is_already_off(tmp_path: Path
     settings_path = tmp_path / 'settings.json'
     settings = {
         'custom_fflags_enabled': False,
-        'custom_fflags': {EXTERNAL_CA_FLAG: 'True', 'FFlagExample': 'True'},
+        'custom_fflags': {EMBEDDED_CA_FLAG: 'True', 'FFlagExample': 'True'},
     }
     settings_path.write_text(json.dumps(settings), encoding='utf-8')
     cache_path = tmp_path / 'flag_cache.dat'
@@ -115,18 +114,17 @@ def test_startup_cache_is_seeded_when_saved_toggle_is_already_off(tmp_path: Path
 
     assert modifier.prime_startup_flag_cache()
     assert json.loads(cache_path.read_bytes()[len(header) :])['applicationSettings'] == {
-        EXTERNAL_CA_FLAG: 'False',
         DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
     }
     assert json.loads(settings_path.read_text(encoding='utf-8')) == settings
 
 
-def test_macos_seeds_trust_with_user_flags_off_and_preserves_other_settings(tmp_path: Path) -> None:
+def test_macos_preserves_upstream_ca_flag_with_user_flags_off(tmp_path: Path) -> None:
     resources = tmp_path / 'Roblox.app' / 'Contents' / 'Resources'
     settings_path = resources / 'ClientSettings' / 'ClientAppSettings.json'
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(
-        json.dumps({'FFlagExample': 'True', EXTERNAL_CA_FLAG: 'True', 'Unrelated': 'kept'}),
+        json.dumps({'FFlagExample': 'True', EMBEDDED_CA_FLAG: 'True', 'Unrelated': 'kept'}),
         encoding='utf-8',
     )
     modifier = CustomFFlagModifier(
@@ -136,7 +134,7 @@ def test_macos_seeds_trust_with_user_flags_off_and_preserves_other_settings(tmp_
 
     assert modifier.prime_startup_flag_cache()
     assert json.loads(settings_path.read_text(encoding='utf-8')) == {
-        EXTERNAL_CA_FLAG: 'False',
+        EMBEDDED_CA_FLAG: 'True',
         DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
         'Unrelated': 'kept',
     }
@@ -145,7 +143,7 @@ def test_macos_seeds_trust_with_user_flags_off_and_preserves_other_settings(tmp_
 
 @pytest.mark.parametrize('platform', ['darwin', 'linux'])
 @pytest.mark.parametrize('enabled', [False, True])
-def test_other_platforms_receive_mandatory_trust_companions(
+def test_other_platforms_preserve_upstream_ca_flag(
     monkeypatch: pytest.MonkeyPatch,
     platform: str,
     *,
@@ -160,10 +158,27 @@ def test_other_platforms_receive_mandatory_trust_companions(
     modified = modifier.modify_response('/v2/settings/application/PCDesktopClient', original)
 
     assert modifier.is_enabled()
-    assert modifier.runtime_flags()[EXTERNAL_CA_FLAG] == 'False'
-    assert json.loads(modified)['applicationSettings'][EXTERNAL_CA_FLAG] == 'False'
+    assert EMBEDDED_CA_FLAG not in modifier.runtime_flags()
+    assert json.loads(modified)['applicationSettings'][EMBEDDED_CA_FLAG] == 'True'
     assert json.loads(modified)['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
     assert ('FFlagExample' in json.loads(modified)['applicationSettings']) is enabled
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_explicit_user_ca_flag_is_respected_only_while_custom_flags_are_enabled(
+    *, enabled: bool
+) -> None:
+    modifier = CustomFFlagModifier(
+        SimpleNamespace(
+            custom_fflags_enabled=enabled,
+            custom_fflags={EMBEDDED_CA_FLAG: 'False'},
+        ),
+    )
+    original = b'{"applicationSettings":{"DFFlagHttpUseEmbeddedCaCerts":"True"}}'
+    modified = modifier.modify_response('/v2/settings/application/PCDesktopClient', original)
+    assert json.loads(modified)['applicationSettings'][EMBEDDED_CA_FLAG] == (
+        'False' if enabled else 'True'
+    )
 
 
 @pytest.mark.parametrize(

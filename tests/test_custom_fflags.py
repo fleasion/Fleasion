@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, cast
 import zstandard
 
 from fleasion.proxy import master as proxy_master, server as proxy_server
+from fleasion.proxy.asset_trace import AssetTrace
 from fleasion.proxy.addons import custom_fflags as custom_fflags_module
 from fleasion.proxy.addons.custom_fflags import (
     DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG,
-    EXTERNAL_CA_FLAG,
     CustomFFlagModifier,
     normalize_custom_fflags,
 )
@@ -29,6 +29,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     import pytest
+
+
+EMBEDDED_CA_FLAG = 'DFFlagHttpUseEmbeddedCaCerts'
 
 
 type _Headers = dict[bytes, bytes]
@@ -211,6 +214,7 @@ def _run_client_settings_session(
         _set_test_attr(proxy, 'custom_fflag_modifier', modifier)
         _set_test_attr(proxy, '_auto_replace_rules', list(auto_replace_rules or []))
         _set_test_attr(proxy, '_module_interceptors', [])
+        _set_test_attr(proxy, '_asset_trace', AssetTrace(enabled=False))
         _set_test_attr(proxy, '_wire_preserving_passthrough', value=False)
         _set_test_attr(proxy, '_intercept_all_hosts', intercept_response_action is not None)
         _set_test_attr(proxy, '_fallback_diagnostics_seen', set[tuple[str, str]]())
@@ -413,7 +417,6 @@ def test_modifier_removes_all_saved_overrides_when_windows_feature_is_disabled(
     payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
     assert payload == {
         'Existing': 'True',
-        EXTERNAL_CA_FLAG: 'False',
         DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
     }
 
@@ -436,7 +439,6 @@ def test_modifier_primes_macos_player_client_settings(tmp_path: Path) -> None:
         'Existing': 'True',
         'DFFlagDebugDrawBroadPhaseAABBs': 'True',
         'FFlagExample': 'False',
-        EXTERNAL_CA_FLAG: 'False',
         DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
     }
 
@@ -461,7 +463,6 @@ def test_modifier_removes_previous_macos_seed_when_flags_change_or_disable(tmp_p
     assert modifier.prime_macos_client_settings()
     assert json.loads(settings.read_text(encoding='utf-8')) == {
         'Existing': 'True',
-        EXTERNAL_CA_FLAG: 'False',
         DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
     }
 
@@ -658,7 +659,6 @@ def test_proxy_counts_already_correct_client_settings_response_as_success() -> N
         {
             'applicationSettings': {
                 'FFlagExample': 'True',
-                EXTERNAL_CA_FLAG: 'False',
                 DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
             }
         },
@@ -861,7 +861,7 @@ def test_modifier_passes_the_windows_bootstrapper_through_unchanged() -> None:
     )
 
 
-def test_modifier_keeps_compatibility_when_custom_flags_are_disabled() -> None:
+def test_modifier_keeps_dynamic_refresh_with_custom_flags_disabled() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=False,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '20'},
@@ -872,12 +872,11 @@ def test_modifier_keeps_compatibility_when_custom_flags_are_disabled() -> None:
     modified = modifier.modify_response('/v2/settings/application/PCDesktopClient', original)
     assert json.loads(modified)['applicationSettings'] == {
         'Existing': 'True',
-        EXTERNAL_CA_FLAG: 'False',
         DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
     }
 
 
-def test_proxy_delivers_trust_flag_with_custom_flags_off() -> None:
+def test_proxy_preserves_upstream_certificate_flag_with_custom_flags_off() -> None:
     config = SimpleNamespace(custom_fflags_enabled=False, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = b'{"applicationSettings":{"DFFlagHttpUseEmbeddedCaCerts":"True","Existing":"True"}}'
@@ -892,7 +891,7 @@ def test_proxy_delivers_trust_flag_with_custom_flags_off() -> None:
 
     payload = json.loads(delivered.split(b'\r\n\r\n', 1)[1])['applicationSettings']
     assert payload == {
-        EXTERNAL_CA_FLAG: 'False',
+        EMBEDDED_CA_FLAG: 'True',
         DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
         'Existing': 'True',
     }

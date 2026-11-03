@@ -44,7 +44,6 @@ CLIENT_SETTINGS_COMPRESSED_PATH = '/settings-compressed/application/'
 BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM = 'PCClientBootstrapper'
 DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG = 'DFIntSecondsBetweenDynamicVariableReloading'
 DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS = '1'
-EXTERNAL_CA_FLAG = 'DFFlagHttpUseEmbeddedCaCerts'
 IS_WINDOWS = sys.platform == 'win32'
 WINDOWS_FLAG_CACHE_PATH = LOCAL_APPDATA / 'Temp' / 'Roblox' / 'cache' / 'flag_cache.dat'
 MACOS_CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
@@ -218,7 +217,7 @@ class CustomFFlagModifier:
 
     @staticmethod
     def is_enabled() -> bool:
-        """Keep proxy certificate compatibility active independently of user flags."""
+        """Keep ClientSettings refresh behavior active independently of user flags."""
         return True
 
     def custom_flags_enabled(self) -> bool:
@@ -246,7 +245,7 @@ class CustomFFlagModifier:
         return is_application_settings and BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM not in path_only
 
     def runtime_flags(self) -> dict[str, str]:
-        """Return enabled custom flags and mandatory, non-persisted companions."""
+        """Return enabled custom flags and the non-persisted refresh companion."""
         self._refresh_settings_from_disk()
         saved_flags = (
             self._disk_flags if self._disk_flags is not None else self.config_manager.custom_fflags
@@ -274,9 +273,6 @@ class CustomFFlagModifier:
             members = as_json_array(folder_mapping.get(folder_name, [])) or []
             disabled_names.update(str(name).strip() for name in members)
         flags = {name: value for name, value in flags.items() if name not in disabled_names}
-        # Player must use the cacert.pem bundle containing Fleasion's CA
-        # Apply this after user filters so a saved value or folder cannot disable it
-        flags[EXTERNAL_CA_FLAG] = 'False'
         # Roblox/Sober reads the reloader interval before applying the response
         # it has just fetched. Therefore, when this companion flag first
         # arrives through Sober's 120-second dynamic fetch, its next wait can
