@@ -128,6 +128,8 @@ def test_oversized_upstream_response_resets_only_offending_stream(
         assert requests[1].upstream_ended
         forwarded = await requests[1].upstream_reader.read()
         assert forwarded.endswith(b'valid')
+        assert bridge.buffered_response_bytes == len(b'valid')
+        bridge._release_response_body(requests[1])  # pyright: ignore[reportPrivateUsage]
         assert bridge.buffered_response_bytes == 0
         assert not bridge.server.terminated
 

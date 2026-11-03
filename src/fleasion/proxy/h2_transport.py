@@ -48,6 +48,7 @@ _MAX_BUFFERED_BODY = 64 * 1024 * 1024
 _MAX_ACTIVE_STREAMS = 64
 _UPSTREAM_DRAIN_GRACE_SECONDS = 1.0
 _H2_SEND_IDLE_TIMEOUT = 30.0
+_H2_UPLOAD_IDLE_TIMEOUT = 30.0
 _HOP_HEADERS = frozenset(
     {b'connection', b'keep-alive', b'proxy-connection', b'transfer-encoding', b'upgrade'}
 )
@@ -200,6 +201,7 @@ class _Request:
     upstream_ended: bool = False
     response_headers: H2Headers | None = None
     response_body: bytearray = field(default_factory=bytearray)
+    response_held_bytes: int = 0
     response_rejected: bool = False
     request_trailers: H2Headers | None = None
     request_trailer_expected_headers: H2Headers | None = None
@@ -207,6 +209,8 @@ class _Request:
     response_trailers: H2Headers | None = None
     trailer_expected_headers: H2Headers | None = None
     trailer_expected_body_hash: bytes | None = None
+    upload_timer: asyncio.TimerHandle | None = None
+    upload_generation: int = 0
 
 
 class _Peer:
@@ -395,8 +399,40 @@ class H2FeatureBridge:
             raise ValueError(msg)
 
     def _release_response_body(self, request: _Request) -> None:
-        self.buffered_response_bytes -= len(request.response_body)
+        self.buffered_response_bytes -= len(request.response_body) + request.response_held_bytes
         request.response_body.clear()
+        request.response_held_bytes = 0
+
+    @staticmethod
+    def _cancel_upload_timeout(request: _Request) -> None:
+        request.upload_generation += 1
+        if request.upload_timer is not None:
+            request.upload_timer.cancel()
+            request.upload_timer = None
+
+    def _arm_upload_timeout(self, stream: int, request: _Request) -> None:
+        self._cancel_upload_timeout(request)
+        generation = request.upload_generation
+        request.upload_timer = asyncio.get_running_loop().call_later(
+            _H2_UPLOAD_IDLE_TIMEOUT,
+            lambda: asyncio.create_task(self._expire_idle_upload(stream, request, generation)),
+        )
+
+    async def _expire_idle_upload(
+        self, stream: int, request: _Request, generation: int
+    ) -> None:
+        if (
+            self.requests.get(stream) is not request
+            or request.upload_generation != generation
+            or request.task is not None
+        ):
+            return
+        self._cancel_upload_timeout(request)
+        self.requests.pop(stream, None)
+        self.buffered_request_bytes -= len(request.body)
+        request.body.clear()
+        with contextlib.suppress(OSError, H2Error):
+            await self.client.reset(stream)
 
     async def _run_request(self, stream: int, request: _Request) -> None:
         final_response_sent = False
@@ -439,24 +475,29 @@ class H2FeatureBridge:
         response_writer = _MessageWriter(send_response)
         request_reader = asyncio.StreamReader()
         body = bytes(request.body)
-        if request.request_trailers is not None:
-            original_message = _as_http1(request.headers, body, request=True)
-            expected_headers, expected_body = _as_http2(
-                original_message, request=True, host=self.host
+        reserved_body_size = len(body)
+
+        def prepare_feature_input() -> UpstreamConnectResult:
+            if request.request_trailers is not None:
+                original_message = _as_http1(request.headers, body, request=True)
+                expected_headers, expected_body = _as_http2(
+                    original_message, request=True, host=self.host
+                )
+                request.request_trailer_expected_headers = expected_headers
+                request.request_trailer_expected_body_hash = hashlib.sha256(expected_body).digest()
+            request.body.clear()
+            request_reader.feed_data(_as_http1(request.headers, body, request=True))
+            request_reader.feed_eof()
+            return UpstreamConnectResult(
+                reader=request.upstream_reader,
+                writer=upstream_writer,
+                method='authenticated_h2',
+                endpoint=self.host,
             )
-            request.request_trailer_expected_headers = expected_headers
-            request.request_trailer_expected_body_hash = hashlib.sha256(expected_body).digest()
-        self.buffered_request_bytes -= len(request.body)
-        request.body.clear()
-        request_reader.feed_data(_as_http1(request.headers, body, request=True))
-        request_reader.feed_eof()
-        upstream = UpstreamConnectResult(
-            reader=request.upstream_reader,
-            writer=upstream_writer,
-            method='authenticated_h2',
-            endpoint=self.host,
-        )
+
+        # The feature engine keeps the body until it exits, so keep its budget reservation
         try:
+            upstream = prepare_feature_input()
             await self.proxy.serve_decrypted_http_session(
                 request_reader, response_writer, self.host, upstream
             )
@@ -470,6 +511,8 @@ class H2FeatureBridge:
                 f'error={type(exc).__name__}',
             )
         finally:
+            self.buffered_request_bytes -= reserved_body_size
+            request.body.clear()
             if not final_response_sent:
                 with contextlib.suppress(OSError, H2Error):
                     await self.client.reset(stream)
@@ -509,7 +552,10 @@ class H2FeatureBridge:
                     if expects_continue:
                         # This bridge buffers the request body before forwarding it
                         headers = [(name, value) for name, value in headers if name != b'expect']
-                    self.requests[event.stream_id] = _Request(headers)
+                    request = _Request(headers)
+                    self.requests[event.stream_id] = request
+                    if event.stream_ended is None:
+                        self._arm_upload_timeout(event.stream_id, request)
                     if expects_continue and event.stream_ended is None:
                         await self.client.send_informational(
                             event.stream_id, [(b':status', b'100')]
@@ -524,6 +570,7 @@ class H2FeatureBridge:
                     self._reserve_body_bytes(len(event.data))
                 except ValueError:
                     # Reject only the stream exceeding the aggregate buffer budget
+                    self._cancel_upload_timeout(request)
                     self.buffered_request_bytes -= len(request.body)
                     request.body.clear()
                     self.requests.pop(event.stream_id, None)
@@ -534,10 +581,13 @@ class H2FeatureBridge:
                     continue
                 self.buffered_request_bytes += len(event.data)
                 request.body.extend(event.data)
+                if event.data:
+                    self._arm_upload_timeout(event.stream_id, request)
                 await self.client.acknowledge(event.stream_id, event.flow_controlled_length)
             elif isinstance(event, StreamEnded):
                 request = self.requests.get(event.stream_id)
                 if request is not None:
+                    self._cancel_upload_timeout(request)
                     task = asyncio.create_task(self._run_request(event.stream_id, request))
                     request.task = task
                     self.tasks.add(task)
@@ -549,6 +599,7 @@ class H2FeatureBridge:
             elif isinstance(event, StreamReset):
                 request = self.requests.pop(event.stream_id, None)
                 if request is not None:
+                    self._cancel_upload_timeout(request)
                     self.buffered_request_bytes -= len(request.body)
                     request.body.clear()
                     if request.task is not None:
@@ -620,7 +671,11 @@ class H2FeatureBridge:
                         request.upstream_reader.feed_data(message)
                         request.upstream_ended = True
                         request.upstream_reader.feed_eof()
-                    self._release_response_body(request)
+                        # The feature engine still owns these bytes until its task exits
+                        request.response_held_bytes += len(request.response_body)
+                        request.response_body.clear()
+                    if request.response_headers is None:
+                        self._release_response_body(request)
             elif isinstance(event, StreamReset):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None:
@@ -691,6 +746,7 @@ class H2FeatureBridge:
             # Release unfinished request/response buffers on either peer's EOF
             # Tasks have already been cancelled and joined above
             for request in self.requests.values():
+                self._cancel_upload_timeout(request)
                 request.body.clear()
                 request.response_body.clear()
             for request in self.upstream_requests.values():
