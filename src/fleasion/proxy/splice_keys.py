@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from .android_community_keys import find_android_community_pid, scan as scan_android_community
 from .live_keys import find_roblox_pid, scan
 from .rosemary_keys import find_rosemary_pid, scan as scan_rosemary
+from .sober_keys import find_sober_pid, scan as scan_sober
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -72,6 +73,9 @@ class KeyProvider:
             android_match = find_android_community_pid()
             if android_match:
                 return scan_android_community(android_match[0], stop=self._stop, client_random=client_random)
+            sober_pid = find_sober_pid()
+            if sober_pid:
+                return scan_sober(sober_pid, stop=self._stop, client_random=client_random)
             return {}
         msg = f'Live splice key recovery is not supported on {sys.platform}'
         raise RuntimeError(msg)

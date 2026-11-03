@@ -4500,6 +4500,29 @@ class ProxyMaster:
     def _use_env_proxy_mode(self) -> bool:
         return str(getattr(self.config_manager, 'proxy_mode', 'hosts') or 'hosts') == 'env'
 
+    @staticmethod
+    def _has_active_linux_splice_target(splice_env: str) -> bool:
+        backend_env = os.environ.get('FLEASION_SPLICE_BACKEND', '').strip().lower()
+        if splice_env in {'rosemary', 'cordial', 'nightcap', 'mocktail', 'sober'} or backend_env:
+            return True
+        find_rosemary_pid = cast(
+            'Callable[[], int | None]',
+            _lazy_attr('fleasion.proxy.rosemary_keys', 'find_rosemary_pid'),
+        )
+        if find_rosemary_pid() is not None:
+            return True
+        find_android_community_pid = cast(
+            'Callable[[str | None], tuple[int, str] | None]',
+            _lazy_attr('fleasion.proxy.android_community_keys', 'find_android_community_pid'),
+        )
+        if find_android_community_pid(None) is not None:
+            return True
+        find_sober_pid = cast(
+            'Callable[[], int | None]',
+            _lazy_attr('fleasion.proxy.sober_keys', 'find_sober_pid'),
+        )
+        return find_sober_pid() is not None
+
     def _use_splice_transport(self) -> bool:
         splice_env = os.environ.get('FLEASION_SPLICE', '1').strip().lower()
         if splice_env in {'0', 'false', 'no', 'off'}:

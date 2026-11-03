@@ -35,6 +35,7 @@ def test_platform_placeholders_remain_disabled(
     monkeypatch.setattr("fleasion.proxy.tls_backends.rosemary.find_rosemary_pid", lambda: None)
     monkeypatch.setattr("fleasion.proxy.tls_backends.windows.find_roblox_pid", lambda: None)
     monkeypatch.setattr("fleasion.proxy.tls_backends.android_community.find_android_community_pid", _mock_no_android)
+    monkeypatch.setattr("fleasion.proxy.tls_backends.sober.find_sober_pid", lambda: None)
 
     async def run() -> None:
         backend = create_backend(backend_id, community_client="cordial")
@@ -58,6 +59,7 @@ def test_all_five_backend_slots_have_explicit_status(
     monkeypatch.setattr("fleasion.proxy.tls_backends.rosemary.find_rosemary_pid", lambda: None)
     monkeypatch.setattr("fleasion.proxy.tls_backends.windows.find_roblox_pid", lambda: None)
     monkeypatch.setattr("fleasion.proxy.tls_backends.android_community.find_android_community_pid", _mock_no_android)
+    monkeypatch.setattr("fleasion.proxy.tls_backends.sober.find_sober_pid", lambda: None)
 
     probes = backend_probes()
     assert len(probes) == 5

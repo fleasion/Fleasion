@@ -44,6 +44,7 @@ def test_unimplemented_providers_never_pass_health_check(
     monkeypatch.setattr("fleasion.proxy.tls_backends.rosemary.find_rosemary_pid", lambda: None)
     monkeypatch.setattr("fleasion.proxy.tls_backends.windows.find_roblox_pid", lambda: None)
     monkeypatch.setattr("fleasion.proxy.tls_backends.android_community.find_android_community_pid", _mock_no_android)
+    monkeypatch.setattr("fleasion.proxy.tls_backends.sober.find_sober_pid", lambda: None)
     result = provider_health(backend, community_client="cordial")
     assert result.phase is HealthPhase.PROVIDER_UNAVAILABLE
     assert not result.working
