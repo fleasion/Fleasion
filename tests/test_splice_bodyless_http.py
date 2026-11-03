@@ -415,3 +415,49 @@ def test_chunked_integrity_trailer_rewrite_fails_closed(
             assert failures == [f'Cannot rewrite an HTTP {mutate} carrying chunked trailers']
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ('upstream_response', 'error'),
+    [
+        (
+            b'HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nPART',
+            'Incomplete HTTP content-length body',
+        ),
+        (
+            b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nAB',
+            'Incomplete HTTP chunk body',
+        ),
+        (
+            b'HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Length: 8\r\n\r\nPART',
+            'Duplicate HTTP framing header',
+        ),
+        (
+            b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n',
+            'Incomplete HTTP header block',
+        ),
+    ],
+)
+def test_incomplete_upstream_message_never_reaches_client(
+    upstream_response: bytes, error: str
+) -> None:
+    async def run() -> None:
+        failures: list[str] = []
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                await reader.readuntil(b'\r\n\r\n')
+                writer.write(upstream_response)
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _proxy_session(upstream, failures=failures) as (reader, writer):
+            writer.write(_REQUEST)
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(), 2) == b''
+            assert len(failures) == 1
+            assert error in failures[0]
+
+    asyncio.run(run())

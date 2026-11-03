@@ -1086,23 +1086,29 @@ def _make_proxy_error_response(status_code: int, message: str) -> bytes:
 
 
 async def _read_headers_raw(reader: asyncio.StreamReader) -> RawHeaders | None:
-    """Read one HTTP header block, preserving the exact wire header bytes."""
+    """Read one complete HTTP header block, preserving the exact wire bytes."""
     raw = bytearray()
 
     while True:
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=15.0)
-        except ConnectionError, OSError, RuntimeError, TimeoutError, ValueError:
+        except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
+            if raw:
+                msg = 'Incomplete HTTP header block'
+                raise ValueError(msg) from exc
             return None
         if not line:
+            if raw:
+                msg = 'Incomplete HTTP header block'
+                raise ValueError(msg)
             return None
 
         raw += line
-        if line in {b'\r\n', b'\n'}:
-            break
         if len(raw) > 1024 * 1024:
             msg = 'HTTP header block too large'
             raise ValueError(msg)
+        if line in {b'\r\n', b'\n'}:
+            break
 
     lines = bytes(raw).splitlines()
     if not lines:
@@ -1112,10 +1118,24 @@ async def _read_headers_raw(reader: asyncio.StreamReader) -> RawHeaders | None:
     headers: dict[bytes, bytes] = {}
     for line in lines[1:]:
         stripped = line.rstrip(b'\r\n')
-        if not stripped or b':' not in stripped:
+        if not stripped:
             continue
+        if stripped.startswith((b' ', b'\t')) or b':' not in stripped:
+            msg = 'Malformed HTTP header line'
+            raise ValueError(msg)
         k, _, v = stripped.partition(b':')
-        headers[k.strip().lower()] = v.strip()
+        name = k.strip().lower()
+        if not name or name != k.lower():
+            msg = 'Malformed HTTP header name'
+            raise ValueError(msg)
+        if name in {b'content-length', b'transfer-encoding'} and name in headers:
+            msg = f'Duplicate HTTP framing header: {name.decode("ascii")}'
+            raise ValueError(msg)
+        headers[name] = v.strip()
+
+    if b'content-length' in headers and b'transfer-encoding' in headers:
+        msg = 'Conflicting HTTP framing headers'
+        raise ValueError(msg)
 
     return RawHeaders(
         first_line=first_line,
@@ -1135,47 +1155,54 @@ async def _read_headers(  # pyright: ignore[reportUnusedFunction]
 
 
 async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, bytes]) -> RawBody:
-    """Read an HTTP body, preserving wire bytes and exposing dechunked payload."""
-    te = headers.get(b'transfer-encoding', b'').lower()
-    cl_raw = headers.get(b'content-length', b'')
+    """Read a complete HTTP body, preserving wire bytes and dechunked payload."""
+    te = headers.get(b'transfer-encoding')
+    cl_raw = headers.get(b'content-length')
+    if te is not None and cl_raw is not None:
+        msg = 'Conflicting HTTP framing headers'
+        raise ValueError(msg)
 
-    if b'chunked' in te:
+    if te is not None:
+        if te.strip().lower() != b'chunked':
+            msg = 'Unsupported HTTP transfer-encoding'
+            raise ValueError(msg)
         wire = bytearray()
         payload = bytearray()
         has_trailers = False
         while True:
-            try:
-                size_line = await reader.readline()
-            except ConnectionError, OSError, RuntimeError:
-                break
-            if not size_line:
-                break
+            size_line = await reader.readline()
+            if not size_line.endswith(b'\r\n'):
+                msg = 'Incomplete HTTP chunk size line'
+                raise ValueError(msg)
             wire += size_line
-            size_str = size_line.strip().split(b';')[0]
-            try:
-                chunk_size = int(size_str, 16)
-            except ValueError:
-                break
+            size_str = size_line[:-2].split(b';', 1)[0]
+            if not size_str or re.fullmatch(rb'[0-9a-fA-F]+', size_str) is None:
+                msg = 'Invalid HTTP chunk size'
+                raise ValueError(msg)
+            chunk_size = int(size_str, 16)
             if chunk_size == 0:
                 while True:
                     trailer_line = await reader.readline()
-                    if not trailer_line:
-                        break
+                    if not trailer_line.endswith(b'\r\n'):
+                        msg = 'Incomplete HTTP chunk trailers'
+                        raise ValueError(msg)
                     wire += trailer_line
-                    if trailer_line in {b'\r\n', b'\n'}:
+                    if trailer_line == b'\r\n':
                         break
+                    if b':' not in trailer_line or trailer_line.startswith((b' ', b'\t')):
+                        msg = 'Malformed HTTP chunk trailer'
+                        raise ValueError(msg)
                     has_trailers = True
                 break
             try:
                 chunk = await reader.readexactly(chunk_size)
-            except asyncio.IncompleteReadError as exc:
-                wire += exc.partial
-                payload += exc.partial
-                break
-            try:
                 crlf = await reader.readexactly(2)
             except asyncio.IncompleteReadError as exc:
-                crlf = exc.partial
+                msg = 'Incomplete HTTP chunk body'
+                raise ValueError(msg) from exc
+            if crlf != b'\r\n':
+                msg = 'Invalid HTTP chunk terminator'
+                raise ValueError(msg)
             wire += chunk + crlf
             payload += chunk
         return RawBody(
@@ -1185,17 +1212,18 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
             has_trailers=has_trailers,
         )
 
-    if cl_raw:
-        try:
-            length = int(cl_raw)
-        except ValueError:
-            return RawBody(wire=b'', payload=b'', was_chunked=False)
-        if length <= 0:
+    if cl_raw is not None:
+        if re.fullmatch(rb'[0-9]+', cl_raw) is None:
+            msg = 'Invalid HTTP content-length'
+            raise ValueError(msg)
+        length = int(cl_raw)
+        if length == 0:
             return RawBody(wire=b'', payload=b'', was_chunked=False)
         try:
             body = await reader.readexactly(length)
         except asyncio.IncompleteReadError as exc:
-            body = exc.partial
+            msg = 'Incomplete HTTP content-length body'
+            raise ValueError(msg) from exc
         return RawBody(wire=body, payload=body, was_chunked=False)
 
     return RawBody(wire=b'', payload=b'', was_chunked=False)
