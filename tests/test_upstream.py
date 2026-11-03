@@ -157,7 +157,7 @@ class UpstreamHandshakeTests(unittest.TestCase):
                 self,
                 host: str,
                 endpoints: Sequence[UpstreamEndpoint],
-                ssl_ctx: ssl.SSLContext,
+                ssl_ctx: ssl.SSLContext | None,
                 timeout: float,
             ) -> UpstreamConnectResult:
                 del ssl_ctx

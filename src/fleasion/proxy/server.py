@@ -30,6 +30,7 @@ import hashlib
 import importlib
 import json
 import logging
+import os
 import re
 import socket
 import ssl
@@ -65,6 +66,8 @@ if TYPE_CHECKING:
 
 from .h2_transport import H2FeatureBridge
 from .roblox_metadata import strip_roblox_metadata
+from .splice import SpliceConnection, read_client_hello
+from .splice_keys import KeyProvider
 from .upstream import (
     AutoConnector,
     BaseUpstreamConnector,
@@ -1563,6 +1566,7 @@ class FleasionProxy:
         intercept_all_hosts: bool = False,
         intercept_excluded_hosts: Iterable[str] | None = None,
         auto_replace_rules: Iterable[AutoReplaceRule] | None = None,
+        tls_splice: bool = False,
     ) -> None:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
@@ -1585,6 +1589,12 @@ class FleasionProxy:
         self._client_settings_dictionary_cache: dict[str, bytes] = {}
         self._wire_preserving_passthrough = bool(wire_preserving_passthrough)
         self._explicit_proxy = bool(explicit_proxy)
+        self._tls_splice = bool(tls_splice)
+        self._splice_keys: KeyProvider | None = None
+        self._splice_tasks: set[asyncio.Task[object]] = set()
+        if self._tls_splice:
+            keylog = os.environ.get('FLEASION_SPLICE_KEYLOG')
+            self._splice_keys = KeyProvider(Path(keylog) if keylog else None)
         self._intercept_hosts: frozenset[str] = (
             frozenset(intercept_hosts) if intercept_hosts is not None else INTERCEPT_HOSTS
         )
@@ -1657,17 +1667,20 @@ class FleasionProxy:
         self._upstream_ssl_ctx = ssl.create_default_context()
         self._upstream_ssl_ctx.set_alpn_protocols(['http/1.1'])
 
-        if default_cert is None:
+        if default_cert is None and not self._tls_splice:
             msg = 'default_cert is required'
             raise ValueError(msg)
-        default_cert_path, default_key_path = default_cert
-        self._server_ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        self._server_ssl_ctx.load_cert_chain(str(default_cert_path), str(default_key_path))
-        self._server_ssl_ctx.verify_mode = ssl.CERT_NONE
-        self._server_ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        self._server_ssl_ctx.maximum_version = self._local_tls_max_version
-        self._server_ssl_ctx.set_alpn_protocols(['http/1.1'])
-        self._server_ssl_ctx.set_servername_callback(self._sni_callback)
+        if default_cert is not None:
+            default_cert_path, default_key_path = default_cert
+            self._server_ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self._server_ssl_ctx.load_cert_chain(str(default_cert_path), str(default_key_path))
+            self._server_ssl_ctx.verify_mode = ssl.CERT_NONE
+            self._server_ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            self._server_ssl_ctx.maximum_version = self._local_tls_max_version
+            self._server_ssl_ctx.set_alpn_protocols(['http/1.1'])
+            self._server_ssl_ctx.set_servername_callback(self._sni_callback)
+        else:
+            self._server_ssl_ctx = None  # type: ignore[assignment]
 
     def set_local_tls_max_version(self, version: ssl.TLSVersion) -> None:
         """Update the TLS ceiling used by local client-facing contexts.
@@ -1677,7 +1690,8 @@ class FleasionProxy:
         machine cannot complete the capped loopback handshake.
         """
         self._local_tls_max_version = version
-        self._server_ssl_ctx.maximum_version = version
+        if self._server_ssl_ctx is not None:
+            self._server_ssl_ctx.maximum_version = version
         for ctx in self._host_ssl_ctxs.values():
             ctx.maximum_version = version
 
@@ -1761,7 +1775,7 @@ class FleasionProxy:
             self._handle_client,
             host='127.0.0.1',
             port=self.port,
-            ssl=None if self._explicit_proxy else self._server_ssl_ctx,
+            ssl=None if self._explicit_proxy or self._tls_splice else self._server_ssl_ctx,
             backlog=256,
             reuse_address=True,
         )
@@ -1770,7 +1784,7 @@ class FleasionProxy:
         self.port = int(self._server.sockets[0].getsockname()[1])
         self._servers = [self._server]
         self._listening_loopbacks = {'127.0.0.1'}
-        mode = 'HTTP CONNECT' if self._explicit_proxy else 'TLS'
+        mode = 'HTTP CONNECT' if self._explicit_proxy else ('TLS splice' if self._tls_splice else 'TLS')
         logger.info('Fleasion proxy listening on 127.0.0.1:%d (%s)', self.port, mode)
 
         try:
@@ -1778,7 +1792,7 @@ class FleasionProxy:
                 self._handle_client,
                 host='::1',
                 port=self.port,
-                ssl=None if self._explicit_proxy else self._server_ssl_ctx,
+                ssl=None if self._explicit_proxy or self._tls_splice else self._server_ssl_ctx,
                 backlog=256,
                 reuse_address=True,
             )
@@ -2094,6 +2108,13 @@ class FleasionProxy:
             pending.action = 'drop'
             pending.event.set()
 
+        if self._splice_keys is not None:
+            self._splice_keys.clear()
+        splice_tasks = list(self._splice_tasks)
+        for task in splice_tasks:
+            task.cancel()
+        await asyncio.gather(*splice_tasks, return_exceptions=True)
+
         servers = list(self._servers)
         if self._server is not None and self._server not in servers:
             servers.append(self._server)
@@ -2369,6 +2390,21 @@ class FleasionProxy:
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        if self._tls_splice:
+            task = asyncio.current_task()
+            if task is not None:
+                self._splice_tasks.add(task)
+            try:
+                if self._explicit_proxy:
+                    await self._handle_explicit_proxy_client(reader, writer)
+                else:
+                    await self._handle_direct_splice(reader, writer)
+            finally:
+                writer.close()
+                if task is not None:
+                    self._splice_tasks.discard(task)
+            return
+
         if self._explicit_proxy:
             await self._handle_explicit_proxy_client(reader, writer)
             return
@@ -2453,7 +2489,113 @@ class FleasionProxy:
             )
             return
 
+        if self._tls_splice:
+            await self._serve_splice(reader, writer, host, port, explicit=True)
+            return
+
         await self._handle_intercepted_explicit_proxy_client(reader, writer, host, log_buffer)
+
+    async def _serve_splice(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        host: str,
+        port: int,
+        *,
+        explicit: bool,
+        client_records: Sequence[bytes] = (),
+    ) -> None:
+        del port
+        log_buffer = _get_log_buffer()
+
+        keys = self._splice_keys
+        if keys is None:
+            msg = 'Splice key provider is unavailable'
+            raise ValueError(msg)
+        result = await self._connector.connect(
+            host, self._endpoints_for_host(host), None, 10.0
+        )
+        if result.reader is None or result.writer is None:
+            if explicit:
+                writer.write(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
+                await writer.drain()
+            writer.close()
+            self._notify_upstream_connect_failure_once(host, result.error or 'TCP tunnel failed')
+            return
+        if explicit:
+            writer.write(b'HTTP/1.1 200 Connection Established\r\nProxy-Agent: Fleasion\r\n\r\n')
+            await writer.drain()
+        connection = SpliceConnection(
+            reader,
+            writer,
+            result.reader,
+            result.writer,
+            keys=keys,
+            client_records=client_records,
+        )
+        try:
+            await connection.run(self, host)
+        except (OSError, ValueError, TimeoutError) as exc:
+            log_buffer.log('Proxy', f'TLS splice failed for {host}: {exc}')
+        finally:
+            result.writer.close()
+            writer.close()
+
+    async def _handle_direct_splice(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        log_buffer = _get_log_buffer()
+
+        try:
+            host, records = await asyncio.wait_for(read_client_hello(reader), timeout=15.0)
+            if host not in self._intercept_hosts:
+                writer.close()
+                return
+            await self._serve_splice(
+                reader, writer, host, 443, explicit=False, client_records=records
+            )
+        except (asyncio.IncompleteReadError, TimeoutError):
+            writer.close()
+        except (OSError, ValueError) as exc:
+            log_buffer.log('Proxy', f'Direct TLS splice failed: {exc}')
+            writer.close()
+
+    async def serve_spliced_session(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        host: str,
+        upstream: UpstreamConnectResult,
+    ) -> None:
+        """Run Fleasion's HTTP/1 or HTTP/2 engine on a spliced TLS stream.
+
+        Parameters
+        ----------
+        reader : asyncio.StreamReader
+            Decrypted client stream reader.
+        writer : asyncio.StreamWriter
+            Client writer encrypting outbound response data.
+        host : str
+            Requested hostname.
+        upstream : UpstreamConnectResult
+            Decrypted upstream connection streams.
+        """
+        first = await asyncio.wait_for(_read_headers_raw(reader), timeout=15.0)
+        if first is None:
+            return
+        if first.first_line == b'PRI * HTTP/2.0':
+            await self.serve_decrypted_h2_session(
+                reader,
+                writer,
+                host,
+                upstream,
+                initial_client_data=first.raw_header_block,
+            )
+            return
+        if b' HTTP/1.' not in first.first_line:
+            msg = 'The negotiated splice application protocol is not HTTP/1.1'
+            raise ValueError(msg)
+        await self._http_session(first, reader, writer, host, upstream=upstream)
 
     async def _handle_intercepted_explicit_proxy_client(
         self,
@@ -2464,6 +2606,10 @@ class FleasionProxy:
     ) -> None:
         writer.write(b'HTTP/1.1 200 Connection Established\r\nProxy-Agent: Fleasion\r\n\r\n')
         await writer.drain()
+
+        if self._server_ssl_ctx is None:
+            writer.close()
+            return
 
         try:
             await writer.start_tls(

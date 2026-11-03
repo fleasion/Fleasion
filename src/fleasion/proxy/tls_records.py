@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import asyncio
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -28,6 +32,130 @@ _TLS_MAX_SEQUENCE = 1 << 64
 _TLS_KEY_UPDATE = b'\x18\x00\x00\x01'
 _TLS_NEW_SESSION_TICKET = 4
 _TLS_MAX_POST_HANDSHAKE_MESSAGE = 256 * 1024
+
+MAX_PLAINTEXT = _TLS_MAX_CONTENT
+MAX_CIPHERTEXT = _TLS_MAX_CIPHERTEXT
+CIPHERS: dict[int, tuple[str, int]] = {
+    0x1301: ('sha256', 16),
+    0x1302: ('sha384', 32),
+    0x1303: ('sha256', 32),
+}
+CHACHA20_SUITE = 0x1303
+
+
+def expand_label(
+    secret: bytes,
+    label: bytes,
+    length: int,
+    hash_name: str,
+    context: bytes = b'',
+) -> bytes:
+    """Derive keys using RFC 8446 HKDF-Expand-Label.
+
+    Parameters
+    ----------
+    secret : bytes
+        Base secret key.
+    label : bytes
+        Label string without 'tls13 ' prefix.
+    length : int
+        Desired output length.
+    hash_name : str
+        Hash algorithm name ('sha256' or 'sha384').
+    context : bytes, optional
+        Handshake transcript hash or context.
+    """
+    full_label = b'tls13 ' + label
+    info = (
+        length.to_bytes(2, 'big')
+        + bytes([len(full_label)])
+        + full_label
+        + bytes([len(context)])
+        + context
+    )
+    algorithm = hashes.SHA384() if hash_name.lower() in {'sha384', 'sha-384'} else hashes.SHA256()
+    return HKDFExpand(
+        algorithm=algorithm,
+        length=length,
+        info=info,
+    ).derive(secret)
+
+
+async def read_record(reader: asyncio.StreamReader) -> bytes:
+    """Read one complete TLS record from an asyncio stream."""
+    header = await reader.readexactly(5)
+    size = int.from_bytes(header[3:5], 'big')
+    if size > MAX_CIPHERTEXT:
+        msg = 'TLS record exceeds the RFC 8446 size limit'
+        raise TLSRecordError(msg)
+    return header + await reader.readexactly(size)
+
+
+class TrafficKeys:
+    """Symmetric TLS 1.3 traffic keys for one connection direction."""
+
+    def __init__(self, secret: bytes, cipher: int) -> None:
+        self.cipher = cipher
+        self.sequence = 0
+        self.secret = secret
+        self.iv = b''
+        self._aead: AESGCM | ChaCha20Poly1305 | None = None
+        self._configure(secret)
+
+    def _configure(self, secret: bytes) -> None:
+        self.secret = secret
+        self.sequence = 0
+        hash_name, key_size = CIPHERS[self.cipher]
+        key = expand_label(secret, b'key', key_size, hash_name)
+        self.iv = expand_label(secret, b'iv', 12, hash_name)
+        self._aead = ChaCha20Poly1305(key) if self.cipher == CHACHA20_SUITE else AESGCM(key)
+
+    def _nonce(self) -> bytes:
+        if self.sequence >= _TLS_MAX_SEQUENCE:
+            msg = 'TLS record sequence exhausted'
+            raise OverflowError(msg)
+        counter = self.sequence.to_bytes(12, 'big')
+        return bytes(a ^ b for a, b in zip(self.iv, counter, strict=True))
+
+    def decrypt(self, record: bytes) -> tuple[int, bytes]:
+        """Decrypt one TLS record and strip padding."""
+        if self._aead is None:
+            msg = 'Traffic keys are not configured'
+            raise RuntimeError(msg)
+        plaintext = self._aead.decrypt(self._nonce(), record[5:], record[:5])
+        end = len(plaintext) - 1
+        while end >= 0 and plaintext[end] == 0:
+            end -= 1
+        if (
+            end < 0
+            or plaintext[end]
+            not in {_TLS_INNER_ALERT, _TLS_INNER_HANDSHAKE, _TLS_INNER_APPLICATION_DATA}
+        ):
+            msg = 'Invalid TLS inner content type'
+            raise TLSRecordError(msg)
+        self.sequence += 1
+        return plaintext[end], plaintext[:end]
+
+    def encrypt(self, content: bytes, content_type: int = 23, padding: int = 0) -> bytes:
+        """Encrypt content into a framed TLSCiphertext record."""
+        if len(content) + padding > MAX_PLAINTEXT:
+            msg = 'TLS plaintext exceeds the record size limit'
+            raise TLSRecordError(msg)
+        if self._aead is None:
+            msg = 'Traffic keys are not configured'
+            raise RuntimeError(msg)
+        plaintext = content + bytes([content_type]) + bytes(padding)
+        header = b'\x17\x03\x03' + (len(plaintext) + 16).to_bytes(2, 'big')
+        ciphertext = self._aead.encrypt(self._nonce(), plaintext, header)
+        self.sequence += 1
+        return header + ciphertext
+
+    def update(self) -> None:
+        """Derive next generation traffic secret."""
+        hash_name, _ = CIPHERS[self.cipher]
+        size = 48 if hash_name == 'sha384' else 32
+        secret = expand_label(self.secret, b'traffic upd', size, hash_name)
+        self._configure(secret)
 
 
 class TLSRecordError(ValueError):

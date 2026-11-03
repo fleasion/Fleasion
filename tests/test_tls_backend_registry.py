@@ -25,7 +25,12 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.parametrize("backend_id", list(BackendId))
-def test_platform_placeholders_remain_disabled(backend_id: BackendId) -> None:
+def test_platform_placeholders_remain_disabled(
+    backend_id: BackendId, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fleasion.proxy.tls_backends.rosemary.find_rosemary_pid", lambda: None)
+    monkeypatch.setattr("fleasion.proxy.tls_backends.windows.find_roblox_pid", lambda: None)
+
     async def run() -> None:
         backend = create_backend(backend_id, community_client="cordial")
         probe = backend.probe()
@@ -42,7 +47,12 @@ def test_platform_placeholders_remain_disabled(backend_id: BackendId) -> None:
     asyncio.run(run())
 
 
-def test_all_five_backend_slots_have_explicit_status() -> None:
+def test_all_five_backend_slots_have_explicit_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("fleasion.proxy.tls_backends.rosemary.find_rosemary_pid", lambda: None)
+    monkeypatch.setattr("fleasion.proxy.tls_backends.windows.find_roblox_pid", lambda: None)
+
     probes = backend_probes()
     assert len(probes) == 5
     assert {probe.backend for probe in probes} == set(BackendId)

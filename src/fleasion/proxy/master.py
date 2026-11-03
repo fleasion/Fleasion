@@ -4500,6 +4500,22 @@ class ProxyMaster:
     def _use_env_proxy_mode(self) -> bool:
         return str(getattr(self.config_manager, 'proxy_mode', 'hosts') or 'hosts') == 'env'
 
+    def _use_splice_transport(self) -> bool:
+        splice_env = os.environ.get('FLEASION_SPLICE', '1').strip().lower()
+        if splice_env in {'0', 'false', 'no', 'off'}:
+            return False
+        if IS_WINDOWS:
+            return True
+        if IS_LINUX:
+            if splice_env == 'rosemary' or os.environ.get('FLEASION_SPLICE_BACKEND') == 'rosemary':
+                return True
+            find_rosemary_pid = cast(
+                'Callable[[], int | None]',
+                _lazy_attr('fleasion.proxy.rosemary_keys', 'find_rosemary_pid'),
+            )
+            return find_rosemary_pid() is not None
+        return False
+
     def can_live_switch_to_hosts(self) -> bool:
         """Return whether this process has a safe hosts-mode privilege path."""
         if IS_WINDOWS:
@@ -6266,6 +6282,7 @@ class ProxyMaster:
             manual_socks5_proxy=manual_socks5_proxy,
             wire_preserving_passthrough=self._effective_wire_preserving_passthrough(),
             explicit_proxy=env_proxy_mode,
+            tls_splice=self._use_splice_transport(),
             intercept_hosts=active_hosts,
             intercept_all_hosts=getattr(self, '_env_proxy_intercept_all', False),
             intercept_excluded_hosts=env_proxy_intercept_excluded_hosts,
