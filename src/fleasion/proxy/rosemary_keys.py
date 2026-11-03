@@ -10,6 +10,7 @@ import hmac
 import logging
 import struct
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,7 +18,6 @@ from .tls_records import expand_label
 
 if TYPE_CHECKING:
     import io
-    import threading
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,28 @@ TLS13 = 0x304
 MIN_DISTINCT_BYTES = 20
 SHA256_SIZE = 32
 CHUNK_SIZE = 4 * 1024 * 1024
+_MAX_HINTED_PIDS = 8
+_MAX_HINTED_REGIONS = 8
+_region_hints: dict[int, list[tuple[int, int]]] = {}
+_region_hints_lock = threading.Lock()
+
+
+def _prioritize_regions(pid: int, regions: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    with _region_hints_lock:
+        preferred = _region_hints.get(pid, ())
+        active = set(regions)
+        ordered = [region for region in preferred if region in active]
+    seen = set(ordered)
+    return ordered + [region for region in regions if region not in seen]
+
+
+def _remember_region(pid: int, region: tuple[int, int]) -> None:
+    with _region_hints_lock:
+        previous = _region_hints.pop(pid, ())
+        remembered = [region, *(entry for entry in previous if entry != region)]
+        _region_hints[pid] = remembered[:_MAX_HINTED_REGIONS]
+        if len(_region_hints) > _MAX_HINTED_PIDS:
+            _region_hints.pop(next(iter(_region_hints)))
 
 
 def find_rosemary_pid() -> int | None:
@@ -261,6 +283,40 @@ def _scan_region(
     return False
 
 
+def _scan_ordered_regions(
+    mem: io.BufferedReader,
+    pid: int,
+    *,
+    needle: bytes,
+    field_offset: int,
+    module_base: int,
+    module_end: int,
+    client_random: str | None,
+    stop: threading.Event | None,
+    found: SecretMap,
+) -> SecretMap:
+    for region in _prioritize_regions(pid, _regions(pid)):
+        start, size = region
+        previously_found = len(found)
+        matched = _scan_region(
+            mem,
+            start,
+            size,
+            needle=needle,
+            field_offset=field_offset,
+            module_base=module_base,
+            module_end=module_end,
+            client_random=client_random,
+            stop=stop,
+            found=found,
+        )
+        if len(found) > previously_found:
+            _remember_region(pid, region)
+        if matched:
+            break
+    return found
+
+
 def scan(
     pid: int,
     *,
@@ -295,28 +351,20 @@ def scan(
     needle = wanted or b'\x04\x03\x00\x00'
     field_offset = 0x188 if wanted is not None else 0x48
     found: SecretMap = {}
-
     module_base, module_end = _module_bounds(pid)
-
     mem_path = Path(f'/proc/{pid}/mem')
     try:
         with mem_path.open('rb') as mem:
-            for start, size in _regions(pid):
-                matched = _scan_region(
-                    mem,
-                    start,
-                    size,
-                    needle=needle,
-                    field_offset=field_offset,
-                    module_base=module_base,
-                    module_end=module_end,
-                    client_random=client_random,
-                    stop=stop,
-                    found=found,
-                )
-                if matched:
-                    return found
+            return _scan_ordered_regions(
+                mem,
+                pid,
+                needle=needle,
+                field_offset=field_offset,
+                module_base=module_base,
+                module_end=module_end,
+                client_random=client_random,
+                stop=stop,
+                found=found,
+            )
     except (OSError, PermissionError, ProcessLookupError):
         return found
-
-    return found
