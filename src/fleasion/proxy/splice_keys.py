@@ -136,17 +136,22 @@ class KeyProvider:
             async with self._scan_slots:
                 if self._stop.is_set():
                     return
+                scan_started = time.monotonic()
                 found = await asyncio.to_thread(self._read, client_random)
+                scan_ended = time.monotonic()
                 if not self._stop.is_set():
                     if len(self._keys) >= MAX_CACHED_CONNECTIONS:
                         self._keys.clear()
                     self._keys.update(found)
-                elapsed = time.monotonic() - started
+                elapsed = scan_ended - started
                 if elapsed >= 1.0:
                     log_buffer.log(
                         'TLS',
                         f'Slow TLS key lookup: client={self.linux_client_key or "default"} '
-                        f'elapsed_ms={int(elapsed * 1000)} found={bool(found)}',
+                        f'elapsed_ms={int(elapsed * 1000)} '
+                        f'queue_ms={int((scan_started - started) * 1000)} '
+                        f'scan_ms={int((scan_ended - scan_started) * 1000)} '
+                        f'found={client_random in found}',
                     )
         finally:
             if len(self._last_refresh) >= MAX_CACHED_CONNECTIONS:
