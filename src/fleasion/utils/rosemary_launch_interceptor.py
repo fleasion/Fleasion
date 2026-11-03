@@ -1,8 +1,6 @@
-"""Automatically replay new Nutmeg/Rosemary Player launches through Fleasion.
+"""Intercept unproxied direct Rosemary Player launches without touching Nutmeg.
 
-Only a new Player process (never Studio, helpers, or an existing session) may
-be stopped. Capture all launch inputs before sending a pidfd-targeted signal.
-The original Nutmeg updater and URI handler are not changed.
+Nutmeg-launched Player processes are never interrupted or restarted.
 """
 
 from __future__ import annotations
@@ -12,7 +10,6 @@ import signal
 import stat
 import subprocess
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,7 +24,6 @@ _MAX_CMDLINE_BYTES = 128 * 1024
 _MAX_ENV_BYTES = 512 * 1024
 _POLL_SECONDS = 0.12
 _REPLAY_MARKER = 'FLEASION_ROSEMARY_ENV_REPLAY'
-_NUTMEG_SETTLE_SECONDS = 5.6
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +65,24 @@ def _nutmeg_stdout_log(proc: Path, home: Path) -> Path | None:
         return None
     else:
         return path
+
+
+def _launched_by_nutmeg(proc: Path) -> bool:
+    """Recognize Nutmeg's direct child even when its log path is customized."""
+    try:
+        status = (proc / 'status').read_text(encoding='utf-8')
+        parent = next(
+            int(line.split(':', 1)[1].strip())
+            for line in status.splitlines()
+            if line.startswith('PPid:')
+        )
+        command = (proc.parent / str(parent) / 'cmdline').read_bytes().split(b'\0')
+        names = [Path(part.decode('utf-8', errors='replace')).name for part in command if part]
+    except (OSError, ValueError, StopIteration):
+        return False
+    return 'nutmeg' in names or any(
+        names[i:i + 2] == ['-m', 'nutmeg'] for i in range(len(names) - 1)
+    )
 
 
 def capture_rosemary_launch(  # ruff: ignore[too-many-return-statements]
@@ -136,20 +150,6 @@ def capture_rosemary_launch(  # ruff: ignore[too-many-return-statements]
     )
 
 
-def _nutmeg_settle_delay(snapshot: RosemaryLaunchSnapshot) -> float:
-    if snapshot.stdout_log is None:
-        return 0.0
-    try:
-        ticks_per_second = float(os.sysconf('SC_CLK_TCK'))
-        if ticks_per_second > 0:
-            process_age = time.monotonic() - snapshot.session.start_ticks / ticks_per_second
-            if process_age >= 0:
-                return max(0.0, _NUTMEG_SETTLE_SECONDS - process_age)
-    except (OSError, ValueError):
-        pass
-    return _NUTMEG_SETTLE_SECONDS
-
-
 def replay_rosemary_launch(  # ruff: ignore[too-many-return-statements]
     snapshot: RosemaryLaunchSnapshot,
     *,
@@ -159,63 +159,38 @@ def replay_rosemary_launch(  # ruff: ignore[too-many-return-statements]
     stop: threading.Event | None = None,
 ) -> bool:
     """Stop exactly one unchanged Player PID, then replay its captured launch."""
-    if not proxy_url.startswith('http://127.0.0.1:'):
+    if (
+        not proxy_url.startswith('http://127.0.0.1:')
+        or snapshot.stdout_log is not None
+        or _launched_by_nutmeg(proc_root / str(snapshot.session.pid))
+    ):
+        return False
+    if stop is not None and stop.is_set():
         return False
     session = snapshot.session
     proc = proc_root / str(session.pid)
     try:
         fd = os.pidfd_open(session.pid, 0)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         log_buffer.log('Launcher', 'Rosemary replay skipped: kernel pidfd unavailable')
         return False
-    suspended = False
-    try:  # ruff: ignore[too-many-statements-in-try-clause]
-        if (
-            read_rosemary_session(proc) != session
-            or proc.stat().st_uid != os.getuid()
-        ):
+    try:
+        if read_rosemary_session(proc) != session or proc.stat().st_uid != os.getuid():
             return False
         if not hasattr(signal, 'pidfd_send_signal'):
             return False
-        settle_delay = _nutmeg_settle_delay(snapshot)
-        if settle_delay > 0:
-            # Nutmeg considers SIGKILL during its first five seconds a startup
-            # failure. Suspend the original process during the grace period so
-            # it cannot make unproxied requests, then replay it after Nutmeg's
-            # monitor has released the child without showing an error.
-            signal.pidfd_send_signal(fd, signal.SIGSTOP)
-            suspended = True
-            interrupted = (
-                stop.wait(settle_delay)
-                if stop is not None
-                else threading.Event().wait(settle_delay)
-            )
-            if interrupted or read_rosemary_session(proc) != session:
-                return False
-        output = None
-        if snapshot.stdout_log is not None:
-            # Opening before termination preserves the original Nutmeg log.
-            try:
-                output = snapshot.stdout_log.open('ab', buffering=0)
-            except OSError:
-                output = None
-        try:
-            env = {**snapshot.env, **proxy_environment, _REPLAY_MARKER: '1'}
-            signal.pidfd_send_signal(fd, signal.SIGKILL)
-            suspended = False
-            subprocess.Popen(
-                list(snapshot.argv),
-                executable=str(session.launcher),
-                env=env,
-                cwd=snapshot.cwd,
-                stdin=subprocess.DEVNULL,
-                stdout=output if output is not None else subprocess.DEVNULL,
-                stderr=subprocess.STDOUT if output is not None else subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        finally:
-            if output is not None:
-                output.close()
+        env = {**snapshot.env, **proxy_environment, _REPLAY_MARKER: '1'}
+        signal.pidfd_send_signal(fd, signal.SIGKILL)
+        subprocess.Popen(
+            list(snapshot.argv),
+            executable=str(session.launcher),
+            env=env,
+            cwd=snapshot.cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         log_buffer.log(
             'Launcher',
@@ -223,17 +198,10 @@ def replay_rosemary_launch(  # ruff: ignore[too-many-return-statements]
         )
         return False
     finally:
-        if suspended:
-            # Never leave an original Player frozen if Fleasion shuts down,
-            # the PID identity changes, or another step fails before replay.
-            try:
-                signal.pidfd_send_signal(fd, signal.SIGCONT)
-            except OSError:
-                pass
         os.close(fd)
     log_buffer.log(
         'Launcher',
-        'Replayed Nutmeg/Rosemary Player launch with identical arguments, '
+        'Replayed Rosemary Player launch with identical arguments, '
         'working directory and original environment plus Fleasion proxy routing',
     )
     return True
@@ -280,6 +248,10 @@ class RosemaryLaunchInterceptor:
                 return
             snapshot = capture_rosemary_launch(session, proc_root=self._proc_root)
             if snapshot is None:
+                continue
+            if snapshot.stdout_log is not None or _launched_by_nutmeg(
+                self._proc_root / str(session.pid)
+            ):
                 continue
             if snapshot.env.get(_REPLAY_MARKER) == '1':
                 continue

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
 import contextlib
 
+from . import nutmeg_proxy_override
 from .json_types import as_json_object
 from .logging import log_buffer
 from .metadata import APP_NAME
@@ -152,6 +153,8 @@ SOBER_ASSET_OVERLAY_DIR = SOBER_DATA_DIR / 'asset_overlay'
 SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
 SOBER_CGROUP_MARKER = SOBER_CLIENT.cgroup_marker
 LINUX_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'linux_proxy_override.json'
+NUTMEG_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'nutmeg_proxy_override.json'
+NUTMEG_CONFIG_PATH = CONFIG_DIR.parent / 'nutmeg/config.json'
 # Sober fetches its update/feature manifest before the Roblox engine starts.
 # That bootstrap client uses certificate pinning and does not trust Fleasion's
 # generated CA, so these connections must remain tunneled when the Proxy tab's
@@ -1220,6 +1223,11 @@ def _rosemary_proxy_environment(*, nutmeg_launcher: bool = False) -> dict[str, s
         'all_proxy': proxy_url,
         'NO_PROXY': bypass,
         'no_proxy': bypass,
+        'ROSEMARY_ENVIRON': '\n'.join((
+            os.environ.get('ROSEMARY_ENVIRON', ''),
+            'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+            'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+        )).lstrip('\n'),
     }
 
 
@@ -1337,21 +1345,16 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
 
     if installation.client.runtime in {'rosemary', 'native'}:
         if installation.client.runtime == 'rosemary':
+            if not nutmeg_proxy_override.arm(
+                proxy_url, NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE
+            ):
+                return False
             globals()['_active_rosemary_proxy_url'] = proxy_url
+            log_buffer.log('Launcher', 'Rosemary Env Proxy armed for Nutmeg launches')
         else:
             globals()['_active_mocktail_proxy_url'] = proxy_url
+            log_buffer.log('Launcher', 'Mocktail Env Proxy armed for native Fleasion launches')
         _set_active_linux_proxy_client_key(installation.key)
-        if installation.client.runtime == 'rosemary':
-            log_buffer.log(
-                'Launcher',
-                'Rosemary Env Proxy armed for direct launches and new Nutmeg/desktop Player replays',
-            )
-        else:
-            log_buffer.log(
-                'Launcher',
-                'Mocktail Env Proxy armed for native Fleasion launches; '
-                'other launchers require a process interceptor for inherited routing',
-            )
         return True
 
     proxy_env = _proxy_environment_for_installation(
@@ -1398,11 +1401,15 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
     return True
 
 
-def clear_linux_client_env_proxy_override(*, client_key: str | None = None) -> bool:
+def clear_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-statements]
+    *, client_key: str | None = None
+) -> bool:
     """Clear only the exact client environment names managed by Fleasion."""
     key = client_key or _active_linux_proxy_client_key or _read_linux_proxy_override_state()
     if key is None or key in {'rosemary', 'mocktail'}:
         if key == 'rosemary':
+            if not nutmeg_proxy_override.clear(NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE):
+                return False
             globals()['_active_rosemary_proxy_url'] = None
         elif key == 'mocktail':
             globals()['_active_mocktail_proxy_url'] = None
@@ -1456,6 +1463,8 @@ def recover_stale_linux_client_env_proxy_override() -> bool:
     """Clear a persisted Env Proxy override left by an earlier Fleasion process."""
     if _active_linux_proxy_client_key is not None:
         return True
+    if not nutmeg_proxy_override.clear(NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE):
+        return False
     key = _read_linux_proxy_override_state()
     if key is None:
         return True

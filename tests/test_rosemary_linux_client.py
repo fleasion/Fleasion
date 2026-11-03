@@ -111,6 +111,11 @@ def test_auto_prefers_running_rosemary_over_sober(tmp_path: Path, monkeypatch: p
 
 
 def test_native_proxy_environment_and_launch_are_scoped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config_path = tmp_path / 'nutmeg/config.json'
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('{"extra_env":{}}', encoding='utf-8')
+    monkeypatch.setattr(platform_linux, 'NUTMEG_CONFIG_PATH', config_path)
+    monkeypatch.setattr(platform_linux, 'NUTMEG_PROXY_OVERRIDE_STATE', tmp_path / 'proxy-state.json')
     binary = tmp_path / 'rosemary'
     binary.write_text('bin', encoding='utf-8')
     bundle = _make_bundle(tmp_path)
@@ -132,11 +137,40 @@ def test_native_proxy_environment_and_launch_are_scoped(monkeypatch: pytest.Monk
     assert launches[0][0] == [str(binary), 'run', str(bundle)]
     assert launches[0][1] is not None
     assert launches[0][1]['HTTPS_PROXY'] == 'http://127.0.0.1:9999'
+    assert 'HTTPS_PROXY' in launches[0][1]['ROSEMARY_ENVIRON'].splitlines()
+    import json
+    applied = json.loads(config_path.read_text(encoding='utf-8'))
+    assert applied['extra_env']['HTTPS_PROXY'] == 'http://127.0.0.1:9999'
+    assert 'HTTPS_PROXY' in applied['extra_env']['ROSEMARY_ENVIRON'].splitlines()
     assert platform_linux.launch_as_standard_user(str(bundle / 'Contents/MacOS/RobloxPlayer'))
     assert launches[1][0] == [str(binary), 'run', str(bundle)]
     assert platform_linux.clear_linux_client_env_proxy_override(client_key='rosemary')
+    assert json.loads(config_path.read_text(encoding='utf-8'))['extra_env'] == {}
+    assert not (tmp_path / 'proxy-state.json').exists()
     assert platform_linux.launch_as_standard_user('rosemary')
     assert launches[2][1] == {}
+
+
+def test_rosemary_stale_nutmeg_proxy_override_is_restored_on_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    config_path = tmp_path / 'nutmeg/config.json'
+    state_path = tmp_path / 'fleasion/nutmeg-state.json'
+    config_path.parent.mkdir()
+    config_path.write_text('{"extra_env":{"CUSTOM":"original"}}', encoding='utf-8')
+    original = json.loads(config_path.read_text(encoding='utf-8'))
+    monkeypatch.setattr(platform_linux, 'NUTMEG_CONFIG_PATH', config_path)
+    monkeypatch.setattr(platform_linux, 'NUTMEG_PROXY_OVERRIDE_STATE', state_path)
+    monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', None)
+    from fleasion.utils import nutmeg_proxy_override
+
+    assert nutmeg_proxy_override.arm('http://127.0.0.1:58443', config_path, state_path)
+    assert json.loads(config_path.read_text(encoding='utf-8'))['extra_env']['HTTPS_PROXY']
+    assert platform_linux.recover_stale_linux_client_env_proxy_override()
+    assert json.loads(config_path.read_text(encoding='utf-8')) == original
+    assert not state_path.exists()
 
 
 def test_nutmeg_desktop_launch_routes_uri_and_bypasses_bootstrap(

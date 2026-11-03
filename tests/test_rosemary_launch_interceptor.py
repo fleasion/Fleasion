@@ -197,67 +197,82 @@ def test_watcher_only_replays_when_proxy_is_armed(
 
 
 
-def test_nutmeg_grace_suspends_until_after_settle_before_replay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_nutmeg_launch_is_never_interrupted_or_replayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from dataclasses import replace
 
     root, session = _fixture(tmp_path)
     original = interceptor.capture_rosemary_launch(session, proc_root=root)
     assert original is not None
-    log = tmp_path / 'nutmeg.log'
-    log.write_text('log-before-replay\n')
-    snapshot = replace(original, stdout_log=log)
-    monkeypatch.setattr(interceptor, '_nutmeg_settle_delay', lambda _snapshot: 0.001)
+    snapshot = replace(original, stdout_log=tmp_path / 'nutmeg.log')
     issued: list[int] = []
-    launched: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        interceptor.os, 'pidfd_open', lambda pid, flags: os.open('/dev/null', os.O_RDONLY)
-    )
+    spawned: list[object] = []
+
+    def reject_pidfd(_pid: int, _flags: int) -> int:
+        msg = 'pidfd forbidden'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(interceptor.os, 'pidfd_open', reject_pidfd)
     monkeypatch.setattr(
         interceptor.signal, 'pidfd_send_signal',
-        lambda _fd, signum: issued.append(signum),
+        lambda _fd, sig: issued.append(sig),
     )
     monkeypatch.setattr(
         interceptor.subprocess, 'Popen',
-        lambda _argv, **kw: launched.append(kw) or SimpleNamespace(pid=5555),
+        lambda *args, **kwargs: spawned.append((args, kwargs)),
     )
-    assert interceptor.replay_rosemary_launch(
+    assert not interceptor.replay_rosemary_launch(
         snapshot, proxy_url='http://127.0.0.1:58443',
         proxy_environment={'https_proxy': 'http://127.0.0.1:58443'},
         proc_root=root,
     )
-    assert issued == [interceptor.signal.SIGSTOP, interceptor.signal.SIGKILL]
-    assert len(launched) == 1
-    assert launched[0]['stdout'] is not interceptor.subprocess.DEVNULL
-    assert log.read_text() == 'log-before-replay\n'
+    assert not issued
+    assert not spawned
 
 
-def test_nutmeg_shutdown_during_grace_resumes_original_player(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_watcher_does_not_replay_nutmeg_even_without_proxy_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from dataclasses import replace
+
+    root, _ = _fixture(tmp_path)
+    replays: list[RosemarySession] = []
+    original_capture = interceptor.capture_rosemary_launch
+
+    def capture(session: RosemarySession, **kwargs: object) -> interceptor.RosemaryLaunchSnapshot | None:
+        original = original_capture(session, **kwargs)
+        return None if original is None else replace(original, stdout_log=tmp_path / 'nutmeg.log')
+
+    monkeypatch.setattr(interceptor, 'capture_rosemary_launch', capture)
+    monkeypatch.setattr(
+        interceptor, 'replay_rosemary_launch',
+        lambda snapshot, **_kwargs: replays.append(snapshot.session) or True,
+    )
+    watcher = interceptor.RosemaryLaunchInterceptor(
+        is_armed=lambda: True,
+        proxy_url=lambda: 'http://127.0.0.1:58443',
+        proxy_environment=lambda: {'HTTPS_PROXY': 'http://127.0.0.1:58443'},
+        proc_root=root,
+    )
+    _fixture(tmp_path, pid=4322, suffix='nutmeg')
+    watcher._poll_once()
+    assert not replays
+    watcher.stop()
+
+
+def test_replay_does_not_kill_if_cleanup_is_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import threading
 
     root, session = _fixture(tmp_path)
-    original = interceptor.capture_rosemary_launch(session, proc_root=root)
-    assert original is not None
-    log = tmp_path / 'nutmeg.log'
-    log.write_text('original')
-    snapshot = replace(original, stdout_log=log)
-    monkeypatch.setattr(interceptor, '_nutmeg_settle_delay', lambda _snapshot: 0.01)
-    issued: list[int] = []
-    launches: list[object] = []
-    monkeypatch.setattr(
-        interceptor.os, 'pidfd_open', lambda pid, flags: os.open('/dev/null', os.O_RDONLY)
-    )
+    snapshot = interceptor.capture_rosemary_launch(session, proc_root=root)
+    assert snapshot is not None
+    signals: list[int] = []
     monkeypatch.setattr(
         interceptor.signal, 'pidfd_send_signal',
-        lambda _fd, signum: issued.append(signum),
-    )
-    monkeypatch.setattr(
-        interceptor.subprocess, 'Popen',
-        lambda argv, **kwargs: launches.append((argv, kwargs)),
+        lambda _fd, sig: signals.append(sig),
     )
     stopped = threading.Event()
     stopped.set()
@@ -266,5 +281,31 @@ def test_nutmeg_shutdown_during_grace_resumes_original_player(
         proxy_environment={'https_proxy': 'http://127.0.0.1:58443'},
         proc_root=root, stop=stopped,
     )
-    assert issued == [interceptor.signal.SIGSTOP, interceptor.signal.SIGCONT]
-    assert not launches
+    assert not signals
+
+
+def test_nutmeg_parent_process_is_not_replayed_when_stdout_is_customized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, session = _fixture(tmp_path, pid=7777)
+    proc = root / str(session.pid)
+    (proc / 'status').write_text('Name:\trosemary\nPPid:\t7776\n', encoding='utf-8')
+    (root / '7776').mkdir()
+    (root / '7776/cmdline').write_bytes(
+        b'/home/test/python\0-E\0/home/test/.local/bin/nutmeg\0launch\0'
+    )
+    signals: list[int] = []
+
+    def capture_signal(_fd: int, signal_number: int) -> None:
+        signals.append(signal_number)
+
+    monkeypatch.setattr(interceptor.signal, 'pidfd_send_signal', capture_signal)
+    snapshot = interceptor.capture_rosemary_launch(session, proc_root=root)
+    assert snapshot is not None
+    assert snapshot.stdout_log is None
+    assert not interceptor.replay_rosemary_launch(
+        snapshot, proxy_url='http://127.0.0.1:58443',
+        proxy_environment={'HTTPS_PROXY': 'http://127.0.0.1:58443'},
+        proc_root=root,
+    )
+    assert not signals
