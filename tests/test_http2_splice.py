@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from h2.config import H2Configuration
 from h2.connection import H2Connection
-from h2.events import DataReceived, RequestReceived, StreamEnded
+from h2.events import DataReceived, InformationalResponseReceived, RequestReceived, StreamEnded
 
 from fleasion.proxy.server import FleasionProxy
 from fleasion.proxy.upstream import UpstreamEndpoint
@@ -25,9 +25,10 @@ if TYPE_CHECKING:
 @pytest.mark.parametrize('goaway', [True, False])
 @pytest.mark.parametrize('explicit', [True, False])
 @pytest.mark.parametrize('stream_ids', [(1, 3), (1, 3, 5, 7)])
+@pytest.mark.parametrize('informational', [False, True])
 def test_tls_h2_multiplexed_replacements_and_flow_control(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool, goaway: bool,
-    stream_ids: tuple[int, ...],
+    stream_ids: tuple[int, ...], informational: bool,
 ) -> None:
     host = 'h2-splice.test'
     ca, key = generate_ca(tmp_path)
@@ -60,6 +61,11 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                         )
                     elif isinstance(event, StreamEnded):
                         incoming.append(bytes(bodies.pop(event.stream_id)))
+                        if informational:
+                            connection.send_headers(
+                                event.stream_id,
+                                [(b':status', b'103'), (b'link', b'</static.css>; rel=preload')],
+                            )
                         connection.send_headers(
                             event.stream_id,
                             [(b':status', b'200')]
@@ -77,7 +83,7 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
 
-    def client(port: int) -> dict[int, bytes]:
+    def client(port: int) -> tuple[dict[int, bytes], dict[int, int]]:
         ssl_context = ssl.create_default_context(cafile=str(ca))
         ssl_context.set_alpn_protocols(['h2'])
         with socket.create_connection(('127.0.0.1', port), timeout=10) as raw:
@@ -104,6 +110,7 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                     )
                 offsets = dict.fromkeys(stream_ids, 0)
                 responses = {stream: bytearray() for stream in stream_ids}
+                informational_counts = dict.fromkeys(stream_ids, 0)
                 done: set[int] = set()
                 while len(done) < len(stream_ids):
                     for stream in stream_ids:
@@ -129,9 +136,12 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                             connection.acknowledge_received_data(
                                 event.flow_controlled_length, event.stream_id
                             )
+                        elif isinstance(event, InformationalResponseReceived):
+                            informational_counts[event.stream_id] += 1
                         elif isinstance(event, StreamEnded):
                             done.add(event.stream_id)
-                return {stream: bytes(body) for stream, body in responses.items()}
+                return ({stream: bytes(body) for stream, body in responses.items()},
+                        informational_counts)
 
     async def run() -> None:
         upstream_srv = await asyncio.start_server(server, '127.0.0.1', 0, ssl=context)
@@ -169,8 +179,9 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
         )
         try:
             await proxy.start()
-            responses = await asyncio.wait_for(asyncio.to_thread(client, proxy.port), timeout=15)
+            responses, hints = await asyncio.wait_for(asyncio.to_thread(client, proxy.port), timeout=15)
             assert responses == dict.fromkeys(stream_ids, replacement.encode())
+            assert hints == dict.fromkeys(stream_ids, int(informational))
             assert incoming == [b'rewritten' * 12000] * len(stream_ids)
         finally:
             await proxy.stop()

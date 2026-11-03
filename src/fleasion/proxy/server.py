@@ -1201,7 +1201,11 @@ async def _read_body_raw(  # pyright: ignore[reportUnusedFunction]
 
 
 def _reassemble_raw_response(
-    status_line: bytes, headers: dict[bytes, bytes], body_raw: bytes
+    status_line: bytes,
+    headers: dict[bytes, bytes],
+    body_raw: bytes,
+    *,
+    bodyless: bool = False,
 ) -> bytes:
     """Reconstruct an HTTP response forwarding the ORIGINAL body bytes.
     Strips only hop-by-hop headers but preserves content-encoding and content-length.
@@ -1217,7 +1221,7 @@ def _reassemble_raw_response(
         if k not in hop_by_hop:
             lines.append(k + b': ' + v)
     # Replace/add content-length (body_raw is already dechunked)
-    if b'content-length' not in headers:
+    if not bodyless and b'content-length' not in headers:
         lines.append(b'content-length: ' + str(len(body_raw)).encode())
     return b'\r\n'.join(lines) + b'\r\n\r\n' + body_raw
 
@@ -3253,6 +3257,23 @@ class FleasionProxy:
                         msg = 'Request Host does not match authenticated session host'
                         raise ValueError(msg)
 
+                # The request body must be read before feature processing, so let a
+                # client waiting on Expect: 100-continue begin its upload locally
+                expect_tokens = {
+                    token.strip().lower() for token in req_headers.get(b'expect', b'').split(b',')
+                }
+                try:
+                    declared_body_length = int(req_headers.get(b'content-length', b'0'))
+                except ValueError:
+                    declared_body_length = 0
+                sent_continue_locally = b'100-continue' in expect_tokens and (
+                    declared_body_length > 0
+                    or b'chunked' in req_headers.get(b'transfer-encoding', b'').lower()
+                )
+                if sent_continue_locally:
+                    writer.write(b'HTTP/1.1 100 Continue\r\n\r\n')
+                    await writer.drain()
+
                 # Read request body. payload is dechunked; wire preserves chunk framing.
                 req_body = await _read_body_wire(reader, req_headers)
                 req_body_raw = req_body.payload
@@ -3493,8 +3514,17 @@ class FleasionProxy:
                 except ConnectionResetError, BrokenPipeError, OSError:
                     break
 
-                # Read upstream response
-                resp_result = await _read_headers_raw(cast('asyncio.StreamReader', up_reader))
+                # Forward provisional responses without completing the request
+                while True:
+                    resp_result = await _read_headers_raw(cast('asyncio.StreamReader', up_reader))
+                    if resp_result is None:
+                        break
+                    status_code = _parse_status_code(resp_result.first_line)
+                    if not 100 <= status_code < 200 or status_code == 101:
+                        break
+                    if not (sent_continue_locally and status_code == 100):
+                        writer.write(resp_result.raw_header_block)
+                        await writer.drain()
                 if resp_result is None:
                     break
                 resp_raw = resp_result
@@ -3506,8 +3536,7 @@ class FleasionProxy:
                     and not 100 <= status_code < 200
                 )
                 close_delimited = (
-                    upstream is not None
-                    and response_has_body
+                    response_has_body
                     and b'content-length' not in resp_headers
                     and b'transfer-encoding' not in resp_headers
                 )
@@ -3712,7 +3741,7 @@ class FleasionProxy:
                     outgoing_response = resp_raw.raw_header_block + resp_body.wire
                 else:
                     outgoing_response = _reassemble_raw_response(
-                        resp_first, resp_headers, resp_body_raw
+                        resp_first, resp_headers, resp_body_raw, bodyless=not response_has_body
                     )
                 response_writer.write(outgoing_response)
 
@@ -3745,8 +3774,10 @@ class FleasionProxy:
                         generation=custom_fflag_request_generation,
                     )
 
-                if not _keep_alive(req_first, req_headers) or not _keep_alive(
-                    resp_first, resp_headers
+                if (
+                    close_delimited
+                    or not _keep_alive(req_first, req_headers)
+                    or not _keep_alive(resp_first, resp_headers)
                 ):
                     break
 

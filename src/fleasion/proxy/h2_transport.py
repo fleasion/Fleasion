@@ -235,6 +235,15 @@ class _Peer:
         await self.writer.drain()
         await self._send_body(stream, body)
 
+    async def send_informational(self, stream: int, headers: H2Headers) -> None:
+        async with self.lock:
+            if self.terminated:
+                msg = 'HTTP/2 peer has terminated'
+                raise ConnectionError(msg)
+            self.h2.send_headers(stream, headers, end_stream=False)
+            self.writer.write(self.h2.data_to_send())
+        await self.writer.drain()
+
     async def open_request(
         self,
         headers: H2Headers,
@@ -331,6 +340,8 @@ class H2FeatureBridge:
         request.response_body.clear()
 
     async def _run_request(self, stream: int, request: _Request) -> None:
+        final_response_sent = False
+
         async def send_request(message: bytes) -> None:
             headers, body = _as_http2(message, request=True, host=self.host)
 
@@ -341,9 +352,15 @@ class H2FeatureBridge:
             await self.server.open_request(headers, body, register)
 
         async def send_response(message: bytes) -> None:
+            nonlocal final_response_sent
             method = dict(request.headers).get(b':method')
             headers, body = _as_http2(message, request=False, host=self.host, request_method=method)
-            await self.client.send(stream, headers, body)
+            status = int(dict(headers)[b':status'])
+            if 100 <= status < 200:
+                await self.client.send_informational(stream, headers)
+            else:
+                await self.client.send(stream, headers, body)
+                final_response_sent = True
 
         upstream_writer = _MessageWriter(send_request)
         response_writer = _MessageWriter(send_response)
@@ -373,7 +390,7 @@ class H2FeatureBridge:
                 f'error={type(exc).__name__}',
             )
         finally:
-            if not response_writer.sent:
+            if not final_response_sent:
                 with contextlib.suppress(OSError, H2Error):
                     await self.client.reset(stream)
             if request.upstream_id is not None:
@@ -458,10 +475,9 @@ class H2FeatureBridge:
         for event in await self.server.receive(data):
             if isinstance(event, InformationalResponseReceived):
                 request = self.upstream_requests.get(event.stream_id)
-                if request is not None:
-                    request.response_rejected = True
-                    request.upstream_reader.set_exception(
-                        ConnectionError('HTTP/2 informational responses are not supported')
+                if request is not None and not request.response_rejected:
+                    request.upstream_reader.feed_data(
+                        _as_http1(list(event.headers), b'', request=False)
                     )
             elif isinstance(event, ResponseReceived):
                 request = self.upstream_requests.get(event.stream_id)
