@@ -154,8 +154,16 @@ def _as_http2(
 class _MessageWriter(asyncio.StreamWriter):
     """Convert complete HTTP/1 writes from the feature engine to a callback."""
 
-    def __init__(self, callback: Callable[[bytes], Awaitable[None]]) -> None:
+    def __init__(
+        self,
+        callback: Callable[[bytes], Awaitable[None]],
+        *,
+        reserve: Callable[[int], None],
+        release: Callable[[int], None],
+    ) -> None:
         self._callback = callback
+        self._reserve = reserve
+        self._release = release
         self._buffer = bytearray()
         self._closing = False
         self.sent = False
@@ -164,26 +172,42 @@ class _MessageWriter(asyncio.StreamWriter):
         if self._closing:
             msg = 'Cannot write to a closed HTTP/2 stream adapter'
             raise ConnectionError(msg)
-        self._buffer.extend(data)
-        if len(self._buffer) > _MAX_BUFFERED_BODY:
+        amount = data.nbytes if isinstance(data, memoryview) else len(data)
+        if len(self._buffer) + amount > _MAX_BUFFERED_BODY:
             msg = 'HTTP feature message exceeds HTTP/2 bridge limit'
             raise ValueError(msg)
+        self._reserve(amount)
+        previous = len(self._buffer)
+        try:
+            self._buffer.extend(data)
+        except BaseException:
+            del self._buffer[previous:]
+            self._release(amount)
+            raise
 
     async def drain(self) -> None:
         if self._buffer:
+            amount = len(self._buffer)
             message = bytes(self._buffer)
             self._buffer.clear()
-            await self._callback(message)
-            self.sent = True
+            try:
+                await self._callback(message)
+                self.sent = True
+            finally:
+                self._release(amount)
 
     def close(self) -> None:
-        self._closing = True
+        if not self._closing:
+            self._closing = True
+            amount = len(self._buffer)
+            self._buffer.clear()
+            self._release(amount)
 
     def is_closing(self) -> bool:
         return self._closing
 
     async def wait_closed(self) -> None:
-        self._closing = True
+        self.close()
 
     def __del__(self, _warnings: object = None) -> None:
         # No asyncio transport exists for this StreamWriter adapter
@@ -391,12 +415,26 @@ class H2FeatureBridge:
         self.tasks: set[asyncio.Task[None]] = set()
         self.buffered_request_bytes = 0
         self.buffered_response_bytes = 0
+        self.buffered_output_bytes = 0
 
     def _reserve_body_bytes(self, size: int) -> None:
-        # Enforce a total bridge buffer budget, not 64 MiB per HTTP/2 stream
-        if self.buffered_request_bytes + self.buffered_response_bytes + size > _MAX_BUFFERED_BODY:
+        # Include pending feature-generated messages in the connection-wide budget
+        if (
+            self.buffered_request_bytes
+            + self.buffered_response_bytes
+            + self.buffered_output_bytes
+            + size
+            > _MAX_BUFFERED_BODY
+        ):
             msg = 'HTTP/2 connection body buffer limit exceeded'
             raise ValueError(msg)
+
+    def _reserve_output_bytes(self, size: int) -> None:
+        self._reserve_body_bytes(size)
+        self.buffered_output_bytes += size
+
+    def _release_output_bytes(self, size: int) -> None:
+        self.buffered_output_bytes -= size
 
     def _release_response_body(self, request: _Request) -> None:
         self.buffered_response_bytes -= len(request.response_body) + request.response_held_bytes
@@ -471,8 +509,12 @@ class H2FeatureBridge:
                 await self.client.send(stream, headers, body, trailers=trailers)
                 final_response_sent = True
 
-        upstream_writer = _MessageWriter(send_request)
-        response_writer = _MessageWriter(send_response)
+        upstream_writer = _MessageWriter(
+            send_request, reserve=self._reserve_output_bytes, release=self._release_output_bytes
+        )
+        response_writer = _MessageWriter(
+            send_response, reserve=self._reserve_output_bytes, release=self._release_output_bytes
+        )
         request_reader = asyncio.StreamReader()
         body = bytes(request.body)
         reserved_body_size = len(body)
@@ -511,6 +553,8 @@ class H2FeatureBridge:
                 f'error={type(exc).__name__}',
             )
         finally:
+            upstream_writer.close()
+            response_writer.close()
             self.buffered_request_bytes -= reserved_body_size
             request.body.clear()
             if not final_response_sent:
@@ -753,5 +797,6 @@ class H2FeatureBridge:
                 request.response_body.clear()
             self.buffered_request_bytes = 0
             self.buffered_response_bytes = 0
+            self.buffered_output_bytes = 0
             self.requests.clear()
             self.upstream_requests.clear()

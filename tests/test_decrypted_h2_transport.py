@@ -11,7 +11,10 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from h2.config import H2Configuration
 from h2.connection import H2Connection
-from h2.events import DataReceived, RequestReceived, ResponseReceived, StreamEnded, StreamReset
+from h2.events import (
+    DataReceived, InformationalResponseReceived, RequestReceived, ResponseReceived,
+    StreamEnded, StreamReset,
+)
 
 from fleasion.proxy.server import FleasionProxy
 from fleasion.proxy.tls_backends import (
@@ -742,7 +745,7 @@ def test_h2_bridge_rejects_truncated_upstream_response(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("trailer_direction", ["request", "response", "informational"])
-def test_h2_bridge_rejects_unsupported_trailers(tmp_path: Path, trailer_direction: str) -> None:
+def test_h2_bridge_preserves_informationals_and_guards_trailers(tmp_path: Path, trailer_direction: str) -> None:
     async def run() -> None:
         proxy = _proxy(tmp_path)
         upstream_paths: list[bytes] = []
@@ -826,24 +829,44 @@ def test_h2_bridge_rejects_unsupported_trailers(tmp_path: Path, trailer_directio
             writer.write(h2.data_to_send())
             await writer.drain()
             events: list[str] = []
+            statuses: list[int] = []
+            response_body = bytearray()
 
             async def collect() -> None:
                 while not events:
                     data = await reader.read(65536)
-                    assert data, "HTTP/2 bridge closed before resetting unsupported trailers"
+                    assert data, "HTTP/2 bridge closed before the expected stream outcome"
                     for event in h2.receive_data(data):
-                        if isinstance(event, StreamReset):
+                        if isinstance(event, InformationalResponseReceived):
+                            statuses.append(int(dict(event.headers)[b':status']))
+                        elif isinstance(event, ResponseReceived):
+                            statuses.append(int(dict(event.headers)[b':status']))
+                        elif isinstance(event, DataReceived):
+                            response_body.extend(event.data)
+                            h2.acknowledge_received_data(
+                                event.flow_controlled_length, event.stream_id
+                            )
+                        elif isinstance(event, StreamReset):
                             events.append("reset")
                         elif isinstance(event, StreamEnded):
                             events.append("completed")
                     writer.write(h2.data_to_send())
                     await writer.drain()
 
-            await asyncio.wait_for(collect(), timeout=6)
-            assert events == ["reset"]
-            assert upstream_paths == ([] if trailer_direction == "request" else [b"/with-trailers"])
-            writer.close()
-            await writer.wait_closed()
+            try:
+                await asyncio.wait_for(collect(), timeout=6)
+                if trailer_direction == 'informational':
+                    assert events == ['completed']
+                    assert statuses == [103, 200]
+                    assert bytes(response_body) == b'client-original'
+                else:
+                    assert events == ['reset']
+                assert upstream_paths == (
+                    [] if trailer_direction == 'request' else [b'/with-trailers']
+                )
+            finally:
+                writer.close()
+                await writer.wait_closed()
         finally:
             bridge_server.close()
             upstream_server.close()
@@ -861,6 +884,7 @@ def test_h2_bridge_connection_wide_buffer_budget() -> None:
         bridge = object.__new__(H2FeatureBridge)
         bridge.buffered_request_bytes = 64 * 1024 * 1024 - 10
         bridge.buffered_response_bytes = 8
+        bridge.buffered_output_bytes = 0
         bridge._reserve_body_bytes(2)  # pyright: ignore[reportPrivateUsage]
         with pytest.raises(ValueError, match="connection body buffer limit"):
             bridge._reserve_body_bytes(3)  # pyright: ignore[reportPrivateUsage]
