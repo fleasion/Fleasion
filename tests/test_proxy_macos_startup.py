@@ -1143,6 +1143,78 @@ def test_linux_custom_fflags_wait_for_sober_engine_bootstrap_window(
     assert getattr(proxy, '_desired_intercept_hosts')() == set(proxy_master.BASE_INTERCEPT_HOSTS)
 
 
+def test_sober_native_keylog_arms_first_request_without_engine_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
+    monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
+    monkeypatch.setattr(proxy_master, 'IS_WINDOWS', False)
+
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    setattr(proxy, 'config_manager', SimpleNamespace(settings={}))
+    setattr(proxy, 'username_spoofer', SimpleNamespace(is_enabled=_callback0(lambda: False)))
+    setattr(proxy, 'custom_fflag_modifier', SimpleNamespace(is_enabled=_callback0(lambda: True)))
+    setattr(
+        proxy, '_active_linux_client_installation',
+        SimpleNamespace(
+            key='sober',
+            client=SimpleNamespace(
+                proxy_passthrough_hosts=frozenset({'sober.vinegarhq.org'}),
+                clientsettings_route_delay_seconds=30.0,
+            ),
+        ),
+    )
+    setattr(proxy, '_active_linux_client_key', 'sober')
+    setattr(proxy, '_sober_native_keylog_armed', True)
+
+    assert getattr(proxy, '_desired_intercept_hosts')() == (
+        set(proxy_master.BASE_INTERCEPT_HOSTS) | set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+    )
+    assert getattr(proxy, '_linux_env_proxy_excluded_hosts')() == {'sober.vinegarhq.org'}
+
+    setattr(proxy, '_sober_native_keylog_armed', False)
+    assert getattr(proxy, '_desired_intercept_hosts')() == set(proxy_master.BASE_INTERCEPT_HOSTS)
+    assert getattr(proxy, '_linux_env_proxy_excluded_hosts')() == (
+        {'sober.vinegarhq.org'} | set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+    )
+
+
+def test_sober_native_keylog_failure_retries_safe_delayed_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils.linux_clients import SOBER_CLIENT
+
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    setattr(
+        proxy, '_active_linux_client_installation',
+        SimpleNamespace(key='sober', client=SOBER_CLIENT),
+    )
+    setattr(proxy, '_active_linux_client_key', 'sober')
+    setattr(proxy, '_active_proxy_port', 58443)
+    monkeypatch.setattr(
+        proxy_master.ProxyMaster, '_use_splice_transport', _callback1(lambda _self: True)
+    )
+    monkeypatch.delenv('FLEASION_SPLICE_KEYLOG', raising=False)
+    calls: list[dict[str, object]] = []
+
+    def apply(_url: str, **kwargs: object) -> bool:
+        calls.append(kwargs)
+        return not kwargs.get('sober_native_keylog', False)
+
+    monkeypatch.setattr(
+        'fleasion.utils.platform_linux.set_linux_client_env_proxy_override', apply
+    )
+    assert getattr(proxy, '_arm_linux_env_proxy_override')()
+    assert calls == [
+        {'client_key': 'sober', 'sober_native_keylog': True},
+        {'client_key': 'sober'},
+    ]
+    assert getattr(proxy, '_sober_native_keylog_armed') is False
+    assert set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS) <= getattr(
+        proxy, '_linux_env_proxy_excluded_hosts'
+    )()
+
+
 def test_linux_env_proxy_exclusions_come_from_selected_descriptor() -> None:
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
     setattr(proxy, '_active_linux_client_key', 'sober')
@@ -1186,6 +1258,9 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from fleasion.utils.linux_clients import SOBER_CLIENT
+
+    # Exercise explicit keylog compatibility; native Sober bootstrap is tested separately
+    monkeypatch.setenv('FLEASION_SPLICE_KEYLOG', str(tmp_path / 'explicit-test-keys'))
 
     self_test_hosts: list[set[str]] = []
     override_calls: list[tuple[str, str]] = []

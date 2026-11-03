@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
 import contextlib
 
-from . import nutmeg_proxy_override
+from . import nutmeg_proxy_override, sober_bootstrap_keys
 from .json_types import as_json_object
 from .logging import log_buffer
 from .metadata import APP_NAME
@@ -154,6 +154,7 @@ SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
 SOBER_CGROUP_MARKER = SOBER_CLIENT.cgroup_marker
 LINUX_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'linux_proxy_override.json'
 NUTMEG_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'nutmeg_proxy_override.json'
+SOBER_NATIVE_KEYLOG_OVERRIDE_STATE = CONFIG_DIR / 'sober_native_keylog_override.json'
 NUTMEG_CONFIG_PATH = CONFIG_DIR.parent / 'nutmeg/config.json'
 # Sober fetches its update/feature manifest before the Roblox engine starts.
 # That bootstrap client uses certificate pinning and does not trust Fleasion's
@@ -1319,6 +1320,7 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
     *,
     client_key: str | None = None,
     ca_cert_path: Path | None = None,
+    sober_native_keylog: bool = False,
 ) -> bool:
     """Arm Env Proxy for exactly one selected Linux client."""
     # Retained for call-site compatibility; registered clients currently need
@@ -1369,6 +1371,27 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
             f'Cannot arm {installation.display_name} Env Proxy: flatpak command not found',
         )
         return False
+    keylog_path: Path | None = None
+    if sober_native_keylog and installation.key == SOBER_CLIENT.key:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            previous_override = _standard_user_run(
+                [flatpak, 'override', '--user', '--show', installation.app_id],
+                capture_output=True, text=True, timeout=10,
+            )
+            if previous_override.returncode != 0:
+                log_buffer.log('Launcher', 'Could not inspect prior Sober TLS key-log override')
+                return False
+            keylog_path = sober_bootstrap_keys.native_keylog_path()
+            previous = sober_bootstrap_keys.previous_keylog_override(previous_override.stdout)
+            if not sober_bootstrap_keys.arm(
+                keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE, previous
+            ):
+                log_buffer.log('Launcher', 'Could not prepare private Sober TLS key log')
+                return False
+            proxy_env['SSLKEYLOGFILE'] = str(keylog_path)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log_buffer.log('Launcher', f'Could not prepare Sober TLS key log: {exc}')
+            return False
     try:
         result = _standard_user_run(
             [
@@ -1383,9 +1406,13 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as exc:
+        if keylog_path is not None:
+            sober_bootstrap_keys.clear(keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE)
         log_buffer.log('Launcher', f'Could not arm {installation.display_name} Env Proxy: {exc}')
         return False
     if result.returncode != 0:
+        if keylog_path is not None:
+            sober_bootstrap_keys.clear(keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE)
         detail = (result.stderr or result.stdout).strip()
         log_buffer.log(
             'Launcher',
@@ -1420,6 +1447,13 @@ def clear_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-state
     if installation is None:
         return False
     names = installation.client.proxy_environment_names
+    restoration: str | None = None
+    if key == 'sober':
+        try:
+            restoration = sober_bootstrap_keys.restore_option(SOBER_NATIVE_KEYLOG_OVERRIDE_STATE)
+        except (ValueError, TypeError) as exc:
+            log_buffer.log('Launcher', f'Cannot restore Sober TLS key-log override: {exc}')
+            return False
     flatpak = shutil.which('flatpak')
     if not flatpak:
         log_buffer.log(
@@ -1434,6 +1468,7 @@ def clear_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-state
                 'override',
                 '--user',
                 *(f'--unset-env={name}' for name in names),
+                *([restoration] if restoration is not None else []),
                 installation.app_id,
             ],
             capture_output=True,
@@ -1451,6 +1486,11 @@ def clear_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-state
             + (f': {detail}' if detail else ''),
         )
         return False
+    if key == 'sober' and not sober_bootstrap_keys.clear(
+        sober_bootstrap_keys.native_keylog_path(), SOBER_NATIVE_KEYLOG_OVERRIDE_STATE
+    ):
+        log_buffer.log('Launcher', 'Sober private TLS key log could not be cleaned up')
+        return False
     if _active_linux_proxy_client_key == key:
         _set_active_linux_proxy_client_key(None)
     if _read_linux_proxy_override_state() == key:
@@ -1466,6 +1506,8 @@ def recover_stale_linux_client_env_proxy_override() -> bool:
     if not nutmeg_proxy_override.clear(NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE):
         return False
     key = _read_linux_proxy_override_state()
+    if key is None and SOBER_NATIVE_KEYLOG_OVERRIDE_STATE.exists():
+        key = 'sober'
     if key is None:
         return True
     log_buffer.log(

@@ -4671,7 +4671,7 @@ class ProxyMaster:
         hosts = self._linux_proxy_passthrough_hosts()
         descriptor = self._linux_client_descriptor()
         route_delay = getattr(descriptor, 'clientsettings_route_delay_seconds', 0.0)
-        if route_delay > 0:
+        if route_delay > 0 and not getattr(self, '_sober_native_keylog_armed', False):
             # The first ClientSettings request is made by Sober's pinned
             # bootstrap client, so keep it tunneled until the descriptor's
             # route-arm delay has elapsed.
@@ -4688,13 +4688,28 @@ class ProxyMaster:
             'Callable[..., bool]',
             _lazy_attr('fleasion.utils.platform_linux', 'set_linux_client_env_proxy_override'),
         )
-        armed = set_env_proxy_override(
-            self.roblox_env_proxy_url(),
-            client_key=client_key,
+        native_sober_keylog = (
+            client_key == 'sober'
+            and self._use_splice_transport()
+            and not os.environ.get('FLEASION_SPLICE_KEYLOG')
         )
+        kwargs: dict[str, object] = {'client_key': client_key}
+        if native_sober_keylog:
+            kwargs['sober_native_keylog'] = True
+        armed = set_env_proxy_override(self.roblox_env_proxy_url(), **kwargs)
+        if not armed and native_sober_keylog:
+            # Native key logging can be unavailable on older Flatpak runtimes
+            # Keep the original safe ClientSettings startup bypass in that case
+            log_buffer.log(
+                'Launcher',
+                'Sober native TLS key logging unavailable; using delayed ClientSettings routing',
+            )
+            armed = set_env_proxy_override(self.roblox_env_proxy_url(), client_key=client_key)
+            native_sober_keylog = False
         if armed:
             self._linux_env_proxy_override_client_key = client_key
             self._sober_env_proxy_override_active = client_key == 'sober'
+            self._sober_native_keylog_armed = native_sober_keylog
         return bool(armed)
 
     def _clear_linux_env_proxy_override(self) -> bool:
@@ -4712,6 +4727,7 @@ class ProxyMaster:
         if cleared:
             self._linux_env_proxy_override_client_key = None
             self._sober_env_proxy_override_active = False
+            self._sober_native_keylog_armed = False
         return bool(cleared)
 
     def _cleanup_linux_client_proxy_state(self) -> None:
@@ -5052,6 +5068,8 @@ class ProxyMaster:
                 SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS,
             )
         )
+        if getattr(self, '_sober_native_keylog_armed', False):
+            return True
         if route_delay <= 0:
             return True
         if installation is None:
@@ -5092,6 +5110,8 @@ class ProxyMaster:
                 SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS,
             )
         )
+        if getattr(self, '_sober_native_keylog_armed', False):
+            return
         if (
             not IS_LINUX
             or installation is None
@@ -6617,6 +6637,12 @@ class ProxyMaster:
             self._running = False
             return
         self._active_env_proxy_mode = True
+        if IS_LINUX and getattr(self, '_sober_native_keylog_armed', False):
+            # The native Sober libcurl keylog permits the pinned bootstrap
+            # ClientSettings response to be intercepted on its first fetch.
+            self._set_linux_sober_clientsettings_passthrough(enabled=False)
+            self.refresh_username_spoofer_interception()
+            env_proxy_intercept_excluded_hosts -= CUSTOM_FFLAGS_INTERCEPT_HOSTS
         ready_event = getattr(self, '_env_proxy_ready', None)
         if ready_event is not None:
             ready_event.set()

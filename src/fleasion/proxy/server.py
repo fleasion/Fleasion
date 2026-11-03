@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 from fleasion.utils.json_types import JsonValue, require_json_value
+from fleasion.utils.sober_bootstrap_keys import native_keylog_path
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -1702,7 +1703,13 @@ class FleasionProxy:
         if self._tls_splice:
             keylog = os.environ.get('FLEASION_SPLICE_KEYLOG')
             self._splice_keys = KeyProvider(
-                Path(keylog) if keylog else None, linux_client_key=splice_client_key
+                Path(keylog) if keylog else None,
+                linux_client_key=splice_client_key,
+                sober_native_keylog=(
+                    native_keylog_path()
+                    if not keylog and splice_client_key == 'sober' and os.name == 'posix'
+                    else None
+                ),
             )
         self._intercept_hosts: frozenset[str] = (
             frozenset(intercept_hosts) if intercept_hosts is not None else INTERCEPT_HOSTS

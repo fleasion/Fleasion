@@ -48,25 +48,44 @@ def _parse_keylog_line(line: str, keys: SecretMap) -> None:
 class KeyProvider:
     """Provider for TLS traffic keys via keylog or memory scanner."""
 
-    def __init__(self, keylog: Path | None = None, *, linux_client_key: str | None = None) -> None:
+    def __init__(
+        self,
+        keylog: Path | None = None,
+        *,
+        linux_client_key: str | None = None,
+        sober_native_keylog: Path | None = None,
+    ) -> None:
         self.keylog = keylog
         self.linux_client_key = linux_client_key
+        self.sober_native_keylog = sober_native_keylog
         self._keys: SecretMap = {}
         self._scan_slots = asyncio.Semaphore(2)
         self._inflight: dict[str, asyncio.Task[None]] = {}
         self._last_refresh: dict[str, float] = {}
         self._stop = threading.Event()
 
+    @staticmethod
+    def _read_keylog(path: Path) -> SecretMap:
+        keys: SecretMap = {}
+        try:
+            if path.is_symlink() or path.stat().st_size > 8 * 1024 * 1024:
+                return keys
+            with path.open(encoding='ascii') as source:
+                for line in source:
+                    _parse_keylog_line(line, keys)
+        except (OSError, UnicodeError):
+            pass
+        return keys
+
     def _read(self, client_random: str) -> SecretMap:  # ruff: ignore[too-many-return-statements]
         if self.keylog is not None:
-            keys: SecretMap = {}
-            try:
-                with self.keylog.open(encoding='ascii') as source:
-                    for line in source:
-                        _parse_keylog_line(line, keys)
-            except FileNotFoundError:
-                pass
-            return keys
+            return self._read_keylog(self.keylog)
+        native_keys: SecretMap = {}
+        if sys.platform == 'linux' and self.linux_client_key == 'sober':
+            if self.sober_native_keylog is not None:
+                native_keys = self._read_keylog(self.sober_native_keylog)
+            if client_random in native_keys:
+                return native_keys
         if sys.platform == 'win32':
             pid = find_roblox_pid()
             return scan(pid, stop=self._stop, client_random=client_random) if pid else {}
@@ -82,11 +101,12 @@ class KeyProvider:
                 )
             if self.linux_client_key == 'sober':
                 sober_pid = find_sober_pid()
-                return (
+                android_keys = (
                     scan_sober(sober_pid, stop=self._stop, client_random=client_random)
                     if sober_pid
                     else {}
                 )
+                return {**android_keys, **native_keys}
             if self.linux_client_key == 'rosemary':
                 rosemary_pid = find_rosemary_pid()
                 return (
