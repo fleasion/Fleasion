@@ -24,6 +24,7 @@ from fleasion.proxy.tls_backends import (
 from fleasion.proxy.types import AutoReplaceRule, ModuleInterceptor
 from fleasion.proxy.upstream import UpstreamConnectResult
 from fleasion.utils.certs import generate_ca, generate_multi_host_cert
+from fleasion.utils.logging import log_buffer
 
 if TYPE_CHECKING:
     from fleasion.proxy.addons.cache_scraper import CacheScraper
@@ -416,6 +417,50 @@ def test_cdn_local_mesh_replacement_and_scraping_parity(tmp_path: Path, protocol
         assert calls.cdn[0][2] == payload
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('protocol', ['http/1.1', 'h2'])
+def test_cdn_local_serve_logs_omit_signed_query_parameters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+) -> None:
+    messages: list[str] = []
+
+    def capture(_category: str, message: str) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr(log_buffer, 'log', capture)
+
+    async def run() -> None:
+        payload = b'synthetic-content'
+        replacement = tmp_path / 'replacement.mesh'
+        replacement.write_bytes(payload)
+        calls = AddonCalls()
+        host = 'contentdelivery.roblox.com'
+        path = '/v1/bytes/fixture?__token__=private-signed-url&auth=secret'
+        proxy = _proxy(tmp_path, host, calls, local_file=replacement, scraper=True)
+        response, upstream = await _exchange(
+            proxy,
+            calls,
+            protocol=protocol,
+            host=host,
+            path=path,
+            method='GET',
+        )
+        assert response == payload
+        assert upstream == []
+        assert len(calls.cdn) == 1
+        assert calls.cdn[0][1] == path
+
+    asyncio.run(run())
+    local_logs = [message for message in messages if 'CDN local serve ' in message]
+    assert len(local_logs) == 2
+    assert all('path=/v1/bytes/fixture ' in message for message in local_logs)
+    assert all(
+        '__token__' not in message and 'private-signed-url' not in message for message in local_logs
+    )
+    assert all('auth=secret' not in message for message in local_logs)
 
 
 @pytest.mark.parametrize('protocol', ['http/1.1', 'h2'])

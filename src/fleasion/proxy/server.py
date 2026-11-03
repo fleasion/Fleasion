@@ -3128,9 +3128,10 @@ class FleasionProxy:
                 serve_category = (
                     'TexPackTrace' if serve_path.suffix.lower() in {'.ktx', '.ktx2'} else 'Local'
                 )
+                log_path = path.partition('?')[0].partition('#')[0][:160]
                 log_buffer.log(
                     serve_category,
-                    f'CDN local serve start: host={host} path={path[:160]} '
+                    f'CDN local serve start: host={host} path={log_path} '
                     f'file={serve_path.name} exists={serve_exists} bytes={serve_size}',
                 )
                 response = await asyncio.get_event_loop().run_in_executor(
@@ -3143,7 +3144,7 @@ class FleasionProxy:
                 )
                 log_buffer.log(
                     serve_category,
-                    f'CDN local serve complete: host={host} path={path[:160]} '
+                    f'CDN local serve complete: host={host} path={log_path} '
                     f'file={serve_path.name} status={status_line} response_bytes={len(response)}',
                 )
                 response_writer.write(response)

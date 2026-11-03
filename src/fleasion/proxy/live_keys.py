@@ -11,12 +11,12 @@ import ctypes.wintypes as wt
 import hmac
 import struct
 import sys
+import threading
 from typing import TYPE_CHECKING, Any, cast
 
 from .tls_records import expand_label
 
 if TYPE_CHECKING:
-    import threading
     from collections.abc import Callable, Iterator
 
 type ConnectionSecrets = dict[str, bytes]
@@ -27,6 +27,48 @@ TLS13 = 0x304
 MIN_DISTINCT_BYTES = 20
 SHA256_SIZE = 32
 CHUNK_SIZE = 4 * 1024 * 1024
+_MAX_HINTED_PIDS = 8
+_MAX_HINTED_LOCATIONS = 8
+_scan_hints: dict[int, list[tuple[int, int, int]]] = {}
+_scan_hints_lock = threading.Lock()
+
+
+def _prioritize_regions(pid: int, regions: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    with _scan_hints_lock:
+        hints = tuple(_scan_hints.get(pid, ()))
+    live = set(regions)
+    prioritized = list(
+        dict.fromkeys((start, size) for start, size, _ in hints if (start, size) in live)
+    )
+    seen = set(prioritized)
+    return prioritized + [region for region in regions if region not in seen]
+
+
+def _prioritize_offsets(pid: int, region: tuple[int, int]) -> Iterator[int]:
+    _start, size = region
+    with _scan_hints_lock:
+        hints = tuple(_scan_hints.get(pid, ()))
+    prioritized = list(
+        dict.fromkeys(
+            offset
+            for hint_start, hint_size, offset in hints
+            if (hint_start, hint_size) == region and 0 <= offset < size and offset % CHUNK_SIZE == 0
+        )
+    )
+    yield from prioritized
+    seen = set(prioritized)
+    yield from (offset for offset in range(0, size, CHUNK_SIZE) if offset not in seen)
+
+
+def _remember_scan_location(pid: int, region: tuple[int, int], offset: int) -> None:
+    location = (*region, offset)
+    with _scan_hints_lock:
+        previous = _scan_hints.pop(pid, ())
+        remembered = [location, *(entry for entry in previous if entry != location)]
+        _scan_hints[pid] = remembered[:_MAX_HINTED_LOCATIONS]
+        if len(_scan_hints) > _MAX_HINTED_PIDS:
+            _scan_hints.pop(next(iter(_scan_hints)))
+
 
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ = 0x0010
@@ -365,16 +407,18 @@ def _regions(handle: int) -> Iterator[tuple[int, int]]:
 
 def _candidates(
     handle: int,
+    pid: int,
     stop: threading.Event | None = None,
     client_random: bytes | None = None,
-) -> Iterator[int]:
+) -> Iterator[tuple[int, tuple[int, int], int]]:
     needle = client_random or b'\x04\x03\x00\x00'
     field_offset = 0x184 if client_random is not None else 0x48
     read_buf = ctypes.create_string_buffer(CHUNK_SIZE + len(needle))
     got = ctypes.c_size_t()
 
-    for start, size in _regions(handle):
-        for offset in range(0, size, CHUNK_SIZE):
+    for start, size in _prioritize_regions(pid, list(_regions(handle))):
+        region = (start, size)
+        for offset in _prioritize_offsets(pid, region):
             if stop is not None and stop.is_set():
                 return
             to_read = min(CHUNK_SIZE + len(needle) - 1, size - offset)
@@ -394,12 +438,13 @@ def _candidates(
             while position >= 0:
                 candidate = start + offset + position - field_offset
                 if candidate >= start:
-                    yield candidate
+                    yield candidate, region, offset
                 position = data.find(needle, position + 1)
 
 
 def _scan_handle(
     handle: int,
+    pid: int,
     module_base: int,
     module_end: int,
     *,
@@ -408,7 +453,7 @@ def _scan_handle(
     client_random: str | None,
 ) -> SecretMap:
     found: SecretMap = {}
-    for base in _candidates(handle, stop, wanted):
+    for base, region, offset in _candidates(handle, pid, stop, wanted):
         raw = _read(handle, base, STRUCT_SIZE)
         if len(raw) < STRUCT_SIZE:
             continue
@@ -417,6 +462,7 @@ def _scan_handle(
             validated = validate_openssl_struct(raw)
             if validated is not None:
                 found[validated[0]] = validated[1]
+                _remember_scan_location(pid, region, offset)
                 if client_random is not None and validated[0] == client_random:
                     break
     return found
@@ -466,6 +512,7 @@ def scan(
             return {}
         return _scan_handle(
             handle,
+            pid,
             module_base,
             module_end,
             stop=stop,
