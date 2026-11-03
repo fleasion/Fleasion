@@ -46,14 +46,15 @@ def _parse_keylog_line(line: str, keys: SecretMap) -> None:
 class KeyProvider:
     """Provider for TLS traffic keys via keylog or memory scanner."""
 
-    def __init__(self, keylog: Path | None = None) -> None:
+    def __init__(self, keylog: Path | None = None, *, linux_client_key: str | None = None) -> None:
         self.keylog = keylog
+        self.linux_client_key = linux_client_key
         self._keys: SecretMap = {}
         self._lock = asyncio.Lock()
         self._last_refresh = 0.0
         self._stop = threading.Event()
 
-    def _read(self, client_random: str) -> SecretMap:
+    def _read(self, client_random: str) -> SecretMap:  # ruff: ignore[too-many-return-statements]
         if self.keylog is not None:
             keys: SecretMap = {}
             try:
@@ -67,6 +68,21 @@ class KeyProvider:
             pid = find_roblox_pid()
             return scan(pid, stop=self._stop, client_random=client_random) if pid else {}
         if sys.platform == 'linux':
+            # Never read another client's secrets merely because its process
+            # is running. The active Fleasion selection owns this proxy.
+            if self.linux_client_key == 'mocktail':
+                match = find_android_community_pid('mocktail')
+                return (
+                    scan_android_community(match[0], stop=self._stop, client_random=client_random)
+                    if match
+                    else {}
+                )
+            if self.linux_client_key == 'sober':
+                sober_pid = find_sober_pid()
+                return scan_sober(sober_pid, stop=self._stop, client_random=client_random) if sober_pid else {}
+            if self.linux_client_key == 'rosemary':
+                rosemary_pid = find_rosemary_pid()
+                return scan_rosemary(rosemary_pid, stop=self._stop, client_random=client_random) if rosemary_pid else {}
             rosemary_pid = find_rosemary_pid()
             if rosemary_pid:
                 return scan_rosemary(rosemary_pid, stop=self._stop, client_random=client_random)

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from cryptography.exceptions import InvalidTag
 
+from fleasion.utils.logging import log_buffer
+
 from .tls_records import CIPHERS, MAX_PLAINTEXT, TrafficKeys, read_record
 from .upstream import UpstreamConnectResult
 
@@ -334,6 +336,12 @@ class SpliceConnection:
         """
         async def session() -> None:
             await asyncio.wait_for(self._application_ready.wait(), timeout=20.0)
+            if proxy.mark_splice_decrypted(host):
+                log_buffer.log(
+                    'TLS',
+                    f'Live TLS splice decrypted application traffic for {host}; '
+                    'HTTP interception is active',
+                )
             upstream = UpstreamConnectResult(
                 reader=self.server.plain,
                 writer=self.client.writer,

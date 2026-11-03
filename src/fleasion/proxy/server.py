@@ -68,6 +68,7 @@ from .h2_transport import H2FeatureBridge
 from .roblox_metadata import strip_roblox_metadata
 from .splice import SpliceConnection, read_client_hello
 from .splice_keys import KeyProvider
+from .tls_records import read_record
 from .upstream import (
     AutoConnector,
     BaseUpstreamConnector,
@@ -1567,6 +1568,7 @@ class FleasionProxy:
         intercept_excluded_hosts: Iterable[str] | None = None,
         auto_replace_rules: Iterable[AutoReplaceRule] | None = None,
         tls_splice: bool = False,
+        splice_client_key: str | None = None,
     ) -> None:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
@@ -1592,9 +1594,12 @@ class FleasionProxy:
         self._tls_splice = bool(tls_splice)
         self._splice_keys: KeyProvider | None = None
         self._splice_tasks: set[asyncio.Task[object]] = set()
+        self._splice_decrypted_hosts: set[str] = set()
         if self._tls_splice:
             keylog = os.environ.get('FLEASION_SPLICE_KEYLOG')
-            self._splice_keys = KeyProvider(Path(keylog) if keylog else None)
+            self._splice_keys = KeyProvider(
+                Path(keylog) if keylog else None, linux_client_key=splice_client_key
+            )
         self._intercept_hosts: frozenset[str] = (
             frozenset(intercept_hosts) if intercept_hosts is not None else INTERCEPT_HOSTS
         )
@@ -1809,6 +1814,13 @@ class FleasionProxy:
         if not self._servers:
             return
         await asyncio.gather(*(server.serve_forever() for server in self._servers))
+
+    def mark_splice_decrypted(self, host: str) -> bool:
+        """Mark the first decrypted session for a host for bounded diagnostics."""
+        if host in self._splice_decrypted_hosts:
+            return False
+        self._splice_decrypted_hosts.add(host)
+        return True
 
     def set_module_interceptors(self, interceptors: Iterable[_ModuleInterceptor]) -> None:
         """Set the list of module interceptors for gamejoin traffic hooks."""
@@ -2525,6 +2537,30 @@ class FleasionProxy:
         if explicit:
             writer.write(b'HTTP/1.1 200 Connection Established\r\nProxy-Agent: Fleasion\r\n\r\n')
             await writer.drain()
+            # A CONNECT response only establishes a TCP tunnel. Startup probes
+            # close the tunnel without sending a ClientHello; don't treat their
+            # absence as a 20-second TLS secret-recovery failure.
+            try:
+                first_record = await asyncio.wait_for(read_record(reader), timeout=10.0)
+            except (asyncio.IncompleteReadError, ConnectionResetError, TimeoutError):
+                result.writer.close()
+                writer.close()
+                return
+            except (OSError, ValueError) as exc:
+                log_buffer.log(
+                    'Proxy',
+                    f'Invalid TLS record after CONNECT for {host}: '
+                    f'{type(exc).__name__}: {exc}',
+                )
+                result.writer.close()
+                writer.close()
+                return
+            if first_record[0] != 22:
+                log_buffer.log('Proxy', f'Expected TLS ClientHello after CONNECT for {host}')
+                result.writer.close()
+                writer.close()
+                return
+            client_records = (*client_records, first_record)
         connection = SpliceConnection(
             reader,
             writer,
@@ -2536,7 +2572,9 @@ class FleasionProxy:
         try:
             await connection.run(self, host)
         except (OSError, ValueError, TimeoutError) as exc:
-            log_buffer.log('Proxy', f'TLS splice failed for {host}: {exc}')
+            log_buffer.log(
+                'Proxy', f'TLS splice failed for {host}: {type(exc).__name__}: {exc}'
+            )
         finally:
             result.writer.close()
             writer.close()

@@ -1069,6 +1069,56 @@ def _connect_explicit_proxy_tls_for_self_test(
             return cert if isinstance(cert, dict) else {}
 
 
+def _probe_splice_route(host: str, port: int, *, explicit_proxy: bool) -> None:
+    with socket.create_connection(('127.0.0.1', port), timeout=5.0) as connection:
+        connection.settimeout(15.0)
+        if not explicit_proxy:
+            return
+        connection.sendall(
+            (
+                f'CONNECT {host}:443 HTTP/1.1\r\n'
+                f'Host: {host}:443\r\n'
+                '\r\n'
+            ).encode('ascii')
+        )
+        response = bytearray()
+        while b'\r\n\r\n' not in response and len(response) < 4096:
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            response.extend(chunk)
+        status_line = bytes(response).split(b'\r\n', 1)[0]
+        if status_line != b'HTTP/1.1 200 Connection Established':
+            msg = f'CONNECT route failed: {status_line!r}'
+            raise OSError(msg)
+
+
+def _run_splice_connect_probe_sync(
+    hosts: set[str],
+    port: int,
+    *,
+    explicit_proxy: bool,
+) -> tuple[bool, list[str]]:
+    """Verify splice transport routing, not synthetic client TLS decryption."""
+    failures: list[str] = []
+    for host in sorted(hosts):
+        try:
+            _probe_splice_route(host, port, explicit_proxy=explicit_proxy)
+        except (OSError, RuntimeError, ValueError) as exc:
+            failures.append(f'{host}: {type(exc).__name__}: {exc}')
+    return not failures, failures
+
+
+async def _splice_connect_probe_result(
+    hosts: set[str], port: int, *, explicit_proxy: bool
+) -> tuple[bool, list[str]]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        partial(_run_splice_connect_probe_sync, hosts, port, explicit_proxy=explicit_proxy),
+    )
+
+
 def _cert_dict_san_hosts(cert: _PeerCertificate) -> set[str]:
     names: set[str] = set()
     subject_alt_names = cert.get('subjectAltName', ())
@@ -4287,7 +4337,24 @@ def _patch_running_roblox_ca_file(
     return pre_state, post_state, changed, fleasion_count, current_count
 
 
-def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
+def _splice_ca_patch_unneeded() -> bool:
+    """Avoid legacy certificate modification for the selected live TLS transport."""
+    splice_env = os.environ.get('FLEASION_SPLICE', '1').strip().lower()
+    if splice_env in {'0', 'false', 'no', 'off'}:
+        return False
+    if IS_WINDOWS:
+        return True
+    if IS_MACOS:
+        return False
+    if IS_LINUX:
+        installation = _selected_linux_client_installation()
+        return installation is not None and installation.key in {'rosemary', 'sober', 'mocktail'}
+    return False
+
+
+def check_and_patch_running_roblox_ca(  # ruff: ignore[too-many-return-statements]
+    exe_path: Path,
+) -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
     Called when RobloxPlayerBeta.exe is detected launching at runtime.
@@ -4297,6 +4364,8 @@ def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
     Returns True if the cert bundle needed refresh (Roblox needs a restart).
     Returns False if already launch-healthy or the CA has not been generated.
     """
+    if _splice_ca_patch_unneeded():
+        return False
     ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
     if not ca_cert_path.exists():
         return False  # CA not generated yet - nothing to patch
@@ -4523,27 +4592,25 @@ class ProxyMaster:
         )
         return find_sober_pid() is not None
 
-    def _use_splice_transport(self) -> bool:
+    def _use_splice_transport(self) -> bool:  # ruff: ignore[too-many-return-statements]
         splice_env = os.environ.get('FLEASION_SPLICE', '1').strip().lower()
         if splice_env in {'0', 'false', 'no', 'off'}:
             return False
         if IS_WINDOWS:
             return True
+        if IS_MACOS:
+            return False
         if IS_LINUX:
-            backend_env = os.environ.get('FLEASION_SPLICE_BACKEND', '').strip().lower()
-            if splice_env in {'rosemary', 'cordial', 'nightcap', 'mocktail'} or backend_env:
+            # Proxy startup normally precedes Player startup. Select the splice
+            # backend from the configured client, not only a running process.
+            active_client_key = getattr(self, '_active_linux_client_key', None)
+            if active_client_key in {'rosemary', 'sober', 'mocktail'}:
                 return True
-            find_rosemary_pid = cast(
-                'Callable[[], int | None]',
-                _lazy_attr('fleasion.proxy.rosemary_keys', 'find_rosemary_pid'),
-            )
-            if find_rosemary_pid() is not None:
-                return True
-            find_android_community_pid = cast(
-                'Callable[[str | None], tuple[int, str] | None]',
-                _lazy_attr('fleasion.proxy.android_community_keys', 'find_android_community_pid'),
-            )
-            return find_android_community_pid(None) is not None
+            if active_client_key is None:
+                selected = _selected_linux_client_installation()
+                if selected is not None and selected.key in {'rosemary', 'sober', 'mocktail'}:
+                    return True
+            return self._has_active_linux_splice_target(splice_env)
         return False
 
     def can_live_switch_to_hosts(self) -> bool:
@@ -4712,6 +4779,8 @@ class ProxyMaster:
 
     def ensure_env_proxy_roblox_ca(self, exe_path: Path, *, settle: bool = False) -> _ErrorDetails:
         """Settle, directly repair, and fully verify Player's CA bundle."""
+        if self._use_splice_transport():
+            return {'success': True, 'healthy': True, 'changed': False, 'splice': True}
         if settle:
             time.sleep(_CACERT_LAUNCH_SETTLE_SECONDS)
         before = self.inspect_env_proxy_roblox_ca(
@@ -4739,6 +4808,8 @@ class ProxyMaster:
         duration: float = _CACERT_LAUNCH_POLL_SECONDS,
     ) -> _ErrorDetails:
         """Require CA health for the complete post-launch observation window."""
+        if self._use_splice_transport():
+            return {'success': True, 'healthy': True, 'changed': False, 'splice': True}
         deadline = time.monotonic() + max(0.0, duration)
         unhealthy_samples = 0
         last_state: _CacertInspection = {}
@@ -5436,6 +5507,8 @@ class ProxyMaster:
         overwritten or incomplete, it patches certs, refreshes hosts/upstream IPs,
         and restarts Roblox exactly once for that launch window.
         """
+        if self._use_splice_transport():
+            return
         ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
         if not ca_cert_path.exists():
             return
@@ -5566,10 +5639,15 @@ class ProxyMaster:
         self._windows_proactor_accept_fault = False
         loop_name = type(loop).__name__
         mode = 'env' if env_proxy_mode else 'hosts'
+        splice = self._use_splice_transport()
+        tls_mode = (
+            'transport=live_tls_splice; local_tls_max=not_applicable'
+            if splice
+            else f'transport=legacy_ca_mitm; local_tls_max={PROXY_TLS_MAX_VERSION.name}'
+        )
         runtime = (
             f'Python {platform.python_version()} ({platform.python_implementation()}); '
-            f'OpenSSL={ssl.OPENSSL_VERSION}; '
-            f'local_tls_max={PROXY_TLS_MAX_VERSION.name}; '
+            f'OpenSSL={ssl.OPENSSL_VERSION}; {tls_mode}; '
             f'OS={platform.platform()}; machine={platform.machine() or "unknown"}'
         )
         log_buffer.log(
@@ -5657,6 +5735,29 @@ class ProxyMaster:
         if not hosts:
             self._tls_startup_attempts = []
             return True
+
+        if getattr(self._proxy, '_tls_splice', False):
+            ok, failures = await _splice_connect_probe_result(
+                hosts, port, explicit_proxy=explicit_proxy
+            )
+            self._tls_startup_attempts = [
+                {
+                    'loopback': '127.0.0.1',
+                    'mode': 'splice_connect',
+                    'ok': ok,
+                    'failures': list(failures),
+                }
+            ]
+            if ok:
+                log_buffer.log(
+                    'TLS',
+                    'Startup TLS splice transport probe passed for '
+                    f'{format_count(hosts, "intercept host")} '
+                    '(CONNECT/upstream only; live client traffic is required to test decryption)',
+                )
+            else:
+                _log_tls_self_test_failures(failures)
+            return ok
 
         if not IS_WINDOWS:
             ok = await _run_tls_self_test(hosts, ca_cert_path, port, explicit_proxy=explicit_proxy)
@@ -5986,8 +6087,21 @@ class ProxyMaster:
         certificates: _ProxyCertificateState,
     ) -> _ProxyStartupState | None:
         ca_cert_path = certificates['ca_cert_path']
-        ca_pem = get_ca_pem(ca_cert_path)
         selected_linux_client_key = self._linux_client_key()
+        if self._use_splice_transport():
+            log_buffer.log(
+                'TLS',
+                'TLS splice selected: preserving Roblox cacert.pem and skipping '
+                'CA trust installation; startup will verify transport routing',
+            )
+            return {
+                **certificates,
+                'ca_pem': '',
+                'selected_linux_client_key': selected_linux_client_key,
+                'ca_patch_ok': True,
+            }
+
+        ca_pem = get_ca_pem(ca_cert_path)
         ca_patch_ok, ca_patch_details = _install_ca_into_roblox(
             ca_pem, include_studio=not env_proxy_mode
         )
@@ -6283,6 +6397,7 @@ class ProxyMaster:
             IS_LINUX
             and not env_proxy_mode
             and not use_linux_helper
+            and not self._use_splice_transport()
             and not _ensure_linux_system_trust_for_hosts(active_hosts, startup['ca_cert_path'])
         ):
             self._running = False
@@ -6313,6 +6428,7 @@ class ProxyMaster:
             wire_preserving_passthrough=self._effective_wire_preserving_passthrough(),
             explicit_proxy=env_proxy_mode,
             tls_splice=self._use_splice_transport(),
+            splice_client_key=self._linux_client_key() if IS_LINUX else None,
             intercept_hosts=active_hosts,
             intercept_all_hosts=getattr(self, '_env_proxy_intercept_all', False),
             intercept_excluded_hosts=env_proxy_intercept_excluded_hosts,
@@ -6567,7 +6683,10 @@ class ProxyMaster:
                 'Callable[..., bool]',
                 _lazy_attr('fleasion.utils.linux_proxy_helper', 'start_helper'),
             )
-            require_linux_system_ca = bool(active_hosts & USERNAME_SPOOFER_INTERCEPT_HOSTS)
+            require_linux_system_ca = (
+                not self._use_splice_transport()
+                and bool(active_hosts & USERNAME_SPOOFER_INTERCEPT_HOSTS)
+            )
             if not start_helper(
                 active_hosts,
                 backend_port=listen_port,
@@ -6600,7 +6719,11 @@ class ProxyMaster:
                     self._running = False
                     return
 
-        if IS_MACOS or use_linux_helper:
+        if self._use_splice_transport():
+            relay_ok, relay_failures = await _splice_connect_probe_result(
+                set(active_hosts), PROXY_PORT, explicit_proxy=False
+            )
+        elif IS_MACOS or use_linux_helper:
             relay_ok, relay_failures = await _run_privileged_relay_tls_self_test(
                 set(INTERCEPT_HOSTS),
                 startup['ca_cert_path'],

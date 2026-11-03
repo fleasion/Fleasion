@@ -433,9 +433,11 @@ DEFAULT_SETTINGS: JsonObject = {
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
     'proxy_mode': 'env',
-    # Linux client selection is registry-backed. Sober is the only registered
-    # implementation today; ``auto`` leaves room for future backends.
+    # Linux client selection is registry-backed; auto follows a running Player or desktop handler.
     'linux_client': 'auto',
+    'rosemary_app_path': '',
+    'rosemary_binary_path': '',
+    'rosemary_prefix_path': '',
     'env_proxy_migration_v1_complete': False,
     'lock_roblox_files_read_only': False,
     'read_only_lock_migration_v1_complete': False,
@@ -1171,6 +1173,36 @@ class ConfigManager:
     @linux_client.setter
     def linux_client(self, value: str) -> None:
         self.settings['linux_client'] = _normalise_linux_client(value)
+        self._save_settings()
+
+    @property
+    def rosemary_app_path(self) -> str:
+        """Optional custom macOS Roblox.app path on the Linux host."""
+        return str(self.settings.get('rosemary_app_path', '') or '')
+
+    @rosemary_app_path.setter
+    def rosemary_app_path(self, value: str) -> None:
+        self.settings['rosemary_app_path'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def rosemary_binary_path(self) -> str:
+        """Optional Rosemary executable path on the Linux host."""
+        return str(self.settings.get('rosemary_binary_path', '') or '')
+
+    @rosemary_binary_path.setter
+    def rosemary_binary_path(self, value: str) -> None:
+        self.settings['rosemary_binary_path'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def rosemary_prefix_path(self) -> str:
+        """Optional custom Rosemary guest prefix for cache and login discovery."""
+        return str(self.settings.get('rosemary_prefix_path', '') or '')
+
+    @rosemary_prefix_path.setter
+    def rosemary_prefix_path(self, value: str) -> None:
+        self.settings['rosemary_prefix_path'] = str(value or '')
         self._save_settings()
 
     @property

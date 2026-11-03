@@ -351,11 +351,38 @@ class EnvProxyLifecycleController:
         if not self._enabled():
             return False
 
+        if (
+            sys.platform.startswith('linux')
+            and getattr(self._proxy_master, '_active_linux_client_key', None) == 'rosemary'
+        ):
+            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+                running_rosemary_proxy_status,
+            )
+
+            status = running_rosemary_proxy_status(self._proxy_master.roblox_env_proxy_url())
+            if status != 'configured':
+                self._mark_owned(owned=False)
+                log_buffer.log(
+                    'Launcher',
+                    'Rosemary Player does not have verified Fleasion Env Proxy '
+                    f'routing ({status}); no interception ownership assigned. '
+                    'Launch Player through Fleasion or use Hosts File routing. '
+                    'The running Player will not be restarted automatically.',
+                )
+                return False
+
         self._mark_owned(owned=True)
-        log_buffer.log(
-            'Certificate',
-            'Env Proxy adopted Player ownership assigned; CA monitoring started',
-        )
+        if prepared.get('splice'):
+            log_buffer.log(
+                'TLS',
+                'Env Proxy Player inherited proxy settings; live TLS splice is '
+                'armed, but decrypted traffic has not yet been verified',
+            )
+        else:
+            log_buffer.log(
+                'Certificate',
+                'Env Proxy adopted Player ownership assigned; CA monitoring started',
+            )
         # The initial Xbox/GDK package activation already supplied the
         # environment, so it must not be synthetically relaunched. If the
         # package overwrites cacert.pem later, however, an in-place write loses
@@ -383,10 +410,17 @@ class EnvProxyLifecycleController:
                 # Refresh the token after startup settles. Sober in particular
                 # transitions from its launcher to a long-lived engine process.
                 self._mark_owned(owned=True)
-                log_buffer.log(
-                    'Certificate',
-                    'Env Proxy Player cacert.pem remained healthy through launch',
-                )
+                if health.get('splice'):
+                    log_buffer.log(
+                        'TLS',
+                        'Live TLS splice transport ready; awaiting routed '
+                        'application traffic to verify decryption',
+                    )
+                else:
+                    log_buffer.log(
+                        'Certificate',
+                        'Env Proxy Player cacert.pem remained healthy through launch',
+                    )
                 return True
             if health.get('cancelled'):
                 break

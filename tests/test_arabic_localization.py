@@ -20,7 +20,7 @@ from fleasion.translations.en import ENGLISH
 def test_arabic_catalog_is_complete_and_preserves_markup() -> None:
     """Every source string has a manually authored Arabic counterpart."""
     assert list(ARABIC) == list(ENGLISH)
-    assert len(ARABIC) == 1904
+    assert len(ARABIC) == len(ENGLISH)
 
     for key, english in ENGLISH.items():
         arabic = ARABIC[key]

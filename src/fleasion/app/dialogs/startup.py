@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -370,6 +371,61 @@ def prompt_first_time_startup_options(
         show_desktop_integration_failure(dialog.parentWidget())
 
 
+def prompt_first_linux_client_choice(config_manager: ConfigManager, tray: SystemTray) -> None:
+    """Offer installed Linux Roblox clients without requiring a running Player."""
+    if not sys.platform.startswith('linux'):
+        return
+    from fleasion.utils import platform_linux  # ruff: ignore[import-outside-top-level]
+
+    installed = platform_linux.linux_client_installations()
+    if not installed:
+        msg = QMessageBox(visible_parent_widget())
+        msg.setWindowTitle(tr('settings.linux_client.section'))
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText(tr('settings.linux_client.not_found'))
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+        return
+
+    selected = platform_linux.get_selected_linux_client_installation()
+    choices = [(tr('settings.linux_client.use_auto'), 'auto')]
+    choices.extend((item.display_name, item.key) for item in installed)
+    initial = next(
+        (
+            index
+            for index, (_, key) in enumerate(choices)
+            if key == (selected.key if selected is not None else 'auto')
+        ),
+        0,
+    )
+    choice, accepted = QInputDialog.getItem(
+        visible_parent_widget(),
+        tr('settings.linux_client.section'),
+        tr('settings.linux_client.first_launch'),
+        [name for name, _key in choices],
+        initial,
+        editable=False,
+    )
+    if not accepted:
+        return
+    new_key = next((key for name, key in choices if name == choice), 'auto')
+    if new_key == config_manager.linux_client:
+        return
+    proxy_master = getattr(tray, 'proxy_master', None)
+    running = bool(proxy_master is not None and proxy_master.is_running)
+    if running and proxy_master is not None:
+        proxy_master.stop()
+    mod_manager = getattr(tray, 'mod_manager', None)
+    if mod_manager is not None:
+        mod_manager.restore_all()
+    config_manager.linux_client = new_key
+    platform_linux.set_linux_client_preference(new_key)
+    if mod_manager is not None:
+        mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+    if running and proxy_master is not None:
+        proxy_master.start()
+
+
 def complete_first_time_setup(config_manager: ConfigManager, tray: SystemTray) -> None:
     """Show the required welcome guide and persist the chosen startup settings."""
     top = QApplication.topLevelWidgets()
@@ -407,6 +463,7 @@ def complete_first_time_setup(config_manager: ConfigManager, tray: SystemTray) -
     if icon_path := get_icon_path():
         welcome_box.setWindowIcon(QIcon(str(icon_path)))
     welcome_box.exec()
+    prompt_first_linux_client_choice(config_manager, tray)
     prompt_first_time_startup_options(config_manager, tray)
     config_manager.env_proxy_migration_v1_complete = True
     config_manager.first_time_setup_complete = True

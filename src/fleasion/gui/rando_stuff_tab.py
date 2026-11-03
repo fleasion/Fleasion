@@ -472,6 +472,15 @@ def _linux_client_display_name() -> str:
         return tr('rando.linux_roblox_client')
 
 
+def _is_rosemary_client() -> bool:
+    """Identify native macOS Player launches hosted by Rosemary on Linux."""
+    if not IS_LINUX:
+        return False
+    from fleasion.utils.platform_linux import selected_linux_client_key
+
+    return selected_linux_client_key() == 'rosemary'
+
+
 def _build_roblox_player_uri(
     ticket: str,
     *,
@@ -550,6 +559,9 @@ def _build_auth_ticket_place_uri(
         tracker_id=tracker,
         launch_time_ms=launch_time_ms,
     )
+
+
+build_auth_ticket_place_uri = _build_auth_ticket_place_uri
 
 
 def _build_auth_ticket_private_server_uri(
@@ -1153,7 +1165,12 @@ class RandoStuffTab(QWidget):
         self._import_browser_btn.setVisible(IS_MACOS or IS_LINUX)
         self._launch_acct_btn = QPushButton(tr('ui.gui.rando_stuff_tab.launch'))
         self._launch_acct_btn.clicked.connect(self._on_launch_account)
-        self._switch_acct_btn = QPushButton(tr('ui.gui.rando_stuff_tab.switch_to_selected'))
+        switch_label = (
+            tr('ui.gui.rando_stuff_tab.select_for_launches')
+            if IS_MACOS or _is_rosemary_client()
+            else tr('ui.gui.rando_stuff_tab.switch_to_selected')
+        )
+        self._switch_acct_btn = QPushButton(switch_label)
         self._switch_acct_btn.clicked.connect(self._on_switch_account)
         am_btns.addWidget(self._add_acct_btn)
         am_btns.addWidget(self._import_browser_btn)
@@ -2108,17 +2125,23 @@ class RandoStuffTab(QWidget):
             )
             return
         username = acc.get('username') or tr('rando.account.unknown_parenthesized')
-        if IS_MACOS:
+        if IS_MACOS or _is_rosemary_client():
             self._last_switched_account = acc
             self._set_selected_account(username)
+            platform_name = 'Rosemary' if _is_rosemary_client() else 'macOS'
             log_buffer.log(
                 'accounts',
-                f'Selected account for Fleasion launches on macOS: {username}',
+                f'Selected account for Fleasion launches on {platform_name}: {username}',
+            )
+            message = (
+                tr('ui.gui.rando_stuff_tab.select_for_launches_info')
+                if _is_rosemary_client()
+                else tr('ui.gui.rando_stuff_tab.this_account_will_be_used_for_fleasion')
             )
             QMessageBox.information(
                 self,
                 tr('ui.gui.rando_stuff_tab.account_selected'),
-                tr('ui.gui.rando_stuff_tab.this_account_will_be_used_for_fleasion'),
+                message,
             )
             return
 
@@ -2146,6 +2169,20 @@ class RandoStuffTab(QWidget):
             )
 
         _run_contained_action(_switch, _handle_switch_error)
+
+    def selected_launch_account_cookie(self) -> str | None:
+        """Resolve a deliberately selected account for ticket-based launches."""
+        if not (IS_MACOS or _is_rosemary_client()):
+            return None
+        account = self._last_switched_account
+        if not account:
+            return None
+        encrypted = account.get('cookie', '')
+        cookie = _decrypt_cookie(encrypted) if encrypted else None
+        if not cookie:
+            msg = 'The selected account token is unavailable'
+            raise ValueError(msg)
+        return cookie
 
     def _show_selected_account_launch_failed(self, username: str, reason: str) -> None:
         def _warn() -> None:
@@ -2178,6 +2215,7 @@ class RandoStuffTab(QWidget):
         job_id: str = '',
         subplace_id: str = '',
     ) -> None:
+        ticket_only_launch = IS_MACOS or _is_rosemary_client()
         if IS_WINDOWS:
             _run_contained_action(
                 lambda: self._write_cookie_to_dat(cookie),
@@ -2253,7 +2291,7 @@ class RandoStuffTab(QWidget):
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
-                if IS_MACOS:
+                if ticket_only_launch:
                     self._show_selected_account_launch_failed(
                         username,
                         tr('rando.account.launch_failed.private_server_ticket'),
@@ -2301,7 +2339,7 @@ class RandoStuffTab(QWidget):
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
-                if IS_MACOS:
+                if ticket_only_launch:
                     self._show_selected_account_launch_failed(
                         username,
                         tr('rando.account.launch_failed.place_ticket'),
@@ -2341,12 +2379,12 @@ class RandoStuffTab(QWidget):
                 launch_ok = launch_as_standard_user(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox app URI without elevation')
-                    if IS_MACOS:
+                    if ticket_only_launch:
                         self._show_selected_account_launch_failed(
                             username,
                             tr('rando.account.launch_failed.macos_app_uri'),
                         )
-            elif IS_MACOS:
+            elif ticket_only_launch:
                 self._show_selected_account_launch_failed(
                     username,
                     tr('rando.account.launch_failed.app_ticket'),

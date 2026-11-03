@@ -25,10 +25,14 @@ from fleasion.utils import (
     log_buffer,
     run_in_thread,
 )
+from fleasion.utils.mocktail_launch_interceptor import MocktailLaunchInterceptor
 from fleasion.utils.platform_linux import (
+    mocktail_proxy_environment,
+    rosemary_proxy_environment,
     selected_linux_client_app_id,
     selected_linux_client_display_name,
 )
+from fleasion.utils.rosemary_launch_interceptor import RosemaryLaunchInterceptor
 
 if sys.platform == 'darwin':
     from fleasion.utils.platform_macos import (
@@ -81,12 +85,34 @@ class RobloxExitMonitor(QObject):
         self.was_running = adopted_running
         self._player_was_running = adopted_running
         self._suppress_next_player_exit_cache_delete = False
+        self._mocktail_replay_suppress_until = 0.0
         self._studio_was_running = False
         self._studio_notified = False
         self._studio_suppress_session = False
         self._macos_uri_interceptor: MacOSRobloxUriInterceptor | None = None
         self._macos_plain_launch_lock = threading.Lock()
         self._macos_plain_launches: dict[int, Path] = {}
+        self._rosemary_launch_interceptor: RosemaryLaunchInterceptor | None = None
+        self._mocktail_launch_interceptor: MocktailLaunchInterceptor | None = None
+        if (
+            sys.platform.startswith('linux')
+            and proxy_master is not None
+            and callable(getattr(proxy_master, 'roblox_env_proxy_url', None))
+            and callable(getattr(proxy_master, 'wait_for_env_proxy_ready', None))
+        ):
+            self._rosemary_launch_interceptor = RosemaryLaunchInterceptor(
+                is_armed=self._rosemary_uri_interception_armed,
+                proxy_url=proxy_master.roblox_env_proxy_url,
+                proxy_environment=rosemary_proxy_environment,
+            )
+            self._rosemary_launch_interceptor.start()
+            self._mocktail_launch_interceptor = MocktailLaunchInterceptor(
+                is_armed=self._mocktail_interception_armed,
+                proxy_url=proxy_master.roblox_env_proxy_url,
+                proxy_environment=mocktail_proxy_environment,
+                on_replay=self._note_mocktail_replay,
+            )
+            self._mocktail_launch_interceptor.start()
         macos_env_proxy_enabled = (
             sys.platform == 'darwin'
             and env_lifecycle is not None
@@ -134,6 +160,36 @@ class RobloxExitMonitor(QObject):
         interceptor = self._macos_uri_interceptor
         if interceptor is not None:
             interceptor.stop()
+        if self._rosemary_launch_interceptor is not None:
+            self._rosemary_launch_interceptor.stop()
+        if self._mocktail_launch_interceptor is not None:
+            self._mocktail_launch_interceptor.stop()
+
+    def _rosemary_uri_interception_armed(self) -> bool:
+        """Only replay Player after the Rosemary proxy is actually listening."""
+        master = self._proxy_master
+        if (
+            master is None
+            or self.config_manager.proxy_mode != 'env'
+            or not self.config_manager.proxy_features_enabled
+            or getattr(master, '_active_linux_client_key', None) != 'rosemary'
+        ):
+            return False
+        return master.wait_for_env_proxy_ready(timeout=0.0)
+
+    def _note_mocktail_replay(self) -> None:
+        """Skip automatic cache deletion during deliberate Player replacement."""
+        self._mocktail_replay_suppress_until = time.monotonic() + 4.0
+
+    def _mocktail_interception_armed(self) -> bool:
+        master = self._proxy_master
+        return bool(
+            master is not None
+            and self.config_manager.proxy_mode == 'env'
+            and self.config_manager.proxy_features_enabled
+            and getattr(master, '_active_linux_client_key', None) == 'mocktail'
+            and master.wait_for_env_proxy_ready(timeout=0.0)
+        )
 
     def _macos_uri_interception_armed(self) -> bool:
         """Return whether it is safe to stop and replay a browser URI launch."""
@@ -358,8 +414,13 @@ class RobloxExitMonitor(QObject):
         # Roblox Player: auto cache deletion on exit
         if self.config_manager.auto_delete_cache_on_exit:
             if self.was_running and not is_running:
-                if intentional_player_exit or self._suppress_next_player_exit_cache_delete:
+                if (
+                    intentional_player_exit
+                    or self._suppress_next_player_exit_cache_delete
+                    or time.monotonic() < self._mocktail_replay_suppress_until
+                ):
                     self._suppress_next_player_exit_cache_delete = False
+                    self._mocktail_replay_suppress_until = 0.0
                     log_buffer.log(
                         'Cache',
                         'Roblox exited during env-proxy relaunch; skipping auto cache deletion',

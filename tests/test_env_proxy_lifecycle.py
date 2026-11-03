@@ -319,3 +319,37 @@ def test_intentional_exit_uses_sample_time_not_delayed_monitor_processing() -> N
 
     assert controller.consume_intentional_player_exit(11.0)
     assert not controller.consume_intentional_player_exit(20.0)
+
+
+def test_rosemary_adopted_player_without_proxy_variables_is_not_marked_intercepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils import platform_linux
+
+    controller, proxy, _calls, _running, _identity = _controller(
+        [{'success': True}], adopted=True
+    )
+    setattr(proxy, '_active_linux_client_key', 'rosemary')
+    monkeypatch.setattr(
+        platform_linux, 'running_rosemary_proxy_status', lambda _url: 'missing'
+    )
+    assert not controller.handle_adopted_player_launch(Path('/Roblox/RobloxPlayer'))
+    assert not controller.owns_player
+    assert proxy.monitors == 0
+
+
+def test_rosemary_adopted_player_with_proxy_variables_is_monitored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils import platform_linux
+
+    controller, proxy, _calls, _running, _identity = _controller(
+        [{'success': True, 'healthy': True, 'splice': True}], adopted=False
+    )
+    setattr(proxy, '_active_linux_client_key', 'rosemary')
+    monkeypatch.setattr(
+        platform_linux, 'running_rosemary_proxy_status', lambda _url: 'configured'
+    )
+    assert controller.handle_adopted_player_launch(Path('/Roblox/RobloxPlayer'))
+    assert controller.owns_player
+    assert proxy.monitors == 1

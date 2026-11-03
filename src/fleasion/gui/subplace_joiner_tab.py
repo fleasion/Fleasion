@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import secrets
 import sys
 import threading
 import time
@@ -11,7 +10,7 @@ import traceback
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast, override
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import requests
 from dateutil import parser as _dateutil_parser
@@ -125,6 +124,8 @@ class _RandoTab(Protocol):
     def is_multi_instance_enabled(self) -> bool: ...
 
     def close_singleton_event(self) -> None: ...
+
+    def selected_launch_account_cookie(self) -> str | None: ...
 
 
 class SubplaceJoinerConfig(Protocol):
@@ -1896,7 +1897,20 @@ class SubplaceJoinerTab(QWidget):
             'subplace',
             f'Joining place ID: {place_id}' + (f' with jobId: {job_id}' if job_id else ''),
         )
-        cookie = _get_roblosecurity()
+        selected_cookie: str | None = None
+        if self._rando_tab is not None:
+            selected_account = getattr(self._rando_tab, 'selected_launch_account_cookie', None)
+            if callable(selected_account):
+                try:
+                    value = selected_account()
+                    if value is not None and not isinstance(value, str):
+                        log_buffer.log('subplace', 'Selected account returned an invalid token type')
+                        return
+                    selected_cookie = value
+                except ValueError as exc:
+                    log_buffer.log('subplace', f'Cannot use selected account for join: {exc}')
+                    return
+        cookie = selected_cookie or _get_roblosecurity()
         if root_place_id and int(place_id) != int(root_place_id):
             ok = self._join_root(root_place_id, cookie)
             log_buffer.log(
@@ -1930,20 +1944,10 @@ class SubplaceJoinerTab(QWidget):
                             'Failed to get auth ticket for multi-instance join',
                         )
                         return
-                    tracker_id = 10_000_000_000 + secrets.randbelow(90_000_000_000)
-                    place_launcher_url = (
-                        f'https://www.roblox.com/Game/PlaceLauncher.ashx'
-                        f'?request=RequestGame'
-                        f'&browserTrackerId={tracker_id}'
-                        f'&placeId={place_id}'
-                        f'&isPlayTogetherGame=false'
-                    )
-                    roblox_player_uri = (
-                        f'roblox-player:1+launchmode:play+gameinfo:{ticket}'
-                        f'+launchtime:{int(time.time() * 1000)}'
-                        f'+placelauncherurl:{quote(place_launcher_url, safe="")}'
-                        f'+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us'
-                        f'+channel:+LaunchExp:InApp'
+                    from .rando_stuff_tab import build_auth_ticket_place_uri
+
+                    roblox_player_uri = build_auth_ticket_place_uri(
+                        ticket, str(place_id), job_id=job_id
                     )
                     log_buffer.log(
                         'subplace',
@@ -1954,6 +1958,32 @@ class SubplaceJoinerTab(QWidget):
 
                 threading.Thread(target=_launch_with_uri, daemon=True).start()
                 return
+        if job_id or selected_cookie:
+            self.joining_place = True
+
+            def _launch_ticketed_join() -> None:
+                from .rando_stuff_tab import build_auth_ticket_place_uri, get_auth_ticket
+
+                if not cookie:
+                    log_buffer.log(
+                        'subplace',
+                        'Cannot join a specific job or selected account without a login token',
+                    )
+                    return
+                ticket = get_auth_ticket(cookie)
+                if not ticket:
+                    log_buffer.log(
+                        'subplace',
+                        'Cannot join a specific job or selected account: auth ticket unavailable',
+                    )
+                    return
+                target = build_auth_ticket_place_uri(ticket, str(place_id), job_id=job_id)
+                if not self._launch_roblox_uri(target):
+                    log_buffer.log('subplace', 'Failed to launch authenticated Roblox join URI')
+
+            threading.Thread(target=_launch_ticketed_join, daemon=True).start()
+            return
+
         self.joining_place = True
         log_buffer.log('subplace', f'Launching Roblox deeplink to placeId={place_id}')
         if not self._launch_roblox_uri(f'roblox://experiences/start?placeId={place_id}'):

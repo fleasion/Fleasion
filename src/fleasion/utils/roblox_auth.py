@@ -23,7 +23,12 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 
 from .json_types import JsonObject, as_json_object
-from .linux_clients import SOBER_CLIENT, LinuxClientInstallation
+from .linux_clients import (
+    MOCKTAIL_CLIENT,
+    SOBER_CLIENT,
+    LinuxClientInstallation,
+    running_mocktail_players,
+)
 from .logging import log_buffer
 from .paths import CONFIG_DIR, CONFIG_FILE, LOCAL_APPDATA, USER_HOME
 from .secure_tokens import decrypt_token, encrypt_token
@@ -561,6 +566,8 @@ def _read_linux_cookie_payload(
     path: Path,
     metadata: os.stat_result,
     source_name: str,
+    *,
+    max_bytes: int | None = None,
 ) -> bytes:
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
     fd = os.open(path, flags)
@@ -572,7 +579,14 @@ def _read_linux_cookie_payload(
                 msg,
                 f'{source_name} local cookie store changed while it was being opened.',
             )
-        return handle.read()
+        payload = handle.read(max_bytes + 1 if max_bytes is not None else -1)
+        if max_bytes is not None and len(payload) > max_bytes:
+            msg = 'cookie_store_too_large'
+            raise LinuxAuthWriteError(
+                msg,
+                f'{source_name} local cookie store exceeds the safe read limit.',
+            )
+        return payload
 
 
 def _linux_cookie_file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -734,6 +748,346 @@ class LinuxLocalAuthProvider:
         return True
 
 
+_ROSEMARY_COOKIE_FILENAME = 'com.roblox.RobloxPlayer.cookies.tsv'
+_ROSEMARY_COOKIE_MAX_BYTES = 256 * 1024
+
+
+def _parse_rosemary_cookie_tsv(payload: bytes) -> str | None:
+    """Read only a live, secure Roblox session cookie from Rosemary's TSV store."""
+    try:
+        lines = payload.decode('utf-8').splitlines()
+    except UnicodeDecodeError:
+        return None
+    matched: str | None = None
+    now = time.time()
+    for line in lines:
+        if not line.startswith('.ROBLOSECURITY\t'):
+            continue
+        fields = line.split('\t')
+        if len(fields) != 6:
+            return None
+        name, value, domain, cookie_path, secure, expires = fields
+        try:
+            expiry = int(expires)
+        except ValueError:
+            return None
+        if (
+            name != '.ROBLOSECURITY'
+            or domain.lstrip('.').casefold() != 'roblox.com'
+            or cookie_path != '/'
+            or secure != '1'
+        ):
+            continue
+        if (
+            expiry <= now
+            or not value
+            or len(value) > 4096
+            or any(char.isspace() or char == '\x00' for char in value)
+        ):
+            continue
+        if matched is not None and matched != value:
+            return None
+        matched = value
+    return matched
+
+
+class RosemaryLocalAuthProvider:
+    """Read-only access to Nutmeg's isolated macOS Player cookie store."""
+
+    client_key = 'rosemary'
+    source_name = 'Rosemary'
+
+    def cookie_path(self, installation: LinuxClientInstallation) -> Path:
+        from .linux_clients import rosemary_guest_home  # ruff: ignore[import-outside-top-level]
+
+        prefix = _platform_linux.get_rosemary_prefix_path() if _platform_linux else None
+        guest_home = rosemary_guest_home(installation, prefix_path=prefix)
+        if guest_home is None:
+            return Path('/nonexistent-fleasion-rosemary-cookie-store')
+        return guest_home / 'Library' / 'Cookies' / _ROSEMARY_COOKIE_FILENAME
+
+    def read_roblosecurity(self, path: Path) -> str | None:
+        try:
+            metadata = path.lstat()
+            getuid = getattr(os, 'getuid', None)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or (getuid is not None and metadata.st_uid != getuid())
+                or not 0 < metadata.st_size <= _ROSEMARY_COOKIE_MAX_BYTES
+            ):
+                _log_auth_failure(
+                    f'rosemary-cookie-unsafe:{path}',
+                    f'Refusing unsafe or unexpectedly large Rosemary Player cookie store at {path}',
+                )
+                return None
+            payload = _read_linux_cookie_payload(
+                path, metadata, self.source_name, max_bytes=_ROSEMARY_COOKIE_MAX_BYTES
+            )
+        except FileNotFoundError:
+            return None
+        except (LinuxAuthWriteError, OSError) as exc:
+            _log_auth_failure(
+                f'rosemary-cookie-read:{path}:{type(exc).__name__}',
+                f'Could not safely read Rosemary Player cookies: {type(exc).__name__}',
+            )
+            return None
+        return _parse_rosemary_cookie_tsv(payload)
+
+    def write_roblosecurity(self, path: Path, cookie: str) -> bool:
+        del path, cookie
+        code = 'rosemary_cookie_read_only'
+        raise LinuxAuthWriteError(
+            code,
+            'Fleasion reads Rosemary Player cookies but does not modify the macOS cookie store.',
+        )
+
+
+def _mocktail_auth_error(code: str, message: str) -> LinuxAuthWriteError:
+    return LinuxAuthWriteError(code, message)
+
+
+_MOCKTAIL_MAX_COOKIE_BYTES = 256 * 1024
+_MOCKTAIL_LOCK_FILENAME = '.roblox.cookie.mocktail-writer.lock'
+
+
+def _mocktail_plaintext_store_allowed(path: Path) -> bool:  # ruff: ignore[too-many-return-statements]
+    """Reject plaintext changes whenever Mocktail may prefer secure credentials."""
+    if os.environ.get('MOCKTAIL_USE_LIBSECRET') == '1':
+        return False
+    if os.environ.get('MOCKTAIL_USE_LIBSECRET') not in {None, '', '0'}:
+        return False
+    if os.environ.get('MOCKTAIL_COOKIE_FILE') or os.environ.get('MOCKTAIL_ROBLOX_COOKIES'):
+        return False
+
+    installation = _selected_linux_client_installation()
+    if installation is not None and installation.key == MOCKTAIL_CLIENT.key:
+        config = installation.paths.config_file
+    else:
+        # Recognize only the standard, isolated Mocktail auth layout
+        if path.name != 'roblox.cookie' or path.parent.name != 'auth' or path.parent.parent.name != 'mocktail':
+            return False
+        try:
+            home = path.parents[4]
+        except IndexError:
+            return False
+        config = home / '.config' / 'mocktail' / 'config.yaml'
+    if config.is_symlink():
+        return False
+    if not config.exists():
+        return True
+    try:
+        source = config.read_text(encoding='utf-8')
+    except (OSError, UnicodeError):
+        return False
+    # Fail closed on YAML syntax we cannot identify without a YAML parser
+    values = [
+        re.match(r'^\s*use_libsecret\s*:\s*(true|false|0|1)\s*(?:#.*)?$', line, re.IGNORECASE)
+        for line in source.splitlines()
+        if 'use_libsecret' in line and not line.lstrip().startswith('#')
+    ]
+    if any(match is None for match in values):
+        return False
+    return not any(match is not None and match.group(1).lower() in {'true', '1'} for match in values)
+
+
+def _rewrite_mocktail_cookie_header(payload: bytes, cookie: str) -> bytes:
+    """Change the one Roblox credential, preserving other Mocktail cookies."""
+    if (
+        not cookie or len(cookie) > 4096
+        or any(ord(char) <= 0x20 or ord(char) >= 0x7f or char == ';' for char in cookie)
+    ):
+        code = 'invalid_cookie_value'
+        raise _mocktail_auth_error(
+            code,
+            'The selected Roblox account has an invalid session token.',
+        )
+    try:
+        text = payload.decode('utf-8')
+    except UnicodeDecodeError as exc:
+        code = 'cookie_store_unknown_format'
+        raise _mocktail_auth_error(
+            code,
+            'Mocktail cookie store is not UTF-8; no account data was changed.',
+        ) from exc
+    newline = '\n' if text.endswith('\n') else ''
+    body = text.removesuffix('\n')
+    if not body or '\r' in body or '\n' in body or '\x00' in body:
+        code = 'cookie_store_unknown_format'
+        raise _mocktail_auth_error(
+            code,
+            'Mocktail cookie store has an unexpected format; no account data was changed.',
+        )
+    segments = body.split(';')
+    credential_indices = [
+        index for index, segment in enumerate(segments)
+        if segment.strip().startswith('.ROBLOSECURITY=')
+    ]
+    if len(credential_indices) != 1 or any(
+        '=' not in segment or not segment.split('=', 1)[0].strip()
+        for segment in segments
+    ):
+        code = 'cookie_store_unknown_format'
+        raise _mocktail_auth_error(
+            code,
+            'Mocktail cookie store has missing or ambiguous credentials.',
+        )
+    index = credential_indices[0]
+    prefix, _old_value = segments[index].split('=', 1)
+    segments[index] = f'{prefix}={cookie}'
+    return (';'.join(segments) + newline).encode('utf-8')
+
+
+class MocktailLocalAuthProvider:
+    """Read and safely update Mocktail's plaintext cookie store."""
+
+    client_key = MOCKTAIL_CLIENT.key
+    source_name = MOCKTAIL_CLIENT.display_name
+
+    def cookie_path(self, installation: LinuxClientInstallation) -> Path:
+        return installation.paths.flatpak_root / 'auth' / 'roblox.cookie'
+
+    def read_roblosecurity(self, path: Path) -> str | None:
+        try:
+            if not _mocktail_plaintext_store_allowed(path):
+                return None
+            metadata = _validate_linux_cookie_file(path)
+            payload = _read_linux_cookie_payload(
+                path, metadata, self.source_name, max_bytes=_MOCKTAIL_MAX_COOKIE_BYTES
+            )
+            return _parse_plaintext_roblosecurity(payload)
+        except (LinuxAuthWriteError, OSError) as exc:
+            _log_auth_failure(
+                f'mocktail-cookie-read:{path}:{type(exc).__name__}',
+                f'Could not safely read Mocktail Player cookies: {type(exc).__name__}',
+            )
+            return None
+
+    def write_roblosecurity(self, path: Path, cookie: str) -> bool:
+        """Synchronize with Mocktail's own writer and atomically change the cookie."""
+        import fcntl  # ruff: ignore[import-outside-top-level]
+
+        with _LINUX_AUTH_WRITE_LOCK:
+            if not _mocktail_plaintext_store_allowed(path):
+                code = 'mocktail_secure_or_overridden_auth'
+                raise _mocktail_auth_error(
+                    code,
+                    'Mocktail may be using secure or overridden credentials; the plaintext file was not changed.',
+                )
+            if running_mocktail_players():
+                code = 'mocktail_running'
+                raise _mocktail_auth_error(
+                    code,
+                    'Close Mocktail before switching its saved account.',
+                )
+            parent = path.parent
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
+                directory_info = parent.lstat()
+                if (
+                    not stat.S_ISDIR(directory_info.st_mode)
+                    or directory_info.st_uid != os.getuid()
+                    or directory_info.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+                ):
+                    code = 'cookie_store_unsafe_path'
+                    raise _mocktail_auth_error(
+                        code,
+                        'Mocktail auth directory is not private.',
+                    )
+                metadata = _validate_linux_cookie_file(path)
+                if not 0 < metadata.st_size <= _MOCKTAIL_MAX_COOKIE_BYTES:
+                    code = 'cookie_store_too_large'
+                    raise _mocktail_auth_error(
+                        code,
+                        'Mocktail cookie file is empty or unexpectedly large.',
+                    )
+                flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+                with contextlib.ExitStack() as stack:
+                    dir_fd = os.open(parent, flags)
+                    stack.callback(os.close, dir_fd)
+                    opened_dir = os.fstat(dir_fd)
+                    if (opened_dir.st_dev, opened_dir.st_ino) != (
+                        directory_info.st_dev, directory_info.st_ino
+                    ):
+                        code = 'cookie_store_changed_during_write'
+                        raise _mocktail_auth_error(
+                            code,
+                            'Mocktail auth directory changed during account switching.',
+                        )
+                    lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
+                    lock_fd = os.open(_MOCKTAIL_LOCK_FILENAME, lock_flags, 0o600, dir_fd=dir_fd)
+                    stack.callback(os.close, lock_fd)
+                    lock_info = os.fstat(lock_fd)
+                    if (
+                        not stat.S_ISREG(lock_info.st_mode)
+                        or lock_info.st_uid != os.getuid()
+                        or lock_info.st_nlink != 1
+                        or lock_info.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+                    ):
+                        code = 'cookie_store_unsafe_path'
+                        raise _mocktail_auth_error(
+                            code,
+                            'Mocktail cookie writer lock is unsafe.',
+                        )
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError as exc:
+                        code = 'cookie_store_busy'
+                        raise _mocktail_auth_error(
+                            code,
+                            'Mocktail is updating its login cookie; retry after it finishes.',
+                        ) from exc
+                    file_fd = os.open(
+                        path.name, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0), dir_fd=dir_fd
+                    )
+                    stack.callback(os.close, file_fd)
+                    try:
+                        fcntl.flock(file_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError as exc:
+                        code = 'cookie_store_busy'
+                        raise _mocktail_auth_error(
+                            code, 'Mocktail login data is currently in use.'
+                        ) from exc
+                    opened = os.fstat(file_fd)
+                    if _linux_cookie_write_identity(opened) != _linux_cookie_write_identity(metadata):
+                        code = 'cookie_store_changed_during_write'
+                        raise _mocktail_auth_error(
+                            code,
+                            'Mocktail cookie file changed before switching.',
+                        )
+                    payload = os.read(file_fd, _MOCKTAIL_MAX_COOKIE_BYTES + 1)
+                    if len(payload) != opened.st_size or len(payload) > _MOCKTAIL_MAX_COOKIE_BYTES:
+                        code = 'cookie_store_too_large'
+                        raise _mocktail_auth_error(
+                            code,
+                            'Mocktail cookie file exceeds the safe write limit.',
+                        )
+                    updated = _rewrite_mocktail_cookie_header(payload, cookie)
+                    if len(updated) > _MOCKTAIL_MAX_COOKIE_BYTES:
+                        code = 'cookie_store_too_large'
+                        raise _mocktail_auth_error(code, 'Updated Mocktail cookie data is too large.')
+                    if running_mocktail_players():
+                        code = 'mocktail_running'
+                        raise _mocktail_auth_error(
+                            code,
+                            'Mocktail started while switching; account data was not changed.',
+                        )
+                    _atomic_replace_linux_cookie_file(path, updated, opened)
+            except LinuxAuthWriteError as exc:
+                if 'Sober' in str(exc):
+                    raise LinuxAuthWriteError(exc.code, str(exc).replace('Sober', 'Mocktail')) from exc
+                raise
+            except OSError as exc:
+                error = _linux_auth_os_error(exc)
+                raise LinuxAuthWriteError(error.code, str(error).replace('Sober', 'Mocktail')) from exc
+        return True
+
+
+MOCKTAIL_LOCAL_AUTH_PROVIDER = MocktailLocalAuthProvider()
+
+
+ROSEMARY_LOCAL_AUTH_PROVIDER = RosemaryLocalAuthProvider()
+
+
 SOBER_LOCAL_AUTH_PROVIDER = LinuxLocalAuthProvider(
     client_key=SOBER_CLIENT.key,
     source_name=SOBER_CLIENT.display_name,
@@ -741,8 +1095,14 @@ SOBER_LOCAL_AUTH_PROVIDER = LinuxLocalAuthProvider(
     parse_payload=_parse_plaintext_roblosecurity,
     config_relative_path=_SOBER_CONFIG_RELATIVE_PATH,
 )
-LINUX_LOCAL_AUTH_PROVIDERS_BY_KEY: Mapping[str, LinuxLocalAuthProvider] = MappingProxyType(
-    {SOBER_LOCAL_AUTH_PROVIDER.client_key: SOBER_LOCAL_AUTH_PROVIDER}
+LINUX_LOCAL_AUTH_PROVIDERS_BY_KEY: Mapping[
+    str, LinuxLocalAuthProvider | RosemaryLocalAuthProvider | MocktailLocalAuthProvider
+] = MappingProxyType(
+    {
+        SOBER_LOCAL_AUTH_PROVIDER.client_key: SOBER_LOCAL_AUTH_PROVIDER,
+        ROSEMARY_LOCAL_AUTH_PROVIDER.client_key: ROSEMARY_LOCAL_AUTH_PROVIDER,
+        MOCKTAIL_LOCAL_AUTH_PROVIDER.client_key: MOCKTAIL_LOCAL_AUTH_PROVIDER,
+    }
 )
 
 
@@ -811,7 +1171,7 @@ def _selected_linux_client_installation() -> LinuxClientInstallation | None:
     return _platform_linux.get_selected_linux_client_installation()
 
 
-def _selected_linux_local_auth_candidate() -> tuple[LinuxLocalAuthProvider, Path] | None:
+def _selected_linux_local_auth_candidate() -> tuple[LinuxLocalAuthProvider | RosemaryLocalAuthProvider | MocktailLocalAuthProvider, Path] | None:
     """Return the selected client's opt-in local auth provider and path."""
     try:
         installation = _selected_linux_client_installation()
@@ -1787,9 +2147,10 @@ def get_roblosecurity(
     if browser_cookie:
         return browser_cookie
 
+    selected_candidate = _selected_linux_local_auth_candidate() if sys.platform.startswith('linux') else None
     failure_details: dict[str, object] = {
         'local_appdata': str(LOCAL_APPDATA),
-        'default_cookie_path': str(ROBLOX_COOKIES_PATH),
+        'default_cookie_path': str(selected_candidate[1] if selected_candidate else ROBLOX_COOKIES_PATH),
         'userprofile': os.environ.get('USERPROFILE') or '',
         'username': os.environ.get('USERNAME') or '',
         'home': str(USER_HOME),
@@ -1838,8 +2199,8 @@ def set_roblosecurity(cookie: str, path: Path | None = None) -> bool:
         if candidate is None:
             error = LinuxAuthWriteError(
                 'linux_client_not_installed',
-                'Sober is not installed as a Flatpak, or Flatpak could not confirm the installation. '
-                'Fleasion did not change any Sober account data.',
+                'No installed Linux Roblox client with a writable cookie store was selected. '
+                'Fleasion did not change any account data.',
             )
             _log_auth_failure(
                 'linux-cookie-write-provider-missing',

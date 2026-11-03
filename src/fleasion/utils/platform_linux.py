@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, overload
 
@@ -22,11 +23,17 @@ from fleasion.localization import tr
 
 from .linux_clients import (
     LINUX_CLIENTS_BY_KEY,
+    MOCKTAIL_CLIENT,
+    ROSEMARY_CLIENT,
     SOBER_CLIENT,
     LinuxClientDescriptor,
     LinuxClientInstallation,
     detect_installed_clients,
     get_linux_client,
+    rosemary_guest_home,
+    running_mocktail_players,
+    running_rosemary_players,
+    running_rosemary_studios,
     select_linux_client,
 )
 
@@ -154,6 +161,11 @@ PROC_ROOT = Path('/proc')
 _ROBLOX_URI_SCHEMES = ('x-scheme-handler/roblox', 'x-scheme-handler/roblox-player')
 _linux_client_preference: str | None = None
 _active_linux_proxy_client_key: str | None = None
+_active_rosemary_proxy_url: str | None = None
+_active_mocktail_proxy_url: str | None = None
+_rosemary_app_path: str | None = None
+_rosemary_binary_path: str | None = None
+_rosemary_prefix_path: str | None = None
 _FLEASION_ROBLOX_URI_HANDLER_IDS = frozenset(
     {
         'fleasion.desktop',
@@ -297,16 +309,78 @@ def _configured_linux_client_preference() -> str:
     return _normalized_linux_client_preference(value)
 
 
+def set_rosemary_paths(
+    app_path: str | None, binary_path: str | None, prefix_path: str | None = None
+) -> None:
+    """Apply configured paths without modifying installed clients."""
+    globals()['_rosemary_app_path'] = app_path or None
+    globals()['_rosemary_binary_path'] = binary_path or None
+    globals()['_rosemary_prefix_path'] = prefix_path or None
+
+
+def running_rosemary_proxy_status(proxy_url: str) -> str:
+    """Inspect inherited proxy variables without reading or logging credentials."""
+    sessions = running_rosemary_players(proc_root=PROC_ROOT)
+    if not sessions:
+        return 'not_running'
+    readable = False
+    for session in sessions:
+        try:
+            entries = (PROC_ROOT / str(session.pid) / 'environ').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        readable = True
+        variables = {
+            name.decode('ascii', errors='ignore').lower(): value
+            for entry in entries
+            if b'=' in entry
+            for name, value in (entry.split(b'=', 1),)
+            if name.lower() in {b'https_proxy', b'http_proxy', b'all_proxy'}
+        }
+        if variables.get('https_proxy') == proxy_url.encode('ascii'):
+            return 'configured'
+    return 'missing' if readable else 'unreadable'
+
+
+def get_rosemary_prefix_path() -> str | None:
+    """Return the configured guest prefix override, if any."""
+    return _rosemary_prefix_path
+
+
 def linux_client_installations() -> tuple[LinuxClientInstallation, ...]:
-    """Return installed clients using metadata-only discovery."""
-    return detect_installed_clients(home=USER_HOME)
+    """Find clients by Flatpak metadata, process, desktop entry, and path."""
+    installations = detect_installed_clients(
+        home=USER_HOME,
+        rosemary_app_path=_rosemary_app_path,
+        rosemary_binary_path=_rosemary_binary_path,
+    )
+    if not _rosemary_prefix_path:
+        return installations
+    # Nutmeg replaces ROSEMARY_PREFIX with its own config value. An explicit
+    # Fleasion prefix requires a direct Rosemary invocation instead.
+    return tuple(
+        replace(installation, desktop_launcher=False)
+        if installation.key == 'rosemary'
+        else installation
+        for installation in installations
+    )
 
 
 def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve the configured/desktop-selected installed Linux Roblox client."""
     preference = _configured_linux_client_preference()
     installed = linux_client_installations()
-    return select_linux_client(preference, installed=installed, home=USER_HOME)
+    if preference == 'auto' and _active_linux_proxy_client_key is not None:
+        pinned = select_linux_client(_active_linux_proxy_client_key, installed=installed)
+        if pinned is not None:
+            return pinned
+    return select_linux_client(
+        preference,
+        installed=installed,
+        home=USER_HOME,
+        rosemary_running=bool(running_rosemary_players(proc_root=PROC_ROOT)),
+        mocktail_running=bool(running_mocktail_players(proc_root=PROC_ROOT)),
+    )
 
 
 def selected_linux_client_key() -> str:
@@ -397,13 +471,51 @@ def linux_client_main_process(
     installation: LinuxClientInstallation | None = None,
 ) -> tuple[int, float] | None:
     installation = installation or get_selected_linux_client_installation()
-    if installation is None or installation.key != SOBER_CLIENT.key:
+    if installation is None:
         return None
-    return sober_main_process()
+    if installation.key == ROSEMARY_CLIENT.key:
+        sessions = tuple(
+            session
+            for session in running_rosemary_players(proc_root=PROC_ROOT)
+            if installation.app_bundle is None or session.bundle == installation.app_bundle
+        )
+        try:
+            ticks_per_second = float(os.sysconf('SC_CLK_TCK'))
+        except AttributeError, OSError, ValueError:
+            ticks_per_second = 0
+        if sessions and ticks_per_second > 0:
+            session = sessions[0]
+            return session.pid, session.start_ticks / ticks_per_second
+    elif installation.key == MOCKTAIL_CLIENT.key:
+        sessions = running_mocktail_players(
+            proc_root=PROC_ROOT, executable=installation.executable
+        )
+        try:
+            ticks_per_second = float(os.sysconf('SC_CLK_TCK'))
+        except AttributeError, OSError, ValueError:
+            ticks_per_second = 0
+        if sessions and ticks_per_second > 0:
+            return sessions[0].pid, sessions[0].start_ticks / ticks_per_second
+    elif installation.key == SOBER_CLIENT.key:
+        return sober_main_process()
+    return None
 
 
 def _client_pids(installation: LinuxClientInstallation) -> list[int]:
-    """Return only process IDs owned by the installation's Flatpak cgroup."""
+    """Return only selected-client PIDs, never unrelated players or Studio."""
+    if installation.client.runtime == 'rosemary':
+        return [
+            session.pid
+            for session in running_rosemary_players(proc_root=PROC_ROOT)
+            if installation.app_bundle is None or session.bundle == installation.app_bundle
+        ]
+    if installation.key == MOCKTAIL_CLIENT.key:
+        return [
+            session.pid
+            for session in running_mocktail_players(
+                proc_root=PROC_ROOT, executable=installation.executable
+            )
+        ]
     found: list[int] = []
     seen: set[int] = set()
     for name in installation.client.process_names:
@@ -466,14 +578,13 @@ def is_studio_running() -> bool:
 
 
 def get_roblox_player_exe_path() -> Path | None:
-    """Linux clients do not expose a stable RobloxPlayerBeta.exe path.
-
-    The running process is the Flatpak launcher or wrapper, not the resource
-    root that callers need for cert/modification discovery. Returning a
-    fabricated path would send downstream code to the wrong directory, so we
-    intentionally return ``None`` and let callers use the Linux resource-root
-    discovery helpers instead.
-    """
+    """Return the native macOS Player executable for Rosemary; None for Sober."""
+    installation = get_selected_linux_client_installation()
+    if installation is not None and installation.client.runtime == 'rosemary':
+        bundle = installation.app_bundle
+        if bundle is not None:
+            exe = bundle / 'Contents' / 'MacOS' / 'RobloxPlayer'
+            return exe if exe.is_file() else None
     return None
 
 
@@ -491,7 +602,7 @@ def terminate_roblox() -> bool:
     if not pids:
         return False
 
-    flatpak = shutil.which('flatpak')
+    flatpak = shutil.which('flatpak') if installation.client.runtime == 'flatpak' else None
     if flatpak:
         try:
             result = _run_subprocess(
@@ -568,6 +679,81 @@ def _clear_fleasion_obj_cache(messages: list[str]) -> None:
         messages.append('Fleasion obj cache deleted successfully')
 
 
+def _rosemary_cache_targets(
+    installation: LinuxClientInstallation,
+) -> tuple[tuple[Path, str], ...] | None:
+    """Resolve only the known macOS Player cache family, never the guest Library."""
+    guest_home = rosemary_guest_home(installation, prefix_path=_rosemary_prefix_path)
+    if guest_home is None:
+        return None
+    library = guest_home / 'Library'
+    roblox = library / 'Roblox'
+    if any(path.is_symlink() for path in (guest_home, library, roblox)):
+        return None
+    if not roblox.is_dir():
+        return None
+
+    database = roblox / 'rbx-storage.db'
+    targets: list[tuple[Path, str]] = [
+        (database, 'Storage database'),
+        *(
+            (Path(str(database) + suffix), f'Storage database {suffix}')
+            for suffix in ('-wal', '-shm', '-journal')
+        ),
+        (roblox / 'rbx-storage.id', 'Storage identifier'),
+        (roblox / 'rbx-storage', 'Storage folder'),
+        (roblox / 'rbx-storage-sc', 'Session storage folder'),
+    ]
+    targets.extend(
+        (library / 'Caches' / name, f'Player cache ({name})')
+        for name in ('com.roblox.RobloxPlayer', 'com.Roblox.RobloxPlayer')
+    )
+    return tuple(targets)
+
+
+def _clear_rosemary_cache(
+    installation: LinuxClientInstallation, messages: list[str]
+) -> None:
+    targets = _rosemary_cache_targets(installation)
+    if targets is None:
+        messages.append('Rosemary guest cache path could not be verified; no Roblox cache deleted')
+        return
+    for path, label in targets:
+        if path.is_symlink():
+            messages.append(f'{label} is a symbolic link; deletion skipped')
+            continue
+        _delete_path(path, messages, label)
+
+
+def _mocktail_cache_target_is_safe(
+    installation: LinuxClientInstallation, target: Path
+) -> bool:
+    """Reject redirects through symlinks outside Mocktail's owned cache roots."""
+    for base in (installation.paths.flatpak_root, installation.paths.cache_root):
+        if not target.is_relative_to(base):
+            continue
+        if base.is_symlink():
+            return False
+        current = base
+        for part in target.relative_to(base).parts:
+            current /= part
+            if current.is_symlink():
+                return False
+        return True
+    return False
+
+
+def _delete_client_cache_path(
+    installation: LinuxClientInstallation, path: Path, messages: list[str], label: str
+) -> None:
+    if installation.key == MOCKTAIL_CLIENT.key and not _mocktail_cache_target_is_safe(
+        installation, path
+    ):
+        messages.append(f'{label} is outside a safe Mocktail storage path; deletion skipped')
+        return
+    _delete_path(path, messages, label)
+
+
 def delete_cache() -> list[str]:
     """Delete cache files for only the selected Linux client and Fleasion."""
     messages: list[str] = []
@@ -578,6 +764,17 @@ def delete_cache() -> list[str]:
             'Cache deletion aborted',
         ]
     client_name = installation.display_name
+    if installation.client.runtime == 'rosemary':
+        if running_rosemary_studios(proc_root=PROC_ROOT):
+            return [
+                'Rosemary Studio is running and may share the Player storage database',
+                'Cache deletion aborted; close Studio before clearing Rosemary Player cache',
+            ]
+        if _rosemary_cache_targets(installation) is None:
+            return [
+                'Rosemary guest cache path could not be verified',
+                'Cache deletion aborted; configure the correct Nutmeg/Rosemary prefix',
+            ]
 
     if is_roblox_running():
         messages.append(f'{client_name} is running, terminating...')
@@ -590,20 +787,31 @@ def delete_cache() -> list[str]:
     else:
         messages.append(f'{client_name} was closed')
 
+    if installation.client.runtime == 'rosemary':
+        _clear_rosemary_cache(installation, messages)
+    elif installation.key == MOCKTAIL_CLIENT.key:
+        # Mocktail keeps Android rbx-storage outside its appData directory.
+        # Never remove its managed APK payloads, auth cookies or client settings.
+        target = installation.paths.data_root / 'rbx-storage'
+        if target.is_symlink() or installation.paths.data_root.is_symlink():
+            messages.append('Mocktail Android storage is a symbolic link; deletion skipped')
+        else:
+            _delete_client_cache_path(installation, target, messages, 'Mocktail Android rbx-storage')
+
     storage_db = installation.paths.storage_db
     storage_folder: Path | None = None
     if storage_db is not None:
-        _delete_path(storage_db, messages, 'Storage database')
+        _delete_client_cache_path(installation, storage_db, messages, 'Storage database')
         for suffix in ('-wal', '-shm'):
             sidecar = Path(str(storage_db) + suffix)
             if sidecar.exists():
-                _delete_path(sidecar, messages, f'Storage database {suffix}')
+                _delete_client_cache_path(installation, sidecar, messages, f'Storage database {suffix}')
 
         storage_folder = storage_db.parent / 'rbx-storage'
-        _delete_path(storage_folder, messages, 'Storage folder')
+        _delete_client_cache_path(installation, storage_folder, messages, 'Storage folder')
     cache_storage = installation.paths.cache_storage_dir
     if cache_storage is not None and cache_storage != storage_folder:
-        _delete_path(cache_storage, messages, 'Cache storage folder')
+        _delete_client_cache_path(installation, cache_storage, messages, 'Cache storage folder')
 
     if APP_CACHE_DIR.exists():
         _clear_fleasion_obj_cache(messages)
@@ -631,7 +839,11 @@ def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
         return found
 
     resource_roots = installation.paths.resource_roots
-    if installation.paths.data_root.exists() and resource_roots:
+    if (
+        installation.client.runtime == 'flatpak'
+        and installation.paths.data_root.exists()
+        and resource_roots
+    ):
         resource_roots[0].mkdir(parents=True, exist_ok=True)
     for resource_root in resource_roots:
         _add(resource_root)
@@ -653,7 +865,11 @@ def is_sober_resource_dir(path: Path) -> bool:
 def find_linux_global_settings_dirs() -> list[Path]:
     """Return the selected client's data root for Roblox settings XML."""
     installation = get_selected_linux_client_installation()
-    if installation is None or not installation.paths.data_root.exists():
+    if (
+        installation is None
+        or installation.client.runtime != 'flatpak'
+        or not installation.paths.data_root.exists()
+    ):
         return []
     return [installation.paths.data_root]
 
@@ -711,8 +927,12 @@ def _desktop_user_context() -> tuple[Path, int, int, str] | None:
     return user_home, stat_result.st_uid, stat_result.st_gid, pw_entry.pw_name
 
 
-def _standard_user_popen(args: list[str]) -> subprocess.Popen[bytes]:
+def _standard_user_popen(
+    args: list[str], *, extra_env: dict[str, str] | None = None
+) -> subprocess.Popen[bytes]:
     env = _host_subprocess_env()
+    if extra_env:
+        env.update(extra_env)
     kwargs: StandardUserPopenKwargs = {**_DETACHED_POPEN_KWARGS, 'env': env}
     if os.geteuid() == 0 and (user_context := _desktop_user_context()) is not None:
         user_home, uid, gid, username = user_context
@@ -849,14 +1069,82 @@ def _launch_target_for_log(target: str) -> str:
 
 def _launch_roblox_uri(target: str) -> bool:
     installation = get_selected_linux_client_installation()
-    if installation is None or installation.executable is None:
+    if installation is None:
         log_buffer.log('Launch', 'Cannot launch Roblox URI: selected client not found')
         return False
-    command = installation.launch_command(target)
+    needs_inherited_proxy = (
+        installation.client.runtime == 'rosemary'
+        and bool(_active_rosemary_proxy_url)
+    )
+    command = installation.launch_command(
+        target, require_inherited_environment=needs_inherited_proxy
+    )
     if command is None:
-        log_buffer.log('Launch', 'Cannot launch Roblox URI: launcher not found')
+        log_buffer.log(
+            'Launch',
+            'Cannot launch Roblox URI: a native Rosemary executable and Player '
+            'bundle are required for proxy-aware launching'
+            if needs_inherited_proxy
+            else 'Cannot launch Roblox URI: launcher not found',
+        )
         return False
-    _standard_user_popen(command)
+    if installation.client.runtime == 'rosemary':
+        _standard_user_popen(
+            command,
+            extra_env=_rosemary_proxy_environment(
+                nutmeg_launcher=Path(command[0]).name == 'gtk-launch'
+            ),
+        )
+    elif installation.key == MOCKTAIL_CLIENT.key:
+        _standard_user_popen(command, extra_env=mocktail_proxy_environment())
+    else:
+        _standard_user_popen(command)
+    return True
+
+
+def _launch_selected_linux_client_target(
+    installation: LinuxClientInstallation | None, target: str, path: Path
+) -> bool | None:
+    if installation is None:
+        return None
+    is_client_request = (
+        target == installation.app_id
+        or (installation.client.runtime == 'flatpak' and path.name == 'flatpak')
+        or (installation.client.runtime == 'native' and path == installation.executable)
+        or (
+            installation.client.runtime == 'rosemary'
+            and installation.app_bundle is not None
+            and path == installation.app_bundle / 'Contents' / 'MacOS' / 'RobloxPlayer'
+        )
+    )
+    if not is_client_request:
+        return None
+    needs_inherited_proxy = (
+        installation.client.runtime == 'rosemary'
+        and bool(_active_rosemary_proxy_url)
+    )
+    command = installation.launch_command(
+        require_inherited_environment=needs_inherited_proxy
+    )
+    if command is None:
+        if needs_inherited_proxy:
+            log_buffer.log(
+                'Launch',
+                'A native Rosemary executable and Player bundle are required '
+                'to inherit Fleasion proxy variables',
+            )
+        return False
+    if installation.client.runtime == 'rosemary':
+        _standard_user_popen(
+            command,
+            extra_env=_rosemary_proxy_environment(
+                nutmeg_launcher=Path(command[0]).name == 'gtk-launch'
+            ),
+        )
+    elif installation.key == MOCKTAIL_CLIENT.key:
+        _standard_user_popen(command, extra_env=mocktail_proxy_environment())
+    else:
+        _standard_user_popen(command)
     return True
 
 
@@ -868,14 +1156,9 @@ def _launch_standard_user_target(target: str) -> bool | None:
 
     path = Path(target)
     installation = get_selected_linux_client_installation()
-    flatpak = shutil.which('flatpak')
-    if (
-        installation is not None
-        and flatpak
-        and (path.name == 'flatpak' or target == installation.app_id)
-    ):
-        _standard_user_popen([flatpak, 'run', installation.app_id])
-        return True
+    launched = _launch_selected_linux_client_target(installation, target, path)
+    if launched is not None:
+        return launched
     if path.exists():
         return _open_with_desktop_handler(str(path), 'path')
     return None
@@ -898,12 +1181,72 @@ def launch_as_standard_user(target: str | Path) -> bool:
     return False
 
 
+def _rosemary_proxy_environment(*, nutmeg_launcher: bool = False) -> dict[str, str]:
+    launch_environment: dict[str, str] = {}
+    if _rosemary_prefix_path and not nutmeg_launcher:
+        prefix = Path(_rosemary_prefix_path).expanduser()
+        if not prefix.is_absolute():
+            msg = 'Rosemary prefix override must be an absolute path'
+            raise ValueError(msg)
+        launch_environment['ROSEMARY_PREFIX'] = str(prefix)
+        selected = get_selected_linux_client_installation()
+        if selected is not None and rosemary_guest_home(
+            selected, prefix_path=prefix
+        ) == selected.paths.home:
+            launch_environment['ROSEMARY_PREFIX_HOME'] = 'host'
+    proxy_url = _active_rosemary_proxy_url
+    if not proxy_url:
+        return launch_environment
+    no_proxy = ['localhost', '127.0.0.1', '::1']
+    if nutmeg_launcher:
+        # Nutmeg updates Roblox before launching; its bootstrap must bypass MITM.
+        no_proxy.extend(
+            (
+                'clientsettingscdn.roblox.com',
+                'clientsettings.roblox.com',
+                'setup.rbxcdn.com',
+                'setup-aws.rbxcdn.com',
+                'setup-ak.rbxcdn.com',
+            )
+        )
+    bypass = ','.join(no_proxy)
+    return {
+        **launch_environment,
+        'HTTP_PROXY': proxy_url,
+        'HTTPS_PROXY': proxy_url,
+        'ALL_PROXY': proxy_url,
+        'http_proxy': proxy_url,
+        'https_proxy': proxy_url,
+        'all_proxy': proxy_url,
+        'NO_PROXY': bypass,
+        'no_proxy': bypass,
+    }
+
+
+def mocktail_proxy_environment() -> dict[str, str]:
+    """Scoped proxy environment for native Mocktail launches."""
+    url = _active_mocktail_proxy_url
+    if not url:
+        return {}
+    return _proxy_environment_for_installation(
+        LinuxClientInstallation(MOCKTAIL_CLIENT, MOCKTAIL_CLIENT.paths(home=USER_HOME), None),
+        url,
+    )
+
+
+def rosemary_proxy_environment() -> dict[str, str]:
+    """Environment for a native Rosemary replay with Fleasion proxy routing."""
+    return _rosemary_proxy_environment()
+
+
 def _installation_for_client_key(key: str) -> LinuxClientInstallation | None:
     """Build a deterministic installation for scoped override cleanup."""
     try:
         client = get_linux_client(key)
     except ValueError:
         return None
+    if client.runtime in {'rosemary', 'native'}:
+        return next((item for item in linux_client_installations() if item.key == key), None)
     flatpak = shutil.which('flatpak')
     return LinuxClientInstallation(
         client=client,
@@ -963,7 +1306,7 @@ def _set_active_linux_proxy_client_key(value: str | None) -> None:
     globals()['_active_linux_proxy_client_key'] = value
 
 
-def set_linux_client_env_proxy_override(
+def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-statements]
     proxy_url: str,
     *,
     client_key: str | None = None,
@@ -991,6 +1334,25 @@ def set_linux_client_env_proxy_override(
             f'override for {previous_key} could not be cleared',
         )
         return False
+
+    if installation.client.runtime in {'rosemary', 'native'}:
+        if installation.client.runtime == 'rosemary':
+            globals()['_active_rosemary_proxy_url'] = proxy_url
+        else:
+            globals()['_active_mocktail_proxy_url'] = proxy_url
+        _set_active_linux_proxy_client_key(installation.key)
+        if installation.client.runtime == 'rosemary':
+            log_buffer.log(
+                'Launcher',
+                'Rosemary Env Proxy armed for direct launches and new Nutmeg/desktop Player replays',
+            )
+        else:
+            log_buffer.log(
+                'Launcher',
+                'Mocktail Env Proxy armed for native Fleasion launches; '
+                'other launchers require a process interceptor for inherited routing',
+            )
+        return True
 
     proxy_env = _proxy_environment_for_installation(
         installation,
@@ -1039,7 +1401,13 @@ def set_linux_client_env_proxy_override(
 def clear_linux_client_env_proxy_override(*, client_key: str | None = None) -> bool:
     """Clear only the exact client environment names managed by Fleasion."""
     key = client_key or _active_linux_proxy_client_key or _read_linux_proxy_override_state()
-    if key is None:
+    if key is None or key in {'rosemary', 'mocktail'}:
+        if key == 'rosemary':
+            globals()['_active_rosemary_proxy_url'] = None
+        elif key == 'mocktail':
+            globals()['_active_mocktail_proxy_url'] = None
+        if key is not None and _active_linux_proxy_client_key == key:
+            _set_active_linux_proxy_client_key(None)
         return True
     installation = _installation_for_client_key(key)
     if installation is None:

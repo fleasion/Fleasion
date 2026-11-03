@@ -360,6 +360,11 @@ def run_application() -> None:
     if sys.platform.startswith('linux'):
         platform_linux = importlib.import_module('fleasion.utils.platform_linux')
         platform_linux.set_linux_client_preference(config_manager.linux_client)
+        platform_linux.set_rosemary_paths(
+            config_manager.rosemary_app_path,
+            config_manager.rosemary_binary_path,
+            config_manager.rosemary_prefix_path,
+        )
     env_proxy_migration_pending = prepare_env_proxy_migration(config_manager)
     config_manager.settings['_runtime_proxy_debug'] = bool(args.proxy_debug)
     config_manager.settings['_runtime_proxy_debug_mode'] = args.proxy_debug_mode or 'full'

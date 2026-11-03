@@ -211,7 +211,7 @@ def show_admin_required_dialog(parent: QWidget | None = None) -> None:
         msg.setInformativeText(tr('app.run_fleasion_as_your_normal_macos_user'))
     elif sys.platform.startswith('linux'):
         msg.setText(tr('app.fleasion_needs_administrator_permission_for_linux_interception'))
-        msg.setInformativeText(tr('app.linux_support_targets_the_sober_flatpak_client'))
+        msg.setInformativeText(tr('app.linux_client_permission_info'))
     else:
         msg.setText(tr('app.fleasion_won_t_work_unless_you_re'))
         msg.setInformativeText(tr('app.windows_did_not_start_fleasion_with_administrator'))

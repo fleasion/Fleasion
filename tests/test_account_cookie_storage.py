@@ -880,6 +880,7 @@ def test_linux_switch_account_writes_selected_cookie_to_sober_storage(
     monkeypatch.setattr(rando_stuff_tab, 'IS_LINUX', True)
     monkeypatch.setattr(rando_stuff_tab, '_decrypt_cookie', _decrypt_cookie_secret)
     monkeypatch.setattr(rando_stuff_tab, '_linux_client_display_name', _linux_client_sober)
+    monkeypatch.setattr(rando_stuff_tab, '_is_rosemary_client', lambda: False)
     monkeypatch.setattr(
         rando_stuff_tab.QMessageBox,
         'information',
@@ -923,6 +924,7 @@ def test_linux_switch_account_explains_libsecret_and_does_not_select_account(
     monkeypatch.setattr(rando_stuff_tab, 'IS_WINDOWS', False)
     monkeypatch.setattr(rando_stuff_tab, 'IS_MACOS', False)
     monkeypatch.setattr(rando_stuff_tab, 'IS_LINUX', True)
+    monkeypatch.setattr(rando_stuff_tab, '_is_rosemary_client', lambda: False)
     monkeypatch.setattr(rando_stuff_tab, '_decrypt_cookie', _decrypt_cookie_secret)
 
     def show_warning(_owner: object, title: str, message: str) -> None:
@@ -1077,3 +1079,135 @@ def test_account_proxy_preserves_teleport_when_redirecting_job_id() -> None:
     assert body['gameId'] == '00000000-0000-0000-0000-000000000001'
     assert body['isTeleport'] is True
     assert owner.__dict__['_account_manager_job_id'] == ''
+
+
+def test_rosemary_select_account_does_not_write_guest_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = _account_manager_owner()
+    account: rando_stuff_tab.Account = {
+        'username': 'RosemaryUser',
+        'cookie': 'encrypted-cookie',
+    }
+    owner.__dict__['_accounts'] = [account]
+    owner.__dict__['_account_list'] = SimpleNamespace(currentRow=lambda: 0)
+    owner.__dict__['_last_switched_account'] = None
+    selected: list[str] = []
+    written: list[str] = []
+    owner.__dict__['_set_selected_account'] = selected.append
+    owner.__dict__['_write_cookie_to_dat'] = written.append
+    notifications: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(rando_stuff_tab, 'IS_WINDOWS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_MACOS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_LINUX', True)
+    monkeypatch.setattr(rando_stuff_tab, '_is_rosemary_client', lambda: True)
+    monkeypatch.setattr(rando_stuff_tab, '_decrypt_cookie', _decrypt_cookie_secret)
+    monkeypatch.setattr(
+        rando_stuff_tab.QMessageBox,
+        'information',
+        lambda _owner, title, message: notifications.append((title, message)),
+    )
+
+    _owner_switch_account(owner)
+
+    assert selected == ['RosemaryUser']
+    assert written == []
+    assert owner.__dict__['_last_switched_account'] is account
+    assert owner.selected_launch_account_cookie() == 'cookie-secret'
+    assert len(notifications) == 1
+
+
+@pytest.mark.parametrize(
+    ('private_server_link', 'job_id', 'subplace_id'),
+    [
+        ('', '', ''),
+        ('123456', '', ''),
+        ('https://www.roblox.com/games/123456/game?privateServerLinkCode=code', '', ''),
+        ('', '00000000-0000-0000-0000-000000000001', '123456'),
+    ],
+)
+def test_rosemary_account_launch_requires_ticket_and_never_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+    private_server_link: str,
+    job_id: str,
+    subplace_id: str,
+) -> None:
+    owner = _account_manager_owner()
+    launches: list[str] = []
+    failures: list[tuple[str, str]] = []
+    monkeypatch.setattr(rando_stuff_tab, 'IS_WINDOWS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_MACOS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_LINUX', True)
+    monkeypatch.setattr(rando_stuff_tab, '_is_rosemary_client', lambda: True)
+    monkeypatch.setattr(rando_stuff_tab, '_find_roblox_exe', _find_fake_roblox_exe)
+    monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', lambda _cookie: None)
+    monkeypatch.setattr(rando_stuff_tab, 'launch_as_standard_user', _record_launch(launches))
+    monkeypatch.setattr(rando_stuff_tab, '_preseed_root_place_for_subplace', lambda *_: True)
+    owner.__dict__['_show_selected_account_launch_failed'] = (
+        lambda username, reason: failures.append((username, reason))
+    )
+    _owner_launch_account_thread(
+        owner, 'synthetic-cookie', 'RosemaryUser', private_server_link, job_id, subplace_id
+    )
+    assert launches == []
+    assert failures and failures[0][0] == 'RosemaryUser'
+
+
+def test_mocktail_account_manager_switch_selects_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = _account_manager_owner()
+    account: rando_stuff_tab.Account = {
+        'username': 'MocktailUser',
+        'cookie': 'encrypted-cookie',
+    }
+    owner.__dict__['_accounts'] = [account]
+    owner.__dict__['_account_list'] = SimpleNamespace(currentRow=lambda: 0)
+    selected: list[str] = []
+    written: list[str] = []
+    owner.__dict__['_set_selected_account'] = selected.append
+    owner.__dict__['_write_cookie_to_dat'] = written.append
+    monkeypatch.setattr(rando_stuff_tab, 'IS_WINDOWS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_MACOS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_LINUX', True)
+    monkeypatch.setattr(rando_stuff_tab, '_is_rosemary_client', lambda: False)
+    monkeypatch.setattr(rando_stuff_tab, '_linux_client_display_name', lambda: 'Mocktail')
+    monkeypatch.setattr(rando_stuff_tab, '_decrypt_cookie', lambda _encrypted: 'synthetic-token')
+    _owner_switch_account(owner)
+    assert selected == ['MocktailUser']
+    assert written == ['synthetic-token']
+    assert owner.__dict__['_last_switched_account'] is account
+
+
+def test_mocktail_account_manager_refuses_switch_while_player_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = _account_manager_owner()
+    owner.__dict__['_accounts'] = [{'username': 'MocktailUser', 'cookie': 'encrypted'}]
+    owner.__dict__['_account_list'] = SimpleNamespace(currentRow=lambda: 0)
+    owner.__dict__['_last_switched_account'] = None
+    selected: list[str] = []
+    warnings: list[str] = []
+    owner.__dict__['_set_selected_account'] = selected.append
+
+    def blocked(_cookie: str) -> Never:
+        raise roblox_auth.LinuxAuthWriteError(
+            'mocktail_running', 'Close Mocktail before switching its saved account.'
+        )
+
+    owner.__dict__['_write_cookie_to_dat'] = blocked
+    monkeypatch.setattr(rando_stuff_tab, 'IS_WINDOWS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_MACOS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_LINUX', True)
+    monkeypatch.setattr(rando_stuff_tab, '_is_rosemary_client', lambda: False)
+    monkeypatch.setattr(rando_stuff_tab, '_decrypt_cookie', lambda _encrypted: 'synthetic-token')
+    monkeypatch.setattr(
+        rando_stuff_tab.QMessageBox,
+        'warning',
+        lambda _owner, _title, message: warnings.append(message),
+    )
+    _owner_switch_account(owner)
+    assert selected == []
+    assert owner.__dict__['_last_switched_account'] is None
+    assert warnings == ['Close Mocktail before switching its saved account.']

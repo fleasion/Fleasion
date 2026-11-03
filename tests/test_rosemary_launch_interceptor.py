@@ -1,0 +1,270 @@
+"""Read-only fixture coverage for Rosemary's automatic Nutmeg launch replay."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
+
+from fleasion.utils import rosemary_launch_interceptor as interceptor
+from fleasion.utils.linux_clients import RosemarySession
+
+if TYPE_CHECKING:
+    import pytest
+
+
+def _fixture(tmp_path: Path, *, pid: int = 4321, suffix: str = 'test') -> tuple[Path, RosemarySession]:
+    root = tmp_path / 'proc'
+    process = root / str(pid)
+    process.mkdir(parents=True, exist_ok=True)
+    binary = tmp_path / 'bin/rosemary'
+    binary.parent.mkdir(exist_ok=True)
+    binary.write_text('stub')
+    binary.chmod(0o700)
+    bundle = tmp_path / 'nutmeg' / 'Roblox.app'
+    executable = bundle / 'Contents/MacOS/RobloxPlayer'
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text('Mach-O')
+    ssl_cert = bundle / 'Contents/Resources/ssl/cacert.pem'
+    ssl_cert.parent.mkdir(parents=True, exist_ok=True)
+    ssl_cert.write_text('unmodified')
+    argv = [
+        str(binary), 'run', '--emulated', str(bundle),
+        '-protocolString', f'roblox-player:synthetic-{suffix}',
+    ]
+    (process / 'cmdline').write_bytes(b'\0'.join(s.encode() for s in argv) + b'\0')
+    environment = {
+        'HOME': str(tmp_path),
+        'ROSEMARY_PREFIX': str(tmp_path / 'nutmeg'),
+        'SDL_VIDEO_DRIVER': 'x11',
+        'CUSTOM_LAUNCH_VARIABLE': 'preserve',
+    }
+    (process / 'environ').write_bytes(
+        b'\0'.join(f'{name}={value}'.encode() for name, value in environment.items()) + b'\0'
+    )
+    # /proc/PID/stat field 22 is element index 19 after the comm field.
+    (process / 'stat').write_text(
+        f'{pid} (Main) S ' + ' '.join(['0'] * 18 + ['456789'] + ['0'] * 2)
+    )
+    (process / 'cwd').symlink_to(tmp_path, target_is_directory=True)
+    return root, RosemarySession(pid, bundle.resolve(), binary, 456789)
+
+
+def test_capture_preserves_nutmeg_player_launch_with_uri_and_environment(tmp_path: Path) -> None:
+    root, session = _fixture(tmp_path)
+    snapshot = interceptor.capture_rosemary_launch(session, proc_root=root)
+    assert snapshot is not None
+    assert snapshot.argv[-1] == 'roblox-player:synthetic-test'
+    assert snapshot.argv[:4] == (
+        str(session.launcher), 'run', '--emulated', str(session.bundle),
+    )
+    assert snapshot.cwd == tmp_path
+    assert snapshot.env['ROSEMARY_PREFIX'] == str(tmp_path / 'nutmeg')
+    assert snapshot.env['SDL_VIDEO_DRIVER'] == 'x11'
+    assert snapshot.env['CUSTOM_LAUNCH_VARIABLE'] == 'preserve'
+
+
+def test_capture_rejects_modified_generation_and_missing_environment(tmp_path: Path) -> None:
+    root, session = _fixture(tmp_path)
+    wrong = RosemarySession(
+        session.pid, session.bundle, session.launcher, session.start_ticks + 1
+    )
+    assert interceptor.capture_rosemary_launch(wrong, proc_root=root) is None
+    (root / str(session.pid) / 'environ').unlink()
+    assert interceptor.capture_rosemary_launch(session, proc_root=root) is None
+
+
+def test_replay_stops_only_verified_original_pid_and_preserves_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, session = _fixture(tmp_path)
+    snapshot = interceptor.capture_rosemary_launch(session, proc_root=root)
+    assert snapshot is not None
+    signals: list[tuple[int, int]] = []
+    spawned: list[tuple[list[str], dict[str, object]]] = []
+    monkeypatch.setattr(
+        interceptor.os, 'pidfd_open', lambda pid, flags: os.open('/dev/null', os.O_RDONLY)
+    )
+    monkeypatch.setattr(
+        interceptor.signal,
+        'pidfd_send_signal',
+        lambda fd, signum: signals.append((fd, signum)),
+    )
+    monkeypatch.setattr(
+        interceptor.subprocess, 'Popen',
+        lambda argv, **kwargs: (
+            spawned.append((argv, kwargs)) or SimpleNamespace(pid=5678)
+        ),
+    )
+    assert interceptor.replay_rosemary_launch(
+        snapshot,
+        proxy_url='http://127.0.0.1:58443',
+        proxy_environment={
+            'HTTP_PROXY': 'http://127.0.0.1:58443',
+            'HTTPS_PROXY': 'http://127.0.0.1:58443',
+            'https_proxy': 'http://127.0.0.1:58443',
+        },
+        proc_root=root,
+    )
+    assert len(signals) == 1
+    assert len(spawned) == 1
+    argv, kwargs = spawned[0]
+    assert argv == list(snapshot.argv)
+    assert kwargs['cwd'] == tmp_path
+    env = kwargs['env']
+    assert env['CUSTOM_LAUNCH_VARIABLE'] == 'preserve'
+    assert env['ROSEMARY_PREFIX'] == str(tmp_path / 'nutmeg')
+    assert env['https_proxy'] == 'http://127.0.0.1:58443'
+    assert env['FLEASION_ROSEMARY_ENV_REPLAY'] == '1'
+
+    (root / str(session.pid) / 'stat').write_text(
+        f'{session.pid} (Main) S ' + ' '.join(['0'] * 18 + ['456790'] + ['0'] * 2)
+    )
+    assert not interceptor.replay_rosemary_launch(
+        snapshot,
+        proxy_url='http://127.0.0.1:58443',
+        proxy_environment={},
+        proc_root=root,
+    )
+    assert len(signals) == 1
+    assert len(spawned) == 1
+
+
+def test_watcher_does_not_replay_preexisting_or_already_proxied_processes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, session = _fixture(tmp_path)
+    replays: list[RosemarySession] = []
+    monkeypatch.setattr(
+        interceptor, 'replay_rosemary_launch',
+        lambda snapshot, **_kwargs: replays.append(snapshot.session) or True,
+    )
+    watcher = interceptor.RosemaryLaunchInterceptor(
+        is_armed=lambda: True,
+        proxy_url=lambda: 'http://127.0.0.1:58443',
+        proxy_environment=lambda: {'HTTPS_PROXY': 'http://127.0.0.1:58443'},
+        proc_root=root,
+    )
+    watcher._poll_once()
+    assert not replays  # Never interrupt Player that was open before Fleasion.
+
+    _fixture(tmp_path, pid=4322, suffix='new')
+    watcher._poll_once()
+    assert len(replays) == 1
+    watcher._poll_once()
+    assert len(replays) == 1
+
+    _fixture(tmp_path, pid=4323, suffix='proxied')
+    with (root / '4323' / 'environ').open('ab') as file:
+        file.write(b'https_proxy=http://127.0.0.1:58443\0')
+    watcher._poll_once()
+    assert len(replays) == 1
+
+    _fixture(tmp_path, pid=4324, suffix='replayed')
+    with (root / '4324' / 'environ').open('ab') as file:
+        file.write(b'FLEASION_ROSEMARY_ENV_REPLAY=1\0')
+    watcher._poll_once()
+    assert len(replays) == 1
+
+    watcher.stop()
+
+
+def test_watcher_only_replays_when_proxy_is_armed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _fixture(tmp_path)
+    armed = False
+    replays: list[RosemarySession] = []
+    monkeypatch.setattr(
+        interceptor, 'replay_rosemary_launch',
+        lambda snapshot, **_kwargs: replays.append(snapshot.session) or True,
+    )
+    watcher = interceptor.RosemaryLaunchInterceptor(
+        is_armed=lambda: armed,
+        proxy_url=lambda: 'http://127.0.0.1:58443',
+        proxy_environment=lambda: {'HTTPS_PROXY': 'http://127.0.0.1:58443'},
+        proc_root=root,
+    )
+    _fixture(tmp_path, pid=4330, suffix='not-armed')
+    watcher._poll_once()
+    assert not replays
+    armed = True
+    _fixture(tmp_path, pid=4331, suffix='armed')
+    watcher._poll_once()
+    assert [s.pid for s in replays] == [4331]
+    watcher.stop()
+
+
+
+def test_nutmeg_grace_suspends_until_after_settle_before_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    root, session = _fixture(tmp_path)
+    original = interceptor.capture_rosemary_launch(session, proc_root=root)
+    assert original is not None
+    log = tmp_path / 'nutmeg.log'
+    log.write_text('log-before-replay\n')
+    snapshot = replace(original, stdout_log=log)
+    monkeypatch.setattr(interceptor, '_nutmeg_settle_delay', lambda _snapshot: 0.001)
+    issued: list[int] = []
+    launched: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        interceptor.os, 'pidfd_open', lambda pid, flags: os.open('/dev/null', os.O_RDONLY)
+    )
+    monkeypatch.setattr(
+        interceptor.signal, 'pidfd_send_signal',
+        lambda _fd, signum: issued.append(signum),
+    )
+    monkeypatch.setattr(
+        interceptor.subprocess, 'Popen',
+        lambda _argv, **kw: launched.append(kw) or SimpleNamespace(pid=5555),
+    )
+    assert interceptor.replay_rosemary_launch(
+        snapshot, proxy_url='http://127.0.0.1:58443',
+        proxy_environment={'https_proxy': 'http://127.0.0.1:58443'},
+        proc_root=root,
+    )
+    assert issued == [interceptor.signal.SIGSTOP, interceptor.signal.SIGKILL]
+    assert len(launched) == 1
+    assert launched[0]['stdout'] is not interceptor.subprocess.DEVNULL
+    assert log.read_text() == 'log-before-replay\n'
+
+
+def test_nutmeg_shutdown_during_grace_resumes_original_player(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+    import threading
+
+    root, session = _fixture(tmp_path)
+    original = interceptor.capture_rosemary_launch(session, proc_root=root)
+    assert original is not None
+    log = tmp_path / 'nutmeg.log'
+    log.write_text('original')
+    snapshot = replace(original, stdout_log=log)
+    monkeypatch.setattr(interceptor, '_nutmeg_settle_delay', lambda _snapshot: 0.01)
+    issued: list[int] = []
+    launches: list[object] = []
+    monkeypatch.setattr(
+        interceptor.os, 'pidfd_open', lambda pid, flags: os.open('/dev/null', os.O_RDONLY)
+    )
+    monkeypatch.setattr(
+        interceptor.signal, 'pidfd_send_signal',
+        lambda _fd, signum: issued.append(signum),
+    )
+    monkeypatch.setattr(
+        interceptor.subprocess, 'Popen',
+        lambda argv, **kwargs: launches.append((argv, kwargs)),
+    )
+    stopped = threading.Event()
+    stopped.set()
+    assert not interceptor.replay_rosemary_launch(
+        snapshot, proxy_url='http://127.0.0.1:58443',
+        proxy_environment={'https_proxy': 'http://127.0.0.1:58443'},
+        proc_root=root, stop=stopped,
+    )
+    assert issued == [interceptor.signal.SIGSTOP, interceptor.signal.SIGCONT]
+    assert not launches

@@ -854,6 +854,7 @@ def test_windows_resolved_launch_target_reseeds_even_if_not_discovered_at_startu
     monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
     monkeypatch.setattr(proxy_master, 'IS_LINUX', False)
     monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
+    monkeypatch.setenv('FLEASION_SPLICE', '0')  # Exercise legacy CA fallback explicitly
     monkeypatch.setattr(proxy_master, '_current_proxy_ca_dir', _callback0(lambda: proxy_ca_dir))
     monkeypatch.setattr(proxy_master, 'get_ca_pem', _callback1(lambda _path: ca_pem))
     monkeypatch.setattr(

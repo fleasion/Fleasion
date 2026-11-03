@@ -364,3 +364,113 @@ def test_linux_subplace_uri_uses_sober_handler_without_env_proxy_relaunch(
 
     assert owner.launch_roblox_uri(target)
     assert launches == [target]
+
+
+class _SelectedAccountStub:
+    account_switched = False
+
+    def __init__(self, cookie: str | None) -> None:
+        self.cookie = cookie
+
+    def selected_launch_account_cookie(self) -> str | None:
+        return self.cookie
+
+    def is_multi_instance_enabled(self) -> bool:
+        return False
+
+    def close_singleton_event(self) -> None:
+        raise AssertionError('Multi-instance is unsupported by Rosemary')
+
+
+def test_subplace_joiner_uses_selected_rosemary_account_and_specific_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.gui import rando_stuff_tab
+
+    owner = _settings_owner()
+    owner.__dict__['_rando_tab'] = _SelectedAccountStub('selected-account-cookie')
+    requests: list[str] = []
+    uris: list[str] = []
+    done = threading.Event()
+    monkeypatch.setattr(subplace_joiner_tab, '_get_roblosecurity', lambda: 'default-cookie')
+
+    def ticket(cookie: str) -> str:
+        requests.append(cookie)
+        return 'synthetic-ticket'
+
+    def launch(target: str) -> bool:
+        uris.append(target)
+        done.set()
+        return True
+
+    monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', ticket)
+    owner.__dict__['_launch_roblox_uri'] = launch
+    owner._join_place('12345', job_id='00000000-0000-0000-0000-000000000123')
+    assert done.wait(2)
+    assert requests == ['selected-account-cookie']
+    assert len(uris) == 1
+    from urllib.parse import unquote
+    decoded = unquote(uris[0])
+    assert 'request=RequestGameJob' in decoded
+    assert 'placeId=12345' in decoded
+    assert 'gameId=00000000-0000-0000-0000-000000000123' in decoded
+
+
+def test_subplace_joiner_selected_account_without_job_uses_ticket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.gui import rando_stuff_tab
+
+    owner = _settings_owner()
+    owner.__dict__['_rando_tab'] = _SelectedAccountStub('selected-cookie')
+    done = threading.Event()
+    uris: list[str] = []
+    monkeypatch.setattr(subplace_joiner_tab, '_get_roblosecurity', lambda: 'default-cookie')
+    monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', lambda token: 'ticket' if token == 'selected-cookie' else None)
+
+    def launch(target: str) -> bool:
+        uris.append(target)
+        done.set()
+        return True
+
+    owner.__dict__['_launch_roblox_uri'] = launch
+    owner._join_place('98765')
+    assert done.wait(2)
+    assert len(uris) == 1
+    from urllib.parse import unquote
+    assert 'request=RequestGame' in unquote(uris[0])
+    assert 'placeId=98765' in unquote(uris[0])
+
+
+def test_subplace_joiner_specific_job_fails_closed_without_ticket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.gui import rando_stuff_tab
+
+    owner = _settings_owner()
+    owner.__dict__['_rando_tab'] = None
+    attempted = threading.Event()
+    launches: list[str] = []
+    monkeypatch.setattr(subplace_joiner_tab, '_get_roblosecurity', lambda: 'signed-in-cookie')
+
+    def missing_ticket(_cookie: str) -> None:
+        attempted.set()
+        return None
+
+    monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', missing_ticket)
+    owner.__dict__['_launch_roblox_uri'] = lambda uri: launches.append(uri)
+    owner._join_place('11111', job_id='server-id-123')
+    assert attempted.wait(2)
+    assert launches == []
+
+
+def test_subplace_joiner_default_join_remains_simple_deeplink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = _settings_owner()
+    owner.__dict__['_rando_tab'] = None
+    urls: list[str] = []
+    monkeypatch.setattr(subplace_joiner_tab, '_get_roblosecurity', lambda: None)
+    owner.__dict__['_launch_roblox_uri'] = lambda uri: urls.append(uri)
+    owner._join_place('54321')
+    assert urls == ['roblox://experiences/start?placeId=54321']

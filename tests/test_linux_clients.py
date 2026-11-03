@@ -10,6 +10,8 @@ from fleasion.utils.linux_clients import (
     LINUX_CLIENTS,
     LINUX_CLIENTS_BY_KEY,
     SOBER_CLIENT,
+    MOCKTAIL_CLIENT,
+    ROSEMARY_CLIENT,
     CommandRunner,
     LinuxClientDescriptor,
     LinuxClientInstallation,
@@ -41,9 +43,11 @@ def _no_which(_name: str) -> None:
     return None
 
 
-def test_registry_contains_only_sober() -> None:
-    assert LINUX_CLIENTS == (SOBER_CLIENT,)
-    assert dict(LINUX_CLIENTS_BY_KEY) == {'sober': SOBER_CLIENT}
+def test_registry_contains_sober_mocktail_and_rosemary() -> None:
+    assert LINUX_CLIENTS == (SOBER_CLIENT, MOCKTAIL_CLIENT, ROSEMARY_CLIENT)
+    assert dict(LINUX_CLIENTS_BY_KEY) == {
+        'sober': SOBER_CLIENT, 'mocktail': MOCKTAIL_CLIENT, 'rosemary': ROSEMARY_CLIENT
+    }
     assert get_linux_client('SOBER') is SOBER_CLIENT
     assert SOBER_CLIENT.app_id == 'org.vinegarhq.Sober'
     assert SOBER_CLIENT.desktop_id == 'org.vinegarhq.Sober.desktop'

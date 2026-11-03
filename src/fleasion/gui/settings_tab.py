@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -374,6 +375,30 @@ class SettingsTab(QWidget):
         self._linux_client_status.setWordWrap(True)
         self._refresh_linux_client_status()
         section.add_widget(self._linux_client_status)
+
+        self._rosemary_path_edits: dict[str, QLineEdit] = {}
+        for name, setting_name, folder in (
+            (tr('settings.linux_client.rosemary_bundle'), 'rosemary_app_path', True),
+            (tr('settings.linux_client.rosemary_binary'), 'rosemary_binary_path', False),
+            (tr('settings.linux_client.rosemary_prefix'), 'rosemary_prefix_path', True),
+        ):
+            path_row = QHBoxLayout()
+            path_row.addWidget(QLabel(name))
+            edit = QLineEdit(str(getattr(self._config, setting_name, '')))
+            edit.setPlaceholderText(tr('settings.linux_client.auto_detect'))
+            self._rosemary_path_edits[setting_name] = edit
+            edit.editingFinished.connect(partial(self._on_rosemary_path_edited, setting_name, edit))
+            path_row.addWidget(edit, 1)
+            browse = QPushButton(tr('settings.linux_client.browse'))
+            browse.clicked.connect(partial(self._browse_rosemary_path, setting_name, edit, folder))
+            path_row.addWidget(browse)
+            widget = QWidget()
+            widget.setLayout(path_row)
+            section.add_widget(widget)
+
+        note = QLabel(tr('settings.linux_client.rosemary_note'))
+        note.setWordWrap(True)
+        section.add_widget(note)
         return section
 
     def _refresh_linux_client_status(self) -> None:
@@ -401,6 +426,8 @@ class SettingsTab(QWidget):
                 value0=selected,
                 value1=installed or tr('settings.linux_client.none_detected'),
             )
+            if not installed:
+                self._linux_status_text += '\n' + tr('settings.linux_client.not_found')
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             log_buffer.log('Settings', f'Linux client detection failed: {exc}')
             self._linux_status_text = tr(
@@ -799,6 +826,8 @@ class SettingsTab(QWidget):
             _set_signals_blocked(self._linux_client_combo, blocked=True)
             self._linux_client_combo.setCurrentIndex(max(0, idx))
             _set_signals_blocked(self._linux_client_combo, blocked=False)
+            for name, edit in self._rosemary_path_edits.items():
+                edit.setText(str(getattr(self._config, name, '')))
             self._refresh_linux_client_status()
 
         for widget, value in [
@@ -1005,6 +1034,50 @@ class SettingsTab(QWidget):
     def _on_upstream_mode_changed(self, *_args: object) -> None:
         self._config.upstream_transport_mode = cast('str', self._upstream_mode_combo.currentData())
         self._sync_manual_proxy_credentials_timer()
+
+    def _browse_rosemary_path(
+        self, setting_name: str, edit: QLineEdit, folder: bool, _checked: bool = False
+    ) -> None:
+        current = edit.text().strip()
+        if folder:
+            title = (
+                tr('settings.linux_client.rosemary_prefix')
+                if setting_name == 'rosemary_prefix_path'
+                else tr('settings.linux_client.rosemary_bundle')
+            )
+            selected = QFileDialog.getExistingDirectory(self, title, current)
+        else:
+            selected, _filter = QFileDialog.getOpenFileName(
+                self, tr('settings.linux_client.rosemary_binary'), current
+            )
+        if selected:
+            edit.setText(selected)
+            self._on_rosemary_path_edited(setting_name, edit)
+
+    def _on_rosemary_path_edited(self, setting_name: str, edit: QLineEdit) -> None:
+        if platform_linux is None:
+            return
+        path = edit.text().strip()
+        if path == getattr(self._config, setting_name, ''):
+            return
+        proxy_master = getattr(self._tray, 'proxy_master', None) if self._tray else None
+        proxy_was_running = bool(proxy_master is not None and proxy_master.is_running)
+        if proxy_was_running and proxy_master is not None:
+            proxy_master.stop()
+        mod_manager = getattr(self._tray, 'mod_manager', None) if self._tray else None
+        if mod_manager is not None:
+            mod_manager.restore_all()
+        setattr(self._config, setting_name, path)
+        platform_linux.set_rosemary_paths(
+            self._config.rosemary_app_path,
+            self._config.rosemary_binary_path,
+            self._config.rosemary_prefix_path,
+        )
+        if mod_manager is not None:
+            mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+        if proxy_was_running and proxy_master is not None:
+            proxy_master.start()
+        self._refresh_linux_client_status()
 
     def _on_linux_client_changed(self, *_args: object) -> None:
         if not sys.platform.startswith('linux'):

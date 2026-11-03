@@ -94,6 +94,7 @@ def test_read_linux_sober_original_asset_from_apk(
         archive.writestr('assets/android/textures/sky/sky512_bk.tex', b'sky')
 
     monkeypatch.setattr(platform_targets.sys, 'platform', 'linux')
+    monkeypatch.setattr(platform_linux, '_linux_client_preference', 'sober')
     monkeypatch.setattr(platform_linux, 'SOBER_DATA_DIR', sober_data)
     monkeypatch.setattr(platform_linux, 'SOBER_LEGACY_EXE_DIR', sober_data / 'exe')
 
@@ -136,6 +137,7 @@ def test_read_linux_sober_original_directory_from_apk(
         archive.writestr('assets/content/fonts/families/nested/ignored.json', b'{}')
 
     monkeypatch.setattr(platform_targets.sys, 'platform', 'linux')
+    monkeypatch.setattr(platform_linux, '_linux_client_preference', 'sober')
     monkeypatch.setattr(platform_linux, 'SOBER_DATA_DIR', sober_data)
     monkeypatch.setattr(platform_linux, 'SOBER_LEGACY_EXE_DIR', sober_data / 'exe')
     monkeypatch.setattr(

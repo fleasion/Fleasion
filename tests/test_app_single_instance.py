@@ -761,6 +761,8 @@ def test_linux_env_proxy_migration_adopts_running_sober_without_relaunch(
     monkeypatch.setattr(dialogs_startup_module, 'get_icon_path', lambda: None)
     monkeypatch.setattr(dialogs_startup_module.sys, 'platform', 'linux')
     monkeypatch.setattr(dialogs_startup_module, 'run_in_thread', _callable_callback(lambda function: function))
+    monkeypatch.setattr(dialogs_startup_module, 'selected_linux_client_app_id', lambda: 'org.vinegarhq.Sober')
+    monkeypatch.setattr(dialogs_startup_module, 'selected_linux_client_display_name', lambda: 'Sober')
 
     _show_env_proxy_migration(config, monitor)
 
@@ -1913,6 +1915,7 @@ def test_linux_browser_sober_launch_is_always_adopted_without_relaunch(
     monkeypatch.setattr(core_module.sys, 'platform', 'linux')
     monkeypatch.setattr(roblox_monitor_module, 'is_roblox_running', lambda: True)
     monkeypatch.setattr(roblox_monitor_module, 'is_studio_running', lambda: False)
+    monkeypatch.setattr(roblox_monitor_module, 'selected_linux_client_app_id', lambda: 'org.vinegarhq.Sober')
     monkeypatch.setattr(
         roblox_monitor_module, 'run_in_thread', _callable_callback(lambda function: function)
     )
