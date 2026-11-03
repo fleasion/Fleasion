@@ -67,7 +67,7 @@ def _valid_h2_request_target(method: bytes | None, path: bytes | None) -> bool:
     )
 
 
-def _as_http1(headers: H2Headers, body: bytes, *, request: bool) -> bytes:
+def _as_http1(headers: H2Headers, body: bytes | bytearray, *, request: bool) -> bytes:
     pseudo = dict(headers)
     authority = b''
     if request:
@@ -164,7 +164,7 @@ class _MessageWriter(asyncio.StreamWriter):
         self._callback = callback
         self._reserve = reserve
         self._release = release
-        self._buffer = bytearray()
+        self._buffer: bytes | bytearray = b''
         self._closing = False
         self.sent = False
 
@@ -177,19 +177,24 @@ class _MessageWriter(asyncio.StreamWriter):
             msg = 'HTTP feature message exceeds HTTP/2 bridge limit'
             raise ValueError(msg)
         self._reserve(amount)
-        previous = len(self._buffer)
+        if not self._buffer and isinstance(data, bytes):
+            self._buffer = data
+            return
+        buffer = bytearray(self._buffer) if isinstance(self._buffer, bytes) else self._buffer
+        previous_size = len(buffer)
         try:
-            self._buffer.extend(data)
+            buffer.extend(data.tobytes() if isinstance(data, memoryview) else data)
         except BaseException:
-            del self._buffer[previous:]
+            del buffer[previous_size:]
             self._release(amount)
             raise
+        self._buffer = buffer
 
     async def drain(self) -> None:
         if self._buffer:
             amount = len(self._buffer)
-            message = bytes(self._buffer)
-            self._buffer.clear()
+            message = self._buffer if isinstance(self._buffer, bytes) else bytes(self._buffer)
+            self._buffer = b''
             try:
                 await self._callback(message)
                 self.sent = True
@@ -200,7 +205,7 @@ class _MessageWriter(asyncio.StreamWriter):
         if not self._closing:
             self._closing = True
             amount = len(self._buffer)
-            self._buffer.clear()
+            self._buffer = b''
             self._release(amount)
 
     def is_closing(self) -> bool:
@@ -698,7 +703,7 @@ class H2FeatureBridge:
                     else:
                         message = _as_http1(
                             request.response_headers,
-                            bytes(request.response_body),
+                            request.response_body,
                             request=False,
                         )
                         if request.response_trailers is not None:
