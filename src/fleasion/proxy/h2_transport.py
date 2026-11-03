@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -185,6 +186,12 @@ class _Request:
     response_headers: H2Headers | None = None
     response_body: bytearray = field(default_factory=bytearray)
     response_rejected: bool = False
+    request_trailers: H2Headers | None = None
+    request_trailer_expected_headers: H2Headers | None = None
+    request_trailer_expected_body_hash: bytes | None = None
+    response_trailers: H2Headers | None = None
+    trailer_expected_headers: H2Headers | None = None
+    trailer_expected_body_hash: bytes | None = None
 
 
 class _Peer:
@@ -225,15 +232,30 @@ class _Peer:
             self.writer.write(self.h2.data_to_send())
         await self.writer.drain()
 
-    async def send(self, stream: int, headers: H2Headers, body: bytes) -> None:
+    async def send(
+        self,
+        stream: int,
+        headers: H2Headers,
+        body: bytes,
+        *,
+        trailers: H2Headers | None = None,
+    ) -> None:
         async with self.lock:
             if self.terminated:
                 msg = 'HTTP/2 peer has terminated'
                 raise ConnectionError(msg)
-            self.h2.send_headers(stream, headers, end_stream=not body)
+            self.h2.send_headers(stream, headers, end_stream=not body and trailers is None)
             self.writer.write(self.h2.data_to_send())
         await self.writer.drain()
-        await self._send_body(stream, body)
+        await self._send_body(stream, body, end_stream=trailers is None)
+        if trailers is not None:
+            async with self.lock:
+                if self.terminated:
+                    msg = 'HTTP/2 peer has terminated'
+                    raise ConnectionError(msg)
+                self.h2.send_headers(stream, trailers, end_stream=True)
+                self.writer.write(self.h2.data_to_send())
+            await self.writer.drain()
 
     async def send_informational(self, stream: int, headers: H2Headers) -> None:
         async with self.lock:
@@ -249,6 +271,8 @@ class _Peer:
         headers: H2Headers,
         body: bytes,
         on_open: Callable[[int], None],
+        *,
+        trailers: H2Headers | None = None,
     ) -> None:
         # Reserve and open the new stream atomically to prevent duplicate IDs
         async with self.lock:
@@ -256,13 +280,21 @@ class _Peer:
                 msg = 'HTTP/2 peer has terminated'
                 raise ConnectionError(msg)
             stream = self.h2.get_next_available_stream_id()
-            self.h2.send_headers(stream, headers, end_stream=not body)
+            self.h2.send_headers(stream, headers, end_stream=not body and trailers is None)
             on_open(stream)
             self.writer.write(self.h2.data_to_send())
         await self.writer.drain()
-        await self._send_body(stream, body)
+        await self._send_body(stream, body, end_stream=trailers is None)
+        if trailers is not None:
+            async with self.lock:
+                if self.terminated:
+                    msg = 'HTTP/2 peer has terminated'
+                    raise ConnectionError(msg)
+                self.h2.send_headers(stream, trailers, end_stream=True)
+                self.writer.write(self.h2.data_to_send())
+            await self.writer.drain()
 
-    async def _send_body(self, stream: int, body: bytes) -> None:
+    async def _send_body(self, stream: int, body: bytes, *, end_stream: bool = True) -> None:
         offset = 0
         while offset < len(body):
             async with self.lock:
@@ -280,7 +312,9 @@ class _Peer:
                 )
                 if count:
                     end = offset + count
-                    self.h2.send_data(stream, body[offset:end], end_stream=end == len(body))
+                    self.h2.send_data(
+                        stream, body[offset:end], end_stream=end_stream and end == len(body)
+                    )
                     offset = end
                     self.writer.write(self.h2.data_to_send())
                 else:
@@ -344,12 +378,19 @@ class H2FeatureBridge:
 
         async def send_request(message: bytes) -> None:
             headers, body = _as_http2(message, request=True, host=self.host)
+            trailers = request.request_trailers
+            if trailers is not None and (
+                request.request_trailer_expected_headers != headers
+                or request.request_trailer_expected_body_hash != hashlib.sha256(body).digest()
+            ):
+                msg = 'Cannot forward HTTP/2 request trailers after request modification'
+                raise ValueError(msg)
 
             def register(upstream_id: int) -> None:
                 request.upstream_id = upstream_id
                 self.upstream_requests[upstream_id] = request
 
-            await self.server.open_request(headers, body, register)
+            await self.server.open_request(headers, body, register, trailers=trailers)
 
         async def send_response(message: bytes) -> None:
             nonlocal final_response_sent
@@ -359,13 +400,27 @@ class H2FeatureBridge:
             if 100 <= status < 200:
                 await self.client.send_informational(stream, headers)
             else:
-                await self.client.send(stream, headers, body)
+                trailers = request.response_trailers
+                if trailers is not None and (
+                    request.trailer_expected_headers != headers
+                    or request.trailer_expected_body_hash != hashlib.sha256(body).digest()
+                ):
+                    msg = 'Cannot forward HTTP/2 trailers after response modification'
+                    raise ValueError(msg)
+                await self.client.send(stream, headers, body, trailers=trailers)
                 final_response_sent = True
 
         upstream_writer = _MessageWriter(send_request)
         response_writer = _MessageWriter(send_response)
         request_reader = asyncio.StreamReader()
         body = bytes(request.body)
+        if request.request_trailers is not None:
+            original_message = _as_http1(request.headers, body, request=True)
+            expected_headers, expected_body = _as_http2(
+                original_message, request=True, host=self.host
+            )
+            request.request_trailer_expected_headers = expected_headers
+            request.request_trailer_expected_body_hash = hashlib.sha256(expected_body).digest()
         self.buffered_request_bytes -= len(request.body)
         request.body.clear()
         request_reader.feed_data(_as_http1(request.headers, body, request=True))
@@ -420,7 +475,18 @@ class H2FeatureBridge:
                     # One overloaded stream cannot starve the connection or other streams
                     await self.client.reset(event.stream_id)
                 else:
+                    expects_continue = any(
+                        name == b'expect' and value.strip().lower() == b'100-continue'
+                        for name, value in headers
+                    )
+                    if expects_continue:
+                        # This bridge buffers the request body before forwarding it
+                        headers = [(name, value) for name, value in headers if name != b'expect']
                     self.requests[event.stream_id] = _Request(headers)
+                    if expects_continue and event.stream_ended is None:
+                        await self.client.send_informational(
+                            event.stream_id, [(b':status', b'100')]
+                        )
             elif isinstance(event, DataReceived):
                 request = self.requests.get(event.stream_id)
                 if request is None:
@@ -450,15 +516,9 @@ class H2FeatureBridge:
                     self.tasks.add(task)
                     task.add_done_callback(self.tasks.discard)
             elif isinstance(event, TrailersReceived):
-                # The HTTP/1 feature adapter cannot preserve request trailers
-                request = self.requests.pop(event.stream_id, None)
+                request = self.requests.get(event.stream_id)
                 if request is not None:
-                    # The task may have been cancelled before its coroutine started
-                    self.buffered_request_bytes -= len(request.body)
-                    request.body.clear()
-                    if request.task is not None:
-                        request.task.cancel()
-                await self.client.reset(event.stream_id)
+                    request.request_trailers = list(event.headers)
             elif isinstance(event, StreamReset):
                 request = self.requests.pop(event.stream_id, None)
                 if request is not None:
@@ -503,13 +563,9 @@ class H2FeatureBridge:
                     request.response_body.extend(event.data)
                 await self.server.acknowledge(event.stream_id, event.flow_controlled_length)
             elif isinstance(event, TrailersReceived):
-                # Do not forward an incomplete response with silently dropped trailers
                 request = self.upstream_requests.get(event.stream_id)
-                if request is not None:
-                    request.response_rejected = True
-                    request.upstream_reader.set_exception(
-                        ConnectionError('HTTP/2 response trailers are not supported')
-                    )
+                if request is not None and not request.response_rejected:
+                    request.response_trailers = list(event.headers)
             elif isinstance(event, StreamEnded):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None and not request.response_rejected:
@@ -518,13 +574,23 @@ class H2FeatureBridge:
                             ConnectionError('HTTP/2 response missing final headers')
                         )
                     else:
-                        request.upstream_reader.feed_data(
-                            _as_http1(
-                                request.response_headers,
-                                bytes(request.response_body),
-                                request=False,
-                            )
+                        message = _as_http1(
+                            request.response_headers,
+                            bytes(request.response_body),
+                            request=False,
                         )
+                        if request.response_trailers is not None:
+                            expected_headers, expected_body = _as_http2(
+                                message,
+                                request=False,
+                                host=self.host,
+                                request_method=dict(request.headers).get(b':method'),
+                            )
+                            request.trailer_expected_headers = expected_headers
+                            request.trailer_expected_body_hash = hashlib.sha256(
+                                expected_body
+                            ).digest()
+                        request.upstream_reader.feed_data(message)
                         request.upstream_ended = True
                         request.upstream_reader.feed_eof()
                     self._release_response_body(request)

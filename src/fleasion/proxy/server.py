@@ -343,6 +343,7 @@ class RawBody:
     wire: bytes
     payload: bytes
     was_chunked: bool
+    has_trailers: bool = False
 
 
 def _decompress_body(body: bytes, headers: dict[bytes, bytes]) -> bytes:
@@ -1141,6 +1142,7 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
     if b'chunked' in te:
         wire = bytearray()
         payload = bytearray()
+        has_trailers = False
         while True:
             try:
                 size_line = await reader.readline()
@@ -1162,6 +1164,7 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
                     wire += trailer_line
                     if trailer_line in {b'\r\n', b'\n'}:
                         break
+                    has_trailers = True
                 break
             try:
                 chunk = await reader.readexactly(chunk_size)
@@ -1175,7 +1178,12 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
                 crlf = exc.partial
             wire += chunk + crlf
             payload += chunk
-        return RawBody(wire=bytes(wire), payload=bytes(payload), was_chunked=True)
+        return RawBody(
+            wire=bytes(wire),
+            payload=bytes(payload),
+            was_chunked=True,
+            has_trailers=has_trailers,
+        )
 
     if cl_raw:
         try:
@@ -1483,6 +1491,30 @@ async def _copy_tunnel_stream(
         if log_entry is not None:
             log_entry['size'] = log_entry.get('size', 0) + len(data)
             log_entry['ms'] = round((time.time() - started) * 1000)
+
+
+async def _relay_upgraded_streams(
+    client_reader: asyncio.StreamReader,
+    client_writer: asyncio.StreamWriter,
+    upstream_reader: asyncio.StreamReader,
+    upstream_writer: asyncio.StreamWriter,
+) -> None:
+    """Relay opaque bytes after an HTTP/1 protocol upgrade."""
+    tasks = (
+        asyncio.create_task(_copy_tunnel_stream(client_reader, upstream_writer, None, 0.0)),
+        asyncio.create_task(_copy_tunnel_stream(upstream_reader, client_writer, None, 0.0)),
+    )
+    try:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            try:
+                task.result()
+            except ConnectionError, OSError:
+                pass
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _read_client_settings_dictionary_response(
@@ -3277,6 +3309,9 @@ class FleasionProxy:
                 # Read request body. payload is dechunked; wire preserves chunk framing.
                 req_body = await _read_body_wire(reader, req_headers)
                 req_body_raw = req_body.payload
+                request_has_trailers = req_body.has_trailers
+                original_request_headers = req_raw.raw_header_block
+                original_request_wire = req_body.wire
 
                 parts = req_first.split(b' ', 2)
                 method = parts[0].decode('ascii', errors='replace') if parts else ''
@@ -3381,6 +3416,14 @@ class FleasionProxy:
                                 log_entry['method'] = method
                                 log_entry['path'] = path
 
+                if request_has_trailers and (
+                    not req_body.has_trailers
+                    or req_raw.raw_header_block != original_request_headers
+                    or req_body.wire != original_request_wire
+                ):
+                    msg = 'Cannot rewrite an HTTP request carrying chunked trailers'
+                    raise ValueError(msg)
+
                 response_writer.begin(
                     log_entry,
                     hold=self._intercept_all_hosts and self._intercept_matches(host, path),
@@ -3432,6 +3475,9 @@ class FleasionProxy:
 
                 # Modify batch request body if needed
                 if is_batch:
+                    if request_has_trailers:
+                        msg = 'Cannot process asset batches carrying chunked trailers'
+                        raise ValueError(msg)
                     # Decompress for reading/modifying, send uncompressed to upstream
                     req_body_plain = _decompress_body(req_body_raw, req_headers)
                     # Unique ID for this specific batch request/response pair.
@@ -3465,6 +3511,9 @@ class FleasionProxy:
                         _build_modified_request(req_first, req_headers, req_body_modified)
                     )
                 elif host == GAMEJOIN_HOST:
+                    if request_has_trailers:
+                        msg = 'Cannot process gamejoin requests carrying chunked trailers'
+                        raise ValueError(msg)
                     # Module interceptors may modify or locally drop gamejoin requests.
                     gamejoin_flow, gamejoin_action = await forward_gamejoin_request(
                         path, req_raw, req_body, req_body_raw
@@ -3492,10 +3541,15 @@ class FleasionProxy:
                         )
                 else:
                     # Forward request as-is.
+                    if request_has_trailers and (
+                        upstream_req_first != req_first or upstream_req_headers is not req_headers
+                    ):
+                        msg = 'Cannot alter HTTP request headers carrying chunked trailers'
+                        raise ValueError(msg)
                     if not await ensure_upstream(path):
                         break
                     if (
-                        self._preserve_unmodified_wire_for_host(host)
+                        (self._preserve_unmodified_wire_for_host(host) or request_has_trailers)
                         and upstream_req_first == req_first
                         and upstream_req_headers is req_headers
                     ):
@@ -3530,6 +3584,18 @@ class FleasionProxy:
                 resp_raw = resp_result
                 resp_first, resp_headers = resp_raw.first_line, resp_raw.headers
                 status_code = _parse_status_code(resp_first)
+                if status_code == 101:
+                    # After Switching Protocols the connection is no longer HTTP
+                    response_writer.write(resp_raw.raw_header_block)
+                    await response_writer.drain()
+                    await response_writer.flush_pending_response()
+                    await _relay_upgraded_streams(
+                        reader,
+                        writer,
+                        cast('asyncio.StreamReader', up_reader),
+                        cast('asyncio.StreamWriter', up_writer),
+                    )
+                    return
                 response_has_body = (
                     method.upper() != 'HEAD'
                     and status_code not in {204, 304}
@@ -3729,8 +3795,15 @@ class FleasionProxy:
                         ):
                             custom_fflag_delivered_signature = None
 
+                # Trailers may attest to the original body or headers
+                if resp_body.has_trailers and response_modified:
+                    msg = 'Cannot rewrite an HTTP response carrying chunked trailers'
+                    raise ValueError(msg)
+
                 # Forward response to Roblox
-                if response_modified:
+                if resp_body.has_trailers:
+                    outgoing_response = resp_raw.raw_header_block + resp_body.wire
+                elif response_modified:
                     outgoing_response = _build_modified_response(
                         resp_first,
                         resp_headers,

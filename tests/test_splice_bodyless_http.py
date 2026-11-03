@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import pytest
 
@@ -28,7 +28,12 @@ def _empty_replacements() -> tuple[dict[str, str], set[str], dict[str, str], dic
 
 @asynccontextmanager
 async def _proxy_session(
-    handler: _HANDLER, *, authenticated_upstream: bool = True, host: str = _HOST
+    handler: _HANDLER,
+    *,
+    authenticated_upstream: bool = True,
+    host: str = _HOST,
+    mutate: Literal['request', 'response'] | None = None,
+    failures: list[str] | None = None,
 ) -> AsyncGenerator[tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
     proxy = FleasionProxy(
         texture_stripper=cast(
@@ -39,6 +44,11 @@ async def _proxy_session(
         host_certs={},
         intercept_hosts={host},
         tls_splice=True,
+        auto_replace_rules=(
+            [{'direction': mutate, 'match': 'DATA', 'replacement': 'EDIT'}]
+            if mutate is not None
+            else []
+        ),
     )
     upstream_server = await asyncio.start_server(handler, '127.0.0.1', 0)
     upstream_port = upstream_server.sockets[0].getsockname()[1]
@@ -63,6 +73,10 @@ async def _proxy_session(
                 await proxy._http_session(  # pyright: ignore[reportPrivateUsage]
                     first, reader, writer, host
                 )
+        except ValueError as exc:
+            if failures is None:
+                raise
+            failures.append(str(exc))
         finally:
             writer.close()
             await writer.wait_closed()
@@ -266,5 +280,138 @@ def test_bodyless_cdn_response_does_not_invent_content_length(status: int) -> No
             response = await asyncio.wait_for(reader.read(), 1)
             assert response.startswith(f'HTTP/1.1 {status}'.encode())
             assert b'content-length' not in response.lower()
+
+    asyncio.run(run())
+
+
+def test_spliced_http_upgrade_relays_opaque_application_bytes() -> None:
+    async def run() -> None:
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                request = await reader.readuntil(b'\r\n\r\n')
+                assert b'upgrade: websocket' in request.lower()
+                writer.write(
+                    b'HTTP/1.1 101 Switching Protocols\r\n'
+                    b'Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n'
+                )
+                await writer.drain()
+                payload = await asyncio.wait_for(reader.readexactly(4), 2)
+                assert payload == b'PING'
+                writer.write(b'PONG')
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _proxy_session(upstream) as (reader, writer):
+            writer.write(
+                b'GET /connect HTTP/1.1\r\nHost: apis.roblox.com\r\n'
+                b'Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n'
+            )
+            await writer.drain()
+            response = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 2)
+            assert response.startswith(b'HTTP/1.1 101 Switching Protocols')
+            writer.write(b'PING')
+            await writer.drain()
+            assert await asyncio.wait_for(reader.readexactly(4), 2) == b'PONG'
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('host', ['apis.roblox.com', 'clientsettingscdn.roblox.com'])
+def test_chunked_http_response_preserves_trailers(host: str) -> None:
+    async def run() -> None:
+        response = (
+            b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n'
+            b'Trailer: x-verification\r\nConnection: close\r\n\r\n'
+            b'4\r\nDATA\r\n0\r\nx-verification: valid\r\n\r\n'
+        )
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                await reader.readuntil(b'\r\n\r\n')
+                writer.write(response)
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _proxy_session(upstream, host=host) as (reader, writer):
+            writer.write(f'GET /data HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n'.encode())
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(), 2) == response
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('host', ['apis.roblox.com', 'clientsettingscdn.roblox.com'])
+def test_chunked_http_request_preserves_trailers(host: str) -> None:
+    async def run() -> None:
+        payload = b'4\r\nDATA\r\n0\r\nx-verification: valid\r\n\r\n'
+        received: list[bytes] = []
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                headers = await reader.readuntil(b'\r\n\r\n')
+                assert b'transfer-encoding: chunked' in headers.lower()
+                received.append(await asyncio.wait_for(reader.readuntil(b'0\r\nx-verification: valid\r\n\r\n'), 1))
+                writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK')
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _proxy_session(upstream, host=host) as (reader, writer):
+            writer.write(
+                f'POST /data HTTP/1.1\r\nHost: {host}\r\n'.encode()
+                + b'Transfer-Encoding: chunked\r\nTrailer: x-verification\r\n'
+                + b'Connection: close\r\n\r\n' + payload
+            )
+            await writer.drain()
+            response = await asyncio.wait_for(reader.read(), 2)
+            assert response.startswith(b'HTTP/1.1 200 OK')
+            assert response.endswith(b'OK')
+            assert received == [payload]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('mutate', ['request', 'response'])
+def test_chunked_integrity_trailer_rewrite_fails_closed(
+    mutate: Literal['request', 'response'],
+) -> None:
+    async def run() -> None:
+        host = 'clientsettingscdn.roblox.com'
+        failures: list[str] = []
+        payload = b'4\r\nDATA\r\n0\r\nx-verification: valid\r\n\r\n'
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                await reader.readuntil(b'\r\n\r\n')
+                if mutate == 'response':
+                    writer.write(
+                        b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n'
+                        b'Trailer: x-verification\r\nConnection: close\r\n\r\n' + payload
+                    )
+                    await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _proxy_session(upstream, host=host, mutate=mutate, failures=failures) as (
+            reader,
+            writer,
+        ):
+            request = (
+                f'POST /data HTTP/1.1\r\nHost: {host}\r\n'.encode()
+                + b'Transfer-Encoding: chunked\r\nTrailer: x-verification\r\n'
+                + b'Connection: close\r\n\r\n' + payload
+            ) if mutate == 'request' else (
+                f'GET /data HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n'.encode()
+            )
+            writer.write(request)
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(), 2) == b''
+            assert failures == [f'Cannot rewrite an HTTP {mutate} carrying chunked trailers']
 
     asyncio.run(run())

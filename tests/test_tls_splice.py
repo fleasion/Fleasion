@@ -311,3 +311,95 @@ def test_splice_closes_both_tls_directions_with_notify() -> None:
         await connection.run(cast('FleasionProxy', Session()), 'splice.test')
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('explicit', [True, False])
+def test_tls_splice_http1_upgrade_relays_binary_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool
+) -> None:
+    host = 'upgrade-splice.test'
+    ca, key = generate_ca(tmp_path)
+    cert, leaf_key = generate_host_cert(host, ca, key, tmp_path)
+    keylog = tmp_path / 'server.keys'
+    monkeypatch.setenv('FLEASION_SPLICE_KEYLOG', str(keylog))
+    upstream_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    upstream_context.load_cert_chain(cert, leaf_key)
+    upstream_context.minimum_version = upstream_context.maximum_version = ssl.TLSVersion.TLSv1_3
+    upstream_context.set_alpn_protocols(['http/1.1'])
+    upstream_context.keylog_filename = str(keylog)
+
+    async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            request = await reader.readuntil(b'\r\n\r\n')
+            assert b'upgrade: websocket' in request.lower()
+            writer.write(
+                b'HTTP/1.1 101 Switching Protocols\r\n'
+                b'Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n'
+            )
+            await writer.drain()
+            assert await asyncio.wait_for(reader.readexactly(4), 4) == b'PING'
+            writer.write(b'PONG')
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    def client(port: int) -> None:
+        context = ssl.create_default_context(cafile=str(ca))
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
+        context.set_alpn_protocols(['http/1.1'])
+        with socket.create_connection(('127.0.0.1', port), timeout=5) as raw:
+            if explicit:
+                raw.sendall(f'CONNECT {host}:443 HTTP/1.1\r\n\r\n'.encode())
+                tunnel = bytearray()
+                while not tunnel.endswith(b'\r\n\r\n'):
+                    tunnel.extend(raw.recv(1))
+                assert tunnel.startswith(b'HTTP/1.1 200')
+            with context.wrap_socket(raw, server_hostname=host) as tls:
+                assert tls.selected_alpn_protocol() == 'http/1.1'
+                tls.sendall(
+                    f'GET /upgrade HTTP/1.1\r\nHost: {host}\r\n'.encode()
+                    + b'Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n'
+                )
+                with tls.makefile('rb') as stream:
+                    headers = bytearray()
+                    while not headers.endswith(b'\r\n\r\n'):
+                        next_byte = stream.read(1)
+                        assert next_byte
+                        headers.extend(next_byte)
+                    assert headers.startswith(b'HTTP/1.1 101 Switching Protocols')
+                    assert b'content-length' not in headers.lower()
+                    tls.sendall(b'PING')
+                    assert stream.read(4) == b'PONG'
+
+    async def run() -> None:
+        server = await asyncio.start_server(upstream, '127.0.0.1', 0, ssl=upstream_context)
+        port = server.sockets[0].getsockname()[1]
+        proxy = FleasionProxy(
+            texture_stripper=cast(
+                'TextureStripper',
+                SimpleNamespace(
+                    config_manager=SimpleNamespace(
+                        get_all_replacements=lambda: (
+                            dict[str, str](), set[str](), dict[str, str](), dict[str, str]()
+                        )
+                    )
+                ),
+            ),
+            cache_scraper=cast('CacheScraper', SimpleNamespace(enabled=False)),
+            host_certs={},
+            port=0,
+            explicit_proxy=explicit,
+            tls_splice=True,
+            intercept_hosts={host},
+            upstream_endpoints={host: [UpstreamEndpoint(host, port, '127.0.0.1')]},
+        )
+        try:
+            await proxy.start()
+            await asyncio.wait_for(asyncio.to_thread(client, proxy.port), 12)
+        finally:
+            await proxy.stop()
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(run())

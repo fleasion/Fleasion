@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from h2.config import H2Configuration
 from h2.connection import H2Connection
-from h2.events import DataReceived, InformationalResponseReceived, RequestReceived, StreamEnded
+from h2.events import (
+    DataReceived, InformationalResponseReceived, RequestReceived, StreamEnded, TrailersReceived,
+)
 
 from fleasion.proxy.server import FleasionProxy
 from fleasion.proxy.upstream import UpstreamEndpoint
@@ -26,9 +28,11 @@ if TYPE_CHECKING:
 @pytest.mark.parametrize('explicit', [True, False])
 @pytest.mark.parametrize('stream_ids', [(1, 3), (1, 3, 5, 7)])
 @pytest.mark.parametrize('informational', [False, True])
+@pytest.mark.parametrize('trailers', [False, True])
+@pytest.mark.parametrize('request_trailers', [False, True])
 def test_tls_h2_multiplexed_replacements_and_flow_control(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool, goaway: bool,
-    stream_ids: tuple[int, ...], informational: bool,
+    stream_ids: tuple[int, ...], informational: bool, trailers: bool, request_trailers: bool,
 ) -> None:
     host = 'h2-splice.test'
     ca, key = generate_ca(tmp_path)
@@ -41,6 +45,7 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
     context.set_alpn_protocols(['h2'])
     context.keylog_filename = str(keylog)
     incoming: list[bytes] = []
+    incoming_trailers: dict[int, list[tuple[bytes, bytes]]] = {}
     replacement = 'x' * 150000
     request_body = b'original' * 12000
 
@@ -59,6 +64,8 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                         connection.acknowledge_received_data(
                             event.flow_controlled_length, event.stream_id
                         )
+                    elif isinstance(event, TrailersReceived):
+                        incoming_trailers[event.stream_id] = list(event.headers)
                     elif isinstance(event, StreamEnded):
                         incoming.append(bytes(bodies.pop(event.stream_id)))
                         if informational:
@@ -71,7 +78,11 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                             [(b':status', b'200')]
                             + ([(b'content-length', b'8')] if event.stream_id == 1 else []),
                         )
-                        connection.send_data(event.stream_id, b'original', end_stream=True)
+                        connection.send_data(event.stream_id, b'original', end_stream=not trailers)
+                        if trailers:
+                            connection.send_headers(
+                                event.stream_id, [(b'x-verification', b'ok')], end_stream=True
+                            )
                 if goaway and len(incoming) == len(stream_ids):
                     connection.close_connection()
                 writer.write(connection.data_to_send())
@@ -83,7 +94,7 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
 
-    def client(port: int) -> tuple[dict[int, bytes], dict[int, int]]:
+    def client(port: int) -> tuple[dict[int, bytes], dict[int, int], dict[int, list[tuple[bytes, bytes]]]]:
         ssl_context = ssl.create_default_context(cafile=str(ca))
         ssl_context.set_alpn_protocols(['h2'])
         with socket.create_connection(('127.0.0.1', port), timeout=10) as raw:
@@ -111,6 +122,8 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                 offsets = dict.fromkeys(stream_ids, 0)
                 responses = {stream: bytearray() for stream in stream_ids}
                 informational_counts = dict.fromkeys(stream_ids, 0)
+                received_trailers: dict[int, list[tuple[bytes, bytes]]] = {}
+                uploaded_trailer: set[int] = set()
                 done: set[int] = set()
                 while len(done) < len(stream_ids):
                     for stream in stream_ids:
@@ -125,8 +138,14 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                             offsets[stream] += size
                             remaining -= size
                             connection.send_data(
-                                stream, request_body[start : start + size], end_stream=not remaining
+                                stream, request_body[start : start + size],
+                                end_stream=not remaining and not request_trailers,
                             )
+                            if request_trailers and not remaining and stream not in uploaded_trailer:
+                                connection.send_headers(
+                                    stream, [(b'x-upload-trailer', b'ok')], end_stream=True
+                                )
+                                uploaded_trailer.add(stream)
                     tls.sendall(connection.data_to_send())
                     data = tls.recv(65536)
                     assert data
@@ -138,10 +157,12 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
                             )
                         elif isinstance(event, InformationalResponseReceived):
                             informational_counts[event.stream_id] += 1
+                        elif isinstance(event, TrailersReceived):
+                            received_trailers[event.stream_id] = list(event.headers)
                         elif isinstance(event, StreamEnded):
                             done.add(event.stream_id)
                 return ({stream: bytes(body) for stream, body in responses.items()},
-                        informational_counts)
+                        informational_counts, received_trailers)
 
     async def run() -> None:
         upstream_srv = await asyncio.start_server(server, '127.0.0.1', 0, ssl=context)
@@ -172,17 +193,23 @@ def test_tls_h2_multiplexed_replacements_and_flow_control(
             intercept_hosts={host},
             intercept_all_hosts=True,
             upstream_endpoints={host: [UpstreamEndpoint(host, port, '127.0.0.1')]},
-            auto_replace_rules=[
+            auto_replace_rules=[] if trailers or request_trailers else [
                 {'direction': 'request', 'match': 'original', 'replacement': 'rewritten'},
                 {'direction': 'response', 'match': 'original', 'replacement': replacement},
             ],
         )
         try:
             await proxy.start()
-            responses, hints = await asyncio.wait_for(asyncio.to_thread(client, proxy.port), timeout=15)
-            assert responses == dict.fromkeys(stream_ids, replacement.encode())
+            responses, hints, received = await asyncio.wait_for(asyncio.to_thread(client, proxy.port), timeout=15)
+            expected_body = b'original' if trailers or request_trailers else replacement.encode()
+            assert responses == dict.fromkeys(stream_ids, expected_body)
             assert hints == dict.fromkeys(stream_ids, int(informational))
-            assert incoming == [b'rewritten' * 12000] * len(stream_ids)
+            assert received == ({stream: [(b'x-verification', b'ok')] for stream in stream_ids} if trailers else {})
+            assert incoming == [request_body if trailers or request_trailers else b'rewritten' * 12000] * len(stream_ids)
+            assert incoming_trailers == (
+                {stream: [(b'x-upload-trailer', b'ok')] for stream in stream_ids}
+                if request_trailers else {}
+            )
         finally:
             await proxy.stop()
             upstream_srv.close()
