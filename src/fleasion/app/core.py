@@ -456,7 +456,7 @@ def run_application() -> None:
                 tr('app.linux_proxy_helper.start_denied')
             )
             return
-        if code == 'tls_self_test_failed':
+        if code in {'tls_self_test_failed', 'roblox_rejected_certificate'}:
             proxy_error_invoker.show_proxy_error.emit(code, dict(details))
             return
         if code not in {

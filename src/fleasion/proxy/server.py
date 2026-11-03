@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         ProxyRequestLogEntry as ProxyRequestLogEntry,
     )
 
+from .ca_rejection import is_certificate_rejection
 from .roblox_metadata import strip_roblox_metadata
 from .upstream import (
     AutoConnector,
@@ -1553,6 +1554,7 @@ class FleasionProxy:
         vpn_compat_max_assetdelivery_connections: int = 16,
         vpn_compat_max_cdn_connections: int = 32,
         custom_fflag_modifier: CustomFFlagModifier | None = None,
+        on_client_certificate_rejected: Callable[[str], None] | None = None,
         on_upstream_connect_failure: Callable[[str, str], None] | None = None,
         upstream_endpoint_refresher: Callable[[str], Sequence[UpstreamEndpoint | str]]
         | None = None,
@@ -1566,6 +1568,7 @@ class FleasionProxy:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
         self.custom_fflag_modifier = custom_fflag_modifier
+        self._on_client_certificate_rejected = on_client_certificate_rejected
         self.port = port
         self._module_interceptors: list[_ModuleInterceptor] = []
         if upstream_endpoints is None:
@@ -2474,6 +2477,8 @@ class FleasionProxy:
             return
         except OSError as exc:
             log_buffer.log('TLS', f'Explicit proxy TLS upgrade socket error for {host}: {exc!r}')
+            if self._on_client_certificate_rejected is not None and is_certificate_rejection(exc):
+                self._on_client_certificate_rejected(host)
             return
         except (RuntimeError, ValueError) as exc:
             log_buffer.log('Proxy', f'Explicit proxy TLS upgrade failed for {host}: {exc}')
