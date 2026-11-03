@@ -3511,7 +3511,10 @@ class FleasionProxy:
                     and b'content-length' not in resp_headers
                     and b'transfer-encoding' not in resp_headers
                 )
-                if close_delimited:
+                if not response_has_body:
+                    # HEAD, 1xx, 204 and 304 have no body even with Content-Length
+                    resp_body = RawBody(wire=b'', payload=b'', was_chunked=False)
+                elif close_delimited:
                     # HTTP/1 responses without framing end at upstream EOF
                     payload = await cast('asyncio.StreamReader', up_reader).read()
                     resp_body = RawBody(wire=payload, payload=payload, was_chunked=False)
