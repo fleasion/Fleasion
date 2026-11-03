@@ -158,3 +158,72 @@ def test_connection_budget_exhaustion_keeps_previously_buffered_stream(
         assert not bridge.client.terminated
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ('method', 'path'),
+    [
+        (b'GET', b'https://example.invalid/steal'),
+        (b'GET', b'/path with spaces'),
+        (b'GET', b'/path\twith-tab'),
+        (b'GET X', b'/path'),
+        (b'GET', b'*'),
+        (b'GET', b'/fragment#unencoded'),
+    ],
+)
+def test_invalid_h2_request_target_resets_only_that_stream(
+    method: bytes, path: bytes
+) -> None:
+    async def run() -> None:
+        bridge, writer, _ = _bridge()
+        peer = H2Connection()
+        await bridge.client.start()
+        peer.initiate_connection()
+        peer.receive_data(writer.take())
+        peer.send_headers(
+            1,
+            [
+                (b':method', method),
+                (b':scheme', b'https'),
+                (b':authority', b'apis.roblox.com'),
+                (b':path', path),
+            ],
+            end_stream=False,
+        )
+        peer.send_headers(3, _HEADERS, end_stream=False)
+        await bridge._receive_client(peer.data_to_send())  # pyright: ignore[reportPrivateUsage]
+        events = peer.receive_data(writer.take())
+        assert [e.stream_id for e in events if isinstance(e, StreamReset)] == [1]
+        assert list(bridge.requests) == [3]
+        assert not bridge.client.terminated
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ('method', 'path'),
+    [(b'OPTIONS', b'*'), (b'GET', b'/path%20with%20spaces?query=yes')],
+)
+def test_valid_h2_request_targets_still_pass(method: bytes, path: bytes) -> None:
+    async def run() -> None:
+        bridge, writer, _ = _bridge()
+        peer = H2Connection()
+        await bridge.client.start()
+        peer.initiate_connection()
+        peer.receive_data(writer.take())
+        peer.send_headers(
+            1,
+            [
+                (b':method', method),
+                (b':scheme', b'https'),
+                (b':authority', b'apis.roblox.com'),
+                (b':path', path),
+            ],
+            end_stream=False,
+        )
+        await bridge._receive_client(peer.data_to_send())  # pyright: ignore[reportPrivateUsage]
+        events = peer.receive_data(writer.take())
+        assert not any(isinstance(e, StreamReset) for e in events)
+        assert list(bridge.requests) == [1]
+
+    asyncio.run(run())

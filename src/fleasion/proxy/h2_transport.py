@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -49,6 +50,19 @@ _UPSTREAM_DRAIN_GRACE_SECONDS = 1.0
 _HOP_HEADERS = frozenset(
     {b'connection', b'keep-alive', b'proxy-connection', b'transfer-encoding', b'upgrade'}
 )
+
+
+def _valid_h2_request_target(method: bytes | None, path: bytes | None) -> bool:
+    if method is None or re.fullmatch(rb"[!#$%&'*+\-.^_`|~0-9A-Za-z]+", method) is None:
+        return False
+    if path == b'*':
+        return method == b'OPTIONS'
+    return bool(
+        path
+        and path.startswith(b'/')
+        and b'#' not in path
+        and all(0x21 <= char <= 0x7E for char in path)
+    )
 
 
 def _as_http1(headers: H2Headers, body: bytes, *, request: bool) -> bytes:
@@ -469,7 +483,9 @@ class H2FeatureBridge:
                     host == self.host
                     and pseudo.get(b':scheme') == b'https'
                     and pseudo.get(b':method') != b'CONNECT'
-                    and bool(pseudo.get(b':path'))
+                    and _valid_h2_request_target(
+                        pseudo.get(b':method'), pseudo.get(b':path')
+                    )
                 )
                 if not valid_request or len(self.requests) >= _MAX_ACTIVE_STREAMS:
                     # One overloaded stream cannot starve the connection or other streams
