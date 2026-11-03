@@ -22,9 +22,17 @@ def _installation(home: Path) -> LinuxClientInstallation:
     )
 
 
-def _row(value: str, *, domain: str = 'roblox.com', secure: str = '1', expires: int | None = None) -> bytes:
+def _row(
+    value: str,
+    *,
+    domain: str = 'roblox.com',
+    secure: str = '1',
+    expires: int | None = None,
+    host_only: str | None = None,
+) -> bytes:
     expires = int(time.time()) + 86400 if expires is None else expires
-    return f'.ROBLOSECURITY\t{value}\t{domain}\t/\t{secure}\t{expires}\n'.encode()
+    suffix = f'\t{host_only}' if host_only is not None else ''
+    return f'.ROBLOSECURITY\t{value}\t{domain}\t/\t{secure}\t{expires}{suffix}\n'.encode()
 
 
 def test_rosemary_parser_accepts_only_live_secure_domain_scoped_cookie() -> None:
@@ -35,6 +43,38 @@ def test_rosemary_parser_accepts_only_live_secure_domain_scoped_cookie() -> None
     assert roblox_auth._parse_rosemary_cookie_tsv(_row('bad', expires=int(time.time()) - 2)) is None
     assert roblox_auth._parse_rosemary_cookie_tsv(valid + _row('different')) is None
     assert roblox_auth._parse_rosemary_cookie_tsv(b'\xff') is None
+
+
+def test_rosemary_parser_accepts_current_seven_column_cookie_store() -> None:
+    current = _row('live-synthetic-token', host_only='0')
+    assert roblox_auth._parse_rosemary_cookie_tsv(current) == 'live-synthetic-token'
+    assert roblox_auth._parse_rosemary_cookie_tsv(
+        _row('invalid-host-only', host_only='1')
+    ) is None
+    assert roblox_auth._parse_rosemary_cookie_tsv(
+        _row('invalid-host-only', host_only='invalid')
+    ) is None
+    assert roblox_auth._parse_rosemary_cookie_tsv(
+        _row('invalid-expired', host_only='0', expires=int(time.time()) - 1)
+    ) is None
+    assert roblox_auth._parse_rosemary_cookie_tsv(
+        _row('not-domain-scoped', host_only='0', domain='example.com')
+    ) is None
+    assert roblox_auth._parse_rosemary_cookie_tsv(
+        current.rstrip(b'\n') + b'\tunexpected\n'
+    ) is None
+
+
+def test_rosemary_provider_reads_current_cookie_store_without_modification(tmp_path: Path) -> None:
+    path = tmp_path / 'com.roblox.RobloxPlayer.cookies.tsv'
+    payload = (
+        b'GuestData\tvalue\troblox.com\t/\t0\t0\t1\n'
+        + _row('local-synthetic-token', host_only='0')
+        + b'rbx-ip2\tvalue\troblox.com\t/\t1\t0\t0\n'
+    )
+    path.write_bytes(payload)
+    assert roblox_auth.ROSEMARY_LOCAL_AUTH_PROVIDER.read_roblosecurity(path) == 'local-synthetic-token'
+    assert path.read_bytes() == payload
 
 
 def test_rosemary_cookie_source_uses_nutmeg_prefix_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

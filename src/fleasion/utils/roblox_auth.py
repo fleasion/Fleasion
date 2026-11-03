@@ -764,9 +764,13 @@ def _parse_rosemary_cookie_tsv(payload: bytes) -> str | None:
         if not line.startswith('.ROBLOSECURITY\t'):
             continue
         fields = line.split('\t')
-        if len(fields) != 6:
+        if len(fields) not in {6, 7}:
             return None
-        name, value, domain, cookie_path, secure, expires = fields
+        name, value, domain, cookie_path, secure, expires = fields[:6]
+        # Rosemary's current TSV format includes a seventh host-only flag
+        # A domain-scoped Roblox session must be valid on Roblox subdomains
+        if len(fields) == 7 and fields[6] != '0':
+            return None
         try:
             expiry = int(expires)
         except ValueError:
