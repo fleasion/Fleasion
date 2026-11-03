@@ -73,7 +73,7 @@ async def _proxy_session(
                 await proxy._http_session(  # pyright: ignore[reportPrivateUsage]
                     first, reader, writer, host
                 )
-        except ValueError as exc:
+        except (TimeoutError, ValueError) as exc:
             if failures is None:
                 raise
             failures.append(str(exc))
@@ -459,5 +459,75 @@ def test_incomplete_upstream_message_never_reaches_client(
             assert await asyncio.wait_for(reader.read(), 2) == b''
             assert len(failures) == 1
             assert error in failures[0]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    'upstream_response',
+    [
+        b'HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nPARTIAL',
+        b'HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nPARTIAL',
+        b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nPAR',
+    ],
+)
+def test_stalled_upstream_body_closes_proxy_session(
+    monkeypatch: pytest.MonkeyPatch, upstream_response: bytes,
+) -> None:
+    async def run() -> None:
+        from fleasion.proxy import server as proxy_server
+
+        monkeypatch.setattr(proxy_server, '_HTTP_BODY_IDLE_TIMEOUT', 0.05, raising=False)
+        release = asyncio.Event()
+        failures: list[str] = []
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                await reader.readuntil(b'\r\n\r\n')
+                writer.write(upstream_response)
+                await writer.drain()
+                await release.wait()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _proxy_session(upstream, failures=failures) as (reader, writer):
+            try:
+                writer.write(_REQUEST)
+                await writer.drain()
+                assert await asyncio.wait_for(reader.read(), 0.5) == b''
+                assert failures == ['HTTP body read stalled']
+            finally:
+                release.set()
+
+    asyncio.run(run())
+
+
+def test_progressing_unframed_upstream_response_survives_idle_intervals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        from fleasion.proxy import server as proxy_server
+
+        monkeypatch.setattr(proxy_server, '_HTTP_BODY_IDLE_TIMEOUT', 0.09)
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                await reader.readuntil(b'\r\n\r\n')
+                writer.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n')
+                await writer.drain()
+                for fragment in (b'A', b'B', b'C', b'D', b'E', b'F'):
+                    await asyncio.sleep(0.03)
+                    writer.write(fragment)
+                    await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _proxy_session(upstream) as (reader, writer):
+            writer.write(_REQUEST)
+            await writer.drain()
+            response = await asyncio.wait_for(reader.read(), 1)
+            assert response.endswith(b'ABCDEF')
 
     asyncio.run(run())

@@ -74,3 +74,52 @@ def test_valid_chunked_message_retains_trailers() -> None:
         assert parsed.has_trailers
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ('headers', 'partial_wire'),
+    [
+        ({b'content-length': b'8'}, b'PART'),
+        ({b'transfer-encoding': b'chunked'}, b'3'),
+        ({b'transfer-encoding': b'chunked'}, b'3\r\nA'),
+        ({b'transfer-encoding': b'chunked'}, b'1\r\nA'),
+        ({b'transfer-encoding': b'chunked'}, b'0\r\nx-proof: '),
+    ],
+)
+def test_stalled_http_body_expires_without_peer_eof(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[bytes, bytes], partial_wire: bytes
+) -> None:
+    async def run() -> None:
+        monkeypatch.setattr(proxy_server, '_HTTP_BODY_IDLE_TIMEOUT', 0.05, raising=False)
+        reader = asyncio.StreamReader()
+        reader.feed_data(partial_wire)
+        with pytest.raises(TimeoutError, match='HTTP body read stalled'):
+            await asyncio.wait_for(
+                proxy_server._read_body_wire(reader, headers), 0.5  # pyright: ignore[reportPrivateUsage]
+            )
+
+    asyncio.run(run())
+
+
+def test_progressing_body_may_exceed_one_idle_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        monkeypatch.setattr(proxy_server, '_HTTP_BODY_IDLE_TIMEOUT', 0.07, raising=False)
+        reader = asyncio.StreamReader()
+
+        async def supply() -> None:
+            for ch in b'ABCDEFGH':
+                await asyncio.sleep(0.02)
+                reader.feed_data(bytes([ch]))
+
+        sender = asyncio.create_task(supply())
+        body = await asyncio.wait_for(
+            proxy_server._read_body_wire(  # pyright: ignore[reportPrivateUsage]
+                reader, {b'content-length': b'8'}
+            ), 1
+        )
+        await sender
+        assert body.payload == b'ABCDEFGH'
+
+    asyncio.run(run())

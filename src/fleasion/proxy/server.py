@@ -1154,6 +1154,54 @@ async def _read_headers(  # pyright: ignore[reportUnusedFunction]
     return raw.first_line, raw.headers
 
 
+_HTTP_BODY_IDLE_TIMEOUT = 30.0
+_HTTP_BODY_READ_CHUNK = 64 * 1024
+
+
+async def _read_http_body_line(reader: asyncio.StreamReader) -> bytes:
+    try:
+        async with asyncio.timeout(_HTTP_BODY_IDLE_TIMEOUT):
+            return await reader.readline()
+    except TimeoutError as exc:
+        msg = 'HTTP body read stalled'
+        raise TimeoutError(msg) from exc
+
+
+async def _read_http_body_bytes(
+    reader: asyncio.StreamReader,
+    length: int,
+    *,
+    context: str,
+) -> bytes:
+    body = bytearray()
+    while len(body) < length:
+        try:
+            async with asyncio.timeout(_HTTP_BODY_IDLE_TIMEOUT):
+                chunk = await reader.read(min(length - len(body), _HTTP_BODY_READ_CHUNK))
+        except TimeoutError as exc:
+            msg = 'HTTP body read stalled'
+            raise TimeoutError(msg) from exc
+        if not chunk:
+            msg = f'Incomplete HTTP {context}'
+            raise ValueError(msg)
+        body += chunk
+    return bytes(body)
+
+
+async def _read_http_body_to_eof(reader: asyncio.StreamReader) -> bytes:
+    body = bytearray()
+    while True:
+        try:
+            async with asyncio.timeout(_HTTP_BODY_IDLE_TIMEOUT):
+                chunk = await reader.read(_HTTP_BODY_READ_CHUNK)
+        except TimeoutError as exc:
+            msg = 'HTTP body read stalled'
+            raise TimeoutError(msg) from exc
+        if not chunk:
+            return bytes(body)
+        body += chunk
+
+
 async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, bytes]) -> RawBody:
     """Read a complete HTTP body, preserving wire bytes and dechunked payload."""
     te = headers.get(b'transfer-encoding')
@@ -1170,7 +1218,7 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
         payload = bytearray()
         has_trailers = False
         while True:
-            size_line = await reader.readline()
+            size_line = await _read_http_body_line(reader)
             if not size_line.endswith(b'\r\n'):
                 msg = 'Incomplete HTTP chunk size line'
                 raise ValueError(msg)
@@ -1182,7 +1230,7 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
             chunk_size = int(size_str, 16)
             if chunk_size == 0:
                 while True:
-                    trailer_line = await reader.readline()
+                    trailer_line = await _read_http_body_line(reader)
                     if not trailer_line.endswith(b'\r\n'):
                         msg = 'Incomplete HTTP chunk trailers'
                         raise ValueError(msg)
@@ -1194,12 +1242,8 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
                         raise ValueError(msg)
                     has_trailers = True
                 break
-            try:
-                chunk = await reader.readexactly(chunk_size)
-                crlf = await reader.readexactly(2)
-            except asyncio.IncompleteReadError as exc:
-                msg = 'Incomplete HTTP chunk body'
-                raise ValueError(msg) from exc
+            chunk = await _read_http_body_bytes(reader, chunk_size, context='chunk body')
+            crlf = await _read_http_body_bytes(reader, 2, context='chunk body')
             if crlf != b'\r\n':
                 msg = 'Invalid HTTP chunk terminator'
                 raise ValueError(msg)
@@ -1219,11 +1263,7 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
         length = int(cl_raw)
         if length == 0:
             return RawBody(wire=b'', payload=b'', was_chunked=False)
-        try:
-            body = await reader.readexactly(length)
-        except asyncio.IncompleteReadError as exc:
-            msg = 'Incomplete HTTP content-length body'
-            raise ValueError(msg) from exc
+        body = await _read_http_body_bytes(reader, length, context='content-length body')
         return RawBody(wire=body, payload=body, was_chunked=False)
 
     return RawBody(wire=b'', payload=b'', was_chunked=False)
@@ -3639,7 +3679,9 @@ class FleasionProxy:
                     resp_body = RawBody(wire=b'', payload=b'', was_chunked=False)
                 elif close_delimited:
                     # HTTP/1 responses without framing end at upstream EOF
-                    payload = await cast('asyncio.StreamReader', up_reader).read()
+                    payload = await _read_http_body_to_eof(
+                        cast('asyncio.StreamReader', up_reader)
+                    )
                     resp_body = RawBody(wire=payload, payload=payload, was_chunked=False)
                 else:
                     resp_body = await _read_body_wire(
