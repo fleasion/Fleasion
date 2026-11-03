@@ -1115,7 +1115,7 @@ def test_rosemary_select_account_does_not_write_guest_cookie(
     assert written == []
     assert owner.__dict__['_last_switched_account'] is account
     assert owner.selected_launch_account_cookie() == 'cookie-secret'
-    assert len(notifications) == 1
+    assert notifications == []
 
 
 @pytest.mark.parametrize(

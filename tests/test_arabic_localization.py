@@ -50,7 +50,7 @@ def test_arabic_text_and_technical_literals_are_distinguished() -> None:
     assert ARABIC['ui.gui.conflicts.col_losers'] == 'القواعد المتجاوزة'
     assert ARABIC['ui.gui.subplace_joiner_tab.jobids'] == 'معرّفات الجلسات'
     assert 'placeID' in ARABIC['ui.gui.rando_stuff_tab.reserved_server_placeid']
-    assert 'Roblox' in ARABIC['ui.gui.rando_stuff_tab.this_account_will_be_used_for_fleasion']
+    assert 'Fleasion' in ARABIC['ui.gui.rando_stuff_tab.select_for_launches']
     assert 'Shift Lock' in ARABIC['modifications.builtin.texture.shiftlock_cursor']
     assert ARABIC['ui.cache.rbxm_preview.delete_instance'] == 'حذف المثيل'
     assert ARABIC['ui.gui.settings_tab.upstream_transport'] == 'طريقة الاتصال الصادر'

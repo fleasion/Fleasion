@@ -388,7 +388,7 @@ def prompt_first_linux_client_choice(config_manager: ConfigManager, tray: System
         return
 
     selected = platform_linux.get_selected_linux_client_installation()
-    choices = [(tr('settings.linux_client.use_auto'), 'auto')]
+    choices = [(tr('ui.gui.settings_tab.auto'), 'auto')]
     choices.extend((item.display_name, item.key) for item in installed)
     initial = next(
         (

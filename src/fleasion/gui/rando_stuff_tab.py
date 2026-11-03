@@ -2133,16 +2133,6 @@ class RandoStuffTab(QWidget):
                 'accounts',
                 f'Selected account for Fleasion launches on {platform_name}: {username}',
             )
-            message = (
-                tr('ui.gui.rando_stuff_tab.select_for_launches_info')
-                if _is_rosemary_client()
-                else tr('ui.gui.rando_stuff_tab.this_account_will_be_used_for_fleasion')
-            )
-            QMessageBox.information(
-                self,
-                tr('ui.gui.rando_stuff_tab.account_selected'),
-                message,
-            )
             return
 
         def _switch() -> None:

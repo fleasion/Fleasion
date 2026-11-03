@@ -1347,8 +1347,8 @@ def test_dutch_reviewed_network_and_account_actions() -> None:
     assert DUTCH['ui.gui.rando_stuff_tab.switch_to_selected'] in DUTCH[
         'ui.gui.rando_stuff_tab.use_switch_to_selected_first_to_pick'
     ]
-    assert DUTCH['ui.gui.rando_stuff_tab.this_account_will_be_used_for_fleasion'] == (
-        'Dit account wordt gebruikt wanneer Fleasion Roblox op macOS start.'
+    assert DUTCH['ui.gui.rando_stuff_tab.select_for_launches'] == (
+        'Gebruiken voor Fleasion-starts'
     )
 
 

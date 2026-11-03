@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from functools import partial
 from pathlib import Path
-from threading import Thread
 from typing import TYPE_CHECKING, Literal, cast, override
 
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QTimer
@@ -177,12 +176,6 @@ class SettingsTab(QWidget):
         self._manual_proxy_credentials_timer.timeout.connect(
             self._revert_manual_proxy_without_credentials
         )
-        self._linux_status_thread: Thread | None = None
-        self._linux_status_pending = False
-        self._linux_status_text = ''
-        self._linux_status_timer = QTimer(self)
-        self._linux_status_timer.setInterval(25)
-        self._linux_status_timer.timeout.connect(self._receive_linux_client_status)
         if not defer_setup:
             for _ in self.build_ui():
                 pass
@@ -351,32 +344,20 @@ class SettingsTab(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(QLabel(tr('ui.gui.settings_tab.client')))
         self._linux_client_combo = DropdownComboBox()
-        self._linux_client_combo.addItem(tr('ui.gui.settings_tab.auto_desktop_handler'), 'auto')
+        self._linux_client_combo.addItem(tr('ui.gui.settings_tab.auto'), 'auto')
         for client in linux_client_descriptors:
             self._linux_client_combo.addItem(client.display_name, client.key)
         index = self._linux_client_combo.findData(getattr(self._config, 'linux_client', 'auto'))
         self._linux_client_combo.setCurrentIndex(max(0, index))
         self._linux_client_combo.activated.connect(self._on_linux_client_changed)
-        if len(linux_client_descriptors) <= 1:
-            self._linux_client_combo.setEnabled(False)
-            self._linux_client_combo.setToolTip(
-                tr(
-                    'ui.gui.settings_tab.value_is_currently_the_only_supported_linux',
-                    value0=linux_client_descriptors[0].display_name,
-                )
-            )
         row.addWidget(self._linux_client_combo)
         row.addStretch()
         row_widget = QWidget()
         row_widget.setLayout(row)
         section.add_widget(row_widget)
 
-        self._linux_client_status = QLabel()
-        self._linux_client_status.setWordWrap(True)
-        self._refresh_linux_client_status()
-        section.add_widget(self._linux_client_status)
-
         self._rosemary_path_edits: dict[str, QLineEdit] = {}
+        self._rosemary_path_rows: list[QWidget] = []
         for name, setting_name, folder in (
             (tr('settings.linux_client.rosemary_bundle'), 'rosemary_app_path', True),
             (tr('settings.linux_client.rosemary_binary'), 'rosemary_binary_path', False),
@@ -394,58 +375,16 @@ class SettingsTab(QWidget):
             path_row.addWidget(browse)
             widget = QWidget()
             widget.setLayout(path_row)
+            self._rosemary_path_rows.append(widget)
             section.add_widget(widget)
 
-        note = QLabel(tr('settings.linux_client.rosemary_note'))
-        note.setWordWrap(True)
-        section.add_widget(note)
+        self._update_rosemary_path_visibility()
         return section
 
-    def _refresh_linux_client_status(self) -> None:
-        if not sys.platform.startswith('linux'):
-            return
-        if self._linux_status_thread is not None:
-            self._linux_status_pending = True
-            return
-        self._linux_status_thread = Thread(
-            target=self._probe_linux_client_status, name='fleasion-linux-client-probe', daemon=True
-        )
-        self._linux_status_thread.start()
-        self._linux_status_timer.start()
-
-    def _probe_linux_client_status(self) -> None:
-        if platform_linux is None:
-            return
-        try:
-            installed = ', '.join(
-                item.display_name for item in platform_linux.linux_client_installations()
-            )
-            selected = platform_linux.selected_linux_client_display_name()
-            self._linux_status_text = tr(
-                'ui.gui.settings_tab.active_value_installed_value_fleasion_routes_linux',
-                value0=selected,
-                value1=installed or tr('settings.linux_client.none_detected'),
-            )
-            if not installed:
-                self._linux_status_text += '\n' + tr('settings.linux_client.not_found')
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            log_buffer.log('Settings', f'Linux client detection failed: {exc}')
-            self._linux_status_text = tr(
-                'ui.gui.settings_tab.unable_to_detect_linux_roblox_clients'
-            )
-
-    def _receive_linux_client_status(self) -> None:
-        thread = self._linux_status_thread
-        if thread is None or thread.is_alive():
-            return
-        thread.join()
-        self._linux_status_thread = None
-        self._linux_status_timer.stop()
-        if self._linux_status_pending:
-            self._linux_status_pending = False
-            self._refresh_linux_client_status()
-            return
-        self._linux_client_status.setText(self._linux_status_text)
+    def _update_rosemary_path_visibility(self) -> None:
+        show = self._linux_client_combo.currentData() in {'auto', 'rosemary'}
+        for row in self._rosemary_path_rows:
+            row.setVisible(show)
 
     def _build_macos_auth_section(self) -> CollapsibleSection:
         section = CollapsibleSection(tr('settings.roblox_login.section'), expanded=True)
@@ -828,7 +767,7 @@ class SettingsTab(QWidget):
             _set_signals_blocked(self._linux_client_combo, blocked=False)
             for name, edit in self._rosemary_path_edits.items():
                 edit.setText(str(getattr(self._config, name, '')))
-            self._refresh_linux_client_status()
+            self._update_rosemary_path_visibility()
 
         for widget, value in [
             (self._http_proxy_host, self._config.upstream_http_connect_host),
@@ -1077,7 +1016,6 @@ class SettingsTab(QWidget):
             mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
         if proxy_was_running and proxy_master is not None:
             proxy_master.start()
-        self._refresh_linux_client_status()
 
     def _on_linux_client_changed(self, *_args: object) -> None:
         if not sys.platform.startswith('linux'):
@@ -1099,6 +1037,7 @@ class SettingsTab(QWidget):
             mod_manager.restore_all()
 
         self._config.linux_client = new_client
+        self._update_rosemary_path_visibility()
         from fleasion.utils import platform_linux
 
         platform_linux.set_linux_client_preference(new_client)
@@ -1107,7 +1046,6 @@ class SettingsTab(QWidget):
             mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
         if proxy_master is not None and proxy_was_running:
             proxy_master.start()
-        self._refresh_linux_client_status()
 
     def _on_proxy_mode_changed(self, *_args: object) -> None:
         previous_mode = self._config.proxy_mode
