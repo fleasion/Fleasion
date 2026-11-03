@@ -138,7 +138,16 @@ class AssetTrace:
             f'target_ids={",".join(targets[:24]) if targets else "none"}'
         )
 
-    def cdn(self, host: str, path: str, action: str | None) -> None:
+    def cdn(
+        self,
+        host: str,
+        path: str,
+        action: str | None,
+        *,
+        method: str = 'GET',
+        has_range: bool = False,
+        conditional: bool = False,
+    ) -> None:
         """Report CDN coverage, including later misses after a consumed replacement route."""
         if not self.enabled or host not in _CDN_HOSTS:
             return
@@ -158,7 +167,8 @@ class AssetTrace:
             f'route={action if action is not None else "upstream"} '
             f'previously_replaced={previous is not None} '
             f'prior_route={previous[1] if previous is not None else "none"} '
-            f'age_ms={int((now - previous[0]) * 1000) if previous is not None else -1}'
+            f'age_ms={int((now - previous[0]) * 1000) if previous is not None else -1} '
+            f'method={method} has_range={has_range} conditional={conditional}'
         )
 
     def response(

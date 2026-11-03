@@ -70,9 +70,18 @@ def test_cdn_repeated_fetch_detects_consumed_one_shot_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trace, events = _capture(monkeypatch)
+    trace.cdn('fts.rbxcdn.com', '/known-hash?auth=super-secret', None, method='HEAD')
+    assert 'method=HEAD' in events[-1]
     trace.cdn('fts.rbxcdn.com', '/known-hash?auth=super-secret', 'local')
-    trace.cdn('fts.rbxcdn.com', '/known-hash?auth=changed-secret', None)
+    trace.cdn(
+        'fts.rbxcdn.com',
+        '/known-hash?auth=changed-secret',
+        None,
+        has_range=True,
+        conditional=True,
+    )
     assert 'route=local previously_replaced=False' in events[-2]
+    assert 'has_range=True conditional=True' in events[-1]
     assert 'route=upstream previously_replaced=True prior_route=local' in events[-1]
     assert 'super-secret' not in '\n'.join(events)
     assert 'changed-secret' not in '\n'.join(events)

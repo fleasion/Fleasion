@@ -3110,6 +3110,25 @@ class FleasionProxy:
         ) -> tuple[tuple[str, object] | None, bool, bool]:
             if host not in CDN_HOSTS:
                 return None, False, True
+            has_range = b'range' in req_headers
+            conditional = b'if-none-match' in req_headers or b'if-modified-since' in req_headers
+            if not req_first.startswith(b'GET '):
+                # Metadata probes must not consume a replacement intended for a GET
+                raw_method = req_first.partition(b' ')[0]
+                method_name = (
+                    raw_method.decode('ascii')
+                    if raw_method in {b'HEAD', b'POST', b'OPTIONS', b'PUT', b'DELETE', b'PATCH'}
+                    else 'OTHER'
+                )
+                self._asset_trace.cdn(
+                    host,
+                    path,
+                    None,
+                    method=method_name,
+                    has_range=has_range,
+                    conditional=conditional,
+                )
+                return None, False, True
 
             short_circuit = cast(
                 'tuple[str, object] | None', self.texture_stripper.check_cdn_request(host, path)
@@ -3127,7 +3146,11 @@ class FleasionProxy:
                         break
 
             self._asset_trace.cdn(
-                host, path, short_circuit[0] if short_circuit is not None else None
+                host,
+                path,
+                short_circuit[0] if short_circuit is not None else None,
+                has_range=has_range,
+                conditional=conditional,
             )
             if short_circuit is None:
                 return None, False, True

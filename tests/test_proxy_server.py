@@ -1053,3 +1053,110 @@ def test_explicit_proxy_rewrites_unbatched_asset_id_upstream(tmp_path: Path) -> 
             await proxy.stop()
 
     asyncio.run(run_test())
+
+
+def test_cdn_head_probe_preserves_pending_local_replacement(tmp_path: Path) -> None:
+    """HEAD probes may reach upstream but must not consume a GET replacement."""
+    import json
+
+    from fleasion.proxy.addons.texture_stripper import TextureStripper
+
+    replacement = tmp_path / 'replacement.mesh'
+    replacement.write_bytes(b'REPLACEMENT-MESH')
+
+    class _Config:
+        @staticmethod
+        def get_all_replacements() -> tuple[
+            dict[int | str, int], set[int | str], dict[int | str, str], dict[int | str, str]
+        ]:
+            return {}, set(), {}, {12345: str(replacement)}
+
+    async def run_test() -> None:
+        host = 'fts.rbxcdn.com'
+        TextureStripper.reset_routes()
+        config = _Config()
+        stripper = TextureStripper(cast('ConfigManager', config))
+        original_batch = json.dumps(
+            [{'assetId': 12345, 'assetTypeId': 4, 'assetType': 'Mesh', 'requestId': 'one'}]
+        ).encode()
+        response_batch = json.dumps(
+            [{'requestId': 'one', 'location': 'https://fts.rbxcdn.com/known-hash?sig=opaque'}]
+        ).encode()
+        stripper.process_batch_request(original_batch, {}, config.get_all_replacements(), 'probe')
+        stripper.process_batch_response(original_batch, response_batch, {}, 'probe')
+
+        ca, key = generate_ca(tmp_path)
+        host_cert = generate_host_cert(host, ca, key, tmp_path)
+        default_cert = generate_multi_host_cert('default', {host}, ca, key, tmp_path)
+        proxy = FleasionProxy(
+            texture_stripper=stripper,
+            cache_scraper=_cache_stub(enabled=False),
+            host_certs={host: host_cert},
+            default_cert=default_cert,
+            upstream_endpoints={},
+            explicit_proxy=True,
+            port=0,
+        )
+        upstream_writers: list[_FakeUpstreamWriter] = []
+
+        async def fake_connect_upstream(
+            requested_host: str,
+            *,
+            timeout: float = 10.0,
+            max_targets: int | None = None,
+        ) -> UpstreamConnectResult:
+            assert requested_host == host
+            del timeout, max_targets
+            reader = asyncio.StreamReader()
+            body = b'' if not upstream_writers else b'ORIGINAL-MESH'
+            reader.feed_data(
+                f'HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n'
+                'Connection: close\r\n\r\n'.encode() + body
+            )
+            reader.feed_eof()
+            upstream_writer = _FakeUpstreamWriter()
+            upstream_writers.append(upstream_writer)
+            return UpstreamConnectResult(
+                reader=reader,
+                writer=cast('asyncio.StreamWriter', upstream_writer),
+                endpoint='test',
+                method='direct_ip',
+            )
+
+        proxy.__dict__['_connect_upstream'] = fake_connect_upstream
+        await proxy.start()
+        port = _server_port(cast('object', proxy.__dict__['_server']))
+        ctx = ssl.create_default_context(cafile=str(ca))
+
+        async def fetch(method: str) -> bytes:
+            reader, writer = await asyncio.open_connection('127.0.0.1', port)
+            writer.write(
+                f'CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n'.encode()
+            )
+            await writer.drain()
+            assert (await reader.readuntil(b'\r\n\r\n')).startswith(b'HTTP/1.1 200 ')
+            await writer.start_tls(ctx, server_hostname=host)
+            writer.write(
+                f'{method} /known-hash?sig=opaque HTTP/1.1\r\nHost: {host}\r\n'
+                'Connection: close\r\n\r\n'.encode()
+            )
+            await writer.drain()
+            response = await asyncio.wait_for(reader.read(), timeout=4.0)
+            writer.close()
+            await writer.wait_closed()
+            assert response.startswith(b'HTTP/1.1 200 ')
+            return response.split(b'\r\n\r\n', 1)[1]
+
+        try:
+            assert await fetch('HEAD') == b''
+            assert len(upstream_writers) == 1
+            assert bytes(upstream_writers[0].buffer).startswith(b'HEAD /known-hash?')
+            assert await fetch('GET') == b'REPLACEMENT-MESH'
+            assert len(upstream_writers) == 1
+            assert await fetch('GET') == b'ORIGINAL-MESH'
+            assert len(upstream_writers) == 2
+        finally:
+            await proxy.stop()
+            TextureStripper.reset_routes()
+
+    asyncio.run(run_test())
