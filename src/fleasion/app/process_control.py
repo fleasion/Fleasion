@@ -67,32 +67,46 @@ def _run_trusted_command(
     )
 
 
-def _looks_like_fleasion_gui_command(command: str) -> bool:
-    """Return whether a process command is a Fleasion GUI app/dev launch."""
+def _looks_like_fleasion_gui_command(command: str) -> bool:  # ruff: ignore[too-many-return-statements]
+    """Match the GUI entry point, not shell command text mentioning Fleasion."""
     try:
-        tokens = shlex.split(command)
+        tokens = shlex.split(command, posix=sys.platform != 'win32')
     except ValueError:
-        tokens = command.split()
+        return False
+    tokens = [token.strip('"') for token in tokens]
     if not tokens or '--linux-proxy-helper' in tokens:
         return False
-    if any(Path(argument).name == 'linux_proxy_helper_daemon.py' for argument in tokens):
-        return False
 
-    executable = Path(tokens[0]).name.lower()
+    executable = Path(tokens[0].replace('\\', '/')).name.lower().removesuffix('.exe')
     if executable == 'fleasion' or executable.startswith('fleasion-v'):
         return True
 
-    # ``uv run fleasion`` and virtual-environment entry points are executed as
-    # ``python …/bin/fleasion``.  The old check only considered argv[0], so
-    # Linux's Kill Others action missed the already-running GUI and a second
-    # instance later failed on the proxy backend port.
-    if any(Path(argument).name.lower() == 'fleasion' for argument in tokens[1:]):
-        return True
-
-    return any(
-        argument == '-m' and index + 1 < len(tokens) and tokens[index + 1].lower() == 'fleasion'
-        for index, argument in enumerate(tokens)
-    )
+    # The installed script is launched by a Python interpreter, but a shell,
+    # uv wrapper, or unrelated -c script merely referring to it is not the GUI
+    if not executable.startswith(('python', 'pypy')):
+        return False
+    index = 1
+    while index < len(tokens) and tokens[index] in {
+        '-B',
+        '-E',
+        '-I',
+        '-O',
+        '-OO',
+        '-s',
+        '-S',
+        '-u',
+    }:
+        index += 1
+    if index >= len(tokens):
+        return False
+    if tokens[index] == '-m':
+        return index + 1 < len(tokens) and tokens[index + 1].lower() in {
+            'fleasion',
+            'fleasion.__main__',
+        }
+    if tokens[index].startswith('-'):
+        return False
+    return Path(tokens[index].replace('\\', '/')).name.lower() == 'fleasion'
 
 
 def _parse_posix_fleasion_pids(output: str, safe_pids: set[int]) -> list[int]:
@@ -141,8 +155,8 @@ def _parse_powershell_fleasion_pids(output: str, safe_pids: set[int]) -> list[in
         if not _is_error_details(record):
             continue
         pid = _get_int_detail(record, 'ProcessId', 0)
-        cmdline = str(record.get('CommandLine') or '').lower()
-        if pid not in safe_pids and pid != 0 and 'fleasion' in cmdline:
+        cmdline = str(record.get('CommandLine') or '')
+        if pid not in safe_pids and pid != 0 and _looks_like_fleasion_gui_command(cmdline):
             pids.append(pid)
     return pids
 

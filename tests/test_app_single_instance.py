@@ -499,6 +499,39 @@ def test_macos_fleasion_process_matching_rejects_unrelated_commands() -> None:
     assert not _looks_like_fleasion_gui_command('/usr/bin/python3 /tmp/not-fleasion.py')
 
 
+def test_process_matching_rejects_shell_wrappers_and_incidental_paths() -> None:
+    from fleasion.app.process_control import _parse_posix_fleasion_pids  # pyright: ignore[reportPrivateUsage]
+
+    wrapper = (
+        '/bin/bash -c cd /home/spencer/Source-Code/Fleasion && nohup '
+        '/home/spencer/Source-Code/Fleasion/.venv/bin/fleasion '
+        '>/tmp/fleasion-restart.log 2>&1 </dev/null & sleep 3'
+    )
+    gui = '/home/spencer/Source-Code/Fleasion/.venv/bin/python /home/spencer/Source-Code/Fleasion/.venv/bin/fleasion'
+    assert not _looks_like_fleasion_gui_command(wrapper)
+    assert not _looks_like_fleasion_gui_command('uv run fleasion')
+    assert not _looks_like_fleasion_gui_command('python -c "import fleasion; print(1)"')
+    assert not _looks_like_fleasion_gui_command('python /tmp/check.py fleasion')
+    assert not _looks_like_fleasion_gui_command('python /tmp/fleasion-helper.py')
+    assert _looks_like_fleasion_gui_command(gui)
+    assert _parse_posix_fleasion_pids(f'101 1 {wrapper}\n102 101 {gui}', set()) == [102]
+    assert _parse_posix_fleasion_pids(f'101 1 {wrapper}\n102 101 {gui}', {102}) == []
+
+
+def test_process_matching_powershell_uses_executable_not_path_mention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.app.process_control import _parse_powershell_fleasion_pids  # pyright: ignore[reportPrivateUsage]
+    import json
+
+    rows = [
+        {'ProcessId': 101, 'CommandLine': 'python -c "print(fleasion)"'},
+        {'ProcessId': 102, 'CommandLine': 'C:\\Python314\\python.exe C:\\venv\\Scripts\\fleasion'},
+    ]
+    monkeypatch.setattr(process_control_module.sys, 'platform', 'win32')
+    assert _parse_powershell_fleasion_pids(json.dumps(rows), set()) == [102]
+
+
 def test_fleasion_process_matching_rejects_linux_proxy_helper_commands() -> None:
     assert not _looks_like_fleasion_gui_command(
         '/opt/Fleasion/Fleasion --linux-proxy-helper --backend-port 8443'
