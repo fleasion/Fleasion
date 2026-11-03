@@ -33,12 +33,17 @@ def _synthetic_session() -> AuthenticatedSession:
     )
 
 
+def _mock_no_android(_client: str | None = None) -> None:
+    return None
+
+
 @pytest.mark.parametrize("backend", list(BackendId))
 def test_unimplemented_providers_never_pass_health_check(
     backend: BackendId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("fleasion.proxy.tls_backends.rosemary.find_rosemary_pid", lambda: None)
     monkeypatch.setattr("fleasion.proxy.tls_backends.windows.find_roblox_pid", lambda: None)
+    monkeypatch.setattr("fleasion.proxy.tls_backends.android_community.find_android_community_pid", _mock_no_android)
     result = provider_health(backend, community_client="cordial")
     assert result.phase is HealthPhase.PROVIDER_UNAVAILABLE
     assert not result.working

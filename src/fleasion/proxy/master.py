@@ -4507,13 +4507,20 @@ class ProxyMaster:
         if IS_WINDOWS:
             return True
         if IS_LINUX:
-            if splice_env == 'rosemary' or os.environ.get('FLEASION_SPLICE_BACKEND') == 'rosemary':
+            backend_env = os.environ.get('FLEASION_SPLICE_BACKEND', '').strip().lower()
+            if splice_env in {'rosemary', 'cordial', 'nightcap', 'mocktail'} or backend_env:
                 return True
             find_rosemary_pid = cast(
                 'Callable[[], int | None]',
                 _lazy_attr('fleasion.proxy.rosemary_keys', 'find_rosemary_pid'),
             )
-            return find_rosemary_pid() is not None
+            if find_rosemary_pid() is not None:
+                return True
+            find_android_community_pid = cast(
+                'Callable[[str | None], tuple[int, str] | None]',
+                _lazy_attr('fleasion.proxy.android_community_keys', 'find_android_community_pid'),
+            )
+            return find_android_community_pid(None) is not None
         return False
 
     def can_live_switch_to_hosts(self) -> bool:

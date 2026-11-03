@@ -24,12 +24,17 @@ if TYPE_CHECKING:
     from fleasion.proxy.server import FleasionProxy
 
 
+def _mock_no_android(_client: str | None = None) -> None:
+    return None
+
+
 @pytest.mark.parametrize("backend_id", list(BackendId))
 def test_platform_placeholders_remain_disabled(
     backend_id: BackendId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("fleasion.proxy.tls_backends.rosemary.find_rosemary_pid", lambda: None)
     monkeypatch.setattr("fleasion.proxy.tls_backends.windows.find_roblox_pid", lambda: None)
+    monkeypatch.setattr("fleasion.proxy.tls_backends.android_community.find_android_community_pid", _mock_no_android)
 
     async def run() -> None:
         backend = create_backend(backend_id, community_client="cordial")
@@ -52,6 +57,7 @@ def test_all_five_backend_slots_have_explicit_status(
 ) -> None:
     monkeypatch.setattr("fleasion.proxy.tls_backends.rosemary.find_rosemary_pid", lambda: None)
     monkeypatch.setattr("fleasion.proxy.tls_backends.windows.find_roblox_pid", lambda: None)
+    monkeypatch.setattr("fleasion.proxy.tls_backends.android_community.find_android_community_pid", _mock_no_android)
 
     probes = backend_probes()
     assert len(probes) == 5
@@ -61,7 +67,10 @@ def test_all_five_backend_slots_have_explicit_status(
 
 
 @pytest.mark.parametrize("runtime", ["cordial", "nightcap", "mocktail"])
-def test_android_community_placeholder_tracks_runtime(runtime: str) -> None:
+def test_android_community_placeholder_tracks_runtime(
+    runtime: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fleasion.proxy.tls_backends.android_community.find_android_community_pid", _mock_no_android)
     backend = create_backend(BackendId.ANDROID_COMMUNITY, community_client=runtime)
     assert getattr(backend, "client") == runtime
     assert not backend.probe().ready

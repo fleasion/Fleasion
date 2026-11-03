@@ -9,6 +9,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from .android_community_keys import find_android_community_pid, scan as scan_android_community
 from .live_keys import find_roblox_pid, scan
 from .rosemary_keys import find_rosemary_pid, scan as scan_rosemary
 
@@ -65,8 +66,13 @@ class KeyProvider:
             pid = find_roblox_pid()
             return scan(pid, stop=self._stop, client_random=client_random) if pid else {}
         if sys.platform == 'linux':
-            pid = find_rosemary_pid()
-            return scan_rosemary(pid, stop=self._stop, client_random=client_random) if pid else {}
+            rosemary_pid = find_rosemary_pid()
+            if rosemary_pid:
+                return scan_rosemary(rosemary_pid, stop=self._stop, client_random=client_random)
+            android_match = find_android_community_pid()
+            if android_match:
+                return scan_android_community(android_match[0], stop=self._stop, client_random=client_random)
+            return {}
         msg = f'Live splice key recovery is not supported on {sys.platform}'
         raise RuntimeError(msg)
 
