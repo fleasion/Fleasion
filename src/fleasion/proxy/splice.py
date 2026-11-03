@@ -30,6 +30,7 @@ SERVER_HELLO = 2
 KEY_UPDATE = 24
 HELLO_PREFIX_SIZE = 35
 SNI_PREFIX_SIZE = 5
+_HTTP_DRAIN_GRACE_SECONDS = 1.0
 
 
 def _server_name(hello: bytes) -> str:
@@ -381,6 +382,22 @@ class SpliceConnection:
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     task.result()
+                if http not in done and any(pump in done for pump in pumps):
+                    # A closed TLS direction cannot deliver additional records
+                    # Give an active HTTP session a short window to flush its response
+                    if self._http_started:
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(http), timeout=_HTTP_DRAIN_GRACE_SECONDS
+                            )
+                        except TimeoutError:
+                            pass
+                        else:
+                            http.result()
+                    break
+            if not http.done():
+                return
+            http.result()
             # Deliver a TLS close_notify after HTTP has flushed, in both directions
             # Both peers otherwise see an abrupt EOF when the feature session ends
             for direction in (self.server, self.client):
