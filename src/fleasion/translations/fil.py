@@ -1368,7 +1368,6 @@ FILIPINO: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Kailangan ng pahintulot ang mga global keybind sa Linux upang basahin ang keyboard input.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Nabigo ang Pag-set Up ng Linux Keybind',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Sinimulan ang Pag-set Up ng Linux Keybind',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Limitasyon ng Linux / Sober: Dahil sa seguridad ng Sober, unang inilalapat ang mga custom FastFlag mga 2 minuto pagkatapos magsimula ang Sober. Magiging aktibo ang live na dynamic FastFlag editing pagkalipas ng 2 minuto pa (4 minuto sa kabuuan). Nangyayari ang pagkaantalang ito sa tuwing binubuksan ang Sober, kahit kakasara at kakabukas lang nito.',
     'ui.gui.modifications_tab.load': 'I-load',
     'ui.gui.modifications_tab.mesh_lod_override': 'Pag-override sa Mesh LOD',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Error sa pag-preview ng mesh: {value0}',

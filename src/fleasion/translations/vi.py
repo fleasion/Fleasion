@@ -1368,7 +1368,6 @@ VIETNAMESE: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Phím tắt toàn cục trên Linux cần quyền đọc đầu vào bàn phím.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Thiết lập phím tắt Linux thất bại',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Đã bắt đầu thiết lập phím tắt Linux',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Giới hạn Linux / Sober: Do bảo mật của Sober, FastFlag tùy chỉnh chỉ được áp dụng lần đầu khoảng 2 phút sau khi Sober khởi động. Tính năng chỉnh sửa FastFlag động trực tiếp bắt đầu hoạt động sau đó thêm 2 phút (tổng 4 phút). Độ trễ này xảy ra mỗi lần mở Sober, kể cả sau khi đóng/mở lại nhanh.',
     'ui.gui.modifications_tab.load': 'Tải',
     'ui.gui.modifications_tab.mesh_lod_override': 'Ghi đè LOD của lưới',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Lỗi xem trước lưới: {value0}',

@@ -1368,7 +1368,6 @@ KAZAKH: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Linux жаһандық перне тіркесімдеріне пернетақта енгізуін оқу рұқсаты қажет.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Linux перне тіркесімін баптау сәтсіз аяқталды',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Linux перне тіркесімін баптау басталды',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Linux / Sober шектеуі: Sober қауіпсіздігіне байланысты таңдамалы FastFlags алғаш рет Sober іске қосылғаннан шамамен 2 минуттан кейін қолданылады. Тікелей Dynamic FastFlag өңдеуі одан тағы 2 минуттан кейін (барлығы 4 минут) белсенді болады. Бұл кідіріс Sober әр ашылған сайын, соның ішінде жылдам жауып/қайта ашқаннан кейін де болады.',
     'ui.gui.modifications_tab.load': 'Жүктеу',
     'ui.gui.modifications_tab.mesh_lod_override': 'Тор LOD қайта анықтауы',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Торды алдын ала қарау қатесі: {value0}',

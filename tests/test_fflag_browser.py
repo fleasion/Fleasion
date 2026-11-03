@@ -371,6 +371,24 @@ def test_fflag_browser_refresh_bypasses_a_fresh_cache(monkeypatch: pytest.Monkey
     assert app is not None
 
 
+def test_custom_fflag_editor_has_no_obsolete_sober_delay_warning() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(custom_fflags={}, custom_fflags_enabled=False),
+    )
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
+    )
+    editor = CustomFFlagEditor(config, proxy)
+    labels = editor.findChildren(QLabel)
+
+    assert any('color: #ef8f8f' in label.styleSheet() for label in labels)
+    assert not any('color: #ffcc66' in label.styleSheet() for label in labels)
+    assert app is not None
+
+
 def test_custom_fflag_editor_uses_an_edit_on_demand_boolean_selector() -> None:
     app = _qapp()
     config = cast(

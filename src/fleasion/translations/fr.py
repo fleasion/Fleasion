@@ -1368,7 +1368,6 @@ FRENCH: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Les raccourcis globaux Linux ont besoin de l’autorisation de lire les entrées clavier.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Échec de la configuration des raccourcis Linux',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Configuration des raccourcis Linux démarrée',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Limitation Linux / Sober : en raison de la sécurité de Sober, les FastFlags personnalisés sont d’abord appliqués environ 2 minutes après le démarrage de Sober. La modification dynamique en direct des FastFlags devient active 2 minutes plus tard (4 minutes au total). Ce délai se produit à chaque ouverture de Sober, y compris après une fermeture/réouverture rapide.',
     'ui.gui.modifications_tab.load': 'Charger',
     'ui.gui.modifications_tab.mesh_lod_override': 'Remplacement du LOD de mesh',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Erreur d’aperçu du mesh : {value0}',

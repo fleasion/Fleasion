@@ -1368,7 +1368,6 @@ GERMAN: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Globale Linux-Tastenkürzel benötigen die Berechtigung, Tastatureingaben zu lesen.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Einrichtung der Linux-Tastenkürzel fehlgeschlagen',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Einrichtung der Linux-Tastenkürzel gestartet',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Linux-/Sober-Einschränkung: Aufgrund der Sober-Sicherheit werden benutzerdefinierte FastFlags erstmals etwa 2 Minuten nach dem Start von Sober angewendet. Die Live-Bearbeitung dynamischer FastFlags wird weitere 2 Minuten später aktiv (insgesamt 4 Minuten). Diese Verzögerung tritt bei jedem Öffnen von Sober auf, auch nach einem schnellen Schließen und erneuten Öffnen.',
     'ui.gui.modifications_tab.load': 'Laden',
     'ui.gui.modifications_tab.mesh_lod_override': 'Mesh-LOD-Überschreibung',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Fehler bei der Mesh-Vorschau: {value0}',

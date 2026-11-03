@@ -1368,7 +1368,6 @@ PORTUGUESE: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Os atalhos globais do Linux precisam de permissão para ler a entrada do teclado.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Falha ao configurar atalhos do Linux',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Configuração de atalhos do Linux iniciada',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Limitação do Linux / Sober: devido à segurança do Sober, FastFlags personalizadas são aplicadas pela primeira vez cerca de 2 minutos após o Sober iniciar. A edição ao vivo de Dynamic FastFlags fica ativa 2 minutos depois disso (4 minutos no total). Esse atraso ocorre toda vez que o Sober é aberto, inclusive após fechar e reabrir rapidamente.',
     'ui.gui.modifications_tab.load': 'Carregar',
     'ui.gui.modifications_tab.mesh_lod_override': 'Substituição de LOD da malha',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Erro na prévia da malha: {value0}',

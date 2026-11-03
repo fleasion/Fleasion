@@ -1368,7 +1368,6 @@ SPANISH: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Las combinaciones de teclas globales de Linux necesitan permiso para leer la entrada del teclado.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Error en la configuración de combinación de teclas de Linux',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Configuración de combinación de teclas de Linux iniciada',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Limitación de Linux/Sober: debido a la seguridad de Sober, los FastFlags personalizados se aplican por primera vez aproximadamente 2 minutos después de que se inicia Sober. La edición Live Dynamic FastFlag se activa 2 minutos después (4 minutos en total). Este retraso ocurre cada vez que se abre Sober, incluso después de un cierre/reapertura rápida.',
     'ui.gui.modifications_tab.load': 'Cargar',
     'ui.gui.modifications_tab.mesh_lod_override': 'Anulación de LOD de malla',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Error de vista previa de malla: {value0}',

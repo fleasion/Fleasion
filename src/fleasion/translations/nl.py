@@ -1368,7 +1368,6 @@ DUTCH: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Globale Linux-sneltoetsen vereisen toestemming om toetsenbordinvoer te lezen.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Instellen van Linux-sneltoetsen mislukt',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Instellen van Linux-sneltoetsen gestart',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Beperking van Linux / Sober: vanwege de beveiliging van Sober worden eigen FastFlags pas ongeveer 2 minuten na het starten van Sober toegepast. Het live dynamisch bewerken van FastFlags wordt 2 minuten daarna actief (in totaal 4 minuten). Deze vertraging treedt op telkens wanneer Sober wordt geopend, ook na snel sluiten en heropenen.',
     'ui.gui.modifications_tab.load': 'Laden',
     'ui.gui.modifications_tab.mesh_lod_override': 'Mesh-LOD-overschrijving',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Fout bij meshvoorbeeld: {value0}',

@@ -1370,7 +1370,6 @@ ARABIC: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'تحتاج اختصارات Linux العامة إلى إذن لقراءة إدخال لوحة المفاتيح.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'فشل إعداد اختصارات Linux',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'بدأ إعداد اختصارات Linux',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ قيود Linux / Sober: بسبب إجراءات الأمان في Sober، تُطبّق FastFlags المخصصة لأول مرة بعد نحو دقيقتين من بدء Sober. ويصبح التعديل المباشر الديناميكي لـ FastFlag نشطًا بعد دقيقتين إضافيتين (أربع دقائق إجمالًا). يحدث هذا التأخير كل مرة يُفتح فيها Sober، حتى بعد إغلاقه وإعادة فتحه بسرعة.',
     'ui.gui.modifications_tab.load': 'تحميل',
     'ui.gui.modifications_tab.mesh_lod_override': 'فرض مستوى تفاصيل الشبكة الهندسية',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'خطأ في معاينة الشبكة الهندسية: {value0}',

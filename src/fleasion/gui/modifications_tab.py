@@ -3058,17 +3058,6 @@ class CustomFFlagEditor(QWidget):
         )
         layout.addWidget(warning)
 
-        if sys.platform.startswith('linux'):
-            sober_delay_warning = QLabel(
-                tr('ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security')
-            )
-            sober_delay_warning.setWordWrap(True)
-            sober_delay_warning.setStyleSheet(
-                'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
-                'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
-            )
-            layout.addWidget(sober_delay_warning)
-
         self._enable_toggle = QCheckBox(tr('ui.gui.modifications_tab.enable_custom_fastflags'))
         self._enable_toggle.setChecked(
             bool(self._config and getattr(self._config, 'custom_fflags_enabled', False))

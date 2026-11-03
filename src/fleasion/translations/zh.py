@@ -1368,7 +1368,6 @@ CHINESE: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Linux 全局按键绑定需要读取键盘输入的权限。',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Linux 按键绑定设置失败',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Linux 按键绑定设置已启动',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Linux / Sober 限制：由于 Sober 的安全机制，自定义 FastFlags 会在 Sober 启动约 2 分钟后首次应用。实时 Dynamic FastFlag 编辑会再过 2 分钟启用（总计约 4 分钟）。每次打开 Sober 都会出现此延迟，包括快速关闭后重新打开。',
     'ui.gui.modifications_tab.load': '加载',
     'ui.gui.modifications_tab.mesh_lod_override': '网格 LOD 覆盖',
     'ui.gui.modifications_tab.mesh_preview_error_value': '网格预览错误：{value0}',

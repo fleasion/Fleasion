@@ -1368,7 +1368,6 @@ RUSSIAN: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Глобальным привязкам клавиш Linux требуется разрешение на чтение клавиатурного ввода.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Сбой настройки привязок клавиш Linux',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Настройка привязок клавиш Linux запущена',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Ограничение Linux / Sober: из-за защиты Sober пользовательские FastFlags впервые применяются примерно через 2 минуты после запуска Sober. Редактирование Dynamic FastFlag в реальном времени становится активным ещё через 2 минуты (всего 4 минуты). Эта задержка возникает при каждом открытии Sober, в том числе после быстрого закрытия и повторного открытия.',
     'ui.gui.modifications_tab.load': 'Загрузить',
     'ui.gui.modifications_tab.mesh_lod_override': 'Переопределение LOD сетки',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Ошибка предпросмотра сетки: {value0}',

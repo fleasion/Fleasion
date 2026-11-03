@@ -1368,7 +1368,6 @@ POLISH: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Globalne skróty klawiszowe Linux wymagają pozwolenia na odczyt danych wprowadzanych z klawiatury.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Konfiguracja skrótów klawiszowych w Linux nie powiodła się',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Rozpoczęto konfigurację skrótów klawiszowych w Linux',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': 'Ograniczenia Linux / Sober: Ze względu na bezpieczeństwo Sober niestandardowe FastFlags są stosowane po raz pierwszy około 2 minuty po uruchomieniu Sober. Edycja dynamiczna na żywo FastFlag staje się aktywna 2 minuty później (łącznie 4 minuty). Opóźnienie to ma miejsce przy każdym otwarciu Sober, także po szybkim zamknięciu/ponownym otwarciu.',
     'ui.gui.modifications_tab.load': 'Załaduj',
     'ui.gui.modifications_tab.mesh_lod_override': 'Zastąpienie LOD siatki',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Błąd podglądu siatki: {value0}',

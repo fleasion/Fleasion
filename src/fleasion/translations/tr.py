@@ -1368,7 +1368,6 @@ TURKISH: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Linux genel tuş atamalarının klavye girişini okumak için izne ihtiyacı var.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Linux Tuş Ataması Kurulumu Başarısız',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Linux Tuş Ataması Kurulumu Başlatıldı',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Linux / Sober sınırlaması: Sober güvenliği nedeniyle özel FastFlags ilk kez Sober başladıktan yaklaşık 2 dakika sonra uygulanır. Canlı Dinamik FastFlag düzenleme bundan 2 dakika sonra (toplam 4 dakika) etkinleşir. Bu gecikme, hızlı kapatıp yeniden açma dahil Sober her açıldığında oluşur.',
     'ui.gui.modifications_tab.load': 'Yükle',
     'ui.gui.modifications_tab.mesh_lod_override': 'Mesh LOD Geçersiz Kılma',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Mesh önizleme hatası: {value0}',

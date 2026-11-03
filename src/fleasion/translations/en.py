@@ -1368,7 +1368,6 @@ ENGLISH: dict[str, str] = {
     'ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read': 'Linux global keybinds need permission to read keyboard input.',
     'ui.gui.modifications_tab.linux_keybind_setup_failed': 'Linux Keybind Setup Failed',
     'ui.gui.modifications_tab.linux_keybind_setup_started': 'Linux Keybind Setup Started',
-    'ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security': '⚠ Linux / Sober limitation: Due to Sober security, custom FastFlags are first applied about 2 minutes after Sober starts. Live Dynamic FastFlag editing becomes active 2 minutes after that (4 minutes total). This delay happens every time Sober is opened, including after a quick close/reopen.',
     'ui.gui.modifications_tab.load': 'Load',
     'ui.gui.modifications_tab.mesh_lod_override': 'Mesh LOD Override',
     'ui.gui.modifications_tab.mesh_preview_error_value': 'Mesh preview error: {value0}',
