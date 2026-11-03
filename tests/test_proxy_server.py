@@ -27,6 +27,7 @@ from fleasion.proxy.upstream import (
 from fleasion.utils.certs import generate_ca, generate_host_cert, generate_multi_host_cert
 
 if TYPE_CHECKING:
+    from fleasion.config.manager import ConfigManager
     from fleasion.proxy.addons.cache_scraper import CacheScraper
     from fleasion.proxy.addons.texture_stripper import TextureStripper
 
@@ -960,3 +961,95 @@ def test_explicit_proxy_excludes_pinned_bootstrap_hosts_from_intercept_all(tmp_p
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_explicit_proxy_rewrites_unbatched_asset_id_upstream(tmp_path: Path) -> None:
+    """An exact ID replacement must reach upstream on GET, not just the URL helper."""
+    from fleasion.proxy.addons.texture_stripper import TextureStripper
+
+    class _Config:
+        @staticmethod
+        def get_all_replacements() -> tuple[
+            dict[int | str, int], set[int | str], dict[int | str, str], dict[int | str, str]
+        ]:
+            return {12345: 98765}, set(), {}, {}
+
+    async def run_test() -> None:
+        ca_cert, ca_key = generate_ca(tmp_path)
+        host_cert = generate_host_cert(ASSET_DELIVERY_HOST, ca_cert, ca_key, tmp_path)
+        default_cert = generate_multi_host_cert(
+            'default', {ASSET_DELIVERY_HOST}, ca_cert, ca_key, tmp_path
+        )
+        stripper = TextureStripper(cast('ConfigManager', _Config()))
+        proxy = FleasionProxy(
+            texture_stripper=stripper,
+            cache_scraper=_cache_stub(enabled=False),
+            host_certs={ASSET_DELIVERY_HOST: host_cert},
+            default_cert=default_cert,
+            upstream_endpoints={},
+            explicit_proxy=True,
+            port=0,
+        )
+        upstream_writers: list[_FakeUpstreamWriter] = []
+
+        async def fake_connect_upstream(
+            host: str,
+            *,
+            timeout: float = 10.0,
+            max_targets: int | None = None,
+        ) -> UpstreamConnectResult:
+            assert host == ASSET_DELIVERY_HOST
+            del timeout, max_targets
+            reader = asyncio.StreamReader()
+            reader.feed_data(
+                b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK'
+            )
+            reader.feed_eof()
+            upstream_writer = _FakeUpstreamWriter()
+            upstream_writers.append(upstream_writer)
+            return UpstreamConnectResult(
+                reader=reader,
+                writer=cast('asyncio.StreamWriter', upstream_writer),
+                endpoint='test',
+                method='direct_ip',
+            )
+
+        proxy.__dict__['_connect_upstream'] = fake_connect_upstream
+        await proxy.start()
+        port = _server_port(cast('object', proxy.__dict__['_server']))
+        ctx = ssl.create_default_context(cafile=str(ca_cert))
+
+        async def request(path: str) -> bytes:
+            reader, writer = await asyncio.open_connection('127.0.0.1', port)
+            writer.write(
+                f'CONNECT {ASSET_DELIVERY_HOST}:443 HTTP/1.1\r\n'
+                f'Host: {ASSET_DELIVERY_HOST}:443\r\n\r\n'.encode()
+            )
+            await writer.drain()
+            connect_response = await reader.readuntil(b'\r\n\r\n')
+            assert connect_response.startswith(b'HTTP/1.1 200 ')
+            await writer.start_tls(ctx, server_hostname=ASSET_DELIVERY_HOST)
+            writer.write(
+                f'GET {path} HTTP/1.1\r\nHost: {ASSET_DELIVERY_HOST}\r\n'
+                'X-Sentinel: header-kept\r\nConnection: close\r\n\r\n'.encode()
+            )
+            await writer.drain()
+            response = await asyncio.wait_for(reader.read(), timeout=4.0)
+            writer.close()
+            await writer.wait_closed()
+            assert response.endswith(b'\r\n\r\nOK')
+            return bytes(upstream_writers[-1].buffer)
+
+        try:
+            forwarded = await request('/v1/asset/?client=studio&id=12345&token=opaque')
+            assert forwarded.startswith(
+                b'GET /v1/asset/?client=studio&id=98765&token=opaque HTTP/1.1\r\n'
+            )
+            assert b'x-sentinel: header-kept\r\n' in forwarded.lower()
+            assert b'id=12345' not in forwarded
+            unchanged = await request('/v1/other/?id=12345')
+            assert unchanged.startswith(b'GET /v1/other/?id=12345 HTTP/1.1\r\n')
+        finally:
+            await proxy.stop()
+
+    asyncio.run(run_test())

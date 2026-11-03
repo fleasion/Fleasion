@@ -51,6 +51,19 @@ def test_direct_request_reports_unhandled_exact_replacement_without_tokens(
     assert all('cookie-secret' not in e and 'private-secret' not in e for e in events)
     trace.request('assetdelivery.roblox.com', 'GET', '/v1/asset/?id=777', _maps())
     assert any('asset_id=777' in e and 'replacement_bypassed=False' in e for e in events)
+    trace.request(
+        'assetdelivery.roblox.com',
+        'GET',
+        '/v1/asset/?id=98765',
+        _maps(),
+        rewritten=True,
+    )
+    assert 'asset_id_rewritten=True' in events[-1]
+    assert 'replacement_bypassed=False' in events[-1]
+    removal_maps: ReplacementMaps = ({}, {98765}, {}, {})
+    trace.request('assetdelivery.roblox.com', 'GET', '/v1/asset/?id=98765', removal_maps)
+    assert 'removal_bypassed=True' in events[-1]
+    assert 'exact_replacement=False' in events[-1]
 
 
 def test_cdn_repeated_fetch_detects_consumed_one_shot_route(

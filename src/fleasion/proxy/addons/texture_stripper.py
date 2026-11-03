@@ -13,13 +13,14 @@ import importlib
 import io
 import json
 import logging
+import re
 import struct
 import time
 import zlib
 from pathlib import Path
 from threading import Lock, Thread
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from fleasion.config.manager import ANIMATION_TYPE_KEYS
 from fleasion.proxy.roblox_metadata import strip_roblox_metadata
@@ -1702,6 +1703,40 @@ class TextureStripper:
             map_index=map_index,
         )
         return True
+
+    @staticmethod
+    def rewrite_direct_asset_id(path: str, replacements_tuple: ReplacementMaps) -> str:
+        """Apply exact ID swaps to unbatched asset-delivery requests."""
+        if urlparse(path).path.rstrip('/') != '/v1/asset':
+            return path
+        matches = list(re.finditer(r'([?&])id=([0-9]+)(?=&|$)', path))
+        if len(matches) != 1:
+            return path
+        match = matches[0]
+        ids = [
+            value
+            for key, value in parse_qsl(urlparse(path).query, keep_blank_values=True)
+            if key == 'id'
+        ]
+        if ids != [match.group(2)]:
+            return path
+        original_id = int(match.group(2))
+        replacements, removals, cdn_replacements, local_replacements = replacements_tuple
+        if (
+            original_id in removals
+            or original_id in local_replacements
+            or original_id in cdn_replacements
+        ):
+            return path
+        replacement_id = replacements.get(original_id)
+        # Private predownloaded targets cannot be resolved through the public direct endpoint
+        if (
+            replacement_id is None
+            or replacement_id in {0, 1, original_id}
+            or replacement_id in TextureStripper._predownloaded
+        ):
+            return path
+        return f'{path[: match.start(2)]}{replacement_id}{path[match.end(2) :]}'
 
     # Batch request (called from server MITM thread)
 

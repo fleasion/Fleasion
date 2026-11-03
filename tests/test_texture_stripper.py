@@ -4,14 +4,14 @@ import json
 from typing import TYPE_CHECKING, Protocol, cast
 from unittest.mock import patch
 
+import pytest
+
 from fleasion.proxy.addons import texture_stripper as texture_stripper_module
 from fleasion.proxy.addons.texture_stripper import TextureStripper
 
 if TYPE_CHECKING:
     from pathlib import Path
     from typing import Never
-
-    import pytest
 
     from fleasion.config.manager import ConfigManager
     from fleasion.config.types import ReplacementMaps
@@ -694,3 +694,59 @@ def test_orm_composite_resolves_normal_asset_id_for_variance_mips(
     assert seen['baseline'] == orm_baseline
     assert seen['normal_source'] == downloaded
     assert seen['normal_baseline'] == normal_baseline
+
+
+@pytest.mark.parametrize(
+    ('path', 'expected'),
+    [
+        ('/v1/asset/?id=12345', '/v1/asset/?id=98765'),
+        (
+            '/v1/asset/?client=studio&id=12345&auth=private-value&version=3',
+            '/v1/asset/?client=studio&id=98765&auth=private-value&version=3',
+        ),
+        ('/v1/asset?id=12345', '/v1/asset?id=98765'),
+        ('/v1/asset/?id=00012345', '/v1/asset/?id=98765'),
+        ('/v1/asset/?id=12345&id=67890', '/v1/asset/?id=12345&id=67890'),
+        ('/v1/asset/?id=12345&id=bogus', '/v1/asset/?id=12345&id=bogus'),
+        ('/v1/asset/?id=12345&id=', '/v1/asset/?id=12345&id='),
+        ('/v1/asset/?id=12345&%69d=67890', '/v1/asset/?id=12345&%69d=67890'),
+        ('/v1/asset/?id=12345&ID=999', '/v1/asset/?id=98765&ID=999'),
+        ('/v1/assets/batch?id=12345', '/v1/assets/batch?id=12345'),
+        ('/v1/asset/?notid=12345', '/v1/asset/?notid=12345'),
+        ('/v1/asset/?id=%31%32%33%34%35', '/v1/asset/?id=%31%32%33%34%35'),
+        ('/v1/asset/?id=54321', '/v1/asset/?id=54321'),
+    ],
+)
+def test_unbatched_exact_id_rewrite_preserves_other_query_parameters(
+    path: str, expected: str
+) -> None:
+    replacements: ReplacementMaps = ({12345: 98765}, set(), {}, {})
+    assert TextureStripper.rewrite_direct_asset_id(path, replacements) == expected
+
+
+_UNBATCHED_MODE_CASES: list[tuple[ReplacementMaps, str]] = [
+    (({12345: 98765}, {12345}, {}, {}), '/v1/asset/?id=12345'),
+    (({12345: 98765}, set(), {12345: 'https://example.org/a'}, {}), '/v1/asset/?id=12345'),
+    (({12345: 98765}, set(), {}, {12345: '/tmp/replacement.mesh'}), '/v1/asset/?id=12345'),
+    (({12345: 0}, set(), {}, {}), '/v1/asset/?id=12345'),
+    (({12345: 1}, set(), {}, {}), '/v1/asset/?id=12345'),
+    (({12345: 12345}, set(), {}, {}), '/v1/asset/?id=12345'),
+]
+
+
+@pytest.mark.parametrize(('replacements', 'expected'), _UNBATCHED_MODE_CASES)
+def test_unbatched_id_rewrite_does_not_override_higher_priority_modes(
+    replacements: ReplacementMaps, expected: str
+) -> None:
+    assert TextureStripper.rewrite_direct_asset_id('/v1/asset/?id=12345', replacements) == expected
+
+
+def test_unbatched_id_rewrite_does_not_forward_predownloaded_private_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TextureStripper, '_predownloaded', {98765: '/tmp/private-replacement.mesh'})
+    replacements: ReplacementMaps = ({12345: 98765}, set(), {}, {})
+    assert (
+        TextureStripper.rewrite_direct_asset_id('/v1/asset/?id=12345', replacements)
+        == '/v1/asset/?id=12345'
+    )

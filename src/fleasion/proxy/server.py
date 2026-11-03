@@ -2950,7 +2950,6 @@ class FleasionProxy:
         custom_fflag_modifier = cast('CustomFFlagModifier', self.custom_fflag_modifier)
         texture_batch_processor = cast('_TextureBatchProcessor', self.texture_stripper)
 
-        replacements_tuple = self.texture_stripper.config_manager.get_all_replacements()
         pending_req: RawHeaders | None = first_req
         up_reader: asyncio.StreamReader | None = None
         up_writer: asyncio.StreamWriter | None = None
@@ -3517,6 +3516,11 @@ class FleasionProxy:
                     hold=self._intercept_all_hosts and self._intercept_matches(host, path),
                 )
                 is_batch = host == ASSET_DELIVERY_HOST and b'/v1/assets/batch' in req_first
+                replacements_tuple: _ReplacementMaps = (
+                    self.texture_stripper.config_manager.get_all_replacements()
+                    if host == ASSET_DELIVERY_HOST
+                    else ({}, set(), {}, {})
+                )
                 batch_id = ''
                 req_body_modified = req_body_raw
                 scraper_body = req_body_raw
@@ -3547,9 +3551,50 @@ class FleasionProxy:
                 if custom_fflag_request_enabled and custom_fflag_modifier.requires_fresh_response():
                     upstream_req_headers = _without_conditional_client_settings_headers(req_headers)
 
+                direct_id_rewritten = False
+                if (
+                    host == ASSET_DELIVERY_HOST
+                    and not is_batch
+                    and method.upper() in {'GET', 'HEAD'}
+                    and urlparse(path).path.rstrip('/') == '/v1/asset'
+                    and not request_has_trailers
+                ):
+                    updated_path = self.texture_stripper.rewrite_direct_asset_id(
+                        path, replacements_tuple
+                    )
+                    if updated_path != path:
+                        parts = req_first.split(b' ', 2)
+                        if len(parts) == 3:
+                            upstream_req_first = (
+                                parts[0] + b' ' + updated_path.encode('ascii') + b' ' + parts[2]
+                            )
+                            direct_id_rewritten = True
+                            original_asset = next(
+                                (
+                                    value
+                                    for key, value in parse_qsl(urlparse(path).query)
+                                    if key == 'id'
+                                ),
+                                '',
+                            )
+                            new_asset = next(
+                                (
+                                    value
+                                    for key, value in parse_qsl(urlparse(updated_path).query)
+                                    if key == 'id'
+                                ),
+                                '',
+                            )
+                            log_buffer.log(
+                                'Replacer',
+                                f'Replaced {original_asset} -> {new_asset} (unbatched)',
+                            )
+
                 if host == ASSET_DELIVERY_HOST or host in CDN_HOSTS:
                     self._note_asset_traffic()
-                    self._asset_trace.request(host, method, path, replacements_tuple)
+                    self._asset_trace.request(
+                        host, method, path, replacements_tuple, rewritten=direct_id_rewritten
+                    )
 
                 # ── TextureStripper: CDN short-circuit (replace before upstream) ──
                 (

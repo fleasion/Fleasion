@@ -52,6 +52,8 @@ class AssetTrace:
         method: str,
         path: str,
         replacements: ReplacementMaps,
+        *,
+        rewritten: bool = False,
     ) -> None:
         """Trace the endpoint and identify exact-ID replacements bypassed by direct requests."""
         if not self.enabled:
@@ -70,11 +72,16 @@ class AssetTrace:
             has_replacement = asset_id is not None and any(
                 asset_id in mapping or str(asset_id) in mapping for mapping in maps
             )
+            has_removal = asset_id is not None and (
+                asset_id in replacements[1] or str(asset_id) in replacements[1]
+            )
             self._emit(
                 f'http_request host=assetdelivery kind=direct method={method} '
                 f'asset_id={asset_id if asset_id is not None else "unknown"} '
                 f'exact_replacement={has_replacement} '
-                f'replacement_bypassed={has_replacement}'
+                f'replacement_bypassed={has_replacement and not rewritten} '
+                f'removal_bypassed={has_removal} '
+                f'asset_id_rewritten={rewritten}'
             )
         else:
             kind = 'batch' if parsed.path == '/v1/assets/batch' else 'other'
