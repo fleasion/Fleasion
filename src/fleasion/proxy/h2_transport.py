@@ -47,6 +47,7 @@ log = logging.getLogger(__name__)
 _MAX_BUFFERED_BODY = 64 * 1024 * 1024
 _MAX_ACTIVE_STREAMS = 64
 _UPSTREAM_DRAIN_GRACE_SECONDS = 1.0
+_H2_SEND_IDLE_TIMEOUT = 30.0
 _HOP_HEADERS = frozenset(
     {b'connection', b'keep-alive', b'proxy-connection', b'transfer-encoding', b'upgrade'}
 )
@@ -310,6 +311,7 @@ class _Peer:
 
     async def _send_body(self, stream: int, body: bytes, *, end_stream: bool = True) -> None:
         offset = 0
+        deadline = asyncio.get_running_loop().time() + _H2_SEND_IDLE_TIMEOUT
         while offset < len(body):
             async with self.lock:
                 if self.terminated:
@@ -334,9 +336,18 @@ class _Peer:
                 else:
                     self.window.clear()
             if count:
+                deadline = asyncio.get_running_loop().time() + _H2_SEND_IDLE_TIMEOUT
                 await self.writer.drain()
             else:
-                await self.window.wait()
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    msg = 'HTTP/2 flow-control window stalled'
+                    raise TimeoutError(msg)
+                try:
+                    await asyncio.wait_for(self.window.wait(), timeout=remaining)
+                except TimeoutError as exc:
+                    msg = 'HTTP/2 flow-control window stalled'
+                    raise TimeoutError(msg) from exc
 
     async def reset(self, stream: int) -> None:
         async with self.lock:
