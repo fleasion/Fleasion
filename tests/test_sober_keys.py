@@ -66,6 +66,19 @@ def test_find_sober_pid_synthetic(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert find_sober_pid() == 100
 
 
+def test_unrelated_command_line_mentioning_sober_is_not_a_client(tmp_path: Path) -> None:
+    from fleasion.proxy import sober_keys
+
+    proc = tmp_path / '123'
+    proc.mkdir()
+    (proc / 'comm').write_text('python3\n')
+    (proc / 'cgroup').write_text('0::/user.slice/session.scope\n')
+    (proc / 'cmdline').write_bytes(
+        b'/usr/bin/python3\0/tmp/fleasion-sober-debugger.py\0'
+    )
+    assert not sober_keys._is_sober_entry(proc)  # pyright: ignore[reportPrivateUsage]
+
+
 def test_find_sober_pid_non_linux(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, 'platform', 'win32')
     assert find_sober_pid() is None

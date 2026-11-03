@@ -27,7 +27,6 @@ type SecretMap = dict[str, ConnectionSecrets]
 
 CHUNK_SIZE = 1024 * 1024
 SOBER_CGROUP_SUBSTRING = 'org.vinegarhq.sober'
-SOBER_CMDLINE_SUBSTRING = b'sober'
 LARGE_MEMFD_MIN_SIZE = 10 * 1024 * 1024
 _SCANNABLE_PATHNAMES = frozenset({'', '[heap]', '/memfd: (deleted)'})
 
@@ -127,13 +126,6 @@ def _is_sober_entry(entry: Path) -> bool:
     try:
         exe = (entry / 'exe').resolve().name.lower()
         if exe == 'sober':
-            return True
-    except (OSError, PermissionError):
-        pass
-
-    try:
-        cmdline = (entry / 'cmdline').read_bytes()
-        if SOBER_CMDLINE_SUBSTRING in cmdline.lower():
             return True
     except (OSError, PermissionError):
         pass
