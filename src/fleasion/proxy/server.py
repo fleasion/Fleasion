@@ -65,6 +65,7 @@ if TYPE_CHECKING:
         ProxyRequestLogEntry as ProxyRequestLogEntry,
     )
 
+from .asset_trace import AssetTrace
 from .h2_transport import H2FeatureBridge
 from .roblox_metadata import strip_roblox_metadata
 from .splice import SpliceConnection, read_client_hello
@@ -1726,6 +1727,7 @@ class FleasionProxy:
         self._ca_cert_path = ca_cert_path
         self._ca_key_path = ca_key_path
         self._cert_cache_dir = cert_cache_dir
+        self._asset_trace = AssetTrace()
         self._request_log_lock = threading.Lock()
         self._request_log: list[ProxyRequestLogEntry] = []
         self._request_log_max = 4000
@@ -2680,15 +2682,18 @@ class FleasionProxy:
             keys=keys,
             client_records=client_records,
         )
+        self._asset_trace.splice(host, 'open')
         try:
             await connection.run(self, host)
         except (OSError, ValueError, TimeoutError) as exc:
+            self._asset_trace.splice(host, 'error', detail=type(exc).__name__)
             log_buffer.log(
                 'Proxy',
                 f'TLS splice failed for {host}: {type(exc).__name__}: {exc}; '
                 f'{connection.diagnostic_state()}',
             )
         finally:
+            self._asset_trace.splice(host, 'closed', detail=connection.diagnostic_state())
             result.writer.close()
             writer.close()
 
@@ -3122,6 +3127,9 @@ class FleasionProxy:
                     if short_circuit is not None or not self.texture_stripper.has_pending():
                         break
 
+            self._asset_trace.cdn(
+                host, path, short_circuit[0] if short_circuit is not None else None
+            )
             if short_circuit is None:
                 return None, False, True
 
@@ -3154,6 +3162,9 @@ class FleasionProxy:
                     f'CDN local serve complete: host={host} path={log_path} '
                     f'file={serve_path.name} status={status_line} response_bytes={len(response)}',
                 )
+                self._asset_trace.response(
+                    host, path, _parse_status_code(response.split(b'\r\n', 1)[0]), len(response)
+                )
                 response_writer.write(response)
                 await response_writer.drain()
                 if self.cache_scraper.enabled:
@@ -3172,6 +3183,7 @@ class FleasionProxy:
                 return short_circuit, True, _keep_alive(req_first, req_headers)
 
             if action == 'cdn':
+                self._asset_trace.response(host, path, 302, 0)
                 response_writer.write(_make_redirect(cast('str', value)))
                 await response_writer.drain()
                 return short_circuit, True, _keep_alive(req_first, req_headers)
@@ -3537,6 +3549,7 @@ class FleasionProxy:
 
                 if host == ASSET_DELIVERY_HOST or host in CDN_HOSTS:
                     self._note_asset_traffic()
+                    self._asset_trace.request(host, method, path, replacements_tuple)
 
                 # ── TextureStripper: CDN short-circuit (replace before upstream) ──
                 (
@@ -3573,6 +3586,7 @@ class FleasionProxy:
                         replacements_tuple,
                         batch_id,
                     )
+                    self._asset_trace.batch(req_body_plain, req_body_modified, replacements_tuple)
                     if _is_empty_json_array(req_body_modified) and not _is_empty_json_array(
                         req_body_plain
                     ):
@@ -3744,6 +3758,14 @@ class FleasionProxy:
                         f'Upstream HTTP {status_code} from {host}{path[:180]} '
                         f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes{snippet_text}',
                     )
+
+                self._asset_trace.response(
+                    host,
+                    path,
+                    status_code,
+                    len(resp_body_raw),
+                    location=resp_headers.get(b'location'),
+                )
 
                 # Determine if we need to modify the response body
                 # We only modify if: solidmodel injection is requested.
