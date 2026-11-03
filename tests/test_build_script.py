@@ -58,6 +58,51 @@ def test_packaging_collects_all_fleasion_runtime_modules() -> None:
     assert "source_root / 'macos_proxy_helper_daemon.py'" in spec_source
 
 
+def test_packaging_keeps_http2_runtime_dependencies() -> None:
+    spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
+    tree = ast.parse(spec_path.read_text(encoding='utf-8'))
+    excludes = next(
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == '_BASE_EXCLUDES'
+            for target in node.targets
+        )
+    )
+    assert isinstance(excludes, ast.List)
+    excluded_packages = {
+        element.value
+        for element in excludes.elts
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    }
+    assert excluded_packages.isdisjoint({'h2', 'hpack', 'hyperframe'})
+
+
+def test_frozen_package_checks_http2_runtime_modules_on_all_platforms() -> None:
+    workflow_source = (
+        Path(__file__).resolve().parents[1] / '.github/workflows/build.yml'
+    ).read_text(encoding='utf-8')
+    windows_check = workflow_source.split('Verify Windows runtime payload', 1)[1].split(
+        '- name: Prepare Linux executable', 1
+    )[0]
+    linux_check = workflow_source.split('Verify Linux runtime Python dependencies', 1)[1].split(
+        '- name: Upload package', 1
+    )[0]
+    for module in (
+        'h2',
+        'h2.connection',
+        'h2.config',
+        'h2.events',
+        'h2.settings',
+        'h2.exceptions',
+        'hpack',
+        'hyperframe',
+    ):
+        assert f"'{module}'" in windows_check
+        assert f'            {module} ' in linux_check
+
+
 def test_packaging_uses_package_main_module_as_entrypoint() -> None:
     spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
     spec_source = spec_path.read_text(encoding='utf-8')

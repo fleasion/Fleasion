@@ -149,6 +149,14 @@ jobs:
             'soundfile',
             'sounddevice',
             'cryptography.fernet',
+            'h2',
+            'h2.connection',
+            'h2.config',
+            'h2.events',
+            'h2.settings',
+            'h2.exceptions',
+            'hpack',
+            'hyperframe',
             'win11toast',
             'win32com.client',
             'win32con'
@@ -213,6 +221,14 @@ jobs:
             soundfile \
             sounddevice \
             cryptography.fernet \
+            h2 \
+            h2.connection \
+            h2.config \
+            h2.events \
+            h2.settings \
+            h2.exceptions \
+            hpack \
+            hyperframe \
             browser_cookie3; do
             if ! grep -Eq "(^|[[:space:]'])${required_module}([[:space:]']|$)" <<< "$archive_listing"; then
               echo "Linux package is missing required runtime module: $required_module" >&2

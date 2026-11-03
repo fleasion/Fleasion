@@ -83,8 +83,6 @@ _BASE_EXCLUDES = [
     'mitmproxy_rs',  # removed
     'setuptools',
     'wsproto',  # mitmproxy dep, no longer needed
-    'h2',  # mitmproxy dep, no longer needed
-    'hyperframe',  # mitmproxy dep, no longer needed
 ]
 
 _NUMPY_EXCLUDES = [
