@@ -65,6 +65,7 @@ if TYPE_CHECKING:
         ProxyRequestLogEntry as ProxyRequestLogEntry,
     )
 
+from .addons.texture_stripper import is_synthetic_cdn_request
 from .asset_delivery import direct_asset_id, is_asset_batch_path, is_direct_asset_path
 from .asset_trace import AssetTrace
 from .h2_transport import H2FeatureBridge
@@ -302,7 +303,7 @@ class _TextureBatchProcessor(Protocol):
         resp_body: bytes,
         req_headers: dict[bytes, bytes],
         batch_id: str = '',
-    ) -> None: ...
+    ) -> bytes | None: ...
 
 
 def _texture_detect_repl_rig(texture_stripper: TextureStripper, repl_path: str) -> str:
@@ -1441,6 +1442,8 @@ def _make_local_response(status_code: int = 204, body: bytes = b'') -> bytes:
         400: 'Bad Request',
         403: 'Forbidden',
         404: 'Not Found',
+        405: 'Method Not Allowed',
+        410: 'Gone',
         500: 'Internal Server Error',
     }
     reason = reason_map.get(status_code, 'OK')
@@ -3142,28 +3145,34 @@ class FleasionProxy:
                 return None, False, True
             has_range = b'range' in req_headers
             conditional = b'if-none-match' in req_headers or b'if-modified-since' in req_headers
-            if not req_first.startswith(b'GET '):
-                # Metadata probes must not consume a replacement intended for a GET
-                raw_method = req_first.partition(b' ')[0]
-                method_name = (
-                    raw_method.decode('ascii')
-                    if raw_method in {b'HEAD', b'POST', b'OPTIONS', b'PUT', b'DELETE', b'PATCH'}
-                    else 'OTHER'
-                )
-                self._asset_trace.cdn(
-                    host,
-                    path,
-                    None,
-                    method=method_name,
-                    has_range=has_range,
-                    conditional=conditional,
-                )
-                return None, False, True
+            managed = is_synthetic_cdn_request(host, path)
+            is_head = req_first.startswith(b'HEAD ')
+            if not req_first.startswith(b'GET ') and not (managed and is_head):
+                if managed:
+                    response_writer.write(_make_local_response(405))
+                    await response_writer.drain()
+                else:
+                    # Metadata probes must not consume a replacement intended for a GET
+                    raw_method = req_first.partition(b' ')[0]
+                    method_name = (
+                        raw_method.decode('ascii')
+                        if raw_method in {b'HEAD', b'POST', b'OPTIONS', b'PUT', b'DELETE', b'PATCH'}
+                        else 'OTHER'
+                    )
+                    self._asset_trace.cdn(
+                        host,
+                        path,
+                        None,
+                        method=method_name,
+                        has_range=has_range,
+                        conditional=conditional,
+                    )
+                return None, managed, _keep_alive(req_first, req_headers) if managed else True
 
             short_circuit = cast(
                 'tuple[str, object] | None', self.texture_stripper.check_cdn_request(host, path)
             )
-            if short_circuit is None and self.texture_stripper.has_pending():
+            if short_circuit is None and not managed and self.texture_stripper.has_pending():
                 # Give an in-flight batch response a brief chance to register
                 # its replacement before forwarding this CDN request.
                 for _wait_i in range(12):
@@ -3183,7 +3192,11 @@ class FleasionProxy:
                 conditional=conditional,
             )
             if short_circuit is None:
-                return None, False, True
+                if managed:
+                    # A stale synthetic URL must never reach Roblox's real CDN
+                    response_writer.write(_make_local_response(410))
+                    await response_writer.drain()
+                return None, managed, _keep_alive(req_first, req_headers) if managed else True
 
             action, value = short_circuit
             if action == 'local':
@@ -3205,9 +3218,12 @@ class FleasionProxy:
                     self._executor,
                     _serve_local_file,
                     local_value,
-                    req_headers.get(b'range'),
-                    req_headers.get(b'if-range'),
+                    None if is_head else req_headers.get(b'range'),
+                    None if is_head else req_headers.get(b'if-range'),
                 )
+                if is_head:
+                    header_block, delimiter, _body = response.partition(b'\r\n\r\n')
+                    response = header_block + delimiter if delimiter else response
                 status_line = (
                     response.split(b'\r\n', 1)[0].decode('ascii', errors='replace')
                     if response
@@ -3223,7 +3239,7 @@ class FleasionProxy:
                 )
                 response_writer.write(response)
                 await response_writer.drain()
-                if self.cache_scraper.enabled:
+                if self.cache_scraper.enabled and not managed and not is_head:
                     with contextlib.suppress(Exception):
                         file_bytes = await asyncio.get_event_loop().run_in_executor(
                             self._executor, _read_local_bytes, local_value
@@ -3898,17 +3914,21 @@ class FleasionProxy:
                     # (strip_textures, removal rules), using req_body_raw causes every index
                     # after a removed item to map to the wrong response item, producing wrong
                     # assetTypeId values (the root cause of SolidModel/Mesh being typed as Image).
-                    texture_batch_processor.process_batch_response(
-                        req_body_modified,
-                        resp_body_plain,
-                        req_headers,
-                        batch_id,
+                    rewritten_batch = (
+                        texture_batch_processor.process_batch_response(
+                            req_body_modified,
+                            resp_body_plain,
+                            req_headers,
+                            batch_id,
+                        )
+                        if not resp_body.has_trailers and 200 <= status_code < 300
+                        else None
                     )
                     if self.cache_scraper.enabled:
-                        self.cache_scraper.process_batch_response(
-                            scraper_body,
-                            resp_body_plain,
-                        )
+                        self.cache_scraper.process_batch_response(scraper_body, resp_body_plain)
+                    if rewritten_batch is not None and rewritten_batch != resp_body_plain:
+                        resp_body_raw = rewritten_batch
+                        response_modified = True
 
                 elif host == ASSET_DELIVERY_HOST and not is_batch:
                     # Non-batch assetdelivery response (confirmed rare/non-existent

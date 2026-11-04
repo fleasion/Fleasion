@@ -13,14 +13,17 @@ import importlib
 import io
 import json
 import logging
+import os
 import re
+import secrets
 import struct
 import time
 import zlib
+from collections import OrderedDict
 from pathlib import Path
 from threading import Lock, Thread
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urlparse, urlsplit
 
 from fleasion.config.manager import ANIMATION_TYPE_KEYS
 from fleasion.proxy.asset_delivery import (
@@ -55,6 +58,33 @@ type _PendingValue = tuple[str, str]
 type _AnimPendingValue = tuple[str, _AnimRequiredRig]
 type _CdnMatch = tuple[str, str | _AnimPendingValue]
 type _MipmapMode = Literal['color', 'normal', 'linear']
+
+_SYNTHETIC_CDN_PATH_PREFIX = '/__fleasion__/asset/'
+_SYNTHETIC_CDN_ROUTE_LIMIT = 8192
+_SYNTHETIC_CDN_HOSTS = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
+
+
+def is_synthetic_cdn_request(host: str, path: str) -> bool:
+    """Identify proxy-owned CDN paths, including stale or malformed tokens."""
+    return host.lower() in _SYNTHETIC_CDN_HOSTS and path.split('?', 1)[0].startswith(
+        _SYNTHETIC_CDN_PATH_PREFIX
+    )
+
+
+def _synthetic_cdn_host(url: str) -> str | None:
+    """Require a trusted CDN HTTPS origin for a synthetic response URL."""
+    try:
+        location = urlsplit(url)
+        if location.scheme != 'https' or location.hostname not in _SYNTHETIC_CDN_HOSTS:
+            return None
+        if location.username is not None or location.password is not None:
+            return None
+        if location.port not in {None, 443} or location.fragment:
+            return None
+    except ValueError:
+        return None
+    return location.hostname
+
 
 _MIPMAP_MODES: dict[int | None, _MipmapMode] = {
     None: 'color',
@@ -976,6 +1006,7 @@ class TextureStripper:
         set()
     )  # base_cdn_url values that should force v3 CSG export
     _batch_generations: ClassVar[dict[str, int]] = {}  # batch_id -> route generation
+    _synthetic_routes: ClassVar[OrderedDict[str, _PendingValue]] = OrderedDict()
     _routes_generation: int = 0
 
     ASSET_TYPES: ClassVar[dict[int, str]] = {
@@ -1067,6 +1098,9 @@ class TextureStripper:
         self._seen_replacements_generation = getattr(
             config_manager, 'replacements_generation', None
         )
+        self._synthetic_cdn_enabled = os.environ.get(
+            'FLEASION_ASSET_SYNTHETIC_CDN', ''
+        ).strip().lower() in {'1', 'true', 'yes'}
 
     @classmethod
     def reset_routes(cls, reason: str = '') -> dict[str, int]:
@@ -1078,6 +1112,7 @@ class TextureStripper:
                 'cdn': len(cls._cdn_redirects),
                 'solid': len(cls._solidmodel_injections),
                 'batches': len(cls._batch_generations),
+                'synthetic': len(cls._synthetic_routes),
             }
             cls._pending.clear()
             cls._local_redirects.clear()
@@ -1085,6 +1120,7 @@ class TextureStripper:
             cls._solidmodel_injections.clear()
             cls._solidmodel_force_v3.clear()
             cls._batch_generations.clear()
+            cls._synthetic_routes.clear()
             cls._routes_generation += 1
         with cls._anim_lock:
             counts['anim_pending'] = len(cls._anim_local_pending)
@@ -2217,6 +2253,31 @@ class TextureStripper:
             return result, scraper_body
         return body, body
 
+    def _issue_synthetic_location_locked(self, item: _JsonObject, kind: str, target: str) -> bool:
+        """Assign a request-specific CDN URL for one replacement representation."""
+        locations = batch_response_locations(item)
+        if len(locations) != 1 or kind not in {'local', 'cdn'}:
+            return False
+        host = _synthetic_cdn_host(locations[0])
+        if host is None:
+            return False
+        synthetic_path = f'{_SYNTHETIC_CDN_PATH_PREFIX}{secrets.token_hex(24)}'
+        synthetic_url = f'https://{host}{synthetic_path}'
+        plural = item.get('locations')
+        if isinstance(item.get('location'), str) and isinstance(plural, list):
+            return False
+        if isinstance(plural, list):
+            if len(plural) != 1 or not isinstance(plural[0], dict):
+                return False
+            plural[0]['location'] = synthetic_url
+        else:
+            item['location'] = synthetic_url
+        synthetic_key = f'https://{host}{synthetic_path}'
+        self._synthetic_routes[synthetic_key] = (kind, target)
+        while len(self._synthetic_routes) > _SYNTHETIC_CDN_ROUTE_LIMIT:
+            self._synthetic_routes.popitem(last=False)
+        return True
+
     def _process_batch_response_entry_locked(
         self,
         *,
@@ -2273,8 +2334,11 @@ class TextureStripper:
                         normal_source=normal_source,
                     )
                     if comp:
-                        for base_loc in base_locs:
-                            self._local_redirects[base_loc] = comp
+                        if not (
+                            self._synthetic_cdn_enabled
+                            and self._issue_synthetic_location_locked(item, 'local', comp)
+                        ):
+                            self._local_redirects.update(dict.fromkeys(base_locs, comp))
                         log_buffer.log(
                             'Local',
                             f'Will serve local for {base_locs[0][:60]}... '
@@ -2295,8 +2359,12 @@ class TextureStripper:
                     local_replacements[local_key],
                     map_index=map_index,
                 )
-                for base_loc in base_locs:
-                    self._local_redirects[base_loc] = local_path
+                if not (
+                    self._synthetic_cdn_enabled
+                    and self._issue_synthetic_location_locked(item, 'local', local_path)
+                ):
+                    for base_loc in base_locs:
+                        self._local_redirects[base_loc] = local_path
                 log_buffer.log(
                     'Local',
                     f'Will serve local for {base_locs[0][:60]}... '
@@ -2304,8 +2372,14 @@ class TextureStripper:
                 )
                 return
             if cdn_key is not None:
-                for base_loc in base_locs:
-                    self._cdn_redirects[base_loc] = cdn_replacements[cdn_key]
+                if not (
+                    self._synthetic_cdn_enabled
+                    and self._issue_synthetic_location_locked(
+                        item, 'cdn', cdn_replacements[cdn_key]
+                    )
+                ):
+                    for base_loc in base_locs:
+                        self._cdn_redirects[base_loc] = cdn_replacements[cdn_key]
                 log_buffer.log(
                     'CDN',
                     f'Will redirect {base_locs[0][:60]}... (key={cdn_key}, slot={map_index})',
@@ -2317,8 +2391,15 @@ class TextureStripper:
         url_type, url_value = self._pending.pop(pending_key)
         with self._anim_lock:
             anim_pending = self._anim_local_pending.pop(pending_key, None)
-        for base_loc in base_locs:
-            self._register_batch_response_route_locked(base_loc, url_type, url_value, anim_pending)
+        if not (
+            anim_pending is None
+            and self._synthetic_cdn_enabled
+            and self._issue_synthetic_location_locked(item, url_type, url_value)
+        ):
+            for base_loc in base_locs:
+                self._register_batch_response_route_locked(
+                    base_loc, url_type, url_value, anim_pending
+                )
 
     def _register_batch_response_route_locked(
         self,
@@ -2358,7 +2439,7 @@ class TextureStripper:
         resp_body: bytes,
         req_headers: dict[str, str],
         batch_id: str = '',
-    ) -> None:
+    ) -> bytes | None:
         """Commit CDN URL -> redirect/local/solid mappings from batch response."""
         del req_headers
         if not resp_body:
@@ -2428,6 +2509,13 @@ class TextureStripper:
         texpack_request_slots = self._build_texpack_request_slot_map(req_data, slot_target_ids)
 
         with self._lock:
+            original_locations = (
+                tuple(
+                    batch_response_locations(item) for item in resp_data if isinstance(item, dict)
+                )
+                if self._synthetic_cdn_enabled
+                else ()
+            )
             batch_generation = self._batch_generations.pop(batch_id, None)
             if batch_generation is None or batch_generation != self._routes_generation:
                 return
@@ -2446,6 +2534,12 @@ class TextureStripper:
                     orm_overrides=orm_overrides,
                     normal_overrides=normal_overrides,
                 )
+            if self._synthetic_cdn_enabled and original_locations != tuple(
+                batch_response_locations(item) for item in resp_data if isinstance(item, dict)
+            ):
+                rewritten = _dumps(resp_data)
+                return rewritten if rewritten != resp_body else None
+        return None
 
     # CDN request check (called from server MITM thread for Roblox CDN hosts)
 
@@ -2458,7 +2552,16 @@ class TextureStripper:
         """
         self._sync_replacements_generation()
         base_url = f'https://{host}{path}'.split('?')[0]
+        if is_synthetic_cdn_request(host, path):
+            with self._lock:
+                entry = self._synthetic_routes.get(base_url)
+                if entry is not None:
+                    self._synthetic_routes.move_to_end(base_url)
+                return entry
 
+        return self._check_legacy_cdn_request(base_url)
+
+    def _check_legacy_cdn_request(self, base_url: str) -> _CdnMatch | None:
         def _log_cdn_match(action: str, value: str | _AnimPendingValue) -> None:
             target = value[0] if action == 'anim_rig' and isinstance(value, tuple) else value
             try:
