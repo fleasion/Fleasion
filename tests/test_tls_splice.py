@@ -166,9 +166,10 @@ def test_real_tls_reuses_existing_http_rules_and_logging(
                 with tls.makefile('rb') as source:
                     results: list[bytes] = []
                     for number in range(1 if framing in {'eof', 'local'} else 2):
-                        body = b'original' if number == 0 else b''
+                        body = b'' if framing == 'local' else (b'original' if number == 0 else b'')
+                        method = 'GET' if framing == 'local' else 'POST'
                         tls.sendall(
-                            f'POST /asset/{number} HTTP/1.1\r\nHost: {host}\r\n'.encode()
+                            f'{method} /asset/{number} HTTP/1.1\r\nHost: {host}\r\n'.encode()
                             + f'Content-Length: {len(body)}\r\n\r\n'.encode()
                             + body
                         )

@@ -89,6 +89,9 @@ def _fake_addons(
         calls.solid_models.append((body, replacement_path, url, prefer_v3))
         return b'controlled-solid-model-output'
 
+    def rewrite_direct_asset_id(path: str, _replacements: object) -> str:
+        return path
+
     stripper = cast(
         'TextureStripper',
         SimpleNamespace(
@@ -98,6 +101,7 @@ def _fake_addons(
             process_batch_request=process_batch_request,
             process_batch_response=process_batch_response,
             process_solidmodel_response=process_solid_model,
+            rewrite_direct_asset_id=rewrite_direct_asset_id,
         ),
     )
     cache = cast(

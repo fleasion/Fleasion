@@ -65,6 +65,7 @@ if TYPE_CHECKING:
         ProxyRequestLogEntry as ProxyRequestLogEntry,
     )
 
+from .asset_delivery import direct_asset_id, is_asset_batch_path, is_direct_asset_path
 from .asset_trace import AssetTrace
 from .h2_transport import H2FeatureBridge
 from .roblox_metadata import strip_roblox_metadata
@@ -1930,7 +1931,11 @@ class FleasionProxy:
         self.port = int(self._server.sockets[0].getsockname()[1])
         self._servers = [self._server]
         self._listening_loopbacks = {'127.0.0.1'}
-        mode = 'HTTP CONNECT' if self._explicit_proxy else ('TLS splice' if self._tls_splice else 'TLS')
+        mode = (
+            'HTTP CONNECT'
+            if self._explicit_proxy
+            else ('TLS splice' if self._tls_splice else 'TLS')
+        )
         logger.info('Fleasion proxy listening on 127.0.0.1:%d (%s)', self.port, mode)
 
         try:
@@ -2665,9 +2670,7 @@ class FleasionProxy:
         if keys is None:
             msg = 'Splice key provider is unavailable'
             raise ValueError(msg)
-        result = await self._connector.connect(
-            host, self._endpoints_for_host(host), None, 10.0
-        )
+        result = await self._connector.connect(host, self._endpoints_for_host(host), None, 10.0)
         if result.reader is None or result.writer is None:
             if explicit:
                 writer.write(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
@@ -2683,15 +2686,14 @@ class FleasionProxy:
             # absence as a 20-second TLS secret-recovery failure.
             try:
                 first_record = await asyncio.wait_for(read_record(reader), timeout=10.0)
-            except (asyncio.IncompleteReadError, ConnectionResetError, TimeoutError):
+            except asyncio.IncompleteReadError, ConnectionResetError, TimeoutError:
                 result.writer.close()
                 writer.close()
                 return
             except (OSError, ValueError) as exc:
                 log_buffer.log(
                     'Proxy',
-                    f'Invalid TLS record after CONNECT for {host}: '
-                    f'{type(exc).__name__}: {exc}',
+                    f'Invalid TLS record after CONNECT for {host}: {type(exc).__name__}: {exc}',
                 )
                 result.writer.close()
                 writer.close()
@@ -2738,7 +2740,7 @@ class FleasionProxy:
             await self._serve_splice(
                 reader, writer, host, 443, explicit=False, client_records=records
             )
-        except (asyncio.IncompleteReadError, TimeoutError):
+        except asyncio.IncompleteReadError, TimeoutError:
             writer.close()
         except (OSError, ValueError) as exc:
             log_buffer.log('Proxy', f'Direct TLS splice failed: {exc}')
@@ -3570,7 +3572,11 @@ class FleasionProxy:
                     log_entry,
                     hold=self._intercept_all_hosts and self._intercept_matches(host, path),
                 )
-                is_batch = host == ASSET_DELIVERY_HOST and b'/v1/assets/batch' in req_first
+                is_batch = (
+                    host == ASSET_DELIVERY_HOST
+                    and method.upper() == 'POST'
+                    and is_asset_batch_path(path)
+                )
                 replacements_tuple: _ReplacementMaps = (
                     self.texture_stripper.config_manager.get_all_replacements()
                     if host == ASSET_DELIVERY_HOST
@@ -3611,7 +3617,7 @@ class FleasionProxy:
                     host == ASSET_DELIVERY_HOST
                     and not is_batch
                     and method.upper() in {'GET', 'HEAD'}
-                    and urlparse(path).path.rstrip('/') == '/v1/asset'
+                    and is_direct_asset_path(path)
                     and not request_has_trailers
                 ):
                     updated_path = self.texture_stripper.rewrite_direct_asset_id(
@@ -3624,22 +3630,8 @@ class FleasionProxy:
                                 parts[0] + b' ' + updated_path.encode('ascii') + b' ' + parts[2]
                             )
                             direct_id_rewritten = True
-                            original_asset = next(
-                                (
-                                    value
-                                    for key, value in parse_qsl(urlparse(path).query)
-                                    if key == 'id'
-                                ),
-                                '',
-                            )
-                            new_asset = next(
-                                (
-                                    value
-                                    for key, value in parse_qsl(urlparse(updated_path).query)
-                                    if key == 'id'
-                                ),
-                                '',
-                            )
+                            original_asset = direct_asset_id(path) or ''
+                            new_asset = direct_asset_id(updated_path) or ''
                             log_buffer.log(
                                 'Replacer',
                                 f'Replaced {original_asset} -> {new_asset} (unbatched)',
@@ -3667,8 +3659,17 @@ class FleasionProxy:
                     if request_has_trailers:
                         msg = 'Cannot process asset batches carrying chunked trailers'
                         raise ValueError(msg)
-                    # Decompress for reading/modifying, send uncompressed to upstream
-                    req_body_plain = _decompress_body(req_body_raw, req_headers)
+                    # Only rewrite encodings that were decoded successfully
+                    content_encoding = req_headers.get(b'content-encoding', b'').strip().lower()
+                    supported_encoding = content_encoding in {b'', b'identity', b'gzip', b'zstd'}
+                    req_body_plain = (
+                        _decompress_body(req_body_raw, req_headers)
+                        if supported_encoding
+                        else req_body_raw
+                    )
+                    decoded = supported_encoding and (
+                        content_encoding not in {b'gzip', b'zstd'} or req_body_plain != req_body_raw
+                    )
                     # Unique ID for this specific batch request/response pair.
                     # Keyed into _pending as f'{batch_id}_{req_id}' so parallel
                     # connections using the same req_id integers don't collide —
@@ -3680,13 +3681,23 @@ class FleasionProxy:
                     # _pending, skipped the wait, and forwarded unreplaced assets. Running
                     # synchronously ensures _pending is populated before any CDN coroutine
                     # can check has_pending().
-                    req_body_modified, scraper_body = texture_batch_processor.process_batch_request(
-                        req_body_plain,
-                        req_headers,
-                        replacements_tuple,
-                        batch_id,
-                    )
-                    self._asset_trace.batch(req_body_plain, req_body_modified, replacements_tuple)
+                    if decoded:
+                        req_body_modified, scraper_body = (
+                            texture_batch_processor.process_batch_request(
+                                req_body_plain,
+                                req_headers,
+                                replacements_tuple,
+                                batch_id,
+                            )
+                        )
+                        self._asset_trace.batch(
+                            req_body_plain, req_body_modified, replacements_tuple
+                        )
+                    else:
+                        # A pass-through must preserve compression, even when we
+                        # cannot inspect a dictionary-compressed or future format
+                        req_body_modified = req_body_raw
+                        scraper_body = req_body_raw
                     if _is_empty_json_array(req_body_modified) and not _is_empty_json_array(
                         req_body_plain
                     ):
@@ -3697,9 +3708,15 @@ class FleasionProxy:
                         continue
                     if not await ensure_upstream(path):
                         break
-                    cast('asyncio.StreamWriter', up_writer).write(
-                        _build_modified_request(req_first, req_headers, req_body_modified)
-                    )
+                    if not decoded or req_body_modified == req_body_plain:
+                        # Preserve the original compressed or chunked bytes
+                        cast('asyncio.StreamWriter', up_writer).write(
+                            req_raw.raw_header_block + req_body.wire
+                        )
+                    else:
+                        cast('asyncio.StreamWriter', up_writer).write(
+                            _build_modified_request(req_first, req_headers, req_body_modified)
+                        )
                 elif host == GAMEJOIN_HOST:
                     if request_has_trailers:
                         msg = 'Cannot process gamejoin requests carrying chunked trailers'
@@ -3801,9 +3818,7 @@ class FleasionProxy:
                     resp_body = RawBody(wire=b'', payload=b'', was_chunked=False)
                 elif close_delimited:
                     # HTTP/1 responses without framing end at upstream EOF
-                    payload = await _read_http_body_to_eof(
-                        cast('asyncio.StreamReader', up_reader)
-                    )
+                    payload = await _read_http_body_to_eof(cast('asyncio.StreamReader', up_reader))
                     resp_body = RawBody(wire=payload, payload=payload, was_chunked=False)
                 else:
                     resp_body = await _read_body_wire(

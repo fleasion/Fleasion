@@ -6,6 +6,8 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+import pytest
+
 from h2.config import H2Configuration
 from h2.connection import H2Connection
 from h2.events import DataReceived, RequestReceived, ResponseReceived, StreamEnded
@@ -29,7 +31,17 @@ class _Config:
         return {12345: 98765}, set(), {}, {}
 
 
-def test_h2_asset_delivery_rewrites_unbatched_id_before_forwarding(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ('path', 'rewritten'),
+    [
+        (b'/v1/asset/?client=studio&id=12345&token=opaque', b'/v1/asset/?client=studio&id=98765&token=opaque'),
+        (b'/v2/asset/?client=studio&id=12345&token=opaque', b'/v2/asset/?client=studio&id=98765&token=opaque'),
+        (b'/v2/assetId/12345?format=source', b'/v2/assetId/98765?format=source'),
+    ],
+)
+def test_h2_asset_delivery_rewrites_unbatched_id_before_forwarding(
+    tmp_path: Path, path: bytes, rewritten: bytes
+) -> None:
     async def run() -> None:
         ca, key = generate_ca(tmp_path)
         default_cert = generate_multi_host_cert('h2-asset', {_HOST}, ca, key, tmp_path)
@@ -102,7 +114,7 @@ def test_h2_asset_delivery_rewrites_unbatched_id_before_forwarding(tmp_path: Pat
                     (b':method', b'GET'),
                     (b':scheme', b'https'),
                     (b':authority', _HOST.encode('ascii')),
-                    (b':path', b'/v1/asset/?client=studio&id=12345&token=opaque'),
+                    (b':path', path),
                     (b'x-sentinel', b'header-kept'),
                 ],
                 end_stream=True,
@@ -132,7 +144,7 @@ def test_h2_asset_delivery_rewrites_unbatched_id_before_forwarding(tmp_path: Pat
 
             await asyncio.wait_for(collect(), timeout=8)
             assert response == b'OK'
-            assert forwarded_paths == [b'/v1/asset/?client=studio&id=98765&token=opaque']
+            assert forwarded_paths == [rewritten]
             assert len(forwarded_headers) == 1
             assert forwarded_headers[0][b'x-sentinel'] == b'header-kept'
             writer.close()

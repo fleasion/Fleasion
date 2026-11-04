@@ -700,6 +700,13 @@ def test_orm_composite_resolves_normal_asset_id_for_variance_mips(
     ('path', 'expected'),
     [
         ('/v1/asset/?id=12345', '/v1/asset/?id=98765'),
+        ('/v2/asset/?id=12345', '/v2/asset/?id=98765'),
+        ('/v2/assetId/12345', '/v2/assetId/98765'),
+        ('/v2/assetId/12345/?format=source', '/v2/assetId/98765/?format=source'),
+        ('/v1/assetId/12345', '/v1/assetId/98765'),
+        ('/v2/assetId/12345/version/1', '/v2/assetId/12345/version/1'),
+        ('/v2/assetId/12345?id=999', '/v2/assetId/12345?id=999'),
+        ('/v2/assetId/54321', '/v2/assetId/54321'),
         (
             '/v1/asset/?client=studio&id=12345&auth=private-value&version=3',
             '/v1/asset/?client=studio&id=98765&auth=private-value&version=3',

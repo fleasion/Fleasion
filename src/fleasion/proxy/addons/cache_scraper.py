@@ -39,6 +39,7 @@ import zstandard
 from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
 
+from fleasion.proxy.asset_delivery import batch_response_locations
 from fleasion.utils import format_count, log_buffer
 from fleasion.utils.json_types import (
     ObjectDict,
@@ -649,15 +650,14 @@ class CacheScraper:
                 if not is_object_dict(res_item_value):
                     continue
                 res_item = res_item_value
-                location_value = res_item.get('location')
+                locations = batch_response_locations(res_item)
                 asset_type_value = res_item.get('assetTypeId')
-                location = location_value if isinstance(location_value, str) else None
                 asset_type = (
                     asset_type_value
                     if isinstance(asset_type_value, int) and not isinstance(asset_type_value, bool)
                     else None
                 )
-                if location is None:
+                if not locations:
                     continue
                 # Roblox often omits assetTypeId on the 2nd and 3rd slots of a
                 # TexturePack batch (all share the same assetId).  Fall back to
@@ -668,57 +668,54 @@ class CacheScraper:
                     asset_type = previous.get('assetTypeId') if previous is not None else None
                 if asset_type is None:
                     continue
-                base_url = location.split('?')[0]
+                for location in locations:
+                    base_url = location.split('?')[0]
 
-                # TexturePack slot metadata must be refreshed before the
-                # duplicate-URL skip below. Otherwise the first classification
-                # of a reused CDN URL sticks forever and KTX2 slot exports can
-                # be written under the wrong slot name.
-                if asset_type == 63:
-                    request_slot = texpack_request_slots.get(idx)
-                    selected_quality = _decode_selected_representation_slot_quality(res_item)
-                    if request_slot is not None:
-                        slot_quality = (
-                            request_slot,
-                            selected_quality[1] if selected_quality else 0,
-                        )
-                    else:
-                        slot_quality = None
-                    if slot_quality is not None:
-                        slot, qual = slot_quality
-                        new_meta = (int(asset_id), int(slot), int(qual))
-                        self._url_to_texpack_slot.setdefault(base_url, set()).add(new_meta)
-                # Skip if this exact CDN URL is already registered.
-                # Previously this was keyed by asset_id alone, which meant only
-                # the FIRST batch entry for a given assetId was tracked — silently
-                # dropping all subsequent texture slots (normal, metalness,
-                # roughness…) that Roblox requests by sending the same assetId
-                # multiple times with different requestedBuildType values.
-                if base_url in self._url_to_asset:
-                    continue
-                if asset_id not in self.cache_logs:
-                    self.cache_logs[asset_id] = {
-                        'location': location,
-                        'assetTypeId': asset_type,
-                    }
-                url_list = self._url_to_asset.setdefault(base_url, [])
+                    # TexturePack slot metadata must be refreshed before the
+                    # duplicate-URL skip below. Otherwise the first classification
+                    # of a reused CDN URL sticks forever and KTX2 slot exports can
+                    # be written under the wrong slot name.
+                    if asset_type == 63:
+                        request_slot = texpack_request_slots.get(idx)
+                        selected_quality = _decode_selected_representation_slot_quality(res_item)
+                        if request_slot is not None:
+                            slot_quality = (
+                                request_slot,
+                                selected_quality[1] if selected_quality else 0,
+                            )
+                        else:
+                            slot_quality = None
+                        if slot_quality is not None:
+                            slot, qual = slot_quality
+                            new_meta = (int(asset_id), int(slot), int(qual))
+                            self._url_to_texpack_slot.setdefault(base_url, set()).add(new_meta)
+                    # Keep distinct asset IDs sharing one CDN content hash
+                    # while avoiding duplicate associations for the same ID
+                    url_list = self._url_to_asset.setdefault(base_url, [])
+                    if asset_id in url_list:
+                        continue
+                    if asset_id not in self.cache_logs:
+                        self.cache_logs[asset_id] = {
+                            'location': location,
+                            'assetTypeId': asset_type,
+                        }
 
-                # Check if a sibling for this CDN URL is already cached
-                # (from a previous batch).  If so, mark this one cached and
-                # schedule a content copy instead of waiting for a CDN
-                # response that will never arrive.
-                cached_sibling = None
-                for sibling_id in url_list:
-                    sibling_info = self.cache_logs.get(sibling_id)
-                    if sibling_info and 'cached' in sibling_info:
-                        cached_sibling = sibling_id
-                        break
-                if cached_sibling is not None:
-                    self.cache_logs[asset_id]['cached'] = True
-                    to_copy.append((cached_sibling, asset_id, asset_type, location))
+                    # Check if a sibling for this CDN URL is already cached
+                    # (from a previous batch).  If so, mark this one cached and
+                    # schedule a content copy instead of waiting for a CDN
+                    # response that will never arrive.
+                    cached_sibling = None
+                    for sibling_id in url_list:
+                        sibling_info = self.cache_logs.get(sibling_id)
+                        if sibling_info and 'cached' in sibling_info:
+                            cached_sibling = sibling_id
+                            break
+                    if cached_sibling is not None:
+                        self.cache_logs[asset_id]['cached'] = True
+                        to_copy.append((cached_sibling, asset_id, asset_type, location))
 
-                url_list.append(asset_id)
-                tracked += 1
+                    url_list.append(asset_id)
+                    tracked += 1
 
         # Submit copy tasks outside the lock
         for source_id, dest_id, asset_type, url in to_copy:

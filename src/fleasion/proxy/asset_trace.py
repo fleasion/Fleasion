@@ -8,9 +8,11 @@ import os
 import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, cast
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from fleasion.utils import log_buffer
+
+from .asset_delivery import direct_asset_id, is_asset_batch_path, is_direct_asset_path
 
 if TYPE_CHECKING:
     from fleasion.config.types import ReplacementMaps
@@ -62,12 +64,9 @@ class AssetTrace:
             return
         if host != _ASSET_HOST:
             return
-        parsed = urlsplit(path)
-        if parsed.path.rstrip('/') == '/v1/asset':
-            ids = parse_qs(parsed.query).get('id', [])
-            asset_id = (
-                int(ids[0]) if len(ids) == 1 and ids[0].isascii() and ids[0].isdigit() else None
-            )
+        if is_direct_asset_path(path):
+            asset_id_raw = direct_asset_id(path)
+            asset_id = int(asset_id_raw) if asset_id_raw is not None else None
             maps = (replacements[0], replacements[2], replacements[3])
             has_replacement = asset_id is not None and any(
                 asset_id in mapping or str(asset_id) in mapping for mapping in maps
@@ -84,7 +83,7 @@ class AssetTrace:
                 f'asset_id_rewritten={rewritten}'
             )
         else:
-            kind = 'batch' if parsed.path == '/v1/assets/batch' else 'other'
+            kind = 'batch' if is_asset_batch_path(path) else 'other'
             self._emit(
                 f'http_request host=assetdelivery kind={kind} method={method} '
                 f'path_key={self._path_key(host, path)}'

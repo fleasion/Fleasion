@@ -23,6 +23,11 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast
 from urllib.parse import parse_qsl, urlparse
 
 from fleasion.config.manager import ANIMATION_TYPE_KEYS
+from fleasion.proxy.asset_delivery import (
+    batch_response_locations,
+    direct_asset_id,
+    is_direct_asset_path,
+)
 from fleasion.proxy.roblox_metadata import strip_roblox_metadata
 from fleasion.utils import APP_CACHE_DIR, format_count, log_buffer
 from fleasion.utils.http import http_download_to
@@ -1707,20 +1712,27 @@ class TextureStripper:
     @staticmethod
     def rewrite_direct_asset_id(path: str, replacements_tuple: ReplacementMaps) -> str:
         """Apply exact ID swaps to unbatched asset-delivery requests."""
-        if urlparse(path).path.rstrip('/') != '/v1/asset':
+        if not is_direct_asset_path(path) or direct_asset_id(path) is None:
             return path
-        matches = list(re.finditer(r'([?&])id=([0-9]+)(?=&|$)', path))
-        if len(matches) != 1:
-            return path
-        match = matches[0]
-        ids = [
-            value
-            for key, value in parse_qsl(urlparse(path).query, keep_blank_values=True)
-            if key == 'id'
-        ]
-        if ids != [match.group(2)]:
-            return path
-        original_id = int(match.group(2))
+        parsed = urlparse(path)
+        id_path = re.fullmatch(r'/v[12]/assetId/([0-9]+)/?', parsed.path)
+        if id_path is not None:
+            original_id = int(id_path.group(1))
+            start, end = id_path.span(1)
+        else:
+            matches = list(re.finditer(r'([?&])id=([0-9]+)(?=&|$)', path))
+            if len(matches) != 1:
+                return path
+            match = matches[0]
+            ids = [
+                value
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if key == 'id'
+            ]
+            if ids != [match.group(2)]:
+                return path
+            original_id = int(match.group(2))
+            start, end = match.span(2)
         replacements, removals, cdn_replacements, local_replacements = replacements_tuple
         if (
             original_id in removals
@@ -1736,7 +1748,7 @@ class TextureStripper:
             or replacement_id in TextureStripper._predownloaded
         ):
             return path
-        return f'{path[: match.start(2)]}{replacement_id}{path[match.end(2) :]}'
+        return f'{path[:start]}{replacement_id}{path[end:]}'
 
     # Batch request (called from server MITM thread)
 
@@ -2220,9 +2232,10 @@ class TextureStripper:
         normal_overrides: dict[int | str, str | int | None],
     ) -> None:
         req_id_raw = str(item.get('requestId', ''))
-        location_value = item.get('location')
-        location = location_value if isinstance(location_value, str) else None
-        base_loc = location.split('?')[0] if location else ''
+        # V1 has one location; V2 supplies per-format locations
+        base_locs = tuple(
+            dict.fromkeys(url.split('?', 1)[0] for url in batch_response_locations(item))
+        )
 
         pending_key = ''
         if req_id_raw:
@@ -2244,7 +2257,7 @@ class TextureStripper:
         aid = self._normalize_asset_id(req_item.get('assetId'))
         map_index = texpack_request_slots.get(idx)
 
-        if location and not pending_key and aid is not None and map_index is not None:
+        if base_locs and not pending_key and aid is not None and map_index is not None:
             if map_index == 2 and orm_overrides:
                 orm_chs: dict[str, str | None] = {}
                 orm_chs.update(orm_overrides.get('TexturePack', {}))
@@ -2260,10 +2273,11 @@ class TextureStripper:
                         normal_source=normal_source,
                     )
                     if comp:
-                        self._local_redirects[base_loc] = comp
+                        for base_loc in base_locs:
+                            self._local_redirects[base_loc] = comp
                         log_buffer.log(
                             'Local',
-                            f'Will serve local for {base_loc[:60]}... '
+                            f'Will serve local for {base_locs[0][:60]}... '
                             f'(key=ORM[{", ".join(sorted(orm_chs))}], slot={map_index}, file={Path(comp).name})',
                         )
                         return
@@ -2281,24 +2295,38 @@ class TextureStripper:
                     local_replacements[local_key],
                     map_index=map_index,
                 )
-                self._local_redirects[base_loc] = local_path
+                for base_loc in base_locs:
+                    self._local_redirects[base_loc] = local_path
                 log_buffer.log(
                     'Local',
-                    f'Will serve local for {base_loc[:60]}... '
+                    f'Will serve local for {base_locs[0][:60]}... '
                     f'(key={local_key}, slot={map_index}, file={Path(local_path).name})',
                 )
                 return
             if cdn_key is not None:
-                self._cdn_redirects[base_loc] = cdn_replacements[cdn_key]
+                for base_loc in base_locs:
+                    self._cdn_redirects[base_loc] = cdn_replacements[cdn_key]
                 log_buffer.log(
                     'CDN',
-                    f'Will redirect {base_loc[:60]}... (key={cdn_key}, slot={map_index})',
+                    f'Will redirect {base_locs[0][:60]}... (key={cdn_key}, slot={map_index})',
                 )
                 return
 
-        if not location or not pending_key:
+        if not base_locs or not pending_key:
             return
         url_type, url_value = self._pending.pop(pending_key)
+        with self._anim_lock:
+            anim_pending = self._anim_local_pending.pop(pending_key, None)
+        for base_loc in base_locs:
+            self._register_batch_response_route_locked(base_loc, url_type, url_value, anim_pending)
+
+    def _register_batch_response_route_locked(
+        self,
+        base_loc: str,
+        url_type: str,
+        url_value: str,
+        anim_pending: _AnimPendingValue | None,
+    ) -> None:
         if url_type == 'cdn':
             self._cdn_redirects[base_loc] = url_value
             log_buffer.log('CDN', f'Will redirect {base_loc[:60]}...')
@@ -2306,8 +2334,6 @@ class TextureStripper:
             # Check if this is a tagged animation replacement — if so, put it in
             # _anim_rig_local so server.py reads the upstream CDN response first
             # to detect the original rig, rather than short-circuiting immediately.
-            with self._anim_lock:
-                anim_pending = self._anim_local_pending.pop(pending_key, None)
             if anim_pending is not None:
                 anim_path, required_rig = anim_pending
                 self._anim_rig_local[base_loc] = (anim_path, required_rig)
