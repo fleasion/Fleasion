@@ -43,7 +43,7 @@ from fleasion.app.elevation import (
     relaunch_as_admin as _relaunch_as_admin,
 )
 from fleasion.app.restart import restart_fleasion_normally
-from fleasion.appearance import ACCENTS, COLOR_MODES, STYLES
+from fleasion.appearance import COLOR_MODES, STYLES
 from fleasion.gui import (
     AboutWindow,
     DeleteCacheWindow,
@@ -51,7 +51,7 @@ from fleasion.gui import (
     ReplacerConfigWindow,
     ThemeManager,
 )
-from fleasion.gui.appearance_controls import choice_label, swatch_icon
+from fleasion.gui.appearance_controls import ACCENT_OPTIONS, choice_label, swatch_icon
 from fleasion.localization import tr
 from fleasion.utils import (
     APP_DISCORD,
@@ -459,6 +459,7 @@ class SystemTray:
         self.style_actions: dict[str, QAction] = {}
         self.color_mode_actions: dict[str, QAction] = {}
         self.accent_actions: dict[str, QAction] = {}
+        self._accent_menu: QMenu | None = None
         for key, label, choices, actions in (
             ('style', tr('settings.appearance.style'), STYLES, self.style_actions),
             (
@@ -467,16 +468,20 @@ class SystemTray:
                 COLOR_MODES,
                 self.color_mode_actions,
             ),
-            ('accent', tr('settings.appearance.accent'), tuple(ACCENTS), self.accent_actions),
+            ('accent', tr('settings.appearance.accent'), ACCENT_OPTIONS, self.accent_actions),
         ):
             submenu = QMenu(label, appearance_menu)
+            if key == 'accent':
+                self._accent_menu = submenu
             group = QActionGroup(submenu)
             group.setExclusive(True)
             for name in choices:
                 text = choice_label(name) if key != 'accent' and name != 'Fusion' else name
                 action = QAction(text, submenu)
                 if key == 'accent':
-                    action.setIcon(swatch_icon(name))
+                    action.setIcon(
+                        swatch_icon(name, custom_color=self.config_manager.custom_accent_color)
+                    )
                 action.setCheckable(True)
                 group.addAction(action)
                 action.triggered.connect(partial(self._set_appearance, key, name))
@@ -731,13 +736,21 @@ class SystemTray:
             self.dashboard_window.refresh_env_proxy_gate()
 
     def _sync_appearance_actions(self) -> None:
+        if self._accent_menu is not None:
+            self._accent_menu.menuAction().setVisible(
+                self.config_manager.appearance_style == 'Glass'
+            )
         for actions, current in (
             (self.style_actions, self.config_manager.appearance_style),
             (self.color_mode_actions, self.config_manager.color_mode),
             (self.accent_actions, self.config_manager.accent_color),
         ):
             for name, action in actions.items():
-                action.setChecked(name == current)
+                action.setChecked(name == current or (name == 'Custom' and current.startswith('#')))
+        if custom := self.accent_actions.get('Custom'):
+            custom.setIcon(
+                swatch_icon('Custom', custom_color=self.config_manager.custom_accent_color)
+            )
 
     def _set_appearance(self, key: str, value: str, _checked: bool = False) -> None:
         if key in {'style', 'color_mode', 'accent'}:

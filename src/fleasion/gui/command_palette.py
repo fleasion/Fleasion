@@ -5,8 +5,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, override
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QPainter, QPaintEvent, QShortcut
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    Qt,
+    Signal,
+)
+from PySide6.QtGui import (
+    QColor,
+    QKeyEvent,
+    QKeySequence,
+    QPainter,
+    QPaintEvent,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QDialog,
     QGraphicsDropShadowEffect,
@@ -204,74 +222,128 @@ class CommandPalette(QDialog):
             command.run()
 
 
-class _TabReveal(QWidget):
-    """Fade a temporary, noninteractive cover instead of the entire tab page."""
+class _TabFade(QWidget):
+    """Fade a complete snapshot of the incoming page over its live contents."""
 
-    def __init__(self, page: QWidget) -> None:
-        super().__init__(page)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+    finished = Signal(object)
+
+    def __init__(self, tabs: QTabWidget, page: QWidget) -> None:
+        super().__init__(tabs)
+        self.setObjectName('TabContentFade')
+        self._page = page
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self._alpha = 1.0
-        background = page.palette().window().color()
-        # A transparent Glass palette still needs an opaque initial cover
-        self._color = background if background.alpha() == 255 else QColor('#20212a')
-        self.setGeometry(page.rect())
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        # Capture through the top-level window, not page.grab(). Glass paints
+        # its backdrop on the window, so a page-only grab retains transparency
+        # and produces a visible jump when the temporary frame disappears
+        window = page.window()
+        frame_rect = QRect(page.mapTo(window, QPoint()), page.size())
+        self._frame: QPixmap = window.grab(frame_rect)
+        self._opacity = 0.0
+        self._finished = False
+        self.setGeometry(QRect(page.mapTo(tabs, QPoint()), page.size()))
+        self._animation = QPropertyAnimation(self, b'opacity', self)
+        self._animation.setDuration(_TAB_FADE_MS)
+        self._animation.setStartValue(0.0)
+        self._animation.setEndValue(1.0)
+        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._animation.finished.connect(self.cancel)
         page.installEventFilter(self)
+        self._hiding_page = True
+        page.hide()
+        self._hiding_page = False
         self.show()
         self.raise_()
-        animation = QVariantAnimation(self)
-        self._animation = animation
-        animation.setDuration(_TAB_FADE_MS)
-        animation.setStartValue(1.0)
-        animation.setEndValue(0.0)
-        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        animation.valueChanged.connect(self._set_alpha)
-        animation.finished.connect(self.deleteLater)
-        animation.start()
+        self._animation.start()
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if (
-            isinstance(watched, QWidget)
-            and watched is self.parentWidget()
-            and event.type() == QEvent.Type.Resize
+            watched is self._page
+            and not self._hiding_page
+            and event.type()
+            in {
+                QEvent.Type.Hide,
+                QEvent.Type.Move,
+                QEvent.Type.Resize,
+            }
         ):
-            self.setGeometry(watched.rect())
+            # A cached image no longer matches a moved or resized page
+            self.cancel()
         return False
 
-    def cancel(self) -> None:
-        self._animation.stop()
-        self.hide()
-        self.deleteLater()
+    def _get_opacity(self) -> float:
+        return self._opacity
 
-    def _set_alpha(self, value: object) -> None:
-        self._alpha = float(value) if isinstance(value, int | float) else 0.0
+    def _set_opacity(self, value: float) -> None:
+        self._opacity = value
         self.update()
+
+    opacity = Property(float, _get_opacity, _set_opacity)
 
     @override
     def paintEvent(self, _event: QPaintEvent) -> None:
         painter = QPainter(self)
-        color = QColor(self._color)
-        color.setAlphaF(self._alpha)
-        painter.fillRect(self.rect(), color)
+        painter.setOpacity(self._opacity)
+        painter.drawPixmap(0, 0, self._frame)
         painter.end()
+
+    def cancel(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._animation.stop()
+        parent = self.parentWidget()
+        if (
+            isValid(self._page)
+            and isinstance(parent, QTabWidget)
+            and parent.currentWidget() is self._page
+        ):
+            self._page.show()
+        self.hide()
+        self.finished.emit(self)
+        self.deleteLater()
+
+
+class _TabTransitionController(QObject):
+    """Cancel in-flight frames on tab and appearance changes."""
+
+    def __init__(self, tabs: QTabWidget) -> None:
+        super().__init__(tabs)
+        self._tabs = tabs
+        self._active: _TabFade | None = None
+        tabs.installEventFilter(self)
+        tabs.currentChanged.connect(self._on_change)
+        ThemeManager.events().changed.connect(self.cancel)
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._tabs and event.type() == QEvent.Type.Resize:
+            self.cancel()
+        return False
+
+    def _on_change(self, index: int) -> None:
+        self.cancel()
+        page = self._tabs.widget(index)
+        if page is not None and page.isVisible() and page.width() > 0 and page.height() > 0:
+            fade = _TabFade(self._tabs, page)
+            fade.finished.connect(self._on_finished)
+            self._active = fade
+
+    def _on_finished(self, fade: object) -> None:
+        if self._active is fade:
+            self._active = None
+
+    def cancel(self) -> None:
+        if self._active is not None and isValid(self._active):
+            self._active.cancel()
+        self._active = None
 
 
 def fade_tabs(tabs: QTabWidget) -> None:
-    """Reveal each tab without translucency or cached rendering on its page."""
-    active: _TabReveal | None = None
-
-    def on_change(index: int) -> None:
-        nonlocal active
-        if active is not None and isValid(active):
-            active.cancel()
-        active = None
-        page = tabs.widget(index)
-        if page is not None and page.isVisible():
-            active = _TabReveal(page)
-
-    tabs.currentChanged.connect(on_change)
+    """Fade in each new tab as one complete frame, including item viewports."""
+    _TabTransitionController(tabs)
 
 
 def install(window: QWidget, commands: Callable[[], list[Command]]) -> CommandPalette:

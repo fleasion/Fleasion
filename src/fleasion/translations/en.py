@@ -1911,6 +1911,7 @@ ENGLISH: dict[str, str] = {
     'settings.appearance.style': 'Style',
     'settings.appearance.color_mode': 'Color mode',
     'settings.appearance.accent': 'Accent color',
+    'settings.appearance.custom': 'Custom…',
     'settings.appearance.backdrop': 'Backdrop',
     'settings.appearance.opacity': 'Opacity',
     'settings.appearance.accent_named': 'Accent color: {name}',

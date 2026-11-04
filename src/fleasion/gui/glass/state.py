@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final, Literal
 from fleasion.appearance import ACCENTS as ACCENTS, DEFAULT_ACCENT as DEFAULT_ACCENT
 
 if TYPE_CHECKING:
-    from PySide6.QtGui import QPalette
+    from PySide6.QtGui import QColor, QPalette
 
     from fleasion.config.manager import ConfigManager
 
@@ -35,7 +35,11 @@ class GlassSettings:
 
     @property
     def accent_color(self) -> str:
-        return ACCENTS.get(self.accent, ACCENTS[DEFAULT_ACCENT])
+        return (
+            self.accent
+            if self.accent.startswith('#')
+            else ACCENTS.get(self.accent, ACCENTS[DEFAULT_ACCENT])
+        )
 
 
 class GlassState:
@@ -44,6 +48,7 @@ class GlassState:
     def __init__(self) -> None:
         self.settings = GlassSettings()
         self.base_palette: QPalette | None = None
+        self.system_accent: QColor | None = None
         self.dark = True
         self._config: ConfigManager | None = None
 

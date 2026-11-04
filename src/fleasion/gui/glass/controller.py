@@ -11,7 +11,7 @@ from fleasion.localization import tr
 
 from .chrome import apply_chrome, register, registered_windows
 from .desktop_blur import APP_ID, blur
-from .state import ACCENTS, Backdrop, state
+from .state import Backdrop, state
 from .style import palette, stylesheet
 from .stylesheets import WindowStyles
 from .surface import GlassWindows
@@ -135,7 +135,11 @@ class GlassTheme:
             self._filter.update_window_shape(window)
 
     def set_accent(self, name: str) -> None:
-        if name not in ACCENTS:
+        from fleasion.appearance import accent_name
+
+        if accent_name(name) != name and name != 'Custom':
+            return
+        if name == 'Custom':
             return
         state.set_accent(name)
         if (app := _app()) is not None:

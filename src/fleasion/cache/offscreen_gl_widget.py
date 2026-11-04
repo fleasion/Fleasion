@@ -173,8 +173,13 @@ class OffscreenOpenGLWidget(QWidget):
 
             painter = QPainter(self)
             try:
+                # An offscreen frame may contain transparent pixels. Give them
+                # an opaque local backing rather than leaking the glass window's
+                # desktop backdrop through the 3D viewport
+                background = self.palette().base().color()
+                background.setAlpha(255)
+                painter.fillRect(self.rect(), background)
                 if self._frame_image.isNull():
-                    painter.fillRect(self.rect(), self.palette().window())
                     painter.setPen(self.palette().windowText().color())
                     painter.drawText(
                         self.rect(),

@@ -49,7 +49,7 @@ def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
         text = native.windowText().color()
         well = native.base().color()
         popup = QColor(well)
-    accent = accent_color(settings.accent, surface)
+    accent = accent_color(settings.accent, surface, system_accent=state.system_accent)
     return GlassColors(
         text,
         QColor('#ffffff' if dark else '#1b2030'),
@@ -116,7 +116,7 @@ def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) ->
     placeholder = QColor(colors.text)
     placeholder.setAlpha(128)
     pal.setColor(role.PlaceholderText, placeholder)
-    pal = apply_accent(pal, settings.accent)
+    pal = apply_accent(pal, settings.accent, system_accent=state.system_accent)
     # GlassWindows paints the surface; inherited widget backgrounds stay transparent
     window = QColor(colors.surface)
     window.setAlpha(0)
@@ -170,6 +170,9 @@ QTabBar::tab {
 }
 QTabBar::tab:hover { color: $text; background: rgba($ink_rgb,0.06); }
 QTabBar::tab:selected { color: $text; background: $pane_hover; $rim }
+QTabBar::tab:disabled, QTabBar::tab:disabled:hover {
+    color: rgba($ink_rgb,0.31); background: transparent; border-color: transparent;
+}
 
 QFrame#SubplaceSearchPanel {
     background: rgba($ink_rgb,0.065); border: 1px solid rgba($ink_rgb,0.12);
@@ -202,6 +205,10 @@ QGroupBox::title {
     subcontrol-origin: margin; left: 8px; top: 3px; padding: 0 4px;
     color: $muted;
 }
+QGroupBox#ReplacerConfigurationSection::title,
+QGroupBox#ReplacerEditSection::title {
+    left: 0; padding: 0;
+}
 
 QPushButton, QToolButton {
     color: $button_text;
@@ -222,7 +229,7 @@ QPushButton:focus, QToolButton:focus {
 }
 QTabBar::tab:focus { border-color: rgba($accent_rgb,0.95); }
 QCheckBox:focus, QRadioButton:focus {
-    outline: 1px dotted rgba($accent_rgb,0.95);
+    color: $text;
 }
 QPushButton:pressed, QPushButton:checked, QToolButton:pressed, QToolButton:checked {
     background: rgba($accent_rgb,0.30); border-color: rgba($accent_rgb,0.55);
@@ -254,6 +261,14 @@ QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     padding: ${input_padding}px 8px; min-height: ${input_content_height}px;
 }
+QComboBox { padding-right: 30px; }
+QComboBox[compactCell="true"] {
+    background: transparent; border: 0; border-radius: 6px;
+    padding: 0 24px 0 5px; min-height: 0;
+}
+QComboBox[compactCell="true"]:hover, QComboBox[compactCell="true"]:focus {
+    background: rgba($ink_rgb,0.10); border: 0;
+}
 QAbstractSpinBox > QLineEdit, QComboBox > QLineEdit {
     background: transparent; border: 0; border-radius: 0; padding: 0; min-height: 0;
 }
@@ -261,14 +276,17 @@ QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: rgba($ink_rgb,0
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus,
 QDoubleSpinBox:focus, QComboBox:focus { border: 1px solid rgba($accent_rgb,0.85); }
 QComboBox::drop-down {
-    subcontrol-origin: padding; subcontrol-position: center right;
-    width: 24px; border: 0; background: transparent;
+    subcontrol-origin: border; subcontrol-position: center right;
+    width: 24px; margin-right: 3px; border: 0; background: transparent;
 }
 QComboBox::down-arrow { image: url($chevron_down); width: 14px; height: 14px; }
 QComboBox QAbstractItemView {
     background: rgba($popup_rgb,0.98); border: 1px solid transparent;
-    border-radius: 10px; padding: 4px; selection-background-color: rgba($accent_rgb,0.35);
+    border-radius: 10px; padding: 6px; selection-background-color: rgba($accent_rgb,0.35);
     selection-color: $text;
+}
+QComboBox QAbstractItemView::item:selected {
+    border-radius: 5px;
 }
 QSpinBox, QDoubleSpinBox { padding-right: 24px; }
 QSpinBox::up-button, QDoubleSpinBox::up-button,

@@ -140,7 +140,8 @@ def test_glass_chrome_restores_registered_window_layout_margins(
     try:
         for _ in range(2):
             chrome.apply_chrome(window, enabled=True)
-            assert layout.contentsMargins().left() == 4
+            edge = layout.contentsMargins()
+            assert (edge.left(), edge.top(), edge.right(), edge.bottom()) == (0, 0, 0, 0)
             chrome.apply_chrome(window, enabled=False)
             restored = layout.contentsMargins()
             assert (restored.left(), restored.top(), restored.right(), restored.bottom()) == margins

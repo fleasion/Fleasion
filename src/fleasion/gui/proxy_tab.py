@@ -42,6 +42,7 @@ from fleasion.utils.paths import PROXY_TRAFFIC_FILE
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
 
+from . import glass
 from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
 from .rules_dialog_ui import UiDialog as UiRulesDialog
 
@@ -428,10 +429,11 @@ class _TableColumnResizer(QObject):
 
 
 class _CompactComboBox(QComboBox):
-    """A borderless combo box that blends into a table cell, instead of the
-    raw OS-styled QComboBox default - same look already used elsewhere in
-    the app for compact in-cell dropdowns (e.g. FastFlag True/False editing).
-    """
+    """A borderless combo box that blends into a table cell."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setProperty('compactCell', 'true')
 
     @override
     def wheelEvent(self, e: QWheelEvent) -> None:
@@ -439,6 +441,9 @@ class _CompactComboBox(QComboBox):
 
     @override
     def paintEvent(self, e: QPaintEvent) -> None:
+        if glass.theme.active:
+            super().paintEvent(e)
+            return
         painter = QPainter(self)
         if self.hasFocus() or self.underMouse():
             painter.fillRect(self.rect(), self.palette().alternateBase())

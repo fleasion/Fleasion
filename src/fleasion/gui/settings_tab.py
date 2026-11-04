@@ -318,16 +318,20 @@ class SettingsTab(QWidget):
             row.addStretch()
             rows.addWidget(QLabel(label), row_index, 0)
             rows.addLayout(row, row_index, 1)
-        self._accent_selector = AccentSelector()
+        self._accent_selector = AccentSelector(custom_color=self._config.custom_accent_color)
         self._accent_selector.set_accent(self._config.accent_color)
         self._accent_selector.accent_changed.connect(partial(self._set_appearance, 'accent'))
         accent_label = QLabel(tr('settings.appearance.accent'))
         accent_label.setAlignment(Qt.AlignmentFlag.AlignTop)
         rows.addWidget(accent_label, 2, 0)
         rows.addWidget(self._accent_selector, 2, 1, alignment=Qt.AlignmentFlag.AlignLeft)
-        self._glass_widgets = self._build_glass_controls(
-            rows, visible=self._config.appearance_style == 'Glass'
+        self._glass_widgets = (
+            accent_label,
+            self._accent_selector,
+            *self._build_glass_controls(rows, visible=self._config.appearance_style == 'Glass'),
         )
+        for widget in (accent_label, self._accent_selector):
+            widget.setVisible(self._config.appearance_style == 'Glass')
         section.add_widget(options)
         ThemeManager.events().changed.connect(self._refresh_appearance)
 
@@ -932,6 +936,7 @@ class SettingsTab(QWidget):
             for name, button in buttons.items():
                 with QSignalBlocker(button):
                     button.setChecked(name == current)
+        self._accent_selector.set_custom_color(self._config.custom_accent_color)
         self._accent_selector.set_accent(self._config.accent_color)
         self._refresh_blur_button()
 

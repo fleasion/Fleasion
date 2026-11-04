@@ -92,7 +92,7 @@ from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.json_types import JsonValue, require_json_value
 from fleasion.utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from fleasion.widgets.image_preview import ImagePreviewLabel
-from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
 
 from . import asset_type_filter as _asset_type_filter, mesh_processing
@@ -1536,6 +1536,10 @@ class CacheViewerTab(QWidget):
         self._name_resolver_thread: threading.Thread | None = None
         self._shutting_down = False
         self._ui_ready = False
+        self._page_content_layout: QVBoxLayout | None = None
+        from fleasion.gui.theme import ThemeManager
+
+        ThemeManager.events().changed.connect(self._update_page_margins)
         self._initial_population = True
         self.initial_population_ready = False
         self._table_population = GuiWork(self)
@@ -2013,6 +2017,15 @@ class CacheViewerTab(QWidget):
         }
         return ''.join(char_map.get(c, c) for c in name)
 
+    def _update_page_margins(self) -> None:
+        if self._page_content_layout is None:
+            return
+        from fleasion.gui import glass
+
+        self._page_content_layout.setContentsMargins(
+            *page_content_margins(glass=glass.theme.active)
+        )
+
     def _build_ui(self) -> Generator[None]:
         """Setup the UI."""
         layout = QVBoxLayout(self)
@@ -2021,7 +2034,8 @@ class CacheViewerTab(QWidget):
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(*PANEL_MARGINS)
+        self._page_content_layout = content_layout
+        self._update_page_margins()
         content_layout.setSpacing(GAP)
         layout.addWidget(content, 1)
 
@@ -3569,14 +3583,7 @@ class CacheViewerTab(QWidget):
         while not self._name_resolver_stop.is_set():
             # Skip if Show Names is OFF
             if not self._show_names:
-                self._name_resolver_stop.wait(0.2)
-                continue
-
-            # Get authentication cookie
-            cookie = self._get_roblosecurity()
-            if not cookie:
-                # No cookie - wait longer to avoid spam
-                self._name_resolver_stop.wait(5)
+                self._name_resolver_stop.wait(1.0)
                 continue
 
             # Build pending list - assets without resolved names. Prioritise
@@ -3599,7 +3606,14 @@ class CacheViewerTab(QWidget):
             pending = visible + hidden
 
             if not pending:
-                self._name_resolver_stop.wait(0.2)
+                self._name_resolver_stop.wait(2.0)
+                continue
+
+            # Cookie discovery can scan several browser or client stores. Do
+            # not pay that cost while there is no metadata left to resolve
+            cookie = self._get_roblosecurity()
+            if not cookie:
+                self._name_resolver_stop.wait(5)
                 continue
 
             # Batch size and delay

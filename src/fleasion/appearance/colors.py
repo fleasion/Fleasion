@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtGui import QColor, QPalette
 
-from . import ACCENTS, accent_name
+from . import ACCENTS, DEFAULT_ACCENT, accent_name
 
 
 def luminance(color: QColor) -> float:
@@ -28,9 +28,14 @@ def on_accent(color: QColor) -> QColor:
     return dark if contrast(color, dark) >= contrast(color, light) else light
 
 
-def accent_color(name: str, background: QColor) -> QColor:
-    """Keep the preset hue while making controls distinguishable from their surface."""
-    color = QColor(ACCENTS[accent_name(name)])
+def accent_color(name: str, background: QColor, *, system_accent: QColor | None = None) -> QColor:
+    """Resolve a native, custom, or preset accent against its surface."""
+    resolved = accent_name(name)
+    if resolved == 'System':
+        return (
+            QColor(system_accent) if system_accent is not None else QColor(ACCENTS[DEFAULT_ACCENT])
+        )
+    color = QColor(resolved if resolved.startswith('#') else ACCENTS[resolved])
     dark_surface = luminance(background) < 0.3
     for _ in range(40):
         if contrast(color, background) >= 3.0:
@@ -39,9 +44,9 @@ def accent_color(name: str, background: QColor) -> QColor:
     return color
 
 
-def apply_accent(palette: QPalette, name: str) -> QPalette:
+def apply_accent(palette: QPalette, name: str, *, system_accent: QColor | None = None) -> QPalette:
     result = QPalette(palette)
-    accent = accent_color(name, result.window().color())
+    accent = accent_color(name, result.window().color(), system_accent=system_accent)
     link = QColor(accent)
     for _ in range(40):
         if (

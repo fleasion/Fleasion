@@ -278,15 +278,15 @@ def test_command_palette_changes_each_preference_independently(
 ) -> None:
     window = ReplacerConfigWindow(config, system_tray=None)
     try:
-        commands = window._palette_commands()  # pyright: ignore[reportPrivateUsage]
-        for kind, title in (
-            (tr('settings.appearance.style'), choice_label('Glass')),
-            (tr('settings.appearance.color_mode'), choice_label('Light')),
-            (tr('settings.appearance.accent'), 'Rose'),
-        ):
+        def run_choice(kind: str, title: str) -> None:
+            commands = window._palette_commands()  # pyright: ignore[reportPrivateUsage]
             next(
                 command for command in commands if command.kind == kind and command.title == title
             ).run()
+
+        run_choice(tr('settings.appearance.style'), choice_label('Glass'))
+        run_choice(tr('settings.appearance.color_mode'), choice_label('Light'))
+        run_choice(tr('settings.appearance.accent'), 'Rose')
         assert (config.appearance_style, config.color_mode, config.accent_color) == (
             'Glass',
             'Light',

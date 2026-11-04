@@ -11,10 +11,11 @@ if sys.platform == 'win32':
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QStyle, QWidget
+from PySide6.QtWidgets import QApplication, QColorDialog, QStyle, QWidget
 
 from fleasion.appearance import accent_name
 from fleasion.appearance.colors import apply_accent, luminance
+from fleasion.localization import tr
 from fleasion.widgets.style import LayoutStyle
 
 from .appearance_events import AppearanceEvents
@@ -135,9 +136,21 @@ class ThemeManager:
                 return
             config.color_mode = mode
         else:
-            if config.accent_color == accent_name(value):
+            if value == 'Custom':
+                picked = QColorDialog.getColor(
+                    QColor(config.custom_accent_color),
+                    QApplication.activeWindow(),
+                    tr('settings.appearance.accent'),
+                )
+                if not picked.isValid():
+                    return
+                value = picked.name()
+            resolved = accent_name(value)
+            if resolved.startswith('#'):
+                config.custom_accent_color = resolved
+            if config.accent_color == resolved:
                 return
-            config.accent_color = value
+            config.accent_color = resolved
         ThemeManager.apply_from_config(config)
 
     @staticmethod
@@ -168,6 +181,8 @@ class ThemeManager:
         from . import glass
         from .glass.state import state
 
+        native_accent = ThemeManager._system_palette.highlight().color()
+        state.system_accent = QColor(native_accent)
         ThemeManager._applying = True
         try:
             if style == 'Fusion':
@@ -181,7 +196,9 @@ class ThemeManager:
                 state.dark = luminance(base.window().color()) < 0.3
                 glass.theme.enable(app, accent=ThemeManager._accent, base_palette=base)
             else:
-                app.setPalette(apply_accent(base, ThemeManager._accent))
+                app.setPalette(
+                    apply_accent(base, ThemeManager._accent, system_accent=native_accent)
+                )
             ThemeManager._refresh_widgets(app)
         finally:
             ThemeManager._applying = False
@@ -216,6 +233,16 @@ class ThemeManager:
     @staticmethod
     def follows_system() -> bool:
         return ThemeManager._color_mode == 'System' and not ThemeManager._applying
+
+    @staticmethod
+    def system_accent_color() -> QColor:
+        palette = ThemeManager._system_palette
+        if palette is not None:
+            return QColor(palette.highlight().color())
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            return QColor(app.style().standardPalette().highlight().color())
+        return QColor('#8ab4ff')
 
     @staticmethod
     def set_accent(name: str) -> None:

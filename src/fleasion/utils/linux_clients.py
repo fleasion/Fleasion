@@ -278,8 +278,14 @@ MOCKTAIL_CLIENT = LinuxClientDescriptor(
     storage_db_relative_path=Path('appData/rbx-storage.db'),
     cache_storage_relative_path=Path('android/rbx-storage'),
     proxy_environment_names=(
-        'ALL_PROXY', 'HTTPS_PROXY', 'HTTP_PROXY',
-        'all_proxy', 'https_proxy', 'http_proxy', 'NO_PROXY', 'no_proxy',
+        'ALL_PROXY',
+        'HTTPS_PROXY',
+        'HTTP_PROXY',
+        'all_proxy',
+        'https_proxy',
+        'http_proxy',
+        'NO_PROXY',
+        'no_proxy',
     ),
     runtime='native',
 )
@@ -406,7 +412,6 @@ def _rosemary_bundle(value: str) -> Path | None:
 def _read_rosemary_session(process: Path) -> RosemarySession | None:
     try:
         command_line = (process / 'cmdline').read_bytes()
-        stat_text = (process / 'stat').read_text(encoding='utf-8')
     except OSError:
         return None
     argv = [arg.decode('utf-8', errors='replace') for arg in command_line.split(b'\0') if arg]
@@ -420,8 +425,9 @@ def _read_rosemary_session(process: Path) -> RosemarySession | None:
     if bundle is None:
         return None
     try:
+        stat_text = (process / 'stat').read_text(encoding='utf-8')
         start_ticks = int(stat_text.rsplit(')', 1)[1].split()[19])
-    except IndexError, ValueError:
+    except OSError, IndexError, ValueError:
         return None
     return RosemarySession(int(process.name), bundle, Path(argv[0]), start_ticks)
 
@@ -481,7 +487,7 @@ def read_mocktail_session(  # ruff: ignore[too-many-return-statements]
         stat_text = (process / 'stat').read_text(encoding='utf-8')
         start_ticks = int(stat_text.rsplit(')', 1)[1].split()[19])
         return MocktailSession(int(process.name), start_ticks)
-    except (OSError, ValueError, IndexError):
+    except OSError, ValueError, IndexError:
         return None
 
 
@@ -545,9 +551,7 @@ def rosemary_guest_home(
     environment = os.environ if environ is None else environ
     xdg_config = environment.get('XDG_CONFIG_HOME', '')
     config_dir = (
-        Path(xdg_config)
-        if xdg_config and Path(xdg_config).is_absolute()
-        else home / '.config'
+        Path(xdg_config) if xdg_config and Path(xdg_config).is_absolute() else home / '.config'
     )
     config_path = config_dir / 'nutmeg' / 'config.json'
     settings: dict[str, object] = {}
@@ -558,21 +562,20 @@ def rosemary_guest_home(
         settings = cast('dict[str, object]', raw_settings)
     except FileNotFoundError:
         pass
-    except (OSError, UnicodeDecodeError, ValueError):
+    except OSError, UnicodeDecodeError, ValueError:
         return None
 
     xdg_data = environment.get('XDG_DATA_HOME', '')
     data_home = (
-        Path(xdg_data) if xdg_data and Path(xdg_data).is_absolute()
-        else home / '.local/share'
+        Path(xdg_data) if xdg_data and Path(xdg_data).is_absolute() else home / '.local/share'
     )
     prefix = data_home / 'nutmeg' / 'prefix'
-    configured_prefix = prefix_path or environment.get('ROSEMARY_PREFIX') or settings.get('prefix_path')
+    configured_prefix = (
+        prefix_path or environment.get('ROSEMARY_PREFIX') or settings.get('prefix_path')
+    )
     if configured_prefix:
         candidate = (
-            Path(configured_prefix).expanduser()
-            if isinstance(configured_prefix, str)
-            else None
+            Path(configured_prefix).expanduser() if isinstance(configured_prefix, str) else None
         )
         if candidate is None or not candidate.is_absolute():
             return None

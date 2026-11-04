@@ -75,20 +75,20 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from fleasion.appearance import ACCENTS, COLOR_MODES, STYLES
+from fleasion.appearance import COLOR_MODES, STYLES
 from fleasion.cache.cache_viewer import CacheViewerTab
 from fleasion.config.manager import (
     local_replacement_path_for_storage,
     resolve_local_replacement_path,
 )
 from fleasion.config.rules import is_group_rule, is_profile_rule, is_rule_entry as _is_rule_entry
-from fleasion.gui.appearance_controls import choice_label
+from fleasion.gui.appearance_controls import ACCENT_OPTIONS, choice_label
 from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
 from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.http import http_head_status
 from fleasion.utils.json_types import as_object_list, require_json_value
-from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.spacing import GAP, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
 
 from . import command_palette, glass
@@ -267,7 +267,7 @@ _KIND_PROFILE = 'profile'
 _KIND_GROUP = 'group'
 _MIXED_STATUS = '—'
 _DRAG_GROUP_COLORS: tuple[str, ...] = ('#2d6cdf', '#2f9e44', '#f08c00', '#ae3ec9', '#0ca678')
-_TREE_INDENT_PX = 9
+_TREE_INDENT_PX = 12
 _GROUP_ROW_HEIGHT_PX = 24
 _GROUP_CONTENT_INDENT_SPACES = 5
 _PROFILE_NAME_COLUMN = 1
@@ -905,8 +905,8 @@ class ReplacerConfigWindow(QDialog):
         self._env_proxy_gates: list[ProxyGate] = []
 
         self.setWindowTitle(tr('ui.gui.replacer_config.dashboard'))
-        self.resize(900, 750)
-        self.setMinimumSize(800, 650)
+        self.resize(980, 750)
+        self.setMinimumSize(920, 650)
         if sys.platform == 'darwin':
             _set_widget_attribute(
                 self,
@@ -991,7 +991,7 @@ class ReplacerConfigWindow(QDialog):
     def _setup_ui(self) -> None:
         """Setup the UI with tabs."""
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(4, 0, 4, 4)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -1050,12 +1050,20 @@ class ReplacerConfigWindow(QDialog):
         command_palette.fade_tabs(self.tab_widget)
         glass.theme.configure(self.config_manager)
         glass.theme.attach(self)
+        ThemeManager.events().changed.connect(self._update_page_margins)
+        self._update_page_margins()
+
+    def _update_page_margins(self) -> None:
+        self._replacer_content_layout.setContentsMargins(
+            *page_content_margins(glass=glass.theme.active)
+        )
 
     def _install_tab(self, name: str, widget: QWidget, *, enabled: bool = True) -> None:
         page = self._tab_pages[name]
         layout = cast('QVBoxLayout', page.layout())
         layout.addWidget(widget)
         self.tab_widget.setTabEnabled(self._tab_indices[name], enabled)
+        glass.chrome.sync_dashboard_tabs(self)
         self.set_proxy_features_enabled(self.config_manager.proxy_features_enabled)
 
     def _preload_tabs(self) -> Generator[None]:
@@ -1160,14 +1168,16 @@ class ReplacerConfigWindow(QDialog):
                     else tr('ui.gui.command_palette.hint_off'),
                 )
             )
-        for key, choices, label in (
+        appearance_choices: list[tuple[str, tuple[str, ...], str]] = [
             ('style', STYLES, tr('settings.appearance.style')),
             ('color_mode', COLOR_MODES, tr('settings.appearance.color_mode')),
-            ('accent', tuple(ACCENTS), tr('settings.appearance.accent')),
-        ):
+        ]
+        if config.appearance_style == 'Glass':
+            appearance_choices.append(('accent', ACCENT_OPTIONS, tr('settings.appearance.accent')))
+        for key, choices, label in appearance_choices:
             commands.extend(
                 Command(
-                    name if key == 'accent' or name == 'Fusion' else choice_label(name),
+                    choice_label(name),
                     label,
                     partial(
                         ThemeManager.set_preference,
@@ -1273,7 +1283,8 @@ class ReplacerConfigWindow(QDialog):
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(*PANEL_MARGINS)
+        self._replacer_content_layout = content_layout
+        content_layout.setContentsMargins(*page_content_margins(glass=glass.theme.active))
         content_layout.setSpacing(GAP)
         replacer_layout.addWidget(content, 1)
 
@@ -1303,6 +1314,7 @@ class ReplacerConfigWindow(QDialog):
     def _enable_scraper_tab(self) -> None:
         enabled = True
         self.tab_widget.setTabEnabled(self._tab_indices['scraper'], enabled)
+        glass.chrome.sync_dashboard_tabs(self)
 
     def _create_cache_tab(self) -> CacheViewerTab:
         """Create the cache viewer tab."""
@@ -1324,6 +1336,7 @@ class ReplacerConfigWindow(QDialog):
     def _create_config_section(self, parent_layout: QVBoxLayout) -> None:
         """Create the configuration selector section."""
         config_group = QGroupBox(tr('ui.gui.replacer_config.configuration'))
+        config_group.setObjectName('ReplacerConfigurationSection')
         config_layout = QVBoxLayout()
 
         # Row 1: Configuration controls
@@ -1444,6 +1457,7 @@ class ReplacerConfigWindow(QDialog):
     def _create_edit_section(self, parent_layout: QVBoxLayout) -> None:
         """Create the add/edit profile section."""
         edit_group = QGroupBox(tr('ui.gui.replacer_config.add_edit_profile'))
+        edit_group.setObjectName('ReplacerEditSection')
         edit_layout = QVBoxLayout()
         edit_layout.setSpacing(GAP)
 

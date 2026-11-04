@@ -5,14 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, override
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QProxyStyle, QStyle
+from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox, QProxyStyle, QStyle
 
 from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING
 
 if TYPE_CHECKING:
     from PySide6.QtCore import QRect, QSize
     from PySide6.QtGui import QPainter
-    from PySide6.QtWidgets import QStyleOption, QWidget
+    from PySide6.QtWidgets import QStyleHintReturn, QStyleOption, QWidget
 
 
 class LayoutStyle(QProxyStyle):
@@ -63,6 +63,20 @@ class LayoutStyle(QProxyStyle):
         return value
 
     @override
+    def styleHint(
+        self,
+        hint: QStyle.StyleHint,
+        option: QStyleOption | None = None,
+        widget: QWidget | None = None,
+        returnData: QStyleHintReturn | None = None,
+    ) -> int:
+        if hint == QStyle.StyleHint.SH_ComboBox_Popup and isinstance(widget, QComboBox):
+            # Qt otherwise opens the selected item directly over the selector
+            # before the popup has painted its first frame
+            return 0
+        return super().styleHint(hint, option, widget, returnData)
+
+    @override
     def drawPrimitive(
         self,
         element: QStyle.PrimitiveElement,
@@ -70,6 +84,12 @@ class LayoutStyle(QProxyStyle):
         painter: QPainter,
         widget: QWidget | None = None,
     ) -> None:
+        # Fusion's dotted focus primitive can extend beyond button bounds and
+        # overlap adjacent controls. The control's existing state remains visible
+        if element == QStyle.PrimitiveElement.PE_FrameFocusRect and isinstance(
+            widget, QAbstractButton
+        ):
+            return
         if (
             element == QStyle.PrimitiveElement.PE_FrameTabWidget
             and widget is not None

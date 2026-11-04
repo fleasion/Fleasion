@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, override
 from weakref import WeakKeyDictionary, ref
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QSize, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, QSize, Qt
 from PySide6.QtGui import QCursor, QHoverEvent, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QTabBar,
+    QTabWidget,
     QWidget,
 )
 from shiboken6 import isValid
@@ -28,11 +30,11 @@ if TYPE_CHECKING:
 
 type WindowButton = Literal['min', 'max', 'close']
 
-_TITLE_BAR_HEIGHT: Final = 46
+_TITLE_BAR_HEIGHT: Final = 36
 _ICON_SIZE: Final = QSize(20, 20)
 _BUTTON_ICON_SIZE: Final = QSize(14, 14)
 _RESIZE_MARGIN: Final = 6
-_CHROME_MARGINS: Final = (4, 0, 4, 4)
+_CHROME_MARGINS: Final = (0, 0, 0, 0)
 
 
 def _window_handle(window: QWidget) -> QWindow | None:
@@ -49,20 +51,34 @@ class GlassTitleBar(QWidget):
         self.setObjectName('GlassTitleBar')
         self.setFixedHeight(_TITLE_BAR_HEIGHT)
         row = QHBoxLayout(self)
-        row.setContentsMargins(14, 8, 10, 2)
-        row.setSpacing(8)
+        row.setContentsMargins(12, 4, 8, 4)
+        row.setSpacing(6)
 
-        icon = QLabel()
-        app_icon = window.windowIcon()
-        if app_icon.isNull():
-            app_icon = QApplication.windowIcon()
-        if not app_icon.isNull():
-            icon.setPixmap(app_icon.pixmap(_ICON_SIZE))
-        title = QLabel(window.windowTitle())
-        title.setObjectName('GlassTitle')
-        window.windowTitleChanged.connect(title.setText)
-        row.addWidget(icon)
-        row.addWidget(title)
+        self._dashboard_tabs = window.findChild(QTabWidget, 'DashboardTabs')
+        self._navigation: QTabBar | None = None
+        if self._dashboard_tabs is None:
+            icon = QLabel()
+            app_icon = window.windowIcon()
+            if app_icon.isNull():
+                app_icon = QApplication.windowIcon()
+            if not app_icon.isNull():
+                icon.setPixmap(app_icon.pixmap(_ICON_SIZE))
+            title = QLabel(window.windowTitle())
+            title.setObjectName('GlassTitle')
+            window.windowTitleChanged.connect(title.setText)
+            row.addWidget(icon)
+            row.addWidget(title)
+        else:
+            navigation = QTabBar(self)
+            navigation.setExpanding(False)
+            navigation.setDrawBase(False)
+            navigation.setObjectName('GlassDashboardNavigation')
+            navigation.currentChanged.connect(self._dashboard_tabs.setCurrentIndex)
+            self._dashboard_tabs.currentChanged.connect(navigation.setCurrentIndex)
+            self._navigation = navigation
+            row.addWidget(navigation)
+            self.sync_tabs()
+            self._dashboard_tabs.tabBar().hide()
         row.addStretch()
 
         buttons: tuple[WindowButton, ...] = ('min', 'max', 'close')
@@ -75,6 +91,28 @@ class GlassTitleBar(QWidget):
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.clicked.connect(self._presser(role))
             row.addWidget(button)
+
+    def sync_tabs(self) -> None:
+        tabs = self._dashboard_tabs
+        navigation = self._navigation
+        if tabs is None or navigation is None:
+            return
+        # Rebuilding a QTabBar selects tab zero by default. Suppress its
+        # change signal so theme switches never navigate away from the page
+        # the user already has open.
+        with QSignalBlocker(navigation):
+            while navigation.count() < tabs.count():
+                navigation.addTab(tabs.tabText(navigation.count()))
+            while navigation.count() > tabs.count():
+                navigation.removeTab(navigation.count() - 1)
+            for index in range(tabs.count()):
+                navigation.setTabText(index, tabs.tabText(index))
+                navigation.setTabEnabled(index, tabs.isTabEnabled(index))
+            navigation.setCurrentIndex(tabs.currentIndex())
+
+    def restore_tabs(self) -> None:
+        if self._dashboard_tabs is not None:
+            self._dashboard_tabs.tabBar().show()
 
     @override
     def changeEvent(self, event: QEvent) -> None:
@@ -284,6 +322,12 @@ def _layout(window: QWidget) -> QBoxLayout | None:
     return layout if isinstance(layout, QBoxLayout) else None
 
 
+def sync_dashboard_tabs(window: QWidget) -> None:
+    chrome = _installed.get(window)
+    if chrome is not None and isValid(chrome.title_bar):
+        chrome.title_bar.sync_tabs()
+
+
 def apply_chrome(window: QWidget, *, enabled: bool) -> None:
     """Swap the platform title bar for the glass one, or restore it."""
     if not isValid(window):
@@ -300,6 +344,8 @@ def apply_chrome(window: QWidget, *, enabled: bool) -> None:
         layout.setContentsMargins(*_CHROME_MARGINS)
         _installed[window] = chrome
     elif not enabled and chrome is not None:
+        chrome.title_bar.restore_tabs()
+        chrome.title_bar.hide()
         if layout is not None:
             layout.removeWidget(chrome.title_bar)
             layout.setContentsMargins(*chrome.original_margins)

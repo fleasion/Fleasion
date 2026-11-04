@@ -346,11 +346,13 @@ def test_animated_proxy_type_ids_use_shared_matching_constraints() -> None:
     assert TextureStripper._ANIM_TYPE_IDS == ANIMATION_TYPE_KEYS  # pyright: ignore[reportPrivateUsage]
 
 
-def test_dashboard_tab_switches_leave_no_page_opacity_effects(
+def test_dashboard_tab_switches_keep_one_complete_frame_transition(
     app: QApplication, config: manager.ConfigManager
 ) -> None:
     from PySide6.QtCore import QEvent, QPropertyAnimation
-    from PySide6.QtWidgets import QGraphicsOpacityEffect
+    from PySide6.QtTest import QTest
+
+    from fleasion.gui.command_palette import _TabFade  # pyright: ignore[reportPrivateUsage]
 
     window = replacer_config.ReplacerConfigWindow(config)
     try:
@@ -359,7 +361,6 @@ def test_dashboard_tab_switches_leave_no_page_opacity_effects(
         app.processEvents()
         for index in range(tabs.count()):
             tabs.setTabEnabled(index, True)
-        from fleasion.gui.command_palette import _TabReveal  # pyright: ignore[reportPrivateUsage]
 
         for attempt in range(100):
             current = attempt % tabs.count()
@@ -369,9 +370,21 @@ def test_dashboard_tab_switches_leave_no_page_opacity_effects(
             for index in range(tabs.count()):
                 page = tabs.widget(index)
                 assert page is not None
-                assert not isinstance(page.graphicsEffect(), QGraphicsOpacityEffect)
-            assert len(tabs.findChildren(_TabReveal)) <= 2
-            assert not tabs.findChildren(QPropertyAnimation)
+                assert page.graphicsEffect() is None
+            frames = tabs.findChildren(_TabFade)
+            assert len(frames) <= 1
+            if attempt > 0:
+                assert len(frames) == 1
+                assert not frames[0]._frame.isNull()  # pyright: ignore[reportPrivateUsage]
+            assert len(tabs.findChildren(QPropertyAnimation)) <= 1
+
+        QTest.qWait(250)
+        for index in range(tabs.count()):
+            page = tabs.widget(index)
+            assert page is not None
+            assert page.graphicsEffect() is None
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert not tabs.findChildren(_TabFade)
     finally:
         window.close()
         window.deleteLater()

@@ -22,6 +22,7 @@ from PySide6.QtCore import (
     QModelIndex,
     QObject,
     QPersistentModelIndex,
+    QPointF,
     QPropertyAnimation,
     QRectF,
     QSignalBlocker,
@@ -42,6 +43,7 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPalette,
     QPixmap,
+    QPolygonF,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -74,9 +76,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionButton,
-    QStyleOptionComboBox,
     QStyleOptionViewItem,
-    QStylePainter,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -650,16 +650,49 @@ class _RichTextButton(QPushButton):
 # CollapsibleSection
 
 
+class _SectionArrowButton(QPushButton):
+    """Draw both disclosure directions around an identical fixed center."""
+
+    def __init__(self, *, expanded: bool) -> None:
+        super().__init__()
+        self._expanded = expanded
+        self.setCheckable(True)
+        self.setChecked(expanded)
+        self.setFlat(True)
+        # A single stylesheet prevents state-dependent font metrics from
+        # changing the button width and shifting the adjacent section title
+        self.setStyleSheet(
+            'border: 0; background: transparent; padding: 0; '
+            'min-width: 14px; max-width: 14px; min-height: 18px; max-height: 18px;'
+        )
+        self.setFixedSize(14, 18)
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self.setChecked(expanded)
+        self.update()
+
+    @override
+    def paintEvent(self, _event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.palette().buttonText())
+        # Widget dimensions are pixel counts; QRectF(self.rect()).center()
+        # would place the center half a pixel off for these even dimensions
+        x, y = self.width() / 2, self.height() / 2
+        if self._expanded:
+            points = [QPointF(x - 5, y - 3), QPointF(x + 5, y - 3), QPointF(x, y + 6)]
+        else:
+            points = [QPointF(x - 3, y - 5), QPointF(x + 6, y), QPointF(x - 3, y + 5)]
+        painter.drawPolygon(QPolygonF(points))
+        painter.end()
+
+
 class CollapsibleSection(QWidget):
     """A section with a clickable header that collapses/expands its content."""
 
-    _EXPANDED_ARROW = '\u25bc'
-    _COLLAPSED_ARROW = '\u25b6'
-    _DEFAULT_ARROW_STYLE = 'border: none;'
-    _WINDOWS_COLLAPSED_ARROW_SIZE = 19
-    WINDOWS_COLLAPSED_ARROW_SIZE = _WINDOWS_COLLAPSED_ARROW_SIZE
-    _WINDOWS_EXPANDED_ARROW_STYLE = 'font-size: 11px; border: none;'
-    _WINDOWS_COLLAPSED_ARROW_STYLE = f'font-size: {_WINDOWS_COLLAPSED_ARROW_SIZE}px; border: none;'
+    WINDOWS_COLLAPSED_ARROW_SIZE = 19
 
     def __init__(
         self,
@@ -693,11 +726,9 @@ class CollapsibleSection(QWidget):
         )
         header_layout = QHBoxLayout(self._header_widget)
         header_layout.setContentsMargins(PANEL_PADDING, GAP, PANEL_PADDING, GAP)
+        header_layout.setSpacing(GAP)
 
-        self._arrow = QPushButton()
-        self._arrow.setFixedSize(22, 22)
-        self._arrow.setFlat(True)
-        self._set_arrow_state(expanded)
+        self._arrow = _SectionArrowButton(expanded=expanded)
         self._arrow.clicked.connect(self.toggle)
         header_layout.addWidget(self._arrow)
 
@@ -729,7 +760,9 @@ class CollapsibleSection(QWidget):
 
         # --- Assemble ---
         main = QVBoxLayout()
-        main.setContentsMargins(0, 0, 0, 0)
+        # Keep the outer border clear of the header and its separator,
+        # including when the content viewport is completely collapsed
+        main.setContentsMargins(1, 1, 1, 1)
         main.setSpacing(0)
         main.addWidget(self._header_widget)
         main.addWidget(sep)
@@ -769,55 +802,47 @@ class CollapsibleSection(QWidget):
     def add_widget(self, widget: QWidget) -> None:
         self._content_layout.addWidget(widget)
 
-    def _arrow_style(self, expanded: bool) -> str:
-        """Return platform-specific arrow styling for Unicode triangle glyphs."""
-        if os.name == 'nt':
-            return (
-                self._WINDOWS_EXPANDED_ARROW_STYLE
-                if expanded
-                else self._WINDOWS_COLLAPSED_ARROW_STYLE
-            )
-        return self._DEFAULT_ARROW_STYLE
-
-    def _set_arrow_state(self, expanded: bool) -> None:
-        self._arrow.setText(self._EXPANDED_ARROW if expanded else self._COLLAPSED_ARROW)
-        self._arrow.setStyleSheet(self._arrow_style(expanded))
-
     def toggle(self) -> None:
         self._expanded = not self._expanded
-        self._set_arrow_state(self._expanded)
+        self._arrow.set_expanded(self._expanded)
 
-        # A collapse animates the clipping height of _content.  If its layout
-        # remains active, Qt re-lays out (and squashes) every child on every
-        # animation frame; complex sections such as Fast Flags then visibly
-        # bounce/reflow instead of simply sliding closed.  Freeze the existing
-        # child geometries while collapsing so _content behaves as a viewport.
-        # Re-enable the layout once the content is fully clipped away.
-        self._content_layout.setEnabled(True)
+        # Restart from the currently visible height, not the previous target.
+        # Keep child geometry frozen for BOTH directions: enabling the layout
+        # midway through a reopen squashes its children into the clipped area.
+        current_height = min(self._content.height(), self._content.maximumHeight())
+        if self._animation is not None:
+            self._animation.stop()
+            self._animation.deleteLater()
 
-        self._animation = QPropertyAnimation(self._content, b'maximumHeight')
+        full_height = self._content_layout.sizeHint().height()
+        if self._expanded and current_height == 0:
+            # Populate natural child geometry before opening from zero height,
+            # including sections constructed initially collapsed
+            self._content.setMaximumHeight(full_height)
+            self._content.resize(self._content.width(), full_height)
+            self._content_layout.setEnabled(True)
+            self._content_layout.activate()
+
+        self._content_layout.setEnabled(False)
+        self._content.setMaximumHeight(current_height)
+        self._animation = QPropertyAnimation(self._content, b'maximumHeight', self)
         self._animation.setDuration(200)
         self._animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        if self._expanded:
-            self._animation.setStartValue(self._content.maximumHeight())
-            self._animation.setEndValue(self._content.sizeHint().height())
-            self._animation.finished.connect(lambda: self._content.setMaximumHeight(16777215))
-        else:
-            # Capture the real rendered height so the animation starts from
-            # the actual visible size rather than QWIDGETSIZE_MAX.
-            actual = self._content.height()
-            self._content.setMaximumHeight(actual)
-            self._content_layout.setEnabled(False)
-            self._animation.setStartValue(actual)
-            self._animation.setEndValue(0)
-            self._animation.finished.connect(self._finish_collapse)
-
+        self._animation.setStartValue(current_height)
+        self._animation.setEndValue(full_height if self._expanded else 0)
+        self._animation.finished.connect(
+            self._finish_expand if self._expanded else self._finish_collapse
+        )
         self._animation.start()
 
-    def _finish_collapse(self) -> None:
+    def _finish_expand(self) -> None:
+        self._content.setMaximumHeight(16777215)
         self._content_layout.setEnabled(True)
         self._content_layout.activate()
+        self.updateGeometry()
+
+    def _finish_collapse(self) -> None:
+        # Keep the children at their natural sizes while the viewport is closed
         self.updateGeometry()
         parent = self.parentWidget()
         if parent is not None:
@@ -846,70 +871,33 @@ class NoWheelSlider(QSlider):
         e.ignore()
 
 
-# DropdownComboBox — QComboBox with ▼ indicator instead of OS arrow
+# DropdownComboBox — native rendering shared with every other selector
 
 
 class DropdownComboBox(QComboBox):
-    """QComboBox that paints ▼ as the dropdown indicator and ignores wheel events."""
+    """A standard combo box that does not change selection on wheel scroll."""
 
     @override
     def wheelEvent(self, e: QWheelEvent) -> None:
-        """Ignore wheel events to prevent accidental value changes."""
         e.ignore()
-
-    @override
-    def paintEvent(self, e: QPaintEvent) -> None:
-        if glass.theme.active:
-            # The Glass stylesheet draws its own chevron
-            super().paintEvent(e)
-            return
-
-        style = _style_or_none(self)
-        if style is None:
-            super().paintEvent(e)
-            return
-
-        painter = QStylePainter(self)
-        opt = QStyleOptionComboBox()
-        self.initStyleOption(opt)
-
-        # Draw the full combo box (frame, edit field, and arrow button border)
-        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)
-        # Draw the selected-item label
-        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, opt)
-
-        # Replace the native arrow without painting a separate button-colored block.
-        # Redraw an adjacent slice of the edit field over the arrow interior so the
-        # background remains exactly continuous for the active Qt style/theme.
-        arrow_rect = style.subControlRect(
-            QStyle.ComplexControl.CC_ComboBox,
-            opt,
-            QStyle.SubControl.SC_ComboBoxArrow,
-            self,
-        )
-        painter.save()
-        painter.setClipRect(arrow_rect.adjusted(0, 1, -1, -1))
-        background_opt = QStyleOptionComboBox(opt)
-        background_opt.rect = opt.rect.translated(arrow_rect.width(), 0)
-        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, background_opt)
-        painter.restore()
-
-        painter.setPen(self.palette().buttonText().color())
-        f = painter.font()
-        f.setPointSize(8)
-        painter.setFont(f)
-        painter.drawText(arrow_rect, Qt.AlignmentFlag.AlignCenter, '\u25bc')
 
 
 class CompactBooleanComboBox(QComboBox):
     """A borderless True/False selector that blends into a table cell."""
 
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setProperty('compactCell', 'true')
+
     @override
     def wheelEvent(self, e: QWheelEvent) -> None:
         e.ignore()
 
     @override
     def paintEvent(self, e: QPaintEvent) -> None:
+        if glass.theme.active:
+            super().paintEvent(e)
+            return
         painter = QPainter(self)
         if self.hasFocus() or self.underMouse():
             painter.fillRect(self.rect(), self.palette().alternateBase())

@@ -424,6 +424,7 @@ DEFAULT_SETTINGS: JsonObject = {
     'appearance_style': 'Fusion',
     'color_mode': 'System',
     'accent_color': 'Ice',
+    'custom_accent_color': '#a17dff',
     'language': 'en',
     'audio_volume': 70,  # 0-100
     'always_on_top': False,
@@ -1030,6 +1031,19 @@ class ConfigManager:
     def accent_color(self, value: str) -> None:
         self.settings['accent_color'] = accent_name(value)
         self._save_settings()
+
+    @property
+    def custom_accent_color(self) -> str:
+        color = self.settings.get('custom_accent_color')
+        resolved = accent_name(color)
+        return resolved if resolved.startswith('#') else '#a17dff'
+
+    @custom_accent_color.setter
+    def custom_accent_color(self, value: str) -> None:
+        resolved = accent_name(value)
+        if resolved.startswith('#'):
+            self.settings['custom_accent_color'] = resolved
+            self._save_settings()
 
     @property
     def glass_accent(self) -> str:

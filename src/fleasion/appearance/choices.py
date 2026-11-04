@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Final, Literal
 
 type AppearanceStyle = Literal['Fusion', 'Glass']
@@ -10,6 +11,7 @@ type ColorMode = Literal['Dark', 'Light', 'System']
 STYLES: Final[tuple[AppearanceStyle, ...]] = ('Fusion', 'Glass')
 COLOR_MODES: Final[tuple[ColorMode, ...]] = ('Dark', 'Light', 'System')
 DEFAULT_ACCENT: Final = 'Ice'
+DEFAULT_CUSTOM_ACCENT: Final = '#a17dff'
 ACCENTS: Final[dict[str, str]] = {
     'Ice': '#8ab4ff',
     'Signal': '#ff5a68',
@@ -36,4 +38,9 @@ def color_mode(value: object) -> ColorMode:
 
 
 def accent_name(value: object) -> str:
-    return value if isinstance(value, str) and value in ACCENTS else DEFAULT_ACCENT
+    if isinstance(value, str):
+        if value == 'System' or value in ACCENTS:
+            return value
+        if re.fullmatch(r'#[0-9a-fA-F]{6}', value):
+            return value.lower()
+    return DEFAULT_ACCENT
