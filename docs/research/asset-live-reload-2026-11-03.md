@@ -1,0 +1,37 @@
+# Asset live-reload investigation — 2026-11-03
+
+## Scope and evidence limits
+
+Two rare reports: replaced assets revert after seconds, or many assets revert together after minutes. Reported affected types include meshes, textures/images and audio. Neither affected client is currently reproducible. All tests below distinguish a **new fetch receiving original bytes** from an **already-loaded renderer/audio resource being actively invalidated**. No in-game causal trace of either rare event exists yet.
+
+## Common client asset-fetch path
+
+Symbolized, unmodified Roblox Studio **macOS 0.735.19.7351131** (`TOER-AI-TRAINING/reference/roblox-macos-studio-0.735.19.7351131/RobloxStudio`):
+
+- `RBX::AssetRequest::sendAssetDeliveryV1` at `0x100049528` calls `RBX::HttpCache::HttpRedirectCache::get2` at `0x1000497d6` and, when a usable redirect is available, `RBX::AssetRequest::sendCdnRequest` at `0x100049985`. This route does **not require another `/v1/assets/batch` request**.
+- The newer AssetProvider implementation has `AssetResolutionRedirectCacheState::next` (`0x1034bcee2`), `AssetResolutionCDNState::next` (`0x1034be64c`), `AssetResolutionReAuthenticateAssetState::next` (`0x1034bdaf8`), and `AssetDeliveryRefreshWorkflow` (`0x1034b91b8`). `AssetResolutionRedirectCacheState::next` checks `CDN::needsReauthentication` (`0x1034bd2c0`); signed URL refresh is a request-resolution path, not demonstrated to be an autonomous renderer reload.
+- The **current unmodified 0.743.0.7431133** binary retains RTTI/string names `AssetResolutionRedirectCacheState`, `AssetResolutionReAuthenticateAssetState`, and `AssetDeliveryRefreshWorkflow`. The precise 0.735 instruction offsets/branches are **not** a same-build proof for 0.743.
+- `ContentProvider::invalidateCache` (`0x1000902ee`) updates fetch status, invalidates an HTTP cache file, and emits a content-ID signal. Its observed direct calls in 0.735 are Studio file synchronization, Studio image-manager force reload and FBX import retry; this is **not** proof of a periodic gameplay-wide cache purge. `ContentProvider::invalidateBadUrl` (`0x100090984`) removes `AsyncHttpQueue` bad-URL state, with permission/failure and Studio caller paths.
+- The `FStringHttpCacheAssetIdRefetchList` flag is read by `HttpCacheAssetDeliveryBlocklist::fetchBlockList` (`0x102f5a2b2`), whose URL check calls `getAssetIdFromUrl`. It affects eligibility for **HTTP cache** hits, not a proven way to invalidate a rendered asset on demand. `FFlagHttpCacheForcedAssetEviction` likewise did not produce a spontaneous cross-type visible reload during the prior native Studio test.
+
+## Fleasion reproducible mechanisms
+
+Current `feat/rewrite-ui-v2`, HEAD `9dc7b4a` at investigation:
+
+1. `TextureStripper.process_batch_response` stores pending local/CDN replacement routes under the **original CDN host + URL path** (`src/fleasion/proxy/addons/texture_stripper.py`). `check_cdn_request` consumes `_local_redirects` and `_cdn_redirects` with `.pop()`. The first matching GET is replaced; subsequent GETs for the same CDN path are upstream originals unless a new batch re-registers that route. `src/fleasion/proxy/server.py` only intercepts CDN GET in the short-circuit path. HEAD no longer consumes the route (fixed in `9dc7b4a`).
+2. A fake-upstream, real HTTPS explicit-proxy replay reproduced `batch → first CDN GET = replacement → second same CDN GET = Roblox original` for **image**, **audio**, and **mesh**. All three passed the negative-behavior assertions in `/tmp/fleasion_multitype_{image,audio,mesh}_refresh_20261103.py`. This proves a Fleasion fallback, **not** that a real affected client made the second request or swapped an in-use resource.
+3. A separate synthetic two-ID batch showed that a replaced asset ID `111` and unrelated ID `222` sharing **one identical content-hash CDN path** result in one route. The first request (regardless of which ID caused it) gets the replacement, the second gets upstream. This makes blindly retaining original-path routes **unsafe**: it would apply one asset's replacement to all distinct assets with that content hash.
+4. Local replacement responses currently lack `Cache-Control`, `ETag` and `Last-Modified`, while an actual CDN HEAD/GET sample contained a long `max-age`, ETag and Last-Modified. This can affect revalidation and refetch patterns but is **not** evidence that Roblox automatically refreshes already-loaded content.
+5. `_serve_local_file` returns full `200 OK` for a request with `Range: bytes=0-5`, without `Content-Range` (controlled audio HTTPS replay: `/tmp/fleasion_multitype_audio_range_refresh_20261103.py`). This is another independent protocol problem that could cause retries, especially for streaming audio, but does not explain all reported asset types.
+6. The older Windows log `/tmp/fleasion-asset-reload-20261103.log` recorded near-simultaneous TLS splice connection resets against assetdelivery/CDN/gamejoin/clientsettings at `21:49:50`, followed by a user's reported later cascade. Connection resets could cause renewed loads, but there is **no** request/response-to-visual-reversion proof.
+
+## Live 0.743 test and limitations
+
+A disposable copy of the test Place was opened through isolated Rosemary 0.5.0, macOS Studio 0.743.0.7431133, with a session-scoped no-MITM CONNECT relay at `127.0.0.1:43291`. StudioMCP confirmed the correct 0.743 editor. HTTPS proxy environment settings reached the Rosemary process, and connection attempts were observed to `create.roblox.com` and `cdn.foundation.roblox.com`, but the relay could not establish upstream connections to those endpoints. Three controlled `ContentProvider:PreloadAsync` calls using a public asset ID reported callbacks of `Failure`, so **none of these failures or statuses are valid evidence of the rare live reload**. No affected client was available. The owned Studio/Gamescope/relay processes were terminated. Probe log: `/tmp/fleasion-safe-connect-probe-20261103.log`. No global proxy configuration or original Studio binary was changed.
+
+## Proposed engineering direction
+
+- Prototype **per-asset synthetic CDN locations** returned to the client in the intercepted batch response for local/CDN replacements. Each location must identify the **original asset ID and TexturePack slot**, not only the original content-hash URL, so both repeated GETs and shared-content IDs can be routed independently. Keep the mapping until configuration-generation invalidation; bound lifecycle/retention safely. Do not blindly persist the original CDN path.
+- Validate the synthetic location in a real client before enabling by default: CDN host/path format, authentication checks, redirected response caching, repeated GETs across connections, concurrent same-content different-ID assets, non-proxied reconnects, texture packs, SolidModel response-dependent injections, and rig-detect animations all require testing.
+- Implement correct `GET`/`HEAD`/`Range`/conditional response handling and coherent caching headers for replacement bodies. Avoid comparing or recording signed query tokens; use host+hash of normalized path only in diagnostic logs.
+- To **force an already-loaded asset to update live**, prove a specific client-side invalidation/rebind mechanism first. A fresh CDN fetch is necessary in some paths but not sufficient to make a renderer or audio object discard existing content. Nothing observed so far proves a network-only universal hot-reload trigger.
