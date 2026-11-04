@@ -1358,7 +1358,9 @@ def _local_file_metadata(path: Path) -> tuple[bool, int]:
         return False, 0
 
 
-def _serve_local_file(local_path: str) -> bytes:
+def _serve_local_file(
+    local_path: str, range_header: bytes | None = None, if_range: bytes | None = None
+) -> bytes:
     path = Path(local_path)
     if path.suffix.lower() == '.obj':
         try:
@@ -1391,10 +1393,36 @@ def _serve_local_file(local_path: str) -> bytes:
         '.mesh': 'application/octet-stream',
     }
     ct = ct_map.get(ext, 'application/octet-stream')
+    status = '200 OK'
+    content_range = ''
+    if range_header is not None and if_range is None and len(range_header) <= 128:
+        # A single range is supported; ignore malformed and multipart ranges
+        match = re.fullmatch(rb'bytes=(\d*)-(\d*)', range_header.strip(), flags=re.IGNORECASE)
+        if match is not None and (match[1] or match[2]):
+            total = len(content)
+            start_text, end_text = match.groups()
+            start = int(start_text) if start_text else 0
+            end = int(end_text) if end_text else total - 1
+            if not start_text:
+                suffix = int(end_text)
+                start = max(0, total - suffix) if suffix else total
+                end = total - 1
+            if total == 0 or start >= total or end < start:
+                return (
+                    'HTTP/1.1 416 Range Not Satisfiable\r\n'
+                    f'Content-Range: bytes */{total}\r\n'
+                    'Content-Length: 0\r\nAccept-Ranges: bytes\r\n'
+                    'Connection: keep-alive\r\n\r\n'
+                ).encode('ascii')
+            end = min(end, total - 1)
+            content_range = f'Content-Range: bytes {start}-{end}/{total}\r\n'
+            content = content[start : end + 1]
+            status = '206 Partial Content'
     return (
-        f'HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\n'
+        f'HTTP/1.1 {status}\r\nContent-Type: {ct}\r\n'
+        f'{content_range}Accept-Ranges: bytes\r\n'
         f'Content-Length: {len(content)}\r\nConnection: keep-alive\r\n\r\n'
-    ).encode() + content
+    ).encode('ascii') + content
 
 
 def _make_redirect(target_url: str) -> bytes:
@@ -3172,7 +3200,11 @@ class FleasionProxy:
                     f'file={serve_path.name} exists={serve_exists} bytes={serve_size}',
                 )
                 response = await asyncio.get_event_loop().run_in_executor(
-                    self._executor, _serve_local_file, local_value
+                    self._executor,
+                    _serve_local_file,
+                    local_value,
+                    req_headers.get(b'range'),
+                    req_headers.get(b'if-range'),
                 )
                 status_line = (
                     response.split(b'\r\n', 1)[0].decode('ascii', errors='replace')

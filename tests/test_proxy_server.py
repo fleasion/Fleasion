@@ -79,9 +79,14 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
     return await callback(reader, headers)
 
 
-def _serve_local_file(path: str) -> bytes:
-    callback = cast('Callable[[str], bytes]', proxy_server.__dict__['_serve_local_file'])
-    return callback(path)
+def _serve_local_file(
+    path: str, range_header: bytes | None = None, if_range: bytes | None = None
+) -> bytes:
+    callback = cast(
+        'Callable[[str, bytes | None, bytes | None], bytes]',
+        proxy_server.__dict__['_serve_local_file'],
+    )
+    return callback(path, range_header, if_range)
 
 
 def _preserve_wire(proxy: FleasionProxy, host: str) -> bool:
@@ -369,6 +374,41 @@ class ProxyServerRawHttpTests(unittest.TestCase):
             response = _serve_local_file(str(path))
 
         self.assertEqual(_response_body(response), content)
+
+    def test_local_byte_range_is_partial_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for extension in ('ogg', 'mesh', 'png'):
+                with self.subTest(extension=extension):
+                    path = Path(tmp) / f'asset.{extension}'
+                    path.write_bytes(b'0123456789')
+                    response = _serve_local_file(str(path), b'bytes=3-6')
+                    self.assertTrue(response.startswith(b'HTTP/1.1 206 Partial Content\r\n'))
+                    self.assertIn(b'Content-Range: bytes 3-6/10\r\n', response)
+                    self.assertIn(b'Content-Length: 4\r\n', response)
+                    self.assertIn(b'Accept-Ranges: bytes\r\n', response)
+                    self.assertEqual(_response_body(response), b'3456')
+
+    def test_local_byte_range_edge_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'asset.ogg'
+            path.write_bytes(b'0123456789')
+            suffix = _serve_local_file(str(path), b'bytes=-3')
+            open_end = _serve_local_file(str(path), b'bytes=8-')
+            unsatisfiable = _serve_local_file(str(path), b'bytes=10-')
+            uppercase = _serve_local_file(str(path), b'BYTES=0-1')
+            ignored_multi = _serve_local_file(str(path), b'bytes=0-2,5-8')
+            ignored_if_range = _serve_local_file(str(path), b'bytes=0-2', b'"unmatched"')
+        self.assertEqual(_response_body(suffix), b'789')
+        self.assertEqual(_response_body(open_end), b'89')
+        self.assertEqual(_response_body(uppercase), b'01')
+        self.assertIn(b'Content-Range: bytes 8-9/10\r\n', open_end)
+        self.assertTrue(unsatisfiable.startswith(b'HTTP/1.1 416 Range Not Satisfiable\r\n'))
+        self.assertIn(b'Content-Range: bytes */10\r\n', unsatisfiable)
+        self.assertEqual(_response_body(unsatisfiable), b'')
+        self.assertTrue(ignored_multi.startswith(b'HTTP/1.1 200 OK\r\n'))
+        self.assertEqual(_response_body(ignored_multi), b'0123456789')
+        self.assertTrue(ignored_if_range.startswith(b'HTTP/1.1 200 OK\r\n'))
+        self.assertEqual(_response_body(ignored_if_range), b'0123456789')
 
     def test_local_target_extension_without_roblox_marker_keeps_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
