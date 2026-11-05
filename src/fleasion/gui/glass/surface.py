@@ -33,7 +33,7 @@ from .desktop_blur import blur
 from .itemview import RoundedItemViewEffect
 from .state import state
 from .style import RADIUS, glass_colors
-from .transparency import enable_transparency, has_alpha
+from .transparency import enable_transparency, has_alpha, restore_transparency
 from .wallpaper import wallpapers
 
 if TYPE_CHECKING:
@@ -159,12 +159,16 @@ class GlassWindows(QObject):
         app: QApplication,
         original_popup_masks: dict[QWidget, QRegion] | None = None,
         stylesheets: WindowStyles | None = None,
+        original_popup_attributes: dict[QWidget, tuple[bool, bool]] | None = None,
     ) -> None:
         super().__init__(app)
         self._app = app
         self._stylesheets = stylesheets
         self._original_popup_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary(
             original_popup_masks or {}
+        )
+        self._original_popup_attributes: WeakKeyDictionary[QWidget, tuple[bool, bool]] = (
+            WeakKeyDictionary(original_popup_attributes or {})
         )
         self._rounded_itemviews: WeakSet[QAbstractItemView] = WeakSet()
         self._attributes: WeakKeyDictionary[QWidget, tuple[bool, bool]] = WeakKeyDictionary()
@@ -191,11 +195,30 @@ class GlassWindows(QObject):
         self._wallpaper_timer.stop()
         blur.stop_polling()
         wallpapers.close()
-        for window, (translucent, no_background) in list(self._attributes.items()):
+        # Restore parent windows before their popup children, since recreating
+        # a native X11 parent may also invalidate its children's native handles
+
+        def parent_depth(window: QWidget) -> int:
+            depth = 0
+            parent = window.parentWidget()
+            while parent is not None:
+                depth += 1
+                parent = parent.parentWidget()
+            return depth
+
+        valid_windows = (
+            (window, attributes)
+            for window, attributes in self._attributes.items()
+            if isValid(window)
+        )
+        for window, (translucent, no_background) in sorted(
+            valid_windows, key=lambda item: parent_depth(item[0])
+        ):
             if not isValid(window):
                 continue
-            window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=translucent)
-            window.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, on=no_background)
+            restore_transparency(
+                window, translucent=translucent, no_system_background=no_background
+            )
             window.update()
         self._attributes.clear()
         for widget, original_mask in list(self._original_masks.items()):
@@ -219,6 +242,7 @@ class GlassWindows(QObject):
             else:
                 widget.setMask(original)
         self._original_popup_masks.clear()
+        self._original_popup_attributes.clear()
         for button, names in list(self._button_properties.items()):
             if not isValid(button):
                 continue
@@ -228,10 +252,17 @@ class GlassWindows(QObject):
         self._button_properties.clear()
 
     def remember_window(self, window: QWidget) -> None:
-        # Capture before Glass chrome can change the window attributes. A
-        # dashboard created while Glass is already active is not yet polished
-        # when its custom title bar is attached.
-        if window not in self._attributes:
+        # Root windows created during Glass predate their custom title bar, but
+        # popup widgets may already have Glass QSS attributes when polished
+        if window in self._attributes:
+            return
+        original = self._original_popup_attributes.get(window)
+        if original is not None:
+            self._attributes[window] = original
+        elif QApplication.platformName() == 'xcb' and self.is_rounded_popup(window):
+            # Popups created during Glass should return to opaque X11 visuals
+            self._attributes[window] = (False, False)
+        else:
             self._attributes[window] = (
                 window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground),
                 window.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground),

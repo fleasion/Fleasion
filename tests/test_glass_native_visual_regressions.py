@@ -75,6 +75,8 @@ def test_dashboard_created_while_glass_active_restores_opaque_window(
         app.processEvents()
         assert not window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         assert not window.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        if QApplication.platformName() == 'xcb':
+            assert window.windowHandle().format().alphaBufferSize() <= 0
         assert window.mask().isEmpty()
         image = window.grab().toImage()
         assert image.pixelColor(window.width() // 2, window.height() // 2).alpha() == 255
@@ -85,6 +87,9 @@ def test_dashboard_created_while_glass_active_restores_opaque_window(
             assert window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground) == (
                 theme == 'Glass'
             )
+            if QApplication.platformName() == 'xcb':
+                alpha = window.windowHandle().format().alphaBufferSize()
+                assert (alpha > 0) == (theme == 'Glass')
             if theme != 'Glass':
                 assert window.mask().isEmpty()
                 assert window.grab().toImage().pixelColor(0, 0).alpha() == 255
@@ -148,6 +153,7 @@ def test_x11_rounded_popups_use_alpha_and_restore_native_shape(
         ThemeManager.apply_theme('System')
         app.processEvents()
         assert window.mask().isEmpty()
+        assert window.windowHandle().format().alphaBufferSize() <= 0
     finally:
         if combo is not None:
             combo.hidePopup()
@@ -156,6 +162,87 @@ def test_x11_rounded_popups_use_alpha_and_restore_native_shape(
         if menu is not None:
             menu.close()
             menu.deleteLater()
+        app.processEvents()
+
+
+def test_x11_existing_translucent_popup_keeps_its_original_visual(app: QApplication) -> None:
+    if QApplication.platformName() != 'xcb':
+        pytest.skip('Native popup visuals require the xcb platform')
+    ThemeManager.apply_theme('Dark')
+    menu = QMenu()
+    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    menu.addAction('First')
+    menu.popup(QPoint(150, 150))
+    try:
+        QTest.qWait(40)
+        assert menu.windowHandle().format().alphaBufferSize() > 0
+        ThemeManager.apply_theme('Glass')
+        ThemeManager.apply_theme('Dark')
+        app.processEvents()
+        assert menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        assert menu.windowHandle().format().alphaBufferSize() > 0
+    finally:
+        menu.close()
+        menu.deleteLater()
+        app.processEvents()
+
+
+@pytest.mark.parametrize(
+    'themes',
+    [
+        ('Glass', 'Fusion', 'Glass'),
+        ('Fusion', 'Glass', 'Fusion'),
+    ],
+)
+@pytest.mark.parametrize('open_at_each_theme', [False, True])
+def test_x11_config_menus_keep_matching_native_visual_after_repeated_theme_changes(
+    app: QApplication,
+    config: manager.ConfigManager,
+    monkeypatch: pytest.MonkeyPatch,
+    themes: tuple[str, str, str],
+    open_at_each_theme: bool,
+) -> None:
+    if QApplication.platformName() != 'xcb':
+        pytest.skip('Native popup visuals require the xcb platform')
+
+    from fleasion.utils.gui_work import GuiWork
+
+    def skip_preload(_self: GuiWork, _work: object) -> None:
+        return
+
+    monkeypatch.setattr(GuiWork, 'start', skip_preload)
+    ThemeManager.apply_theme(themes[0])
+    window = replacer_config.ReplacerConfigWindow(config)
+    window.show()
+    app.processEvents()
+    menus = (
+        (window.config_menu_btn, window.config_menu),
+        (window.enabled_menu_btn, window.enabled_menu),
+    )
+    try:
+        for index, theme in enumerate(themes):
+            ThemeManager.apply_theme(theme)
+            app.processEvents()
+            expected_alpha = theme == 'Glass'
+            assert (window.windowHandle().format().alphaBufferSize() > 0) == expected_alpha
+            if not open_at_each_theme and index != len(themes) - 1:
+                continue
+            for button, menu in menus:
+                menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+                QTest.qWait(50)
+                assert menu.isVisible()
+                assert (menu.windowHandle().format().alphaBufferSize() > 0) == expected_alpha
+                assert menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground) == (
+                    theme == 'Glass'
+                )
+                assert menu.sizeHint() == menu.size()
+                menu.hide()
+    finally:
+        for _button, menu in menus:
+            menu.close()
+        ThemeManager.apply_theme('Light')
+        window.close()
+        window.deleteLater()
         app.processEvents()
 
 

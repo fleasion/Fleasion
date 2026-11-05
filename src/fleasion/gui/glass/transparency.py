@@ -20,10 +20,26 @@ def enable_transparency(window: QWidget) -> None:
         and not has_alpha(window)
     )
     window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    if not recreate:
-        return
+    if recreate:
+        _recreate_native_window(window)
 
-    # Changing the attribute alone leaves an existing native visual opaque
+
+def restore_transparency(window: QWidget, *, translucent: bool, no_system_background: bool) -> None:
+    """Restore the original attributes and X11 visual after leaving Glass."""
+    recreate = (
+        QApplication.platformName() == 'xcb'
+        and window.testAttribute(Qt.WidgetAttribute.WA_WState_Created)
+        and has_alpha(window)
+        and not translucent
+    )
+    window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=translucent)
+    window.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, on=no_system_background)
+    if recreate:
+        _recreate_native_window(window)
+
+
+def _recreate_native_window(window: QWidget) -> None:
+    """Recreate an X11 visual while keeping window state, geometry and focus."""
     visible = window.isVisible()
     active = window.isActiveWindow()
     geometry = window.geometry()

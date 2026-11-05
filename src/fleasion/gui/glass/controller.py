@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QWidget
 
@@ -88,20 +89,26 @@ class GlassTheme:
             app.setDesktopFileName(APP_ID)
         ThemeManager.ensure_widget_style(app, 'Fusion')
         app.setPalette(palette(state.settings, base_palette=base_palette))
-        original_popup_masks = (
-            {
-                widget: QRegion(widget.mask())
-                for widget in app.allWidgets()
-                if GlassWindows.is_rounded_popup(widget)
-            }
+        original_popups = (
+            [widget for widget in app.allWidgets() if GlassWindows.is_rounded_popup(widget)]
             if self._filter is None
-            else {}
+            else []
         )
+        original_popup_masks = {widget: QRegion(widget.mask()) for widget in original_popups}
+        original_popup_attributes = {
+            widget: (
+                widget.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground),
+                widget.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground),
+            )
+            for widget in original_popups
+        }
         # Application QSS repolishes cached descendants repeatedly. Root QSS
         # keeps the same inherited rules while visiting each window tree once
         self._stylesheets.apply(app, stylesheet(state.settings))
         if self._filter is None:
-            self._filter = GlassWindows(app, original_popup_masks, self._stylesheets)
+            self._filter = GlassWindows(
+                app, original_popup_masks, self._stylesheets, original_popup_attributes
+            )
             self._filter.blur_status_changed.connect(self._sync_blur_controls)
             app.installEventFilter(self._filter)
         if entering:
@@ -117,6 +124,11 @@ class GlassTheme:
         if self._filter is None:
             return
         window_filter = self._filter
+        # Qt may create native combo popups without delivering a Polish event
+        # to the application filter, so include any still-live popup windows
+        for widget in app.allWidgets():
+            if GlassWindows.is_rounded_popup(widget):
+                window_filter.remember_window(widget)
         app.removeEventFilter(window_filter)
         self._filter = None
         self._stylesheets.restore()
