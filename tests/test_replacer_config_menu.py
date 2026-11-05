@@ -3,7 +3,7 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 import pytest
 
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTreeWidgetItem,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 from fleasion.config import manager as manager_module
 from fleasion.gui import replacer_config as replacer_config_module
 from fleasion.gui.replacer_config import ReplacerConfigWindow
+from fleasion.gui.theme import ThemeManager
 
 
 class _MenuRowLike(Protocol):
@@ -61,12 +63,14 @@ def _draw_group_icon_role() -> int:
     return cast('int', replacer_config_module.__dict__['_ROLE_DRAW_GROUP_ICON'])
 
 
-def _new_scrollable_menu(*, checkable: bool = False) -> QMenu:
+def _new_scrollable_menu(
+    *, checkable: bool = False, parent: QWidget | None = None
+) -> QMenu:
     factory = cast(
         'Callable[..., QMenu]',
         replacer_config_module.__dict__['_ScrollableConfigMenu'],
     )
-    return factory(checkable=checkable)
+    return factory(parent, checkable=checkable)
 
 
 def _menu_set_entries(menu: QMenu, entries: list[dict[str, object]], minimum_width: int) -> None:
@@ -194,12 +198,80 @@ def test_scrollable_config_menu_constrains_height_and_scrolls() -> None:
     assert (
         _menu_scroll_area(popup).verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
     )
-    assert popup.sizeHint().width() == _menu_scroll_area(popup).width()
+    panel = popup.style().pixelMetric(QStyle.PixelMetric.PM_MenuPanelWidth, None, popup)
+    h_margin = popup.style().pixelMetric(QStyle.PixelMetric.PM_MenuHMargin, None, popup)
+    v_margin = popup.style().pixelMetric(QStyle.PixelMetric.PM_MenuVMargin, None, popup)
+    assert popup.sizeHint().width() == _menu_scroll_area(popup).width() + 2 * (panel + h_margin)
+    assert popup.sizeHint().height() == _menu_scroll_area(popup).height() + 2 * (panel + v_margin)
+    assert popup.sizeHint().height() <= 240
     assert popup.actionGeometry(popup.actions()[0]).width() == _menu_scroll_area(popup).width()
     popup.close()
     popup.deleteLater()
     app.processEvents()
     assert app is not None
+
+
+@pytest.mark.parametrize('color_mode', ['Dark', 'Light', 'System'])
+def test_config_popups_retain_visible_frame_after_glass_fusion_switch(
+    color_mode: Literal['Dark', 'Light', 'System'],
+) -> None:
+    app = _qapp()
+    ThemeManager.apply_appearance('Fusion', color_mode, 'Ice')
+    owner = QWidget()
+    owner.resize(500, 350)
+    editing_button = QPushButton('Default', owner)
+    enabled_button = QPushButton('Enabled', owner)
+    enabled_button.move(200, 0)
+    editing = _new_scrollable_menu(parent=editing_button)
+    enabled = _new_scrollable_menu(checkable=True, parent=enabled_button)
+    editing_button.setMenu(editing)
+    enabled_button.setMenu(enabled)
+    owner.show()
+    app.processEvents()
+    try:
+        for theme in ('Glass', 'Fusion', 'Glass', 'Fusion'):
+            ThemeManager.apply_appearance(theme, color_mode, 'Ice')
+            app.processEvents()
+            for button, menu in ((editing_button, editing), (enabled_button, enabled)):
+                _menu_set_entries(
+                    menu,
+                    [{'name': f'Config {i:02d}', 'checked': i == 0} for i in range(18)],
+                    minimum_width=170,
+                )
+                menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+                app.processEvents()
+                scroll_area = _menu_scroll_area(menu)
+                panel = menu.style().pixelMetric(
+                    QStyle.PixelMetric.PM_MenuPanelWidth, None, menu
+                )
+                h_margin = menu.style().pixelMetric(
+                    QStyle.PixelMetric.PM_MenuHMargin, None, menu
+                )
+                v_margin = menu.style().pixelMetric(
+                    QStyle.PixelMetric.PM_MenuVMargin, None, menu
+                )
+                assert menu.isVisible()
+                assert menu.isWindow()
+                assert menu.windowFlags() & Qt.WindowType.Popup
+                assert scroll_area.x() == panel + h_margin
+                assert scroll_area.y() == panel + v_margin
+                assert menu.width() == scroll_area.width() + 2 * scroll_area.x()
+                assert menu.height() == scroll_area.height() + 2 * scroll_area.y()
+                assert menu.sizeHint() == menu.size()
+                assert scroll_area.widget() is not None
+                if theme == 'Fusion':
+                    assert 'background: palette(window)' in menu.styleSheet()
+                    assert 'border: 1px solid palette(mid)' in menu.styleSheet()
+                else:
+                    assert not menu.styleSheet()
+                menu.hide()
+    finally:
+        editing.hide()
+        enabled.hide()
+        owner.close()
+        ThemeManager.apply_appearance('Fusion', 'Dark', 'Ice')
+        owner.deleteLater()
+        app.processEvents()
 
 
 def test_scrollable_config_menu_ignores_opening_release() -> None:

@@ -683,6 +683,7 @@ class _ScrollableConfigMenu(QMenu):
 
     def __init__(self, parent: QWidget | None = None, *, checkable: bool = False) -> None:
         super().__init__(parent)
+        self.setObjectName('ConfigMenuPopup')
         self._checkable = checkable
         self._minimum_width = 0
         self._natural_content_size = QSize(0, 0)
@@ -703,11 +704,38 @@ class _ScrollableConfigMenu(QMenu):
         self.addAction(self._content_action)
         self.aboutToShow.connect(self._guard_opening_mouse_release)
 
+    def _sync_popup_surface(self) -> None:
+        """Keep widget-backed popup content framed and opaque outside Glass."""
+        stylesheet = (
+            ''
+            if glass.theme.active
+            else (
+                'QMenu#ConfigMenuPopup {'
+                'background: palette(window);'
+                'border: 1px solid palette(mid);'
+                'padding: 2px;'
+                '}'
+            )
+        )
+        if self.styleSheet() != stylesheet:
+            self.setStyleSheet(stylesheet)
+
+    def _popup_insets(self) -> tuple[int, int]:
+        style = self.style()
+        panel = style.pixelMetric(QStyle.PixelMetric.PM_MenuPanelWidth, None, self)
+        horizontal = style.pixelMetric(QStyle.PixelMetric.PM_MenuHMargin, None, self)
+        vertical = style.pixelMetric(QStyle.PixelMetric.PM_MenuVMargin, None, self)
+        return panel + horizontal, panel + vertical
+
     @override
     def sizeHint(self) -> QSize:
-        """Use the embedded scroll area's size without rebuilding the action."""
+        """Include menu framing without losing the constrained scroll area size."""
         if self._natural_content_size.isValid() and self.scroll_area.size().isValid():
-            return self.scroll_area.size()
+            horizontal, vertical = self._popup_insets()
+            return QSize(
+                self.scroll_area.width() + 2 * horizontal,
+                self.scroll_area.height() + 2 * vertical,
+            )
         return super().sizeHint()
 
     def set_entries(self, entries: list[_ConfigMenuEntry], *, minimum_width: int = 0) -> None:
@@ -751,6 +779,7 @@ class _ScrollableConfigMenu(QMenu):
         self.scroll_area.setWidget(container)
         container.adjustSize()
         self._natural_content_size = container.sizeHint()
+        self._sync_popup_surface()
         self._set_popup_content_size(self._natural_content_size.height())
         self._reset_action_geometry()
 
@@ -780,8 +809,11 @@ class _ScrollableConfigMenu(QMenu):
             space_above = anchor_y - available_geometry.top()
             available_height = max(space_below, space_above)
 
-        max_height = max(1, available_height - _CONFIG_MENU_SCREEN_MARGIN_PX)
-        max_width = max(1, available_geometry.width() - _CONFIG_MENU_SCREEN_MARGIN_PX)
+        horizontal, vertical = self._popup_insets()
+        max_height = max(1, available_height - _CONFIG_MENU_SCREEN_MARGIN_PX - 2 * vertical)
+        max_width = max(
+            1, available_geometry.width() - _CONFIG_MENU_SCREEN_MARGIN_PX - 2 * horizontal
+        )
         self._set_popup_content_size(max_height, max_width=max_width)
         self._reset_action_geometry()
 
