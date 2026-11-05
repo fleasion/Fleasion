@@ -215,14 +215,18 @@ def test_x11_config_menus_keep_matching_native_visual_after_repeated_theme_chang
     window = replacer_config.ReplacerConfigWindow(config)
     window.show()
     app.processEvents()
-    menus = (
-        (window.config_menu_btn, window.config_menu),
-        (window.enabled_menu_btn, window.enabled_menu),
-    )
+    previous_menus = (window.config_menu, window.enabled_menu)
     try:
         for index, theme in enumerate(themes):
             ThemeManager.apply_theme(theme)
             app.processEvents()
+            menus = (
+                (window.config_menu_btn, window.config_menu),
+                (window.enabled_menu_btn, window.enabled_menu),
+            )
+            if index:
+                assert all(menu is not old for (_, menu), old in zip(menus, previous_menus))
+            previous_menus = tuple(menu for _button, menu in menus)
             expected_alpha = theme == 'Glass'
             assert (window.windowHandle().format().alphaBufferSize() > 0) == expected_alpha
             if not open_at_each_theme and index != len(themes) - 1:
@@ -238,8 +242,8 @@ def test_x11_config_menus_keep_matching_native_visual_after_repeated_theme_chang
                 assert menu.sizeHint() == menu.size()
                 menu.hide()
     finally:
-        for _button, menu in menus:
-            menu.close()
+        window.config_menu.close()
+        window.enabled_menu.close()
         ThemeManager.apply_theme('Light')
         window.close()
         window.deleteLater()

@@ -1083,7 +1083,56 @@ class ReplacerConfigWindow(QDialog):
         glass.theme.configure(self.config_manager)
         glass.theme.attach(self)
         ThemeManager.events().changed.connect(self._update_page_margins)
+        self._popup_theme_style = glass.theme.active
+        ThemeManager.events().changed.connect(self._reset_popup_widgets_after_style_change)
         self._update_page_margins()
+
+    def _reset_popup_widgets_after_style_change(self) -> None:
+        """Replace cached widget-action popups when their owning Qt theme changes."""
+        style = glass.theme.active
+        if style == self._popup_theme_style:
+            return
+        self._popup_theme_style = style
+
+        # Reusing Qt's QWidgetAction-backed QMenus after an X11 theme switch
+        # can leave their native windows mapped but completely unpainted
+        old_editing = self.config_menu
+        editing = _ScrollableConfigMenu(self.config_menu_btn)
+        editing.aboutToShow.connect(self._rebuild_editing_menu)
+        editing.item_selected.connect(self._on_config_select)
+        self.config_menu = editing
+        self.config_menu_btn.setMenu(editing)
+        old_editing.close()
+        old_editing.deleteLater()
+
+        old_enabled = self.enabled_menu
+        enabled = _ScrollableConfigMenu(self.enabled_menu_btn, checkable=True)
+        enabled.aboutToShow.connect(self._rebuild_enabled_menu)
+        enabled.item_toggled.connect(self._on_config_toggle)
+        self.enabled_menu = enabled
+        self.enabled_menu_btn.setMenu(enabled)
+        old_enabled.close()
+        old_enabled.deleteLater()
+
+        self._rebuild_editing_menu()
+        self._rebuild_enabled_menu()
+
+        from fleasion.cache.asset_type_filter import CategoryFilterPopup
+
+        old_asset_types = self.asset_types_popup
+        asset_types = CategoryFilterPopup(parent=self)
+        asset_types.filters_changed.connect(self._on_asset_types_changed)
+        asset_types.aboutToHide.connect(self._mark_asset_types_popup_closed)
+        self.asset_types_popup = asset_types
+        old_asset_types.close()
+        old_asset_types.deleteLater()
+        self._asset_types_popup_last_closed = 0.0
+
+        if (dialog_popup := self._dialog_asset_types_popup) is not None:
+            self._dialog_asset_types_popup = None
+            dialog_popup.close()
+            dialog_popup.deleteLater()
+            self._dialog_asset_types_popup_last_closed = 0.0
 
     def _update_page_margins(self) -> None:
         self._replacer_content_layout.setContentsMargins(

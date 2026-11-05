@@ -35,6 +35,34 @@ assert not any(name == 'OpenGL' or name.startswith('OpenGL.') for name in loaded
     subprocess.run([sys.executable, '-c', script], check=True)
 
 
+def test_category_filter_popup_recalculates_outer_and_inner_geometry_on_reopen() -> None:
+    app = _qapp()
+    popup = CategoryFilterPopup(active_filters={24, 41})
+    available = QRect(0, 0, 900, 650)
+    try:
+        for anchor_y in (620, 20, 590, 45, 620, 20):
+            popup.constrain_to_available_geometry(available, anchor_y)
+            hint = popup.sizeHint()
+            assert popup.size() == hint
+            assert hint.width() <= available.width()
+            assert hint.height() <= available.height()
+            assert popup.checkboxes[24].isChecked()
+            assert popup.checkboxes[41].isChecked()
+
+        small = QRect(0, 0, 440, 330)
+        popup.constrain_to_available_geometry(small, 315)
+        assert popup.size() == popup.sizeHint()
+        assert popup.width() <= small.width()
+        assert popup.height() <= small.height()
+        assert popup.scroll_area.horizontalScrollBarPolicy() == (
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+    finally:
+        popup.close()
+        popup.deleteLater()
+        app.processEvents()
+
+
 def test_category_filter_popup_constrains_height_and_scrolls() -> None:
     app = _qapp()
     popup = CategoryFilterPopup(active_filters={24, 41})

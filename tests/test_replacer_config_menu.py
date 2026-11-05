@@ -274,6 +274,55 @@ def test_config_popups_retain_visible_frame_after_glass_fusion_switch(
         app.processEvents()
 
 
+def test_dashboard_recreates_widget_backed_popups_on_style_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _qapp()
+    config_dir = tmp_path / 'FleasionNT'
+    monkeypatch.setattr(manager_module, 'CONFIG_DIR', config_dir)
+    monkeypatch.setattr(manager_module, 'CONFIG_FILE', config_dir / 'settings.json')
+    monkeypatch.setattr(manager_module, 'CONFIGS_FOLDER', config_dir / 'configs')
+    config = manager_module.ConfigManager()
+    config.set_config_enabled('Default', True)
+    ThemeManager.apply_appearance('Fusion', 'Dark', 'Ice')
+    window = _window(config)
+    window.show()
+    app.processEvents()
+    try:
+        previous = (
+            window.config_menu,
+            window.enabled_menu,
+            window.asset_types_popup,
+        )
+        for style in ('Glass', 'Fusion', 'Glass', 'Fusion'):
+            ThemeManager.apply_appearance(style, 'Dark', 'Ice')
+            app.processEvents()
+            current = (
+                window.config_menu,
+                window.enabled_menu,
+                window.asset_types_popup,
+            )
+            assert all(old is not new for old, new in zip(previous, current))
+            assert window.config_menu_btn.menu() is window.config_menu
+            assert window.enabled_menu_btn.menu() is window.enabled_menu
+            assert list(window.config_menu.item_widgets) == ['Default']
+            assert list(window.enabled_menu.item_widgets) == ['Default']
+            assert _enabled_row_checked(window, 'Default')
+            assert 'Default' in window.config_enabled_vars
+            previous = current
+
+        ThemeManager.apply_appearance('Fusion', 'Light', 'Ice')
+        app.processEvents()
+        assert window.config_menu is previous[0]
+        assert window.enabled_menu is previous[1]
+        assert window.asset_types_popup is previous[2]
+    finally:
+        window.close()
+        window.deleteLater()
+        ThemeManager.apply_appearance('Fusion', 'Dark', 'Ice')
+        app.processEvents()
+
+
 def test_scrollable_config_menu_ignores_opening_release() -> None:
     app = _qapp()
     popup = _new_scrollable_menu(checkable=True)

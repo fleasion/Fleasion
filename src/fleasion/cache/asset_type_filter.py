@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import override
 
-from PySide6.QtCore import QRect, QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QRect, QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics, QMouseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QStyle,
     QVBoxLayout,
     QWidget,
     QWidgetAction,
@@ -276,7 +277,7 @@ class CategoryFilterPopup(QMenu):
         self.scroll_area.setObjectName('FilterScrollArea')
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_area.setWidget(self.container)
 
@@ -287,13 +288,35 @@ class CategoryFilterPopup(QMenu):
         action.setDefaultWidget(self.scroll_area)
         self.addAction(action)
 
-    def _set_popup_content_size(self, max_height: int) -> None:
+    def _popup_insets(self) -> tuple[int, int]:
+        style = self.style()
+        panel = style.pixelMetric(QStyle.PixelMetric.PM_MenuPanelWidth, None, self)
+        horizontal = style.pixelMetric(QStyle.PixelMetric.PM_MenuHMargin, None, self)
+        vertical = style.pixelMetric(QStyle.PixelMetric.PM_MenuVMargin, None, self)
+        return panel + horizontal, panel + vertical
+
+    @override
+    def sizeHint(self) -> QSize:
+        """Size the menu and its embedded widget together, including style margins."""
+        if self._natural_content_size.isValid() and self.scroll_area.size().isValid():
+            horizontal, vertical = self._popup_insets()
+            return QSize(
+                self.scroll_area.width() + 2 * horizontal,
+                self.scroll_area.height() + 2 * vertical,
+            )
+        return super().sizeHint()
+
+    def _set_popup_content_size(self, max_height: int, *, max_width: int | None = None) -> None:
         natural = self._natural_content_size
-        height = min(natural.height(), max(220, max_height))
+        height = min(natural.height(), max(1, max_height))
         width = natural.width()
         if natural.height() > height:
             width += self.scroll_area.verticalScrollBar().sizeHint().width()
-        self.scroll_area.setFixedSize(width, height)
+        if max_width is not None:
+            width = min(width, max(1, max_width))
+        self.scroll_area.setFixedSize(max(1, width), max(1, height))
+        self.scroll_area.updateGeometry()
+        self.updateGeometry()
 
     def constrain_to_available_geometry(
         self, available_geometry: QRect | None, anchor_y: int | None = None
@@ -309,8 +332,13 @@ class CategoryFilterPopup(QMenu):
             space_above = anchor_y - available_geometry.top()
             available_height = max(space_below, space_above)
 
-        self._set_popup_content_size(max(220, available_height - 12))
+        horizontal, vertical = self._popup_insets()
+        max_height = max(1, available_height - 12 - 2 * vertical)
+        max_width = max(1, available_geometry.width() - 12 - 2 * horizontal)
+        self._set_popup_content_size(max_height, max_width=max_width)
         self.adjustSize()
+        self.resize(self.sizeHint())
+        self.updateGeometry()
 
     def set_active_filters(self, active_filters: set[AssetType] | None) -> None:
         """Update the popup checks without rebuilding the widget."""
