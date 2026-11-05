@@ -6,10 +6,12 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from typing import cast
 
-from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from fleasion.cache.asset_type_filter import CategoryFilterPopup
+from fleasion.gui.theme import ThemeManager
 
 
 def _qapp() -> QApplication:
@@ -60,6 +62,26 @@ def test_category_filter_popup_recalculates_outer_and_inner_geometry_on_reopen()
     finally:
         popup.close()
         popup.deleteLater()
+        app.processEvents()
+
+
+def test_category_filter_popup_paints_background_in_glass() -> None:
+    app = _qapp()
+    ThemeManager.apply_appearance('Glass', 'Dark', 'Ice')
+    popup = CategoryFilterPopup()
+    try:
+        popup.popup(QPoint(50, 50))
+        QTest.qWait(60)
+        assert popup.isVisible()
+        image = popup.grab().toImage()
+        # The gutter between the menu edge and its category cards must paint
+        assert image.pixelColor(12, 50).alpha() == 255
+        expected = popup.palette().toolTipBase().color().name()
+        assert image.pixelColor(12, 50).name() == expected
+    finally:
+        popup.close()
+        popup.deleteLater()
+        ThemeManager.apply_appearance('Fusion', 'Dark', 'Ice')
         app.processEvents()
 
 

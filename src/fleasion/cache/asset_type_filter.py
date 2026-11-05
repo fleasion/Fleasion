@@ -163,12 +163,8 @@ class CategoryFilterPopup(QMenu):
         active_filters: set[AssetType] | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setStyleSheet("""
-            QMenu { background-color: palette(window); border: 1px solid palette(mid); border-radius: 4px; color: palette(window-text); }
-            QWidget#FilterContainer { background-color: palette(window); }
-            QCheckBox { padding: 1px; color: palette(window-text); font-size: 12px; }
-            QCheckBox::indicator { width: 14px; height: 14px; }
-        """)
+        self._sync_surface_stylesheet()
+        self.aboutToShow.connect(self._sync_surface_stylesheet)
 
         self.active_filters: set[AssetType] = set(active_filters) if active_filters else set()
         self._updating = False
@@ -287,6 +283,21 @@ class CategoryFilterPopup(QMenu):
         action = QWidgetAction(self)
         action.setDefaultWidget(self.scroll_area)
         self.addAction(action)
+
+    def _sync_surface_stylesheet(self) -> None:
+        """Use an opaque palette role even when Glass makes Window transparent."""
+        surface = self.palette().window().color()
+        if surface.alpha() == 0:
+            surface = self.palette().toolTipBase().color()
+        color = surface.name()
+        stylesheet = f"""
+            QMenu {{ background-color: {color}; border: 1px solid palette(mid); border-radius: 4px; color: palette(window-text); }}
+            QWidget#FilterContainer {{ background-color: {color}; }}
+            QCheckBox {{ padding: 1px; color: palette(window-text); font-size: 12px; }}
+            QCheckBox::indicator {{ width: 14px; height: 14px; }}
+        """
+        if self.styleSheet() != stylesheet:
+            self.setStyleSheet(stylesheet)
 
     def _popup_insets(self) -> tuple[int, int]:
         style = self.style()
