@@ -366,6 +366,15 @@ def run_application() -> None:
             config_manager.rosemary_prefix_path,
         )
     env_proxy_migration_pending = prepare_env_proxy_migration(config_manager)
+    if sys.platform == 'darwin':
+
+        def _clear_legacy_macos_proxy_hosts() -> None:
+            helper = importlib.import_module('fleasion.utils.macos_proxy_helper')
+            if helper.helper_status() is not None and not helper.helper_clear_hosts():
+                log_buffer.log('Proxy', 'Could not clear old macOS proxy host redirects')
+
+        run_in_thread(_clear_legacy_macos_proxy_hosts)()
+
     config_manager.settings['_runtime_proxy_debug'] = bool(args.proxy_debug)
     config_manager.settings['_runtime_proxy_debug_mode'] = args.proxy_debug_mode or 'full'
 
@@ -489,12 +498,12 @@ def run_application() -> None:
     )
     if not config_manager.lock_roblox_files_read_only:
         if not config_manager.read_only_lock_migration_v1_complete:
-            # One-time cleanup for persistent guards left by older builds,
-            # including the old cacert.pem lock
-            mod_manager.clear_managed_file_read_only(
-                (roblox_dir / 'ssl' / 'cacert.pem' for roblox_dir in mod_manager.roblox_dirs),
-                clear_untracked=True,
-            )
+            # Never change Roblox's CA bundle (including its mode) on native macOS
+            if sys.platform != 'darwin':
+                mod_manager.clear_managed_file_read_only(
+                    (roblox_dir / 'ssl' / 'cacert.pem' for roblox_dir in mod_manager.roblox_dirs),
+                    clear_untracked=True,
+                )
             config_manager.read_only_lock_migration_v1_complete = True
         else:
             # Exact original modes persisted by the new opt-in guard survive a
@@ -832,6 +841,16 @@ def run_application() -> None:
         QTimer.singleShot(0, startup_tasks.start)
 
     schedule_startup_auth_check(config_manager, tray, app)
+
+    if sys.platform == 'darwin':
+        QTimer.singleShot(
+            0,
+            lambda: QMessageBox.information(
+                visible_parent_widget(),
+                tr('app.macos_proxy_unavailable.title'),
+                tr('app.macos_proxy_unavailable.message'),
+            ),
+        )
 
     # Run application
     sys.exit(app.exec())

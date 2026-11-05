@@ -82,7 +82,7 @@ from fleasion.config.manager import (
     resolve_local_replacement_path,
 )
 from fleasion.config.rules import is_group_rule, is_profile_rule, is_rule_entry as _is_rule_entry
-from fleasion.gui.appearance_controls import ACCENT_OPTIONS, choice_label
+from fleasion.gui.appearance_controls import ACCENT_KEYS, choice_label
 from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
 from fleasion.utils.gui_work import GuiWork
@@ -1173,7 +1173,7 @@ class ReplacerConfigWindow(QDialog):
             ('color_mode', COLOR_MODES, tr('settings.appearance.color_mode')),
         ]
         if config.appearance_style == 'Glass':
-            appearance_choices.append(('accent', ACCENT_OPTIONS, tr('settings.appearance.accent')))
+            appearance_choices.append(('accent', ACCENT_KEYS, tr('settings.appearance.accent')))
         for key, choices, label in appearance_choices:
             commands.extend(
                 Command(

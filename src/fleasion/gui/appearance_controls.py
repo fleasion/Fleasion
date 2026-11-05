@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from PySide6.QtWidgets import QAbstractButton
 
 
-ACCENT_OPTIONS = ('System', *ACCENTS, 'Custom')
+ACCENT_KEYS = ('System', *ACCENTS, 'Custom')
 
 
 def choice_label(name: str) -> str:
@@ -81,7 +81,7 @@ class AccentSelector(QWidget):
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        for index, name in enumerate(ACCENT_OPTIONS):
+        for index, name in enumerate(ACCENT_KEYS):
             button = QPushButton(choice_label(name))
             button.setObjectName(f'Accent{name}')
             button.setProperty('accentName', name)

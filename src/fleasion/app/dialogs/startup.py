@@ -53,6 +53,10 @@ def prepare_env_proxy_migration(config_manager: ConfigManager) -> bool:
     """Select Env Proxy before privilege gates and report a legacy migration."""
     if config_manager.env_proxy_migration_v1_complete:
         return False
+    if sys.platform == 'darwin':
+        # Native macOS cannot enable the proxy, so this migration is obsolete
+        config_manager.env_proxy_migration_v1_complete = True
+        return False
 
     # Assign even when the merged in-memory default is already Env so the new
     # mode is durable on disk before any acknowledgement dialog can appear

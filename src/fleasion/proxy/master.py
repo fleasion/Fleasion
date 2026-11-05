@@ -5909,6 +5909,9 @@ class ProxyMaster:
         raise _RetryProxyWithWindowsSelectorError
 
     def start(self) -> None:
+        if IS_MACOS:
+            log_buffer.log('Proxy', 'Native macOS proxy support is disabled; skipping startup')
+            return
         with self._lock:
             if self._running:
                 return

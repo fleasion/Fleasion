@@ -6,6 +6,7 @@ import importlib
 import json
 import locale
 import stat
+import sys
 import threading
 from contextlib import suppress
 from copy import deepcopy
@@ -703,6 +704,9 @@ class ConfigManager:
         self.settings = self._load_settings()
         self._ensure_default_config()
         self.reconcile_configs(save=False)
+        if sys.platform == 'darwin' and self.settings.get('proxy_features_enabled') is not False:
+            self.settings['proxy_features_enabled'] = False
+            self._save_settings()
 
     @staticmethod
     def _file_signature(path: Path) -> FileSignature:
@@ -1158,13 +1162,15 @@ class ConfigManager:
 
     @property
     def proxy_features_enabled(self) -> bool:
-        """Get proxy feature toggle."""
+        """Get proxy feature toggle; native macOS does not support interception."""
+        if sys.platform == 'darwin':
+            return False
         return bool_value(self.settings.get('proxy_features_enabled', True), default=True)
 
     @proxy_features_enabled.setter
     def proxy_features_enabled(self, value: bool) -> None:
-        """Set proxy feature toggle."""
-        self.settings['proxy_features_enabled'] = value
+        """Set proxy feature toggle, except on unsupported native macOS."""
+        self.settings['proxy_features_enabled'] = bool(value) and sys.platform != 'darwin'
         self._save_settings()
 
     @property

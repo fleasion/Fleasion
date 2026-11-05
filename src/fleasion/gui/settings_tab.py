@@ -560,6 +560,26 @@ class SettingsTab(QWidget):
         limits_widget.setLayout(limits_row)
         section.add_widget(limits_widget)
 
+        if sys.platform == 'darwin':
+            self._proxy_warning_label.setText(tr('settings.proxy.macos_unavailable'))
+            for control in (
+                self._proxy_features_chk,
+                self._upstream_mode_combo,
+                self._proxy_mode_combo,
+                self._wire_preserving_chk,
+                self._http_proxy_host,
+                self._http_proxy_port,
+                self._socks5_host,
+                self._socks5_port,
+                self._http_proxy_user,
+                self._http_proxy_pass,
+                self._socks5_user,
+                self._socks5_pass,
+                self._asset_limit_spin,
+                self._cdn_limit_spin,
+            ):
+                control.setEnabled(False)
+
         return section
 
     # Startup

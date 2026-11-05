@@ -51,7 +51,7 @@ from fleasion.gui import (
     ReplacerConfigWindow,
     ThemeManager,
 )
-from fleasion.gui.appearance_controls import ACCENT_OPTIONS, choice_label, swatch_icon
+from fleasion.gui.appearance_controls import ACCENT_KEYS, choice_label, swatch_icon
 from fleasion.localization import tr
 from fleasion.utils import (
     APP_DISCORD,
@@ -468,7 +468,7 @@ class SystemTray:
                 COLOR_MODES,
                 self.color_mode_actions,
             ),
-            ('accent', tr('settings.appearance.accent'), ACCENT_OPTIONS, self.accent_actions),
+            ('accent', tr('settings.appearance.accent'), ACCENT_KEYS, self.accent_actions),
         ):
             submenu = QMenu(label, appearance_menu)
             if key == 'accent':
@@ -665,6 +665,7 @@ class SystemTray:
     def set_proxy_features_enabled(self, enabled: bool) -> None:
         """Persist and apply the top-level proxy feature toggle."""
         self.config_manager.proxy_features_enabled = enabled
+        enabled = self.config_manager.proxy_features_enabled
 
         if enabled:
             if self.config_manager.proxy_mode == 'env':
