@@ -67,7 +67,7 @@ from .fps_controls import (
     MovementKey,
     movement_key_from_event,
 )
-from .gl_format import legacy_gl_format, set_perspective
+from .gl_format import legacy_gl_format, multisampled_readback_skip_reason, set_perspective
 from .offscreen_gl_widget import OffscreenOpenGLWidget
 
 if TYPE_CHECKING:
@@ -1300,6 +1300,9 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
     def _sample_center_pixel(self) -> str:
         """Sample one rendered pixel so logs can separate rendering from presentation."""
         try:
+            skip_reason = multisampled_readback_skip_reason()
+            if skip_reason is not None:
+                return skip_reason
             values = self._read_center_pixel_values()
         except (OpenGLError, RuntimeError, TypeError, ValueError) as exc:
             return f'readback_failed={type(exc).__name__}: {exc}'

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import math
 import sys
+from typing import cast
 
 from PySide6.QtGui import QSurfaceFormat
 
@@ -45,3 +46,18 @@ def set_perspective(fov_y_degrees: float, aspect: float, near: float, far: float
     right = top * aspect
     left = -right
     gl_frustum(left, right, bottom, top, near, far)
+
+
+def multisampled_readback_skip_reason() -> str | None:
+    """Explain why reading one pixel from the active draw framebuffer is unsafe.
+
+    Offscreen previews use a multisampled renderbuffer on Windows. OpenGL
+    forbids glReadPixels directly from that framebuffer; Qt's FBO.toImage()
+    performs the required resolve for the actual on-screen presentation
+    """
+    from OpenGL import GL
+
+    samples = int(cast('int', GL.glGetIntegerv(0x80A9)))  # GL_SAMPLES
+    if samples > 0:
+        return f'readback_skipped=multisampled_fbo(samples={samples})'
+    return None
