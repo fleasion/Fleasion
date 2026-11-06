@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from fleasion.proxy.server import FleasionProxy
+from fleasion.proxy.splice_keys import KeyProvider
 from fleasion.proxy.upstream import UpstreamEndpoint
 from fleasion.utils.certs import generate_ca, generate_host_cert
 
@@ -21,9 +22,24 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.parametrize('explicit_proxy', [True, False])
+@pytest.mark.parametrize(('cipher_name', 'secret_error'), [
+    ('ECDHE-RSA-AES128-SHA256', ''),
+    ('ECDHE-RSA-AES128-GCM-SHA256', 'missing'),
+    ('ECDHE-RSA-AES128-GCM-SHA256', 'incorrect'),
+])
 def test_actual_tls12_is_relayed_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_proxy: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_proxy: bool,
+    cipher_name: str, secret_error: str
 ) -> None:
+    if secret_error:
+        async def unavailable_secret(
+            _provider: KeyProvider, _random: str, _label: str, *, wait_seconds: float = 10
+        ) -> bytes:
+            if secret_error == 'incorrect':
+                return bytes(range(48))
+            raise TimeoutError('TLS 1.2 master secret unavailable')
+
+        monkeypatch.setattr(KeyProvider, 'get', unavailable_secret)
     host = 'tls12.fleasion-test.invalid'
     ca, key = generate_ca(tmp_path)
     cert, leaf_key = generate_host_cert(host, ca, key, tmp_path)
@@ -31,9 +47,11 @@ def test_actual_tls12_is_relayed_unchanged(
     server_context.load_cert_chain(cert, leaf_key)
     server_context.minimum_version = ssl.TLSVersion.TLSv1_2
     server_context.maximum_version = ssl.TLSVersion.TLSv1_2
+    server_context.set_ciphers(cipher_name)
     client_context = ssl.create_default_context(cafile=str(ca))
     client_context.minimum_version = ssl.TLSVersion.TLSv1_2
     client_context.maximum_version = ssl.TLSVersion.TLSv1_2
+    client_context.set_ciphers(cipher_name)
     captured: list[bytes] = []
     decrypted: list[str] = []
 

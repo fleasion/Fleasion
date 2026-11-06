@@ -1,7 +1,8 @@
-"""Read-only TLS 1.3 secret recovery for the Roblox player process (Windows).
+"""Read-only TLS 1.2/1.3 secret recovery for the Roblox player process (Windows).
 
 All reads go through NtReadVirtualMemory. No writes, no injection.
-Layout validated against OpenSSL 3.5.0 as shipped by Roblox.
+The TLS 1.3 layout is validated against Roblox's OpenSSL 3.5.0 build;
+TLS 1.2 session-pointer recovery still requires live Windows verification.
 """
 
 from __future__ import annotations
@@ -23,7 +24,15 @@ type ConnectionSecrets = dict[str, bytes]
 type SecretMap = dict[str, ConnectionSecrets]
 
 STRUCT_SIZE = 0x900
+TLS12_STRUCT_SIZE = 0x958
+TLS12 = 0x303
 TLS13 = 0x304
+TLS12_MASTER_LENGTH = 48
+TLS12_SESSION_SECRET_OFFSET = 80
+TLS12_SESSION_PREFIX_SIZE = TLS12_SESSION_SECRET_OFFSET + 48
+# OpenSSL 3.5.0 SSL_CONNECTION.session lies near 0x900 on x64; probe
+# pointer-aligned offsets because optional build features vary by platform
+TLS12_SESSION_POINTER_OFFSETS = tuple(range(0x8D0, 0x948, 8))
 MIN_DISTINCT_BYTES = 20
 SHA256_SIZE = 32
 CHUNK_SIZE = 4 * 1024 * 1024
@@ -368,6 +377,44 @@ def validate_openssl_struct(raw: bytes) -> tuple[str, dict[str, bytes]] | None:
     }
 
 
+def validate_tls12_openssl_struct(
+    raw: bytes,
+    read_memory: Callable[[int, int], bytes],
+) -> tuple[str, dict[str, bytes]] | None:
+    """Resolve a TLS 1.2 SSL_SESSION master secret through its SSL_CONNECTION.
+
+    The connection and session layout comes from OpenSSL 3.5.0. Only a
+    structurally credible master secret is returned; the TLS 1.2 AEAD
+    decoder must then authenticate the first application record before
+    Fleasion alters or forwards plaintext
+    """
+    if len(raw) < TLS12_STRUCT_SIZE or struct.unpack_from('<I', raw, 0x48)[0] != TLS12:
+        return None
+    if struct.unpack_from('<I', raw, 0x78)[0] != 0:
+        return None
+    client_random = raw[0x184:0x1A4]
+    server_random = raw[0x164:0x184]
+    if len(set(client_random)) < MIN_DISTINCT_BYTES or len(set(server_random)) < MIN_DISTINCT_BYTES:
+        return None
+
+    for offset in TLS12_SESSION_POINTER_OFFSETS:
+        pointer = struct.unpack_from('<Q', raw, offset)[0]
+        if pointer < 0x10000 or pointer >= 0x0000800000000000 or pointer & 7:
+            continue
+        session = read_memory(pointer, TLS12_SESSION_PREFIX_SIZE)
+        if len(session) < TLS12_SESSION_PREFIX_SIZE:
+            continue
+        version = struct.unpack_from('<I', session, 0)[0]
+        key_length = struct.unpack_from('<Q', session, 8)[0]
+        if version != TLS12 or key_length != TLS12_MASTER_LENGTH:
+            continue
+        master = session[TLS12_SESSION_SECRET_OFFSET:TLS12_SESSION_PREFIX_SIZE]
+        if len(set(master)) < MIN_DISTINCT_BYTES:
+            continue
+        return client_random.hex(), {'CLIENT_RANDOM': master}
+    return None
+
+
 _validate = validate_openssl_struct
 
 
@@ -376,7 +423,9 @@ def _module_bounds(handle: int) -> tuple[int, int]:
         return 0, 0
     modules = (wt.HMODULE * 1024)()
     needed = wt.DWORD()
-    if _win32.EnumProcessModulesEx(handle, modules, ctypes.sizeof(modules), ctypes.byref(needed), 3):
+    if _win32.EnumProcessModulesEx(
+        handle, modules, ctypes.sizeof(modules), ctypes.byref(needed), 3
+    ):
         info = MODULEINFO()
         if _win32.GetModuleInformation(handle, modules[0], ctypes.byref(info), ctypes.sizeof(info)):
             base = int(info.lpBaseOfDll or 0)
@@ -454,12 +503,16 @@ def _scan_handle(
 ) -> SecretMap:
     found: SecretMap = {}
     for base, region, offset in _candidates(handle, pid, stop, wanted):
-        raw = _read(handle, base, STRUCT_SIZE)
+        raw = _read(handle, base, TLS12_STRUCT_SIZE)
         if len(raw) < STRUCT_SIZE:
             continue
         method = struct.unpack_from('<Q', raw, 0x18)[0]
         if module_base <= method < module_end:
             validated = validate_openssl_struct(raw)
+            if validated is None and len(raw) >= TLS12_STRUCT_SIZE:
+                validated = validate_tls12_openssl_struct(
+                    raw, lambda addr, length: _read(handle, addr, length)
+                )
             if validated is not None:
                 found[validated[0]] = validated[1]
                 _remember_scan_location(pid, region, offset)
@@ -474,7 +527,7 @@ def scan(
     stop: threading.Event | None = None,
     client_random: str | None = None,
 ) -> SecretMap:
-    """Scan process memory for TLS 1.3 secrets.
+    """Scan process memory for TLS 1.3 secrets or a TLS 1.2 master secret.
 
     Parameters
     ----------
@@ -488,7 +541,7 @@ def scan(
     Returns
     -------
     SecretMap
-        Recovered TLS 1.3 traffic secrets keyed by client random.
+        Validated TLS 1.3 traffic secrets or TLS 1.2 session master secrets.
     """
     wanted: bytes | None = None
     if client_random is not None:

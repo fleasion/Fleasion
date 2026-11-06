@@ -11,6 +11,7 @@ from cryptography.exceptions import InvalidTag
 
 from fleasion.utils.logging import log_buffer
 
+from .tls12_records import TLS12_SUITES, TLS12RecordCipher, derive_tls12_keys
 from .tls_records import CIPHERS, MAX_PLAINTEXT, TrafficKeys, read_record
 from .upstream import UpstreamConnectResult
 
@@ -119,7 +120,7 @@ class _PlainWriter(asyncio.StreamWriter):
 
     def __init__(self, wire: asyncio.StreamWriter) -> None:
         self.wire = wire
-        self.keys: TrafficKeys | None = None
+        self.keys: TrafficKeys | TLS12RecordCipher | None = None
         self.closed = False
 
     def write(self, data: bytes | bytearray | memoryview) -> None:
@@ -187,7 +188,8 @@ class _Direction:
         self.writer = _PlainWriter(wire)
         self.handshake_sequence = 0
         self.handshake_keys: TrafficKeys | None = None
-        self.input_keys: TrafficKeys | None = None
+        self.input_keys: TrafficKeys | TLS12RecordCipher | None = None
+        self.ccs_relayed = False
         self.handshake = HandshakeMessages()
         self.post_handshake = HandshakeMessages()
         self.close_alert: bytes | None = None
@@ -212,11 +214,15 @@ class SpliceConnection:
         self.keys = keys
         self.client_records = client_records
         self.client_random = ''
+        self.server_random = b''
         self.cipher: int | None = None
+        self._tls12_lock = asyncio.Lock()
         self.client_finished_relayed = False
         self._application_ready = asyncio.Event()
         self._ready = asyncio.Event()
         self._transparent_passthrough = False
+        self._passthrough_reason = ''
+        self._tls12_authenticated_application = False
         self._started_at = time.monotonic()
         self._http_started = False
         self._plain_bytes = {'CLIENT': 0, 'SERVER': 0}
@@ -234,11 +240,36 @@ class SpliceConnection:
                     msg = 'Truncated TLS ServerHello cipher suite'
                     raise ValueError(msg)
                 self.cipher = int.from_bytes(body[offset : offset + 2], 'big')
-                if self.cipher not in CIPHERS:
+                self.server_random = body[2:34]
+                if self.cipher not in CIPHERS and self.cipher not in TLS12_SUITES:
                     # Relay the already-started handshake unchanged. Reconnecting
                     # would break the client's TLS transcript and certificates
                     self._transparent_passthrough = True
+                    self._passthrough_reason = 'unsupported_cipher'
                     self._ready.set()
+
+    async def _prepare_tls12_keys(self) -> None:
+        """Install the authenticated TLS 1.2 AEAD keys for both wire directions."""
+        async with self._tls12_lock:
+            if self._transparent_passthrough or self.client.input_keys is not None:
+                return
+            if self.cipher not in TLS12_SUITES or len(self.server_random) != 32:
+                msg = 'Missing TLS 1.2 hello or supported cipher suite'
+                raise ValueError(msg)
+            master = await self.keys.get(self.client_random, 'CLIENT_RANDOM')
+            client_key, server_key, client_iv, server_iv = derive_tls12_keys(
+                master, self.cipher, bytes.fromhex(self.client_random), self.server_random
+            )
+            for direction, key, iv in (
+                (self.client, client_key, client_iv),
+                (self.server, server_key, server_iv),
+            ):
+                direction.input_keys = TLS12RecordCipher(
+                    key, iv, self.cipher, sequence=direction.handshake_sequence
+                )
+                direction.writer.keys = TLS12RecordCipher(
+                    key, iv, self.cipher, sequence=direction.handshake_sequence
+                )
 
     async def _prepare_keys(self, direction: _Direction) -> None:
         async with direction.key_lock:
@@ -256,18 +287,86 @@ class SpliceConnection:
             direction.handshake_keys = TrafficKeys(handshake, self.cipher)
             direction.handshake_keys.sequence = direction.handshake_sequence
 
+    async def _tls12_record(self, direction: _Direction, record: bytes) -> bool:
+        """Relay the clear handshake and decrypt post-CCS TLS 1.2 records."""
+        kind = record[0]
+        if kind == 20 and not direction.ccs_relayed:
+            direction.ccs_relayed = True
+            direction.wire.write(record)
+            await direction.wire.drain()
+            return True
+        if not direction.ccs_relayed:
+            if kind == HANDSHAKE:
+                self._hello(direction, record)
+            direction.wire.write(record)
+            await direction.wire.drain()
+            return True
+        if kind == HANDSHAKE and direction.input_keys is None:
+            # Finished, and possibly a post-CCS encrypted ticket: both peers
+            # already agree on this ciphertext, so preserve it bit-for-bit
+            direction.handshake_sequence += 1
+            if direction is self.client:
+                self.client_finished_relayed = True
+            direction.wire.write(record)
+            await direction.wire.drain()
+            return True
+        if kind == ALERT and direction.input_keys is None:
+            direction.handshake_sequence += 1
+            direction.wire.write(record)
+            await direction.wire.drain()
+            return False
+        if kind not in {HANDSHAKE, APPLICATION, ALERT}:
+            msg = 'Unexpected TLS 1.2 encrypted record type'
+            raise ValueError(msg)
+        if kind == HANDSHAKE:
+            # TLS 1.2 renegotiation requires a fresh master secret and key epoch
+            msg = 'TLS 1.2 renegotiation is not supported by the splice transport'
+            raise ValueError(msg)
+        return await self._application_record(direction, record)
+
     async def _application_record(self, direction: _Direction, record: bytes) -> bool:
-        await self._prepare_keys(direction)
+        is_tls12 = self.cipher in TLS12_SUITES
+        if is_tls12:
+            try:
+                await self._prepare_tls12_keys()
+            except TimeoutError:
+                # No application bytes have been altered yet. Preserve the
+                # established TLS handshake instead of disconnecting the app
+                self._transparent_passthrough = True
+                self._passthrough_reason = 'tls12_master_secret_unavailable'
+                self._ready.set()
+            if self._transparent_passthrough:
+                direction.wire.write(record)
+                await direction.wire.drain()
+                return True
+        else:
+            await self._prepare_keys(direction)
         incoming = direction.input_keys
         outgoing = direction.writer.keys
         handshake = direction.handshake_keys
-        if incoming is None or outgoing is None or handshake is None:
+        if incoming is None or outgoing is None or (not is_tls12 and handshake is None):
             msg = 'Splice traffic keys were not initialized'
             raise RuntimeError(msg)
         try:
             content_type, content = incoming.decrypt(record)
         except InvalidTag:
+            if is_tls12:
+                if not self._tls12_authenticated_application:
+                    # A plausible OpenSSL session pointer is not proof of
+                    # matching TLS keys; restore the untouched encrypted wire
+                    # only while no application plaintext has been processed
+                    self._transparent_passthrough = True
+                    self._passthrough_reason = 'tls12_master_secret_auth_failed'
+                    self._ready.set()
+                    direction.wire.write(record)
+                    await direction.wire.drain()
+                    return True
+                msg = 'TLS 1.2 record failed authentication after interception began'
+                raise ValueError(msg) from None
             # A fragmented client Finished may occupy more than one record
+            if handshake is None:
+                msg = 'Missing TLS 1.3 handshake keys'
+                raise RuntimeError(msg) from None
             try:
                 handshake.decrypt(record)
             except InvalidTag:
@@ -281,6 +380,8 @@ class SpliceConnection:
             self._application_ready.set()
             self._ready.set()
         if content_type == APPLICATION:
+            if is_tls12:
+                self._tls12_authenticated_application = True
             self._plain_bytes[direction.name] += len(content)
             direction.plain.feed_data(content)
             await direction.flow.ready.wait()
@@ -289,10 +390,18 @@ class SpliceConnection:
             return False
         else:
             direction.wire.write(outgoing.encrypt(content, HANDSHAKE))
+            if is_tls12:
+                await direction.wire.drain()
+                return True
             for kind, body in direction.post_handshake.feed(content):
                 if kind == KEY_UPDATE:
                     if body not in {b'\x00', b'\x01'}:
                         msg = 'Malformed TLS KeyUpdate'
+                        raise ValueError(msg)
+                    if not isinstance(incoming, TrafficKeys) or not isinstance(
+                        outgoing, TrafficKeys
+                    ):
+                        msg = 'TLS 1.3 KeyUpdate received without TLS 1.3 cipher state'
                         raise ValueError(msg)
                     incoming.update()
                     outgoing.update()
@@ -304,6 +413,8 @@ class SpliceConnection:
             direction.wire.write(record)
             await direction.wire.drain()
             return True
+        if self.cipher in TLS12_SUITES:
+            return await self._tls12_record(direction, record)
         if record[0] != APPLICATION:
             if record[0] == HANDSHAKE:
                 self._hello(direction, record)
@@ -340,6 +451,11 @@ class SpliceConnection:
                 break
 
     @property
+    def passthrough_reason(self) -> str:
+        """Indicate why this TLS connection remained opaque to Fleasion."""
+        return self._passthrough_reason
+
+    @property
     def transparent_passthrough(self) -> bool:
         """Whether this connection switched to encrypted wire-only relay."""
         return self._transparent_passthrough
@@ -355,7 +471,8 @@ class SpliceConnection:
             f'client_plain_bytes={self._plain_bytes["CLIENT"]} '
             f'server_plain_bytes={self._plain_bytes["SERVER"]} '
             f'http_started={self._http_started} '
-            f'transparent_passthrough={self._transparent_passthrough}'
+            f'transparent_passthrough={self._transparent_passthrough} '
+            f'passthrough_reason={self._passthrough_reason or "none"}'
         )
 
     async def run(self, proxy: FleasionProxy, host: str) -> None:

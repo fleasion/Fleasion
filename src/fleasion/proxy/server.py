@@ -2728,7 +2728,7 @@ class FleasionProxy:
                 log_buffer.log(
                     'TLS',
                     f'TLS connection for {host} used transparent passthrough '
-                    '(unsupported cipher suite)',
+                    f'({connection.passthrough_reason})',
                 )
         except (OSError, ValueError, TimeoutError) as exc:
             self._asset_trace.splice(host, 'error', detail=type(exc).__name__)
