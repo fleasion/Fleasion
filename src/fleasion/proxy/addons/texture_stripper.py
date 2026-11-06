@@ -1064,6 +1064,7 @@ class TextureStripper:
         57: 'EarAccessory',
         58: 'EyeAccessory',
         59: 'LocalizationTableManifest',
+        60: 'LocalizationTableTranslation',
         61: 'EmoteAnimation',
         62: 'Video',
         63: 'TexturePack',
