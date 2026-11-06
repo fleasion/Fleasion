@@ -1581,6 +1581,14 @@ class CacheScraper:
                 f'TexturePack {parent_id}: mapped {format_count(added, "sub-asset")}',
             )
 
+    @staticmethod
+    def _ktx2_resolution_rank(header: bytes) -> tuple[int, int, int, int]:
+        """Return KTX2 resolution precedence from only the first 28 bytes."""
+        if len(header) < 28 or header[:12] != b'\xabKTX 20\xbb\r\n\x1a\n':
+            return (-1, -1, -1, -1)
+        width, height = struct.unpack_from('<II', header, 20)
+        return width * height, max(width, height), width, height
+
     def _store_texpack_slot_ktx2_unchecked(
         self,
         parent_id: int,
@@ -1637,14 +1645,13 @@ class CacheScraper:
             existing_rank = (-1, -1, -1, -1)
             if slot_path.exists():
                 try:
-                    existing = slot_path.read_bytes()
-                    if len(existing) >= 28 and existing[:12] == b'\xabKTX 20\xbb\r\n\x1a\n':
-                        existing_w, existing_h = struct.unpack_from('<II', existing, 20)
-                        existing_rank = (
-                            existing_w * existing_h,
-                            max(existing_w, existing_h),
-                            existing_w,
-                            existing_h,
+                    with slot_path.open('rb') as canonical:
+                        header = canonical.read(28)
+                        existing_rank = self._ktx2_resolution_rank(header)
+                        # Keep exact byte comparison for same-resolution packs
+                        # but avoid reading the entire KTX2 on upgrades/downgrades
+                        existing = (
+                            header + canonical.read() if existing_rank == new_rank else header
                         )
                 except OSError:
                     existing = None
