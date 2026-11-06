@@ -84,7 +84,8 @@ def test_asset_endpoint_detection_is_exact() -> None:
         assert not is_direct_asset_path(f'/{ver}/assetId/123/version/1')
         assert not is_asset_batch_path(f'/{ver}/assets/batch/subpath')
         assert not is_direct_asset_path(f'/{ver}/assets/batch?id=123')
-    assert not is_asset_batch_path('/v3/assets/batch')
+    assert is_asset_batch_path('/v3/assets/batch')
+    assert not is_asset_batch_path('/v4/assets/batch')
 
 
 def test_asset_v2_locations_preserve_format_entries() -> None:
@@ -179,14 +180,20 @@ def test_scraper_reads_v2_locations_without_http_fetch(tmp_path: Path) -> None:
         getattr(scraper, '_executor').shutdown(wait=True, cancel_futures=True)
 
 
-@pytest.mark.parametrize('version', ('v1', 'v2'))
-@pytest.mark.parametrize('kind', ('v2_local', 'gzip_passthrough', 'zstd_passthrough', 'br_passthrough', 'dcz_passthrough', 'gzip_modified', 'zstd_modified'))
-def test_proxy_batch_transport_compat(version: str, kind: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize('version', ('v1', 'v2', 'v3'))
+@pytest.mark.parametrize('kind', ('v2_local', 'gzip_passthrough', 'zstd_passthrough', 'br_passthrough', 'dcz_passthrough', 'gzip_modified', 'zstd_modified', 'gzip_response_local'))
+def test_proxy_batch_transport_compat(
+    version: str, kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if kind == 'gzip_response_local':
+        monkeypatch.setenv('FLEASION_ASSET_SYNTHETIC_CDN', '1')
+    if kind == 'gzip_response_local' and version != 'v3':
+        pytest.skip('Only the V3 compressed response envelope is under test')
     async def run() -> None:
         TextureStripper.reset_routes()
         local = tmp_path / 'replacement.png'
         local.write_bytes(b'LOCAL-IMAGE-REPLACEMENT')
-        config = _Config(str(local) if kind == 'v2_local' else None)
+        config = _Config(str(local) if kind in {'v2_local', 'gzip_response_local'} else None)
         if kind in {'gzip_modified', 'zstd_modified'}:
             config.get_all_replacements = lambda: ({_SOURCE: 123456}, set(), {}, {})  # type: ignore[method-assign]
         stripper = TextureStripper(cast('ConfigManager', config))
@@ -213,12 +220,22 @@ def test_proxy_batch_transport_compat(version: str, kind: str, tmp_path: Path) -
                     entry['locations'] = [{'assetFormat': 'source', 'location': location}]
                 else:
                     entry['location'] = location
-                body = json.dumps([entry]).encode()
+                response_data: object = (
+                    {'assets': [entry], 'extra': {'preserved': True}}
+                    if version == 'v3' else [entry]
+                )
+                body = json.dumps(response_data).encode()
+                encoding_header = b''
+                if kind == 'gzip_response_local':
+                    body = gzip.compress(body)
+                    encoding_header = b'Content-Encoding: gzip\r\n'
             else:
                 body = b'ROBLOX-ORIGINAL-IMAGE'
+                encoding_header = b''
             reader.feed_data(
-                f'HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n'
-                'Connection: close\r\n\r\n'.encode() + body
+                f'HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n'.encode()
+                + encoding_header
+                + b'Connection: close\r\n\r\n' + body
             )
             reader.feed_eof()
             writer = _Writer()
@@ -247,7 +264,22 @@ def test_proxy_batch_transport_compat(version: str, kind: str, tmp_path: Path) -
             await writer.wait_closed()
             return response
 
-        body = json.dumps([{'assetId': _SOURCE, 'assetType': 'Image', 'requestId': 'one'}]).encode()
+        request_data: object
+        if version == 'v3':
+            request_data = {
+                'assets': [
+                    {
+                        'asset': {'assetId': _SOURCE},
+                        'assetType': 'Image',
+                        'version': {'stable': cast('dict[str, object]', {})},
+                        'requestId': 'one',
+                    }
+                ],
+                'extra': {'preserved': True},
+            }
+        else:
+            request_data = [{'assetId': _SOURCE, 'assetType': 'Image', 'requestId': 'one'}]
+        body = json.dumps(request_data).encode()
         if kind in {'br_passthrough', 'dcz_passthrough'}:
             wire_body, ce = b'unknown-future-compression', kind.split('_')[0].encode('ascii')
         elif kind in {'gzip_passthrough', 'gzip_modified'}:
@@ -273,10 +305,29 @@ def test_proxy_batch_transport_compat(version: str, kind: str, tmp_path: Path) -
                 assert b'"assetId":5447528495' not in forwarded
             else:
                 assert forwarded == request
-            if kind == 'v2_local':
+            if version == 'v3':
+                forwarded_body = forwarded.partition(b'\r\n\r\n')[2]
+                if kind in {'gzip_modified', 'zstd_modified'}:
+                    forwarded_v3 = json.loads(forwarded_body)
+                    assert forwarded_v3['extra'] == {'preserved': True}
+                    assert forwarded_v3['assets'][0]['asset'] == {'assetId': 123456}
+                if kind in {'v2_local', 'gzip_response_local'}:
+                    client_response = json.loads(response.partition(b'\r\n\r\n')[2])
+                    assert client_response['extra'] == {'preserved': True}
+            if kind in {'v2_local', 'gzip_response_local'}:
+                response_body = response.partition(b'\r\n\r\n')[2]
+                assert b'content-encoding:' not in response.partition(b'\r\n\r\n')[0].lower()
+                if kind == 'gzip_response_local':
+                    wrapped = cast('dict[str, object]', json.loads(response_body))
+                    items = cast('list[dict[str, object]]', wrapped['assets'])
+                    synthetic = urlsplit(cast('str', items[0]['location'])).path
+                    assert synthetic.startswith('/__fleasion__/asset/')
+                    target_path = synthetic
+                else:
+                    target_path = _REPLACEMENT_PATH
                 cdn = await fetch(
                     _CDN,
-                    f'GET {_REPLACEMENT_PATH}?other-sig=1 HTTP/1.1\r\nHost: {_CDN}\r\n'
+                    f'GET {target_path}?other-sig=1 HTTP/1.1\r\nHost: {_CDN}\r\n'
                     'Connection: close\r\n\r\n'.encode(),
                 )
                 assert cdn.endswith(b'\r\n\r\nLOCAL-IMAGE-REPLACEMENT')

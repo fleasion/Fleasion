@@ -11,8 +11,12 @@ if TYPE_CHECKING:
 
 
 def is_asset_batch_path(path: str) -> bool:
-    """Recognize V1/V2 batch endpoints without substring matching."""
-    return urlsplit(path).path.rstrip('/') in {'/v1/assets/batch', '/v2/assets/batch'}
+    """Recognize V1/V2/V3 batch endpoints without substring matching."""
+    return urlsplit(path).path.rstrip('/') in {
+        '/v1/assets/batch',
+        '/v2/assets/batch',
+        '/v3/assets/batch',
+    }
 
 
 _DIRECT_ASSET_ID_PATH = re.compile(r'/v[12]/assetId/([0-9]+)/?\Z')

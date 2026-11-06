@@ -4877,11 +4877,26 @@ class ProxyMaster:
             return ''
         return self._proxy.format_response_preview(entry)
 
+    def get_env_proxy_intercept_match(self) -> str:
+        """Return the session's active request/URL auto-intercept filter."""
+        return str(getattr(self, '_env_proxy_intercept_match', ''))
+
     def set_env_proxy_intercept_match(self, text: str) -> None:
         """Interception is armed purely by this being non-empty text - nothing else gates it."""
+        previous = self.get_env_proxy_intercept_match()
         self._env_proxy_intercept_match = text
         if self._proxy is not None:
             self._proxy.set_intercept_match(text)
+        if bool(previous) != bool(text):
+            log_buffer.log(
+                'Proxy',
+                'Automatic request interception '
+                f'{"enabled" if text else "disabled"} (session-only)',
+            )
+
+    def get_env_proxy_intercept_all(self) -> bool:
+        """Return the current session's Intercept All setting for UI synchronization."""
+        return bool(getattr(self, '_env_proxy_intercept_all', False))
 
     def set_env_proxy_intercept_all(self, enabled: bool) -> None:
         """Toggle whether hosts outside Fleasion's own feature set also get
@@ -4889,9 +4904,15 @@ class ProxyMaster:
         starts back at False on every launch, regardless of what it was
         last set to.
         """
+        old_value = self.get_env_proxy_intercept_all()
         self._env_proxy_intercept_all = bool(enabled)
         if self._proxy is not None:
             self._proxy.set_intercept_all_hosts(enabled)
+        if old_value != self._env_proxy_intercept_all:
+            log_buffer.log(
+                'Proxy',
+                f'Intercept all hosts {"enabled" if enabled else "disabled"} (session-only)',
+            )
 
     def get_auto_replace_rules(self) -> list[AutoReplaceRule]:
         """Auto Replace rules, persisted to config (unlike the env-proxy

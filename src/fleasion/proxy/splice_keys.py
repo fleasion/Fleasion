@@ -28,6 +28,7 @@ KEYLOG_FIELD_COUNT = 3
 CLIENT_RANDOM_SIZE = 32
 MIN_REFRESH_INTERVAL = 0.1
 MAX_CACHED_CONNECTIONS = 4096
+MAX_PENDING_SCANS = 16
 
 
 def _parse_keylog_line(line: str, keys: SecretMap) -> None:
@@ -61,6 +62,8 @@ class KeyProvider:
         self._keys: SecretMap = {}
         self._scan_slots = asyncio.Semaphore(2)
         self._inflight: dict[str, asyncio.Task[None]] = {}
+        self._running_scans: set[str] = set()
+        self._waiters: dict[str, int] = {}
         self._last_refresh: dict[str, float] = {}
         self._stop = threading.Event()
 
@@ -73,7 +76,7 @@ class KeyProvider:
             with path.open(encoding='ascii') as source:
                 for line in source:
                     _parse_keylog_line(line, keys)
-        except (OSError, UnicodeError):
+        except OSError, UnicodeError:
             pass
         return keys
 
@@ -146,16 +149,34 @@ class KeyProvider:
         bytes
             The recovered traffic secret.
         """
-        async with asyncio.timeout(wait_seconds):
-            return await self._wait_for_secret(client_random, label)
+        client_random = client_random.lower()
+        self._waiters[client_random] = self._waiters.get(client_random, 0) + 1
+        try:
+            async with asyncio.timeout(wait_seconds):
+                return await self._wait_for_secret(client_random, label)
+        finally:
+            remaining = self._waiters.get(client_random, 0) - 1
+            if remaining > 0:
+                self._waiters[client_random] = remaining
+            else:
+                self._waiters.pop(client_random, None)
+                task = self._inflight.get(client_random)
+                if task is not None and client_random not in self._running_scans:
+                    # The caller is gone: discard queued work before it burns
+                    # precious Windows process-memory scan slots
+                    task.cancel()
+                    self._inflight.pop(client_random, None)
 
     async def _scan_for_secret(self, client_random: str) -> None:
         """Bound process scans without blocking unrelated TLS connections."""
         started = time.monotonic()
+        entered_scan = False
         try:
             async with self._scan_slots:
-                if self._stop.is_set():
+                if self._stop.is_set() or not self._waiters.get(client_random):
                     return
+                entered_scan = True
+                self._running_scans.add(client_random)
                 scan_started = time.monotonic()
                 found = await asyncio.to_thread(self._read, client_random)
                 scan_ended = time.monotonic()
@@ -174,10 +195,13 @@ class KeyProvider:
                         f'found={client_random in found}',
                     )
         finally:
-            if len(self._last_refresh) >= MAX_CACHED_CONNECTIONS:
-                self._last_refresh.clear()
-            self._last_refresh[client_random] = time.monotonic()
-            self._inflight.pop(client_random, None)
+            self._running_scans.discard(client_random)
+            if entered_scan:
+                if len(self._last_refresh) >= MAX_CACHED_CONNECTIONS:
+                    self._last_refresh.clear()
+                self._last_refresh[client_random] = time.monotonic()
+            if self._inflight.get(client_random) is asyncio.current_task():
+                self._inflight.pop(client_random, None)
 
     async def _wait_for_secret(self, client_random: str, label: str) -> bytes:
         while True:
@@ -190,6 +214,7 @@ class KeyProvider:
             scan_task = self._inflight.get(client_random)
             if (
                 scan_task is None
+                and len(self._inflight) < MAX_PENDING_SCANS
                 and time.monotonic() - self._last_refresh.get(client_random, 0.0)
                 >= MIN_REFRESH_INTERVAL
             ):
@@ -204,7 +229,15 @@ class KeyProvider:
             else:
                 await asyncio.sleep(0.05)
 
+    @property
+    def pending_scan_count(self) -> int:
+        """Number of in-flight and queued memory scans."""
+        return len(self._inflight)
+
     def clear(self) -> None:
         """Signal provider to stop and clear cached keys."""
         self._stop.set()
+        for random, task in tuple(self._inflight.items()):
+            if random not in self._running_scans:
+                task.cancel()
         self._keys.clear()

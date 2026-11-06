@@ -66,6 +66,12 @@ if TYPE_CHECKING:
     )
 
 from .addons.texture_stripper import is_synthetic_cdn_request
+from .asset_batch import (
+    decode_v3_request,
+    decode_v3_response,
+    encode_v3_request,
+    encode_v3_response,
+)
 from .asset_delivery import direct_asset_id, is_asset_batch_path, is_direct_asset_path
 from .asset_trace import AssetTrace
 from .h2_transport import H2FeatureBridge
@@ -2718,6 +2724,12 @@ class FleasionProxy:
         self._asset_trace.splice(host, 'open')
         try:
             await connection.run(self, host)
+            if connection.transparent_passthrough:
+                log_buffer.log(
+                    'TLS',
+                    f'TLS connection for {host} used transparent passthrough '
+                    '(unsupported cipher suite)',
+                )
         except (OSError, ValueError, TimeoutError) as exc:
             self._asset_trace.splice(host, 'error', detail=type(exc).__name__)
             log_buffer.log(
@@ -3593,6 +3605,8 @@ class FleasionProxy:
                     and method.upper() == 'POST'
                     and is_asset_batch_path(path)
                 )
+                is_v3_batch = is_batch and path.split('?', 1)[0].rstrip('/') == '/v3/assets/batch'
+                v3_request_context = None
                 replacements_tuple: _ReplacementMaps = (
                     self.texture_stripper.config_manager.get_all_replacements()
                     if host == ASSET_DELIVERY_HOST
@@ -3686,6 +3700,15 @@ class FleasionProxy:
                     decoded = supported_encoding and (
                         content_encoding not in {b'gzip', b'zstd'} or req_body_plain != req_body_raw
                     )
+                    # Normalize the V3 request only for the add-on hooks;
+                    # preserve its exact nested wire payload if unchanged
+                    addon_request = req_body_plain
+                    if decoded and is_v3_batch:
+                        normalized = decode_v3_request(req_body_plain)
+                        if normalized is None:
+                            decoded = False
+                        else:
+                            addon_request, v3_request_context = normalized
                     # Unique ID for this specific batch request/response pair.
                     # Keyed into _pending as f'{batch_id}_{req_id}' so parallel
                     # connections using the same req_id integers don't collide —
@@ -3700,38 +3723,49 @@ class FleasionProxy:
                     if decoded:
                         req_body_modified, scraper_body = (
                             texture_batch_processor.process_batch_request(
-                                req_body_plain,
+                                addon_request,
                                 req_headers,
                                 replacements_tuple,
                                 batch_id,
                             )
                         )
                         self._asset_trace.batch(
-                            req_body_plain, req_body_modified, replacements_tuple
+                            addon_request, req_body_modified, replacements_tuple
                         )
                     else:
                         # A pass-through must preserve compression, even when we
                         # cannot inspect a dictionary-compressed or future format
                         req_body_modified = req_body_raw
                         scraper_body = req_body_raw
-                    if _is_empty_json_array(req_body_modified) and not _is_empty_json_array(
-                        req_body_plain
+                    if (
+                        decoded
+                        and _is_empty_json_array(req_body_modified)
+                        and not _is_empty_json_array(addon_request)
                     ):
-                        response_writer.write(_make_local_response(200, b'[]'))
+                        empty_body = b'{"assets":[]}' if is_v3_batch else b'[]'
+                        response_writer.write(_make_local_response(200, empty_body))
                         await response_writer.drain()
                         if not _keep_alive(req_first, req_headers):
                             break
                         continue
                     if not await ensure_upstream(path):
                         break
-                    if not decoded or req_body_modified == req_body_plain:
+                    if not decoded or req_body_modified == addon_request:
                         # Preserve the original compressed or chunked bytes
                         cast('asyncio.StreamWriter', up_writer).write(
                             req_raw.raw_header_block + req_body.wire
                         )
                     else:
+                        outgoing_body = (
+                            encode_v3_request(req_body_modified, v3_request_context)
+                            if v3_request_context is not None
+                            else req_body_modified
+                        )
+                        if outgoing_body is None:
+                            msg = 'Asset batch request could not be rebuilt as V3'
+                            raise ValueError(msg)
                         cast('asyncio.StreamWriter', up_writer).write(
-                            _build_modified_request(req_first, req_headers, req_body_modified)
+                            _build_modified_request(req_first, req_headers, outgoing_body)
                         )
                 elif host == GAMEJOIN_HOST:
                     if request_has_trailers:
@@ -3914,20 +3948,36 @@ class FleasionProxy:
                     # (strip_textures, removal rules), using req_body_raw causes every index
                     # after a removed item to map to the wrong response item, producing wrong
                     # assetTypeId values (the root cause of SolidModel/Mesh being typed as Image).
+                    # V3 wraps its per-asset results inside {"assets": [...]}
+                    # Preserve the original envelope if any response URL changes
+                    response_context = None
+                    if is_v3_batch and v3_request_context is not None:
+                        normalized_response = decode_v3_response(resp_body_plain)
+                        if normalized_response is not None:
+                            resp_body_plain, response_context = normalized_response
+                    can_process_batch = not is_v3_batch or (
+                        v3_request_context is not None and response_context is not None
+                    )
                     rewritten_batch = (
                         texture_batch_processor.process_batch_response(
-                            req_body_modified,
-                            resp_body_plain,
-                            req_headers,
-                            batch_id,
+                            req_body_modified, resp_body_plain, req_headers, batch_id
                         )
-                        if not resp_body.has_trailers and 200 <= status_code < 300
+                        if can_process_batch
+                        and not resp_body.has_trailers
+                        and 200 <= status_code < 300
                         else None
                     )
-                    if self.cache_scraper.enabled:
+                    if can_process_batch and self.cache_scraper.enabled:
                         self.cache_scraper.process_batch_response(scraper_body, resp_body_plain)
                     if rewritten_batch is not None and rewritten_batch != resp_body_plain:
-                        resp_body_raw = rewritten_batch
+                        if response_context is not None:
+                            rebuilt_response = encode_v3_response(rewritten_batch, response_context)
+                            if rebuilt_response is None:
+                                msg = 'Asset batch response could not be rebuilt as V3'
+                                raise ValueError(msg)
+                            resp_body_raw = rebuilt_response
+                        else:
+                            resp_body_raw = rewritten_batch
                         response_modified = True
 
                 elif host == ASSET_DELIVERY_HOST and not is_batch:

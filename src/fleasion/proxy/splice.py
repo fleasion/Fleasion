@@ -215,6 +215,8 @@ class SpliceConnection:
         self.cipher: int | None = None
         self.client_finished_relayed = False
         self._application_ready = asyncio.Event()
+        self._ready = asyncio.Event()
+        self._transparent_passthrough = False
         self._started_at = time.monotonic()
         self._http_started = False
         self._plain_bytes = {'CLIENT': 0, 'SERVER': 0}
@@ -233,8 +235,10 @@ class SpliceConnection:
                     raise ValueError(msg)
                 self.cipher = int.from_bytes(body[offset : offset + 2], 'big')
                 if self.cipher not in CIPHERS:
-                    msg = 'Splice interception requires a supported TLS 1.3 cipher'
-                    raise ValueError(msg)
+                    # Relay the already-started handshake unchanged. Reconnecting
+                    # would break the client's TLS transcript and certificates
+                    self._transparent_passthrough = True
+                    self._ready.set()
 
     async def _prepare_keys(self, direction: _Direction) -> None:
         async with direction.key_lock:
@@ -275,6 +279,7 @@ class SpliceConnection:
         if direction is self.client:
             await self._prepare_keys(self.server)
             self._application_ready.set()
+            self._ready.set()
         if content_type == APPLICATION:
             self._plain_bytes[direction.name] += len(content)
             direction.plain.feed_data(content)
@@ -295,6 +300,10 @@ class SpliceConnection:
         return True
 
     async def _record(self, direction: _Direction, record: bytes) -> bool:
+        if self._transparent_passthrough:
+            direction.wire.write(record)
+            await direction.wire.drain()
+            return True
         if record[0] != APPLICATION:
             if record[0] == HANDSHAKE:
                 self._hello(direction, record)
@@ -330,6 +339,11 @@ class SpliceConnection:
             if not await self._record(direction, record):
                 break
 
+    @property
+    def transparent_passthrough(self) -> bool:
+        """Whether this connection switched to encrypted wire-only relay."""
+        return self._transparent_passthrough
+
     def diagnostic_state(self) -> str:
         """Summarize connection phases without logging traffic or TLS secrets."""
         return (
@@ -340,7 +354,8 @@ class SpliceConnection:
             f'server_keys={self.server.input_keys is not None} '
             f'client_plain_bytes={self._plain_bytes["CLIENT"]} '
             f'server_plain_bytes={self._plain_bytes["SERVER"]} '
-            f'http_started={self._http_started}'
+            f'http_started={self._http_started} '
+            f'transparent_passthrough={self._transparent_passthrough}'
         )
 
     async def run(self, proxy: FleasionProxy, host: str) -> None:
@@ -355,7 +370,12 @@ class SpliceConnection:
         """
 
         async def session() -> None:
-            await asyncio.wait_for(self._application_ready.wait(), timeout=20.0)
+            await asyncio.wait_for(self._ready.wait(), timeout=20.0)
+            if self._transparent_passthrough:
+                # Incompatible TLS sessions are relayed by the two wire pumps
+                # and must never attempt to decrypt or start an HTTP parser
+                await asyncio.Future()
+                return
             self._http_started = True
             if proxy.mark_splice_decrypted(host):
                 log_buffer.log(

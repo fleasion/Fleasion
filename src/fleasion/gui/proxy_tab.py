@@ -94,7 +94,11 @@ class ProxyTrafficSource(Protocol):
 
     def format_env_proxy_response_preview(self, entry: _TrafficEntry) -> str: ...
 
+    def get_env_proxy_intercept_match(self) -> str: ...
+
     def set_env_proxy_intercept_match(self, text: str) -> None: ...
+
+    def get_env_proxy_intercept_all(self) -> bool: ...
 
     def set_env_proxy_intercept_all(self, enabled: bool) -> None: ...
 
@@ -742,11 +746,22 @@ class ProxyTrafficTab(QWidget):
 
         self.ui.filterEdit.textChanged.connect(self._apply_filter)
         self.ui.highlightEdit.textChanged.connect(self._apply_highlight)
+        current_intercept_match = (
+            self._proxy_master.get_env_proxy_intercept_match()
+            if self._proxy_master is not None
+            else ''
+        )
+        self.ui.interceptEdit.setText(current_intercept_match)
         self.ui.interceptEdit.textChanged.connect(self._on_intercept_text_changed)
-        # Deliberately not persisted anywhere (no config_manager read/write) -
-        # always starts unchecked on every launch, regardless of what it was
-        # last set to.
-        self.ui.enableCheckBox.setChecked(False)
+        # The dashboard can be destroyed and recreated without restarting
+        # ProxyMaster (close-to-tray). Its session-only interception state
+        # must survive that UI lifecycle and match the actual running proxy
+        current_intercept_all = (
+            self._proxy_master.get_env_proxy_intercept_all()
+            if self._proxy_master is not None
+            else False
+        )
+        self.ui.enableCheckBox.setChecked(current_intercept_all)
         self.ui.enableCheckBox.toggled.connect(self._on_intercept_all_toggled)
 
         help_btn = QPushButton(tr('ui.gui.proxy_tab.text'))

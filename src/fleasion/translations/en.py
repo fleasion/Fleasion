@@ -1521,7 +1521,7 @@ ENGLISH: dict[str, str] = {
     'ui.gui.proxy_tab_ui.auto_replace': 'Auto replace',
     'ui.gui.proxy_tab_ui.clear': 'Clear',
     'ui.gui.proxy_tab_ui.drop': 'Drop',
-    'ui.gui.proxy_tab_ui.enable': 'Enable',
+    'ui.gui.proxy_tab_ui.enable': 'Intercept all hosts',
     'ui.gui.proxy_tab_ui.filter_apis_method_status_etc': 'Filter APIs, method, status, etc',
     'ui.gui.proxy_tab_ui.form': 'Form',
     'ui.gui.proxy_tab_ui.forward': 'Forward',
