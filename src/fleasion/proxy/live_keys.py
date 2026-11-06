@@ -15,6 +15,7 @@ import sys
 import threading
 from typing import TYPE_CHECKING, Any, cast
 
+from .tls12_session import WINDOWS_OPENSSL_350, validate_tls12_session
 from .tls_records import expand_label
 
 if TYPE_CHECKING:
@@ -24,7 +25,7 @@ type ConnectionSecrets = dict[str, bytes]
 type SecretMap = dict[str, ConnectionSecrets]
 
 STRUCT_SIZE = 0x900
-TLS12_STRUCT_SIZE = 0x958
+TLS12_STRUCT_SIZE = WINDOWS_OPENSSL_350.minimum_size
 TLS12 = 0x303
 TLS13 = 0x304
 TLS12_MASTER_LENGTH = 48
@@ -32,7 +33,7 @@ TLS12_SESSION_SECRET_OFFSET = 80
 TLS12_SESSION_PREFIX_SIZE = TLS12_SESSION_SECRET_OFFSET + 48
 # OpenSSL 3.5.0 SSL_CONNECTION.session lies near 0x900 on x64; probe
 # pointer-aligned offsets because optional build features vary by platform
-TLS12_SESSION_POINTER_OFFSETS = tuple(range(0x8D0, 0x948, 8))
+TLS12_SESSION_POINTER_OFFSETS = WINDOWS_OPENSSL_350.session_offsets
 MIN_DISTINCT_BYTES = 20
 SHA256_SIZE = 32
 CHUNK_SIZE = 4 * 1024 * 1024
@@ -381,38 +382,8 @@ def validate_tls12_openssl_struct(
     raw: bytes,
     read_memory: Callable[[int, int], bytes],
 ) -> tuple[str, dict[str, bytes]] | None:
-    """Resolve a TLS 1.2 SSL_SESSION master secret through its SSL_CONNECTION.
-
-    The connection and session layout comes from OpenSSL 3.5.0. Only a
-    structurally credible master secret is returned; the TLS 1.2 AEAD
-    decoder must then authenticate the first application record before
-    Fleasion alters or forwards plaintext
-    """
-    if len(raw) < TLS12_STRUCT_SIZE or struct.unpack_from('<I', raw, 0x48)[0] != TLS12:
-        return None
-    if struct.unpack_from('<I', raw, 0x78)[0] != 0:
-        return None
-    client_random = raw[0x184:0x1A4]
-    server_random = raw[0x164:0x184]
-    if len(set(client_random)) < MIN_DISTINCT_BYTES or len(set(server_random)) < MIN_DISTINCT_BYTES:
-        return None
-
-    for offset in TLS12_SESSION_POINTER_OFFSETS:
-        pointer = struct.unpack_from('<Q', raw, offset)[0]
-        if pointer < 0x10000 or pointer >= 0x0000800000000000 or pointer & 7:
-            continue
-        session = read_memory(pointer, TLS12_SESSION_PREFIX_SIZE)
-        if len(session) < TLS12_SESSION_PREFIX_SIZE:
-            continue
-        version = struct.unpack_from('<I', session, 0)[0]
-        key_length = struct.unpack_from('<Q', session, 8)[0]
-        if version != TLS12 or key_length != TLS12_MASTER_LENGTH:
-            continue
-        master = session[TLS12_SESSION_SECRET_OFFSET:TLS12_SESSION_PREFIX_SIZE]
-        if len(set(master)) < MIN_DISTINCT_BYTES:
-            continue
-        return client_random.hex(), {'CLIENT_RANDOM': master}
-    return None
+    """Validate a Windows OpenSSL 3.5 TLS 1.2 session candidate."""
+    return validate_tls12_session(raw, read_memory, layout=WINDOWS_OPENSSL_350)
 
 
 _validate = validate_openssl_struct
@@ -503,9 +474,13 @@ def _scan_handle(
 ) -> SecretMap:
     found: SecretMap = {}
     for base, region, offset in _candidates(handle, pid, stop, wanted):
-        raw = _read(handle, base, TLS12_STRUCT_SIZE)
+        raw = _read(handle, base, STRUCT_SIZE)
         if len(raw) < STRUCT_SIZE:
             continue
+        if struct.unpack_from('<I', raw, 0x48)[0] == TLS12:
+            raw = _read(handle, base, TLS12_STRUCT_SIZE)
+            if len(raw) < TLS12_STRUCT_SIZE:
+                continue
         method = struct.unpack_from('<Q', raw, 0x18)[0]
         if module_base <= method < module_end:
             validated = validate_openssl_struct(raw)

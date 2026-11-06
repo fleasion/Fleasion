@@ -21,3 +21,20 @@ The affected log also has long Windows key-memory scans (several seconds), waiti
 These changes were developed locally on `feat/rewrite-ui-v2`. The affected Windows VM was not running during this investigation; no claim of a fresh live Windows validation is made. The prior incident logs cannot establish that Froststrap was responsible for the relaunches, so no speculative Froststrap-specific changes were made. Heavy-game scans can still exceed the existing per-connection deadline if process memory scanning itself takes too long; the fixes bound queue waste, not the cost of a single `NtReadVirtualMemory` scan. Future Windows profiling could justify batching or more precise cached region search.
 
 The final focused proxy/TLS/GUI-state regression run passed **426 tests, 2 skipped, 3 subtests**; changed production and new test files passed Ruff and Pyright with zero errors. A full repo run stopped on a pre-existing GUI collapse-layout failure after 1,138 passes; a subsequent run passed 1,158 tests before an independently reproducible-in-isolation Linux Flatpak override expectation failed. An exclusion run stalled near 65% and timed out. These do not establish full-suite green; the focused proxy/TLS suite and new GUI regression tests are the validation gates for this patch.
+
+## Live OpenSSL session-layout verification — 2026-11-06
+
+A subsequent read-only live probe tested the TLS 1.2 session extraction assumptions against **four actual Roblox processes**. All temporary test clients were closed afterward. The probe never printed or wrote TLS secrets or client-random values; it retained only validation counts and harmless session layout metadata.
+
+| Build / launcher | Validated TLS 1.3 connections during session-pointer probe | Verified `SSL_CONNECTION.session` offset | Session validation |
+|---|---:|---:|---|
+| Windows Roblox Studio 0.746 through Vinegar/Wine | Multiple (real TLS 1.3 validated with Fleasion's Windows validator) | `0x8F8` | `SSL_SESSION.ssl_version=0x304`, `master_key_length=48` |
+| Android Roblox through Mocktail | 37 | `0x900` | `0x304`, 48 bytes |
+| Android Roblox through Sober | 42 | `0x900` | `0x304`, 48 bytes |
+| macOS Roblox Player through Rosemary/Nutmeg | 59 | `0x900` | `0x304`, 48 bytes |
+
+The Windows session pointer is **eight bytes earlier** than the x86_64 Android/macOS layout. Treating them as interchangeable would be incorrect. To prevent a cross-client regression, `tls12_session.py` now has separate Windows and LP64 layout descriptors; the existing TLS 1.3 decoder and fast scanner path remain intact. The Windows scanner also avoids reading larger structs for ordinary TLS 1.3 candidates. The LP64 TLS 1.2 scanner integrates targeted `CLIENT_RANDOM` lookups through Mocktail/Nightcap/Cordial, Sober and Rosemary without changing process-selection logic or its memory-access methods.
+
+**Important limit:** these were TLS **1.3** connections used to validate the *common OpenSSL session structure*, not observed TLS 1.2 sessions. Session-pointer and length-field evidence is strong, but **native client TLS 1.2 master-secret extraction has not been observed live**. The separate TLS 1.2 authenticated record and HTTP/1.1/2 interception tests use genuine TLS 1.2 traffic and test key logs. The new Linux reader tests use synthetic TLS 1.2 memory. A live TLS 1.2 connection on each client remains the final release verification, including the risk of platform-specific `SSL_SESSION` details.
+
+Vinegar installed the current Studio 0.746 build during launch; no Fleasion profile or Roblox account state was edited. Rosemary displayed an optional MiniDarwin upgrade prompt; **Not Now** was selected, leaving the system prefix unchanged. After the test, the Vinegar Studio, Mocktail, Sober, and Rosemary test sessions were closed. The final broad proxy/TLS and key-scanner regression run passed **530 tests, 5 skipped, 3 subtests**; changed source and tests passed Ruff and strict Pyright checks.

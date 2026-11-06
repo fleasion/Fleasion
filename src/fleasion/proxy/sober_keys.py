@@ -1,4 +1,4 @@
-"""Read-only TLS 1.3 secret recovery for Sober Android runtime on Linux.
+"""Read-only TLS 1.2/1.3 secret recovery for Sober Android runtime on Linux.
 
 Supports Sober (org.vinegarhq.Sober) running containerized x86_64 Android Roblox.
 Reads process memory via process_vm_readv or /proc/<pid>/mem without code injection.
@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .rosemary_keys import STRUCT_SIZE, validate_openssl_struct
+from .tls12_session import LP64_OPENSSL_350, TLS12_VERSION, validate_tls12_session
 
 if TYPE_CHECKING:
     import threading
@@ -61,7 +62,7 @@ def _get_process_vm_readv() -> Any:
     try:
         _libc = ctypes.CDLL(None, use_errno=True)
         _pvr_func = _init_pvr_func(_libc)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         _pvr_func = None
     return _pvr_func
 
@@ -79,7 +80,7 @@ class _MemoryReader:
         self._mem_file = None
         try:
             self._mem_file = Path(f'/proc/{pid}/mem').open('rb')  # ruff: ignore[open-file-with-context-handler]
-        except (OSError, PermissionError):
+        except OSError, PermissionError:
             pass
 
     def read(self, addr: int, size: int) -> bytes:
@@ -90,7 +91,7 @@ class _MemoryReader:
                 data = self._mem_file.read(size)
                 if data:
                     return data
-            except (OSError, PermissionError):
+            except OSError, PermissionError:
                 pass
 
         if self._pvr is None:
@@ -120,14 +121,14 @@ def _is_sober_entry(entry: Path) -> bool:
         cgroup = (entry / 'cgroup').read_text(encoding='utf-8', errors='ignore')
         if SOBER_CGROUP_SUBSTRING in cgroup.lower():
             return True
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         pass
 
     try:
         exe = (entry / 'exe').resolve().name.lower()
         if exe == 'sober':
             return True
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         pass
 
     return False
@@ -142,7 +143,7 @@ def _read_process_score(entry: Path) -> int | None:
         statm = (entry / 'statm').read_text(encoding='utf-8', errors='ignore').split()
         rss = int(statm[1]) if len(statm) > 1 else 0
         return rss + (1_000_000_000 if comm.lower() == 'main' else 0)
-    except (OSError, PermissionError, ValueError):
+    except OSError, PermissionError, ValueError:
         return None
 
 
@@ -160,7 +161,7 @@ def find_sober_pid() -> int | None:
     proc = Path('/proc')
     try:
         entries = list(proc.iterdir())
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return None
 
     candidates: list[tuple[int, int]] = []
@@ -191,7 +192,7 @@ def _module_bounds(pid: int) -> tuple[int, int]:
     try:
         with maps_path.open(encoding='utf-8', errors='ignore') as source:
             lines = source.readlines()
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return 0, 0
 
     target_inode: str | None = None
@@ -229,7 +230,7 @@ def _module_bounds(pid: int) -> tuple[int, int]:
 def _parse_smaps_regions(smaps_path: Path) -> list[tuple[int, int]]:
     try:
         lines = smaps_path.read_text(encoding='utf-8', errors='ignore').splitlines()
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return []
 
     regions: list[tuple[int, int]] = []
@@ -262,7 +263,7 @@ def _parse_smaps_regions(smaps_path: Path) -> list[tuple[int, int]]:
 def _parse_maps_regions(maps_path: Path) -> list[tuple[int, int]]:
     try:
         lines = maps_path.read_text(encoding='utf-8', errors='ignore').splitlines()
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return []
 
     regions: list[tuple[int, int]] = []
@@ -308,7 +309,16 @@ def _scan_candidate(
     method = struct.unpack_from('<Q', raw, 0x18)[0]
     if module_base != 0 and not (module_base <= method < module_end):
         return None
-    return validate_openssl_struct(raw)
+    if struct.unpack_from('<I', raw, 0x48)[0] != TLS12_VERSION:
+        return validate_openssl_struct(raw)
+
+    # TLS 1.2 adds a session-pointer read. Keep the TLS 1.3 fast path
+    # unchanged and ask for more bytes only for a plausible TLS 1.2 struct
+    candidate = start + offset + position - field_offset
+    raw = reader.read(candidate, LP64_OPENSSL_350.minimum_size)
+    if len(raw) != LP64_OPENSSL_350.minimum_size:
+        return None
+    return validate_tls12_session(raw, reader.read, layout=LP64_OPENSSL_350)
 
 
 def _scan_region(
@@ -358,7 +368,7 @@ def scan(
     stop: threading.Event | None = None,
     client_random: str | None = None,
 ) -> SecretMap:
-    """Scan Sober Android Roblox process memory for TLS 1.3 secrets.
+    """Scan Sober Android Roblox process memory for TLS 1.2/1.3 secrets.
 
     Parameters
     ----------

@@ -1,4 +1,4 @@
-"""Read-only TLS 1.3 secret recovery for community Android Roblox runtimes on Linux.
+"""Read-only TLS 1.2/1.3 secret recovery for community Android Roblox runtimes on Linux.
 
 Supports Cordial, Nightcap, and Mocktail running x86_64 Android Roblox (libroblox.so).
 All reads go through /proc/<pid>/mem. No writes, no code injection.
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .rosemary_keys import STRUCT_SIZE, validate_openssl_struct
+from .tls12_session import LP64_OPENSSL_350, TLS12_VERSION, validate_tls12_session
 
 if TYPE_CHECKING:
     import io
@@ -31,18 +32,18 @@ COMMUNITY_TARGETS = frozenset({'cordial', 'nightcap', 'mocktail'})
 def _read_process_ident(entry: Path) -> tuple[str, str, str] | None:
     try:
         cmdline_bytes = (entry / 'cmdline').read_bytes()
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return None
     cmdline = cmdline_bytes.replace(b'\x00', b' ').decode('utf-8', errors='ignore').lower()
 
     try:
         exe = (entry / 'exe').resolve().name.lower()
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         exe = ''
 
     try:
         comm = (entry / 'comm').read_text(encoding='utf-8', errors='ignore').strip().lower()
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         comm = ''
 
     return cmdline, exe, comm
@@ -58,7 +59,7 @@ def _read_process_rss_if_active(entry: Path) -> int | None:
                 return None
         statm = (entry / 'statm').read_text().split()
         return int(statm[1]) if len(statm) > 1 else 0
-    except (OSError, PermissionError, ValueError):
+    except OSError, PermissionError, ValueError:
         return None
 
 
@@ -82,7 +83,7 @@ def find_android_community_pid(client: str | None = None) -> tuple[int, str] | N
     proc = Path('/proc')
     try:
         entries = list(proc.iterdir())
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return None
 
     targets = frozenset({client.strip().lower()}) if client else COMMUNITY_TARGETS
@@ -127,7 +128,7 @@ def _module_bounds(pid: int) -> tuple[int, int]:
     try:
         with maps_path.open(encoding='utf-8', errors='ignore') as source:
             lines = source.readlines()
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return 0, 0
 
     min_base = 0
@@ -148,7 +149,7 @@ def _regions(pid: int) -> list[tuple[int, int]]:
     try:
         with maps_path.open(encoding='utf-8', errors='ignore') as source:
             lines = source.readlines()
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return regions
 
     for line in lines:
@@ -164,7 +165,7 @@ def _regions(pid: int) -> list[tuple[int, int]]:
     return regions
 
 
-def _scan_candidate(
+def _scan_candidate(  # ruff: ignore[too-many-return-statements]
     mem: io.BufferedReader,
     buf: bytes,
     *,
@@ -183,7 +184,7 @@ def _scan_candidate(
         try:
             mem.seek(candidate)
             raw = mem.read(STRUCT_SIZE)
-        except (OSError, PermissionError):
+        except OSError, PermissionError:
             return None
 
     if len(raw) != STRUCT_SIZE:
@@ -191,7 +192,28 @@ def _scan_candidate(
     method = struct.unpack_from('<Q', raw, 0x18)[0]
     if module_base != 0 and not (module_base <= method < module_end):
         return None
-    return validate_openssl_struct(raw)
+    if struct.unpack_from('<I', raw, 0x48)[0] != TLS12_VERSION:
+        return validate_openssl_struct(raw)
+
+    # TLS 1.2 adds a session-pointer read. Keep the TLS 1.3 fast path
+    # unchanged and ask for more bytes only for a plausible TLS 1.2 struct
+    candidate = start + offset + position - field_offset
+    try:
+        mem.seek(candidate)
+        raw = mem.read(LP64_OPENSSL_350.minimum_size)
+    except OSError, PermissionError:
+        return None
+    if len(raw) != LP64_OPENSSL_350.minimum_size:
+        return None
+
+    def read_session(addr: int, length: int) -> bytes:
+        try:
+            mem.seek(addr)
+            return mem.read(length)
+        except OSError, PermissionError, ValueError:
+            return b''
+
+    return validate_tls12_session(raw, read_session, layout=LP64_OPENSSL_350)
 
 
 def _scan_region(
@@ -214,7 +236,7 @@ def _scan_region(
         try:
             mem.seek(start + offset)
             buf = mem.read(chunk_len)
-        except (OSError, PermissionError):
+        except OSError, PermissionError:
             continue
         position = buf.find(needle)
         while position >= 0:
@@ -243,7 +265,7 @@ def scan(
     stop: threading.Event | None = None,
     client_random: str | None = None,
 ) -> SecretMap:
-    """Scan community Android Roblox process memory for TLS 1.3 secrets.
+    """Scan community Android Roblox process memory for TLS 1.2/1.3 secrets.
 
     Parameters
     ----------
@@ -292,7 +314,7 @@ def scan(
                 )
                 if matched:
                     return found
-    except (OSError, PermissionError, ProcessLookupError):
+    except OSError, PermissionError, ProcessLookupError:
         return found
 
     return found

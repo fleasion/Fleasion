@@ -36,7 +36,7 @@ def _memory_fixture(pointer_offset: int = 0x900) -> tuple[bytearray, bytes, int,
     return connection, bytes(session), pointer, master
 
 
-@pytest.mark.parametrize('offset', [0x8E8, 0x8F8, 0x900, 0x910, 0x938])
+@pytest.mark.parametrize('offset', TLS12_SESSION_POINTER_OFFSETS)
 def test_session_master_secret_is_found_without_assuming_one_pointer_offset(offset: int) -> None:
     connection, session, pointer, master = _memory_fixture(offset)
     found = validate_tls12_openssl_struct(

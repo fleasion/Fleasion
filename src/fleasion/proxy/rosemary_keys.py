@@ -1,4 +1,4 @@
-"""Read-only TLS 1.3 secret recovery for macOS Roblox Player under Rosemary on Linux.
+"""Read-only TLS 1.2/1.3 secret recovery for macOS Roblox Player under Rosemary on Linux.
 
 All reads go through /proc/<pid>/mem. No writes, no code injection.
 Layout validated against OpenSSL 3.5.0 as shipped in x86_64 macOS Roblox.
@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .tls12_session import LP64_OPENSSL_350, TLS12_VERSION, validate_tls12_session
 from .tls_records import expand_label
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ def find_rosemary_pid() -> int | None:
     proc = Path('/proc')
     try:
         entries = list(proc.iterdir())
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return None
 
     candidates: list[tuple[int, int]] = []
@@ -79,7 +80,7 @@ def find_rosemary_pid() -> int | None:
             pid = int(entry.name)
             cmdline_bytes = (entry / 'cmdline').read_bytes()
             cmdline = cmdline_bytes.replace(b'\x00', b' ').decode('utf-8', errors='ignore').lower()
-        except (OSError, PermissionError, ValueError):
+        except OSError, PermissionError, ValueError:
             continue
 
         if 'rosemary' not in cmdline:
@@ -96,7 +97,7 @@ def find_rosemary_pid() -> int | None:
                     continue
                 statm = (entry / 'statm').read_text().split()
                 rss = int(statm[1]) if len(statm) > 1 else 0
-            except (OSError, PermissionError, ValueError):
+            except OSError, PermissionError, ValueError:
                 continue
             candidates.append((rss, pid))
 
@@ -184,7 +185,7 @@ def _module_bounds(pid: int) -> tuple[int, int]:
                 if len(parts) >= 6 and 'robloxplayer' in parts[5].lower():
                     addrs = parts[0].split('-')
                     return int(addrs[0], 16), int(addrs[1], 16) + 0x20000000
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         pass
     return 0, 0
 
@@ -195,7 +196,7 @@ def _regions(pid: int) -> list[tuple[int, int]]:
     try:
         with maps_path.open(encoding='utf-8', errors='ignore') as source:
             lines = source.readlines()
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         return regions
 
     for line in lines:
@@ -210,7 +211,7 @@ def _regions(pid: int) -> list[tuple[int, int]]:
     return regions
 
 
-def _scan_candidate(
+def _scan_candidate(  # ruff: ignore[too-many-return-statements]
     mem: io.BufferedReader,
     buf: bytes,
     *,
@@ -229,7 +230,7 @@ def _scan_candidate(
         try:
             mem.seek(candidate)
             raw = mem.read(STRUCT_SIZE)
-        except (OSError, PermissionError):
+        except OSError, PermissionError:
             return None
 
     if len(raw) != STRUCT_SIZE:
@@ -237,7 +238,28 @@ def _scan_candidate(
     method = struct.unpack_from('<Q', raw, 0x18)[0]
     if module_base != 0 and not (module_base <= method < module_end):
         return None
-    return validate_openssl_struct(raw)
+    if struct.unpack_from('<I', raw, 0x48)[0] != TLS12_VERSION:
+        return validate_openssl_struct(raw)
+
+    # TLS 1.2 adds a session-pointer read. Keep the TLS 1.3 fast path
+    # unchanged and ask for more bytes only for a plausible TLS 1.2 struct
+    candidate = start + offset + position - field_offset
+    try:
+        mem.seek(candidate)
+        raw = mem.read(LP64_OPENSSL_350.minimum_size)
+    except OSError, PermissionError:
+        return None
+    if len(raw) != LP64_OPENSSL_350.minimum_size:
+        return None
+
+    def read_session(addr: int, length: int) -> bytes:
+        try:
+            mem.seek(addr)
+            return mem.read(length)
+        except OSError, PermissionError, ValueError:
+            return b''
+
+    return validate_tls12_session(raw, read_session, layout=LP64_OPENSSL_350)
 
 
 def _scan_region(
@@ -260,7 +282,7 @@ def _scan_region(
         try:
             mem.seek(start + offset)
             buf = mem.read(chunk_len)
-        except (OSError, PermissionError):
+        except OSError, PermissionError:
             continue
         position = buf.find(needle)
         while position >= 0:
@@ -323,7 +345,7 @@ def scan(
     stop: threading.Event | None = None,
     client_random: str | None = None,
 ) -> SecretMap:
-    """Scan Rosemary Roblox process memory for TLS 1.3 secrets.
+    """Scan Rosemary Roblox process memory for TLS 1.2/1.3 secrets.
 
     Parameters
     ----------
@@ -366,5 +388,5 @@ def scan(
                 stop=stop,
                 found=found,
             )
-    except (OSError, PermissionError, ProcessLookupError):
+    except OSError, PermissionError, ProcessLookupError:
         return found
