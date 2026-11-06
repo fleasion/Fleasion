@@ -37,9 +37,12 @@ TLS12_SESSION_POINTER_OFFSETS = WINDOWS_OPENSSL_350.session_offsets
 MIN_DISTINCT_BYTES = 20
 SHA256_SIZE = 32
 CHUNK_SIZE = 4 * 1024 * 1024
+_NEARBY_SCAN_SIZE = 256 * 1024
 _MAX_HINTED_PIDS = 8
 _MAX_HINTED_LOCATIONS = 8
 _scan_hints: dict[int, list[tuple[int, int, int]]] = {}
+# Store validated structure addresses, not TLS secrets or raw memory
+_scan_candidate_hints: dict[int, list[tuple[int, int, int]]] = {}
 _scan_hints_lock = threading.Lock()
 
 
@@ -78,6 +81,45 @@ def _remember_scan_location(pid: int, region: tuple[int, int], offset: int) -> N
         _scan_hints[pid] = remembered[:_MAX_HINTED_LOCATIONS]
         if len(_scan_hints) > _MAX_HINTED_PIDS:
             _scan_hints.pop(next(iter(_scan_hints)))
+
+
+def _remember_candidate_address(pid: int, region: tuple[int, int], base: int) -> None:
+    """Remember a verified connection's neighborhood for the next TLS handshake."""
+    location = (*region, base)
+    with _scan_hints_lock:
+        old = _scan_candidate_hints.pop(pid, ())
+        _scan_candidate_hints[pid] = [location, *(item for item in old if item != location)][
+            :_MAX_HINTED_LOCATIONS
+        ]
+        if len(_scan_candidate_hints) > _MAX_HINTED_PIDS:
+            _scan_candidate_hints.pop(next(iter(_scan_candidate_hints)))
+
+
+def _nearby_candidate_ranges(
+    pid: int, regions: list[tuple[int, int]]
+) -> Iterator[tuple[int, int, tuple[int, int]]]:
+    """Return small bounds-safe windows around previously validated connections.
+
+    Only targeted client-random searches use these hints. A miss always falls
+    back to the complete region scan, so moved OpenSSL allocations still work.
+    """
+    with _scan_hints_lock:
+        hints = tuple(_scan_candidate_hints.get(pid, ()))
+    live = set(regions)
+    seen: set[tuple[int, int]] = set()
+    for region_start, region_size, base in hints:
+        if (region_start, region_size) not in live:
+            continue
+        region_end = region_start + region_size
+        if not region_start <= base < region_end:
+            continue
+        half = _NEARBY_SCAN_SIZE // 2
+        window_start = max(region_start, base - half)
+        window_size = min(_NEARBY_SCAN_SIZE, region_end - window_start)
+        window = (window_start, window_size)
+        if window_size and window not in seen:
+            seen.add(window)
+            yield window_start, window_size, (region_start, region_size)
 
 
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -435,8 +477,27 @@ def _candidates(
     field_offset = 0x184 if client_random is not None else 0x48
     read_buf = ctypes.create_string_buffer(CHUNK_SIZE + len(needle))
     got = ctypes.c_size_t()
+    regions = list(_regions(handle))
 
-    for start, size in _prioritize_regions(pid, list(_regions(handle))):
+    if client_random is not None:
+        for start, size, region in _nearby_candidate_ranges(pid, regions):
+            if stop is not None and stop.is_set():
+                return
+            status = _win32.NtReadVirtualMemory(
+                handle, ctypes.c_void_p(start), read_buf, size, ctypes.byref(got)
+            )
+            if status != 0:
+                continue
+            data = read_buf.raw[: got.value]
+            position = data.find(needle)
+            while position >= 0:
+                candidate = start + position - field_offset
+                if candidate >= start:
+                    offset = ((candidate - region[0]) // CHUNK_SIZE) * CHUNK_SIZE
+                    yield candidate, region, offset
+                position = data.find(needle, position + 1)
+
+    for start, size in _prioritize_regions(pid, regions):
         region = (start, size)
         for offset in _prioritize_offsets(pid, region):
             if stop is not None and stop.is_set():
@@ -490,6 +551,7 @@ def _scan_handle(
                 )
             if validated is not None:
                 found[validated[0]] = validated[1]
+                _remember_candidate_address(pid, region, base)
                 _remember_scan_location(pid, region, offset)
                 if client_random is not None and validated[0] == client_random:
                     break
