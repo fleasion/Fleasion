@@ -4528,6 +4528,29 @@ def main():
     atexit.register(mod_manager.clear_managed_file_read_only)
     atexit.register(mod_manager.restore_all)
 
+    # 3. SIGTERM/SIGHUP (logout, shutdown, kill): Python's default action kills
+    #    the process without running atexit, leaving e.g. the Sober flatpak proxy
+    #    override armed so Roblox cannot connect until Fleasion runs again.
+    #    Route them through the tray Exit path, which stops the proxy before Qt
+    #    teardown. The timer lets the Python interpreter run signal handlers
+    #    while Qt's event loop is blocking.
+    def _exit_on_signal(*_args: object) -> None:
+        tray = tray_ref.get('tray')
+        if tray is not None:
+            tray._exit_app()
+        else:
+            proxy_master.stop()
+            app.quit()
+
+    for sig_name in ('SIGTERM', 'SIGHUP'):
+        if hasattr(signal, sig_name):
+            signal.signal(
+                getattr(signal, sig_name), lambda *_: QTimer.singleShot(0, _exit_on_signal)
+            )
+    signal_pump = QTimer(app)
+    signal_pump.timeout.connect(lambda: None)
+    signal_pump.start(500)
+
     # Start PreJsons download in background
     run_in_thread(download_prejsons)()
 
