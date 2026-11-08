@@ -1279,6 +1279,104 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
     return RawBody(wire=b'', payload=b'', was_chunked=False)
 
 
+async def _relay_unmodified_response_body(
+    reader: asyncio.StreamReader,
+    writer: _ResponseTrackingWriter,
+    headers: dict[bytes, bytes],
+    header_block: bytes,
+    *,
+    response_has_body: bool,
+) -> int:
+    """Stream an unchanged HTTP response with bounded buffering and backpressure.
+
+    Preserve the upstream framing (including chunk extensions and trailers),
+    rather than waiting for the entire CDN asset before sending its first byte.
+    """
+    if not response_has_body:
+        writer.write(header_block)
+        await writer.drain()
+        return 0
+
+    transfer_encoding = headers.get(b'transfer-encoding')
+    content_length = headers.get(b'content-length')
+    if transfer_encoding is not None and content_length is not None:
+        msg = 'Conflicting HTTP framing headers'
+        raise ValueError(msg)
+    if transfer_encoding is not None and transfer_encoding.strip().lower() != b'chunked':
+        msg = 'Unsupported HTTP transfer-encoding'
+        raise ValueError(msg)
+    if content_length is not None and re.fullmatch(rb'[0-9]+', content_length) is None:
+        msg = 'Invalid HTTP content-length'
+        raise ValueError(msg)
+
+    writer.write(header_block)
+    await writer.drain()
+
+    async def forward_bytes(length: int | None, *, context: str) -> int:
+        total = 0
+        while length is None or total < length:
+            read_size = (
+                _HTTP_BODY_READ_CHUNK
+                if length is None
+                else min(_HTTP_BODY_READ_CHUNK, length - total)
+            )
+            try:
+                async with asyncio.timeout(_HTTP_BODY_IDLE_TIMEOUT):
+                    chunk = await reader.read(read_size)
+            except TimeoutError as exc:
+                msg = 'HTTP body read stalled'
+                raise TimeoutError(msg) from exc
+            if not chunk:
+                if length is not None:
+                    msg = f'Incomplete HTTP {context}'
+                    raise ValueError(msg)
+                break
+            writer.write(chunk)
+            await writer.drain()
+            total += len(chunk)
+        return total
+
+    if transfer_encoding is None:
+        if content_length is not None:
+            return await forward_bytes(int(content_length), context='content-length body')
+        return await forward_bytes(None, context='close-delimited body')
+
+    total = 0
+    while True:
+        size_line = await _read_http_body_line(reader)
+        if not size_line.endswith(b'\r\n'):
+            msg = 'Incomplete HTTP chunk size line'
+            raise ValueError(msg)
+        size_str = size_line[:-2].split(b';', 1)[0]
+        if not size_str or re.fullmatch(rb'[0-9a-fA-F]+', size_str) is None:
+            msg = 'Invalid HTTP chunk size'
+            raise ValueError(msg)
+        chunk_size = int(size_str, 16)
+        writer.write(size_line)
+        if chunk_size == 0:
+            while True:
+                trailer_line = await _read_http_body_line(reader)
+                if not trailer_line.endswith(b'\r\n'):
+                    msg = 'Incomplete HTTP chunk trailers'
+                    raise ValueError(msg)
+                if trailer_line != b'\r\n' and (
+                    b':' not in trailer_line or trailer_line.startswith((b' ', b'\t'))
+                ):
+                    msg = 'Malformed HTTP chunk trailer'
+                    raise ValueError(msg)
+                writer.write(trailer_line)
+                if trailer_line == b'\r\n':
+                    await writer.drain()
+                    return total
+        total += await forward_bytes(chunk_size, context='chunk body')
+        terminator = await _read_http_body_bytes(reader, 2, context='chunk body')
+        if terminator != b'\r\n':
+            msg = 'Invalid HTTP chunk terminator'
+            raise ValueError(msg)
+        writer.write(terminator)
+        await writer.drain()
+
+
 async def _read_body_raw(  # pyright: ignore[reportUnusedFunction]
     reader: asyncio.StreamReader, headers: dict[bytes, bytes]
 ) -> bytes:
@@ -1357,13 +1455,6 @@ def _read_local_bytes(local_path: str) -> bytes:
         with contextlib.suppress(Exception):
             path = _convert_obj_to_mesh(path)
     return strip_roblox_metadata(path, path.read_bytes()) if path.exists() else b''
-
-
-def _local_file_metadata(path: Path) -> tuple[bool, int]:
-    try:
-        return True, path.stat().st_size
-    except OSError:
-        return False, 0
 
 
 def _serve_local_file(
@@ -1733,6 +1824,7 @@ class FleasionProxy:
         self._sni_diagnostics_seen: set[str] = set()
         self._fallback_diagnostics_seen: set[tuple[str, str]] = set()
         self._client_settings_dictionary_cache: dict[str, bytes] = {}
+        self._batch_routes_event = asyncio.Event()
         self._wire_preserving_passthrough = bool(wire_preserving_passthrough)
         self._explicit_proxy = bool(explicit_proxy)
         self._tls_splice = bool(tls_splice)
@@ -2979,6 +3071,12 @@ class FleasionProxy:
             initial_client_data=initial_client_data
         )
 
+    def _signal_batch_route_change(self) -> None:
+        """Wake CDN requests waiting for a completed asset-delivery batch."""
+        event = self._batch_routes_event
+        self._batch_routes_event = asyncio.Event()
+        event.set()
+
     async def _http_session(
         self,
         first_req: RawHeaders,
@@ -3000,6 +3098,16 @@ class FleasionProxy:
         up_writer: asyncio.StreamWriter | None = None
         upstream_failure_hint_logged = False
         supplied_upstream_used = False
+        pending_batches: set[str] = set()
+
+        def finish_batch(batch_id: str) -> None:
+            if batch_id not in pending_batches:
+                return
+            pending_batches.discard(batch_id)
+            discard = getattr(texture_batch_processor, 'discard_batch', None)
+            if callable(discard):
+                discard(batch_id)
+            self._signal_batch_route_change()
 
         async def ensure_upstream(path_for_log: str) -> bool:
             nonlocal up_reader, up_writer, upstream_failure_hint_logged, supplied_upstream_used
@@ -3185,15 +3293,25 @@ class FleasionProxy:
                 'tuple[str, object] | None', self.texture_stripper.check_cdn_request(host, path)
             )
             if short_circuit is None and not managed and self.texture_stripper.has_pending():
-                # Give an in-flight batch response a brief chance to register
-                # its replacement before forwarding this CDN request.
-                for _wait_i in range(12):
-                    await asyncio.sleep(0.05)
+                # A batch may still be publishing the CDN URL for this asset.
+                # Wait for completion notifications, not 50ms polling ticks
+                # Keep the original 600ms upper bound for network failures
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 0.6
+                while self.texture_stripper.has_pending():
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    event = self._batch_routes_event
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=remaining)
+                    except TimeoutError:
+                        break
                     short_circuit = cast(
                         'tuple[str, object] | None',
                         self.texture_stripper.check_cdn_request(host, path),
                     )
-                    if short_circuit is not None or not self.texture_stripper.has_pending():
+                    if short_circuit is not None:
                         break
 
             self._asset_trace.cdn(
@@ -3214,17 +3332,13 @@ class FleasionProxy:
             if action == 'local':
                 local_value = cast('str', value)
                 serve_path = Path(local_value)
-                serve_exists, serve_size = await asyncio.get_event_loop().run_in_executor(
-                    self._executor, _local_file_metadata, serve_path
-                )
                 serve_category = (
                     'TexPackTrace' if serve_path.suffix.lower() in {'.ktx', '.ktx2'} else 'Local'
                 )
                 log_path = path.partition('?')[0].partition('#')[0][:160]
                 log_buffer.log(
                     serve_category,
-                    f'CDN local serve start: host={host} path={log_path} '
-                    f'file={serve_path.name} exists={serve_exists} bytes={serve_size}',
+                    f'CDN local serve start: host={host} path={log_path} file={serve_path.name}',
                 )
                 response = await asyncio.get_event_loop().run_in_executor(
                     self._executor,
@@ -3253,9 +3367,18 @@ class FleasionProxy:
                 await response_writer.drain()
                 if self.cache_scraper.enabled and not managed and not is_head:
                     with contextlib.suppress(Exception):
-                        file_bytes = await asyncio.get_event_loop().run_in_executor(
-                            self._executor, _read_local_bytes, local_value
-                        )
+                        # Reuse the already-loaded payload for whole-file 200s,
+                        # avoiding another disk read and metadata strip
+                        if (
+                            status_line.startswith('HTTP/1.1 200 ')
+                            and not has_range
+                            and b'if-range' not in req_headers
+                        ):
+                            file_bytes = response.partition(b'\r\n\r\n')[2]
+                        else:
+                            file_bytes = await asyncio.get_event_loop().run_in_executor(
+                                self._executor, _read_local_bytes, local_value
+                            )
                         if file_bytes:
                             full_url = f'https://{host}{path}'
                             self.cache_scraper.process_cdn_response(
@@ -3612,6 +3735,11 @@ class FleasionProxy:
                     if host == ASSET_DELIVERY_HOST
                     else ({}, set(), {}, {})
                 )
+                batch_requires_hooks = is_batch and (
+                    any(replacements_tuple)
+                    or self.cache_scraper.enabled
+                    or self._asset_trace.enabled
+                )
                 batch_id = ''
                 req_body_modified = req_body_raw
                 scraper_body = req_body_raw
@@ -3684,8 +3812,17 @@ class FleasionProxy:
                         break
                     continue
 
+                # Avoid JSON decoding and rebuilding for unmodified batches
+                # The scraper and asset trace still receive full batches when
+                # enabled, even if no replacement rules are active
+                if is_batch and not batch_requires_hooks:
+                    if not await ensure_upstream(path):
+                        break
+                    cast('asyncio.StreamWriter', up_writer).write(
+                        req_raw.raw_header_block + req_body.wire
+                    )
                 # Modify batch request body if needed
-                if is_batch:
+                elif is_batch:
                     if request_has_trailers:
                         msg = 'Cannot process asset batches carrying chunked trailers'
                         raise ValueError(msg)
@@ -3714,6 +3851,7 @@ class FleasionProxy:
                     # connections using the same req_id integers don't collide —
                     # the same root cause mitmproxy solved with its flow_id prefix.
                     batch_id = uuid.uuid4().hex
+                    pending_batches.add(batch_id)
                     # Run synchronously — process_batch_request is pure Python (JSON parse +
                     # dict ops), not I/O bound. Using run_in_executor here introduced a gap:
                     # the await released the event loop, the CDN coroutine ran, saw empty
@@ -3863,6 +4001,48 @@ class FleasionProxy:
                     and b'content-length' not in resp_headers
                     and b'transfer-encoding' not in resp_headers
                 )
+                # Unmodified CDN and direct asset responses can be large. Forward
+                # Each chunk arrives immediately instead of buffering the entire response
+                # before Roblox receives the headers or first body bytes
+                # Keep the buffered path whenever hooks, logging/interception,
+                # or response rewriting need to inspect the complete payload
+                cdn_passthrough = host in CDN_HOSTS and short_circuit is None
+                asset_passthrough = (
+                    host == ASSET_DELIVERY_HOST
+                    and not batch_requires_hooks
+                    and not direct_id_rewritten
+                )
+                can_stream_passthrough = (
+                    (cdn_passthrough or asset_passthrough)
+                    and not self.cache_scraper.enabled
+                    and not self._auto_replace_rules
+                    and not self._intercept_all_hosts
+                    and getattr(writer, 'supports_incremental_responses', True)
+                    and status_code < 400
+                )
+                if can_stream_passthrough:
+                    body_size = await _relay_unmodified_response_body(
+                        cast('asyncio.StreamReader', up_reader),
+                        response_writer,
+                        resp_headers,
+                        resp_raw.raw_header_block,
+                        response_has_body=response_has_body,
+                    )
+                    self._asset_trace.response(
+                        host,
+                        path,
+                        status_code,
+                        body_size,
+                        location=resp_headers.get(b'location'),
+                    )
+                    if (
+                        close_delimited
+                        or not _keep_alive(req_first, req_headers)
+                        or not _keep_alive(resp_first, resp_headers)
+                    ):
+                        break
+                    continue
+
                 if not response_has_body:
                     # HEAD, 1xx, 204 and 304 have no body even with Content-Length
                     resp_body = RawBody(wire=b'', payload=b'', was_chunked=False)
@@ -3939,7 +4119,7 @@ class FleasionProxy:
                 modified_content_encoding: bytes | None = None
                 custom_fflag_delivered_signature: tuple[tuple[str, str], ...] | None = None
 
-                if is_batch:
+                if batch_requires_hooks:
                     # Batch response: forward raw to Roblox, decompress only for addon hooks
                     resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
                     # Addon hooks must use req_body_modified (what we actually sent to
@@ -3958,15 +4138,20 @@ class FleasionProxy:
                     can_process_batch = not is_v3_batch or (
                         v3_request_context is not None and response_context is not None
                     )
-                    rewritten_batch = (
-                        texture_batch_processor.process_batch_response(
-                            req_body_modified, resp_body_plain, req_headers, batch_id
+                    try:
+                        rewritten_batch = (
+                            texture_batch_processor.process_batch_response(
+                                req_body_modified, resp_body_plain, req_headers, batch_id
+                            )
+                            if can_process_batch
+                            and not resp_body.has_trailers
+                            and 200 <= status_code < 300
+                            else None
                         )
-                        if can_process_batch
-                        and not resp_body.has_trailers
-                        and 200 <= status_code < 300
-                        else None
-                    )
+                    finally:
+                        # Clear orphan IDs on HTTP errors, malformed responses,
+                        # and partial batches as well as successful responses
+                        finish_batch(batch_id)
                     if can_process_batch and self.cache_scraper.enabled:
                         self.cache_scraper.process_batch_response(scraper_body, resp_body_plain)
                     if rewritten_batch is not None and rewritten_batch != resp_body_plain:
@@ -4142,6 +4327,8 @@ class FleasionProxy:
         try:
             await run_session_loop()
         finally:
+            for unfinished_batch in tuple(pending_batches):
+                finish_batch(unfinished_batch)
             with contextlib.suppress(Exception):
                 await response_writer.flush_pending_response()
             if up_writer is not None:

@@ -398,6 +398,32 @@ def test_auto_replace_and_proxy_request_log_parity(tmp_path: Path, protocol: str
 
 
 @pytest.mark.parametrize('protocol', ['http/1.1', 'h2'])
+def test_unmodified_cdn_passthrough_without_intercept_logging(
+    tmp_path: Path, protocol: str
+) -> None:
+    """HTTP/2's whole-message adapter must not receive partial HTTP responses."""
+    async def run() -> None:
+        calls = AddonCalls()
+        host = 'fts.rbxcdn.com'
+        proxy = _proxy(tmp_path, host, calls, log_all=False)
+        payload = b'unmodified-cdn-bytes' * 512
+        response, upstream = await _exchange(
+            proxy,
+            calls,
+            protocol=protocol,
+            host=host,
+            path='/unmodified-cdn',
+            method='GET',
+            upstream_body=payload,
+        )
+        assert response == payload
+        assert len(upstream) == 1
+        assert upstream[0][0].startswith(b'GET /unmodified-cdn ')
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('protocol', ['http/1.1', 'h2'])
 def test_cdn_local_mesh_replacement_and_scraping_parity(tmp_path: Path, protocol: str) -> None:
     async def run() -> None:
         payload = b'controlled-mesh-replacement'

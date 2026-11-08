@@ -154,6 +154,9 @@ def _as_http2(
 class _MessageWriter(asyncio.StreamWriter):
     """Convert complete HTTP/1 writes from the feature engine to a callback."""
 
+    # The bridge needs one complete response per drain, not body chunks
+    supports_incremental_responses = False
+
     def __init__(
         self,
         callback: Callable[[bytes], Awaitable[None]],

@@ -1167,6 +1167,26 @@ class TextureStripper:
                 self._anim_local_pending[req_id] = value
             return True
 
+    def discard_batch(self, batch_id: str) -> None:
+        """Discard unresolved routes when a batch completes or fails.
+
+        A failed or partially populated upstream response cannot provide the
+        missing CDN URLs. Keeping its pending IDs would unnecessarily delay
+        every unrelated CDN request waiting for mappings that can never arrive.
+        """
+        if not batch_id:
+            return
+        prefix = f'{batch_id}_'
+        with self._lock:
+            self._batch_generations.pop(batch_id, None)
+            for key in tuple(self._pending):
+                if key.startswith(prefix):
+                    del self._pending[key]
+            with self._anim_lock:
+                for key in tuple(self._anim_local_pending):
+                    if key.startswith(prefix):
+                        del self._anim_local_pending[key]
+
     def set_cache_scraper(self, scraper: _CacheScraperLike) -> None:
         """Wire in the CacheScraper for place-ID lookups on replacement assets."""
         self._cache_scraper = scraper

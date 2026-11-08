@@ -470,6 +470,29 @@ def test_disabling_config_invalidates_queued_local_route(tmp_path: Path) -> None
     assert stripper.check_cdn_request('fts.rbxcdn.com', '/old-content') is None
 
 
+def test_discard_batch_cleans_orphans_without_touching_other_batches(tmp_path: Path) -> None:
+    """Missing CDN locations must not leave stale routing candidates indefinitely."""
+    replacement = tmp_path / 'replacement.dat'
+    replacement.write_bytes(b'local replacement')
+    stripper = _make_stripper(_Config())
+    body = json.dumps([{'assetId': 1234, 'requestId': 'a'}]).encode()
+    replacements: ReplacementMaps = ({}, set(), {}, {1234: str(replacement)})
+
+    _process_batch_request(stripper, body, {}, replacements, 'failed')
+    _process_batch_request(stripper, body, {}, replacements, 'active')
+    assert stripper.has_pending()
+
+    stripper.discard_batch('failed')
+    assert stripper.has_pending()
+    pending = cast('dict[str, object]', _attr(stripper, '_pending'))
+    assert all(not key.startswith('failed_') for key in pending)
+    assert any(key.startswith('active_') for key in pending)
+
+    stripper.discard_batch('active')
+    assert not stripper.has_pending()
+    assert cast('dict[str, int]', _attr(stripper, '_batch_generations')) == {}
+
+
 def test_reset_rejects_response_from_old_batch(tmp_path: Path) -> None:
     class _MutableConfig:
         replacements_generation = 0
