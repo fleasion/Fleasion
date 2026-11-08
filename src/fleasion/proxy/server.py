@@ -3071,6 +3071,19 @@ class FleasionProxy:
             initial_client_data=initial_client_data
         )
 
+    def may_stream_untouched_cdn(self) -> bool:
+        """Whether all body-inspection hooks are inactive for CDN responses."""
+        return (
+            not self.cache_scraper.enabled
+            and not self._auto_replace_rules
+            and not self._intercept_all_hosts
+            and not self._asset_trace.enabled
+        )
+
+    def batch_route_change_event(self) -> asyncio.Event:
+        """Return the current event for pending asset-batch completion."""
+        return self._batch_routes_event
+
     def _signal_batch_route_change(self) -> None:
         """Wake CDN requests waiting for a completed asset-delivery batch."""
         event = self._batch_routes_event

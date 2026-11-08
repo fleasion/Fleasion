@@ -2582,6 +2582,27 @@ class TextureStripper:
 
         return self._check_legacy_cdn_request(base_url)
 
+    def has_cdn_route(self, host: str, path: str) -> bool:
+        """Check whether a CDN route requires feature processing without consuming it.
+
+        The HTTP/2 streaming path must not consume one-shot routes just to
+        determine whether the request can be forwarded unmodified.
+        """
+        self._sync_replacements_generation()
+        base_url = f'https://{host}{path}'.split('?', 1)[0]
+        if is_synthetic_cdn_request(host, path):
+            return True
+        with self._lock:
+            routed = (
+                base_url in self._local_redirects
+                or base_url in self._cdn_redirects
+                or base_url in self._solidmodel_injections
+            )
+        if routed:
+            return True
+        with self._anim_lock:
+            return base_url in self._anim_rig_local
+
     def _check_legacy_cdn_request(self, base_url: str) -> _CdnMatch | None:
         def _log_cdn_match(action: str, value: str | _AnimPendingValue) -> None:
             target = value[0] if action == 'anim_rig' and isinstance(value, tuple) else value
