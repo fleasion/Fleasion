@@ -1318,6 +1318,8 @@ FILIPINO: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Burahin',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'Burahin ang FastFlag Profile',
     'ui.gui.modifications_tab.delete_selected': 'Burahin ang Napili',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Burahin ang Lahat ng Custom FastFlag',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Burahin ang lahat ng naka-save na custom FastFlag? Hindi ito maibabalik.',
     'ui.gui.modifications_tab.delete_value': 'Burahin ang “{value0}”?',
     'ui.gui.modifications_tab.display_name': 'Ipinapakitang pangalan:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'I-double-click ang cell ng Keybind upang magtalaga ng global key. Gumagana ang isang key, modifier-only key, at kumbinasyon habang nakatuon ang Roblox.',

@@ -37,6 +37,7 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QKeyEvent,
+    QKeySequence,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -44,6 +45,7 @@ from PySide6.QtGui import (
     QPalette,
     QPixmap,
     QPolygonF,
+    QShortcut,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -77,6 +79,7 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
     QStyleOptionButton,
     QStyleOptionViewItem,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -102,6 +105,7 @@ from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
 
 from . import glass
+from .fflag_virtual_model import VirtualFastFlagModel
 from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
 
@@ -2975,6 +2979,7 @@ class CustomFFlagEditor(QWidget):
     """Fishstrap-style name/value editor backed by Fleasion's proxy settings."""
 
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
+    _VIRTUAL_THRESHOLD = 10_000
 
     def __init__(
         self,
@@ -3025,6 +3030,8 @@ class CustomFFlagEditor(QWidget):
         self._loading = False
         self._sort_column: int | None = 0
         self._sort_ascending = True
+        self._virtual_active = False
+        self._virtual_flags: dict[str, str] = {}
         self._setup_ui()
         self._load_flags()
 
@@ -3112,6 +3119,38 @@ class CustomFFlagEditor(QWidget):
             self._table.setColumnWidth(3, 160)
         layout.addWidget(self._table)
 
+        # Qt's item-based table requires multiple C++ objects per flag and
+        # cannot represent huge lists without exhausting memory
+        self._virtual_model = VirtualFastFlagModel()
+        self._virtual_model.value_changed.connect(self._on_virtual_value_changed)
+        self._virtual_model.name_changed.connect(self._on_virtual_name_changed)
+        self._virtual_model.status_changed.connect(self._on_virtual_status_changed)
+        self._virtual_model.invalid_name.connect(self._on_virtual_invalid_name)
+        self._virtual_table = QTableView(self)
+        self._virtual_table.setModel(self._virtual_model)
+        self._virtual_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._virtual_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._virtual_table.setEditTriggers(self._table.editTriggers())
+        self._virtual_table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._virtual_table))
+        virtual_header = self._virtual_table.horizontalHeader()
+        virtual_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        virtual_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        virtual_header.setSectionsClickable(True)
+        virtual_header.setSortIndicatorShown(True)
+        virtual_header.setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        virtual_header.sectionClicked.connect(self._sort_rows)
+        self._virtual_table.setColumnWidth(0, 300)
+        self._virtual_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self._virtual_table.setFixedHeight(420)
+        self._virtual_table.clicked.connect(self._edit_value_cell)
+        self._virtual_table.doubleClicked.connect(self._on_virtual_double_clicked)
+        self._virtual_table.hide()
+        layout.addWidget(self._virtual_table)
+
+        for table in (self._table, self._virtual_table):
+            delete_shortcut = QShortcut(QKeySequence('Delete'), table)
+            delete_shortcut.activated.connect(self._delete_selected)
+
         buttons = QHBoxLayout()
         browse_button = QPushButton(tr('ui.gui.modifications_tab.browse_fastflags'))
         browse_button.setToolTip(
@@ -3174,7 +3213,21 @@ class CustomFFlagEditor(QWidget):
 
     def _load_flags(self, sync_hotkeys: bool = True) -> None:
         flags = dict(getattr(self._config, 'custom_fflags', {}) or {}) if self._config else {}
-        self._replace_table_rows(self._ordered_flag_rows(flags))
+        if len(flags) > self._VIRTUAL_THRESHOLD:
+            self._virtual_active = True
+            self._virtual_flags = flags
+            self._table.hide()
+            self._virtual_table.show()
+            self._replace_virtual_rows(self._ordered_flag_rows(flags))
+        else:
+            self._virtual_active = False
+            self._virtual_flags = {}
+            self._virtual_model.replace(
+                {}, [], {}, set(), set(), {}, {}, hotkeys_supported=self._hotkeys_supported
+            )
+            self._virtual_table.hide()
+            self._table.show()
+            self._replace_table_rows(self._ordered_flag_rows(flags))
         self._filter_rows(self._search.text())
         self._update_status()
         if sync_hotkeys:
@@ -3269,11 +3322,15 @@ class CustomFFlagEditor(QWidget):
             self._loading = False
 
     def _row_kind(self, row: int) -> str:
+        if self._virtual_active:
+            return self._virtual_model.entry_at(row)[0]
         item = self._table.item(row, 0)
         value = item.data(_FFLAG_ROW_KIND_ROLE) if item is not None else None
         return value if value in {_FFLAG_ROW_FLAG, _FFLAG_ROW_FOLDER} else _FFLAG_ROW_FLAG
 
     def _row_name(self, row: int) -> str:
+        if self._virtual_active:
+            return self._virtual_model.entry_at(row)[1]
         item = self._table.item(row, 0)
         if item is None:
             return ''
@@ -3281,6 +3338,8 @@ class CustomFFlagEditor(QWidget):
         return str(canonical).strip() if canonical is not None else item.text().strip()
 
     def _flags_from_table(self) -> dict[str, str]:
+        if self._virtual_active:
+            return dict(self._virtual_flags)
         flags: dict[str, str] = {}
         for row in range(self._table.rowCount()):
             if self._row_kind(row) != _FFLAG_ROW_FLAG:
@@ -3295,6 +3354,8 @@ class CustomFFlagEditor(QWidget):
         return name.startswith(cls._BOOLEAN_FLAG_PREFIXES)
 
     def _value_from_row(self, row: int) -> str:
+        if self._virtual_active:
+            return self._virtual_model.entry_at(row)[2] or ''
         value_item = self._table.item(row, 1)
         if value_item is None:
             return ''
@@ -3370,11 +3431,28 @@ class CustomFFlagEditor(QWidget):
         return _format_hotkey_binding(binding)
 
     def _flag_is_enabled(self, row: int) -> bool:
+        if self._virtual_active:
+            kind, name, _value = self._virtual_model.entry_at(row)
+            disabled = (
+                self._virtual_model.disabled_folders
+                if kind == _FFLAG_ROW_FOLDER
+                else self._virtual_model.disabled_flags
+            )
+            return name not in disabled
         item = self._table.item(row, 2)
         return item is not None and item.checkState() == Qt.CheckState.Checked
 
     def _save_hotkey_settings(self) -> None:
         if not self._hotkeys_supported or self._config is None or self._loading:
+            return
+        if self._virtual_active:
+            virtual_disabled = sorted(self._virtual_model.disabled_flags)
+            virtual_disabled_folders = sorted(self._virtual_model.disabled_folders)
+            if virtual_disabled != sorted(self._disabled_flag_names()):
+                self._config.custom_fflag_disabled = virtual_disabled
+            if virtual_disabled_folders != sorted(self._disabled_folder_names()):
+                self._config.custom_fflag_disabled_folders = virtual_disabled_folders
+            self._update_status()
             return
         disabled: set[str] = set()
         disabled_folders: set[str] = set()
@@ -3578,7 +3656,40 @@ class CustomFFlagEditor(QWidget):
             and self._row_kind(index.row()) == _FFLAG_ROW_FLAG
             and self._is_boolean_flag(self._row_name(index.row()))
         ):
-            self._table.edit(index)
+            (self._virtual_table if self._virtual_active else self._table).edit(index)
+
+    def _on_virtual_double_clicked(self, index: QModelIndex) -> None:
+        if index.column() == 3:
+            self._edit_keybind(index.row(), index.column())
+
+    def _on_virtual_value_changed(self, _name: str, _value: str) -> None:
+        self._save_table()
+
+    def _on_virtual_name_changed(self, previous: str, name: str) -> None:
+        if self._config is None:
+            return
+        folders = self._folders()
+        changed_folders = False
+        for members in folders.values():
+            for index, member in enumerate(members):
+                if member == previous:
+                    members[index] = name
+                    changed_folders = True
+        if changed_folders:
+            self._config.custom_fflag_folders = folders
+        self._save_table()
+
+    def _on_virtual_status_changed(self, _kind: str, _name: str, _enabled: bool) -> None:
+        self._save_hotkey_settings()
+
+    def _on_virtual_invalid_name(self, name: str) -> None:
+        QMessageBox.warning(
+            self,
+            tr('ui.gui.modifications_tab.invalid_fastflag_name'),
+            tr('ui.gui.modifications_tab.fastflag_name_already_exists', value0=name)
+            if name
+            else tr('ui.gui.modifications_tab.fastflag_name_cannot_be_empty'),
+        )
 
     def _on_cell_changed(self, row: int, column: int) -> None:
         if self._loading:
@@ -3630,20 +3741,31 @@ class CustomFFlagEditor(QWidget):
     def _save_table(self, *_args: object) -> None:
         if self._loading or self._config is None:
             return
-        self._config.custom_fflags = self._flags_from_table()
-        self._prune_hotkey_settings(set(self._config.custom_fflags))
+        flags = self._flags_from_table()
+        self._config.custom_fflags = flags
+        self._prune_hotkey_settings(set(flags))
         self._update_status()
-        self._filter_rows(self._search.text())
+        if self._virtual_active:
+            if self._search.text().strip():
+                QTimer.singleShot(0, lambda: self._filter_rows(self._search.text()))
+        else:
+            self._filter_rows(self._search.text())
 
     def _update_status(self) -> None:
         if not hasattr(self, '_status'):
             return
-        flags = self._flags_from_table() if hasattr(self, '_table') else {}
+        flags = (
+            self._virtual_flags
+            if self._virtual_active
+            else (self._flags_from_table() if hasattr(self, '_table') else {})
+        )
         count = len(flags)
         disabled = self._disabled_flag_names()
         for folder in self._disabled_folder_names():
             disabled.update(self._folders().get(folder, []))
-        active_count = len(set(flags) - disabled) if self._hotkeys_supported else count
+        active_count = (
+            count - sum(name in flags for name in disabled) if self._hotkeys_supported else count
+        )
         enabled = bool(self._config and getattr(self._config, 'custom_fflags_enabled', False))
         if enabled:
             self._status.setText(
@@ -3748,7 +3870,7 @@ class CustomFFlagEditor(QWidget):
         if self._config is None:
             return
         self._config.custom_fflags = flags
-        self._prune_hotkey_settings(set(self._config.custom_fflags), sync_hotkeys=False)
+        self._prune_hotkey_settings(set(flags), sync_hotkeys=False)
         # Flag values are consumed directly from settings; only the master
         # enable toggle changes the interception route set.
         self._load_flags()
@@ -3840,27 +3962,56 @@ class CustomFFlagEditor(QWidget):
         self._config.custom_fflag_actions = dialog.action_definitions
         self._sync_hotkeys()
 
-    def _sort_value(self, entry: tuple[str, str], column: int) -> str:
-        if column == 0:
-            return entry[0]
-        if column == 1:
-            return entry[1]
-        if column == 2:
-            return 'disabled' if entry[0] in self._disabled_flag_names() else 'enabled'
-        return self._keybind_text(self._keybinds().get(entry[0]))
-
     def _ordered_flag_rows(self, flags: dict[str, str]) -> list[tuple[str, str]]:
         column = self._sort_column if self._sort_column is not None else 0
         rows = list(flags.items())
-        rows.sort(
-            key=lambda entry: (
-                self._sort_value(entry, column).casefold(),
-                entry[0].casefold(),
-                entry[1].casefold(),
-            ),
-            reverse=not self._sort_ascending,
-        )
+        disabled: set[str] = self._disabled_flag_names() if column == 2 else set()
+        bindings = self._keybinds() if column == 3 else {}
+
+        def sort_key(entry: tuple[str, str]) -> tuple[str, str, str]:
+            name, value = entry
+            if column == 0:
+                primary = name
+            elif column == 1:
+                primary = value
+            elif column == 2:
+                primary = 'disabled' if name in disabled else 'enabled'
+            else:
+                primary = self._keybind_text(bindings.get(name))
+            return primary.casefold(), name.casefold(), value.casefold()
+
+        rows.sort(key=sort_key, reverse=not self._sort_ascending)
         return rows
+
+    def _replace_virtual_rows(self, rows: list[tuple[str, str]]) -> None:
+        values = self._virtual_flags
+        folders = self._folders()
+        grouped = {name for members in folders.values() for name in members if name in values}
+        order = {name: index for index, (name, _value) in enumerate(rows)} if grouped else {}
+        entries: list[tuple[str, str, str | None]] = []
+        for folder in sorted(folders, key=str.casefold):
+            entries.append((_FFLAG_ROW_FOLDER, folder, None))
+            members = (name for name in folders[folder] if name in values)
+            entries.extend(
+                (_FFLAG_ROW_FLAG, name, values[name])
+                for name in sorted(members, key=lambda name: order[name])
+            )
+        entries.extend(
+            (_FFLAG_ROW_FLAG, name, value) for name, value in rows if name not in grouped
+        )
+        self._virtual_model.replace(
+            values,
+            entries,
+            folders,
+            self._disabled_flag_names(),
+            self._disabled_folder_names(),
+            {name: self._keybind_text(binding) for name, binding in self._keybinds().items()},
+            {
+                name: self._keybind_text(binding)
+                for name, binding in self._folder_keybinds().items()
+            },
+            hotkeys_supported=self._hotkeys_supported,
+        )
 
     def _sort_rows(self, column: int) -> None:
         if self._sort_column == column:
@@ -3869,15 +4020,32 @@ class CustomFFlagEditor(QWidget):
             self._sort_column = column
             self._sort_ascending = True
 
-        self._replace_table_rows(self._ordered_flag_rows(self._flags_from_table()))
-        self._table.horizontalHeader().setSortIndicator(
+        rows = self._ordered_flag_rows(self._flags_from_table())
+        if self._virtual_active:
+            self._replace_virtual_rows(rows)
+        else:
+            self._replace_table_rows(rows)
+        (
+            self._virtual_table if self._virtual_active else self._table
+        ).horizontalHeader().setSortIndicator(
             column,
             Qt.SortOrder.AscendingOrder if self._sort_ascending else Qt.SortOrder.DescendingOrder,
         )
         self._filter_rows(self._search.text())
 
     def _delete_selected(self) -> None:
-        rows = sorted({index.row() for index in self._table.selectedIndexes()})
+        table = self._virtual_table if self._virtual_active else self._table
+        selection = table.selectionModel()
+        if self._virtual_active:
+            # Ctrl+A produces a single selection range regardless of row count
+            ranges = selection.selection()
+            if ranges.count() == 1 and (
+                ranges.at(0).top() == 0
+                and ranges.at(0).bottom() == self._virtual_model.rowCount() - 1
+            ):
+                self._clear_all_flags()
+                return
+        rows = sorted(index.row() for index in selection.selectedRows(0))
         if not rows or self._config is None:
             return
         flags = self._flags_from_table()
@@ -3895,10 +4063,11 @@ class CustomFFlagEditor(QWidget):
         self._set_flags(flags)
 
     def _selected_flag_names(self) -> list[str]:
+        table = self._virtual_table if self._virtual_active else self._table
         return sorted(
             {
                 self._row_name(index.row())
-                for index in self._table.selectedIndexes()
+                for index in table.selectionModel().selectedRows(0)
                 if self._row_kind(index.row()) == _FFLAG_ROW_FLAG and self._row_name(index.row())
             },
             key=str.casefold,
@@ -3977,7 +4146,26 @@ class CustomFFlagEditor(QWidget):
         self._config.custom_fflag_folders = folders
         self._load_flags()
 
+    def _clear_all_flags(self) -> None:
+        if self._config is None or not (
+            self._virtual_flags if self._virtual_active else self._flags_from_table()
+        ):
+            return
+        if (
+            QMessageBox.question(
+                self,
+                tr('ui.gui.modifications_tab.clear_custom_fastflags'),
+                tr('ui.gui.modifications_tab.clear_custom_fastflags_confirmation'),
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self._set_flags({})
+
     def _filter_rows(self, text: str) -> None:
+        if self._virtual_active:
+            self._virtual_model.filter(str(text or ''))
+            return
         query = str(text or '').strip().lower()
         visible_count = 0
         for row in range(self._table.rowCount()):

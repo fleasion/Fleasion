@@ -1318,6 +1318,8 @@ FRENCH: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Supprimer',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'Supprimer le profil FastFlag',
     'ui.gui.modifications_tab.delete_selected': 'Supprimer la sélection',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Effacer toutes les FastFlags personnalisées',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Supprimer toutes les FastFlags personnalisées enregistrées ? Cette action est irréversible.',
     'ui.gui.modifications_tab.delete_value': 'Supprimer « {value0} » ?',
     'ui.gui.modifications_tab.display_name': 'Nom d’affichage :',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Double-cliquez sur une cellule Raccourci pour attribuer une touche globale. Les touches seules, les modificateurs seuls et les combinaisons fonctionnent tous lorsque Roblox a le focus.',

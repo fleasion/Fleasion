@@ -1318,6 +1318,8 @@ POLISH: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Usuń',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'Usuń profil FastFlag',
     'ui.gui.modifications_tab.delete_selected': 'Usuń wybrane',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Usuń wszystkie niestandardowe FastFlags',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Usunąć wszystkie zapisane niestandardowe FastFlags? Tej czynności nie można cofnąć.',
     'ui.gui.modifications_tab.delete_value': 'Usunąć „{value0}”?',
     'ui.gui.modifications_tab.display_name': 'Nazwa wyświetlana:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Kliknij dwukrotnie komórkę skrótu klawiszowego, aby przypisać globalny klawisz. Pojedyncze klawisze, modyfikatory i kombinacje działają, gdy Roblox jest aktywny.',

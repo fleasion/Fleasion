@@ -1318,6 +1318,8 @@ GERMAN: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Löschen',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'FastFlag-Profil löschen',
     'ui.gui.modifications_tab.delete_selected': 'Auswahl löschen',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Alle benutzerdefinierten FastFlags löschen',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Alle gespeicherten benutzerdefinierten FastFlags löschen? Dies kann nicht rückgängig gemacht werden.',
     'ui.gui.modifications_tab.delete_value': '„{value0}“ löschen?',
     'ui.gui.modifications_tab.display_name': 'Anzeigename:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Doppelklicken Sie auf eine Tastenkürzel-Zelle, um eine globale Taste zuzuweisen. Einzelne Tasten, reine Modifikatortasten und Kombinationen funktionieren, während Roblox den Fokus hat.',

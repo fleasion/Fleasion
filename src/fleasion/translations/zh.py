@@ -1318,6 +1318,8 @@ CHINESE: dict[str, str] = {
     'ui.gui.modifications_tab.delete': '删除',
     'ui.gui.modifications_tab.delete_fastflag_profile': '删除 FastFlag 配置方案',
     'ui.gui.modifications_tab.delete_selected': '删除所选项',
+    'ui.gui.modifications_tab.clear_custom_fastflags': '清除所有自定义 FastFlags',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': '删除所有已保存的自定义 FastFlags？此操作无法撤销。',
     'ui.gui.modifications_tab.delete_value': '删除“{value0}”？',
     'ui.gui.modifications_tab.display_name': '显示名称：',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': '双击“按键绑定”单元格可分配全局按键。Roblox 获得焦点时，单键、仅修饰键以及组合键都可使用。',

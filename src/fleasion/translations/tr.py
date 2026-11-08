@@ -1318,6 +1318,8 @@ TURKISH: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Sil',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'FastFlag Profilini Sil',
     'ui.gui.modifications_tab.delete_selected': 'Seçilenleri Sil',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Tüm özel FastFlag’leri temizle',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Kaydedilmiş tüm özel FastFlag’ler silinsin mi? Bu işlem geri alınamaz.',
     'ui.gui.modifications_tab.delete_value': '“{value0}” silinsin mi?',
     'ui.gui.modifications_tab.display_name': 'Görünen ad:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Genel bir tuş atamak için bir Tuş Ataması hücresine çift tıklayın. Tek tuşlar, yalnızca değiştirici tuşlar ve kombinasyonlar Roblox odaktayken çalışır.',

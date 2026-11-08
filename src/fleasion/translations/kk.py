@@ -1318,6 +1318,8 @@ KAZAKH: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Жою',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'FastFlag профилін жою',
     'ui.gui.modifications_tab.delete_selected': 'Таңдалғандарды жою',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Барлық реттелетін FastFlag-терді өшіру',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Барлық сақталған реттелетін FastFlag-тер өшірілсін бе? Бұл әрекетті қайтару мүмкін емес.',
     'ui.gui.modifications_tab.delete_value': '“{value0}” жойылсын ба?',
     'ui.gui.modifications_tab.display_name': 'Көрсетілетін атау:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Жаһандық пернені тағайындау үшін Перне тіркесімі ұяшығын екі рет басыңыз. Roblox фокуста тұрғанда жеке пернелер, тек модификатор пернелері және тіркестердің барлығы жұмыс істейді.',

@@ -1318,6 +1318,8 @@ RUSSIAN: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Удалить',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'Удалить профиль FastFlag',
     'ui.gui.modifications_tab.delete_selected': 'Удалить выбранное',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Удалить все пользовательские FastFlags',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Удалить все сохранённые пользовательские FastFlags? Это действие нельзя отменить.',
     'ui.gui.modifications_tab.delete_value': 'Удалить “{value0}”?',
     'ui.gui.modifications_tab.display_name': 'Отображаемое имя:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Дважды щёлкните ячейку привязки клавиш, чтобы назначить глобальную клавишу. Одиночные клавиши, только модификаторы и их сочетания работают, пока Roblox находится в фокусе.',

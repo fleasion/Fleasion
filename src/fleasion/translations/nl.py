@@ -1318,6 +1318,8 @@ DUTCH: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Verwijderen',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'FastFlag-profiel verwijderen',
     'ui.gui.modifications_tab.delete_selected': 'Selectie verwijderen',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Alle aangepaste FastFlags wissen',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Alle opgeslagen aangepaste FastFlags verwijderen? Dit kan niet ongedaan worden gemaakt.',
     'ui.gui.modifications_tab.delete_value': '“{value0}” verwijderen?',
     'ui.gui.modifications_tab.display_name': 'Weergavenaam:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Dubbelklik op een sneltoetscel om een globale toets toe te wijzen. Losse toetsen, modificatietoetsen en combinaties werken ook wanneer Roblox de focus heeft.',

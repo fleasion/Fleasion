@@ -1320,6 +1320,8 @@ ARABIC: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'حذف',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'حذف ملف تعريف FastFlag',
     'ui.gui.modifications_tab.delete_selected': 'حذف المحدد',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'مسح جميع FastFlags المخصصة',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'هل تريد حذف جميع FastFlags المخصصة المحفوظة؟ لا يمكن التراجع عن هذا الإجراء.',
     'ui.gui.modifications_tab.delete_value': 'هل تريد حذف «{value0}»؟',
     'ui.gui.modifications_tab.display_name': 'اسم العرض:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'انقر مرتين على خانة اختصار المفتاح لتعيين مفتاح عام. تعمل المفاتيح المفردة والمعدّلات وحدها ومجموعات المفاتيح حتى عندما تكون نافذة Roblox نشطة.',

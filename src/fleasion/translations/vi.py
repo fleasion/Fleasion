@@ -1318,6 +1318,8 @@ VIETNAMESE: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Xóa',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'Xóa hồ sơ FastFlag',
     'ui.gui.modifications_tab.delete_selected': 'Xóa mục đã chọn',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Xóa tất cả FastFlag tùy chỉnh',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Xóa mọi FastFlag tùy chỉnh đã lưu? Không thể hoàn tác.',
     'ui.gui.modifications_tab.delete_value': 'Xóa “{value0}”?',
     'ui.gui.modifications_tab.display_name': 'Tên hiển thị:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Nhấp đúp vào ô Phím tắt để gán phím toàn cục. Phím đơn, phím bổ trợ và tổ hợp phím đều hoạt động khi Roblox được lấy nét.',

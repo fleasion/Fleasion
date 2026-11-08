@@ -1318,6 +1318,8 @@ ENGLISH: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Delete',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'Delete FastFlag Profile',
     'ui.gui.modifications_tab.delete_selected': 'Delete Selected',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Clear All Custom FastFlags',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Delete every saved custom FastFlag? This cannot be undone.',
     'ui.gui.modifications_tab.delete_value': 'Delete “{value0}”?',
     'ui.gui.modifications_tab.display_name': 'Display name:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Double-click a Keybind cell to assign a global key. Single keys, modifier-only keys, and combinations all work while Roblox is focused.',

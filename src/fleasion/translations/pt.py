@@ -1318,6 +1318,8 @@ PORTUGUESE: dict[str, str] = {
     'ui.gui.modifications_tab.delete': 'Excluir',
     'ui.gui.modifications_tab.delete_fastflag_profile': 'Excluir perfil de FastFlag',
     'ui.gui.modifications_tab.delete_selected': 'Excluir selecionadas',
+    'ui.gui.modifications_tab.clear_custom_fastflags': 'Limpar todas as FastFlags personalizadas',
+    'ui.gui.modifications_tab.clear_custom_fastflags_confirmation': 'Excluir todas as FastFlags personalizadas salvas? Esta ação não pode ser desfeita.',
     'ui.gui.modifications_tab.delete_value': 'Excluir “{value0}”?',
     'ui.gui.modifications_tab.display_name': 'Nome de exibição:',
     'ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign': 'Clique duas vezes em uma célula de Atalho para atribuir uma tecla global. Teclas únicas, apenas modificadoras e combinações funcionam enquanto o Roblox estiver em foco.',
