@@ -271,6 +271,8 @@ _TREE_INDENT_PX = 12
 _GROUP_ROW_HEIGHT_PX = 24
 _GROUP_CONTENT_INDENT_SPACES = 5
 _PROFILE_NAME_COLUMN = 1
+_REPLACER_COLUMN_KEYS = ('status', 'profile_name', 'mode', 'asset_ids', 'replacement')
+_REPLACER_DEFAULT_COLUMN_WIDTHS = (85, 220, 95, 110)
 _GROUP_FOLDER_ICON_WIDTH_PX = 13
 _GROUP_FOLDER_ICON_HEIGHT_PX = 10
 _GROUP_FOLDER_ICON_GAP_PX = 4
@@ -905,6 +907,7 @@ class ReplacerConfigWindow(QDialog):
         super().__init__()
         self.setAutoFillBackground(True)
         self.config_manager = config_manager
+        self._replacer_column_widths = self._load_replacer_column_widths()
         self.proxy_master = proxy_master
         self._mod_manager = mod_manager
         self.roblox_monitor = roblox_monitor
@@ -1527,13 +1530,41 @@ class ReplacerConfigWindow(QDialog):
         self.tree.setItemDelegateForColumn(_PROFILE_NAME_COLUMN, _ProfileNameDelegate(self.tree))
 
         header = self.tree.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        # Match the scraper: user-resizable columns and a final fill column
+        header.setStretchLastSection(True)
+        for index, key in enumerate(_REPLACER_COLUMN_KEYS[:-1]):
+            header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
+            self.tree.setColumnWidth(
+                index, self._replacer_column_widths.get(key, _REPLACER_DEFAULT_COLUMN_WIDTHS[index])
+            )
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.sectionResized.connect(self._on_replacer_column_resized)
 
         parent_layout.addWidget(self.tree)
+
+    def _load_replacer_column_widths(self) -> dict[str, int]:
+        saved = self.config_manager.settings.get('replacer_column_widths')
+        if not isinstance(saved, dict):
+            return {}
+        return {
+            key: width
+            for key in _REPLACER_COLUMN_KEYS[:-1]
+            if isinstance(width := saved.get(key), int)
+            and not isinstance(width, bool)
+            and width > 0
+        }
+
+    def _on_replacer_column_resized(self, index: int, _old_size: int, new_size: int) -> None:
+        if not 0 <= index < len(_REPLACER_COLUMN_KEYS) - 1:
+            return
+        if self.tree.header().sectionResizeMode(index) != QHeaderView.ResizeMode.Interactive:
+            return
+        key = _REPLACER_COLUMN_KEYS[index]
+        if self._replacer_column_widths.get(key) == new_size:
+            return
+        self._replacer_column_widths[key] = new_size
+        self.config_manager.settings['replacer_column_widths'] = dict(self._replacer_column_widths)
+        self.config_manager.save()
 
     def _create_edit_section(self, parent_layout: QVBoxLayout) -> None:
         """Create the add/edit profile section."""
@@ -1915,7 +1946,7 @@ class ReplacerConfigWindow(QDialog):
         elif mode == 'cdn':
             action = tr('replacer.action.cdn')
             cdn_url = rule.get('cdn_url', '')
-            replace_with = cdn_url[:40] + '...' if len(cdn_url) > 40 else cdn_url
+            replace_with = cdn_url
         elif mode == 'local':
             action = tr('replacer.action.local')
             local_path = rule.get('local_path', '')
