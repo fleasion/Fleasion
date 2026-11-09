@@ -973,3 +973,35 @@ def test_delete_cache_aborts_when_explicit_selection_is_unavailable(
         'Cache deletion aborted',
     ]
     assert sentinel.read_bytes() == b'keep'
+
+
+def test_auto_selected_client_tracks_sober_player_without_overriding_proxy_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils.linux_clients import ROSEMARY_CLIENT
+
+    proc = tmp_path / 'proc'
+    process = proc / '1234'
+    process.mkdir(parents=True)
+    (process / 'comm').write_text('Main\n', encoding='utf-8')
+    (process / 'cgroup').write_text(
+        '0::/user.slice/app-flatpak-org.vinegarhq.Sober-abc.scope\n', encoding='utf-8'
+    )
+    (process / 'stat').write_text(
+        '1234 (Main) ' + ' '.join(['S', *['0'] * 18, '500']),
+        encoding='utf-8',
+    )
+    sober = _flatpak_installation(SOBER_CLIENT, tmp_path)
+    rosemary = _flatpak_installation(ROSEMARY_CLIENT, tmp_path)
+    monkeypatch.setattr(platform_linux, 'USER_HOME', tmp_path)
+    monkeypatch.setattr(platform_linux, 'PROC_ROOT', proc)
+    monkeypatch.setattr(platform_linux, '_linux_client_preference', 'auto')
+    monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', None)
+    monkeypatch.setattr(
+        platform_linux, 'linux_client_installations', lambda: (sober, rosemary)
+    )
+    assert platform_linux.get_selected_linux_client_installation() is sober
+    monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', 'rosemary')
+    assert platform_linux.get_selected_linux_client_installation() is rosemary
+    monkeypatch.setattr(platform_linux, '_linux_client_preference', 'sober')
+    assert platform_linux.get_selected_linux_client_installation() is sober

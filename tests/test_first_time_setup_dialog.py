@@ -1,14 +1,22 @@
 import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from collections.abc import Callable
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from PySide6.QtGui import QScreen
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton, QTextBrowser, QWidget
 
 from fleasion.app.dialogs import common as dialogs_common_module
+
+if TYPE_CHECKING:
+    from fleasion.app.tray import SystemTray
+    from fleasion.config import ConfigManager
 
 
 class _FirstTimeDialogLike(Protocol):
@@ -70,3 +78,36 @@ def test_first_time_setup_dialog_keeps_acknowledgement_on_screen() -> None:
     dialog.ok_button.setEnabled(True)
     dialog.accept()
     assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_linux_first_client_choice_preselects_saved_preference(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fleasion.app.dialogs import startup
+    from fleasion.utils import platform_linux
+    from fleasion.utils.linux_clients import ROSEMARY_CLIENT, SOBER_CLIENT, LinuxClientInstallation
+
+    installed = tuple(
+        LinuxClientInstallation(client, client.paths(home=tmp_path), Path('/usr/bin/flatpak'))
+        for client in (SOBER_CLIENT, ROSEMARY_CLIENT)
+    )
+    choices: list[tuple[str, int]] = []
+
+    def capture_choice(
+        _parent: object, _title: str, _label: str, names: list[str],
+        initial: int, *, editable: bool,
+    ) -> tuple[str, bool]:
+        assert not editable
+        choices.append((names[initial], initial))
+        return '', False
+
+    monkeypatch.setattr(platform_linux, 'linux_client_installations', lambda: installed)
+    monkeypatch.setattr(startup, 'visible_parent_widget', lambda: None)
+    monkeypatch.setattr(startup, 'QInputDialog', SimpleNamespace(getItem=capture_choice))
+    for preference in ('auto', 'rosemary'):
+        config = SimpleNamespace(linux_client=preference)
+        startup.prompt_first_linux_client_choice(
+            cast('ConfigManager', config), cast('SystemTray', SimpleNamespace())
+        )
+    assert choices[0][1] == 0
+    assert choices[1][1] == 2

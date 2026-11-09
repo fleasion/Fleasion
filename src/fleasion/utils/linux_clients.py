@@ -411,6 +411,8 @@ def _rosemary_bundle(value: str) -> Path | None:
 
 def _read_rosemary_session(process: Path) -> RosemarySession | None:
     try:
+        if process.stat().st_uid != os.getuid():
+            return None
         command_line = (process / 'cmdline').read_bytes()
     except OSError:
         return None
@@ -506,6 +508,43 @@ def running_mocktail_players(
         if (session := read_mocktail_session(entry, executable=executable)) is not None
     )
     return tuple(sorted(matches, key=lambda session: session.pid))
+
+
+@dataclass(frozen=True, slots=True)
+class SoberSession:
+    """A Sober Roblox engine process belonging to its Flatpak cgroup."""
+
+    pid: int
+    start_ticks: int
+
+
+def running_sober_players(*, proc_root: Path = Path('/proc')) -> tuple[SoberSession, ...]:
+    """Find Sober's engine, excluding unrelated processes also named Main."""
+    try:
+        processes = list(proc_root.iterdir())
+    except OSError:
+        return ()
+    sessions: list[SoberSession] = []
+    for process in processes:
+        if not process.name.isdecimal():
+            continue
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            if process.stat().st_uid != os.getuid():
+                continue
+            if (process / 'comm').read_text(encoding='utf-8').strip() != 'Main':
+                continue
+            cgroup = (process / 'cgroup').read_text(encoding='utf-8', errors='replace')
+            if SOBER_CLIENT.cgroup_marker not in cgroup:
+                continue
+            stat_text = (process / 'stat').read_text(encoding='utf-8')
+            fields = stat_text.rsplit(')', 1)[1].split()
+            if fields[0] in {'Z', 'X', 'x'}:
+                continue
+            start_ticks = int(fields[19])
+        except OSError, ValueError, IndexError:
+            continue
+        sessions.append(SoberSession(int(process.name), start_ticks))
+    return tuple(sorted(sessions, key=lambda session: session.pid))
 
 
 def running_rosemary_studios(*, proc_root: Path = Path('/proc')) -> tuple[int, ...]:
@@ -643,17 +682,28 @@ def _rosemary_installation(
         if configured_binary is not None
         and configured_binary.is_file()
         and os.access(configured_binary, os.X_OK)
-        else which('rosemary')
+        else None
     )
     running_binary = next(
-        (str(session.launcher) for session in sessions if session.launcher.is_file()), None
+        (
+            str(session.launcher)
+            for session in sorted(sessions, key=lambda s: s.start_ticks, reverse=True)
+            if session.launcher.is_file()
+        ),
+        None,
     )
-    executable_path = binary or running_binary
+    executable_path = binary or running_binary or which('rosemary')
     executable = Path(executable_path) if executable_path is not None else None
     configured_bundle = _rosemary_bundle(str(app_path)) if app_path else None
     bundle = (
         configured_bundle
-        or next((session.bundle for session in sessions), None)
+        or next(
+            (
+                session.bundle
+                for session in sorted(sessions, key=lambda s: s.start_ticks, reverse=True)
+            ),
+            None,
+        )
         or _nutmeg_app_bundle(home)
     )
     if not (desktop or sessions or (executable is not None and bundle is not None)):
@@ -770,7 +820,7 @@ def query_default_roblox_handler(**kwargs: Unpack[_QueryHandlerKwargs]) -> str |
     return handlers[0] if handlers else None
 
 
-def select_linux_client(  # ruff: ignore[too-many-return-statements]
+def select_linux_client(
     selection: str = 'auto',
     *,
     installed: Sequence[LinuxClientInstallation] | None = None,
@@ -778,10 +828,12 @@ def select_linux_client(  # ruff: ignore[too-many-return-statements]
     environ: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] | None = None,
     run: CommandRunner | None = None,
+    proc_root: Path = Path('/proc'),
+    running_client_starts: Mapping[str, int] | None = None,
     rosemary_running: bool | None = None,
     mocktail_running: bool | None = None,
 ) -> LinuxClientInstallation | None:
-    """Resolve ``auto`` or a registered key to an installed client."""
+    """Prefer the newest verified Player in auto mode, then the desktop handler."""
     normalized = str(selection).strip().casefold()
     if normalized != 'auto' and normalized not in LINUX_CLIENTS_BY_KEY:
         choices = ', '.join(('auto', *LINUX_CLIENTS_BY_KEY))
@@ -795,6 +847,7 @@ def select_linux_client(  # ruff: ignore[too-many-return-statements]
             environ=environ,
             which=which,
             run=run,
+            proc_root=proc_root,
         )
     )
     by_key = {installation.key: installation for installation in installations}
@@ -802,18 +855,46 @@ def select_linux_client(  # ruff: ignore[too-many-return-statements]
         return by_key.get(normalized)
     if len(installations) <= 1:
         return installations[0] if installations else None
-    if rosemary_running is None:
-        rosemary_running = (
-            home is None or _home_path(home, os.environ) == _home_path(None, os.environ)
-        ) and bool(running_rosemary_players())
-    if 'rosemary' in by_key and rosemary_running:
-        return by_key['rosemary']
-    if mocktail_running is None:
-        mocktail_running = (
-            home is None or _home_path(home, os.environ) == _home_path(None, os.environ)
-        ) and bool(running_mocktail_players())
-    if 'mocktail' in by_key and mocktail_running:
-        return by_key['mocktail']
+
+    starts = dict(running_client_starts) if running_client_starts is not None else {}
+    current_home = home is None or _home_path(
+        home, os.environ if environ is None else environ
+    ) == _home_path(None, os.environ)
+    if running_client_starts is None and (current_home or proc_root != Path('/proc')):
+        if 'rosemary' in by_key:
+            rosemary_bundle = by_key['rosemary'].app_bundle
+            rosemary_sessions = tuple(
+                session
+                for session in running_rosemary_players(proc_root=proc_root)
+                if rosemary_bundle is None or session.bundle == rosemary_bundle
+            )
+            if rosemary_sessions:
+                starts['rosemary'] = max(session.start_ticks for session in rosemary_sessions)
+        if 'mocktail' in by_key:
+            mocktail_sessions = running_mocktail_players(
+                proc_root=proc_root, executable=by_key['mocktail'].executable
+            )
+            if mocktail_sessions:
+                starts['mocktail'] = max(session.start_ticks for session in mocktail_sessions)
+        if 'sober' in by_key:
+            sober_sessions = running_sober_players(proc_root=proc_root)
+            if sober_sessions:
+                starts['sober'] = max(session.start_ticks for session in sober_sessions)
+    # Preserve the existing explicit process-presence overrides for callers
+    # which cannot supply start ticks
+    for key, override in (('rosemary', rosemary_running), ('mocktail', mocktail_running)):
+        if override is True:
+            starts.setdefault(key, 0)
+        elif override is False:
+            starts.pop(key, None)
+    active = {key: ticks for key, ticks in starts.items() if key in by_key}
+    if active:
+        newest = max(active.values())
+        newest_keys = {key for key, ticks in active.items() if ticks == newest}
+        if len(newest_keys) == 1:
+            return by_key[next(iter(newest_keys))]
+    else:
+        newest_keys = set[str]()
 
     handlers = query_default_roblox_handlers(
         home=home,
@@ -823,10 +904,12 @@ def select_linux_client(  # ruff: ignore[too-many-return-statements]
     )
     for handler in handlers:
         for installation in installations:
-            if handler in installation.client.desktop_ids:
+            if (not newest_keys or installation.key in newest_keys) and (
+                handler in installation.client.desktop_ids
+            ):
                 return installation
     for descriptor in LINUX_CLIENTS:
-        if descriptor.key in by_key:
+        if descriptor.key in by_key and (not newest_keys or descriptor.key in newest_keys):
             return by_key[descriptor.key]
     return None
 

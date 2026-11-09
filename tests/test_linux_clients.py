@@ -304,3 +304,160 @@ def test_resource_owner_uses_exact_registered_roots(tmp_path: Path) -> None:
     assert (
         identify_resource_owner(tmp_path / 'unrelated' / 'asset_overlay', (installation,)) is None
     )
+
+
+def _sober_proc(root: Path, pid: int, *, ticks: int, cgroup: str) -> None:
+    process = root / str(pid)
+    process.mkdir(parents=True, exist_ok=True)
+    (process / 'comm').write_text('Main\n', encoding='utf-8')
+    (process / 'cgroup').write_text(cgroup, encoding='utf-8')
+    fields = ['S', *['0'] * 18, str(ticks)]
+    (process / 'stat').write_text(
+        f'{pid} (Main) ' + ' '.join(fields), encoding='utf-8'
+    )
+
+
+def test_running_sober_players_requires_flatpak_cgroup(tmp_path: Path) -> None:
+    from fleasion.utils.linux_clients import SoberSession, running_sober_players
+
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    _sober_proc(
+        proc, 1234, ticks=500,
+        cgroup='0::/user.slice/app-flatpak-org.vinegarhq.Sober-abc.scope\n',
+    )
+    _sober_proc(proc, 5678, ticks=900, cgroup='0::/user.slice/other.scope\n')
+    assert running_sober_players(proc_root=proc) == (SoberSession(1234, 500),)
+
+
+def test_auto_selection_uses_running_sober_over_rosemary_handler(tmp_path: Path) -> None:
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    _sober_proc(
+        proc, 1234, ticks=500,
+        cgroup='0::/user.slice/app-flatpak-org.vinegarhq.Sober-abc.scope\n',
+    )
+    sober = _installation(SOBER_CLIENT, tmp_path)
+    rosemary = _installation(ROSEMARY_CLIENT, tmp_path)
+
+    def nutmeg_handler(
+        command: Sequence[str], *, env: Mapping[str, str],
+        capture_output: bool, text: Literal[True], timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del env, capture_output, text, timeout
+        return subprocess.CompletedProcess(
+            list(command), 0, 'io.github.frolleks.Nutmeg.desktop\n', ''
+        )
+
+    assert select_linux_client(
+        installed=(sober, rosemary), proc_root=proc, home=tmp_path,
+        which=_xdg_which, run=cast('CommandRunner', nutmeg_handler),
+    ) is sober
+    assert select_linux_client(
+        'rosemary', installed=(sober, rosemary), proc_root=proc, home=tmp_path,
+    ) is rosemary
+
+
+def test_auto_selection_chooses_most_recent_running_player(tmp_path: Path) -> None:
+    installations = tuple(_installation(client, tmp_path) for client in LINUX_CLIENTS)
+    for starts, chosen in (
+        ({'rosemary': 100, 'mocktail': 200, 'sober': 300}, 'sober'),
+        ({'rosemary': 300, 'mocktail': 200, 'sober': 100}, 'rosemary'),
+        ({'rosemary': 100, 'mocktail': 300, 'sober': 200}, 'mocktail'),
+    ):
+        selected = select_linux_client(
+            installed=installations, home=tmp_path, which=_no_which,
+            running_client_starts=starts,
+        )
+        assert selected is not None and selected.key == chosen
+
+
+def test_auto_selection_ignores_non_installed_running_clients(tmp_path: Path) -> None:
+    sober = _installation(SOBER_CLIENT, tmp_path)
+    selected = select_linux_client(
+        installed=(sober,), running_client_starts={'rosemary': 900}
+    )
+    assert selected is sober
+
+
+def test_auto_selection_tie_prefers_default_handler(tmp_path: Path) -> None:
+    sober = _installation(SOBER_CLIENT, tmp_path)
+    rosemary = _installation(ROSEMARY_CLIENT, tmp_path)
+
+    def nutmeg_handler(
+        command: Sequence[str], *, env: Mapping[str, str],
+        capture_output: bool, text: Literal[True], timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del env, capture_output, text, timeout
+        return subprocess.CompletedProcess(
+            list(command), 0, 'io.github.frolleks.Nutmeg.desktop\n', ''
+        )
+
+    assert select_linux_client(
+        installed=(sober, rosemary), home=tmp_path,
+        running_client_starts={'sober': 500, 'rosemary': 500},
+        which=_xdg_which, run=cast('CommandRunner', nutmeg_handler),
+    ) is rosemary
+
+
+def test_auto_selection_reads_verified_process_generations(tmp_path: Path) -> None:
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    rosemary_bundle = tmp_path / 'Roblox.app'
+    player = rosemary_bundle / 'Contents/MacOS/RobloxPlayer'
+    player.parent.mkdir(parents=True)
+    player.write_bytes(b'mach-o')
+    certificate = rosemary_bundle / 'Contents/Resources/ssl/cacert.pem'
+    certificate.parent.mkdir(parents=True)
+    certificate.write_bytes(b'cert')
+    rosemary_process = proc / '1000'
+    rosemary_process.mkdir()
+    (rosemary_process / 'cmdline').write_bytes(
+        f'/bin/rosemary\0run\0{rosemary_bundle}\0'.encode()
+    )
+    (rosemary_process / 'stat').write_text(
+        '1000 (Main) ' + ' '.join(['S', *['0'] * 18, '700']), encoding='utf-8'
+    )
+
+    mocktail_binary = tmp_path / 'bin/mocktail'
+    mocktail_binary.parent.mkdir()
+    mocktail_binary.write_bytes(b'elf')
+    mocktail_process = proc / '2000'
+    mocktail_process.mkdir()
+    (mocktail_process / 'exe').symlink_to(mocktail_binary)
+    (mocktail_process / 'cmdline').write_bytes(str(mocktail_binary).encode() + b'\0')
+    (mocktail_process / 'comm').write_text('Main\n', encoding='utf-8')
+    (mocktail_process / 'maps').write_text(
+        '1000-2000 r-xp 0 00:01 1 /mocktail/libroblox.so\n', encoding='utf-8'
+    )
+    (mocktail_process / 'stat').write_text(
+        '2000 (Main) ' + ' '.join(['S', *['0'] * 18, '900']), encoding='utf-8'
+    )
+
+    _sober_proc(
+        proc, 3000, ticks=800,
+        cgroup='0::/user.slice/app-flatpak-org.vinegarhq.Sober-abc.scope\n',
+    )
+    installations = (
+        _installation(SOBER_CLIENT, tmp_path),
+        LinuxClientInstallation(
+            MOCKTAIL_CLIENT, MOCKTAIL_CLIENT.paths(home=tmp_path), mocktail_binary
+        ),
+        LinuxClientInstallation(
+            ROSEMARY_CLIENT, ROSEMARY_CLIENT.paths(home=tmp_path),
+            Path('/bin/rosemary'), rosemary_bundle,
+        ),
+    )
+    selected = select_linux_client(
+        installed=installations, proc_root=proc, home=tmp_path, which=_no_which,
+    )
+    assert selected is installations[1]
+
+    _sober_proc(
+        proc, 3001, ticks=1000,
+        cgroup='0::/user.slice/app-flatpak-org.vinegarhq.Sober-def.scope\n',
+    )
+    selected = select_linux_client(
+        installed=installations, proc_root=proc, home=tmp_path, which=_no_which,
+    )
+    assert selected is installations[0]

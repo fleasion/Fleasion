@@ -385,8 +385,7 @@ def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
         preference,
         installed=installed,
         home=USER_HOME,
-        rosemary_running=bool(running_rosemary_players(proc_root=PROC_ROOT)),
-        mocktail_running=bool(running_mocktail_players(proc_root=PROC_ROOT)),
+        proc_root=PROC_ROOT,
     )
 
 

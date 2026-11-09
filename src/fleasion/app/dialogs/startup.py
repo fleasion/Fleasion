@@ -391,14 +391,14 @@ def prompt_first_linux_client_choice(config_manager: ConfigManager, tray: System
         msg.exec()
         return
 
-    selected = platform_linux.get_selected_linux_client_installation()
     choices = [(tr('ui.gui.settings_tab.auto'), 'auto')]
     choices.extend((item.display_name, item.key) for item in installed)
+    # Preselect the configured preference, not auto mode's current fallback
     initial = next(
         (
             index
             for index, (_, key) in enumerate(choices)
-            if key == (selected.key if selected is not None else 'auto')
+            if key == config_manager.linux_client
         ),
         0,
     )

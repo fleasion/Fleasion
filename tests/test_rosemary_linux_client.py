@@ -100,12 +100,12 @@ def test_detects_running_custom_rosemary_with_foreign_home(tmp_path: Path) -> No
     assert installed[0].executable is None  # nonexistent launcher is not runnable
 
 
-def test_auto_prefers_running_rosemary_over_sober(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auto_prefers_running_rosemary_over_sober(tmp_path: Path) -> None:
     sober = LinuxClientInstallation(SOBER_CLIENT, SOBER_CLIENT.paths(home=tmp_path), Path('/usr/bin/flatpak'))
     rosemary = LinuxClientInstallation(ROSEMARY_CLIENT, ROSEMARY_CLIENT.paths(home=tmp_path), Path('/usr/bin/rosemary'))
-    fake_session = RosemarySession(17, tmp_path / 'Roblox.app', Path('/usr/bin/rosemary'), 123)
-    monkeypatch.setattr('fleasion.utils.linux_clients.running_rosemary_players', lambda: (fake_session,))
-    assert select_linux_client(installed=(sober, rosemary)) is rosemary
+    assert select_linux_client(
+        installed=(sober, rosemary), running_client_starts={'rosemary': 123}
+    ) is rosemary
     assert select_linux_client('sober', installed=(sober, rosemary)) is sober
     assert select_linux_client('rosemary', installed=(sober, rosemary)) is rosemary
 
@@ -315,3 +315,32 @@ def test_running_rosemary_proxy_status_does_not_guess_from_launcher_state(
     assert platform_linux.running_rosemary_proxy_status(proxy) == 'missing'
     environment.unlink()
     assert platform_linux.running_rosemary_proxy_status(proxy) == 'unreadable'
+
+
+def test_running_rosemary_launcher_precedes_unrelated_path_binary(tmp_path: Path) -> None:
+    bundle = _make_bundle(tmp_path)
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    active = tmp_path / 'running/rosemary'
+    active.parent.mkdir()
+    active.write_bytes(b'active')
+    active.chmod(0o700)
+    stale = tmp_path / 'stale/rosemary'
+    stale.parent.mkdir()
+    stale.write_bytes(b'stale')
+    stale.chmod(0o700)
+    _proc_process(proc, 500, [str(active), 'run', str(bundle)], ticks=700)
+
+    def find_binary(name: str) -> str | None:
+        return str(stale) if name == 'rosemary' else None
+
+    detected = detect_installed_clients(
+        home=tmp_path, environ={}, which=find_binary, proc_root=proc,
+    )
+    assert len(detected) == 1
+    assert detected[0].executable == active
+    configured = detect_installed_clients(
+        home=tmp_path, environ={}, which=find_binary, proc_root=proc,
+        rosemary_binary_path=stale,
+    )
+    assert configured[0].executable == stale
