@@ -331,6 +331,56 @@ def test_sober_main_process_uses_pid_and_start_time_to_identify_engine(
     assert platform_linux.sober_main_process() == (4242, 543.21)
 
 
+def test_sober_engine_remains_detected_after_native_launcher_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation = _flatpak_installation(SOBER_CLIENT, tmp_path)
+    proc = tmp_path / 'proc'
+    engine = proc / '4242'
+    engine.mkdir(parents=True)
+    (engine / 'comm').write_text('Main\n', encoding='utf-8')
+    (engine / 'cgroup').write_text(
+        '0::/user.slice/app-flatpak-org.vinegarhq.Sober-test.scope\n',
+        encoding='utf-8',
+    )
+    (engine / 'stat').write_text(
+        '4242 (Main) ' + ' '.join(['S', *['0'] * 18, '98765']),
+        encoding='utf-8',
+    )
+
+    monkeypatch.setattr(platform_linux, 'PROC_ROOT', proc)
+
+    def no_native_pids(_name: str) -> list[int]:
+        return []
+
+    monkeypatch.setattr(platform_linux, '_process_pids', no_native_pids)
+    assert _client_pids(installation) == [4242]
+    assert platform_linux.is_roblox_running(installation)
+
+
+def test_sober_process_identity_uses_flatpak_session_not_engine_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation = _flatpak_installation(SOBER_CLIENT, tmp_path)
+    monkeypatch.setattr(
+        platform_linux, 'get_selected_linux_client_installation',
+        _selected_installation(installation),
+    )
+    sessions = iter(('app-flatpak-org.vinegarhq.Sober-one.scope',) * 2 + (
+        'app-flatpak-org.vinegarhq.Sober-two.scope',
+    ))
+
+    def next_scope(*, proc_root: Path) -> str:
+        del proc_root
+        return next(sessions)
+
+    monkeypatch.setattr(platform_linux, 'sober_flatpak_session_identity', next_scope)
+    original = platform_linux.get_roblox_process_identity()
+    assert original == ('sober-session', 'app-flatpak-org.vinegarhq.Sober-one.scope')
+    assert platform_linux.get_roblox_process_identity() == original
+    assert platform_linux.get_roblox_process_identity() != original
+
+
 def test_client_pid_detection_rejects_same_name_outside_flatpak_cgroup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

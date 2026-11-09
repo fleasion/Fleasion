@@ -37,7 +37,9 @@ from .linux_clients import (
     running_mocktail_players,
     running_rosemary_players,
     running_rosemary_studios,
+    running_sober_players,
     select_linux_client,
+    sober_flatpak_session_identity,
 )
 
 if TYPE_CHECKING:
@@ -539,10 +541,16 @@ def _client_pids(installation: LinuxClientInstallation) -> list[int]:
                     )
                 except OSError:
                     continue
-                if marker not in cgroup:
+                if f'{marker}-' not in cgroup:
                     continue
             seen.add(pid)
             found.append(pid)
+    if installation.key == SOBER_CLIENT.key:
+        # Sober's Android engine may outlive the native launcher
+        found.extend(
+            session.pid for session in running_sober_players(proc_root=PROC_ROOT)
+            if session.pid not in seen
+        )
     return found
 
 
@@ -569,11 +577,16 @@ def is_roblox_running(installation: LinuxClientInstallation | None = None) -> bo
     return _first_client_pid(installation) is not None
 
 
-def get_roblox_process_identity() -> tuple[str, int, float] | tuple[str, int] | None:
-    """Return the engine generation, falling back to the launcher PID."""
+def get_roblox_process_identity() -> (
+    tuple[str, str] | tuple[str, int, float] | tuple[str, int] | None
+):
+    """Return the selected Player's stable process/session generation."""
     installation = get_selected_linux_client_installation()
     if installation is None:
         return None
+    if installation.key == SOBER_CLIENT.key:
+        scope = sober_flatpak_session_identity(proc_root=PROC_ROOT)
+        return ('sober-session', scope) if scope is not None else None
     engine = linux_client_main_process(installation)
     if engine is not None:
         return 'engine', engine[0], engine[1]

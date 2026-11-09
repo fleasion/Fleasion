@@ -358,6 +358,53 @@ def test_running_sober_launchers_requires_real_flatpak_process(tmp_path: Path) -
     assert running_sober_launchers(proc_root=proc) == (SoberSession(100, 800),)
 
 
+def test_sober_session_identity_survives_launcher_to_engine_transition(
+    tmp_path: Path,
+) -> None:
+    from fleasion.utils.linux_clients import sober_flatpak_session_identity
+
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    scope = 'app-flatpak-org.vinegarhq.Sober-first.scope'
+    cgroup = f'0::/user.slice/{scope}\n'
+    _sober_launcher_proc(proc, 100, ticks=100, cgroup=cgroup)
+    assert sober_flatpak_session_identity(proc_root=proc) == scope
+
+    _sober_proc(proc, 200, ticks=200, cgroup=cgroup)
+    assert sober_flatpak_session_identity(proc_root=proc) == scope
+
+    # Android Main continues after the native launcher exits
+    for item in (proc / '100').iterdir():
+        item.unlink()
+    (proc / '100').rmdir()
+    assert sober_flatpak_session_identity(proc_root=proc) == scope
+
+    for item in (proc / '200').iterdir():
+        item.unlink()
+    (proc / '200').rmdir()
+    next_scope = 'app-flatpak-org.vinegarhq.Sober-next.scope'
+    _sober_launcher_proc(
+        proc, 300, ticks=300, cgroup=f'0::/user.slice/{next_scope}\n'
+    )
+    assert sober_flatpak_session_identity(proc_root=proc) == next_scope
+
+
+def test_sober_session_identity_fails_closed_for_multiple_instances(tmp_path: Path) -> None:
+    from fleasion.utils.linux_clients import sober_flatpak_session_identity
+
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    _sober_launcher_proc(
+        proc, 100, ticks=100,
+        cgroup='0::/user.slice/app-flatpak-org.vinegarhq.Sober-first.scope\n',
+    )
+    _sober_launcher_proc(
+        proc, 200, ticks=200,
+        cgroup='0::/user.slice/app-flatpak-org.vinegarhq.Sober-second.scope\n',
+    )
+    assert sober_flatpak_session_identity(proc_root=proc) is None
+
+
 def test_auto_selection_prefers_sober_launcher_before_engine_starts(tmp_path: Path) -> None:
     proc = tmp_path / 'proc'
     proc.mkdir()

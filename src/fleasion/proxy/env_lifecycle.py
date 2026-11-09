@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from fleasion.proxy.master import ProxyMaster
 
 
-type _PlayerIdentity = tuple[int, str] | tuple[str, int] | tuple[str, int, float]
+type _PlayerIdentity = tuple[int, str] | tuple[str, int] | tuple[str, int, float] | tuple[str, str]
 
 _GDK_PATH_CHECKER_ATTR = 'is_roblox_gdk_exe_path'
 

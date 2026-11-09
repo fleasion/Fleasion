@@ -563,6 +563,31 @@ def running_sober_launchers(*, proc_root: Path = Path('/proc')) -> tuple[SoberSe
     return _running_sober_sessions(proc_root=proc_root, launcher=True)
 
 
+def sober_flatpak_session_identity(*, proc_root: Path = Path('/proc')) -> str | None:
+    """Identify one verified Sober Flatpak scope across launcher/engine transitions.
+
+    When several distinct Sober instances are active, refuse to infer which
+    instance is owned; a broad Flatpak kill could terminate unrelated sessions.
+    """
+    sessions = (
+        *running_sober_launchers(proc_root=proc_root),
+        *running_sober_players(proc_root=proc_root),
+    )
+    prefix = f'{SOBER_CLIENT.cgroup_marker}-'
+    scopes: set[str] = set()
+    for session in sessions:
+        try:
+            cgroups = (proc_root / str(session.pid) / 'cgroup').read_text(
+                encoding='utf-8', errors='replace'
+            )
+        except OSError:
+            continue
+        for component in cgroups.replace('\n', '/').split('/'):
+            if component.startswith(prefix) and component.endswith('.scope'):
+                scopes.add(component)
+    return next(iter(scopes)) if len(scopes) == 1 else None
+
+
 def running_rosemary_studios(*, proc_root: Path = Path('/proc')) -> tuple[int, ...]:
     """Find Rosemary Studio guests, which may share a Player cache prefix."""
     try:
