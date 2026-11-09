@@ -19,6 +19,7 @@ from .tls_records import expand_label
 
 if TYPE_CHECKING:
     import io
+    from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
@@ -30,9 +31,12 @@ TLS13 = 0x304
 MIN_DISTINCT_BYTES = 20
 SHA256_SIZE = 32
 CHUNK_SIZE = 4 * 1024 * 1024
+_NEARBY_SCAN_SIZE = 256 * 1024
 _MAX_HINTED_PIDS = 8
 _MAX_HINTED_REGIONS = 8
 _region_hints: dict[int, list[tuple[int, int]]] = {}
+# Remember only validated structure addresses, never traffic secrets or memory contents
+_candidate_hints: dict[int, list[tuple[int, int, int]]] = {}
 _region_hints_lock = threading.Lock()
 
 
@@ -52,6 +56,43 @@ def _remember_region(pid: int, region: tuple[int, int]) -> None:
         _region_hints[pid] = remembered[:_MAX_HINTED_REGIONS]
         if len(_region_hints) > _MAX_HINTED_PIDS:
             _region_hints.pop(next(iter(_region_hints)))
+
+
+def _remember_candidate(pid: int, region: tuple[int, int], address: int) -> None:
+    """Remember where a validated OpenSSL connection was found."""
+    start, size = region
+    if not start <= address < start + size:
+        return
+    location = (start, size, address)
+    with _region_hints_lock:
+        previous = _candidate_hints.pop(pid, ())
+        _candidate_hints[pid] = [location, *(item for item in previous if item != location)][
+            :_MAX_HINTED_REGIONS
+        ]
+        if len(_candidate_hints) > _MAX_HINTED_PIDS:
+            _candidate_hints.pop(next(iter(_candidate_hints)))
+
+
+def _nearby_ranges(
+    pid: int, regions: list[tuple[int, int]]
+) -> list[tuple[int, int, tuple[int, int]]]:
+    """Prioritize small, mapped neighborhoods of earlier validated connections."""
+    with _region_hints_lock:
+        hints = tuple(_candidate_hints.get(pid, ()))
+    live = set(regions)
+    seen: set[tuple[int, int]] = set()
+    windows: list[tuple[int, int, tuple[int, int]]] = []
+    for region_start, region_size, address in hints:
+        region = (region_start, region_size)
+        if region not in live or not region_start <= address < region_start + region_size:
+            continue
+        length = min(_NEARBY_SCAN_SIZE, region_size)
+        start = max(region_start, min(address - length // 2, region_start + region_size - length))
+        window = (start, length)
+        if window not in seen:
+            seen.add(window)
+            windows.append((start, length, region))
+    return windows
 
 
 def find_rosemary_pid() -> int | None:
@@ -274,6 +315,7 @@ def _scan_region(
     client_random: str | None,
     stop: threading.Event | None,
     found: SecretMap,
+    on_valid_candidate: Callable[[int], None] | None = None,
 ) -> bool:
     for offset in range(0, size, CHUNK_SIZE):
         if stop is not None and stop.is_set():
@@ -299,6 +341,8 @@ def _scan_region(
             if res is not None:
                 cr_hex, secrets = res
                 found[cr_hex] = secrets
+                if on_valid_candidate is not None:
+                    on_valid_candidate(start + offset + position - field_offset)
                 if client_random is not None and cr_hex == client_random:
                     return True
             position = buf.find(needle, position + 1)
@@ -317,7 +361,30 @@ def _scan_ordered_regions(
     stop: threading.Event | None,
     found: SecretMap,
 ) -> SecretMap:
-    for region in _prioritize_regions(pid, _regions(pid)):
+    regions = _prioritize_regions(pid, _regions(pid))
+    if client_random is not None:
+        # Look near recently validated OpenSSL allocations before scanning
+        # multi-gigabyte regions again. A miss always falls back to full coverage
+        for start, size, region in _nearby_ranges(pid, regions):
+            if _scan_region(
+                mem,
+                start,
+                size,
+                needle=needle,
+                field_offset=field_offset,
+                module_base=module_base,
+                module_end=module_end,
+                client_random=client_random,
+                stop=stop,
+                found=found,
+                on_valid_candidate=lambda address, region=region: _remember_candidate(
+                    pid, region, address
+                ),
+            ):
+                _remember_region(pid, region)
+                return found
+
+    for region in regions:
         start, size = region
         previously_found = len(found)
         matched = _scan_region(
@@ -331,6 +398,9 @@ def _scan_ordered_regions(
             client_random=client_random,
             stop=stop,
             found=found,
+            on_valid_candidate=lambda address, region=region: _remember_candidate(
+                pid, region, address
+            ),
         )
         if len(found) > previously_found:
             _remember_region(pid, region)
