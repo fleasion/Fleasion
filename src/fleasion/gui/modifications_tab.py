@@ -808,6 +808,8 @@ class CollapsibleSection(QWidget):
 
     def toggle(self) -> None:
         self._expanded = not self._expanded
+        if not self._expanded:
+            self._content.setMinimumHeight(0)
         self._arrow.set_expanded(self._expanded)
 
         # Restart from the currently visible height, not the previous target.
@@ -843,7 +845,12 @@ class CollapsibleSection(QWidget):
         self._content.setMaximumHeight(16777215)
         self._content_layout.setEnabled(True)
         self._content_layout.activate()
+        self._content.setMinimumHeight(self._content_layout.sizeHint().height())
         self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None and (parent_layout := parent.layout()) is not None:
+            parent_layout.invalidate()
+            parent_layout.activate()
 
     def _finish_collapse(self) -> None:
         # Restore layout updates after clipping has fully closed
@@ -3100,13 +3107,13 @@ class CustomFFlagEditor(QWidget):
             )
         self._table.setHorizontalHeaderLabels(base_headers)
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        header.setStretchLastSection(False)
+        header.setSectionsMovable(False)
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(True)
         header.setSortIndicator(0, Qt.SortOrder.AscendingOrder)
         header.sectionClicked.connect(self._sort_rows)
-        self._table.setColumnWidth(0, 300)
         self._table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         self._table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -3119,9 +3126,6 @@ class CustomFFlagEditor(QWidget):
         self._table.cellChanged.connect(self._on_cell_changed)
         if self._hotkeys_supported:
             self._table.cellDoubleClicked.connect(self._edit_keybind)
-        if self._hotkeys_supported:
-            self._table.setColumnWidth(2, 85)
-            self._table.setColumnWidth(3, 160)
         layout.addWidget(self._table)
 
         # Qt's item-based table requires multiple C++ objects per flag and
@@ -3138,21 +3142,27 @@ class CustomFFlagEditor(QWidget):
         self._virtual_table.setEditTriggers(self._table.editTriggers())
         self._virtual_table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._virtual_table))
         virtual_header = self._virtual_table.horizontalHeader()
-        virtual_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        virtual_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        virtual_header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        virtual_header.setStretchLastSection(False)
+        virtual_header.setSectionsMovable(False)
         virtual_header.setSectionsClickable(True)
         virtual_header.setSortIndicatorShown(True)
         virtual_header.setSortIndicator(0, Qt.SortOrder.AscendingOrder)
         virtual_header.sectionClicked.connect(self._sort_rows)
-        self._virtual_table.setColumnWidth(0, 300)
         self._virtual_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self._virtual_table.setFixedHeight(420)
         self._virtual_table.clicked.connect(self._edit_value_cell)
         self._virtual_table.doubleClicked.connect(self._on_virtual_double_clicked)
+        self._virtual_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._virtual_table.hide()
         layout.addWidget(self._virtual_table)
 
+        self._column_resize_timer = QTimer(self)
+        self._column_resize_timer.setSingleShot(True)
+        self._column_resize_timer.timeout.connect(self._resize_visible_fastflag_columns)
         for table in (self._table, self._virtual_table):
+            table.viewport().installEventFilter(self)
+            self._resize_fastflag_columns(table)
             delete_shortcut = QShortcut(QKeySequence('Delete'), table)
             delete_shortcut.activated.connect(self._delete_selected)
 
@@ -3216,6 +3226,53 @@ class CustomFFlagEditor(QWidget):
         else:
             self._update_status()
 
+    def _resize_fastflag_columns(self, table: QTableView) -> None:
+        """Keep the name/value columns in a 3:2 ratio without draggable headers."""
+        # Qt may expose a provisional viewport width before the row header
+        # finishes its initial layout; take the available frame width too
+        header_width = 0 if table.verticalHeader().isHidden() else table.verticalHeader().width()
+        scrollbar = table.verticalScrollBar()
+        scrollbar_width = scrollbar.width() if scrollbar.isVisible() else 0
+        frame_width = table.width() - 2 * table.frameWidth() - header_width - scrollbar_width
+        viewport_width = min(table.viewport().width(), frame_width)
+        if viewport_width <= 0:
+            return
+        reserved = 0
+        if self._hotkeys_supported:
+            metrics = table.fontMetrics()
+            checkbox_width = table.style().pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth)
+            status_width = max(
+                135,
+                checkbox_width + 28 + max(
+                    metrics.horizontalAdvance(tr('ui.gui.modifications_tab.enabled')),
+                    metrics.horizontalAdvance('Disabled'),
+                ),
+            )
+            keybind_width = 175
+            table.setColumnWidth(2, status_width)
+            table.setColumnWidth(3, keybind_width)
+            reserved = status_width + keybind_width
+        flexible_width = max(0, viewport_width - reserved)
+        name_width = flexible_width * 3 // 5
+        table.setColumnWidth(0, name_width)
+        table.setColumnWidth(1, flexible_width - name_width)
+
+    def _resize_visible_fastflag_columns(self) -> None:
+        table = self._virtual_table if self._virtual_active else self._table
+        self._resize_fastflag_columns(table)
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Resize:
+            for table in (self._table, self._virtual_table):
+                if watched is table.viewport():
+                    self._resize_fastflag_columns(table)
+                    # The row-number gutter can change width after the initial
+                    # viewport resize; correct for its final geometry next tick
+                    self._column_resize_timer.start(0)
+                    break
+        return super().eventFilter(watched, event)
+
     def _load_flags(self, sync_hotkeys: bool = True) -> None:
         flags = dict(getattr(self._config, 'custom_fflags', {}) or {}) if self._config else {}
         if len(flags) > self._VIRTUAL_THRESHOLD:
@@ -3234,6 +3291,7 @@ class CustomFFlagEditor(QWidget):
             self._table.show()
             self._replace_table_rows(self._ordered_flag_rows(flags))
         self._filter_rows(self._search.text())
+        self._resize_fastflag_columns(self._virtual_table if self._virtual_active else self._table)
         self._update_status()
         if sync_hotkeys:
             self._sync_hotkeys()
