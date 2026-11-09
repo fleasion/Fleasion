@@ -34,6 +34,7 @@ import os
 import re
 import socket
 import ssl
+import stat
 import struct
 import threading
 import time
@@ -45,7 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
-from fleasion.utils.json_types import JsonValue, require_json_value
+from fleasion.utils.json_types import JsonValue
 from fleasion.utils.sober_bootstrap_keys import native_keylog_path
 
 if TYPE_CHECKING:
@@ -383,6 +384,15 @@ def _decompress_body(body: bytes, headers: dict[bytes, bytes]) -> bytes:
 _PREVIEW_CAPTURE_CAP = 512 * 1024  # per direction, per request-log entry
 
 
+def _capture_request_preview(header: bytes, body: bytes) -> bytes:
+    if len(header) >= _PREVIEW_CAPTURE_CAP:
+        return header[:_PREVIEW_CAPTURE_CAP]
+    remaining = _PREVIEW_CAPTURE_CAP - len(header)
+    if len(body) > remaining:
+        return b''.join((header, memoryview(body)[:remaining]))
+    return header + body
+
+
 def _looks_binary(text: str) -> bool:
     if '\x00' in text:
         return True
@@ -661,7 +671,8 @@ def _apply_auto_replace_body_rule(
     if rule_type == 'regex':
         return re.sub(match, replacement, body.decode('utf-8', errors='replace')).encode('utf-8')
     if rule_type == 'json_path':
-        data = require_json_value(json.loads(body))
+        # The JSON decoder creates only JSON-compatible builtins
+        data = cast('JsonValue', json.loads(body))
         resolved = _resolve_json_path(data, match)
         if resolved is None:
             return None
@@ -1104,32 +1115,45 @@ def _make_proxy_error_response(status_code: int, message: str) -> bytes:
     ).encode('ascii') + body
 
 
+_HTTP_HEADER_IDLE_TIMEOUT = 15.0
+
+
 async def _read_headers_raw(reader: asyncio.StreamReader) -> RawHeaders | None:
     """Read one complete HTTP header block, preserving the exact wire bytes."""
     raw = bytearray()
 
-    while True:
-        try:
-            line = await asyncio.wait_for(reader.readline(), timeout=15.0)
-        except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
-            if raw:
-                msg = 'Incomplete HTTP header block'
-                raise ValueError(msg) from exc
-            return None
-        if not line:
-            if raw:
-                msg = 'Incomplete HTTP header block'
-                raise ValueError(msg)
-            return None
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
+        async with asyncio.timeout(None) as deadline:
+            loop = asyncio.get_running_loop()
+            while True:
+                deadline.reschedule(loop.time() + _HTTP_HEADER_IDLE_TIMEOUT)
+                try:
+                    line = await reader.readline()
+                except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
+                    if raw:
+                        msg = 'Incomplete HTTP header block'
+                        raise ValueError(msg) from exc
+                    return None
+                if not line:
+                    if raw:
+                        msg = 'Incomplete HTTP header block'
+                        raise ValueError(msg)
+                    return None
 
-        raw += line
-        if len(raw) > 1024 * 1024:
-            msg = 'HTTP header block too large'
-            raise ValueError(msg)
-        if line in {b'\r\n', b'\n'}:
-            break
+                raw += line
+                if len(raw) > 1024 * 1024:
+                    msg = 'HTTP header block too large'
+                    raise ValueError(msg)
+                if line in {b'\r\n', b'\n'}:
+                    break
+    except TimeoutError as exc:
+        if raw:
+            msg = 'Incomplete HTTP header block'
+            raise ValueError(msg) from exc
+        return None
 
-    lines = bytes(raw).splitlines()
+    raw_header_block = bytes(raw)
+    lines = raw_header_block.splitlines()
     if not lines:
         return None
 
@@ -1159,7 +1183,7 @@ async def _read_headers_raw(reader: asyncio.StreamReader) -> RawHeaders | None:
     return RawHeaders(
         first_line=first_line,
         headers=headers,
-        raw_header_block=bytes(raw),
+        raw_header_block=raw_header_block,
     )
 
 
@@ -1203,6 +1227,8 @@ async def _read_http_body_bytes(
         if not chunk:
             msg = f'Incomplete HTTP {context}'
             raise ValueError(msg)
+        if not body and len(chunk) == length:
+            return chunk
         body += chunk
     return bytes(body)
 
@@ -1266,7 +1292,8 @@ async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, byt
             if crlf != b'\r\n':
                 msg = 'Invalid HTTP chunk terminator'
                 raise ValueError(msg)
-            wire += chunk + crlf
+            wire.extend(chunk)
+            wire.extend(crlf)
             payload += chunk
         return RawBody(
             wire=bytes(wire),
@@ -1466,8 +1493,74 @@ def _read_local_bytes(local_path: str) -> bytes:
     return strip_roblox_metadata(path, path.read_bytes()) if path.exists() else b''
 
 
+def _local_range_bounds(match: re.Match[bytes], total: int) -> tuple[int, int] | None:
+    start_text, end_text = match.groups()
+    start = int(start_text) if start_text else 0
+    end = int(end_text) if end_text else total - 1
+    if not start_text:
+        suffix = int(end_text)
+        start = max(0, total - suffix) if suffix else total
+        end = total - 1
+    if total == 0 or start >= total or end < start:
+        return None
+    return start, min(end, total - 1)
+
+
+def _local_range_unsatisfiable(total: int) -> bytes:
+    return (
+        'HTTP/1.1 416 Range Not Satisfiable\r\n'
+        f'Content-Range: bytes */{total}\r\n'
+        'Content-Length: 0\r\nAccept-Ranges: bytes\r\n'
+        'Connection: keep-alive\r\n\r\n'
+    ).encode('ascii')
+
+
+_LOCAL_FILE_FAST_MIN_SIZE = 256 * 1024
+
+
+def _same_local_file_version(before: os.stat_result, after: os.stat_result) -> bool:
+    return before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns
+
+
+def _serve_local_file_range(path: Path, range_header: bytes, content_type: str) -> bytes | None:
+    match = re.fullmatch(rb'bytes=(\d*)-(\d*)', range_header.strip(), flags=re.IGNORECASE)
+    if match is None or not (match[1] or match[2]):
+        return None
+    with path.open('rb') as source:
+        info = os.fstat(source.fileno())
+        # Small virtual files can report a regular-file mode with a fabricated size
+        if not stat.S_ISREG(info.st_mode) or info.st_size < _LOCAL_FILE_FAST_MIN_SIZE:
+            return None
+        total = info.st_size
+        bounds = _local_range_bounds(match, total)
+        if bounds is None:
+            return (
+                _local_range_unsatisfiable(total)
+                if _same_local_file_version(info, os.fstat(source.fileno()))
+                else None
+            )
+        start, end = bounds
+        try:
+            source.seek(start)
+        except OSError:
+            return None
+        content = source.read(end - start + 1)
+        if len(content) != end - start + 1 or not _same_local_file_version(
+            info, os.fstat(source.fileno())
+        ):
+            return None
+    return (
+        f'HTTP/1.1 206 Partial Content\r\nContent-Type: {content_type}\r\n'
+        f'Content-Range: bytes {start}-{end}/{total}\r\nAccept-Ranges: bytes\r\n'
+        f'Content-Length: {len(content)}\r\nConnection: keep-alive\r\n\r\n'
+    ).encode('ascii') + content
+
+
 def _serve_local_file(
-    local_path: str, range_header: bytes | None = None, if_range: bytes | None = None
+    local_path: str,
+    range_header: bytes | None = None,
+    if_range: bytes | None = None,
+    head_only: bool = False,
 ) -> bytes:
     path = Path(local_path)
     if path.suffix.lower() == '.obj':
@@ -1483,9 +1576,10 @@ def _serve_local_file(
             struct.error,
         ) as exc:
             logger.debug('OBJ->mesh conversion failed: %s', exc)
-    if not path.exists():
+    try:
+        path_info = path.stat()
+    except OSError, ValueError:
         return b'HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n'
-    content = strip_roblox_metadata(path, path.read_bytes())
     ext = path.suffix.lower()
     ct_map = {
         '.png': 'image/png',
@@ -1501,6 +1595,33 @@ def _serve_local_file(
         '.mesh': 'application/octet-stream',
     }
     ct = ct_map.get(ext, 'application/octet-stream')
+    large_regular_file = (
+        stat.S_ISREG(path_info.st_mode) and path_info.st_size >= _LOCAL_FILE_FAST_MIN_SIZE
+    )
+    if head_only and range_header is None and ext not in {'', '.bin'} and large_regular_file:
+        with path.open('rb') as source:
+            info = os.fstat(source.fileno())
+            if (
+                stat.S_ISREG(info.st_mode)
+                and info.st_size >= _LOCAL_FILE_FAST_MIN_SIZE
+                and _same_local_file_version(info, os.fstat(source.fileno()))
+            ):
+                return (
+                    f'HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\n'
+                    f'Accept-Ranges: bytes\r\nContent-Length: {info.st_size}\r\n'
+                    'Connection: keep-alive\r\n\r\n'
+                ).encode('ascii')
+    if (
+        ext not in {'', '.bin'}
+        and large_regular_file
+        and range_header is not None
+        and if_range is None
+        and len(range_header) <= 128
+    ):
+        partial = _serve_local_file_range(path, range_header, ct)
+        if partial is not None:
+            return partial.partition(b'\r\n\r\n')[0] + b'\r\n\r\n' if head_only else partial
+    content = strip_roblox_metadata(path, path.read_bytes())
     status = '200 OK'
     content_range = ''
     if range_header is not None and if_range is None and len(range_header) <= 128:
@@ -1508,29 +1629,19 @@ def _serve_local_file(
         match = re.fullmatch(rb'bytes=(\d*)-(\d*)', range_header.strip(), flags=re.IGNORECASE)
         if match is not None and (match[1] or match[2]):
             total = len(content)
-            start_text, end_text = match.groups()
-            start = int(start_text) if start_text else 0
-            end = int(end_text) if end_text else total - 1
-            if not start_text:
-                suffix = int(end_text)
-                start = max(0, total - suffix) if suffix else total
-                end = total - 1
-            if total == 0 or start >= total or end < start:
-                return (
-                    'HTTP/1.1 416 Range Not Satisfiable\r\n'
-                    f'Content-Range: bytes */{total}\r\n'
-                    'Content-Length: 0\r\nAccept-Ranges: bytes\r\n'
-                    'Connection: keep-alive\r\n\r\n'
-                ).encode('ascii')
-            end = min(end, total - 1)
+            bounds = _local_range_bounds(match, total)
+            if bounds is None:
+                return _local_range_unsatisfiable(total)
+            start, end = bounds
             content_range = f'Content-Range: bytes {start}-{end}/{total}\r\n'
             content = content[start : end + 1]
             status = '206 Partial Content'
-    return (
+    header = (
         f'HTTP/1.1 {status}\r\nContent-Type: {ct}\r\n'
         f'{content_range}Accept-Ranges: bytes\r\n'
         f'Content-Length: {len(content)}\r\nConnection: keep-alive\r\n\r\n'
-    ).encode('ascii') + content
+    ).encode('ascii')
+    return header if head_only else header + content
 
 
 def _make_redirect(target_url: str) -> bytes:
@@ -1650,7 +1761,7 @@ class _FlowResponse:
         self.content: bytes = body
 
     def json(self) -> JsonValue:
-        return require_json_value(json.loads(self.content))
+        return cast('JsonValue', json.loads(self.content))
 
 
 class ProxyFlow:
@@ -3389,10 +3500,8 @@ class FleasionProxy:
                     local_value,
                     None if is_head else req_headers.get(b'range'),
                     None if is_head else req_headers.get(b'if-range'),
+                    is_head,
                 )
-                if is_head:
-                    header_block, delimiter, _body = response.partition(b'\r\n\r\n')
-                    response = header_block + delimiter if delimiter else response
                 status_line = (
                     response.split(b'\r\n', 1)[0].decode('ascii', errors='replace')
                     if response
@@ -3667,9 +3776,9 @@ class FleasionProxy:
                     else None
                 )
                 if log_entry is not None:
-                    log_entry['request_raw'] = (req_raw.raw_header_block + req_body_raw)[
-                        :_PREVIEW_CAPTURE_CAP
-                    ]
+                    log_entry['request_raw'] = _capture_request_preview(
+                        req_raw.raw_header_block, req_body_raw
+                    )
 
                     if self._intercept_matches(host, path):
                         req_pending = self._create_pending(
@@ -3748,9 +3857,9 @@ class FleasionProxy:
                                 else path
                             )
                             if log_entry is not None:
-                                log_entry['request_raw'] = (
-                                    req_raw.raw_header_block + req_body_raw
-                                )[:_PREVIEW_CAPTURE_CAP]
+                                log_entry['request_raw'] = _capture_request_preview(
+                                    req_raw.raw_header_block, req_body_raw
+                                )
                                 log_entry['method'] = method
                                 log_entry['path'] = path
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 from typing import TYPE_CHECKING
 import pytest
@@ -51,6 +52,7 @@ def test_key_provider_timeout_raises(tmp_path: Path) -> None:
 
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux client process scanning')
 def test_linux_splice_key_provider_scans_only_the_configured_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -82,9 +84,6 @@ def test_linux_splice_key_provider_scans_only_the_configured_client(
         keys, 'scan_android_community',
         lambda pid, **_kwargs: calls.append(('scan-mocktail', pid)) or {'mocktail': {}},
     )
-    import sys
-    assert sys.platform == 'linux'
-
     for selected, expected in [
         ('sober', [('find-sober', None), ('scan-sober', 222)]),
         ('mocktail', [('find-community', 'mocktail'), ('scan-mocktail', 333)]),

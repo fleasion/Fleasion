@@ -103,6 +103,7 @@ def test_active_splice_ends_after_bounded_drain_or_completed_http(
             keys=KeyProvider(),
         )
         splice._application_ready.set()  # pyright: ignore[reportPrivateUsage]
+        splice._ready.set()  # pyright: ignore[reportPrivateUsage]
         task = asyncio.create_task(splice.run(cast('FleasionProxy', proxy), 'test.local'))
         await asyncio.wait_for(proxy.started.wait(), 0.2)
         (client_reader if closing_peer == 'client' else server_reader).feed_eof()

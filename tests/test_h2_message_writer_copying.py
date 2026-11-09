@@ -98,6 +98,35 @@ def test_nonbyte_memoryview_preserves_its_byte_sequence() -> None:
     asyncio.run(run())
 
 
+def test_memoryviews_are_snapshotted_without_unnecessary_contiguous_copy() -> None:
+    async def run() -> None:
+        seen: list[bytes] = []
+
+        async def callback(message: bytes) -> None:
+            seen.append(message)
+
+        writer, held = _writer(callback)
+        source = bytearray(b'P' * (4 * 1024 * 1024))
+        tracemalloc.start()
+        try:
+            writer.write(memoryview(source))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < len(source) * 3 // 2
+        source[0] = ord('X')
+        await writer.drain()
+        assert seen[-1] == b'P' * len(source)
+        assert held == [0]
+
+        writer.write(memoryview(b'abcdef')[::2])
+        await writer.drain()
+        assert seen[-1] == b'ace'
+        assert held == [0]
+
+    asyncio.run(run())
+
+
 def test_upstream_response_envelope_avoids_intermediate_body_copy() -> None:
     body = bytearray(b'P' * (4 * 1024 * 1024))
     headers = [(b':status', b'200'), (b'content-type', b'application/octet-stream')]
@@ -112,3 +141,19 @@ def test_upstream_response_envelope_avoids_intermediate_body_copy() -> None:
     assert message.startswith(b'HTTP/1.1 200 Upstream\r\n')
     assert message.endswith(body)
     assert peak < len(body) * 3 // 2
+
+
+def test_large_http1_message_conversion_keeps_body_without_a_full_copy() -> None:
+    payload = b'P' * (4 * 1024 * 1024)
+    message = b'HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\n\r\n' + payload
+    tracemalloc.start()
+    try:
+        headers, body = h2_transport._as_http2(  # pyright: ignore[reportPrivateUsage]
+            message, request=False, host='example.test'
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert (b':status', b'200') in headers
+    assert body == payload
+    assert peak < 1024 * 1024

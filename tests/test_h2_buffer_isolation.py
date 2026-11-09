@@ -229,3 +229,14 @@ def test_valid_h2_request_targets_still_pass(method: bytes, path: bytes) -> None
         assert list(bridge.requests) == [1]
 
     asyncio.run(run())
+
+
+def test_h2_request_target_visible_ascii_boundaries() -> None:
+    from fleasion.proxy.h2_transport import _valid_h2_request_target  # pyright: ignore[reportPrivateUsage]
+
+    for value in range(256):
+        path = b'/' + bytes([value])
+        assert _valid_h2_request_target(b'GET', path) == (33 <= value <= 126 and value != 35)
+    assert not _valid_h2_request_target(b'GET', b'')
+    assert _valid_h2_request_target(b'OPTIONS', b'*')
+    assert not _valid_h2_request_target(b'GET', b'*')

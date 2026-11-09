@@ -114,8 +114,10 @@ class TrafficKeys:
         if self.sequence >= _TLS_MAX_SEQUENCE:
             msg = 'TLS record sequence exhausted'
             raise OverflowError(msg)
-        counter = self.sequence.to_bytes(12, 'big')
-        return bytes(a ^ b for a, b in zip(self.iv, counter, strict=True))
+        if len(self.iv) != 12:
+            msg = 'TLS record IV must contain 12 bytes'
+            raise ValueError(msg)
+        return (int.from_bytes(self.iv, 'big') ^ self.sequence).to_bytes(12, 'big')
 
     def decrypt(self, record: bytes) -> tuple[int, bytes]:
         """Decrypt one TLS record and strip padding."""
@@ -123,14 +125,12 @@ class TrafficKeys:
             msg = 'Traffic keys are not configured'
             raise RuntimeError(msg)
         plaintext = self._aead.decrypt(self._nonce(), record[5:], record[:5])
-        end = len(plaintext) - 1
-        while end >= 0 and plaintext[end] == 0:
-            end -= 1
-        if (
-            end < 0
-            or plaintext[end]
-            not in {_TLS_INNER_ALERT, _TLS_INNER_HANDSHAKE, _TLS_INNER_APPLICATION_DATA}
-        ):
+        end = len(plaintext.rstrip(b'\x00')) - 1
+        if end < 0 or plaintext[end] not in {
+            _TLS_INNER_ALERT,
+            _TLS_INNER_HANDSHAKE,
+            _TLS_INNER_APPLICATION_DATA,
+        }:
             msg = 'Invalid TLS inner content type'
             raise TLSRecordError(msg)
         self.sequence += 1
@@ -274,8 +274,10 @@ class TLS13RecordCipher:
         if self.sequence >= _TLS_MAX_SEQUENCE:
             msg = 'TLS record sequence number exhausted'
             raise TLSRecordError(msg)
-        sequence_bytes = self.sequence.to_bytes(12, 'big')
-        return bytes(iv ^ value for iv, value in zip(self._iv, sequence_bytes, strict=True))
+        if len(self._iv) != 12:
+            msg = 'TLS record IV must contain 12 bytes'
+            raise ValueError(msg)
+        return (int.from_bytes(self._iv, 'big') ^ self.sequence).to_bytes(12, 'big')
 
     def encrypt_record(
         self, content: bytes, *, content_type: int = _TLS_INNER_APPLICATION_DATA, padding: int = 0

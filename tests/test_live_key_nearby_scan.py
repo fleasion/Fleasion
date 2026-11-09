@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import tracemalloc
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
@@ -72,3 +73,68 @@ def test_hint_window_bounds_and_stale_region() -> None:
     windows = list(getattr(live_keys, '_nearby_candidate_ranges')(pid, [region]))
     assert windows == [(region[0], region[1], region)]
     assert list(getattr(live_keys, '_nearby_candidate_ranges')(pid, [(0x200000, 200_000)])) == []
+
+
+def test_nearby_read_buffer_covers_window_larger_than_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid = 97533
+    region = (0x100000, 16384)
+    random = bytes(range(1, 33))
+    monkeypatch.setattr(live_keys, 'CHUNK_SIZE', 4096)
+    monkeypatch.setattr(live_keys, '_NEARBY_SCAN_SIZE', 16384)
+    def regions(_handle: int) -> Iterator[tuple[int, int]]:
+        return iter([region])
+
+    monkeypatch.setattr(live_keys, '_regions', regions)
+
+    def read(
+        _handle: int, _address: ctypes.c_void_p, buf: ctypes.Array[ctypes.c_char],
+        size: int, received: ctypes.c_void_p,
+    ) -> int:
+        assert ctypes.sizeof(buf) >= size
+        data = bytearray(size)
+        data[0x184:0x1a4] = random
+        ctypes.memmove(buf, bytes(data), size)
+        ctypes.cast(received, ctypes.POINTER(ctypes.c_size_t)).contents.value = size
+        return 0
+
+    monkeypatch.setattr(getattr(live_keys, '_win32'), 'NtReadVirtualMemory', read, raising=False)
+    with getattr(live_keys, '_scan_hints_lock'):
+        monkeypatch.setitem(getattr(live_keys, '_scan_candidate_hints'), pid, [(*region, region[0])])
+    candidates = cast('Callable[..., Iterator[tuple[int, tuple[int, int], int]]]',
+                      getattr(live_keys, '_candidates'))
+    assert next(candidates(123, pid, client_random=random))[0] == region[0]
+
+
+def test_windows_scan_does_not_make_a_second_full_chunk_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    size = 1024 * 1024
+    region = (0x100000, size)
+    random = bytes(range(1, 33))
+    monkeypatch.setattr(live_keys, 'CHUNK_SIZE', size)
+    monkeypatch.setattr(live_keys, '_NEARBY_SCAN_SIZE', 4096)
+
+    def regions(_handle: int) -> Iterator[tuple[int, int]]:
+        return iter([region])
+
+    def read(
+        _handle: int, _address: ctypes.c_void_p, buf: ctypes.Array[ctypes.c_char],
+        amount: int, received: ctypes.c_void_p,
+    ) -> int:
+        ctypes.memmove(ctypes.addressof(buf) + 0x184, random, len(random))
+        ctypes.cast(received, ctypes.POINTER(ctypes.c_size_t)).contents.value = amount
+        return 0
+
+    monkeypatch.setattr(live_keys, '_regions', regions)
+    monkeypatch.setattr(getattr(live_keys, '_win32'), 'NtReadVirtualMemory', read, raising=False)
+    candidates = cast('Callable[..., Iterator[tuple[int, tuple[int, int], int]]]',
+                      getattr(live_keys, '_candidates'))
+    tracemalloc.start()
+    try:
+        assert next(candidates(123, 97534, client_random=random))[0] == region[0]
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < size * 5 // 2

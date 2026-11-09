@@ -80,6 +80,16 @@ type AssetId = int | str
 type BuildType = int | str
 
 
+def _first_cached_sibling(
+    asset_ids: list[AssetId], cache_logs: dict[AssetId, CacheLogEntry]
+) -> AssetId | None:
+    for sibling_id in asset_ids:
+        sibling_info = cache_logs.get(sibling_id)
+        if sibling_info and 'cached' in sibling_info:
+            return sibling_id
+    return None
+
+
 def _best_effort[T](
     action: Callable[[], T],
     *,
@@ -302,13 +312,15 @@ def creator_game_base_paths(creator_id: int, creator_type: int, limit: int) -> l
     return []
 
 
-def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
+def _build_texpack_request_slot_map(
+    req_json: list[object], *, decoded_json: bool = False
+) -> dict[int, int]:
     texpack_ids: set[int] = set()
     asset_counts: dict[int, int] = {}
     for item_value in req_json:
-        if not is_object_dict(item_value):
+        if not (isinstance(item_value, dict) if decoded_json else is_object_dict(item_value)):
             continue
-        item = item_value
+        item = cast('ObjectDict', item_value)
         aid = _normalize_asset_id(item.get('assetId'))
         if not isinstance(aid, int):
             continue
@@ -318,10 +330,13 @@ def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
         if asset_type == 63 or asset_type_name == 'texturepack':
             texpack_ids.add(aid)
 
+    if not texpack_ids and all(count == 1 for count in asset_counts.values()):
+        return {}
+
     for item_value in req_json:
-        if not is_object_dict(item_value):
+        if not (isinstance(item_value, dict) if decoded_json else is_object_dict(item_value)):
             continue
-        item = item_value
+        item = cast('ObjectDict', item_value)
         aid = _normalize_asset_id(item.get('assetId'))
         if not isinstance(aid, int) or aid in texpack_ids:
             continue
@@ -331,15 +346,18 @@ def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
         ):
             texpack_ids.add(aid)
 
+    if not texpack_ids:
+        return {}
+
     result: dict[int, int] = {}
     build_slots: dict[int, dict[object, int]] = {}
     next_slot: dict[int, int] = {}
     occurrence_slot: dict[int, int] = {}
 
     for idx, item_value in enumerate(req_json):
-        if not is_object_dict(item_value):
+        if not (isinstance(item_value, dict) if decoded_json else is_object_dict(item_value)):
             continue
-        item = item_value
+        item = cast('ObjectDict', item_value)
         aid = _normalize_asset_id(item.get('assetId'))
         if not isinstance(aid, int) or aid not in texpack_ids:
             continue
@@ -631,14 +649,19 @@ class CacheScraper:
         # cached sibling from a previous batch.  The Roblox client won't
         # re-fetch the CDN URL, so we must copy the content ourselves.
         to_copy: list[tuple[AssetId, AssetId, int, str]] = []  # source, dest, type, URL
-        texpack_request_slots = _build_texpack_request_slot_map(req_items)
+        # Both supported JSON decoders produce dictionaries with string keys
+        texpack_request_slots = _build_texpack_request_slot_map(req_items, decoded_json=True)
 
         with self._lock:
             generation = self._work_generation
+            # Index unusually shared URLs only for this batch
+            indexed_ids: dict[str, set[AssetId]] = {}
+            indexed_siblings: dict[str, tuple[AssetId | None, int]] = {}
+            cache_revision = 0
             for idx, item_value in enumerate(req_items):
-                if not is_object_dict(item_value):
+                if not isinstance(item_value, dict):
                     continue
-                item = item_value
+                item = cast('ObjectDict', item_value)
                 if 'assetId' not in item:
                     continue
                 asset_id = item['assetId']
@@ -647,9 +670,9 @@ class CacheScraper:
                 if idx >= len(res_items):
                     continue
                 res_item_value = res_items[idx]
-                if not is_object_dict(res_item_value):
+                if not isinstance(res_item_value, dict):
                     continue
-                res_item = res_item_value
+                res_item = cast('ObjectDict', res_item_value)
                 locations = batch_response_locations(res_item)
                 asset_type_value = res_item.get('assetTypeId')
                 asset_type = (
@@ -692,7 +715,15 @@ class CacheScraper:
                     # Keep distinct asset IDs sharing one CDN content hash
                     # while avoiding duplicate associations for the same ID
                     url_list = self._url_to_asset.setdefault(base_url, [])
-                    if asset_id in url_list:
+                    indexed = indexed_ids.get(base_url)
+                    if indexed is None and len(url_list) >= 8:
+                        indexed = set(url_list)
+                        indexed_ids[base_url] = indexed
+                        indexed_siblings[base_url] = (
+                            _first_cached_sibling(url_list, self.cache_logs),
+                            cache_revision,
+                        )
+                    if asset_id in (indexed if indexed is not None else url_list):
                         continue
                     if asset_id not in self.cache_logs:
                         self.cache_logs[asset_id] = {
@@ -704,17 +735,27 @@ class CacheScraper:
                     # (from a previous batch).  If so, mark this one cached and
                     # schedule a content copy instead of waiting for a CDN
                     # response that will never arrive.
-                    cached_sibling = None
-                    for sibling_id in url_list:
-                        sibling_info = self.cache_logs.get(sibling_id)
-                        if sibling_info and 'cached' in sibling_info:
-                            cached_sibling = sibling_id
-                            break
+                    if indexed is None:
+                        cached_sibling = (
+                            _first_cached_sibling(url_list, self.cache_logs) if url_list else None
+                        )
+                    else:
+                        cached_sibling, revision = indexed_siblings[base_url]
+                        # Another URL can make an earlier sibling eligible during this batch
+                        if revision != cache_revision:
+                            cached_sibling = _first_cached_sibling(url_list, self.cache_logs)
+                            indexed_siblings[base_url] = (cached_sibling, cache_revision)
                     if cached_sibling is not None:
+                        if 'cached' not in self.cache_logs[asset_id]:
+                            cache_revision += 1
                         self.cache_logs[asset_id]['cached'] = True
                         to_copy.append((cached_sibling, asset_id, asset_type, location))
 
                     url_list.append(asset_id)
+                    if indexed is not None:
+                        indexed.add(asset_id)
+                        if cached_sibling is None and 'cached' in self.cache_logs[asset_id]:
+                            indexed_siblings[base_url] = (asset_id, cache_revision)
                     tracked += 1
 
         # Submit copy tasks outside the lock

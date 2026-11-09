@@ -10,7 +10,7 @@ import threading
 import urllib.error
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict, override
+from typing import TYPE_CHECKING, Literal, TypedDict, cast, override
 
 from PIL import Image, ImageDraw
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, Signal
@@ -51,7 +51,6 @@ from fleasion.utils.json_types import (
     JsonValue,
     as_object_dict,
     as_object_list,
-    require_json_value,
     require_object_dict,
     require_object_list,
 )
@@ -488,7 +487,7 @@ class _JsonFetchWorker(QThread):
     def run(self) -> None:
         try:
             raw = _http_get(self._url, timeout=15)
-            data = require_json_value(json.loads(raw.decode('utf-8')))
+            data = cast('JsonValue', json.loads(raw.decode('utf-8')))
             filename = self._url.rsplit('/', 1)[-1] or 'data.json'
             self.done.emit(data, filename)
         except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as e:
@@ -1352,9 +1351,7 @@ class PreJsonsDialog(QDialog):
         p = Path(url)
         if p.is_file():
             try:
-                data = require_json_value(
-                    json.loads(p.read_text(encoding='utf-8', errors='ignore'))
-                )
+                data = cast('JsonValue', json.loads(p.read_text(encoding='utf-8', errors='ignore')))
                 self._open_viewer(data, p.name)
             except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
                 QMessageBox.warning(

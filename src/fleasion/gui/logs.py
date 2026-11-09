@@ -176,13 +176,12 @@ class LogsWindow(QDialog):
         super().showEvent(a0)
 
     def _update_logs(self) -> None:
-        logs = log_buffer.get_all()
-        count = len(logs)
+        count, new_logs = log_buffer.get_since(self._last_count)
         if count != self._last_count:
             scrollbar = self.text_edit.verticalScrollBar()
             was_at_bottom = scrollbar.value() >= scrollbar.maximum() - 4
 
-            new_text = '\n'.join(logs[self._last_count :])
+            new_text = '\n'.join(new_logs)
             prefix = '\n' if self._last_count > 0 else ''
 
             cursor = QTextCursor(self.text_edit.document())

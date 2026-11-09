@@ -43,6 +43,7 @@ class FakeWindowsMemory:
     ) -> int:
         location = int(address.value or 0)
         self.read_addresses.append(location)
+        assert size <= ctypes.sizeof(buffer)
         for start, contents in self.regions.items():
             offset = location - start
             if 0 <= offset < len(contents):
@@ -109,8 +110,14 @@ def windows_memory(monkeypatch: pytest.MonkeyPatch) -> FakeWindowsMemory:
     def regions(_handle: int) -> Iterator[tuple[int, int]]:
         yield from ((start, len(contents)) for start, contents in memory.regions.items())
 
+    def no_nearby_ranges(
+        _pid: int, _regions: list[tuple[int, int]]
+    ) -> Iterator[tuple[int, int, tuple[int, int]]]:
+        return iter(())
+
     monkeypatch.setattr(live_keys, '_module_bounds', module_bounds)
     monkeypatch.setattr(live_keys, '_regions', regions)
+    monkeypatch.setattr(live_keys, '_nearby_candidate_ranges', no_nearby_ranges)
     return memory
 
 

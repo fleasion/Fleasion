@@ -134,7 +134,7 @@ class _MemoryReader:
         res = self._pvr(self.pid, byref(self._local_iov), 1, byref(self._remote_iov), 1, 0)
         if res <= 0:
             return b''
-        return self._buf.raw[:res]
+        return ctypes.string_at(self._buf, min(res, ctypes.sizeof(self._buf)))
 
     def close(self) -> None:
         """Close opened resources."""

@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import json
 import locale
+import os
+import re
 import stat
 import sys
 import threading
@@ -51,6 +53,9 @@ _MOUSE_WHEEL_DIRECTIONS = ('up', 'down')
 _LINUX_MOUSE_BUTTON_CODES = frozenset({0x110, 0x111, 0x112, 0x113, 0x114})
 _WINDOWS_MOUSE_BUTTON_CODES = frozenset({1, 2, 4, 5, 6})
 _WINDOWS_HOTKEY_PLATFORMS = (None, 'windows')
+_CONFIG_FILENAME = re.compile(
+    r'.*\.json\Z', re.DOTALL | (re.IGNORECASE if os.name == 'nt' else re.NOFLAG)
+)
 type ObjectCollection = list[object] | tuple[object, ...] | set[object]
 
 
@@ -720,12 +725,18 @@ class ConfigManager:
     def _scan_config_files() -> tuple[list[str], tuple[tuple[str, int, int], ...]]:
         CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
         entries: list[tuple[str, str, int, int]] = []
-        for path in CONFIGS_FOLDER.glob('*.json'):
-            try:
-                stat_result = path.stat()
-            except OSError:
-                continue
-            entries.append((path.stem, path.name, stat_result.st_mtime_ns, stat_result.st_size))
+        with suppress(OSError), os.scandir(CONFIGS_FOLDER) as paths:
+            for path in paths:
+                name = path.name
+                if _CONFIG_FILENAME.fullmatch(name) is None:
+                    continue
+                try:
+                    stat_result = path.stat()
+                except OSError:
+                    continue
+                prefix = name[:-5]
+                stem = prefix if prefix.strip('.') else name
+                entries.append((stem, name, stat_result.st_mtime_ns, stat_result.st_size))
         entries.sort(key=itemgetter(0))
         return [name for name, *_ in entries], tuple(
             (filename, mtime, size) for _, filename, mtime, size in entries

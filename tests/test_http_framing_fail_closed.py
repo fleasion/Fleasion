@@ -60,6 +60,61 @@ def test_malformed_or_incomplete_header_block_is_rejected(data: bytes) -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('partial', [b'', b'GET / HTTP/1.1\r\n'])
+def test_stalled_header_preserves_empty_and_partial_timeout_behavior(
+    monkeypatch: pytest.MonkeyPatch, partial: bytes,
+) -> None:
+    async def run() -> None:
+        monkeypatch.setattr(proxy_server, '_HTTP_HEADER_IDLE_TIMEOUT', 0.05)
+        reader = asyncio.StreamReader()
+        reader.feed_data(partial)
+        if partial:
+            with pytest.raises(ValueError, match='Incomplete HTTP header'):
+                await proxy_server._read_headers_raw(reader)  # pyright: ignore[reportPrivateUsage]
+        else:
+            assert await proxy_server._read_headers_raw(reader) is None  # pyright: ignore[reportPrivateUsage]
+
+    asyncio.run(run())
+
+
+def test_progressing_header_can_exceed_one_idle_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        monkeypatch.setattr(proxy_server, '_HTTP_HEADER_IDLE_TIMEOUT', 0.1)
+        reader = asyncio.StreamReader()
+        lines = [b'GET / HTTP/1.1\r\n', b'Host: example.test\r\n', b'X: y\r\n', b'\r\n']
+
+        async def supply() -> None:
+            for line in lines:
+                await asyncio.sleep(0.04)
+                reader.feed_data(line)
+
+        sender = asyncio.create_task(supply())
+        parsed = await asyncio.wait_for(
+            proxy_server._read_headers_raw(reader), 1  # pyright: ignore[reportPrivateUsage]
+        )
+        await sender
+        assert parsed is not None
+        assert parsed.raw_header_block == b''.join(lines)
+
+    asyncio.run(run())
+
+
+def test_header_read_propagates_external_cancellation() -> None:
+    async def run() -> None:
+        reader = asyncio.StreamReader()
+        task = asyncio.create_task(
+            proxy_server._read_headers_raw(reader)  # pyright: ignore[reportPrivateUsage]
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+
 def test_valid_chunked_message_retains_trailers() -> None:
     async def run() -> None:
         reader = asyncio.StreamReader()
@@ -121,5 +176,22 @@ def test_progressing_body_may_exceed_one_idle_interval(
         )
         await sender
         assert body.payload == b'ABCDEFGH'
+
+    asyncio.run(run())
+
+
+def test_body_read_propagates_external_cancellation() -> None:
+    async def run() -> None:
+        reader = asyncio.StreamReader()
+        reader.feed_data(b'part')
+        task = asyncio.create_task(
+            proxy_server._read_http_body_bytes(  # pyright: ignore[reportPrivateUsage]
+                reader, 8, context='test body'
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
     asyncio.run(run())

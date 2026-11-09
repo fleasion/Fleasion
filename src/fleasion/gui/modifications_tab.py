@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 from PySide6.QtCore import (
     QAbstractItemModel,
@@ -99,7 +99,6 @@ from fleasion.modifications.platform_targets import (
 from fleasion.modifications.stash_paths import resource_stash_dir
 from fleasion.utils import APP_CACHE_DIR, log_buffer, open_folder
 from fleasion.utils.http import http_get
-from fleasion.utils.json_types import JsonValue, require_json_value
 from fleasion.utils.threading import run_in_thread
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
@@ -132,6 +131,7 @@ if TYPE_CHECKING:
         NewModificationEntry as _NewModificationEntry,
     )
     from fleasion.proxy.master import ProxyMaster
+    from fleasion.utils.json_types import JsonValue
 
 
 type _HotkeyCapture = Callable[[str], tuple[bool, _HotkeyBinding | None]]
@@ -2128,7 +2128,7 @@ class FFlagBrowserDialog(QDialog):
     def _read_cache(cls, *, now: float | None = None) -> dict[str, str | None] | None:
         """Return the recent merged result, ignoring malformed or expired cache files."""
         try:
-            cached = require_json_value(json.loads(cls._CACHE_PATH.read_text(encoding='utf-8')))
+            cached = cast('JsonValue', json.loads(cls._CACHE_PATH.read_text(encoding='utf-8')))
         except OSError, ValueError, json.JSONDecodeError:
             return None
         if not isinstance(cached, dict) or cached.get('version') != cls._CACHE_VERSION:

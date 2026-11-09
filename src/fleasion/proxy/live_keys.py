@@ -297,7 +297,7 @@ def _read(handle: int, addr: int, size: int) -> bytes:
     got = ctypes.c_size_t()
     if _win32.NtReadVirtualMemory(handle, ctypes.c_void_p(addr), buf, size, ctypes.byref(got)) != 0:
         return b''
-    return buf.raw[: got.value]
+    return ctypes.string_at(buf, min(got.value, size))
 
 
 def find_roblox_pid() -> int | None:
@@ -475,7 +475,7 @@ def _candidates(
 ) -> Iterator[tuple[int, tuple[int, int], int]]:
     needle = client_random or b'\x04\x03\x00\x00'
     field_offset = 0x184 if client_random is not None else 0x48
-    read_buf = ctypes.create_string_buffer(CHUNK_SIZE + len(needle))
+    read_buf = ctypes.create_string_buffer(max(CHUNK_SIZE + len(needle), _NEARBY_SCAN_SIZE))
     got = ctypes.c_size_t()
     regions = list(_regions(handle))
 
@@ -488,7 +488,7 @@ def _candidates(
             )
             if status != 0:
                 continue
-            data = read_buf.raw[: got.value]
+            data = ctypes.string_at(read_buf, min(got.value, ctypes.sizeof(read_buf)))
             position = data.find(needle)
             while position >= 0:
                 candidate = start + position - field_offset
@@ -514,7 +514,7 @@ def _candidates(
                 != 0
             ):
                 continue
-            data = read_buf.raw[: got.value]
+            data = ctypes.string_at(read_buf, min(got.value, ctypes.sizeof(read_buf)))
             position = data.find(needle)
             while position >= 0:
                 candidate = start + offset + position - field_offset

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import ssl
 from pathlib import Path
@@ -13,7 +14,7 @@ from cryptography.exceptions import InvalidTag
 from fleasion.proxy.addons.texture_stripper import TextureStripper
 from fleasion.proxy.server import FleasionProxy
 from fleasion.proxy.splice_keys import KeyProvider
-from fleasion.proxy.tls_records import MAX_PLAINTEXT, TrafficKeys, expand_label
+from fleasion.proxy.tls_records import MAX_PLAINTEXT, TLSRecordError, TrafficKeys, expand_label
 from fleasion.proxy.upstream import UpstreamEndpoint
 from fleasion.utils.certs import generate_ca, generate_host_cert
 
@@ -38,6 +39,7 @@ def test_padding_binary_zeros_and_key_update(cipher: int) -> None:
     assert reader.decrypt(writer.encrypt(bytes(MAX_PLAINTEXT))) == (23, bytes(MAX_PLAINTEXT))
 
 
+@pytest.mark.skipif(os.name != 'posix', reason='Sober Flatpak session identity requires POSIX')
 def test_verified_sober_splice_traffic_records_exact_flatpak_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -86,6 +88,19 @@ def test_bad_tag_does_not_advance_sequence() -> None:
     with pytest.raises(InvalidTag):
         reader.decrypt(record[:-1] + bytes([record[-1] ^ 1]))
     assert reader.decrypt(record) == (23, b'body')
+
+
+def test_tls_splice_large_padding_preserves_trailing_content_zeros() -> None:
+    writer, reader = TrafficKeys(bytes(32), 0x1301), TrafficKeys(bytes(32), 0x1301)
+    content = b'content\x00\x00'
+    assert reader.decrypt(writer.encrypt(content, padding=16000)) == (23, content)
+
+
+def test_tls_splice_rejects_all_zero_inner_plaintext_without_advancing() -> None:
+    writer, reader = TrafficKeys(bytes(32), 0x1301), TrafficKeys(bytes(32), 0x1301)
+    with pytest.raises(TLSRecordError, match='content type'):
+        reader.decrypt(writer.encrypt(b'', content_type=0, padding=100))
+    assert reader.sequence == 0
 
 
 @pytest.mark.parametrize('explicit', [True, False])

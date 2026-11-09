@@ -12,10 +12,30 @@ from fleasion.proxy.tls_records import (
     TLS13RecordCipher,
     TLS13RecordSession,
     TLSRecordError,
+    TrafficKeys,
 )
 
 _TEST_SECRET_256 = bytes(range(32))
 _TEST_SECRET_384 = bytes(range(48))
+
+
+@pytest.mark.parametrize('sequence', [0, 1, 255, 256, (1 << 64) - 1])
+def test_tls13_nonce_matches_bytewise_xor(sequence: int) -> None:
+    keys = TrafficKeys(_TEST_SECRET_256, 0x1301)
+    cipher = TLS13RecordCipher(_TEST_SECRET_256, CipherSuite.AES_128_GCM_SHA256)
+    keys.sequence = cipher.sequence = sequence
+    counter = sequence.to_bytes(12, 'big')
+    expected = bytes(a ^ b for a, b in zip(keys.iv, counter, strict=True))
+    assert keys._nonce() == expected  # pyright: ignore[reportPrivateUsage]
+    assert cipher._nonce() == expected  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize('iv', [b'', bytes(11), bytes(13)])
+def test_tls13_nonce_rejects_invalid_iv_length(iv: bytes) -> None:
+    keys = TrafficKeys(_TEST_SECRET_256, 0x1301)
+    keys.iv = iv
+    with pytest.raises(ValueError, match='IV'):
+        keys._nonce()  # pyright: ignore[reportPrivateUsage]
 
 
 def _pair(suite: CipherSuite) -> tuple[TLS13RecordCipher, TLS13RecordCipher]:

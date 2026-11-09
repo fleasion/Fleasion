@@ -246,12 +246,13 @@ def test_repair_hosts_file_preserves_original_permissions(
         + b'127.0.0.1 assetdelivery.roblox.com # Fleasion proxy entry\r\n'
     )
     hosts_file.chmod(0o644)
+    original_mode = hosts_file.stat().st_mode & 0o777
 
     monkeypatch.setattr(proxy_master, 'HOSTS_FILE', hosts_file)
     monkeypatch.setattr(proxy_master, '_HOSTS_FILE_REPAIR_THRESHOLD_BYTES', 100)
 
     assert proxy_master.repair_hosts_file({'assetdelivery.roblox.com'})
-    assert hosts_file.stat().st_mode & 0o777 == 0o644
+    assert hosts_file.stat().st_mode & 0o777 == original_mode
 
 
 def test_remove_hosts_entries_repairs_oversized_file_even_if_user_content_remains_large(

@@ -15,6 +15,7 @@ from h2.events import (
     DataReceived, InformationalResponseReceived, RequestReceived, ResponseReceived,
     StreamEnded, StreamReset,
 )
+from h2.exceptions import ProtocolError
 
 from fleasion.proxy.server import FleasionProxy
 from fleasion.proxy.tls_backends import (
@@ -584,6 +585,13 @@ def test_h2_bridge_rejects_cross_authority_stream(tmp_path: Path, invalid_type: 
                     (b":method", b"CONNECT"),
                     (b":authority", b"apis.roblox.com"),
                 ]
+                # Older h2 versions require ordinary request pseudo-headers for CONNECT
+                probe = H2Connection()
+                probe.initiate_connection()
+                try:
+                    probe.send_headers(1, invalid_headers, end_stream=True)
+                except ProtocolError:
+                    invalid_headers.extend([(b':scheme', b'https'), (b':path', b'/blocked')])
             first_stream = h2.get_next_available_stream_id()
             if invalid_type == "reset":
                 h2.send_headers(

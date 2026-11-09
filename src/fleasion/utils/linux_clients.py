@@ -533,21 +533,20 @@ class SoberSession:
     start_ticks: int
 
 
-def _running_sober_sessions(
-    *, proc_root: Path, launcher: bool
-) -> tuple[SoberSession, ...]:
+def _running_sober_sessions(*, proc_root: Path, launcher: bool | None) -> tuple[SoberSession, ...]:
     """Identify either the Roblox engine or its executable-backed Sober launcher."""
     try:
         processes = list(proc_root.iterdir())
     except OSError:
         return ()
     sessions: list[SoberSession] = []
-    expected_comm = 'sober' if launcher else 'Main'
+    expected_comms = {'sober', 'Main'} if launcher is None else {'sober' if launcher else 'Main'}
     for process in processes:
         if not process.name.isdecimal():
             continue
         try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if (process / 'comm').read_text(encoding='utf-8').strip() != expected_comm:
+            comm = (process / 'comm').read_text(encoding='utf-8').strip()
+            if comm not in expected_comms:
                 continue
             if process.stat().st_uid != os.getuid():
                 continue
@@ -555,7 +554,7 @@ def _running_sober_sessions(
             if f'{SOBER_CLIENT.cgroup_marker}-' not in cgroup:
                 continue
             # Flatpak /app paths exist inside Sober's mount namespace, not ours
-            if launcher and (process / 'exe').readlink().name != 'sober':
+            if comm == 'sober' and (process / 'exe').readlink().name != 'sober':
                 continue
             stat_text = (process / 'stat').read_text(encoding='utf-8')
             fields = stat_text.rsplit(')', 1)[1].split()
@@ -584,10 +583,7 @@ def sober_flatpak_session_identity(*, proc_root: Path = Path('/proc')) -> str | 
     When several distinct Sober instances are active, refuse to infer which
     instance is owned; a broad Flatpak kill could terminate unrelated sessions.
     """
-    sessions = (
-        *running_sober_launchers(proc_root=proc_root),
-        *running_sober_players(proc_root=proc_root),
-    )
+    sessions = _running_sober_sessions(proc_root=proc_root, launcher=None)
     prefix = f'{SOBER_CLIENT.cgroup_marker}-'
     scopes: set[str] = set()
     for session in sessions:
@@ -937,10 +933,7 @@ def select_linux_client(
         if 'sober' in by_key:
             # The native Sober window runs before its Android Main process starts
             # It still represents the most recently opened Roblox client
-            sober_sessions = (
-                *running_sober_players(proc_root=proc_root),
-                *running_sober_launchers(proc_root=proc_root),
-            )
+            sober_sessions = _running_sober_sessions(proc_root=proc_root, launcher=None)
             if sober_sessions:
                 starts['sober'] = max(session.start_ticks for session in sober_sessions)
     # Preserve the existing explicit process-presence overrides for callers

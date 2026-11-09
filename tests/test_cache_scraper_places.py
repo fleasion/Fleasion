@@ -136,6 +136,54 @@ def _make_scraper() -> CacheScraper:
     return CacheScraper(cast('CacheManager', manager))
 
 
+@pytest.mark.parametrize('initial_sibling', [False, True])
+def test_shared_url_index_notices_sibling_cached_through_another_url(
+    initial_sibling: bool,
+) -> None:
+    scraper = _make_scraper()
+    scraper.enabled = True
+    first_url = 'https://cdn.test/first'
+    second_url = 'https://cdn.test/second'
+    _url_to_asset(scraper).update({first_url: [str(i) for i in range(1, 9)], second_url: ['99']})
+    for asset_id in _url_to_asset(scraper)[first_url]:
+        scraper.cache_logs[asset_id] = {'location': first_url, 'assetTypeId': 1}
+    if initial_sibling:
+        scraper.cache_logs['8']['cached'] = True
+    scraper.cache_logs['99'] = {'location': second_url, 'assetTypeId': 1, 'cached': True}
+    copies: list[tuple[object, ...]] = []
+
+    def record_copy(_func: object, *args: object, **_kwargs: object) -> None:
+        copies.append(args)
+
+    _set_submit_background(scraper, record_copy)
+    requests = [{'assetId': asset_id} for asset_id in ('10', '1', '11')]
+    responses = [
+        {'assetTypeId': 1, 'location': location}
+        for location in (first_url, second_url, first_url)
+    ]
+    try:
+        scraper.process_batch_response(json.dumps(requests).encode(), json.dumps(responses).encode())
+        expected = [('8', '10')] if initial_sibling else []
+        expected.extend([('99', '1'), ('1', '11')])
+        assert [copy[:2] for copy in copies] == expected
+        assert _url_to_asset(scraper)[first_url] == [str(i) for i in range(1, 9)] + ['10', '11']
+    finally:
+        _executor(scraper).shutdown(wait=False, cancel_futures=True)
+
+
+def test_batch_scraper_accepts_stdlib_decoded_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cache_scraper_module, '_loads', json.loads)
+    scraper = _make_scraper()
+    scraper.enabled = True
+    request = b'[{"assetId": 123, "nested": {"1": [true, null]}}]'
+    response = b'[{"assetTypeId": 1, "location": "https://cdn.test/asset"}]'
+    try:
+        scraper.process_batch_response(request, response)
+        assert scraper.cache_logs[123]['location'] == 'https://cdn.test/asset'
+    finally:
+        _executor(scraper).shutdown(wait=False, cancel_futures=True)
+
+
 def test_user_place_lookup_uses_supported_limits_and_falls_back() -> None:
     scraper = _make_scraper()
     calls: list[tuple[str, str, dict[str, str] | None]] = []

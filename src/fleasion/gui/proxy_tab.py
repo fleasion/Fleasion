@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QPainter,
     QPaintEvent,
     QShortcut,
+    QShowEvent,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -292,6 +293,27 @@ class _NumericSortItem(QTableWidgetItem):
 def _status_sort_value(entry: _TrafficEntry) -> int:
     status = entry.get('status')
     return status if status is not None else -1
+
+
+def _traffic_sort_value(entry: _TrafficEntry, column: int) -> float | str:
+    match column:
+        case 1:
+            value = entry.get('time') or 0
+        case 2:
+            value = entry.get('method', '')
+        case 3:
+            value = entry.get('host', '')
+        case 4:
+            value = entry.get('path', '')
+        case 5:
+            value = _status_sort_value(entry)
+        case 6:
+            value = entry.get('size') or 0
+        case 7:
+            value = entry.get('ms') or -1
+        case _:
+            value = entry['id']
+    return value
 
 
 _HIGHLIGHT_BRUSH = QBrush(QColor(255, 235, 59, 60))
@@ -816,6 +838,11 @@ class ProxyTrafficTab(QWidget):
         self._make_shortcut('R', self._replay_selected)
 
         self._traffic: list[_TrafficEntry] = []
+        self._traffic_render_pending = False
+        self._traffic_sort_pending = False
+        self.ui.trafficTable.horizontalHeader().sortIndicatorChanged.connect(
+            self._on_traffic_sort_changed
+        )
         self._entries_by_id: dict[int, _TrafficEntry] = {}
         self._displayed_entry_id: int | None = None
         # The request box is editable for whichever entry is displayed, held
@@ -860,7 +887,7 @@ class ProxyTrafficTab(QWidget):
         # plain-traffic-log case to keep the wait for a human to notice small.
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(400)
-        self._poll_timer.timeout.connect(self._refresh_traffic)
+        self._poll_timer.timeout.connect(self._poll_traffic)
         self._poll_timer.start()
 
         # Saving to disk on every 400ms poll would mean rewriting the entire
@@ -890,12 +917,35 @@ class ProxyTrafficTab(QWidget):
 
         self._refresh_traffic()
 
+    @override
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._refresh_traffic()
+
+    def _poll_traffic(self) -> None:
+        if self.isVisible() or self._preserve_enabled:
+            self._refresh_traffic()
+
+    def _on_traffic_sort_changed(self, _column: int, _order: Qt.SortOrder) -> None:
+        self._traffic_sort_pending = True
+
     def _refresh_traffic(self) -> None:
         if self._proxy_master is None or not hasattr(self._proxy_master, 'get_env_proxy_traffic'):
             live = []
         else:
             live = self._proxy_master.get_env_proxy_traffic()
-        self._traffic = self._preserved_traffic + live
+        traffic = self._preserved_traffic + live
+        if (
+            traffic == self._traffic
+            and not self._traffic_render_pending
+            and not self._traffic_sort_pending
+        ):
+            return
+        self._traffic = traffic
+        if not self.isVisible():
+            self._traffic_render_pending = True
+            return
+        self._traffic_render_pending = False
         self._render_table()
 
     def _row_entry_id(self, row: int) -> int | None:
@@ -910,11 +960,7 @@ class ProxyTrafficTab(QWidget):
         highlight_text = self.ui.highlightEdit.text().strip().lower()
         table = self.ui.trafficTable
 
-        # Table gets fully torn down and rebuilt every poll (rows are
-        # re-created, not just updated), which wipes Qt's own selection
-        # state - so the FULL multi-row selection has to be captured by
-        # entry id here and explicitly restored after rebuilding, not just
-        # the single "current" row.
+        # Preserve the full selection while rows are replaced and re-sorted
         selected_ids: set[int] = set()
         for idx in table.selectionModel().selectedRows():
             entry_id = self._row_entry_id(idx.row())
@@ -930,15 +976,69 @@ class ProxyTrafficTab(QWidget):
             or filter_text in entry.get('path', '').lower()
             or filter_text in entry.get('method', '').lower()
         ]
+        old_entries = self._entries_by_id
         self._entries_by_id = {entry['id']: entry for entry in rows}
 
         scrollbar = table.verticalScrollBar()
         saved_scroll_value = scrollbar.value()
         was_at_bottom = saved_scroll_value >= scrollbar.maximum() - 2
 
+        sort_column = table.horizontalHeader().sortIndicatorSection()
+        blocker = QSignalBlocker(table)
         table.setSortingEnabled(False)
-        table.setRowCount(len(rows))
-        for row, entry in enumerate(rows):
+        same_rows = (
+            len(old_entries) == len(rows)
+            and list(old_entries) == list(self._entries_by_id)
+            and table.rowCount() == len(rows)
+        )
+        removed_ids: set[int] = set()
+        added_ids: set[int] = set()
+        incremental = same_rows and not self._traffic_sort_pending
+        may_update_rows = not same_rows and not self._traffic_sort_pending and sort_column == 0
+        if (
+            may_update_rows
+            and old_entries
+            and len(old_entries) == table.rowCount()
+            and len(self._entries_by_id) == len(rows)
+        ):
+            removed_ids = old_entries.keys() - self._entries_by_id.keys()
+            added_ids = self._entries_by_id.keys() - old_entries.keys()
+            incremental = len(removed_ids) + len(added_ids) <= max(16, len(old_entries) // 4)
+        changed_rows: list[tuple[int, _TrafficEntry]] = []
+        removed_rows: list[int] = []
+        seen_ids: set[int] = set()
+        if incremental:
+            for row in range(table.rowCount()):
+                entry_id = self._row_entry_id(row)
+                if entry_id is None or entry_id in seen_ids or entry_id not in old_entries:
+                    incremental = False
+                    break
+                seen_ids.add(entry_id)
+                if entry_id in removed_ids:
+                    removed_rows.append(row)
+                    continue
+                entry = self._entries_by_id[entry_id]
+                if entry != old_entries[entry_id]:
+                    if sort_column != 0 and _traffic_sort_value(
+                        entry, sort_column
+                    ) != _traffic_sort_value(old_entries[entry_id], sort_column):
+                        # Rebuilding restores source order when sort keys become equal
+                        incremental = False
+                        break
+                    changed_rows.append((row - len(removed_rows), entry))
+        if incremental:
+            for row in reversed(removed_rows):
+                table.removeRow(row)
+            for entry in rows:
+                if entry['id'] in added_ids:
+                    row = table.rowCount()
+                    table.insertRow(row)
+                    changed_rows.append((row, entry))
+        else:
+            table.setRowCount(len(rows))
+            changed_rows = list(enumerate(rows))
+        self._traffic_sort_pending = False
+        for row, entry in changed_rows:
             entry_id = entry['id']
             display_number = self._display_row_number(entry_id)
             items = (
@@ -959,7 +1059,6 @@ class ProxyTrafficTab(QWidget):
                 table.setItem(row, col, item)
         table.setSortingEnabled(True)
 
-        blocker = QSignalBlocker(table)
         table.clearSelection()
         selection_model = table.selectionModel()
         select_flags = (

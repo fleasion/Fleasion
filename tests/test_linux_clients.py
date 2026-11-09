@@ -1,5 +1,5 @@
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Literal, cast
@@ -403,6 +403,31 @@ def test_sober_session_identity_fails_closed_for_multiple_instances(tmp_path: Pa
         cgroup='0::/user.slice/app-flatpak-org.vinegarhq.Sober-second.scope\n',
     )
     assert sober_flatpak_session_identity(proc_root=proc) is None
+
+
+def test_sober_identity_scans_launcher_and_engine_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils.linux_clients import sober_flatpak_session_identity
+
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    scope = 'app-flatpak-org.vinegarhq.Sober-one.scope'
+    cgroup = f'0::/user.slice/{scope}\n'
+    _sober_launcher_proc(proc, 100, ticks=100, cgroup=cgroup)
+    _sober_proc(proc, 200, ticks=200, cgroup=cgroup)
+    original = Path.iterdir
+    scans = 0
+
+    def counted_iterdir(path: Path) -> Iterator[Path]:
+        nonlocal scans
+        if path == proc:
+            scans += 1
+        return original(path)
+
+    monkeypatch.setattr(Path, 'iterdir', counted_iterdir)
+    assert sober_flatpak_session_identity(proc_root=proc) == scope
+    assert scans == 1
 
 
 def test_auto_selection_prefers_sober_launcher_before_engine_starts(tmp_path: Path) -> None:

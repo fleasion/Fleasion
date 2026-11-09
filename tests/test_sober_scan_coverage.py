@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
+import tracemalloc
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -166,6 +167,33 @@ def test_process_vm_readv_preserves_chunk_overlap(
         assert len(payload) == sober_keys.CHUNK_SIZE + 31
         assert payload[:32] == data
         assert read_sizes == [sober_keys.CHUNK_SIZE + 31]
+    finally:
+        reader.close()
+
+
+def test_process_vm_readv_small_read_does_not_copy_entire_scan_buffer() -> None:
+    reader = sober_keys._MemoryReader(0)  # pyright: ignore[reportPrivateUsage]
+    expected = bytes(range(32))
+
+    def fake_readv(
+        _pid: int, local: Any, _local_count: int,
+        _remote: Any, _remote_count: int, _flags: int,
+    ) -> int:
+        local_iov = ctypes.cast(local, ctypes.POINTER(sober_keys._Iovec)).contents  # pyright: ignore[reportPrivateUsage]
+        assert local_iov.iov_base is not None
+        ctypes.memmove(local_iov.iov_base, expected, len(expected))
+        return len(expected)
+
+    try:
+        reader._pvr = fake_readv  # pyright: ignore[reportPrivateUsage]
+        reader._mem_file = None  # pyright: ignore[reportPrivateUsage]
+        tracemalloc.start()
+        try:
+            assert reader.read(0x100000, len(expected)) == expected
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < 64 * 1024
     finally:
         reader.close()
 

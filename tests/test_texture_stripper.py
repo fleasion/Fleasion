@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import tracemalloc
 from typing import TYPE_CHECKING, Protocol, cast
 from unittest.mock import patch
 
 import pytest
 
 from fleasion.proxy.addons import texture_stripper as texture_stripper_module
+from fleasion.proxy.addons import cache_scraper as cache_scraper_module
 from fleasion.proxy.addons.texture_stripper import TextureStripper
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
     from typing import Never
 
@@ -323,6 +326,8 @@ def test_predownloaded_texturepack_xml_is_not_served_as_slot_content(tmp_path: P
         b'<roblox><texturepack_version>2</texturepack_version>'
         b'<color>10</color><normal>11</normal></roblox>'
     )
+    with manifest.open('ab') as replacement_file:
+        replacement_file.truncate(16 * 1024 * 1024)
     _set_attr(stripper, '_predownloaded', {9999: str(manifest)})
     body = json.dumps(
         [
@@ -332,16 +337,107 @@ def test_predownloaded_texturepack_xml_is_not_served_as_slot_content(tmp_path: P
         ]
     ).encode()
 
-    modified, _ = _process_batch_request(
-        stripper,
-        body,
-        {},
-        ({'TexturePack': 9999}, set(), {}, {}),
-        'batch',
-    )
+    tracemalloc.start()
+    try:
+        modified, _ = _process_batch_request(
+            stripper,
+            body,
+            {},
+            ({'TexturePack': 9999}, set(), {}, {}),
+            'batch',
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
 
+    assert peak < 2 * 1024 * 1024
     assert [entry['assetId'] for entry in json.loads(modified)] == [9999, 9999, 9999]
     assert not _local_redirects(stripper)
+
+
+def test_animation_precheck_only_reads_prefix_of_non_animation_download(tmp_path: Path) -> None:
+    stripper = _make_stripper(_Config())
+    asset = tmp_path / 'replacement.dat'
+    with asset.open('wb') as output:
+        output.write(b'not an animation')
+        output.truncate(16 * 1024 * 1024)
+    _set_attr(stripper, '_predownloaded', {9999: str(asset)})
+    _set_attr(stripper, '_CONV_CACHE_DIR', tmp_path / 'converted')
+    tracemalloc.start()
+    try:
+        stripper.precheck_anim_rigs()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1024 * 1024
+
+
+def test_animation_prefix_sniff_retains_metadata_stripping(tmp_path: Path) -> None:
+    asset = tmp_path / 'replacement.bin'
+    asset.write_bytes(b'header' * 20 + b'<roblox!KeyframeSequence')
+    prefix = texture_stripper_module._read_replacement_prefix(  # pyright: ignore[reportPrivateUsage]
+        asset, 64
+    )
+    assert prefix == b'<roblox!KeyframeSequence'
+
+
+def test_animation_type_lookup_preserves_exact_name_matching() -> None:
+    stripper = _make_stripper(_Config())
+    virtual = cast('dict[str, str]', _attr(stripper, '_VIRTUAL_ANIM_RIG'))
+    animation_types = cast('frozenset[int]', _attr(stripper, '_ANIM_TYPE_IDS'))
+    expected = {
+        name for type_id, name in stripper.ASSET_TYPES.items() if type_id in animation_types
+    } | set(virtual)
+    names = set(stripper.ASSET_TYPES.values()) | set(virtual)
+    variants = names | {name.lower() for name in names} | {name.upper() for name in names}
+    callback = cast('Callable[[object], bool]', _attr(stripper, '_is_anim_replacement_key'))
+    for name in variants:
+        assert callback(name) is (name in expected)
+    assert not callback('123:1')
+    assert not callback(True)
+
+
+def test_animation_precheck_deduplicates_paths_in_first_seen_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = tmp_path / 'first.rbxm', tmp_path / 'second.rbxm'
+    first.write_bytes(b'first')
+    second.write_bytes(b'second')
+
+    class _LocalConfig:
+        @staticmethod
+        def get_all_replacements() -> ReplacementMaps:
+            return {}, set(), {}, {'Animation': str(first), 'WalkAnimation': str(first),
+                                   'RunAnimation': str(second)}
+
+    stripper = _make_stripper(_LocalConfig())
+    _set_attr(stripper, '_predownloaded', {9999: str(first)})
+    _set_attr(stripper, '_CONV_CACHE_DIR', tmp_path / 'converted')
+    _set_attr(stripper, '_anim_repl_rig', {})
+    seen: list[tuple[str, str, str]] = []
+
+    def detect(_data: bytes) -> str:
+        return 'R6'
+
+    def convert(path: str, rig: str, data: bytes | None = None) -> str | None:
+        assert data is not None
+        seen.append(('keyframe', path, rig))
+        return None
+
+    def convert_curve(path: str, rig: str, data: bytes | None = None) -> str | None:
+        assert data is not None
+        seen.append(('curve', path, rig))
+        return None
+
+    monkeypatch.setattr(texture_stripper_module, '_detect_rig', detect)
+    monkeypatch.setattr(stripper, '_get_or_create_converted', convert)
+    monkeypatch.setattr(stripper, '_get_or_create_converted_curve', convert_curve)
+    stripper.precheck_anim_rigs()
+    assert seen == [
+        (kind, str(path), rig)
+        for path in (first, second)
+        for kind, rig in (('keyframe', 'R15'), ('curve', 'R6'), ('curve', 'R15'))
+    ]
 
 
 def test_exact_local_texturepack_rule_overrides_type_id_rule(
@@ -429,6 +525,91 @@ def test_texturepack_partial_batch_uses_fidelity_before_occurrence_order() -> No
         0: 2,
         1: 1,
     }
+
+
+def test_slot_inference_handles_non_texture_batches_and_repeated_implicit_packs() -> None:
+    stripper = _make_stripper(_Config())
+    ordinary: list[_JsonValue] = [
+        {'assetId': 1, 'assetType': 'MeshPart'},
+        {'assetId': 2, 'assetType': 'Audio'},
+    ]
+    assert _build_texpack_request_slot_map(stripper, ordinary) == {}
+    assert cache_scraper_module._build_texpack_request_slot_map(  # pyright: ignore[reportPrivateUsage]
+        cast('list[object]', ordinary)
+    ) == {}
+
+    repeated: list[_JsonValue] = [
+        {'assetId': 10, 'contentRepresentationPriorityList': ''},
+        {'assetId': 10, 'contentRepresentationPriorityList': ''},
+    ]
+    assert stripper._build_texpack_request_slot_map(  # pyright: ignore[reportPrivateUsage]
+        repeated, infer_repeated_assets=True
+    ) == {0: 0, 1: 1}
+    assert cache_scraper_module._build_texpack_request_slot_map(  # pyright: ignore[reportPrivateUsage]
+        cast('list[object]', repeated)
+    ) == {
+        0: 0,
+        1: 1,
+    }
+    invalid_keys: list[object] = [
+        {'assetId': 10, 'contentRepresentationPriorityList': ''},
+        {'assetId': 10, 'contentRepresentationPriorityList': '', 1: 'invalid key'},
+    ]
+    assert cache_scraper_module._build_texpack_request_slot_map(invalid_keys) == {}  # pyright: ignore[reportPrivateUsage]
+
+
+def test_unmodified_nested_batch_retains_original_wire_bytes() -> None:
+    stripper = _make_stripper(_Config())
+    body = (
+        b'[ { "assetId": 1, "assetType": "MeshPart", '
+        b'"extra": {"nested": [true, null, {"value": 2.5}]} } ]'
+    )
+    result = stripper.process_batch_request(body, {}, ({999: 1000}, set(), {}, {}), 'nested')
+    assert result == (body, body)
+    assert stripper.process_batch_request(b'[{}', {}, ({999: 1000}, set(), {}, {}), 'bad') == b'[{}'
+
+
+def test_removing_batch_entry_keeps_original_request_ids() -> None:
+    stripper = _make_stripper(_Config())
+    requests = [
+        {'assetId': 101 + index, 'assetType': 'MeshPart', 'requestId': str(index)}
+        for index in range(3)
+    ]
+    body = json.dumps(requests).encode()
+    result, scraper_body = _process_batch_request(stripper, body, {}, ({}, {102}, {}, {}), 'b')
+    assert json.loads(result) == [requests[0], requests[2]]
+    assert json.loads(scraper_body) == [requests[0], requests[2]]
+
+
+def test_unmatched_channel_rule_still_composites_orm_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    stripper = _make_stripper(_Config())
+    routed: list[_RoutedCall] = []
+    composites: list[dict[str, str | None]] = []
+
+    def composite(
+        _asset_id: int | str, channels: dict[str, str | None], *, normal_source: object = None
+    ) -> str:
+        del normal_source
+        composites.append(channels)
+        return '/composite.ktx2'
+
+    def route(*args: object, **kwargs: object) -> None:
+        routed.append((args, kwargs))
+
+    monkeypatch.setattr(stripper, '_build_orm_composite', composite)
+    monkeypatch.setattr(stripper, '_route_local', route)
+    body = json.dumps(
+        [
+            _texpack_request(
+                1234,
+                'orm',
+                'W3siZm9ybWF0Ijoia3R4MiIsIm1ham9yVmVyc2lvbiI6IjdyZG8iLCJmaWRlbGl0eSI6IlFFQT0ifV0=',
+            )
+        ]
+    ).encode()
+    _process_batch_request(stripper, body, {}, ({}, set(), {}, {'TexturePack:3': '/rough.png'}), 'b')
+    assert composites == [{'roughness': '/rough.png'}]
+    assert routed[0][0][1:3] == (1234, '/composite.ktx2')
 
 
 def test_animation_replacement_rig_detection_strips_bin_metadata(tmp_path: Path) -> None:

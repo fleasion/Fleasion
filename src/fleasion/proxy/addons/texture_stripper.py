@@ -39,7 +39,6 @@ from fleasion.utils.json_types import (
     JsonObject as _JsonObject,
     JsonValue as _JsonValue,
     as_json_object,
-    require_json_value,
 )
 
 if TYPE_CHECKING:
@@ -594,6 +593,17 @@ def _read_replacement_bytes(path: Path) -> bytes | None:
         return None
 
 
+def _read_replacement_prefix(path: Path, size: int) -> bytes | None:
+    if path.suffix.lower() in {'', '.bin'}:
+        content = _read_replacement_bytes(path)
+        return content[:size] if content is not None else None
+    try:
+        with path.open('rb') as source:
+            return source.read(size)
+    except OSError:
+        return None
+
+
 def _decode_request_entries(body: bytes) -> tuple[_JsonList, list[str]]:
     try:
         loaded = _loads(body)
@@ -638,14 +648,15 @@ try:
     import orjson
 
     def _loads(data: bytes) -> _JsonValue:
-        return require_json_value(orjson.loads(data))
+        # The decoder produces only JSON-compatible builtins
+        return cast('_JsonValue', orjson.loads(data))
 
     def _dumps(obj: _JsonValue) -> bytes:
         return orjson.dumps(obj)
 except ImportError:
 
     def _loads(data: bytes) -> _JsonValue:
-        return require_json_value(json.loads(data))
+        return cast('_JsonValue', json.loads(data))
 
     def _dumps(obj: _JsonValue) -> bytes:
         return json.dumps(obj, separators=(',', ':')).encode()
@@ -1497,14 +1508,15 @@ class TextureStripper:
         """Return True if this local-replacement key targets an animation asset."""
         # All animation-related string keys: virtual rig-filter types + every
         # named animation asset type from ASSET_TYPES
-        anim_str_keys = frozenset(
-            name for tid, name in self.ASSET_TYPES.items() if tid in self._ANIM_TYPE_IDS
-        ) | frozenset(self._VIRTUAL_ANIM_RIG)
-        if isinstance(key, str) and key in anim_str_keys:
-            return True
-        # TexturePack slot keys (e.g. "12345:2") are never animations
-        if isinstance(key, str) and ':' in key:
-            return False
+        if isinstance(key, str):
+            if key in self._VIRTUAL_ANIM_RIG:
+                return True
+            type_id = self._REVERSE.get(key.lower())
+            if type_id in self._ANIM_TYPE_IDS and self.ASSET_TYPES.get(type_id) == key:
+                return True
+            # TexturePack slot keys (e.g. "12345:2") are never animations
+            if ':' in key:
+                return False
         # Numeric asset ID — look up via economy API
         if not isinstance(key, int | str) or isinstance(key, bool):
             return False
@@ -1527,14 +1539,14 @@ class TextureStripper:
 
         # Collect local paths that are definitely animation replacements.
         # Check: animation key/type, .rbxm/.rbxmx extension, or asset type via API.
-        paths_to_process: list[str] = []
+        paths_to_process: dict[str, None] = {}
 
         for key, path_value in local_replacements.items():
             local_path = str(path_value)
             if local_path in paths_to_process:
                 continue
             if Path(local_path).suffix.lower() in anim_exts or self._is_anim_replacement_key(key):
-                paths_to_process.append(local_path)
+                paths_to_process[local_path] = None
 
         # Predownloaded ID-to-ID replacements: check replacement asset ID via API,
         # then fall back to extension and magic-byte sniffing.
@@ -1543,26 +1555,24 @@ class TextureStripper:
             if local_path in paths_to_process:
                 continue
             if Path(local_path).suffix.lower() in anim_exts:
-                paths_to_process.append(local_path)
+                paths_to_process[local_path] = None
                 continue
             # Check the replacement asset ID itself via economy API
             try:
                 if self._is_anim_asset_id(int(repl_id)):
-                    paths_to_process.append(local_path)
+                    paths_to_process[local_path] = None
                     continue
             except TypeError, ValueError:
                 pass
             # Last resort: peek at magic bytes for .dat / extensionless files
             path = Path(local_path)
-            data = _read_replacement_bytes(path)
-            if data is not None:
-                head = data[:64]
-                if (
-                    head.startswith(b'<roblox!')
-                    or b'KeyframeSequence' in head
-                    or b'CurveAnimation' in head
-                ):
-                    paths_to_process.append(local_path)
+            head = _read_replacement_prefix(path, 64)
+            if head is not None and (
+                head.startswith(b'<roblox!')
+                or b'KeyframeSequence' in head
+                or b'CurveAnimation' in head
+            ):
+                paths_to_process[local_path] = None
 
         converted = 0
         for local_path in paths_to_process:
@@ -1857,7 +1867,8 @@ class TextureStripper:
                     # texture payload. Never route it to Color/Normal/ORM CDN
                     # requests; retain the parent ID replacement instead.
                     try:
-                        head = Path(predownloaded).read_bytes()[:2048].lower()
+                        with Path(predownloaded).open('rb') as replacement_file:
+                            head = replacement_file.read(2048).lower()
                     except OSError:
                         head = b''
                     if b'<texturepack_version>' in head:
@@ -1972,6 +1983,9 @@ class TextureStripper:
         orig_len = len(data)
         filtered_data: _JsonList = []
         filtered_slots: dict[int, int] = {}
+        filtered_type_keys: list[list[_ReplacementKey]] = []
+        filtered_anim_flags: list[bool] = []
+        any_replacement = False
         for old_idx, e in enumerate(data):
             if not isinstance(e, dict):
                 continue
@@ -1979,13 +1993,15 @@ class TextureStripper:
             aid = self._normalize_asset_id(e.get('assetId'))
             slot_key = f'{aid}:{map_index}' if (aid is not None and map_index is not None) else None
             wildcard_key = f'TexturePack:{map_index}' if map_index is not None else None
+            type_keys = self._get_type_keys(e)
+            is_animation = self._is_anim_entry(e)
             replacement_keys = (
                 ([slot_key] if slot_key else [])
                 + ([wildcard_key] if wildcard_key else [])
                 + ([aid] if aid is not None else [])
-                + self._get_type_keys(e)
+                + type_keys
             )
-            if self._is_anim_entry(e):
+            if is_animation:
                 replacement_keys += list(self._VIRTUAL_ANIM_RIG)
             has_replacement = any(
                 key in source
@@ -1993,10 +2009,13 @@ class TextureStripper:
                 for key in replacement_keys
                 for source in (replacements, cdn_replacements, local_replacements)
             )
+            any_replacement |= has_replacement
             if not has_replacement and self._should_remove(e, removals, map_index):
                 continue
             new_idx = len(filtered_data)
             filtered_data.append(e)
+            filtered_type_keys.append(type_keys)
+            filtered_anim_flags.append(is_animation)
             if old_idx in texpack_request_slots:
                 filtered_slots[new_idx] = texpack_request_slots[old_idx]
         data = filtered_data
@@ -2004,6 +2023,14 @@ class TextureStripper:
         if len(data) < orig_len:
             log_buffer.log('Remover', f'Removed {format_count(orig_len - len(data), "asset")}')
             modified = True
+
+        # Slot rules can affect an ORM request even when its own slot did not match
+        if (
+            not modified
+            and not any_replacement
+            and not any(isinstance(key, str) and ':' in key for key in all_texpack_rule_keys)
+        ):
+            return body, body
 
         # Pre-build ORM channel override index.
         # Global indices 2-5 in local_replacements map to ORM sub-channels:
@@ -2064,7 +2091,8 @@ class TextureStripper:
             aid_raw = e.get('assetId')
             aid = self._normalize_asset_id(aid_raw)
             req_id = e.get('requestId')
-            type_keys = self._get_type_keys(e)
+            type_keys = filtered_type_keys[idx]
+            is_animation = filtered_anim_flags[idx]
             is_solidmodel = (e.get('assetTypeId') == 39) or (
                 self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
             )
@@ -2189,7 +2217,7 @@ class TextureStripper:
                 # key at the same specificity.
                 all_keys = list(winning_keys)
                 # For animation entries, also check virtual rig-filter keys as fallback
-                if self._is_anim_entry(e):
+                if is_animation:
                     all_keys += list(self._VIRTUAL_ANIM_RIG)
 
                 cdn_key = winning_cdn_key
@@ -2227,7 +2255,7 @@ class TextureStripper:
                     )
                     # Tag animation replacements for upstream rig detection.
                     # Determine required_rig from virtual type keys, or 'any' for normal types.
-                    if self._is_anim_entry(e):
+                    if is_animation:
                         if str(local_key) in self._VIRTUAL_ANIM_RIG:
                             # Collect all virtual keys in local_replacements pointing to the
                             # same file — user may have "R6Animation, R15Animation" in one rule.
@@ -3122,6 +3150,9 @@ class TextureStripper:
                 ):
                     texpack_ids.add(aid)
 
+        if not texpack_ids:
+            return {}
+
         result: dict[int, int] = {}
         build_slots: dict[int, dict[object, int]] = {}
         next_slot: dict[int, int] = {}
@@ -3159,6 +3190,8 @@ class TextureStripper:
     def _should_remove(
         self, e: _JsonObject, removals: set[_ReplacementKey], map_index: int | None = None
     ) -> bool:
+        if not removals:
+            return False
         aid = self._normalize_asset_id(e.get('assetId'))
         if map_index is None:
             map_index = self._get_texpack_map_index(e)

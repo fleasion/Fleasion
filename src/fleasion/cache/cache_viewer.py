@@ -89,7 +89,7 @@ from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 from fleasion.utils.gui_work import GuiWork
-from fleasion.utils.json_types import JsonValue, require_json_value
+from fleasion.utils.json_types import JsonValue
 from fleasion.utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from fleasion.widgets.image_preview import ImagePreviewLabel
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, page_content_margins
@@ -6030,7 +6030,7 @@ class CacheViewerTab(QWidget):
         for encoding in ['utf-8', 'utf-16', 'utf-16-le', 'utf-16-be']:
             try:
                 text = data.decode(encoding)
-                parsed = require_json_value(json.loads(text))
+                parsed = cast('JsonValue', json.loads(text))
             except UnicodeDecodeError, json.JSONDecodeError:
                 continue
             else:

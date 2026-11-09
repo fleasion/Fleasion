@@ -58,9 +58,11 @@ _H2_DEFAULT_RECV_WINDOW = 65_535
 _UPSTREAM_DRAIN_GRACE_SECONDS = 1.0
 _H2_SEND_IDLE_TIMEOUT = 30.0
 _H2_UPLOAD_IDLE_TIMEOUT = 30.0
+_H2_BODY_VIEW_THRESHOLD = 64 * 1024
 _HOP_HEADERS = frozenset(
     {b'connection', b'keep-alive', b'proxy-connection', b'transfer-encoding', b'upgrade'}
 )
+_VISIBLE_ASCII = re.compile(rb'[\x21-\x7e]+')
 
 
 def _valid_h2_request_target(method: bytes | None, path: bytes | None) -> bool:
@@ -72,7 +74,7 @@ def _valid_h2_request_target(method: bytes | None, path: bytes | None) -> bool:
         path
         and path.startswith(b'/')
         and b'#' not in path
-        and all(0x21 <= char <= 0x7E for char in path)
+        and _VISIBLE_ASCII.fullmatch(path) is not None
     )
 
 
@@ -114,9 +116,16 @@ def _as_http2(
     request: bool,
     host: str,
     request_method: bytes | None = None,
-) -> tuple[H2Headers, bytes]:
-    raw, sep, body = message.partition(b'\r\n\r\n')
-    if not sep:
+) -> tuple[H2Headers, bytes | memoryview]:
+    if len(message) <= _H2_BODY_VIEW_THRESHOLD:
+        raw, sep, body = message.partition(b'\r\n\r\n')
+        header_found = bool(sep)
+    else:
+        boundary = message.find(b'\r\n\r\n')
+        header_found = boundary >= 0
+        raw = message[:boundary] if header_found else b''
+        body = memoryview(message)[boundary + 4 :] if header_found else b''
+    if not header_found:
         msg = 'Feature engine produced incomplete HTTP/1 message'
         raise ValueError(msg)
     first, *lines = raw.split(b'\r\n')
@@ -195,7 +204,10 @@ class _MessageWriter(asyncio.StreamWriter):
         buffer = bytearray(self._buffer) if isinstance(self._buffer, bytes) else self._buffer
         previous_size = len(buffer)
         try:
-            buffer.extend(data.tobytes() if isinstance(data, memoryview) else data)
+            if isinstance(data, memoryview):
+                buffer.extend(data.cast('B') if data.c_contiguous else data.tobytes())
+            else:
+                buffer.extend(data)
         except BaseException:
             del buffer[previous_size:]
             self._release(amount)
@@ -322,7 +334,7 @@ class _Peer:
         self,
         stream: int,
         headers: H2Headers,
-        body: bytes,
+        body: bytes | memoryview,
         *,
         trailers: H2Headers | None = None,
     ) -> None:
@@ -383,7 +395,7 @@ class _Peer:
     async def open_request(
         self,
         headers: H2Headers,
-        body: bytes,
+        body: bytes | memoryview,
         on_open: Callable[[int], None],
         *,
         trailers: H2Headers | None = None,
@@ -408,7 +420,9 @@ class _Peer:
                 self.writer.write(self.h2.data_to_send())
             await self.writer.drain()
 
-    async def _send_body(self, stream: int, body: bytes, *, end_stream: bool = True) -> None:
+    async def _send_body(
+        self, stream: int, body: bytes | memoryview, *, end_stream: bool = True
+    ) -> None:
         offset = 0
         deadline = asyncio.get_running_loop().time() + _H2_SEND_IDLE_TIMEOUT
         while offset < len(body):
@@ -680,33 +694,10 @@ class H2FeatureBridge:
                 await self.client.send(stream, headers, body, trailers=trailers)
                 final_response_sent = True
 
-        upstream_writer = _MessageWriter(
-            send_request, reserve=self._reserve_output_bytes, release=self._release_output_bytes
-        )
-        response_writer = _MessageWriter(
-            send_response, reserve=self._reserve_output_bytes, release=self._release_output_bytes
-        )
-        request_reader = asyncio.StreamReader()
+        upstream_writer: _MessageWriter | None = None
+        response_writer: _MessageWriter | None = None
         body = bytes(request.body)
         reserved_body_size = len(body)
-
-        def prepare_feature_input() -> UpstreamConnectResult:
-            if request.request_trailers is not None:
-                original_message = _as_http1(request.headers, body, request=True)
-                expected_headers, expected_body = _as_http2(
-                    original_message, request=True, host=self.host
-                )
-                request.request_trailer_expected_headers = expected_headers
-                request.request_trailer_expected_body_hash = hashlib.sha256(expected_body).digest()
-            request.body.clear()
-            request_reader.feed_data(_as_http1(request.headers, body, request=True))
-            request_reader.feed_eof()
-            return UpstreamConnectResult(
-                reader=request.upstream_reader,
-                writer=upstream_writer,
-                method='authenticated_h2',
-                endpoint=self.host,
-            )
 
         # The feature engine keeps the body until it exits, so keep its budget reservation
         try:  # ruff: ignore[too-many-statements-in-try-clause]
@@ -718,7 +709,35 @@ class H2FeatureBridge:
                 final_response_sent = request.direct_response_sent
             else:
                 self._perf_buffered_requests += 1
-                upstream = prepare_feature_input()
+                upstream_writer = _MessageWriter(
+                    send_request,
+                    reserve=self._reserve_output_bytes,
+                    release=self._release_output_bytes,
+                )
+                response_writer = _MessageWriter(
+                    send_response,
+                    reserve=self._reserve_output_bytes,
+                    release=self._release_output_bytes,
+                )
+                request_reader = asyncio.StreamReader()
+                if request.request_trailers is not None:
+                    original_message = _as_http1(request.headers, body, request=True)
+                    expected_headers, expected_body = _as_http2(
+                        original_message, request=True, host=self.host
+                    )
+                    request.request_trailer_expected_headers = expected_headers
+                    request.request_trailer_expected_body_hash = hashlib.sha256(
+                        expected_body
+                    ).digest()
+                request.body.clear()
+                request_reader.feed_data(_as_http1(request.headers, body, request=True))
+                request_reader.feed_eof()
+                upstream = UpstreamConnectResult(
+                    reader=request.upstream_reader,
+                    writer=upstream_writer,
+                    method='authenticated_h2',
+                    endpoint=self.host,
+                )
                 await self.proxy.serve_decrypted_http_session(
                     request_reader, response_writer, self.host, upstream
                 )
@@ -756,8 +775,10 @@ class H2FeatureBridge:
                     f'client_send_ms={int(request.perf_client_send_seconds * 1000)} '
                     f'route_wait_ms={int(request.perf_route_wait_seconds * 1000)}',
                 )
-            upstream_writer.close()
-            response_writer.close()
+            if upstream_writer is not None:
+                upstream_writer.close()
+            if response_writer is not None:
+                response_writer.close()
             self.buffered_request_bytes -= reserved_body_size
             request.body.clear()
             if not final_response_sent:
