@@ -11,7 +11,7 @@ import pytest
 from fleasion.proxy.env_lifecycle import EnvProxyLifecycleController
 
 type HealthResult = dict[str, object]
-type PlayerIdentity = tuple[int, str] | tuple[str, int] | tuple[str, int, float]
+type PlayerIdentity = tuple[int, str] | tuple[str, int] | tuple[str, int, float] | tuple[str, str]
 type RelaunchCall = tuple[str, str | None, bool, Path, bool]
 type LifecycleCall = RelaunchCall | tuple[Literal['terminate']]
 
@@ -310,6 +310,40 @@ def test_exit_does_not_terminate_a_replacement_player_it_does_not_own() -> None:
     assert not controller.owns_player
 
 
+def test_sober_exit_recovers_from_verified_proxy_traffic_after_missing_adoption() -> None:
+    controller, proxy, calls, running, identity = _controller([], adopted=False)
+    sober_session = ('sober-session', 'app-flatpak-org.vinegarhq.Sober-test.scope')
+    identity['value'] = sober_session
+    setattr(proxy, 'verified_sober_session_identity', lambda: sober_session)
+
+    assert not controller.owns_player
+    assert controller.close_owned_player_for_exit()
+    assert calls == [('terminate',)]
+    assert not running['value']
+
+
+def test_sober_exit_will_not_recover_without_verified_matching_session() -> None:
+    sober_session = ('sober-session', 'app-flatpak-org.vinegarhq.Sober-first.scope')
+    other_session = ('sober-session', 'app-flatpak-org.vinegarhq.Sober-second.scope')
+    for verified in (None, other_session):
+        controller, proxy, calls, running, identity = _controller([], adopted=False)
+        identity['value'] = sober_session
+        setattr(proxy, 'verified_sober_session_identity', lambda result=verified: result)
+        assert controller.close_owned_player_for_exit()
+        assert calls == []
+        assert running['value']
+
+
+def test_sober_exit_does_not_recover_old_owned_session_after_replacement() -> None:
+    controller, proxy, calls, running, identity = _controller([], adopted=True)
+    sober_session = ('sober-session', 'app-flatpak-org.vinegarhq.Sober-new.scope')
+    identity['value'] = sober_session
+    setattr(proxy, 'verified_sober_session_identity', lambda: sober_session)
+    assert controller.close_owned_player_for_exit()
+    assert calls == []
+    assert running['value']
+
+
 def test_intentional_exit_uses_sample_time_not_delayed_monitor_processing() -> None:
     controller, _proxy, _calls, _running, _identity = _controller([], adopted=True)
 
@@ -330,9 +364,10 @@ def test_rosemary_adopted_player_without_proxy_variables_is_not_marked_intercept
         [{'success': True}], adopted=True
     )
     setattr(proxy, '_active_linux_client_key', 'rosemary')
-    monkeypatch.setattr(
-        platform_linux, 'running_rosemary_proxy_status', lambda _url: 'missing'
-    )
+    def missing_proxy_status(_url: str) -> str:
+        return 'missing'
+
+    monkeypatch.setattr(platform_linux, 'running_rosemary_proxy_status', missing_proxy_status)
     assert not controller.handle_adopted_player_launch(Path('/Roblox/RobloxPlayer'))
     assert not controller.owns_player
     assert proxy.monitors == 0
@@ -347,9 +382,10 @@ def test_rosemary_adopted_player_with_proxy_variables_is_monitored(
         [{'success': True, 'healthy': True, 'splice': True}], adopted=False
     )
     setattr(proxy, '_active_linux_client_key', 'rosemary')
-    monkeypatch.setattr(
-        platform_linux, 'running_rosemary_proxy_status', lambda _url: 'configured'
-    )
+    def configured_proxy_status(_url: str) -> str:
+        return 'configured'
+
+    monkeypatch.setattr(platform_linux, 'running_rosemary_proxy_status', configured_proxy_status)
     assert controller.handle_adopted_player_launch(Path('/Roblox/RobloxPlayer'))
     assert controller.owns_player
     assert proxy.monitors == 1

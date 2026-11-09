@@ -4540,6 +4540,19 @@ class ProxyMaster:
     def is_running(self) -> bool:
         return self._running
 
+    def verified_sober_session_identity(self) -> tuple[str, str] | None:
+        """Return the Sober instance that actually sent decrypted proxy traffic."""
+        if (
+            not IS_LINUX
+            or getattr(self, '_active_linux_client_key', None) != 'sober'
+            or not getattr(self, '_sober_env_proxy_override_active', False)
+        ):
+            return None
+        proxy = getattr(self, '_proxy', None)
+        if proxy is None:
+            return None
+        return proxy.verified_sober_session_identity()
+
     def hosts_intercepts_host(self, host: str) -> bool:
         """Return whether managed hosts routing currently sends *host* through Fleasion."""
         normalized = host.strip().lower().rstrip('.')

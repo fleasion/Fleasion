@@ -489,11 +489,34 @@ class EnvProxyLifecycleController:
     def _terminate_owned_player(self) -> bool:
         owned_identity = self._owned_identity()
         current_identity = self._get_player_identity()
-        if owned_identity is None or current_identity != owned_identity:
+        if owned_identity is None and current_identity is not None:
+            # Sober can already be running when Fleasion starts, or a brief
+            # launcher/engine detection gap can clear its adoption token
+            # Only reclaim a scope that sent verified decrypted proxy traffic
+            verified = getattr(self._proxy_master, 'verified_sober_session_identity', None)
+            verified_identity = verified() if callable(verified) else None
+            if (
+                current_identity[0] == 'sober-session'
+                and current_identity == verified_identity
+            ):
+                owned_identity = current_identity
+                log_buffer.log(
+                    'Launcher',
+                    'Recovered Sober exit ownership from verified Env Proxy traffic',
+                )
+        if owned_identity is None:
             if current_identity is not None:
                 log_buffer.log(
                     'Launcher',
-                    'Env Proxy Player ownership changed; leaving the current process untouched',
+                    'Env Proxy Player was never assigned exit ownership; leaving it running',
+                )
+            self._mark_owned(owned=False)
+            return True
+        if current_identity != owned_identity:
+            if current_identity is not None:
+                log_buffer.log(
+                    'Launcher',
+                    'Env Proxy Player identity changed; leaving the replacement process untouched',
                 )
             self._mark_owned(owned=False)
             return True

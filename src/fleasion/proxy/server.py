@@ -1841,6 +1841,8 @@ class FleasionProxy:
         self._splice_keys: KeyProvider | None = None
         self._splice_tasks: set[asyncio.Task[object]] = set()
         self._splice_decrypted_hosts: set[str] = set()
+        self._splice_client_key = splice_client_key
+        self._verified_sober_session_identity: tuple[str, str] | None = None
         if self._tls_splice:
             keylog = os.environ.get('FLEASION_SPLICE_KEYLOG')
             self._splice_keys = KeyProvider(
@@ -2073,11 +2075,26 @@ class FleasionProxy:
         await asyncio.gather(*(server.serve_forever() for server in self._servers))
 
     def mark_splice_decrypted(self, host: str) -> bool:
-        """Mark the first decrypted session for a host for bounded diagnostics."""
+        """Record verified Sober traffic against its current Flatpak session."""
+        if (
+            self._splice_client_key == 'sober'
+            and self._verified_sober_session_identity is None
+            and os.name == 'posix'
+        ):
+            from fleasion.utils.linux_clients import (  # ruff: ignore[import-outside-top-level]
+                sober_flatpak_session_identity,
+            )
+
+            if scope := sober_flatpak_session_identity():
+                self._verified_sober_session_identity = ('sober-session', scope)
         if host in self._splice_decrypted_hosts:
             return False
         self._splice_decrypted_hosts.add(host)
         return True
+
+    def verified_sober_session_identity(self) -> tuple[str, str] | None:
+        """Return only a Sober scope observed during real decrypted traffic."""
+        return self._verified_sober_session_identity
 
     def set_module_interceptors(self, interceptors: Iterable[_ModuleInterceptor]) -> None:
         """Set the list of module interceptors for gamejoin traffic hooks."""

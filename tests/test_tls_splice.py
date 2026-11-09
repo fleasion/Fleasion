@@ -38,6 +38,48 @@ def test_padding_binary_zeros_and_key_update(cipher: int) -> None:
     assert reader.decrypt(writer.encrypt(bytes(MAX_PLAINTEXT))) == (23, bytes(MAX_PLAINTEXT))
 
 
+def test_verified_sober_splice_traffic_records_exact_flatpak_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils import linux_clients
+
+    scope = 'app-flatpak-org.vinegarhq.Sober-test.scope'
+    seen: list[str] = []
+
+    def verify_scope() -> str:
+        seen.append('verify')
+        return scope
+
+    monkeypatch.setattr(linux_clients, 'sober_flatpak_session_identity', verify_scope)
+    proxy = FleasionProxy.__new__(FleasionProxy)
+    setattr(proxy, '_splice_client_key', 'sober')
+    setattr(proxy, '_verified_sober_session_identity', None)
+    setattr(proxy, '_splice_decrypted_hosts', set[str]())
+    assert proxy.verified_sober_session_identity() is None
+    assert proxy.mark_splice_decrypted('apis.roblox.com')
+    assert proxy.verified_sober_session_identity() == ('sober-session', scope)
+    assert not proxy.mark_splice_decrypted('apis.roblox.com')
+    assert proxy.mark_splice_decrypted('clientsettings.roblox.com')
+    assert seen == ['verify']
+
+    # The shutdown controller only sees evidence from the active Sober proxy
+    from fleasion.proxy.master import ProxyMaster  # ruff: ignore[import-outside-top-level]
+
+    master = ProxyMaster.__new__(ProxyMaster)
+    setattr(master, '_active_linux_client_key', 'sober')
+    setattr(master, '_sober_env_proxy_override_active', True)
+    setattr(master, '_proxy', proxy)
+    assert master.verified_sober_session_identity() == ('sober-session', scope)
+    setattr(master, '_sober_env_proxy_override_active', False)
+    assert master.verified_sober_session_identity() is None
+
+    # Decryption on another client cannot provide Sober exit ownership
+    setattr(proxy, '_splice_client_key', 'rosemary')
+    setattr(proxy, '_verified_sober_session_identity', None)
+    assert proxy.mark_splice_decrypted('assetdelivery.roblox.com')
+    assert proxy.verified_sober_session_identity() is None
+
+
 def test_bad_tag_does_not_advance_sequence() -> None:
     writer, reader = TrafficKeys(bytes(32), 0x1301), TrafficKeys(bytes(32), 0x1301)
     record = writer.encrypt(b'body')
