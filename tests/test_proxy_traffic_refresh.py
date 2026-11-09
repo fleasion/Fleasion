@@ -417,3 +417,42 @@ def test_evicted_current_row_clears_the_request_and_response() -> None:
         tab.close()
         tab.deleteLater()
         _app.processEvents()
+
+
+def test_zero_ms_sorts_after_missing_duration_and_refreshes_equal_sort_keys() -> None:
+    global _app
+    _app = cast('QApplication | None', QApplication.instance()) or QApplication([])
+    source = _TrafficSource()
+    source.entries[0]['ms'] = 0
+    missing = source.entries[0].copy()
+    missing['id'] = 2
+    missing['ms'] = None
+    positive = source.entries[0].copy()
+    positive['id'] = 3
+    positive['ms'] = 1
+    source.entries.extend((missing, positive))
+
+    tab = ProxyTrafficTab(None, cast('ProxyTrafficSource', source))
+    try:
+        tab.show()
+        _app.processEvents()
+        table = tab.ui.trafficTable
+        table.sortItems(7, Qt.SortOrder.AscendingOrder)
+        tab._refresh_traffic()  # pyright: ignore[reportPrivateUsage]
+
+        def row_ids() -> list[object]:
+            result: list[object] = []
+            for row in range(table.rowCount()):
+                item = table.item(row, 0)
+                assert item is not None
+                result.append(item.data(Qt.ItemDataRole.UserRole))
+            return result
+
+        assert row_ids() == [2, 1, 3]
+        source.entries[1]['ms'] = 0
+        tab._refresh_traffic()  # pyright: ignore[reportPrivateUsage]
+        assert row_ids() == [1, 2, 3]
+    finally:
+        tab.close()
+        tab.deleteLater()
+        _app.processEvents()

@@ -104,8 +104,9 @@ class LogBuffer:
 
     def get_since(self, index: int) -> tuple[int, list[str]]:
         """Return the current entry count and entries from an earlier count."""
-        count = len(self._buffer)
-        return count, self._buffer[index:count]
+        with self._lock:
+            count = len(self._buffer)
+            return count, self._buffer[index:count]
 
     def get_text(self) -> str:
         """Get all logs as a single text string."""

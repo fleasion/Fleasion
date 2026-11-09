@@ -49,7 +49,7 @@ def test_legacy_ca_flag_is_not_forced_or_exempt_from_user_filters(*, custom_enab
 
     assert modifier.is_enabled()
     assert modifier.custom_flags_enabled() is custom_enabled
-    expected = {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1'}
+    expected = {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0'}
     if custom_enabled:
         expected['FFlagExample'] = 'True'
     assert modifier.runtime_flags() == expected
@@ -86,7 +86,7 @@ def test_disabling_custom_flags_preserves_upstream_ca_flag_in_startup_cache(
     assert json.loads(raw[len(header) :]) == {
         'applicationSettings': {
             EMBEDDED_CA_FLAG: 'True',
-            DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+            DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
             'Existing': 'untouched',
         },
         'otherMetadata': 'untouched',
@@ -114,7 +114,7 @@ def test_startup_cache_is_seeded_when_saved_toggle_is_already_off(tmp_path: Path
 
     assert modifier.prime_startup_flag_cache()
     assert json.loads(cache_path.read_bytes()[len(header) :])['applicationSettings'] == {
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
     }
     assert json.loads(settings_path.read_text(encoding='utf-8')) == settings
 
@@ -135,7 +135,7 @@ def test_macos_preserves_upstream_ca_flag_with_user_flags_off(tmp_path: Path) ->
     assert modifier.prime_startup_flag_cache()
     assert json.loads(settings_path.read_text(encoding='utf-8')) == {
         EMBEDDED_CA_FLAG: 'True',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
         'Unrelated': 'kept',
     }
     assert not modifier.prime_startup_flag_cache()
@@ -160,7 +160,7 @@ def test_other_platforms_preserve_upstream_ca_flag(
     assert modifier.is_enabled()
     assert EMBEDDED_CA_FLAG not in modifier.runtime_flags()
     assert json.loads(modified)['applicationSettings'][EMBEDDED_CA_FLAG] == 'True'
-    assert json.loads(modified)['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert json.loads(modified)['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
     assert ('FFlagExample' in json.loads(modified)['applicationSettings']) is enabled
 
 

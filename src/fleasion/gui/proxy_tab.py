@@ -310,7 +310,8 @@ def _traffic_sort_value(entry: _TrafficEntry, column: int) -> float | str:
         case 6:
             value = entry.get('size') or 0
         case 7:
-            value = entry.get('ms') or -1
+            elapsed_ms = entry.get('ms')
+            value = elapsed_ms if elapsed_ms is not None else -1
         case _:
             value = entry['id']
     return value
@@ -1041,6 +1042,7 @@ class ProxyTrafficTab(QWidget):
         for row, entry in changed_rows:
             entry_id = entry['id']
             display_number = self._display_row_number(entry_id)
+            elapsed_ms = entry.get('ms')
             items = (
                 _NumericSortItem(display_number, str(display_number)),
                 _NumericSortItem(entry.get('time') or 0, _format_timestamp(entry.get('time'))),
@@ -1049,7 +1051,9 @@ class ProxyTrafficTab(QWidget):
                 QTableWidgetItem(entry.get('path', '')),
                 _NumericSortItem(_status_sort_value(entry), _format_status(entry)),
                 _NumericSortItem(entry.get('size') or 0, _format_size(entry.get('size'))),
-                _NumericSortItem(entry.get('ms') or -1, _format_ms(entry.get('ms'))),
+                _NumericSortItem(
+                    elapsed_ms if elapsed_ms is not None else -1, _format_ms(elapsed_ms)
+                ),
             )
             brush = _row_brush(entry, highlight_text)
             for col, item in enumerate(items):
