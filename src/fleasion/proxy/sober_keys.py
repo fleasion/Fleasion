@@ -9,17 +9,20 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import struct
 import sys
+import threading
 from ctypes import POINTER, Structure, byref, c_int, c_size_t, c_ssize_t, c_ulong, c_void_p, cast
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 from .rosemary_keys import STRUCT_SIZE, validate_openssl_struct
 from .tls12_session import LP64_OPENSSL_350, TLS12_VERSION, validate_tls12_session
-
-if TYPE_CHECKING:
-    import threading
 
 log = logging.getLogger(__name__)
 
@@ -29,10 +32,31 @@ type SecretMap = dict[str, ConnectionSecrets]
 CHUNK_SIZE = 1024 * 1024
 # Include a whole TLS client random at each chunk boundary for process_vm_readv
 _SCAN_OVERLAP = 31
+_PAGE_SIZE = os.sysconf('SC_PAGESIZE') if sys.platform == 'linux' else 4096
+# Limit per-MiB sparse probing on large Android memory reservations
+_LARGE_VMA_ZERO_PAGE_PROBES = 16
 # A VMA's total resident bytes are not necessarily a populated prefix of the VMA
 # Only expand sufficiently populated mappings on targeted fallback scans
 _FALLBACK_MIN_RSS_KB = 1024
+_FALLBACK_SMALL_VMA_MAX = 8 * 1024 * 1024
 _FALLBACK_MAX_VIRTUAL_BYTES = 8 * 1024 * 1024 * 1024
+_NEARBY_SCAN_SIZE = 512 * 1024
+_MAX_HINTED_PROCESSES = 8
+_MAX_HINTED_ADDRESSES = 12
+
+
+# Key by PID and Linux starttime to prevent reused process IDs inheriting hints
+@dataclass(frozen=True, slots=True)
+class _ValidatedLocation:
+    region_start: int
+    region_size: int
+    address: int
+    module_base: int
+    module_end: int
+
+
+_validated_addresses: dict[tuple[int, int], list[_ValidatedLocation]] = {}
+_validated_addresses_lock = threading.Lock()
 SOBER_CGROUP_SUBSTRING = 'org.vinegarhq.sober'
 LARGE_MEMFD_MIN_SIZE = 10 * 1024 * 1024
 _SCANNABLE_PATHNAMES = frozenset({'', '[heap]', '/memfd: (deleted)'})
@@ -295,11 +319,26 @@ def _regions(pid: int) -> list[tuple[int, int]]:
 
 
 def _targeted_fallback_regions(pid: int) -> list[tuple[int, int]]:
-    """Expand resident arenas beyond their RSS-prefix heuristic, within a budget."""
+    """Expand likely heap arenas and small sparse mappings within a scan budget."""
+    smaps_path = Path(f'/proc/{pid}/smaps')
     regions = _parse_smaps_regions(
-        Path(f'/proc/{pid}/smaps'),
+        smaps_path,
         full_vmas=True,
         min_rss_kb=_FALLBACK_MIN_RSS_KB,
+    )
+    # Android uses sparse reservations: an SSL object may live on a single
+    # resident page of a small VMA. Include those cheap regions even when
+    # total RSS is below the large-arena threshold
+    large_starts = {start for start, _ in regions}
+    small_resident_regions = _parse_smaps_regions(
+        smaps_path,
+        full_vmas=True,
+        min_rss_kb=1,
+    )
+    regions.extend(
+        (start, size)
+        for start, size in small_resident_regions
+        if start not in large_starts and size <= _FALLBACK_SMALL_VMA_MAX
     )
     total = 0
     selected: list[tuple[int, int]] = []
@@ -309,6 +348,66 @@ def _targeted_fallback_regions(pid: int) -> list[tuple[int, int]]:
         selected.append((start, size))
         total += size
     return selected
+
+
+def _process_start_ticks(pid: int) -> int | None:
+    """Identify the running engine generation without assuming PID uniqueness."""
+    try:
+        status = Path(f'/proc/{pid}/stat').read_text(encoding='utf-8')
+        return int(status.rsplit(')', 1)[1].split()[19])
+    except IndexError, OSError, ValueError:
+        return None
+
+
+def _remember_validated_address(  # ruff: ignore[too-many-positional-arguments]
+    pid: int,
+    start_ticks: int | None,
+    address: int,
+    region_start: int,
+    region_size: int,
+    module_base: int,
+    module_end: int,
+) -> None:
+    """Cache only validated allocations and their mapping, never secret bytes."""
+    if start_ticks is None or not region_start <= address < region_start + region_size:
+        return
+    identity = (pid, start_ticks)
+    location = _ValidatedLocation(region_start, region_size, address, module_base, module_end)
+    with _validated_addresses_lock:
+        prior = _validated_addresses.pop(identity, ())
+        _validated_addresses[identity] = [
+            location,
+            *(previous for previous in prior if previous != location),
+        ][:_MAX_HINTED_ADDRESSES]
+        if len(_validated_addresses) > _MAX_HINTED_PROCESSES:
+            _validated_addresses.pop(next(iter(_validated_addresses)))
+
+
+def _nearby_validated_regions(
+    pid: int,
+    start_ticks: int | None,
+) -> list[tuple[int, int, _ValidatedLocation]]:
+    """Use verified neighborhoods without an expensive smaps read on a hit."""
+    if start_ticks is None:
+        return []
+    with _validated_addresses_lock:
+        hints = tuple(_validated_addresses.get((pid, start_ticks), ()))
+    windows: list[tuple[int, int, _ValidatedLocation]] = []
+    seen: set[tuple[int, int]] = set()
+    for hint in hints:
+        length = min(_NEARBY_SCAN_SIZE, hint.region_size)
+        start = max(
+            hint.region_start,
+            min(
+                hint.address - length // 2,
+                hint.region_start + hint.region_size - length,
+            ),
+        )
+        window = (start, length)
+        if window not in seen:
+            windows.append((start, length, hint))
+            seen.add(window)
+    return windows
 
 
 def _scan_candidate(
@@ -358,14 +457,30 @@ def _scan_region(
     client_random: str | None,
     stop: threading.Event | None,
     found: SecretMap,
+    on_valid_candidate: Callable[[int], None] | None = None,
 ) -> bool:
-    for offset in range(0, size, CHUNK_SIZE):
+    offset = 0
+    zero_page_probes = 0
+    while offset < size:
         if stop is not None and stop.is_set():
             return True
         chunk_len = min(CHUNK_SIZE + len(needle) - 1, size - offset)
         buf = reader.read(start + offset, chunk_len)
         if not buf:
+            # Sober's Android memory mappings can have an unreadable first
+            # page followed immediately by live TLS allocations. A 1 MiB
+            # stride would silently discard the entire small VMA
+            if size <= _FALLBACK_SMALL_VMA_MAX or zero_page_probes < _LARGE_VMA_ZERO_PAGE_PROBES:
+                zero_page_probes += 1
+                next_page = ((start + offset) // _PAGE_SIZE + 1) * _PAGE_SIZE
+                offset = next_page - start
+            else:
+                # Huge sparse guest reservations must remain bounded: skip
+                # the remainder of this MiB after a limited page probe
+                offset = (offset // CHUNK_SIZE + 1) * CHUNK_SIZE
+                zero_page_probes = 0
             continue
+        zero_page_probes = 0
         position = buf.find(needle)
         while position >= 0:
             res = _scan_candidate(
@@ -381,9 +496,17 @@ def _scan_region(
             if res is not None:
                 cr_hex, secrets = res
                 found[cr_hex] = secrets
+                if on_valid_candidate is not None:
+                    on_valid_candidate(start + offset + position - field_offset)
                 if client_random is not None and cr_hex == client_random:
                     return True
             position = buf.find(needle, position + 1)
+        if len(buf) < chunk_len:
+            # A short process_vm_readv read reaches a hole before the MiB
+            # boundary. Revisit its final overlap to catch straddling randoms
+            offset += max(1, len(buf) - _SCAN_OVERLAP)
+        else:
+            offset += min(len(buf), CHUNK_SIZE)
     return False
 
 
@@ -422,10 +545,36 @@ def scan(
     field_offset = 0x188 if wanted is not None else 0x48
     found: SecretMap = {}
 
-    module_base, module_end = _module_bounds(pid)
-
+    start_ticks = _process_start_ticks(pid)
     reader = _MemoryReader(pid)
     try:
+        if client_random is not None:
+            for start, size, hint in _nearby_validated_regions(pid, start_ticks):
+                if _scan_region(
+                    reader,
+                    start,
+                    size,
+                    needle=needle,
+                    field_offset=field_offset,
+                    module_base=hint.module_base,
+                    module_end=hint.module_end,
+                    client_random=client_random,
+                    stop=stop,
+                    found=found,
+                    on_valid_candidate=lambda addr, hint=hint: _remember_validated_address(
+                        pid,
+                        start_ticks,
+                        addr,
+                        hint.region_start,
+                        hint.region_size,
+                        hint.module_base,
+                        hint.module_end,
+                    ),
+                ):
+                    return found
+        # Only consult expensive /proc/<pid>/smaps and module mappings when
+        # this process generation has no nearby validated connection
+        module_base, module_end = _module_bounds(pid)
         fast_regions = _regions(pid)
         for start, size in fast_regions:
             matched = _scan_region(
@@ -439,6 +588,15 @@ def scan(
                 client_random=client_random,
                 stop=stop,
                 found=found,
+                on_valid_candidate=lambda addr, start=start, size=size: _remember_validated_address(
+                    pid,
+                    start_ticks,
+                    addr,
+                    start,
+                    size,
+                    module_base,
+                    module_end,
+                ),
             )
             if matched:
                 return found
@@ -466,6 +624,17 @@ def scan(
                     client_random=client_random,
                     stop=stop,
                     found=found,
+                    on_valid_candidate=lambda addr, start=start, size=full_size: (
+                        _remember_validated_address(
+                            pid,
+                            start_ticks,
+                            addr,
+                            start,
+                            size,
+                            module_base,
+                            module_end,
+                        )
+                    ),
                 ):
                     return found
     finally:
