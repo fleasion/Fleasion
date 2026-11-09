@@ -27,6 +27,7 @@ def isolate_sober_native_keylog_state(
         tmp_path / 'sober-native-keylog-state.json',
     )
     monkeypatch.setattr(platform_linux, '_last_auto_linux_client_key', None)
+    monkeypatch.setattr(platform_linux, 'LAST_AUTO_LINUX_CLIENT_STATE', tmp_path / 'last-auto-client')
 
 
 def _flatpak_installation(
@@ -146,6 +147,53 @@ def test_unavailable_explicit_client_keeps_configured_descriptor_metadata(
     assert platform_linux.selected_linux_client_key() == 'future'
     assert platform_linux.selected_linux_client_display_name() == 'Future Client'
     assert platform_linux.selected_linux_client_app_id() == 'org.example.Future'
+
+
+def test_auto_remembers_last_verified_player_across_fleasion_restarts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils import linux_clients
+    from fleasion.utils.linux_clients import ROSEMARY_CLIENT
+
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    sober = _flatpak_installation(SOBER_CLIENT, tmp_path)
+    rosemary = _flatpak_installation(ROSEMARY_CLIENT, tmp_path)
+    monkeypatch.setattr(platform_linux, 'USER_HOME', tmp_path)
+    monkeypatch.setattr(platform_linux, 'PROC_ROOT', proc)
+    monkeypatch.setattr(platform_linux, '_linux_client_preference', 'auto')
+    monkeypatch.setattr(
+        platform_linux, 'linux_client_installations', lambda: (sober, rosemary)
+    )
+
+    def rosemary_handler(**_kwargs: object) -> tuple[str, ...]:
+        return ('io.github.frolleks.Nutmeg.desktop',)
+
+    monkeypatch.setattr(linux_clients, 'query_default_roblox_handlers', rosemary_handler)
+    # No running Player: desktop fallback must not overwrite recent history
+    assert platform_linux.get_selected_linux_client_installation() is rosemary
+    assert not platform_linux.LAST_AUTO_LINUX_CLIENT_STATE.exists()
+
+    engine = proc / '1234'
+    engine.mkdir()
+    (engine / 'comm').write_text('Main\n', encoding='utf-8')
+    (engine / 'cgroup').write_text(
+        '0::/user.slice/app-flatpak-org.vinegarhq.Sober-current.scope\n',
+        encoding='utf-8',
+    )
+    (engine / 'stat').write_text(
+        '1234 (Main) ' + ' '.join(['S', *['0'] * 18, '500']),
+        encoding='utf-8',
+    )
+    assert platform_linux.get_selected_linux_client_installation() is sober
+    assert platform_linux.LAST_AUTO_LINUX_CLIENT_STATE.read_text().strip() == 'sober'
+
+    for item in engine.iterdir():
+        item.unlink()
+    engine.rmdir()
+    monkeypatch.setattr(platform_linux, '_last_auto_linux_client_key', None)
+    # New Fleasion process retains Sober instead of defaulting to Nutmeg
+    assert platform_linux.get_selected_linux_client_installation() is sober
 
 
 def test_selected_linux_client_does_not_fallback_to_stale_sober_data(

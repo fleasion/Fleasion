@@ -1789,6 +1789,97 @@ def test_linux_browser_sober_launch_is_always_adopted_without_relaunch(
     assert qt_app is not None
 
 
+def test_linux_auto_rebinds_proxy_after_sober_launch_without_killing_player(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    qt_app = QApplication.instance() or QApplication([])
+    config = SimpleNamespace(
+        proxy_mode='env',
+        proxy_features_enabled=True,
+        linux_client='auto',
+        auto_delete_cache_on_exit=True,
+    )
+    calls: list[object] = []
+
+    class _Proxy:
+        is_running = True
+        _active_linux_client_key = 'rosemary'
+        ready = False
+
+        def wait_for_env_proxy_ready(self, timeout: float = 15.0) -> bool:
+            calls.append(('ready', timeout))
+            return self.ready
+
+        def stop(self) -> None:
+            calls.append('stop')
+            self.is_running = False
+
+        def start(self) -> None:
+            calls.append('start')
+            self._active_linux_client_key = 'sober'
+            self.is_running = True
+
+        def set_roblox_player_running(self, running: bool) -> None:
+            calls.append(('status', running))
+
+    class _Lifecycle:
+        operation_in_progress = False
+
+        def note_unexpected_player_exit(self) -> None:
+            calls.append('release_old_owner')
+
+        def handle_adopted_player_launch(self, _path: Path) -> bool:
+            calls.append('adopt')
+            return True
+
+    monitor = _ROBLOX_EXIT_MONITOR_FACTORY(config)
+    proxy = _Proxy()
+    monkeypatch.setattr(monitor, '_proxy_master', proxy)
+    monkeypatch.setattr(monitor, 'env_lifecycle', _Lifecycle())
+
+    def selected() -> SimpleNamespace:
+        return SimpleNamespace(key='sober', display_name='Sober')
+
+    def linux_running(_installation: object) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        roblox_monitor_module, 'get_selected_linux_client_installation', selected
+    )
+    monkeypatch.setattr(roblox_monitor_module, 'is_linux_client_running', linux_running)
+    monkeypatch.setattr(roblox_monitor_module, 'is_roblox_running', lambda: True)
+    monkeypatch.setattr(roblox_monitor_module, 'is_studio_running', lambda: False)
+
+    # Initial proxy has not finished arming Rosemary: do not race the startup
+    _check_roblox_status_locked(monitor)
+    assert calls == [('ready', 0.0)]
+
+    # When ready, the monitor switches to the detected Sober instance
+    proxy.ready = True
+    _check_roblox_status_locked(monitor)
+    assert calls[:5] == [
+        ('ready', 0.0), ('ready', 0.0),
+        'release_old_owner', 'stop', 'start',
+    ]
+    assert ('ready', 15.0) in calls
+    assert ('status', True) in calls
+    assert 'adopt' not in calls
+
+    # The already-running Sober predates its new Flatpak proxy override
+    # It is not falsely claimed as Env-proxied, and exit cache is untouched
+    assert ('cache',) not in calls
+    assert qt_app is not None
+    calls.clear()
+    _check_roblox_status_locked(monitor)
+    assert calls == []
+
+    # An explicit client choice must never be overridden by live detection
+    config.linux_client = 'rosemary'
+    setattr(proxy, '_active_linux_client_key', 'rosemary')
+    _check_roblox_status_locked(monitor)
+    assert calls == []
+
+
 def test_linux_instance_uri_uses_sober_without_env_proxy_relaunch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

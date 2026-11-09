@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -158,6 +159,7 @@ SOBER_ASSET_OVERLAY_DIR = SOBER_DATA_DIR / 'asset_overlay'
 SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
 SOBER_CGROUP_MARKER = SOBER_CLIENT.cgroup_marker
 LINUX_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'linux_proxy_override.json'
+LAST_AUTO_LINUX_CLIENT_STATE = CONFIG_DIR / 'last_auto_linux_client'
 NUTMEG_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'nutmeg_proxy_override.json'
 SOBER_NATIVE_KEYLOG_OVERRIDE_STATE = CONFIG_DIR / 'sober_native_keylog_override.json'
 NUTMEG_CONFIG_PATH = CONFIG_DIR.parent / 'nutmeg/config.json'
@@ -376,20 +378,56 @@ def linux_client_installations() -> tuple[LinuxClientInstallation, ...]:
     )
 
 
+def _read_recent_auto_linux_client() -> str | None:
+    """Read the last verified client, never a desktop-handler guess."""
+    try:
+        key = LAST_AUTO_LINUX_CLIENT_STATE.read_text(encoding='utf-8').strip()
+    except OSError, UnicodeError:
+        return None
+    return key if key in LINUX_CLIENTS_BY_KEY else None
+
+
+def _write_recent_auto_linux_client(key: str) -> None:
+    """Persist an observed Player atomically for the next Fleasion launch."""
+    if key not in LINUX_CLIENTS_BY_KEY:
+        return
+    temporary: Path | None = None
+    try:
+        LAST_AUTO_LINUX_CLIENT_STATE.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', dir=LAST_AUTO_LINUX_CLIENT_STATE.parent,
+            prefix='.last-auto-client-', delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(f'{key}\n')
+        temporary.replace(LAST_AUTO_LINUX_CLIENT_STATE)
+    except OSError as exc:
+        log_buffer.log('Launcher', f'Could not retain last Auto Linux client: {exc}')
+    finally:
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
+
+
 def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve Auto from the newest detected client without inheriting proxy ownership."""
     preference = _configured_linux_client_preference()
     installed = linux_client_installations()
-    # Proxy ownership is tracked separately from the user's Auto selection
-    # Retain the last observed client for cache cleanup after its process exits
+    if preference != 'auto':
+        return select_linux_client(preference, installed=installed)
+
+    recent = _last_auto_linux_client_key or _read_recent_auto_linux_client()
     selected = select_linux_client(
-        preference,
+        'auto',
         installed=installed,
         home=USER_HOME,
         proc_root=PROC_ROOT,
-        recent_client_key=_last_auto_linux_client_key if preference == 'auto' else None,
+        recent_client_key=recent,
     )
-    if preference == 'auto' and selected is not None:
+    if selected is not None and _client_pids(selected):
+        # Do not turn a fallback desktop handler into a persistent selection
+        if selected.key != recent:
+            _write_recent_auto_linux_client(selected.key)
         globals()['_last_auto_linux_client_key'] = selected.key
     return selected
 

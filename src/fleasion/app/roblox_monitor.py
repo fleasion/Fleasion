@@ -27,6 +27,8 @@ from fleasion.utils import (
 )
 from fleasion.utils.mocktail_launch_interceptor import MocktailLaunchInterceptor
 from fleasion.utils.platform_linux import (
+    get_selected_linux_client_installation,
+    is_roblox_running as is_linux_client_running,
     mocktail_proxy_environment,
     rosemary_proxy_environment,
     selected_linux_client_app_id,
@@ -388,8 +390,79 @@ class RobloxExitMonitor(QObject):
                     'Roblox launch detected but could not resolve exe path for CA check',
                 )
 
+    def _sync_linux_auto_proxy_client(self) -> bool:  # ruff: ignore[too-many-return-statements]
+        """Re-arm Env Proxy when Auto detects a newly running Linux client.
+
+        A Flatpak process already running cannot inherit a newly installed
+        override. Do not misclassify that existing process as Env-proxied.
+        """
+        proxy = self._proxy_master
+        if (
+            not sys.platform.startswith('linux')
+            or proxy is None
+            or not getattr(proxy, 'is_running', False)
+        ):
+            return True
+        if (
+            getattr(self.config_manager, 'linux_client', 'auto') != 'auto'
+            or self.config_manager.proxy_mode != 'env'
+            or not self.config_manager.proxy_features_enabled
+        ):
+            return True
+        selected = get_selected_linux_client_installation()
+        if selected is None or not is_linux_client_running(selected):
+            return True
+        if selected.key == getattr(proxy, '_active_linux_client_key', None):
+            return True
+        if not proxy.wait_for_env_proxy_ready(timeout=0.0):
+            # The initial owner may still be starting; retry on the next poll
+            return False
+        lifecycle = self.env_lifecycle
+        if lifecycle is not None and lifecycle.operation_in_progress:
+            return False
+
+        previous = getattr(proxy, '_active_linux_client_key', None)
+        log_buffer.log(
+            'Launcher',
+            f'Auto detected {selected.display_name} while Env Proxy targeted '
+            f'{previous or "no client"}; switching proxy ownership',
+        )
+        if lifecycle is not None:
+            lifecycle.note_unexpected_player_exit()
+        proxy.stop()
+        proxy.start()
+        if (
+            not proxy.wait_for_env_proxy_ready(timeout=15.0)
+            or getattr(proxy, '_active_linux_client_key', None) != selected.key
+        ):
+            log_buffer.log(
+                'Launcher',
+                f'Auto could not finish switching Env Proxy to {selected.display_name}',
+            )
+            return False
+
+        # The running process predates the new override and was not relaunched
+        # Never claim it as owned or automatically clear its cache on this switch
+        was_running = self._player_was_running
+        self._player_was_running = True
+        self.was_running = True
+        if not was_running:
+            player_running = True
+            self.player_status_changed.emit(player_running)
+            proxy.set_roblox_player_running(player_running)
+        if self._mod_manager is not None:
+            self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+        log_buffer.log(
+            'Launcher',
+            f'Auto Env Proxy now targets {selected.display_name}; relaunch an '
+            'already-running Player to inherit its newly armed proxy settings',
+        )
+        return True
+
     def _check_roblox_status_locked(self) -> None:
         """Check if Roblox has exited and trigger cache deletion if needed."""
+        if not self._sync_linux_auto_proxy_client():
+            return
         is_running = is_roblox_running()
         player_status_observed_at = time.monotonic()
         intentional_player_exit = False
