@@ -10,6 +10,10 @@ import zstandard
 
 from fleasion.proxy import master as proxy_master, server as proxy_server
 from fleasion.proxy.asset_trace import AssetTrace
+from fleasion.proxy.client_settings_cache import (
+    ClientSettingsLocalCache,
+    client_settings_cache_key,
+)
 from fleasion.proxy.addons import custom_fflags as custom_fflags_module
 from fleasion.proxy.addons.custom_fflags import (
     DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG,
@@ -164,6 +168,10 @@ def _run_client_settings_session(
     upstream_response: bytes,
     *,
     conditional: bool = False,
+    if_none_match: bytes | None = None,
+    cache: ClientSettingsLocalCache | None = None,
+    path_override: str | None = None,
+    dictionary: bytes | None = None,
     on_connect: Callable[[], None] | None = None,
     auto_replace_rules: list[_AutoReplaceRule] | None = None,
     intercept_response_action: str | None = None,
@@ -171,21 +179,21 @@ def _run_client_settings_session(
 ) -> tuple[bytes, bytes]:
     async def _run() -> tuple[bytes, bytes]:
         host = 'clientsettings.roblox.com'
-        path = '/v2/settings/application/PCDesktopClient'
+        path = path_override or '/v2/settings/application/PCDesktopClient'
         headers = {
             b'host': host.encode('ascii'),
             b'connection': b'close',
         }
-        if conditional:
-            headers[b'if-none-match'] = b'"cached"'
+        if conditional or if_none_match is not None:
+            headers[b'if-none-match'] = if_none_match or b'"cached"'
 
         request_lines = [
             f'GET {path} HTTP/1.1'.encode('ascii'),
             f'Host: {host}'.encode('ascii'),
             b'Connection: close',
         ]
-        if conditional:
-            request_lines.append(b'If-None-Match: "cached"')
+        if conditional or if_none_match is not None:
+            request_lines.append(b'If-None-Match: ' + (if_none_match or b'"cached"'))
         request_block = b'\r\n'.join(request_lines) + b'\r\n\r\n'
         first_request = RawHeaders(
             first_line=request_lines[0],
@@ -218,7 +226,12 @@ def _run_client_settings_session(
         _set_test_attr(proxy, '_wire_preserving_passthrough', value=False)
         _set_test_attr(proxy, '_intercept_all_hosts', intercept_response_action is not None)
         _set_test_attr(proxy, '_fallback_diagnostics_seen', set[tuple[str, str]]())
-        _set_test_attr(proxy, '_client_settings_dictionary_cache', {})
+        dictionary_hash = _dcz_dictionary_sha256(path)
+        _set_test_attr(
+            proxy, '_client_settings_dictionary_cache',
+            {dictionary_hash: dictionary} if dictionary_hash and dictionary is not None else {},
+        )
+        _set_test_attr(proxy, '_client_settings_local_cache', cache)
         _set_test_attr(proxy, '_executor', None)
 
         if intercept_response_action is not None:
@@ -279,6 +292,170 @@ def _run_client_settings_session(
         return bytes(client_writer.buffer), bytes(upstream_writer.buffer)
 
     return asyncio.run(_run())
+
+
+def test_local_dynamic_fastflag_cache_rewrites_dictionary_compressed_android_settings() -> None:
+    dictionary = b'shared dcz dictionary for custom flags ' * 100
+    path = '/v2/settings-compressed/application/GoogleAndroidApp/' + 'a' * 64 + '.dcz'
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    cache = ClientSettingsLocalCache()
+    original = b'{"applicationSettings":{"FFlagExample":"Original"}}'
+    compressed = _compress_dcz(original, dictionary)
+    assert compressed is not None
+    upstream = (
+        b'HTTP/1.1 200 OK\r\nContent-Encoding: dcz\r\n'
+        + f'Content-Length: {len(compressed)}\r\n'.encode('ascii')
+        + b'Connection: close\r\n\r\n' + compressed
+    )
+    first, forwarded = _run_client_settings_session(
+        modifier, upstream, cache=cache, path_override=path, dictionary=dictionary
+    )
+    assert b'GET ' + path.encode('ascii') in forwarded
+    first_header, _, first_body = first.partition(b'\r\n\r\n')
+    assert b'content-encoding: dcz' in first_header.lower()
+    decoded = _decompress_dcz(first_body, dictionary)
+    assert decoded is not None
+    assert json.loads(decoded)['applicationSettings']['FFlagExample'] == 'True'
+    etag = next(
+        line.split(b': ', 1)[1]
+        for line in first_header.split(b'\r\n') if line.startswith(b'etag:')
+    )
+
+    config.custom_fflags['FFlagExample'] = 'False'
+    toggled, forwarded = _run_client_settings_session(
+        modifier, b'', cache=cache, path_override=path,
+        dictionary=dictionary, if_none_match=etag,
+    )
+    assert forwarded == b''
+    toggled_header, _, toggled_body = toggled.partition(b'\r\n\r\n')
+    assert b'HTTP/1.1 200 OK' in toggled_header
+    assert b'content-encoding: dcz' in toggled_header.lower()
+    decoded = _decompress_dcz(toggled_body, dictionary)
+    assert decoded is not None
+    assert json.loads(decoded)['applicationSettings']['FFlagExample'] == 'False'
+
+
+def test_local_dynamic_fastflag_cache_uses_304_and_updates_on_toggle() -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    cache = ClientSettingsLocalCache()
+    body = b'{"applicationSettings":{"Base":"Old","FFlagExample":"Off"}}'
+    upstream = (
+        b'HTTP/1.1 200 OK\r\n'
+        + f'Content-Length: {len(body)}\r\n'.encode('ascii')
+        + b'ETag: "roblox"\r\nCache-Control: public, max-age=0\r\n'
+        + b'Connection: close\r\n\r\n'
+        + body
+    )
+    first, forwarded = _run_client_settings_session(modifier, upstream, cache=cache)
+    assert b'GET /v2/settings/application/PCDesktopClient' in forwarded
+    assert b'HTTP/1.1 200 OK' in first
+    first_header, _, first_body = first.partition(b'\r\n\r\n')
+    etag = next(line.split(b': ', 1)[1] for line in first_header.split(b'\r\n') if line.startswith(b'etag:'))
+    assert etag.startswith(b'"fleasion-')
+    assert b'"roblox"' not in first_header
+    assert json.loads(first_body)['applicationSettings']['FFlagExample'] == 'True'
+
+    unchanged, forwarded = _run_client_settings_session(
+        modifier, b'', if_none_match=etag, cache=cache
+    )
+    assert b'304 Not Modified' in unchanged
+    assert unchanged.endswith(b'\r\n\r\n')
+    assert forwarded == b''
+
+    config.custom_fflags['FFlagExample'] = 'False'
+    toggled, forwarded = _run_client_settings_session(
+        modifier, b'', if_none_match=etag, cache=cache
+    )
+    assert b'HTTP/1.1 200 OK' in toggled
+    assert forwarded == b''
+    second_header, _, second_body = toggled.partition(b'\r\n\r\n')
+    assert json.loads(second_body)['applicationSettings']['FFlagExample'] == 'False'
+    next_etag = next(line.split(b': ', 1)[1] for line in second_header.split(b'\r\n') if line.startswith(b'etag:'))
+    assert next_etag != etag
+    assert not modifier.requires_fresh_response()
+
+    unchanged_again, forwarded = _run_client_settings_session(
+        modifier, b'', if_none_match=next_etag, cache=cache
+    )
+    assert b'304 Not Modified' in unchanged_again
+    assert forwarded == b''
+
+    # Disabling an override must restore the original Roblox base value
+    config.custom_fflags_enabled = False
+    disabled, forwarded = _run_client_settings_session(
+        modifier, b'', if_none_match=next_etag, cache=cache
+    )
+    assert b'200 OK' in disabled
+    assert json.loads(disabled.partition(b'\r\n\r\n')[2])['applicationSettings']['FFlagExample'] == 'Off'
+    assert forwarded == b''
+
+
+def test_local_dynamic_fastflag_cache_revalidates_and_isolates_new_players() -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    cache = ClientSettingsLocalCache()
+
+    def upstream(base: str) -> bytes:
+        body = json.dumps({'applicationSettings': {'Base': base}}).encode('utf-8')
+        return (
+            b'HTTP/1.1 200 OK\r\n'
+            + f'Content-Length: {len(body)}\r\n'.encode('ascii')
+            + b'Connection: close\r\n\r\n' + body
+        )
+
+    first, _ = _run_client_settings_session(modifier, upstream('first'), cache=cache)
+    first_header = first.partition(b'\r\n\r\n')[0]
+    etag = next(line.split(b': ', 1)[1] for line in first_header.split(b'\r\n') if line.startswith(b'etag:'))
+    key = client_settings_cache_key(
+        'clientsettings.roblox.com', '/v2/settings/application/PCDesktopClient', 'GET', {}, b''
+    )
+    assert key is not None
+    snapshot = cache.snapshot(key, modifier.delivery_generation())
+    assert snapshot is not None
+    snapshot.checked_at -= 31.0
+    new_version, forwarded = _run_client_settings_session(
+        modifier, upstream('second'), if_none_match=etag, cache=cache
+    )
+    assert b'if-none-match' not in forwarded.lower()
+    assert json.loads(new_version.partition(b'\r\n\r\n')[2])['applicationSettings']['Base'] == 'second'
+    unchanged, forwarded = _run_client_settings_session(modifier, b'', cache=cache)
+    assert json.loads(unchanged.partition(b'\r\n\r\n')[2])['applicationSettings']['Base'] == 'second'
+    assert forwarded == b''
+
+    modifier.prepare_for_player_launch()
+    relaunched, forwarded = _run_client_settings_session(
+        modifier, upstream('third'), cache=cache
+    )
+    assert b'GET /v2/settings/application/PCDesktopClient' in forwarded
+    assert json.loads(relaunched.partition(b'\r\n\r\n')[2])['applicationSettings']['Base'] == 'third'
+
+
+def test_local_dynamic_fastflag_cache_does_not_commit_on_failed_delivery() -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    cache = ClientSettingsLocalCache()
+    body = b'{"applicationSettings":{"Base":"original"}}'
+    upstream = (
+        b'HTTP/1.1 200 OK\r\n' + f'Content-Length: {len(body)}\r\n'.encode()
+        + b'Connection: close\r\n\r\n' + body
+    )
+    _run_client_settings_session(modifier, upstream, cache=cache)
+    key = client_settings_cache_key(
+        'clientsettings.roblox.com', '/v2/settings/application/PCDesktopClient', 'GET', {}, b''
+    )
+    assert key is not None
+    original = cache.snapshot(key, modifier.delivery_generation())
+    assert original is not None
+    config.custom_fflags['FFlagExample'] = 'False'
+    _run_client_settings_session(modifier, b'', cache=cache, client_drain_failure=True)
+    assert modifier.requires_fresh_response()
+    assert cache.snapshot(key, modifier.delivery_generation()) is original
+    delivered, forwarded = _run_client_settings_session(modifier, b'', cache=cache)
+    assert forwarded == b''
+    assert json.loads(delivered.partition(b'\r\n\r\n')[2])['applicationSettings']['FFlagExample'] == 'False'
+    assert not modifier.requires_fresh_response()
 
 
 def test_normalize_custom_fflags_matches_roblox_string_values() -> None:

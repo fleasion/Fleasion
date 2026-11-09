@@ -40,7 +40,7 @@ import time
 import uuid
 import zlib
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
@@ -74,6 +74,15 @@ from .asset_batch import (
 )
 from .asset_delivery import direct_asset_id, is_asset_batch_path, is_direct_asset_path
 from .asset_trace import AssetTrace
+from .client_settings_cache import (
+    CLIENT_SETTINGS_MAX_SNAPSHOT_BYTES,
+    ClientSettingsLocalCache,
+    ClientSettingsSnapshot,
+    client_settings_cache_key,
+    local_client_settings_reply,
+    make_local_client_settings_response,
+    may_cache_client_settings_response,
+)
 from .h2_transport import H2FeatureBridge
 from .roblox_metadata import strip_roblox_metadata
 from .splice import SpliceConnection, read_client_hello
@@ -1824,6 +1833,7 @@ class FleasionProxy:
         self._sni_diagnostics_seen: set[str] = set()
         self._fallback_diagnostics_seen: set[tuple[str, str]] = set()
         self._client_settings_dictionary_cache: dict[str, bytes] = {}
+        self._client_settings_local_cache = ClientSettingsLocalCache()
         self._batch_routes_event = asyncio.Event()
         self._wire_preserving_passthrough = bool(wire_preserving_passthrough)
         self._explicit_proxy = bool(explicit_proxy)
@@ -2357,6 +2367,9 @@ class FleasionProxy:
         )
 
     async def stop(self) -> None:
+        cache = getattr(self, '_client_settings_local_cache', None)
+        if cache is not None:
+            cache.clear()
         # Wake up any request/response held open awaiting a forward/drop
         # decision so its coroutine (and the executor thread it's parked on)
         # doesn't block shutdown indefinitely.
@@ -3566,7 +3579,7 @@ class FleasionProxy:
         async def run_session_loop() -> None:
             nonlocal pending_req
 
-            while True:
+            while True:  # ruff: ignore[too-many-nested-blocks]
                 # Release the previous iteration's held response (if any) before
                 # moving on - this is the one choke point every response branch
                 # below eventually passes through, on its way back here.
@@ -3780,7 +3793,76 @@ class FleasionProxy:
                 custom_fflag_request_enabled = (
                     custom_fflag_request and custom_fflag_modifier.is_enabled()
                 )
+                cache = getattr(self, '_client_settings_local_cache', None)
+                cache_key = (
+                    client_settings_cache_key(host, path, method, req_headers, req_body_raw)
+                    if (
+                        cache is not None
+                        and custom_fflag_request_enabled
+                        and not request_has_trailers
+                        and not self._intercept_all_hosts
+                        and not self._auto_replace_rules
+                    )
+                    else None
+                )
                 if custom_fflag_request_enabled and custom_fflag_modifier.requires_fresh_response():
+                    upstream_req_headers = _without_conditional_client_settings_headers(req_headers)
+
+                # A local snapshot handles frame-rate polls. Only the first
+                # request after each revalidation interval contacts Roblox.
+                if cache_key is not None and cache is not None:
+                    generation = custom_fflag_modifier.delivery_generation()
+                    if not cache.should_fetch(cache_key, generation):
+                        snapshot = cache.snapshot(cache_key, generation)
+                        if snapshot is not None:
+                            changed_snapshot = False
+                            previous_snapshot = snapshot
+                            desired_signature = tuple(sorted(custom_fflag_modifier.runtime_flags().items()))
+                            if desired_signature != snapshot.signature:
+                                (
+                                    new_body,
+                                    changed,
+                                    new_encoding,
+                                    new_signature,
+                                ) = await modify_custom_fflag_response(
+                                    path, snapshot.headers, snapshot.upstream_body
+                                )
+                                if new_signature == desired_signature:
+                                    encoding = (
+                                        new_encoding if changed
+                                        else snapshot.headers.get(b'content-encoding')
+                                    )
+                                    new_etag, new_response = make_local_client_settings_response(
+                                        new_body, encoding, snapshot.status_line, snapshot.headers
+                                    )
+                                    snapshot = replace(
+                                        snapshot, delivered_body=new_body, encoding=encoding,
+                                        signature=new_signature, etag=new_etag, response=new_response,
+                                    )
+                                    changed_snapshot = True
+                                else:
+                                    snapshot = None
+                            if snapshot is not None:
+                                reply, has_body = local_client_settings_reply(snapshot, req_headers)
+                                response_writer.write(reply)
+                                try:
+                                    await response_writer.drain()
+                                except ConnectionResetError, BrokenPipeError, OSError:
+                                    break
+                                if custom_fflag_modifier.delivery_generation() == generation:
+                                    if has_body:
+                                        custom_fflag_modifier.note_response_success(
+                                            snapshot.signature, generation=generation
+                                        )
+                                    if changed_snapshot:
+                                        cache.update_render(cache_key, previous_snapshot, snapshot)
+                                if not _keep_alive(req_first, req_headers):
+                                    break
+                                continue
+                    else:
+                        cache.note_fetch_attempt(cache_key)
+                    # Fleasion's synthetic ETag must never reach Roblox, and a
+                    # stale HTTP 304 cannot supply the upstream body to refresh.
                     upstream_req_headers = _without_conditional_client_settings_headers(req_headers)
 
                 direct_id_rewritten = False
@@ -3992,6 +4074,10 @@ class FleasionProxy:
                 resp_raw = resp_result
                 resp_first, resp_headers = resp_raw.first_line, resp_raw.headers
                 status_code = _parse_status_code(resp_first)
+                if status_code == 304 and cache_key is not None and cache is not None:
+                    cache.note_not_modified(
+                        cache_key, custom_fflag_modifier.delivery_generation()
+                    )
                 if status_code == 101:
                     # After Switching Protocols the connection is no longer HTTP
                     response_writer.write(resp_raw.raw_header_block)
@@ -4068,6 +4154,7 @@ class FleasionProxy:
                         cast('asyncio.StreamReader', up_reader), resp_headers
                     )
                 resp_body_raw = resp_body.payload
+                upstream_settings_body = resp_body_raw
 
                 custom_fflag_response_enabled = (
                     custom_fflag_request and custom_fflag_modifier.is_enabled()
@@ -4284,7 +4371,41 @@ class FleasionProxy:
                     raise ValueError(msg)
 
                 # Forward response to Roblox
-                if resp_body.has_trailers:
+                cache_candidate: ClientSettingsSnapshot | None = None
+                eligible_snapshot = (
+                    cache_key is not None
+                    and cache is not None
+                    and custom_fflag_delivered_signature is not None
+                )
+                if (
+                    eligible_snapshot
+                    and may_cache_client_settings_response(
+                        status_code, resp_headers, upstream_settings_body
+                    )
+                    and len(resp_body_raw) <= CLIENT_SETTINGS_MAX_SNAPSHOT_BYTES
+                    and not resp_body.has_trailers
+                ):
+                    delivered_encoding = (
+                        modified_content_encoding
+                        if response_modified
+                        else resp_headers.get(b'content-encoding')
+                    )
+                    etag, outgoing_response = make_local_client_settings_response(
+                        resp_body_raw, delivered_encoding, resp_first, resp_headers
+                    )
+                    cache_candidate = ClientSettingsSnapshot(
+                        status_line=resp_first,
+                        headers=dict(resp_headers),
+                        upstream_body=upstream_settings_body,
+                        delivered_body=resp_body_raw,
+                        encoding=delivered_encoding,
+                        signature=cast('tuple[tuple[str, str], ...]', custom_fflag_delivered_signature),
+                        generation=custom_fflag_request_generation or 0,
+                        checked_at=time.monotonic(),
+                        etag=etag,
+                        response=outgoing_response,
+                    )
+                elif resp_body.has_trailers:
                     outgoing_response = resp_raw.raw_header_block + resp_body.wire
                 elif response_modified:
                     outgoing_response = _build_modified_response(
@@ -4329,6 +4450,14 @@ class FleasionProxy:
                         custom_fflag_delivered_signature,
                         generation=custom_fflag_request_generation,
                     )
+                if (
+                    cache_candidate is not None
+                    and cache is not None
+                    and cache_key is not None
+                    and not delivery_ack_deferred
+                    and custom_fflag_request_generation == custom_fflag_modifier.delivery_generation()
+                ):
+                    cache.store(cache_key, cache_candidate)
 
                 if (
                     close_delimited
