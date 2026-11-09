@@ -193,16 +193,21 @@ def test_cache_deletion_refuses_unterminated_rosemary_player(
         del proc_root
         return ()
 
-    def still_running() -> bool:
+    def still_running(_installation: object = None) -> bool:
         return True
 
-    def cannot_terminate() -> bool:
+    def cannot_terminate(_installation: object = None) -> bool:
+        return False
+
+    def cannot_wait(
+        _timeout: float = 10.0, *, installation: object = None
+    ) -> bool:
         return False
 
     monkeypatch.setattr(platform_linux, 'running_rosemary_studios', no_studios)
     monkeypatch.setattr(platform_linux, 'is_roblox_running', still_running)
     monkeypatch.setattr(platform_linux, 'terminate_roblox', cannot_terminate)
-    monkeypatch.setattr(platform_linux, 'wait_for_roblox_exit', cannot_terminate)
+    monkeypatch.setattr(platform_linux, 'wait_for_roblox_exit', cannot_wait)
     messages = platform_linux.delete_cache()
     assert 'Rosemary (macOS Roblox) termination timed out' in messages
     assert 'Cache deletion aborted' in messages

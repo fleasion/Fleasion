@@ -212,7 +212,10 @@ def test_mocktail_cache_preserves_auth_payload_and_clientsettings(
     monkeypatch.setattr(
         platform_linux, 'get_selected_linux_client_installation', lambda: installation
     )
-    monkeypatch.setattr(platform_linux, 'is_roblox_running', lambda: False)
+    def not_running(_installation: object = None) -> bool:
+        return False
+
+    monkeypatch.setattr(platform_linux, 'is_roblox_running', not_running)
     monkeypatch.setattr(platform_linux, 'APP_CACHE_DIR', tmp_path / 'no-fleasion-cache')
     messages = platform_linux.delete_cache()
     assert any('Mocktail Android rbx-storage' in line for line in messages)

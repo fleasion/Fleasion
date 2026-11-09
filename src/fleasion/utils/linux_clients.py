@@ -512,29 +512,35 @@ def running_mocktail_players(
 
 @dataclass(frozen=True, slots=True)
 class SoberSession:
-    """A Sober Roblox engine process belonging to its Flatpak cgroup."""
+    """A validated Sober process belonging to its Flatpak cgroup."""
 
     pid: int
     start_ticks: int
 
 
-def running_sober_players(*, proc_root: Path = Path('/proc')) -> tuple[SoberSession, ...]:
-    """Find Sober's engine, excluding unrelated processes also named Main."""
+def _running_sober_sessions(
+    *, proc_root: Path, launcher: bool
+) -> tuple[SoberSession, ...]:
+    """Identify either the Roblox engine or its executable-backed Sober launcher."""
     try:
         processes = list(proc_root.iterdir())
     except OSError:
         return ()
     sessions: list[SoberSession] = []
+    expected_comm = 'sober' if launcher else 'Main'
     for process in processes:
         if not process.name.isdecimal():
             continue
         try:  # ruff: ignore[too-many-statements-in-try-clause]
             if process.stat().st_uid != os.getuid():
                 continue
-            if (process / 'comm').read_text(encoding='utf-8').strip() != 'Main':
+            if (process / 'comm').read_text(encoding='utf-8').strip() != expected_comm:
                 continue
             cgroup = (process / 'cgroup').read_text(encoding='utf-8', errors='replace')
-            if SOBER_CLIENT.cgroup_marker not in cgroup:
+            if f'{SOBER_CLIENT.cgroup_marker}-' not in cgroup:
+                continue
+            # Flatpak /app paths exist inside Sober's mount namespace, not ours
+            if launcher and (process / 'exe').readlink().name != 'sober':
                 continue
             stat_text = (process / 'stat').read_text(encoding='utf-8')
             fields = stat_text.rsplit(')', 1)[1].split()
@@ -545,6 +551,16 @@ def running_sober_players(*, proc_root: Path = Path('/proc')) -> tuple[SoberSess
             continue
         sessions.append(SoberSession(int(process.name), start_ticks))
     return tuple(sorted(sessions, key=lambda session: session.pid))
+
+
+def running_sober_players(*, proc_root: Path = Path('/proc')) -> tuple[SoberSession, ...]:
+    """Find Sober's engine, excluding unrelated processes also named Main."""
+    return _running_sober_sessions(proc_root=proc_root, launcher=False)
+
+
+def running_sober_launchers(*, proc_root: Path = Path('/proc')) -> tuple[SoberSession, ...]:
+    """Find Sober itself, including its pre-engine launcher window."""
+    return _running_sober_sessions(proc_root=proc_root, launcher=True)
 
 
 def running_rosemary_studios(*, proc_root: Path = Path('/proc')) -> tuple[int, ...]:
@@ -830,6 +846,7 @@ def select_linux_client(
     run: CommandRunner | None = None,
     proc_root: Path = Path('/proc'),
     running_client_starts: Mapping[str, int] | None = None,
+    recent_client_key: str | None = None,
     rosemary_running: bool | None = None,
     mocktail_running: bool | None = None,
 ) -> LinuxClientInstallation | None:
@@ -877,7 +894,12 @@ def select_linux_client(
             if mocktail_sessions:
                 starts['mocktail'] = max(session.start_ticks for session in mocktail_sessions)
         if 'sober' in by_key:
-            sober_sessions = running_sober_players(proc_root=proc_root)
+            # The native Sober window runs before its Android Main process starts
+            # It still represents the most recently opened Roblox client
+            sober_sessions = (
+                *running_sober_players(proc_root=proc_root),
+                *running_sober_launchers(proc_root=proc_root),
+            )
             if sober_sessions:
                 starts['sober'] = max(session.start_ticks for session in sober_sessions)
     # Preserve the existing explicit process-presence overrides for callers
@@ -894,7 +916,9 @@ def select_linux_client(
         if len(newest_keys) == 1:
             return by_key[next(iter(newest_keys))]
     else:
-        newest_keys = set[str]()
+        # Keep the last detected client after it exits; otherwise Auto would
+        # clear the desktop handler's cache instead of the just-closed Player
+        newest_keys = {recent_client_key} if recent_client_key in by_key else set[str]()
 
     handlers = query_default_roblox_handlers(
         home=home,

@@ -32,7 +32,10 @@ def _prepare(home: Path, monkeypatch: pytest.MonkeyPatch) -> LinuxClientInstalla
         platform_linux, 'get_selected_linux_client_installation', lambda: installation
     )
     monkeypatch.setattr(platform_linux, 'running_rosemary_studios', lambda **_kw: ())
-    monkeypatch.setattr(platform_linux, 'is_roblox_running', lambda: False)
+    def not_running(_installation: LinuxClientInstallation | None = None) -> bool:
+        return False
+
+    monkeypatch.setattr(platform_linux, 'is_roblox_running', not_running)
     monkeypatch.setattr(platform_linux, 'APP_CACHE_DIR', home / 'fleasion-cache')
     monkeypatch.setattr(platform_linux, '_rosemary_prefix_path', None)
     return installation

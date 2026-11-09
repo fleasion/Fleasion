@@ -202,7 +202,10 @@ def test_mocktail_cache_clear_refuses_symlinked_storage_parents(
     monkeypatch.setattr(
         platform_linux, 'get_selected_linux_client_installation', lambda: installation
     )
-    monkeypatch.setattr(platform_linux, 'is_roblox_running', lambda: False)
+    def not_running(_installation: object = None) -> bool:
+        return False
+
+    monkeypatch.setattr(platform_linux, 'is_roblox_running', not_running)
     monkeypatch.setattr(platform_linux, 'APP_CACHE_DIR', tmp_path / 'unused-fleasion-cache')
     messages = platform_linux.delete_cache()
     assert external_database.read_text() == 'unrelated data'

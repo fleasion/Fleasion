@@ -26,6 +26,7 @@ def isolate_sober_native_keylog_state(
         'SOBER_NATIVE_KEYLOG_OVERRIDE_STATE',
         tmp_path / 'sober-native-keylog-state.json',
     )
+    monkeypatch.setattr(platform_linux, '_last_auto_linux_client_key', None)
 
 
 def _flatpak_installation(
@@ -80,19 +81,15 @@ def _standard_euid() -> int:
     return 1000
 
 
-def _not_running() -> bool:
+def _not_running(_installation: LinuxClientInstallation | None = None) -> bool:
     return False
 
 
-def _running() -> bool:
+def _running(_installation: LinuxClientInstallation | None = None) -> bool:
     return True
 
 
 def _wait_for_window(_timeout: float = 15.0) -> bool:
-    return True
-
-
-def _wait_for_exit(_timeout: float = 10.0) -> bool:
     return True
 
 
@@ -938,7 +935,7 @@ def test_delete_cache_terminates_sober_before_cleanup(
     storage_folder.mkdir()
     (storage_folder / 'db.dat').write_bytes(b'cache')
 
-    calls: list[str] = []
+    calls: list[tuple[str, LinuxClientInstallation | None]] = []
 
     monkeypatch.setattr(platform_linux, 'APP_CACHE_DIR', app_cache)
     monkeypatch.setattr(
@@ -946,18 +943,32 @@ def test_delete_cache_terminates_sober_before_cleanup(
         'get_selected_linux_client_installation',
         _selected_installation(installation),
     )
-    monkeypatch.setattr(platform_linux, 'is_roblox_running', _running)
 
-    def terminate() -> bool:
-        calls.append('terminate')
+    def running(target: LinuxClientInstallation | None = None) -> bool:
+        calls.append(('running', target))
         return True
 
+    def terminate(target: LinuxClientInstallation | None = None) -> bool:
+        calls.append(('terminate', target))
+        return True
+
+    def wait(
+        _timeout: float = 10.0, *, installation: LinuxClientInstallation | None = None
+    ) -> bool:
+        calls.append(('wait', installation))
+        return True
+
+    monkeypatch.setattr(platform_linux, 'is_roblox_running', running)
     monkeypatch.setattr(platform_linux, 'terminate_roblox', terminate)
-    monkeypatch.setattr(platform_linux, 'wait_for_roblox_exit', _wait_for_exit)
+    monkeypatch.setattr(platform_linux, 'wait_for_roblox_exit', wait)
 
     messages = platform_linux.delete_cache()
 
-    assert calls == ['terminate']
+    assert calls == [
+        ('running', installation),
+        ('terminate', installation),
+        ('wait', installation),
+    ]
     assert messages[:2] == [
         'Sober is running, terminating...',
         'Sober terminated successfully',
@@ -987,6 +998,54 @@ def test_delete_cache_aborts_when_explicit_selection_is_unavailable(
     assert sentinel.read_bytes() == b'keep'
 
 
+def test_auto_cache_clear_uses_sober_launcher_not_pinned_rosemary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils.linux_clients import ROSEMARY_CLIENT
+
+    proc = tmp_path / 'proc'
+    launcher = proc / '1234'
+    launcher.mkdir(parents=True)
+    (launcher / 'comm').write_text('sober\n', encoding='utf-8')
+    (launcher / 'cgroup').write_text(
+        '0::/user.slice/app-flatpak-org.vinegarhq.Sober-abc.scope\n',
+        encoding='utf-8',
+    )
+    (launcher / 'exe').symlink_to('/app/bin/sober')
+    (launcher / 'stat').write_text(
+        '1234 (sober) ' + ' '.join(['S', *['0'] * 18, '500']),
+        encoding='utf-8',
+    )
+
+    sober = _flatpak_installation(SOBER_CLIENT, tmp_path)
+    rosemary = _flatpak_installation(ROSEMARY_CLIENT, tmp_path)
+    sober_db = sober.paths.storage_db
+    assert sober_db is not None
+    sober_db.parent.mkdir(parents=True)
+    sober_db.write_bytes(b'sober')
+    rosemary_sentinel = tmp_path / 'rosemary-cache-unchanged'
+    rosemary_sentinel.write_bytes(b'rosemary')
+
+    monkeypatch.setattr(platform_linux, 'USER_HOME', tmp_path)
+    monkeypatch.setattr(platform_linux, 'PROC_ROOT', proc)
+    monkeypatch.setattr(platform_linux, 'APP_CACHE_DIR', tmp_path / 'fleasion-cache')
+    monkeypatch.setattr(platform_linux, '_linux_client_preference', 'auto')
+    monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', 'rosemary')
+    monkeypatch.setattr(
+        platform_linux, 'linux_client_installations', lambda: (sober, rosemary)
+    )
+    # Keep the test entirely filesystem-only; no real Flatpak is terminated
+    monkeypatch.setattr(platform_linux, 'is_roblox_running', _not_running)
+
+    messages = platform_linux.delete_cache()
+
+    assert 'Sober was closed' in messages
+    assert 'Storage database deleted successfully' in messages
+    assert not sober_db.exists()
+    assert rosemary_sentinel.read_bytes() == b'rosemary'
+    assert platform_linux._active_linux_proxy_client_key == 'rosemary'  # pyright: ignore[reportPrivateUsage]
+
+
 def test_auto_selected_client_tracks_sober_player_without_overriding_proxy_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1014,6 +1073,14 @@ def test_auto_selected_client_tracks_sober_player_without_overriding_proxy_owner
     )
     assert platform_linux.get_selected_linux_client_installation() is sober
     monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', 'rosemary')
-    assert platform_linux.get_selected_linux_client_installation() is rosemary
+    # Proxy ownership remains pinned for cleanup, but Auto follows the Player
+    assert platform_linux.get_selected_linux_client_installation() is sober
+    assert platform_linux._active_linux_proxy_client_key == 'rosemary'  # pyright: ignore[reportPrivateUsage]
+
+    # The most recent client remains selected when its process exits, so
+    # Auto-Clear Cache on Exit cannot unexpectedly target Nutmeg instead
+    (process / 'comm').unlink()
+    assert platform_linux.get_selected_linux_client_installation() is sober
+
     monkeypatch.setattr(platform_linux, '_linux_client_preference', 'sober')
     assert platform_linux.get_selected_linux_client_installation() is sober

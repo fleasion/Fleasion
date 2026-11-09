@@ -167,6 +167,7 @@ SOBER_ENV_PROXY_PASSTHROUGH_HOSTS = SOBER_CLIENT.proxy_passthrough_hosts
 PROC_ROOT = Path('/proc')
 _ROBLOX_URI_SCHEMES = ('x-scheme-handler/roblox', 'x-scheme-handler/roblox-player')
 _linux_client_preference: str | None = None
+_last_auto_linux_client_key: str | None = None
 _active_linux_proxy_client_key: str | None = None
 _active_rosemary_proxy_url: str | None = None
 _active_mocktail_proxy_url: str | None = None
@@ -374,19 +375,21 @@ def linux_client_installations() -> tuple[LinuxClientInstallation, ...]:
 
 
 def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
-    """Resolve the configured/desktop-selected installed Linux Roblox client."""
+    """Resolve Auto from the newest detected client without inheriting proxy ownership."""
     preference = _configured_linux_client_preference()
     installed = linux_client_installations()
-    if preference == 'auto' and _active_linux_proxy_client_key is not None:
-        pinned = select_linux_client(_active_linux_proxy_client_key, installed=installed)
-        if pinned is not None:
-            return pinned
-    return select_linux_client(
+    # Proxy ownership is tracked separately from the user's Auto selection
+    # Retain the last observed client for cache cleanup after its process exits
+    selected = select_linux_client(
         preference,
         installed=installed,
         home=USER_HOME,
         proc_root=PROC_ROOT,
+        recent_client_key=_last_auto_linux_client_key if preference == 'auto' else None,
     )
+    if preference == 'auto' and selected is not None:
+        globals()['_last_auto_linux_client_key'] = selected.key
+    return selected
 
 
 def selected_linux_client_key() -> str:
@@ -561,9 +564,9 @@ def wait_for_roblox_window(timeout: float = 60.0) -> bool:
     return False
 
 
-def is_roblox_running() -> bool:
-    """Check if the selected Linux Roblox client is currently running."""
-    return _first_client_pid() is not None
+def is_roblox_running(installation: LinuxClientInstallation | None = None) -> bool:
+    """Check if the selected or supplied Linux Roblox client is running."""
+    return _first_client_pid(installation) is not None
 
 
 def get_roblox_process_identity() -> tuple[str, int, float] | tuple[str, int] | None:
@@ -654,9 +657,9 @@ def _terminate_rosemary_players(installation: LinuxClientInstallation) -> bool:
     return not _client_pids(installation)
 
 
-def terminate_roblox() -> bool:
-    """Terminate only the selected Linux Roblox client."""
-    installation = get_selected_linux_client_installation()
+def terminate_roblox(installation: LinuxClientInstallation | None = None) -> bool:
+    """Terminate only the selected or supplied Linux Roblox client."""
+    installation = installation or get_selected_linux_client_installation()
     if installation is None:
         return False
     if installation.client.runtime == 'rosemary':
@@ -693,14 +696,16 @@ def terminate_roblox() -> bool:
             signalled = True
         except OSError:
             pass
-    return signalled or not is_roblox_running()
+    return signalled or not is_roblox_running(installation)
 
 
-def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
-    """Wait for the selected Linux client to exit."""
+def wait_for_roblox_exit(
+    timeout: float = 10.0, *, installation: LinuxClientInstallation | None = None
+) -> bool:
+    """Wait for the selected or supplied Linux client to exit."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not is_roblox_running():
+        if not is_roblox_running(installation):
             return True
         time.sleep(0.5)
     return False
@@ -841,10 +846,10 @@ def delete_cache() -> list[str]:
                 'Cache deletion aborted; configure the correct Nutmeg/Rosemary prefix',
             ]
 
-    if is_roblox_running():
+    if is_roblox_running(installation):
         messages.append(f'{client_name} is running, terminating...')
-        terminate_roblox()
-        if wait_for_roblox_exit():
+        terminate_roblox(installation)
+        if wait_for_roblox_exit(installation=installation):
             messages.append(f'{client_name} terminated successfully')
         else:
             messages.extend([f'{client_name} termination timed out', 'Cache deletion aborted'])

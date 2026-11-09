@@ -330,6 +330,62 @@ def test_running_sober_players_requires_flatpak_cgroup(tmp_path: Path) -> None:
     assert running_sober_players(proc_root=proc) == (SoberSession(1234, 500),)
 
 
+def _sober_launcher_proc(
+    root: Path, pid: int, *, ticks: int, cgroup: str, executable: str = '/app/bin/sober',
+    state: str = 'S',
+) -> None:
+    process = root / str(pid)
+    process.mkdir(parents=True, exist_ok=True)
+    (process / 'comm').write_text('sober\n', encoding='utf-8')
+    (process / 'cgroup').write_text(cgroup, encoding='utf-8')
+    (process / 'exe').symlink_to(executable)
+    (process / 'stat').write_text(
+        f'{pid} (sober) ' + ' '.join([state, *['0'] * 18, str(ticks)]),
+        encoding='utf-8',
+    )
+
+
+def test_running_sober_launchers_requires_real_flatpak_process(tmp_path: Path) -> None:
+    from fleasion.utils.linux_clients import SoberSession, running_sober_launchers
+
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    cgroup = '0::/user.slice/app-flatpak-org.vinegarhq.Sober-abc.scope\n'
+    _sober_launcher_proc(proc, 100, ticks=800, cgroup=cgroup)
+    _sober_launcher_proc(proc, 101, ticks=900, cgroup='0::/user.slice/other.scope\n')
+    _sober_launcher_proc(proc, 102, ticks=1000, cgroup=cgroup, executable='/usr/bin/other')
+    _sober_launcher_proc(proc, 103, ticks=1100, cgroup=cgroup, state='Z')
+    assert running_sober_launchers(proc_root=proc) == (SoberSession(100, 800),)
+
+
+def test_auto_selection_prefers_sober_launcher_before_engine_starts(tmp_path: Path) -> None:
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    _sober_launcher_proc(
+        proc, 100, ticks=800,
+        cgroup='0::/user.slice/app-flatpak-org.vinegarhq.Sober-abc.scope\n',
+    )
+    sober = _installation(SOBER_CLIENT, tmp_path)
+    rosemary = _installation(ROSEMARY_CLIENT, tmp_path)
+
+    def nutmeg_handler(
+        command: Sequence[str], *, env: Mapping[str, str],
+        capture_output: bool, text: Literal[True], timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del env, capture_output, text, timeout
+        return subprocess.CompletedProcess(
+            list(command), 0, 'io.github.frolleks.Nutmeg.desktop\n', ''
+        )
+
+    assert select_linux_client(
+        installed=(sober, rosemary), proc_root=proc, home=tmp_path,
+        which=_xdg_which, run=cast('CommandRunner', nutmeg_handler),
+    ) is sober
+    assert select_linux_client(
+        'rosemary', installed=(sober, rosemary), proc_root=proc, home=tmp_path,
+    ) is rosemary
+
+
 def test_auto_selection_uses_running_sober_over_rosemary_handler(tmp_path: Path) -> None:
     proc = tmp_path / 'proc'
     proc.mkdir()
@@ -378,6 +434,31 @@ def test_auto_selection_ignores_non_installed_running_clients(tmp_path: Path) ->
         installed=(sober,), running_client_starts={'rosemary': 900}
     )
     assert selected is sober
+
+
+def test_auto_selection_keeps_last_detected_client_after_exit(tmp_path: Path) -> None:
+    sober = _installation(SOBER_CLIENT, tmp_path)
+    rosemary = _installation(ROSEMARY_CLIENT, tmp_path)
+
+    def nutmeg_handler(
+        command: Sequence[str], *, env: Mapping[str, str],
+        capture_output: bool, text: Literal[True], timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del env, capture_output, text, timeout
+        return subprocess.CompletedProcess(
+            list(command), 0, 'io.github.frolleks.Nutmeg.desktop\n', ''
+        )
+
+    assert select_linux_client(
+        installed=(sober, rosemary), home=tmp_path,
+        running_client_starts={}, recent_client_key='sober',
+        which=_xdg_which, run=cast('CommandRunner', nutmeg_handler),
+    ) is sober
+    assert select_linux_client(
+        installed=(sober, rosemary), home=tmp_path,
+        running_client_starts={'rosemary': 900}, recent_client_key='sober',
+        which=_xdg_which, run=cast('CommandRunner', nutmeg_handler),
+    ) is rosemary
 
 
 def test_auto_selection_tie_prefers_default_handler(tmp_path: Path) -> None:
