@@ -230,3 +230,71 @@ def test_unvalidated_candidate_does_not_create_locality_hint(
     monkeypatch.setattr(rosemary_keys, '_scan_candidate', reject_candidate)
     assert rosemary_keys.scan(pid, client_random=needle.hex()) == {}
     assert pid not in rosemary_keys._candidate_hints  # pyright: ignore[reportPrivateUsage]
+
+
+def test_cold_search_orders_likely_arenas_before_others_without_omission() -> None:
+    pid = 778100
+    mb = 1024 * 1024
+    tiny = (0x100000, 2 * mb)
+    giant = (0x10000000, 1024 * mb)
+    arena_256 = (0x50000000, 256 * mb)
+    mid = (0x70000000, 64 * mb)
+    arena_512 = (0x80000000, 512 * mb)
+    regions: list[tuple[int, int]] = [tiny, giant, arena_256, mid, arena_512]
+    prioritize = rosemary_keys._prioritize_regions  # pyright: ignore[reportPrivateUsage]
+    assert prioritize(pid, regions) == regions
+    assert prioritize(pid, regions, targeted=True) == [
+        arena_256, arena_512, tiny, giant, mid,
+    ]
+
+    # Explicitly validated regions remain ahead of unverified size heuristics
+    rosemary_keys._remember_region(pid, tiny)  # pyright: ignore[reportPrivateUsage]
+    assert prioritize(pid, regions, targeted=True) == [
+        tiny, arena_256, arena_512, giant, mid,
+    ]
+
+
+def test_cold_heuristic_falls_back_to_a_small_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid = 778101
+    mb = 1024 * 1024
+    small = (0x100000, mb)
+    likely = (0x10000000, 256 * mb)
+    giant = (0x60000000, 1024 * mb)
+    calls: list[tuple[int, int]] = []
+    target = 'ab' * 32
+
+    def stub_scan(
+        _mem: io.BufferedReader,
+        start: int,
+        size: int,
+        *,
+        client_random: str | None,
+        found: rosemary_keys.SecretMap,
+        on_valid_candidate: Callable[[int], None] | None = None,
+        **_kwargs: object,
+    ) -> bool:
+        region = (start, size)
+        calls.append(region)
+        if start <= small[0] + 1024 < start + size and client_random == target:
+            found[target] = {'CLIENT_TRAFFIC_SECRET_0': bytes(32)}
+            if on_valid_candidate is not None:
+                on_valid_candidate(small[0] + 1024)
+            return True
+        return False
+
+    def mapped_regions(_pid: int) -> list[tuple[int, int]]:
+        return [small, giant, likely]
+
+    monkeypatch.setattr(rosemary_keys, '_scan_region', stub_scan)
+    monkeypatch.setattr(rosemary_keys, '_regions', mapped_regions)
+    monkeypatch.setattr(rosemary_keys, '_module_bounds', _no_bounds)
+    monkeypatch.setattr(rosemary_keys, 'Path', _mapped_path(pid, Path('/dev/null')))
+    assert target in rosemary_keys.scan(pid, client_random=target)
+    assert calls == [likely, small]
+
+    # Once we actually validated a connection there, the small region wins
+    calls.clear()
+    assert target in rosemary_keys.scan(pid, client_random=target)
+    assert calls == [(small[0], 256 * 1024)]

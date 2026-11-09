@@ -32,6 +32,10 @@ MIN_DISTINCT_BYTES = 20
 SHA256_SIZE = 32
 CHUNK_SIZE = 4 * 1024 * 1024
 _NEARBY_SCAN_SIZE = 256 * 1024
+# The macOS guest allocator commonly places SSL objects in large private arenas
+# Restrict this to initial targeted search order; never exclude other mappings
+_COLD_ARENA_MIN = 128 * 1024 * 1024
+_COLD_ARENA_MAX = 768 * 1024 * 1024
 _MAX_HINTED_PIDS = 8
 _MAX_HINTED_REGIONS = 8
 _region_hints: dict[int, list[tuple[int, int]]] = {}
@@ -40,13 +44,26 @@ _candidate_hints: dict[int, list[tuple[int, int, int]]] = {}
 _region_hints_lock = threading.Lock()
 
 
-def _prioritize_regions(pid: int, regions: list[tuple[int, int]]) -> list[tuple[int, int]]:
+def _prioritize_regions(
+    pid: int,
+    regions: list[tuple[int, int]],
+    *,
+    targeted: bool = False,
+) -> list[tuple[int, int]]:
     with _region_hints_lock:
         preferred = _region_hints.get(pid, ())
         active = set(regions)
         ordered = [region for region in preferred if region in active]
     seen = set(ordered)
-    return ordered + [region for region in regions if region not in seen]
+    remaining = [region for region in regions if region not in seen]
+    if targeted:
+        # An initial cold TLS lookup most often finds OpenSSL allocations in
+        # large, writable macOS guest arenas. Keep previous validated regions
+        # first, and always fall back to every other mapped region on a miss
+        likely = [region for region in remaining if _COLD_ARENA_MIN <= region[1] <= _COLD_ARENA_MAX]
+        seen.update(likely)
+        remaining = likely + [region for region in remaining if region not in seen]
+    return ordered + remaining
 
 
 def _remember_region(pid: int, region: tuple[int, int]) -> None:
@@ -361,7 +378,7 @@ def _scan_ordered_regions(
     stop: threading.Event | None,
     found: SecretMap,
 ) -> SecretMap:
-    regions = _prioritize_regions(pid, _regions(pid))
+    regions = _prioritize_regions(pid, _regions(pid), targeted=client_random is not None)
     if client_random is not None:
         # Look near recently validated OpenSSL allocations before scanning
         # multi-gigabyte regions again. A miss always falls back to full coverage
