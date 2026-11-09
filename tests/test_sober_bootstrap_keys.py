@@ -114,6 +114,73 @@ def test_platform_sober_native_keylog_arm_restore_and_crash_recovery(
     assert not proxy_owner.exists()
 
 
+def test_platform_reuses_existing_sober_keylog_without_changing_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keylog, marker = _private_files(tmp_path)
+    keylog.write_text('existing-user-log\n', encoding='ascii')
+    keylog.chmod(0o644)
+    previous_bytes = keylog.read_bytes()
+    owner_state = tmp_path / 'proxy-owner.json'
+    calls: list[list[str]] = []
+    monkeypatch.setattr(platform_linux, 'SOBER_NATIVE_KEYLOG_OVERRIDE_STATE', marker)
+    monkeypatch.setattr(platform_linux, 'LINUX_PROXY_OVERRIDE_STATE', owner_state)
+    monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', None)
+    monkeypatch.setattr(sober_bootstrap_keys, 'native_keylog_path', lambda: keylog)
+    monkeypatch.setattr(platform_linux.shutil, 'which', _flatpak_path)
+
+    def fake_run(command: list[str], **_kwargs: object) -> object:
+        calls.append(command)
+        output = f'[Environment]\nSSLKEYLOGFILE={keylog}\n' if '--show' in command else ''
+        return platform_linux.subprocess.CompletedProcess(command, 0, output, '')
+
+    monkeypatch.setattr(platform_linux, '_standard_user_run', fake_run)
+    assert platform_linux.set_linux_client_env_proxy_override(
+        'http://127.0.0.1:58443', client_key='sober', sober_native_keylog=True
+    )
+    assert f'--env=SSLKEYLOGFILE={keylog}' in calls[1]
+    assert keylog.read_bytes() == previous_bytes
+    assert keylog.stat().st_mode & 0o777 == 0o644
+    assert not marker.exists()
+    assert platform_linux.clear_linux_client_env_proxy_override(client_key='sober')
+    assert keylog.read_bytes() == previous_bytes
+    assert not marker.exists()
+    assert not owner_state.exists()
+    assert not any('SSLKEYLOGFILE' in option for option in calls[-1])
+
+
+def test_existing_sober_keylog_requires_matching_override_and_secure_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keylog, marker = _private_files(tmp_path)
+    keylog.write_text('existing-user-log\n', encoding='ascii')
+    keylog.chmod(0o644)
+    monkeypatch.setattr(platform_linux, 'SOBER_NATIVE_KEYLOG_OVERRIDE_STATE', marker)
+    monkeypatch.setattr(platform_linux, 'LINUX_PROXY_OVERRIDE_STATE', tmp_path / 'owner.json')
+    monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', None)
+    monkeypatch.setattr(sober_bootstrap_keys, 'native_keylog_path', lambda: keylog)
+    monkeypatch.setattr(platform_linux.shutil, 'which', _flatpak_path)
+
+    def different_override(command: list[str], **_kwargs: object) -> object:
+        output = '[Environment]\nSSLKEYLOGFILE=/another/keylog\n' if '--show' in command else ''
+        return platform_linux.subprocess.CompletedProcess(command, 0, output, '')
+
+    monkeypatch.setattr(platform_linux, '_standard_user_run', different_override)
+    assert not platform_linux.set_linux_client_env_proxy_override(
+        'http://127.0.0.1:58443', client_key='sober', sober_native_keylog=True
+    )
+    assert keylog.read_text(encoding='ascii') == 'existing-user-log\n'
+    assert not marker.exists()
+
+    assert sober_bootstrap_keys.reusable_preconfigured_keylog(keylog, marker)
+    keylog.parent.chmod(0o755)
+    assert not sober_bootstrap_keys.reusable_preconfigured_keylog(keylog, marker)
+    keylog.parent.chmod(0o700)
+    keylog.unlink()
+    keylog.symlink_to(tmp_path / 'other')
+    assert not sober_bootstrap_keys.reusable_preconfigured_keylog(keylog, marker)
+
+
 def test_platform_sober_keylog_override_failure_cleans_private_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

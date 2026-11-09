@@ -1449,7 +1449,21 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
                 return False
             keylog_path = sober_bootstrap_keys.native_keylog_path()
             previous = sober_bootstrap_keys.previous_keylog_override(previous_override.stdout)
-            if not sober_bootstrap_keys.arm(
+            # A prior user override can already be writing secrets to this path
+            # Reuse only that exact validated file without claiming or deleting it
+            reuse_existing = (
+                previous['previous_present']
+                and previous['previous_value'] == str(keylog_path)
+                and sober_bootstrap_keys.reusable_preconfigured_keylog(
+                    keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE
+                )
+            )
+            if reuse_existing:
+                log_buffer.log(
+                    'Launcher',
+                    'Using the existing Sober native TLS key log; preserving its user override',
+                )
+            elif not sober_bootstrap_keys.arm(
                 keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE, previous
             ):
                 log_buffer.log('Launcher', 'Could not prepare private Sober TLS key log')

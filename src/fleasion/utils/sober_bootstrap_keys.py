@@ -63,6 +63,27 @@ def _private_parent(path: Path, *, strict: bool = True) -> bool:
     )
 
 
+def reusable_preconfigured_keylog(path: Path, state_path: Path) -> bool:
+    """Allow a user's existing Sober key log without taking ownership of it.
+
+    The caller must verify Flatpak already sets SSLKEYLOGFILE to this exact path.
+    Fleasion neither truncates nor deletes a pre-existing unowned key-log file.
+    """
+    if state_path.exists() or state_path.is_symlink() or not _valid_owned_file(path):
+        return False
+    try:
+        directory = path.parent.lstat()
+        entry = path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(directory.st_mode)
+        and directory.st_uid == os.getuid()
+        and directory.st_mode & 0o077 == 0
+        and entry.st_size <= 8 * 1024 * 1024
+    )
+
+
 def read_state(state_path: Path) -> KeylogOverrideState | None:
     """Read only a correctly typed ownership record from Fleasion."""
     try:
