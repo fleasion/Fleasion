@@ -263,11 +263,11 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
 }
 QComboBox { padding-right: 30px; }
 QComboBox[compactCell="true"] {
-    background: transparent; border: 0; border-radius: 6px;
+    background: palette(base); border: 0; border-radius: 6px;
     padding: 0 24px 0 5px; min-height: 0;
 }
 QComboBox[compactCell="true"]:hover, QComboBox[compactCell="true"]:focus {
-    background: rgba($ink_rgb,0.10); border: 0;
+    background: palette(alternate-base); border: 0;
 }
 QAbstractSpinBox > QLineEdit, QComboBox > QLineEdit {
     background: transparent; border: 0; border-radius: 0; padding: 0; min-height: 0;

@@ -905,6 +905,9 @@ class CompactBooleanComboBox(QComboBox):
             super().paintEvent(e)
             return
         painter = QPainter(self)
+        # The editor overlaps a table item that still paints its own text
+        # Keep the entire editor opaque even when its popup owns focus
+        painter.fillRect(self.rect(), self.palette().base())
         if self.hasFocus() or self.underMouse():
             painter.fillRect(self.rect(), self.palette().alternateBase())
         painter.setPen(self.palette().text().color())
