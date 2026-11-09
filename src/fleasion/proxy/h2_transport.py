@@ -48,6 +48,8 @@ type H2Headers = list[tuple[bytes, bytes]]
 log = logging.getLogger(__name__)
 _MAX_BUFFERED_BODY = 64 * 1024 * 1024
 _MAX_ACTIVE_STREAMS = 64
+# Flow control bounds queued payload bytes; the count also bounds empty DATA frames
+_MAX_PENDING_DIRECT_EVENTS = 4096
 # HTTP/2's 65,535-byte default connection window serializes CDN transfer
 # progress behind network RTTs.  Both limits remain below the 64 MiB budget.
 _H2_CONNECTION_RECV_WINDOW = 16 * 1024 * 1024
@@ -229,6 +231,10 @@ class _MessageWriter(asyncio.StreamWriter):
         pass
 
 
+def _direct_response_queue() -> asyncio.Queue[object]:
+    return asyncio.Queue(maxsize=_MAX_PENDING_DIRECT_EVENTS)
+
+
 @dataclass
 class _Request:
     headers: H2Headers
@@ -252,7 +258,9 @@ class _Request:
     upload_generation: int = 0
     client_stream_id: int = 0
     direct_passthrough: bool = False
-    direct_finished: asyncio.Event = field(default_factory=asyncio.Event)
+    # No acknowledgements are sent until the downstream consumes each DATA
+    # frame, so upstream HTTP/2 windows bound queued bytes automatically
+    direct_events: asyncio.Queue[object] = field(default_factory=_direct_response_queue)
     direct_response_sent: bool = False
     perf_started_at: float = field(default_factory=time.monotonic)
     perf_upstream_first_at: float = 0.0
@@ -598,7 +606,42 @@ class H2FeatureBridge:
             self.upstream_requests[upstream_id] = request
 
         await self.server.open_request(request.headers, bytes(request.body), register)
-        await request.direct_finished.wait()
+        while True:
+            event = await request.direct_events.get()
+            if isinstance(event, InformationalResponseReceived):
+                await self.client.send_informational(request.client_stream_id, list(event.headers))
+            elif isinstance(event, ResponseReceived):
+                await self.client.send_response_headers(
+                    request.client_stream_id, list(event.headers)
+                )
+            elif isinstance(event, DataReceived):
+                frame_start = time.monotonic() if self._perf_enabled else 0.0
+                if self._perf_enabled and not request.perf_upstream_first_at:
+                    request.perf_upstream_first_at = frame_start
+                await self.client.send_response_data(request.client_stream_id, event.data)
+                if self._perf_enabled:
+                    now = time.monotonic()
+                    request.perf_client_send_seconds += now - frame_start
+                    if not request.perf_client_first_at:
+                        request.perf_client_first_at = now
+                    request.perf_frame_count += 1
+                    request.response_bytes += len(event.data)
+                    self._perf_direct_bytes += len(event.data)
+                # Return flow-control credit only after downstream delivery
+                await self.server.acknowledge(event.stream_id, event.flow_controlled_length)
+            elif isinstance(event, StreamEnded):
+                if request.response_headers is None:
+                    msg = 'HTTP/2 response missing final headers'
+                    raise ValueError(msg)
+                await self.client.finish_response(
+                    request.client_stream_id, request.response_trailers
+                )
+                request.upstream_ended = True
+                request.direct_response_sent = True
+                return
+            elif isinstance(event, StreamReset) or event is None:
+                msg = 'HTTP/2 upstream ended before END_STREAM'
+                raise ConnectionError(msg)
 
     async def _run_request(self, stream: int, request: _Request) -> None:
         final_response_sent = False
@@ -811,16 +854,26 @@ class H2FeatureBridge:
             elif isinstance(event, ConnectionTerminated):
                 self.client.terminate()
 
+    @staticmethod
+    def _queue_direct_response(request: _Request, event: object) -> None:
+        if request.response_rejected:
+            return
+        try:
+            request.direct_events.put_nowait(event)
+        except asyncio.QueueFull:
+            # A peer can send empty DATA frames without spending window credit
+            # Reject only the abusive stream rather than stalling all its peers
+            request.response_rejected = True
+            if request.task is not None:
+                request.task.cancel()
+
     async def _receive_upstream(self, data: bytes) -> None:
         for event in await self.server.receive(data):
             if isinstance(event, InformationalResponseReceived):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None and not request.response_rejected:
                     if request.direct_passthrough:
-                        await self.client.send_informational(
-                            request.client_stream_id,
-                            list(event.headers),
-                        )
+                        self._queue_direct_response(request, event)
                     else:
                         request.upstream_reader.feed_data(
                             _as_http1(list(event.headers), b'', request=False)
@@ -830,25 +883,11 @@ class H2FeatureBridge:
                 if request is not None:
                     request.response_headers = list(event.headers)
                     if request.direct_passthrough:
-                        await self.client.send_response_headers(
-                            request.client_stream_id, request.response_headers
-                        )
+                        self._queue_direct_response(request, event)
             elif isinstance(event, DataReceived):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None and request.direct_passthrough:
-                    frame_start = time.monotonic() if self._perf_enabled else 0.0
-                    if self._perf_enabled and not request.perf_upstream_first_at:
-                        request.perf_upstream_first_at = frame_start
-                    await self.client.send_response_data(request.client_stream_id, event.data)
-                    if self._perf_enabled:
-                        now = time.monotonic()
-                        request.perf_client_send_seconds += now - frame_start
-                        if not request.perf_client_first_at:
-                            request.perf_client_first_at = now
-                        request.perf_frame_count += 1
-                        request.response_bytes += len(event.data)
-                        self._perf_direct_bytes += len(event.data)
-                    await self.server.acknowledge(event.stream_id, event.flow_controlled_length)
+                    self._queue_direct_response(request, event)
                     continue
                 if request is not None and not request.response_rejected:
                     try:
@@ -879,13 +918,7 @@ class H2FeatureBridge:
             elif isinstance(event, StreamEnded):
                 request = self.upstream_requests.get(event.stream_id)
                 if request is not None and request.direct_passthrough:
-                    if request.response_headers is not None:
-                        await self.client.finish_response(
-                            request.client_stream_id, request.response_trailers
-                        )
-                        request.upstream_ended = True
-                        request.direct_response_sent = True
-                    request.direct_finished.set()
+                    self._queue_direct_response(request, event)
                     continue
                 if request is not None and not request.response_rejected:
                     if request.response_headers is None:
@@ -922,7 +955,13 @@ class H2FeatureBridge:
                 if request is not None:
                     self._release_response_body(request)
                     if request.direct_passthrough:
-                        request.direct_finished.set()
+                        # An upstream reset must interrupt a blocked downstream
+                        # send immediately, rather than wait behind queued DATA
+                        if request.task is not None:
+                            request.response_rejected = True
+                            request.task.cancel()
+                        else:
+                            self._queue_direct_response(request, event)
                     else:
                         request.upstream_reader.set_exception(
                             ConnectionError('HTTP/2 stream reset')
@@ -931,6 +970,9 @@ class H2FeatureBridge:
                 self.server.window.set()
             elif isinstance(event, ConnectionTerminated):
                 self.server.terminate()
+                for request in self.upstream_requests.values():
+                    if request.direct_passthrough and not request.upstream_ended:
+                        self._queue_direct_response(request, None)
 
     async def _pump(self, reader: asyncio.StreamReader, *, client: bool) -> None:
         while not (self.client if client else self.server).terminated:
@@ -956,7 +998,7 @@ class H2FeatureBridge:
             for request in self.upstream_requests.values():
                 if not request.upstream_ended:
                     if request.direct_passthrough:
-                        request.direct_finished.set()
+                        self._queue_direct_response(request, None)
                     else:
                         request.upstream_reader.set_exception(
                             ConnectionError('HTTP/2 upstream ended before END_STREAM')

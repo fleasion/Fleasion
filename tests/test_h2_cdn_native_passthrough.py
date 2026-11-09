@@ -357,3 +357,253 @@ def test_h2_peer_advertises_large_receive_windows() -> None:
         assert client.remote_settings.initial_window_size == h2_transport._H2_STREAM_RECV_WINDOW  # pyright: ignore[reportPrivateUsage]
 
     asyncio.run(run())
+
+
+def test_blocked_cdn_stream_does_not_block_unrelated_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One slow downstream writer must not hold the shared upstream receive loop."""
+    from fleasion.proxy.h2_transport import _Peer  # pyright: ignore[reportPrivateUsage]
+
+    async def run() -> None:
+        blocked = asyncio.Event()
+        unblock = asyncio.Event()
+        original_send = _Peer.send_response_data
+        original_ack = _Peer.acknowledge
+        upstream_acknowledged: set[int] = set()
+
+        async def observe_ack(self: _Peer, stream: int, size: int) -> None:
+            if self.h2.config.client_side:
+                upstream_acknowledged.add(stream)
+            await original_ack(self, stream, size)
+
+        monkeypatch.setattr(_Peer, 'acknowledge', observe_ack)
+
+        async def slow_send(self: _Peer, stream: int, data: bytes) -> None:
+            if stream == 1:
+                blocked.set()
+                await unblock.wait()
+            await original_send(self, stream, data)
+
+        monkeypatch.setattr(_Peer, 'send_response_data', slow_send)
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            conn = H2Connection(H2Configuration(client_side=False))
+            conn.initiate_connection()
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            received: set[int] = set()
+            try:
+                while data := await reader.read(65536):
+                    for event in conn.receive_data(data):
+                        if isinstance(event, StreamEnded):
+                            received.add(event.stream_id)
+                    if received == {1, 3}:
+                        for stream, body in ((1, b'SLOW'), (3, b'FAST')):
+                            conn.send_headers(stream, [(b':status', b'200')])
+                            conn.send_data(stream, body, end_stream=True)
+                        writer.write(conn.data_to_send())
+                        await writer.drain()
+                        received.clear()
+                    else:
+                        writer.write(conn.data_to_send())
+                        await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _h2_session(upstream) as (reader, writer):
+            client = H2Connection()
+            client.initiate_connection()
+            for stream in (1, 3):
+                client.send_headers(
+                    stream,
+                    [(b':method', b'GET'), (b':scheme', b'https'),
+                     (b':authority', _HOST.encode()),
+                     (b':path', f'/asset/{stream}'.encode())],
+                    end_stream=True,
+                )
+            writer.write(client.data_to_send())
+            await writer.drain()
+            await asyncio.wait_for(blocked.wait(), timeout=2)
+
+            bodies = {1: bytearray(), 3: bytearray()}
+            ended: set[int] = set()
+            while 3 not in ended:
+                for event in await _get_events(reader, writer, client):
+                    if isinstance(event, DataReceived):
+                        bodies[event.stream_id].extend(event.data)
+                    elif isinstance(event, StreamEnded):
+                        ended.add(event.stream_id)
+            assert bodies[3] == b'FAST'
+            assert bodies[1] == b''
+            assert 1 not in ended
+            # A paused downstream must not grant more receive window credit
+            # to the upstream until its bytes have been delivered
+            assert 3 in upstream_acknowledged
+            assert 1 not in upstream_acknowledged
+            unblock.set()
+            while 1 not in ended:
+                for event in await _get_events(reader, writer, client):
+                    if isinstance(event, DataReceived):
+                        bodies[event.stream_id].extend(event.data)
+                    elif isinstance(event, StreamEnded):
+                        ended.add(event.stream_id)
+            assert bodies[1] == b'SLOW'
+            assert 1 in upstream_acknowledged
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
+
+
+def test_abusive_h2_direct_stream_queue_overflow_is_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A burst of tiny DATA frames cannot grow an unbounded per-stream queue."""
+    from h2.events import StreamReset
+
+    from fleasion.proxy import h2_transport
+
+    async def run() -> None:
+        monkeypatch.setattr(h2_transport, '_MAX_PENDING_DIRECT_EVENTS', 4)
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            conn = H2Connection(H2Configuration(client_side=False))
+            conn.initiate_connection()
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            received: set[int] = set()
+            try:
+                while data := await reader.read(65536):
+                    for event in conn.receive_data(data):
+                        if isinstance(event, StreamEnded):
+                            received.add(event.stream_id)
+                    if received == {1, 3}:
+                        conn.send_headers(1, [(b':status', b'200')])
+                        for _ in range(24):
+                            conn.send_data(1, b'x')
+                        conn.send_headers(3, [(b':status', b'200')])
+                        conn.send_data(3, b'FAST', end_stream=True)
+                        writer.write(conn.data_to_send())
+                        await writer.drain()
+                        received.clear()
+                    else:
+                        writer.write(conn.data_to_send())
+                        await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _h2_session(upstream) as (reader, writer):
+            client = H2Connection()
+            client.initiate_connection()
+            for stream in (1, 3):
+                client.send_headers(
+                    stream,
+                    [(b':method', b'GET'), (b':scheme', b'https'),
+                     (b':authority', _HOST.encode()),
+                     (b':path', f'/asset/{stream}'.encode())],
+                    end_stream=True,
+                )
+            writer.write(client.data_to_send())
+            await writer.drain()
+            finished: set[int] = set()
+            reset: set[int] = set()
+            body = bytearray()
+            while 3 not in finished or 1 not in reset:
+                for event in await _get_events(reader, writer, client):
+                    if isinstance(event, DataReceived) and event.stream_id == 3:
+                        body.extend(event.data)
+                    elif isinstance(event, StreamEnded):
+                        finished.add(event.stream_id)
+                    elif isinstance(event, StreamReset):
+                        reset.add(event.stream_id)
+            assert body == b'FAST'
+            assert finished == {3}
+            assert reset == {1}
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
+
+
+def test_reset_upstream_stream_aborts_blocked_downstream_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An upstream RST_STREAM must cancel a blocked downstream send promptly."""
+    from h2.events import StreamReset
+
+    from fleasion.proxy.h2_transport import _Peer  # pyright: ignore[reportPrivateUsage]
+
+    async def run() -> None:
+        blocked = asyncio.Event()
+        release = asyncio.Event()
+        original_send = _Peer.send_response_data
+
+        async def slow_send(self: _Peer, stream: int, data: bytes) -> None:
+            if stream == 1:
+                blocked.set()
+                await release.wait()
+            await original_send(self, stream, data)
+
+        monkeypatch.setattr(_Peer, 'send_response_data', slow_send)
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            conn = H2Connection(H2Configuration(client_side=False))
+            conn.initiate_connection()
+            writer.write(conn.data_to_send())
+            await writer.drain()
+            received: set[int] = set()
+            try:
+                while data := await reader.read(65536):
+                    for event in conn.receive_data(data):
+                        if isinstance(event, StreamEnded):
+                            received.add(event.stream_id)
+                    if received == {1, 3}:
+                        conn.send_headers(1, [(b':status', b'200')])
+                        conn.send_data(1, b'SLOW')
+                        writer.write(conn.data_to_send())
+                        await writer.drain()
+                        await asyncio.wait_for(blocked.wait(), timeout=2)
+                        conn.reset_stream(1, error_code=8)
+                        conn.send_headers(3, [(b':status', b'200')])
+                        conn.send_data(3, b'FAST', end_stream=True)
+                        writer.write(conn.data_to_send())
+                        await writer.drain()
+                        received.clear()
+                    else:
+                        writer.write(conn.data_to_send())
+                        await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with _h2_session(upstream) as (reader, writer):
+            client = H2Connection()
+            client.initiate_connection()
+            for stream in (1, 3):
+                client.send_headers(
+                    stream,
+                    [(b':method', b'GET'), (b':scheme', b'https'),
+                     (b':authority', _HOST.encode()),
+                     (b':path', f'/asset/{stream}'.encode())],
+                    end_stream=True,
+                )
+            writer.write(client.data_to_send())
+            await writer.drain()
+            ended: set[int] = set()
+            resets: set[int] = set()
+            body = bytearray()
+            try:
+                while 3 not in ended or 1 not in resets:
+                    for event in await _get_events(reader, writer, client):
+                        if isinstance(event, StreamEnded):
+                            ended.add(event.stream_id)
+                        elif isinstance(event, StreamReset):
+                            resets.add(event.stream_id)
+                        elif isinstance(event, DataReceived) and event.stream_id == 3:
+                            body.extend(event.data)
+                assert body == b'FAST'
+                assert resets == {1}
+                assert ended == {3}
+            finally:
+                release.set()
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
