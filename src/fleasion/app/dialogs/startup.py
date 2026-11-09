@@ -41,6 +41,27 @@ if TYPE_CHECKING:
     from fleasion.config import ConfigManager
 
 
+def prompt_reset_unreadable_settings(error_path: str) -> bool:
+    """Offer an explicit destructive reset, defaulting to preserving the file."""
+    prompt = QMessageBox()
+    prompt.setWindowTitle(tr('app.settings_load_failed.title'))
+    prompt.setIcon(QMessageBox.Icon.Warning)
+    prompt.setText(tr('app.settings_load_failed.message'))
+    prompt.setInformativeText(
+        tr('app.settings_load_failed.details', path=error_path)
+    )
+    exit_button = prompt.addButton(
+        tr('app.settings_load_failed.exit'), QMessageBox.ButtonRole.RejectRole
+    )
+    reset_button = prompt.addButton(
+        tr('app.settings_load_failed.reset'), QMessageBox.ButtonRole.DestructiveRole
+    )
+    prompt.setDefaultButton(exit_button)
+    prompt.setEscapeButton(exit_button)
+    prompt.exec()
+    return prompt.clickedButton() is reset_button
+
+
 def prepare_env_proxy_migration(config_manager: ConfigManager) -> bool:
     """Apply the one-time Env Proxy default migration without prompting."""
     if config_manager.env_proxy_migration_v1_complete:

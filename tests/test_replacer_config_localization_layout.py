@@ -76,5 +76,6 @@ def test_translated_replacer_controls_do_not_clip_text(
         if window is not None:
             window.enabled_menu.hide()
             window.close()
+            window.deleteLater()
         set_language(previous_language)
         app.processEvents()

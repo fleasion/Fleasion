@@ -42,6 +42,7 @@ from fleasion.app.dialogs.startup import (
     complete_first_time_setup,
     prepare_env_proxy_migration,
     prompt_first_time_language,
+    prompt_reset_unreadable_settings,
     should_sync_autostart_on_launch,
     show_desktop_integration_failure,
     show_run_on_boot_failure,
@@ -87,6 +88,7 @@ from fleasion.app.single_instance import (
 from fleasion.app.startup_tasks import StartupTasks
 from fleasion.app.tray import SystemTray
 from fleasion.config import ConfigFolderWatcher, ConfigManager
+from fleasion.config.manager import SettingsLoadError
 from fleasion.localization import apply_language_direction, set_language, tr
 from fleasion.modifications import ModificationManager
 from fleasion.prejsons import download_prejsons
@@ -105,6 +107,26 @@ from fleasion.utils.qt_diagnostics import install_qt_message_logging
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QSessionManager
+
+
+def _load_config_manager_with_reset_prompt(*, suppress_dashboard: bool) -> ConfigManager:
+    """Never reset unreadable saved settings without an explicit GUI decision."""
+    try:
+        return ConfigManager()
+    except SettingsLoadError as error:
+        log_buffer.log('Config', f'Settings could not be loaded: {error}')
+        if suppress_dashboard or not prompt_reset_unreadable_settings(str(error.path)):
+            sys.exit(1)
+        try:
+            ConfigManager.reset_invalid_settings(error.path)
+            return ConfigManager()
+        except (OSError, SettingsLoadError) as reset_error:
+            QMessageBox.critical(
+                None,
+                tr('app.settings_load_failed.title'),
+                tr('app.settings_load_failed.reset_failed', error=str(reset_error)),
+            )
+            sys.exit(1)
 
 
 def run_application() -> None:
@@ -351,7 +373,7 @@ def run_application() -> None:
 
     # Initialize config manager before the elevation gate so the non-elevated
     # process can still build the prompt UI and show a fallback dialog
-    config_manager = ConfigManager()
+    config_manager = _load_config_manager_with_reset_prompt(suppress_dashboard=suppress_dashboard)
     set_language(config_manager.language)
     apply_language_direction(app)
     if not suppress_dashboard and not config_manager.first_time_setup_complete:

@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib
 import json
 import locale
+import os
 import stat
 import sys
+import tempfile
 import threading
 from contextlib import suppress
 from copy import deepcopy
@@ -520,8 +522,21 @@ def _json_loads(raw: bytes | str) -> JsonValue:
 
 
 def _write_json(path: Path, data: JsonValue) -> None:
-    with path.open('w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
+    """Atomically publish a complete JSON file in its destination directory."""
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', dir=path.parent,
+            prefix=f'.{path.name}.', suffix='.tmp', delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(data, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _normalize_custom_fflags(value: object) -> dict[str, str]:
@@ -690,11 +705,24 @@ def _normalize_custom_fflag_actions(value: object) -> dict[str, JsonObject]:
     return normalized
 
 
+class SettingsLoadError(ValueError):
+    """An existing settings file could not be loaded without losing user data."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        self.path = path
+        super().__init__(f'{reason}: {path}')
+
+
 class ConfigManager:
     """Manages application settings and replacement configurations."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        # Freeze the paths at construction: deferred Qt callbacks must not use
+        # another test's or application's subsequently changed module globals
+        self._config_dir = Path(CONFIG_DIR)
+        self._config_file = Path(CONFIG_FILE)
+        self._configs_folder = Path(CONFIGS_FOLDER)
         self._config_names_cache: list[str] | None = None
         self._config_names_signature: tuple[tuple[str, int, int], ...] | None = None
         self._config_data_cache: dict[str, tuple[FileSignature, JsonObject]] = {}
@@ -717,10 +745,13 @@ class ConfigManager:
         return stat_result.st_mtime_ns, stat_result.st_size
 
     @staticmethod
-    def _scan_config_files() -> tuple[list[str], tuple[tuple[str, int, int], ...]]:
-        CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
+    def _scan_config_files(
+        folder: Path | None = None,
+    ) -> tuple[list[str], tuple[tuple[str, int, int], ...]]:
+        folder = Path(CONFIGS_FOLDER) if folder is None else folder
+        folder.mkdir(parents=True, exist_ok=True)
         entries: list[tuple[str, str, int, int]] = []
-        for path in CONFIGS_FOLDER.glob('*.json'):
+        for path in folder.glob('*.json'):
             try:
                 stat_result = path.stat()
             except OSError:
@@ -748,7 +779,7 @@ class ConfigManager:
         self._mark_replacements_dirty()
 
     def _refresh_config_names_cache(self) -> list[str]:
-        names, signature = self._scan_config_files()
+        names, signature = self._scan_config_files(self._configs_folder)
         if signature != self._config_names_signature:
             live_names = set(names)
             self._config_data_cache = {
@@ -763,18 +794,23 @@ class ConfigManager:
 
     def _load_settings(self) -> JsonObject:
         """Load settings from disk."""
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
-        if CONFIG_FILE.exists():
-            try:
-                loaded_value = self._load_json_file(Path(CONFIG_FILE))
-            except json.JSONDecodeError, OSError, UnicodeDecodeError:
-                pass
-            else:
-                loaded = as_json_object(loaded_value)
-                if loaded is not None:
-                    return self._settings_from_loaded(loaded)
-        return deepcopy(DEFAULT_SETTINGS)
+        self._config_dir.mkdir(parents=True, exist_ok=True)
+        self._configs_folder.mkdir(parents=True, exist_ok=True)
+        if not self._config_file.exists():
+            return deepcopy(DEFAULT_SETTINGS)
+        try:
+            loaded_value = self._load_json_file(self._config_file)
+        except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError) as exc:
+            raise SettingsLoadError(self._config_file, 'Could not read existing Fleasion settings') from exc
+        loaded = as_json_object(loaded_value)
+        if loaded is None:
+            raise SettingsLoadError(self._config_file, 'Existing Fleasion settings are not a JSON object')
+        return self._settings_from_loaded(loaded)
+
+    @staticmethod
+    def reset_invalid_settings(path: Path) -> None:
+        """Replace settings with defaults only after an explicit reset decision."""
+        _write_json(path, deepcopy(DEFAULT_SETTINGS))
 
     def _settings_from_loaded(self, loaded: JsonObject) -> JsonObject:
         if 'configs' in loaded:
@@ -799,12 +835,11 @@ class ConfigManager:
         loaded.setdefault('accent_color', accent_name(loaded.pop('glass_accent', 'Ice')))
         return {**DEFAULT_SETTINGS, **loaded}
 
-    @staticmethod
-    def _migrate_old_format(old_config: JsonObject) -> None:
+    def _migrate_old_format(self, old_config: JsonObject) -> None:
         """Migrate old config format to new format."""
         configs = as_json_object(old_config.get('configs', {})) or {}
         for name, data in configs.items():
-            config_path = CONFIGS_FOLDER / f'{name}.json'
+            config_path = self._configs_folder / f'{name}.json'
             if not config_path.exists():
                 with suppress(OSError):
                     _write_json(Path(config_path), data)
@@ -817,13 +852,12 @@ class ConfigManager:
     def _save_settings(self) -> None:
         """Save settings to disk."""
         with self._lock:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            _write_json(Path(CONFIG_FILE), self.settings)
+            self._config_dir.mkdir(parents=True, exist_ok=True)
+            _write_json(self._config_file, self.settings)
 
-    @staticmethod
-    def _get_config_path(name: str) -> Path:
+    def _get_config_path(self, name: str) -> Path:
         """Get the path for a config file."""
-        return CONFIGS_FOLDER / f'{name}.json'
+        return self._configs_folder / f'{name}.json'
 
     @staticmethod
     def _clear_read_only(path: Path) -> None:
@@ -978,7 +1012,7 @@ class ConfigManager:
     def _save_config(self, name: str, data: JsonObject) -> None:
         """Save a config to disk."""
         with self._lock:
-            CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
+            self._configs_folder.mkdir(parents=True, exist_ok=True)
             path = self._get_config_path(name)
             self._clear_read_only(path)
             _write_json(Path(path), data)
@@ -1903,7 +1937,7 @@ class ConfigManager:
     @property
     def configs_folder(self) -> Path:
         """Return the folder this manager currently uses for config files."""
-        return Path(CONFIGS_FOLDER)
+        return self._configs_folder
 
     @property
     def config_names(self) -> list[str]:

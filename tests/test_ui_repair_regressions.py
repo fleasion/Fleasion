@@ -211,10 +211,16 @@ def test_tab_transition_survives_rapid_switch_and_theme_change(app: QApplication
         assert second_overlay._active is None  # pyright: ignore[reportPrivateUsage]
         ThemeManager.apply_appearance('Fusion', 'Dark', 'Ice')
         tabs.setCurrentIndex(0)
-        QTest.qWait(240)
+        # Qt's animation driver can fall behind under a loaded full-suite run;
+        # wait for the actual completion instead of assuming 240 ms is enough
+        from time import monotonic
+
+        deadline = monotonic() + 2.0
+        while second_overlay._active is not None and monotonic() < deadline:  # pyright: ignore[reportPrivateUsage]
+            QTest.qWait(20)
         assert tabs.currentIndex() == 0
         assert tabs.currentWidget().graphicsEffect() is None
-        assert second_overlay._active is None or not second_overlay._active.isVisible()  # pyright: ignore[reportPrivateUsage]
+        assert second_overlay._active is None  # pyright: ignore[reportPrivateUsage]
     finally:
         tabs.close()
         tabs.deleteLater()

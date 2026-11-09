@@ -1,13 +1,54 @@
 """Repository-wide pytest environment guards."""
 
+import os
 import socket
+import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from tempfile import TemporaryDirectory
 from typing import Protocol
 
 import pytest
 
 _THREADED_ASYNCIO_MARKER = 'threaded_asyncio'
+
+
+class _PytestConfigIsolation:
+    config_home: TemporaryDirectory[str] | None = None
+    environment_key: str | None = None
+    original_value: str | None = None
+
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Keep all Fleasion config paths in an isolated tree during pytest."""
+    del session
+    if 'fleasion.utils.paths' in sys.modules:
+        pytest.exit('Fleasion paths were initialized before pytest could isolate the user config')
+    key = (
+        'LOCALAPPDATA' if sys.platform == 'win32'
+        else 'FLEASION_USER_HOME' if sys.platform == 'darwin'
+        else 'XDG_CONFIG_HOME'
+    )
+    _PytestConfigIsolation.environment_key = key
+    _PytestConfigIsolation.original_value = os.environ.get(key)
+    _PytestConfigIsolation.config_home = TemporaryDirectory(prefix='fleasion-pytest-config-')
+    os.environ[key] = _PytestConfigIsolation.config_home.name
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Restore the external environment after pytest finishes."""
+    del session, exitstatus
+    key = _PytestConfigIsolation.environment_key
+    if key is not None:
+        if _PytestConfigIsolation.original_value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = _PytestConfigIsolation.original_value
+    if _PytestConfigIsolation.config_home is not None:
+        _PytestConfigIsolation.config_home.cleanup()
+        _PytestConfigIsolation.config_home = None
+
 
 
 class _ThreadFactory(Protocol):
@@ -79,3 +120,17 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         'Rerun pytest outside the restricted sandbox.',
         returncode=2,
     )
+
+
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse]
+def _finish_qt_deletions() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Dispatch Qt deferred destruction after each test and its fixtures finish."""
+    yield
+    # Most tests never import Qt; do not initialize it just for teardown
+    if 'PySide6.QtWidgets' not in sys.modules:
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent  # ruff: ignore[import-outside-top-level]
+    from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
+
+    if isinstance(QApplication.instance(), QApplication):
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
