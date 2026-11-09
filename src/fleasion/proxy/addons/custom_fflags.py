@@ -43,7 +43,7 @@ CLIENT_SETTINGS_APPLICATION_PATH = '/settings/application/'
 CLIENT_SETTINGS_COMPRESSED_PATH = '/settings-compressed/application/'
 BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM = 'PCClientBootstrapper'
 DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG = 'DFIntSecondsBetweenDynamicVariableReloading'
-DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS = '1'
+DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS = '0'
 IS_WINDOWS = sys.platform == 'win32'
 WINDOWS_FLAG_CACHE_PATH = LOCAL_APPDATA / 'Temp' / 'Roblox' / 'cache' / 'flag_cache.dat'
 MACOS_CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
@@ -276,8 +276,8 @@ class CustomFFlagModifier:
         # Roblox/Sober reads the reloader interval before applying the response
         # it has just fetched. Therefore, when this companion flag first
         # arrives through Sober's 120-second dynamic fetch, its next wait can
-        # still be 120 seconds. The following refresh uses this one-second
-        # interval. It deliberately overrides any saved value and is never
+        # still be 120 seconds. The following refresh uses this zero-second
+        # interval for testing. It deliberately overrides any saved value and is never
         # persisted to the user's custom flag list
         flags[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] = DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS
         return flags
@@ -285,7 +285,7 @@ class CustomFFlagModifier:
     def requires_fresh_response(self) -> bool:
         """Return whether changed overrides still need successful delivery.
 
-        Roblox normally answers the one-second reloader request with HTTP 304.
+        Roblox normally answers unchanged reloader requests with HTTP 304.
         That is ideal when flags have not changed, but it cannot deliver a
         newly added, changed, or removed override.  Keep stripping conditional
         headers until a response carrying the active override set is actually

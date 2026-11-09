@@ -329,7 +329,7 @@ def test_modifier_merges_all_platform_application_settings() -> None:
     )
 
     assert modified['applicationSettings']['DFIntTaskSchedulerTargetFps'] == '20'
-    assert modified['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert modified['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
     assert modified['applicationSettings']['Existing'] == 'True'
     android = json.loads(
         modifier.modify_response('/v2/settings/application/GoogleAndroidApp', original)
@@ -350,7 +350,7 @@ def test_modifier_always_enforces_fast_dynamic_reload_without_saving_it() -> Non
         modifier.modify_response('/v2/settings/application/PCDesktopClient', original)
     )
 
-    assert modified['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert modified['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
     assert config.custom_fflags[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '120'
 
 
@@ -371,7 +371,7 @@ def test_modifier_primes_the_uncompressed_windows_flag_cache(tmp_path: Path) -> 
     payload = json.loads(cache_path.read_bytes()[5:])
     assert payload['applicationSettings']['Existing'] == 'True'
     assert payload['applicationSettings']['DFIntTaskSchedulerTargetFps'] == '37'
-    assert payload['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert payload['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
     assert DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG not in config.custom_fflags
 
 
@@ -393,7 +393,7 @@ def test_modifier_removes_disabled_override_from_windows_flag_cache(tmp_path: Pa
 
     payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
     assert 'FFlagFleasionGateMarker' not in payload
-    assert payload[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert payload[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
 
 
 def test_modifier_removes_all_saved_overrides_when_windows_feature_is_disabled(
@@ -417,7 +417,7 @@ def test_modifier_removes_all_saved_overrides_when_windows_feature_is_disabled(
     payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
     assert payload == {
         'Existing': 'True',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
     }
 
 
@@ -439,7 +439,7 @@ def test_modifier_primes_macos_player_client_settings(tmp_path: Path) -> None:
         'Existing': 'True',
         'DFFlagDebugDrawBroadPhaseAABBs': 'True',
         'FFlagExample': 'False',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
     }
 
 
@@ -463,7 +463,7 @@ def test_modifier_removes_previous_macos_seed_when_flags_change_or_disable(tmp_p
     assert modifier.prime_macos_client_settings()
     assert json.loads(settings.read_text(encoding='utf-8')) == {
         'Existing': 'True',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
     }
 
 
@@ -617,7 +617,7 @@ def test_proxy_applies_custom_fflags_when_enabled_while_request_is_in_flight() -
 
     delivered = json.loads(client_response.split(b'\r\n\r\n', 1)[1])['applicationSettings']
     assert delivered['FFlagExample'] == 'True'
-    assert delivered[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert delivered[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
     assert not modifier.requires_fresh_response()
 
 
@@ -659,7 +659,7 @@ def test_proxy_counts_already_correct_client_settings_response_as_success() -> N
         {
             'applicationSettings': {
                 'FFlagExample': 'True',
-                DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+                DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
             }
         },
         separators=(',', ':'),
@@ -872,7 +872,7 @@ def test_modifier_keeps_dynamic_refresh_with_custom_flags_disabled() -> None:
     modified = modifier.modify_response('/v2/settings/application/PCDesktopClient', original)
     assert json.loads(modified)['applicationSettings'] == {
         'Existing': 'True',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
     }
 
 
@@ -892,7 +892,7 @@ def test_proxy_preserves_upstream_certificate_flag_with_custom_flags_off() -> No
     payload = json.loads(delivered.split(b'\r\n\r\n', 1)[1])['applicationSettings']
     assert payload == {
         EMBEDDED_CA_FLAG: 'True',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
         'Existing': 'True',
     }
     assert b'if-none-match' not in forwarded.lower()
