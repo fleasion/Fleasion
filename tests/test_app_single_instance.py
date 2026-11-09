@@ -1809,6 +1809,152 @@ def test_linux_auto_cache_clear_waits_and_never_requests_player_termination(
     assert events == [('settle', 1.5), ('clear', False)]
 
 
+def test_linux_auto_replays_new_sober_after_rosemary_with_original_uri(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils.sober_launch_replay import SoberLaunchSnapshot
+
+    qt_app = QApplication.instance() or QApplication([])
+    config = SimpleNamespace(
+        proxy_mode='env', proxy_features_enabled=True,
+        linux_client='auto', auto_delete_cache_on_exit=True,
+    )
+    calls: list[object] = []
+    uri = 'roblox-player:1+gameinfo:private-one-use-ticket'
+    snapshot = SoberLaunchSnapshot(
+        'app-flatpak-org.vinegarhq.Sober-new.scope', 321, 500, (uri,), Path.home(),
+    )
+
+    class _Proxy:
+        is_running = True
+        _active_linux_client_key = 'rosemary'
+        _sober_env_proxy_override_active = False
+
+        def wait_for_env_proxy_ready(self, timeout: float = 15.0) -> bool:
+            calls.append(('ready', timeout))
+            return True
+
+        def stop(self) -> None:
+            calls.append('stop')
+            self.is_running = False
+
+        def start(self) -> None:
+            calls.append('start')
+            self.is_running = True
+            self._active_linux_client_key = 'sober'
+            self._sober_env_proxy_override_active = True
+
+        def rearm_custom_fflag_delivery_for_player_launch(self) -> None:
+            calls.append('rearm_flags')
+
+        def set_roblox_player_running(self, running: bool) -> None:
+            calls.append(('running', running))
+
+    class _Lifecycle:
+        operation_in_progress = False
+
+        def note_unexpected_player_exit(self) -> None:
+            calls.append('release_old_owner')
+
+        def handle_adopted_player_launch(self, exe_path: Path) -> bool:
+            calls.append(('adopt', exe_path))
+            return True
+
+    monitor = _ROBLOX_EXIT_MONITOR_FACTORY(config)
+    proxy = _Proxy()
+    monkeypatch.setattr(monitor, '_proxy_master', proxy)
+    monkeypatch.setattr(monitor, 'env_lifecycle', _Lifecycle())
+    monkeypatch.setattr(monitor, '_sober_preexisting_scope', None)
+    monkeypatch.setattr(monitor, '_sober_preexisting_ambiguous', False)
+    monkeypatch.setattr(roblox_monitor_module, 'capture_sober_launch', lambda: snapshot)
+    monkeypatch.setattr(
+        roblox_monitor_module, 'replay_sober_launch',
+        lambda capture: calls.append(('replay', capture)) or True,
+    )
+    selected_client = {'key': 'sober'}
+
+    def selected_installation() -> SimpleNamespace:
+        key = selected_client['key']
+        return SimpleNamespace(key=key, display_name=key.capitalize())
+
+    monkeypatch.setattr(
+        roblox_monitor_module, 'get_selected_linux_client_installation', selected_installation,
+    )
+    monkeypatch.setattr(roblox_monitor_module, 'is_linux_client_running', lambda _client: True)
+    monkeypatch.setattr(roblox_monitor_module, 'is_studio_running', lambda: False)
+    monkeypatch.setattr(
+        roblox_monitor_module, 'selected_linux_client_app_id', lambda: 'org.vinegarhq.Sober',
+    )
+    monkeypatch.setattr(roblox_monitor_module, 'run_in_thread', lambda action: action)
+
+    # The first poll captures and relaunches without adopting the old process
+    _check_roblox_status_locked(monitor)
+    assert calls.index('stop') < calls.index('start') < calls.index(('replay', snapshot))
+    assert 'rearm_flags' in calls
+    assert ('adopt', Path('org.vinegarhq.Sober')) not in calls
+    assert not monitor.was_running
+
+    # While Sober is restarting, a still-running Rosemary must not retake Auto
+    selected_client['key'] = 'rosemary'
+    _check_roblox_status_locked(monitor)
+    assert proxy._active_linux_client_key == 'sober'
+    assert calls.count('start') == 1
+
+    # The replacement is adopted on the next tick after it appears
+    selected_client['key'] = 'sober'
+    _check_roblox_status_locked(monitor)
+    assert ('adopt', Path('org.vinegarhq.Sober')) in calls
+    assert calls.count(('replay', snapshot)) == 1
+    assert qt_app is not None
+
+
+def test_linux_auto_does_not_relaunch_preexisting_sober(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.utils.sober_launch_replay import SoberLaunchSnapshot
+
+    config = SimpleNamespace(
+        proxy_mode='env', proxy_features_enabled=True,
+        linux_client='auto', auto_delete_cache_on_exit=False,
+    )
+    snapshot = SoberLaunchSnapshot(
+        'app-flatpak-org.vinegarhq.Sober-existing.scope', 321, 500, (), Path.home(),
+    )
+    calls: list[str] = []
+
+    class _Proxy:
+        is_running = True
+        _active_linux_client_key = 'rosemary'
+        _sober_env_proxy_override_active = False
+
+        def wait_for_env_proxy_ready(self, timeout: float = 0.0) -> bool:
+            return True
+
+        def stop(self) -> None:
+            calls.append('stop')
+
+        def start(self) -> None:
+            calls.append('start')
+            self._active_linux_client_key = 'sober'
+            self._sober_env_proxy_override_active = True
+
+        def set_roblox_player_running(self, _running: bool) -> None:
+            return None
+
+    monitor = _ROBLOX_EXIT_MONITOR_FACTORY(config)
+    monkeypatch.setattr(monitor, '_proxy_master', _Proxy())
+    monkeypatch.setattr(monitor, '_sober_preexisting_scope', snapshot.scope)
+    monkeypatch.setattr(roblox_monitor_module, 'capture_sober_launch', lambda: snapshot)
+    monkeypatch.setattr(roblox_monitor_module, 'replay_sober_launch', lambda _snapshot: calls.append('replay'))
+    monkeypatch.setattr(
+        roblox_monitor_module, 'get_selected_linux_client_installation',
+        lambda: SimpleNamespace(key='sober', display_name='Sober'),
+    )
+    monkeypatch.setattr(roblox_monitor_module, 'is_linux_client_running', lambda _client: True)
+    assert monitor._sync_linux_auto_proxy_client()  # pyright: ignore[reportPrivateUsage]
+    assert calls == ['stop', 'start']
+
+
 def test_linux_auto_rebinds_proxy_after_sober_launch_without_killing_player(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

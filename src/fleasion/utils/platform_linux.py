@@ -71,6 +71,7 @@ class DetachedPopenKwargs(TypedDict):
 
 class StandardUserPopenKwargs(DetachedPopenKwargs, total=False):
     env: dict[str, str]
+    cwd: Path
     user: int
     group: int
 
@@ -1058,12 +1059,14 @@ def _desktop_user_context() -> tuple[Path, int, int, str] | None:
 
 
 def _standard_user_popen(
-    args: list[str], *, extra_env: dict[str, str] | None = None
+    args: list[str], *, extra_env: dict[str, str] | None = None, cwd: Path | None = None
 ) -> subprocess.Popen[bytes]:
     env = _host_subprocess_env()
     if extra_env:
         env.update(extra_env)
     kwargs: StandardUserPopenKwargs = {**_DETACHED_POPEN_KWARGS, 'env': env}
+    if cwd is not None:
+        kwargs['cwd'] = cwd
     if os.geteuid() == 0 and (user_context := _desktop_user_context()) is not None:
         user_home, uid, gid, username = user_context
         env.update(

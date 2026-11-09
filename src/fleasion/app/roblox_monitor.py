@@ -25,6 +25,11 @@ from fleasion.utils import (
     log_buffer,
     run_in_thread,
 )
+from fleasion.utils.linux_clients import (
+    running_sober_launchers,
+    running_sober_players,
+    sober_flatpak_session_identity,
+)
 from fleasion.utils.mocktail_launch_interceptor import MocktailLaunchInterceptor
 from fleasion.utils.platform_linux import (
     get_selected_linux_client_installation,
@@ -35,6 +40,11 @@ from fleasion.utils.platform_linux import (
     selected_linux_client_display_name,
 )
 from fleasion.utils.rosemary_launch_interceptor import RosemaryLaunchInterceptor
+from fleasion.utils.sober_launch_replay import (
+    SoberLaunchSnapshot,
+    capture_sober_launch,
+    replay_sober_launch,
+)
 
 if sys.platform == 'darwin':
     from fleasion.utils.platform_macos import (
@@ -89,6 +99,20 @@ class RobloxExitMonitor(QObject):
         self._player_was_running = adopted_running
         self._suppress_next_player_exit_cache_delete = False
         self._mocktail_replay_suppress_until = 0.0
+        self._sober_replay_suppress_until = 0.0
+        self._sober_handoff_until = 0.0
+        # Never forcibly restart Sober instances predating this Fleasion monitor
+        self._sober_preexisting_scope = (
+            sober_flatpak_session_identity()
+            if sys.platform.startswith('linux') and proxy_master is not None
+            else None
+        )
+        self._sober_preexisting_ambiguous = bool(
+            sys.platform.startswith('linux')
+            and proxy_master is not None
+            and self._sober_preexisting_scope is None
+            and (running_sober_launchers() or running_sober_players())
+        )
         self._studio_was_running = False
         self._studio_notified = False
         self._studio_suppress_session = False
@@ -413,11 +437,31 @@ class RobloxExitMonitor(QObject):
         selected = get_selected_linux_client_installation()
         if selected is None:
             return True
+        if (
+            selected.key != 'sober'
+            and getattr(proxy, '_active_linux_client_key', None) == 'sober'
+            and time.monotonic() < self._sober_handoff_until
+        ):
+            # The replacement Flatpak launcher has not appeared yet
+            # Do not bounce the proxy back to Rosemary during this handoff
+            return False
         self._linux_auto_observed_running = is_linux_client_running(selected)
+        if selected.key == 'sober' and self._linux_auto_observed_running:
+            self._sober_handoff_until = 0.0
         if not self._linux_auto_observed_running:
             return True
         if selected.key == getattr(proxy, '_active_linux_client_key', None):
             return True
+        # Capture one-time launch arguments before reconfiguring the proxy
+        # Flatpak overrides only affect a process started after they are armed
+        pending_sober: SoberLaunchSnapshot | None = None
+        if selected.key == 'sober':
+            pending_sober = capture_sober_launch()
+            if pending_sober is not None and (
+                pending_sober.scope == self._sober_preexisting_scope
+                or self._sober_preexisting_ambiguous
+            ):
+                pending_sober = None
         if not proxy.wait_for_env_proxy_ready(timeout=0.0):
             # The initial owner may still be starting; retry on the next poll
             return False
@@ -445,8 +489,24 @@ class RobloxExitMonitor(QObject):
             )
             return False
 
-        # The running process predates the new override and was not relaunched
-        # Never claim it as owned or automatically clear its cache on this switch
+        if (
+            pending_sober is not None
+            and getattr(proxy, '_sober_env_proxy_override_active', False)
+            and getattr(proxy, '_active_linux_client_key', None) == 'sober'
+        ):
+            # Prevent an intentional handoff from triggering automatic cache cleanup
+            self._sober_replay_suppress_until = time.monotonic() + 5.0
+            if replay_sober_launch(pending_sober):
+                self._sober_handoff_until = time.monotonic() + 10.0
+                proxy.rearm_custom_fflag_delivery_for_player_launch()
+                # The next poll sees the replacement as a new adopted Player
+                self._player_was_running = False
+                self.was_running = False
+                self._linux_auto_observed_running = None
+                return False
+
+        # A preexisting process cannot inherit a newly armed Flatpak override
+        # Do not claim ownership unless the replacement was successfully launched
         was_running = self._player_was_running
         self._player_was_running = True
         self.was_running = True
@@ -501,6 +561,7 @@ class RobloxExitMonitor(QObject):
                     intentional_player_exit
                     or self._suppress_next_player_exit_cache_delete
                     or time.monotonic() < self._mocktail_replay_suppress_until
+                    or time.monotonic() < self._sober_replay_suppress_until
                 ):
                     self._suppress_next_player_exit_cache_delete = False
                     self._mocktail_replay_suppress_until = 0.0
