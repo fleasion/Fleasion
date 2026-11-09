@@ -324,7 +324,9 @@ class SpliceConnection:
             raise ValueError(msg)
         return await self._application_record(direction, record)
 
-    async def _application_record(self, direction: _Direction, record: bytes) -> bool:
+    async def _application_record(  # ruff: ignore[too-many-return-statements]
+        self, direction: _Direction, record: bytes
+    ) -> bool:
         is_tls12 = self.cipher in TLS12_SUITES
         if is_tls12:
             try:
@@ -340,7 +342,27 @@ class SpliceConnection:
                 await direction.wire.drain()
                 return True
         else:
-            await self._prepare_keys(direction)
+            try:
+                await self._prepare_keys(direction)
+            except TimeoutError:
+                # Keep the authenticated peer-to-peer handshake intact if
+                # key discovery fails before Fleasion has modified any TLS
+                # application bytes. After decryption begins, failing closed
+                # is essential because transparent relay cannot be resumed
+                if (
+                    self.client.input_keys is None
+                    and self.server.input_keys is None
+                    and not self._application_ready.is_set()
+                    and not self._http_started
+                    and not any(self._plain_bytes.values())
+                ):
+                    self._transparent_passthrough = True
+                    self._passthrough_reason = 'tls13_traffic_secret_unavailable'
+                    self._ready.set()
+                    direction.wire.write(record)
+                    await direction.wire.drain()
+                    return True
+                raise
         incoming = direction.input_keys
         outgoing = direction.writer.keys
         handshake = direction.handshake_keys
@@ -491,6 +513,12 @@ class SpliceConnection:
             if self._transparent_passthrough:
                 # Incompatible TLS sessions are relayed by the two wire pumps
                 # and must never attempt to decrypt or start an HTTP parser
+                if self._passthrough_reason.endswith('_unavailable'):
+                    log_buffer.log(
+                        'TLS',
+                        f'Encrypted TLS passthrough for {host}: '
+                        f'{self._passthrough_reason}; interception unavailable for this connection',
+                    )
                 await asyncio.Future()
                 return
             self._http_started = True

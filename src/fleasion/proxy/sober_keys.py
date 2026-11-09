@@ -27,6 +27,12 @@ type ConnectionSecrets = dict[str, bytes]
 type SecretMap = dict[str, ConnectionSecrets]
 
 CHUNK_SIZE = 1024 * 1024
+# Include a whole TLS client random at each chunk boundary for process_vm_readv
+_SCAN_OVERLAP = 31
+# A VMA's total resident bytes are not necessarily a populated prefix of the VMA
+# Only expand sufficiently populated mappings on targeted fallback scans
+_FALLBACK_MIN_RSS_KB = 1024
+_FALLBACK_MAX_VIRTUAL_BYTES = 8 * 1024 * 1024 * 1024
 SOBER_CGROUP_SUBSTRING = 'org.vinegarhq.sober'
 LARGE_MEMFD_MIN_SIZE = 10 * 1024 * 1024
 _SCANNABLE_PATHNAMES = frozenset({'', '[heap]', '/memfd: (deleted)'})
@@ -72,9 +78,9 @@ class _MemoryReader:
 
     def __init__(self, pid: int) -> None:
         self.pid = pid
-        self._buf = ctypes.create_string_buffer(CHUNK_SIZE)
+        self._buf = ctypes.create_string_buffer(CHUNK_SIZE + _SCAN_OVERLAP)
         buf_addr = cast(self._buf, c_void_p).value
-        self._local_iov = _Iovec(buf_addr, CHUNK_SIZE)
+        self._local_iov = _Iovec(buf_addr, CHUNK_SIZE + _SCAN_OVERLAP)
         self._remote_iov = _Iovec(0, 0)
         self._pvr = _get_process_vm_readv()
         self._mem_file = None
@@ -97,7 +103,7 @@ class _MemoryReader:
         if self._pvr is None:
             return b''
 
-        to_read = min(size, CHUNK_SIZE)
+        to_read = min(size, CHUNK_SIZE + _SCAN_OVERLAP)
         self._remote_iov.iov_base = addr
         self._remote_iov.iov_len = to_read
         self._local_iov.iov_len = to_read
@@ -227,7 +233,9 @@ def _module_bounds(pid: int) -> tuple[int, int]:
     return min_base, max_end
 
 
-def _parse_smaps_regions(smaps_path: Path) -> list[tuple[int, int]]:
+def _parse_smaps_regions(
+    smaps_path: Path, *, full_vmas: bool = False, min_rss_kb: int = 0
+) -> list[tuple[int, int]]:
     try:
         lines = smaps_path.read_text(encoding='utf-8', errors='ignore').splitlines()
     except OSError, PermissionError:
@@ -253,8 +261,8 @@ def _parse_smaps_regions(smaps_path: Path) -> list[tuple[int, int]]:
                 current_vsize = int(addrs[1], 16) - current_start
         elif line.startswith('Rss:') and is_candidate:
             rss_kb = int(line.split()[1])
-            if rss_kb > 0:
-                scan_len = min(current_vsize, (rss_kb + 256) * 1024)
+            if rss_kb > 0 and rss_kb >= min_rss_kb:
+                scan_len = current_vsize if full_vmas else min(current_vsize, (rss_kb + 256) * 1024)
                 regions.append((current_start, scan_len))
             is_candidate = False
     return regions
@@ -284,6 +292,23 @@ def _regions(pid: int) -> list[tuple[int, int]]:
     if regions:
         return regions
     return _parse_maps_regions(Path(f'/proc/{pid}/maps'))
+
+
+def _targeted_fallback_regions(pid: int) -> list[tuple[int, int]]:
+    """Expand resident arenas beyond their RSS-prefix heuristic, within a budget."""
+    regions = _parse_smaps_regions(
+        Path(f'/proc/{pid}/smaps'),
+        full_vmas=True,
+        min_rss_kb=_FALLBACK_MIN_RSS_KB,
+    )
+    total = 0
+    selected: list[tuple[int, int]] = []
+    for start, size in regions:
+        if total + size > _FALLBACK_MAX_VIRTUAL_BYTES:
+            continue
+        selected.append((start, size))
+        total += size
+    return selected
 
 
 def _scan_candidate(
@@ -401,7 +426,8 @@ def scan(
 
     reader = _MemoryReader(pid)
     try:
-        for start, size in _regions(pid):
+        fast_regions = _regions(pid)
+        for start, size in fast_regions:
             matched = _scan_region(
                 reader,
                 start,
@@ -416,6 +442,32 @@ def scan(
             )
             if matched:
                 return found
+
+        if client_random is not None and (stop is None or not stop.is_set()):
+            # smaps Rss is an aggregate, not the offset of the last resident
+            # page. A validated SSL connection can be beyond the first Rss
+            # bytes; scan those tails only after the fast search misses
+            fast_lengths = dict(fast_regions)
+            for start, full_size in _targeted_fallback_regions(pid):
+                already_scanned = min(fast_lengths.get(start, 0), full_size)
+                if already_scanned >= full_size:
+                    continue
+                # Include candidates whose 32-byte client random straddles
+                # the boundary between the fast prefix and full-VMA fallback
+                resume = max(0, already_scanned - _SCAN_OVERLAP)
+                if _scan_region(
+                    reader,
+                    start + resume,
+                    full_size - resume,
+                    needle=needle,
+                    field_offset=field_offset,
+                    module_base=module_base,
+                    module_end=module_end,
+                    client_random=client_random,
+                    stop=stop,
+                    found=found,
+                ):
+                    return found
     finally:
         reader.close()
 

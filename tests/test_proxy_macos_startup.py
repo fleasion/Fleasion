@@ -1146,6 +1146,10 @@ def test_linux_custom_fflags_wait_for_sober_engine_bootstrap_window(
 def test_sober_native_keylog_arms_first_request_without_engine_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from fleasion.utils import platform_linux
+
+    # The test must not inherit the real Sober engine's uptime on Linux
+    monkeypatch.setattr(platform_linux, 'linux_client_main_process', _callback1(lambda _i: None))
     monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
     monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
     monkeypatch.setattr(proxy_master, 'IS_WINDOWS', False)
