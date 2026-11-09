@@ -9,6 +9,7 @@ try:
     import pwd
 except ModuleNotFoundError:  # pragma: no cover - exercised by Windows collection
     pwd = None
+import select
 import shlex
 import shutil
 import signal
@@ -28,8 +29,10 @@ from .linux_clients import (
     SOBER_CLIENT,
     LinuxClientDescriptor,
     LinuxClientInstallation,
+    RosemarySession,
     detect_installed_clients,
     get_linux_client,
+    read_rosemary_session,
     rosemary_guest_home,
     running_mocktail_players,
     running_rosemary_players,
@@ -597,11 +600,70 @@ def get_roblox_studio_exe_path() -> Path | None:
     return None
 
 
+def _terminate_verified_rosemary_player(  # ruff: ignore[too-many-return-statements]
+    session: RosemarySession,
+) -> bool:
+    """Stop one validated Player generation, escalating only through its pidfd."""
+    proc = PROC_ROOT / str(session.pid)
+    try:
+        fd = os.pidfd_open(session.pid, 0)
+    except ProcessLookupError:
+        return True
+    except AttributeError, OSError:
+        log_buffer.log('Launcher', 'Rosemary termination needs Linux pidfd support')
+        return False
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
+        # Opening the pidfd first prevents a numeric PID reuse between the
+        # identity check and the actual signal. Never signal Studio or launchd
+        if proc.stat().st_uid != os.getuid() or read_rosemary_session(proc) != session:
+            log_buffer.log('Launcher', 'Rosemary Player identity changed; refusing termination')
+            return False
+        if not hasattr(signal, 'pidfd_send_signal'):
+            return False
+        signal.pidfd_send_signal(fd, signal.SIGTERM)
+        if select.select([fd], [], [], 1.5)[0]:
+            return True
+        log_buffer.log(
+            'Launcher', 'Rosemary Player did not exit after SIGTERM; escalating verified Player to SIGKILL'
+        )
+        signal.pidfd_send_signal(fd, signal.SIGKILL)
+        if select.select([fd], [], [], 2.0)[0]:
+            return True
+        log_buffer.log('Launcher', 'Verified Rosemary Player remained alive after SIGKILL')
+        return False  # ruff: ignore[try-consider-else]
+    except ProcessLookupError:
+        return True
+    except OSError as exc:
+        log_buffer.log('Launcher', f'Could not terminate verified Rosemary Player: {exc}')
+        return False
+    finally:
+        os.close(fd)
+
+
+def _terminate_rosemary_players(installation: LinuxClientInstallation) -> bool:
+    """Terminate only Player sessions for the selected Nutmeg app bundle."""
+    for _attempt in range(3):
+        sessions = tuple(
+            session
+            for session in running_rosemary_players(proc_root=PROC_ROOT)
+            if installation.app_bundle is None or session.bundle == installation.app_bundle
+        )
+        if not sessions:
+            return True
+        if not all(_terminate_verified_rosemary_player(session) for session in sessions):
+            return False
+    return not _client_pids(installation)
+
+
 def terminate_roblox() -> bool:
     """Terminate only the selected Linux Roblox client."""
     installation = get_selected_linux_client_installation()
     if installation is None:
         return False
+    if installation.client.runtime == 'rosemary':
+        # The guest can ignore SIGTERM; signal only verified Player generations
+        return _terminate_rosemary_players(installation)
+
     pids = _client_pids(installation)
     if not pids:
         return False
