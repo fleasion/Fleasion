@@ -16,6 +16,18 @@ from fleasion.utils.linux_clients import (
 type _TextProcessResult = platform_linux.subprocess.CompletedProcess[str]
 
 
+@pytest.fixture(autouse=True)
+def isolate_sober_native_keylog_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Linux platform tests must never read or restore a live user's TLS keylog state
+    monkeypatch.setattr(
+        platform_linux,
+        'SOBER_NATIVE_KEYLOG_OVERRIDE_STATE',
+        tmp_path / 'sober-native-keylog-state.json',
+    )
+
+
 def _flatpak_installation(
     client: LinuxClientDescriptor,
     home: Path,

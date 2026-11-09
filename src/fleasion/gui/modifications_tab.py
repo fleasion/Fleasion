@@ -846,7 +846,9 @@ class CollapsibleSection(QWidget):
         self.updateGeometry()
 
     def _finish_collapse(self) -> None:
-        # Keep the children at their natural sizes while the viewport is closed
+        # Restore layout updates after clipping has fully closed
+        self._content_layout.setEnabled(True)
+        self._content_layout.activate()
         self.updateGeometry()
         parent = self.parentWidget()
         if parent is not None:

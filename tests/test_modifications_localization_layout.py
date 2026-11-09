@@ -389,6 +389,14 @@ def test_collapsing_section_clips_content_without_reflowing_children() -> None:
     assert _section_content(section).height() == 0
     assert _section_layout(section).isEnabled()
 
+    section.add_widget(QLabel('Added while collapsed'))
+    section.toggle()
+    _section_animation(section).setCurrentTime(_section_animation(section).duration())
+    app.processEvents()
+    assert _section_content(section).height() > initial_content_height
+    assert inner.height() == initial_inner_height
+    assert _section_layout(section).isEnabled()
+
     host.close()
     host.deleteLater()
     app.processEvents()
