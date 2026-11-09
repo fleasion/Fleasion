@@ -880,8 +880,8 @@ def _delete_client_cache_path(
     _delete_path(path, messages, label)
 
 
-def delete_cache() -> list[str]:
-    """Delete cache files for only the selected Linux client and Fleasion."""
+def delete_cache(*, terminate_running: bool = True) -> list[str]:
+    """Delete selected-client cache, optionally refusing to interrupt a running Player."""
     messages: list[str] = []
     installation = get_selected_linux_client_installation()
     if installation is None:
@@ -903,6 +903,10 @@ def delete_cache() -> list[str]:
             ]
 
     if is_roblox_running(installation):
+        if not terminate_running:
+            return [
+                f'{client_name} started or is still running; automatic cache deletion skipped',
+            ]
         messages.append(f'{client_name} is running, terminating...')
         terminate_roblox(installation)
         if wait_for_roblox_exit(installation=installation):

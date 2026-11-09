@@ -615,7 +615,13 @@ class RobloxExitMonitor(QObject):
         dialog.exec()
 
     def _delete_cache_background(self) -> None:
-        """Delete cache in background thread."""
-        messages = delete_cache()
+        """Delete cache only after a stable exit, without closing a replacement Player."""
+        if sys.platform.startswith('linux'):
+            # A short Sober launcher-to-engine handoff is not a real logout
+            # The automatic path must never terminate a newly launched client
+            time.sleep(1.5)
+            messages = delete_cache(terminate_running=False)
+        else:
+            messages = delete_cache()
         for msg in messages:
             log_buffer.log('Cache', msg)

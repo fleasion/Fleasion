@@ -1084,6 +1084,32 @@ def test_delete_cache_terminates_sober_before_cleanup(
     assert not converted_cache.exists()
 
 
+def test_automatic_cache_delete_refuses_to_terminate_replacement_sober(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation = _flatpak_installation(SOBER_CLIENT, tmp_path)
+    storage_db = installation.paths.storage_db
+    assert storage_db is not None
+    storage_db.parent.mkdir(parents=True)
+    storage_db.write_bytes(b'untouched')
+    monkeypatch.setattr(platform_linux, 'APP_CACHE_DIR', tmp_path / 'fleasion-cache')
+    monkeypatch.setattr(
+        platform_linux, 'get_selected_linux_client_installation',
+        _selected_installation(installation),
+    )
+    monkeypatch.setattr(platform_linux, 'is_roblox_running', _running)
+
+    def unexpected_termination(_installation: LinuxClientInstallation | None = None) -> Never:
+        msg = 'Auto-delete must never terminate a replacement Player'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(platform_linux, 'terminate_roblox', unexpected_termination)
+    assert platform_linux.delete_cache(terminate_running=False) == [
+        'Sober started or is still running; automatic cache deletion skipped',
+    ]
+    assert storage_db.read_bytes() == b'untouched'
+
+
 def test_delete_cache_aborts_when_explicit_selection_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

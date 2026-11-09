@@ -1789,6 +1789,26 @@ def test_linux_browser_sober_launch_is_always_adopted_without_relaunch(
     assert qt_app is not None
 
 
+def test_linux_auto_cache_clear_waits_and_never_requests_player_termination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SimpleNamespace(proxy_mode='env', proxy_features_enabled=True, auto_delete_cache_on_exit=True)
+    monitor = _ROBLOX_EXIT_MONITOR_FACTORY(config)
+    events: list[object] = []
+
+    def wait(delay: float) -> None:
+        events.append(('settle', delay))
+
+    def clear_cache(*, terminate_running: bool = True) -> list[str]:
+        events.append(('clear', terminate_running))
+        return ['Sober started or is still running; automatic cache deletion skipped']
+
+    monkeypatch.setattr(roblox_monitor_module.time, 'sleep', wait)
+    monkeypatch.setattr(roblox_monitor_module, 'delete_cache', clear_cache)
+    monitor._delete_cache_background()  # pyright: ignore[reportPrivateUsage]
+    assert events == [('settle', 1.5), ('clear', False)]
+
+
 def test_linux_auto_rebinds_proxy_after_sober_launch_without_killing_player(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
