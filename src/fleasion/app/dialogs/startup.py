@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
@@ -34,23 +33,16 @@ from fleasion.localization import (
 from fleasion.utils import (
     CONFIG_DIR,
     get_icon_path,
-    get_roblox_player_exe_path,
     log_buffer,
-    run_in_thread,
-)
-from fleasion.utils.platform_linux import (
-    selected_linux_client_app_id,
-    selected_linux_client_display_name,
 )
 
 if TYPE_CHECKING:
-    from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.app.tray import SystemTray
     from fleasion.config import ConfigManager
 
 
 def prepare_env_proxy_migration(config_manager: ConfigManager) -> bool:
-    """Select Env Proxy before privilege gates and report a legacy migration."""
+    """Apply the one-time Env Proxy default migration without prompting."""
     if config_manager.env_proxy_migration_v1_complete:
         return False
     if sys.platform == 'darwin':
@@ -58,71 +50,13 @@ def prepare_env_proxy_migration(config_manager: ConfigManager) -> bool:
         config_manager.env_proxy_migration_v1_complete = True
         return False
 
-    # Assign even when the merged in-memory default is already Env so the new
-    # mode is durable on disk before any acknowledgement dialog can appear
+    # Save the new default before marking migration complete so it cannot
+    # silently overwrite a later manual choice of Hosts File mode
     config_manager.proxy_mode = 'env'
-
-    # First-time users learn about Env Proxy in the setup guide. Existing
-    # users receive the dedicated migration acknowledgement later in startup
-    return bool(config_manager.first_time_setup_complete)
-
-
-def show_env_proxy_migration(
-    config_manager: ConfigManager, roblox_monitor: RobloxExitMonitor
-) -> None:
-    """Acknowledge the forced legacy migration and apply it to Player."""
-    player_running = bool(roblox_monitor.is_player_running())
-    if player_running:
-        # Do not let the process monitor interpret a Player that predates this
-        # startup as a fresh launch and relaunch it without the user's choice
-        roblox_monitor.mark_player_running_at_startup()
-
-    msg = QMessageBox(visible_parent_widget())
-    msg.setWindowTitle(tr('app.new_default_roblox_env_proxy'))
-    msg.setIcon(QMessageBox.Icon.Information)
-    msg.setText(tr('app.fleasion_has_switched_your_saved_proxy_mode'))
-    details = tr('app.env_proxy_migration.details')
-    restart_button = None
-    if player_running and config_manager.proxy_features_enabled:
-        if sys.platform.startswith('linux'):
-            details += tr(
-                'app.env_proxy_migration.linux_future',
-                client_name=selected_linux_client_display_name(),
-            )
-            restart_button = msg.addButton(
-                tr('app.apply_for_future_launches'), QMessageBox.ButtonRole.AcceptRole
-            )
-            later_button = msg.addButton(tr('app.apply_later'), QMessageBox.ButtonRole.RejectRole)
-        else:
-            details += tr('app.env_proxy_migration.player_running')
-            restart_button = msg.addButton(
-                tr('app.restart_roblox_now'), QMessageBox.ButtonRole.AcceptRole
-            )
-            later_button = msg.addButton(
-                tr('app.restart_roblox_later'), QMessageBox.ButtonRole.RejectRole
-            )
-        msg.setDefaultButton(restart_button)
-        msg.setEscapeButton(later_button)
-    else:
-        if player_running:
-            details += tr('app.env_proxy_migration.features_disabled')
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-    msg.setInformativeText(details)
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
-
-    msg.exec()
     config_manager.env_proxy_migration_v1_complete = True
 
-    if restart_button is None or msg.clickedButton() is not restart_button:
-        return
-    lifecycle = getattr(roblox_monitor, 'env_lifecycle', None)
-    if lifecycle is None:
-        return
-    if sys.platform.startswith('linux'):
-        run_in_thread(lifecycle.handle_adopted_player_launch)(Path(selected_linux_client_app_id()))
-    else:
-        run_in_thread(lifecycle.handle_player_launch)(get_roblox_player_exe_path())
+    # Only existing users need the monitor to preserve a running Player session
+    return bool(config_manager.first_time_setup_complete)
 
 
 def should_sync_autostart_on_launch(run_on_boot: bool) -> bool:

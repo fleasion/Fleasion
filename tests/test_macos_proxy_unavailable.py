@@ -134,3 +134,25 @@ def test_macos_skips_obsolete_env_proxy_migration(
         assert prepare_env_proxy_migration(config) is False
         assert config.env_proxy_migration_v1_complete is True
         assert config.proxy_mode == 'hosts'
+
+
+def test_env_proxy_migration_persists_silently_and_preserves_later_choice(
+    monkeypatch: pytest.MonkeyPatch, config_paths: Path
+) -> None:
+    with monkeypatch.context() as linux:
+        linux.setattr(config_module.sys, 'platform', 'linux')
+        config = config_module.ConfigManager()
+        config.first_time_setup_complete = True
+        config.proxy_mode = 'hosts'
+
+        assert prepare_env_proxy_migration(config) is True
+        assert config.proxy_mode == 'env'
+        assert config.env_proxy_migration_v1_complete is True
+
+        reloaded = config_module.ConfigManager()
+        assert reloaded.proxy_mode == 'env'
+        assert reloaded.env_proxy_migration_v1_complete is True
+
+        reloaded.proxy_mode = 'hosts'
+        assert prepare_env_proxy_migration(reloaded) is False
+        assert config_module.ConfigManager().proxy_mode == 'hosts'

@@ -44,7 +44,6 @@ from fleasion.app.dialogs.startup import (
     prompt_first_time_language,
     should_sync_autostart_on_launch,
     show_desktop_integration_failure,
-    show_env_proxy_migration,
     show_run_on_boot_failure,
 )
 from fleasion.app.elevation import is_admin, relaunch_as_admin
@@ -615,8 +614,9 @@ def run_application() -> None:
     single_instance_control_server = start_single_instance_control_server(app, tray)
     single_instance_state.control_server = single_instance_control_server
 
-    if env_proxy_migration_pending:
-        show_env_proxy_migration(config_manager, roblox_monitor)
+    if env_proxy_migration_pending and roblox_monitor.is_player_running():
+        # Do not interpret a pre-existing Player as a fresh Env Proxy launch
+        roblox_monitor.mark_player_running_at_startup()
 
     def _handle_roblox_uri_event(target: str) -> None:
         run_in_thread(launch_roblox_uri_for_instance)(tray, target)

@@ -256,9 +256,6 @@ _windows_ca_permission_denied_dirs = cast(
 _prepare_env_proxy_migration = cast(
     'Callable[[object], bool]', _private_attr(dialogs_startup_module, 'prepare_env_proxy_migration')
 )
-_show_env_proxy_migration = cast(
-    'Callable[[object, object], None]', _private_attr(dialogs_startup_module, 'show_env_proxy_migration')
-)
 _ProxyErrorInvoker = cast(
     'Callable[[], _ProxyErrorInvokerAdapter]', _private_attr(dialogs_proxy_module, 'ProxyErrorInvoker')
 )
@@ -678,7 +675,7 @@ def test_autostart_resync_runs_without_admin_on_windows(monkeypatch: pytest.Monk
     assert _should_sync_autostart_on_launch(True)
 
 
-def test_env_proxy_migration_forces_legacy_users_before_acknowledgement() -> None:
+def test_env_proxy_migration_silently_updates_legacy_users_once() -> None:
     config = SimpleNamespace(
         proxy_mode='hosts',
         first_time_setup_complete=True,
@@ -687,7 +684,11 @@ def test_env_proxy_migration_forces_legacy_users_before_acknowledgement() -> Non
 
     assert _prepare_env_proxy_migration(config) is True
     assert config.proxy_mode == 'env'
-    assert config.env_proxy_migration_v1_complete is False
+    assert config.env_proxy_migration_v1_complete is True
+
+    config.proxy_mode = 'hosts'
+    assert _prepare_env_proxy_migration(config) is False
+    assert config.proxy_mode == 'hosts'
 
 
 def test_env_proxy_migration_uses_first_time_guide_for_new_users() -> None:
@@ -699,7 +700,7 @@ def test_env_proxy_migration_uses_first_time_guide_for_new_users() -> None:
 
     assert _prepare_env_proxy_migration(config) is False
     assert config.proxy_mode == 'env'
-    assert config.env_proxy_migration_v1_complete is False
+    assert config.env_proxy_migration_v1_complete is True
 
 
 def test_completed_env_proxy_migration_preserves_hosts_choice() -> None:
@@ -711,177 +712,6 @@ def test_completed_env_proxy_migration_preserves_hosts_choice() -> None:
 
     assert _prepare_env_proxy_migration(config) is False
     assert config.proxy_mode == 'hosts'
-
-
-def test_linux_env_proxy_migration_adopts_running_sober_without_relaunch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[object] = []
-    config = SimpleNamespace(
-        proxy_features_enabled=True,
-        env_proxy_migration_v1_complete=False,
-    )
-    lifecycle = SimpleNamespace(
-        handle_adopted_player_launch=_path_callback(
-            lambda path: events.append(('adopt', Path(path)))
-        )
-    )
-    monitor = SimpleNamespace(
-        is_player_running=lambda: True,
-        env_lifecycle=lifecycle,
-        was_running=False,
-        _player_was_running=False,
-    )
-
-    def _mark_player_running_at_startup() -> None:
-        monitor.was_running = True
-        monitor._player_was_running = True
-
-    monitor.mark_player_running_at_startup = _mark_player_running_at_startup
-
-    class _MessageBox:
-        class Icon:
-            Information = object()
-
-        class ButtonRole:
-            AcceptRole = object()
-            RejectRole = object()
-
-        class StandardButton:
-            Ok = object()
-
-        def __init__(self, _parent: object) -> None:
-            self._clicked = None
-
-        def setWindowTitle(self, _value: object) -> None:
-            pass
-
-        def setIcon(self, _value: object) -> None:
-            pass
-
-        def setText(self, _value: object) -> None:
-            pass
-
-        def setInformativeText(self, _value: object) -> None:
-            pass
-
-        def setWindowIcon(self, _value: object) -> None:
-            pass
-
-        def setStandardButtons(self, _value: object) -> None:
-            pass
-
-        def addButton(self, label: str, _role: object) -> object:
-            button = object()
-            if label == 'Apply for Future Launches':
-                self._clicked = button
-            return button
-
-        def setDefaultButton(self, _value: object) -> None:
-            pass
-
-        def setEscapeButton(self, _value: object) -> None:
-            pass
-
-        def exec(self) -> None:
-            events.append(('ack-state', config.env_proxy_migration_v1_complete))
-
-        def clickedButton(self) -> object | None:
-            return self._clicked
-
-    monkeypatch.setattr(dialogs_startup_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(dialogs_startup_module, 'visible_parent_widget', lambda: None)
-    monkeypatch.setattr(dialogs_startup_module, 'get_icon_path', lambda: None)
-    monkeypatch.setattr(dialogs_startup_module.sys, 'platform', 'linux')
-    monkeypatch.setattr(dialogs_startup_module, 'run_in_thread', _callable_callback(lambda function: function))
-    monkeypatch.setattr(dialogs_startup_module, 'selected_linux_client_app_id', lambda: 'org.vinegarhq.Sober')
-    monkeypatch.setattr(dialogs_startup_module, 'selected_linux_client_display_name', lambda: 'Sober')
-
-    _show_env_proxy_migration(config, monitor)
-
-    assert events == [
-        ('ack-state', False),
-        ('adopt', Path('org.vinegarhq.Sober')),
-    ]
-    assert config.env_proxy_migration_v1_complete is True
-    assert monitor.was_running is True
-    assert cast('bool', _private_attr(monitor, '_player_was_running')) is True
-
-
-def test_env_proxy_migration_does_not_relaunch_when_proxy_features_are_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = SimpleNamespace(
-        proxy_features_enabled=False,
-        env_proxy_migration_v1_complete=False,
-    )
-    lifecycle = SimpleNamespace(
-        handle_player_launch=_path_callback(
-            lambda _path: (_ for _ in ()).throw(
-                AssertionError('disabled proxy features must not relaunch Roblox')
-            )
-        )
-    )
-    monitor = SimpleNamespace(
-        is_player_running=lambda: True,
-        env_lifecycle=lifecycle,
-        was_running=False,
-        _player_was_running=False,
-    )
-
-    def _mark_player_running_at_startup() -> None:
-        monitor.was_running = True
-        monitor._player_was_running = True
-
-    monitor.mark_player_running_at_startup = _mark_player_running_at_startup
-
-    class _MessageBox:
-        class Icon:
-            Information = object()
-
-        class ButtonRole:
-            AcceptRole = object()
-            RejectRole = object()
-
-        class StandardButton:
-            Ok = object()
-
-        def __init__(self, _parent: object) -> None:
-            self._clicked = None
-
-        def setWindowTitle(self, _value: object) -> None:
-            pass
-
-        def setIcon(self, _value: object) -> None:
-            pass
-
-        def setText(self, _value: object) -> None:
-            pass
-
-        def setInformativeText(self, _value: object) -> None:
-            pass
-
-        def setWindowIcon(self, _value: object) -> None:
-            pass
-
-        def setStandardButtons(self, _value: object) -> None:
-            pass
-
-        def exec(self) -> None:
-            pass
-
-        def clickedButton(self) -> object | None:
-            return self._clicked
-
-    monkeypatch.setattr(dialogs_startup_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(dialogs_startup_module, 'visible_parent_widget', lambda: None)
-    monkeypatch.setattr(dialogs_startup_module, 'get_icon_path', lambda: None)
-
-    _show_env_proxy_migration(config, monitor)
-
-    assert config.env_proxy_migration_v1_complete is True
-    assert monitor.was_running is True
-    assert cast('bool', _private_attr(monitor, '_player_was_running')) is True
 
 
 def test_run_on_boot_failure_can_launch_one_time_admin_repair(

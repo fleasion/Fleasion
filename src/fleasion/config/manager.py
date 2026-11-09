@@ -1227,7 +1227,7 @@ class ConfigManager:
 
     @property
     def env_proxy_migration_v1_complete(self) -> bool:
-        """Whether the one-time Env Proxy default migration was acknowledged."""
+        """Whether the one-time Env Proxy default migration has been applied."""
         return bool(self.settings.get('env_proxy_migration_v1_complete', False))
 
     @env_proxy_migration_v1_complete.setter
