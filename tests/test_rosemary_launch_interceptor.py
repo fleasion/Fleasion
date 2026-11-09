@@ -309,3 +309,41 @@ def test_nutmeg_parent_process_is_not_replayed_when_stdout_is_customized(
         proc_root=root,
     )
     assert not signals
+
+
+def test_inactive_rosemary_watcher_skips_scans_and_rebases_on_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _fixture(tmp_path)
+    state = {'armed': False}
+    watcher = interceptor.RosemaryLaunchInterceptor(
+        is_armed=lambda: state['armed'],
+        proxy_url=lambda: 'http://127.0.0.1:58443',
+        proxy_environment=lambda: {},
+        proc_root=root,
+    )
+    scans: list[str] = []
+    real_scan = interceptor.running_rosemary_players
+
+    def scan(*, proc_root: Path) -> object:
+        scans.append('scan')
+        return real_scan(proc_root=proc_root)
+
+    monkeypatch.setattr(interceptor, 'running_rosemary_players', scan)
+    polls: list[str] = []
+    monkeypatch.setattr(watcher, '_poll_once', lambda: polls.append('poll'))
+    assert not watcher._poll_when_armed(False)
+    assert scans == []
+    state['armed'] = True
+    assert watcher._poll_when_armed(False)
+    assert scans == ['scan']
+    assert polls == []
+    assert watcher._poll_when_armed(True)
+    assert polls == ['poll']
+    state['armed'] = False
+    assert not watcher._poll_when_armed(True)
+    state['armed'] = True
+    assert watcher._poll_when_armed(False)
+    assert scans == ['scan', 'scan']
+    assert polls == ['poll']
+    watcher.stop()

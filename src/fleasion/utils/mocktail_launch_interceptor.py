@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 _POLL_SECONDS = 0.12
+_INACTIVE_POLL_SECONDS = 0.5
 _MAX_CMDLINE = 128 * 1024
 _MAX_ENVIRONMENT = 512 * 1024
 _REPLAY_MARKER = 'FLEASION_MOCKTAIL_ENV_REPLAY'
@@ -259,10 +260,25 @@ class MocktailLaunchInterceptor:
                 proc_root=self._proc_root,
             )
 
+    def _poll_when_armed(self, previously_armed: bool) -> bool:
+        """Skip expensive process enumeration unless Mocktail proxy is armed."""
+        if not self._is_armed():
+            return False
+        if not previously_armed:
+            # Do not replay Players already open when Auto switches to Mocktail
+            self._seen = {
+                (session.pid, session.start_ticks)
+                for session in running_mocktail_players(proc_root=self._proc_root)
+            }
+            return True
+        self._poll_once()
+        return True
+
     def _run(self) -> None:
-        while not self._stop.wait(_POLL_SECONDS):
+        armed = False
+        while not self._stop.wait(_POLL_SECONDS if armed else _INACTIVE_POLL_SECONDS):
             try:
-                self._poll_once()
+                armed = self._poll_when_armed(armed)
             except (OSError, ValueError, RuntimeError) as exc:
                 log_buffer.log(
                     'Launcher',

@@ -250,7 +250,13 @@ class CustomFFlagModifier:
         saved_flags = (
             self._disk_flags if self._disk_flags is not None else self.config_manager.custom_fflags
         )
-        flags = normalize_custom_fflags(saved_flags) if self.custom_flags_enabled() else {}
+        # The file signature was checked above; do not stat it again
+        enabled = (
+            self._disk_enabled
+            if self._disk_enabled is not None
+            else self.config_manager.custom_fflags_enabled
+        )
+        flags = normalize_custom_fflags(saved_flags) if enabled else {}
         disabled = (
             self._disk_disabled
             if self._disk_disabled is not None

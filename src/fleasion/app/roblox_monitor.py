@@ -83,6 +83,7 @@ class RobloxExitMonitor(QObject):
         self._mod_manager = mod_manager
         self.env_lifecycle = env_lifecycle
         self._status_lock = threading.Lock()
+        self._linux_auto_observed_running: bool | None = None
         adopted_running = bool(env_lifecycle and env_lifecycle.owns_player)
         self.was_running = adopted_running
         self._player_was_running = adopted_running
@@ -410,7 +411,10 @@ class RobloxExitMonitor(QObject):
         ):
             return True
         selected = get_selected_linux_client_installation()
-        if selected is None or not is_linux_client_running(selected):
+        if selected is None:
+            return True
+        self._linux_auto_observed_running = is_linux_client_running(selected)
+        if not self._linux_auto_observed_running:
             return True
         if selected.key == getattr(proxy, '_active_linux_client_key', None):
             return True
@@ -461,9 +465,15 @@ class RobloxExitMonitor(QObject):
 
     def _check_roblox_status_locked(self) -> None:
         """Check if Roblox has exited and trigger cache deletion if needed."""
+        self._linux_auto_observed_running = None
         if not self._sync_linux_auto_proxy_client():
             return
-        is_running = is_roblox_running()
+        # Reuse the Auto detection from this tick instead of rescanning /proc
+        is_running = (
+            self._linux_auto_observed_running
+            if self._linux_auto_observed_running is not None
+            else is_roblox_running()
+        )
         player_status_observed_at = time.monotonic()
         intentional_player_exit = False
 

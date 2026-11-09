@@ -417,14 +417,19 @@ def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
         return select_linux_client(preference, installed=installed)
 
     recent = _last_auto_linux_client_key or _read_recent_auto_linux_client()
+    detected_starts: dict[str, int] = {}
     selected = select_linux_client(
         'auto',
         installed=installed,
         home=USER_HOME,
         proc_root=PROC_ROOT,
         recent_client_key=recent,
+        observed_running_starts=detected_starts,
     )
-    if selected is not None and _client_pids(selected):
+    if selected is not None and (
+        selected.key in detected_starts
+        or (len(installed) <= 1 and bool(_client_pids(selected)))
+    ):
         # Do not turn a fallback desktop handler into a persistent selection
         if selected.key != recent:
             _write_recent_auto_linux_client(selected.key)

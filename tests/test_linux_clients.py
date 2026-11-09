@@ -475,6 +475,19 @@ def test_auto_selection_chooses_most_recent_running_player(tmp_path: Path) -> No
         assert selected is not None and selected.key == chosen
 
 
+def test_auto_selection_reports_only_verified_installed_player_starts(tmp_path: Path) -> None:
+    sober = _installation(SOBER_CLIENT, tmp_path)
+    rosemary = _installation(ROSEMARY_CLIENT, tmp_path)
+    observed: dict[str, int] = {}
+    selected = select_linux_client(
+        installed=(sober, rosemary), home=tmp_path,
+        running_client_starts={'sober': 100, 'unknown': 999},
+        observed_running_starts=observed,
+    )
+    assert selected is sober
+    assert observed == {'sober': 100}
+
+
 def test_auto_selection_ignores_non_installed_running_clients(tmp_path: Path) -> None:
     sober = _installation(SOBER_CLIENT, tmp_path)
     selected = select_linux_client(

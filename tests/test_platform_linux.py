@@ -185,6 +185,12 @@ def test_auto_remembers_last_verified_player_across_fleasion_restarts(
         '1234 (Main) ' + ' '.join(['S', *['0'] * 18, '500']),
         encoding='utf-8',
     )
+
+    def reject_duplicate_scan(_installation: LinuxClientInstallation) -> Never:
+        msg = 'Auto selection already verified this Player'
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(platform_linux, '_client_pids', reject_duplicate_scan)
     assert platform_linux.get_selected_linux_client_installation() is sober
     assert platform_linux.LAST_AUTO_LINUX_CLIENT_STATE.read_text().strip() == 'sober'
 

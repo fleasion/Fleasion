@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 _MAX_CMDLINE_BYTES = 128 * 1024
 _MAX_ENV_BYTES = 512 * 1024
 _POLL_SECONDS = 0.12
+_INACTIVE_POLL_SECONDS = 0.5
 _REPLAY_MARKER = 'FLEASION_ROSEMARY_ENV_REPLAY'
 
 
@@ -265,10 +266,25 @@ class RosemaryLaunchInterceptor:
                 stop=self._stop,
             )
 
+    def _poll_when_armed(self, previously_armed: bool) -> bool:
+        """Only scan the process table while Rosemary proxy routing is armed."""
+        if not self._is_armed():
+            return False
+        if not previously_armed:
+            # Existing Players must not be replayed after an Auto client switch
+            self._seen = {
+                (session.pid, session.start_ticks)
+                for session in running_rosemary_players(proc_root=self._proc_root)
+            }
+            return True
+        self._poll_once()
+        return True
+
     def _run(self) -> None:
-        while not self._stop.wait(_POLL_SECONDS):
+        armed = False
+        while not self._stop.wait(_POLL_SECONDS if armed else _INACTIVE_POLL_SECONDS):
             try:
-                self._poll_once()
+                armed = self._poll_when_armed(armed)
             except (OSError, ValueError, RuntimeError) as exc:
                 log_buffer.log(
                     'Launcher',

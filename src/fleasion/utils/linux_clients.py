@@ -409,12 +409,26 @@ def _rosemary_bundle(value: str) -> Path | None:
     return None
 
 
-def _read_rosemary_session(process: Path) -> RosemarySession | None:
-    try:
+def _read_rosemary_candidate_cmdline(process: Path) -> bytes | None:
+    """Reject unrelated argv prefixes without reading all of their metadata."""
+    with (process / 'cmdline').open('rb') as stream:
+        preview = stream.read(512)
+        if not preview:
+            return None
+        # Do not filter on comm: Rosemary's guest can rename that field
+        if b'\0' in preview and preview.split(b'\0', 1)[0].rsplit(b'/', 1)[-1] != b'rosemary':
+            return None
         if process.stat().st_uid != os.getuid():
             return None
-        command_line = (process / 'cmdline').read_bytes()
+        return preview + stream.read()
+
+
+def _read_rosemary_session(process: Path) -> RosemarySession | None:
+    try:
+        command_line = _read_rosemary_candidate_cmdline(process)
     except OSError:
+        return None
+    if command_line is None:
         return None
     argv = [arg.decode('utf-8', errors='replace') for arg in command_line.split(b'\0') if arg]
     if len(argv) < 3 or Path(argv[0]).name != 'rosemary':
@@ -470,6 +484,9 @@ def read_mocktail_session(  # ruff: ignore[too-many-return-statements]
 ) -> MocktailSession | None:
     """Reject helpers, updaters, and PID reuse using /proc/exe and stat."""
     try:  # ruff: ignore[too-many-statements-in-try-clause]
+        # Resolve /proc/PID/exe only for plausible Mocktail engine processes
+        if (process / 'comm').read_text(encoding='utf-8').strip() != 'Main':
+            return None
         if process.stat().st_uid != os.getuid():
             return None
         linked_exe = (process / 'exe').resolve(strict=True)
@@ -480,8 +497,6 @@ def read_mocktail_session(  # ruff: ignore[too-many-return-statements]
         command_line = (process / 'cmdline').read_bytes()
         argv = [arg for arg in command_line.split(b'\0') if arg]
         if not argv or Path(os.fsdecode(argv[0])).name != 'mocktail':
-            return None
-        if (process / 'comm').read_text(encoding='utf-8').strip() != 'Main':
             return None
         with (process / 'maps').open(encoding='utf-8', errors='replace') as mapped:
             if not any('libroblox.so' in line.lower() for line in mapped):
@@ -532,9 +547,9 @@ def _running_sober_sessions(
         if not process.name.isdecimal():
             continue
         try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if process.stat().st_uid != os.getuid():
-                continue
             if (process / 'comm').read_text(encoding='utf-8').strip() != expected_comm:
+                continue
+            if process.stat().st_uid != os.getuid():
                 continue
             cgroup = (process / 'cgroup').read_text(encoding='utf-8', errors='replace')
             if f'{SOBER_CLIENT.cgroup_marker}-' not in cgroup:
@@ -871,6 +886,7 @@ def select_linux_client(
     run: CommandRunner | None = None,
     proc_root: Path = Path('/proc'),
     running_client_starts: Mapping[str, int] | None = None,
+    observed_running_starts: dict[str, int] | None = None,
     recent_client_key: str | None = None,
     rosemary_running: bool | None = None,
     mocktail_running: bool | None = None,
@@ -935,6 +951,9 @@ def select_linux_client(
         elif override is False:
             starts.pop(key, None)
     active = {key: ticks for key, ticks in starts.items() if key in by_key}
+    if observed_running_starts is not None:
+        # Reuse verified process presence instead of enumerating /proc twice
+        observed_running_starts.update(active)
     if active:
         newest = max(active.values())
         newest_keys = {key for key, ticks in active.items() if ticks == newest}

@@ -299,3 +299,41 @@ def test_mocktail_replay_terminates_verified_lock_child_before_engine(
         (4321, interceptor.signal.SIGKILL),
     ]
     assert len(spawned) == 1
+
+
+def test_inactive_mocktail_watcher_skips_scans_and_rebases_on_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _fixture(tmp_path)
+    state = {'armed': False}
+    watcher = interceptor.MocktailLaunchInterceptor(
+        is_armed=lambda: state['armed'],
+        proxy_url=lambda: 'http://127.0.0.1:58443',
+        proxy_environment=lambda: {},
+        proc_root=root,
+    )
+    scans: list[str] = []
+    real_scan = interceptor.running_mocktail_players
+
+    def scan(*, proc_root: Path) -> object:
+        scans.append('scan')
+        return real_scan(proc_root=proc_root)
+
+    monkeypatch.setattr(interceptor, 'running_mocktail_players', scan)
+    polls: list[str] = []
+    monkeypatch.setattr(watcher, '_poll_once', lambda: polls.append('poll'))
+    assert not watcher._poll_when_armed(False)
+    assert scans == []
+    state['armed'] = True
+    assert watcher._poll_when_armed(False)
+    assert scans == ['scan']
+    assert polls == []
+    assert watcher._poll_when_armed(True)
+    assert polls == ['poll']
+    state['armed'] = False
+    assert not watcher._poll_when_armed(True)
+    state['armed'] = True
+    assert watcher._poll_when_armed(False)
+    assert scans == ['scan', 'scan']
+    assert polls == ['poll']
+    watcher.stop()

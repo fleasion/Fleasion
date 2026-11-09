@@ -1847,7 +1847,13 @@ def test_linux_auto_rebinds_proxy_after_sober_launch_without_killing_player(
         roblox_monitor_module, 'get_selected_linux_client_installation', selected
     )
     monkeypatch.setattr(roblox_monitor_module, 'is_linux_client_running', linux_running)
-    monkeypatch.setattr(roblox_monitor_module, 'is_roblox_running', lambda: True)
+    redundant_scans: list[bool] = []
+
+    def read_running_again() -> bool:
+        redundant_scans.append(True)
+        return True
+
+    monkeypatch.setattr(roblox_monitor_module, 'is_roblox_running', read_running_again)
     monkeypatch.setattr(roblox_monitor_module, 'is_studio_running', lambda: False)
 
     # Initial proxy has not finished arming Rosemary: do not race the startup
@@ -1864,6 +1870,7 @@ def test_linux_auto_rebinds_proxy_after_sober_launch_without_killing_player(
     assert ('ready', 15.0) in calls
     assert ('status', True) in calls
     assert 'adopt' not in calls
+    assert redundant_scans == []
 
     # The already-running Sober predates its new Flatpak proxy override
     # It is not falsely claimed as Env-proxied, and exit cache is untouched
@@ -1872,12 +1879,14 @@ def test_linux_auto_rebinds_proxy_after_sober_launch_without_killing_player(
     calls.clear()
     _check_roblox_status_locked(monitor)
     assert calls == []
+    assert redundant_scans == []
 
     # An explicit client choice must never be overridden by live detection
     config.linux_client = 'rosemary'
     setattr(proxy, '_active_linux_client_key', 'rosemary')
     _check_roblox_status_locked(monitor)
     assert calls == []
+    assert redundant_scans == [True]
 
 
 def test_linux_instance_uri_uses_sober_without_env_proxy_relaunch(
