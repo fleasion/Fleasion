@@ -38,7 +38,7 @@ from .linux_clients import (
     read_rosemary_session,
     rosemary_guest_home,
     running_community_launchers,
-    running_cordial_players,
+    running_installed_cordial_players,
     running_mocktail_players,
     running_rosemary_players,
     running_rosemary_studios,
@@ -549,12 +549,7 @@ def linux_client_main_process(
             return session.pid, session.start_ticks / ticks_per_second
     elif installation.key in {MOCKTAIL_CLIENT.key, NIGHTCAP_CLIENT.key, CORDIAL_CLIENT.key}:
         if installation.key == CORDIAL_CLIENT.key:
-            sessions = running_cordial_players(
-                proc_root=PROC_ROOT,
-                flatpak_id=installation.app_id
-                if installation.client.runtime == 'flatpak'
-                else None,
-            )
+            sessions = running_installed_cordial_players(installation, proc_root=PROC_ROOT)
         else:
             sessions = running_mocktail_players(
                 proc_root=PROC_ROOT,
@@ -586,7 +581,7 @@ def _client_pids(installation: LinuxClientInstallation) -> list[int]:
         ]
     if installation.key == CORDIAL_CLIENT.key:
         flatpak_id = installation.app_id if installation.client.runtime == 'flatpak' else None
-        engines = running_cordial_players(proc_root=PROC_ROOT, flatpak_id=flatpak_id)
+        engines = running_installed_cordial_players(installation, proc_root=PROC_ROOT)
         launchers = running_community_launchers(
             'cordial-shell',
             proc_root=PROC_ROOT,

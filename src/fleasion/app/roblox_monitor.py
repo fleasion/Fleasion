@@ -25,7 +25,19 @@ from fleasion.utils import (
     log_buffer,
     run_in_thread,
 )
+from fleasion.utils.community_flatpak_replay import (
+    capture_community_flatpak_launches,
+    flatpak_community_scopes,
+    replay_community_flatpak_launch,
+)
+from fleasion.utils.cordial_launch_interceptor import (
+    CordialLaunchInterceptor,
+    cordial_engine_executable,
+)
 from fleasion.utils.linux_clients import (
+    CORDIAL_CLIENT,
+    NIGHTCAP_CLIENT,
+    LinuxClientInstallation,
     running_sober_launchers,
     running_sober_players,
     sober_flatpak_session_identity,
@@ -35,6 +47,7 @@ from fleasion.utils.platform_linux import (
     get_selected_linux_client_installation,
     is_roblox_running as is_linux_client_running,
     mocktail_proxy_environment,
+    native_proxy_environment,
     rosemary_proxy_environment,
     selected_linux_client_app_id,
     selected_linux_client_display_name,
@@ -101,6 +114,17 @@ class RobloxExitMonitor(QObject):
         self._mocktail_replay_suppress_until = 0.0
         self._sober_replay_suppress_until = 0.0
         self._sober_handoff_until = 0.0
+        self._community_handoff: tuple[str, float] | None = None
+        self._community_preexisting_scopes = (
+            {
+                descriptor.key: flatpak_community_scopes(
+                    LinuxClientInstallation(descriptor, descriptor.paths(), None)
+                )
+                for descriptor in (NIGHTCAP_CLIENT, CORDIAL_CLIENT)
+            }
+            if sys.platform.startswith('linux') and proxy_master is not None
+            else {}
+        )
         # Never forcibly restart Sober instances predating this Fleasion monitor
         self._sober_preexisting_scope = (
             sober_flatpak_session_identity()
@@ -121,6 +145,7 @@ class RobloxExitMonitor(QObject):
         self._macos_plain_launches: dict[int, Path] = {}
         self._rosemary_launch_interceptor: RosemaryLaunchInterceptor | None = None
         self._mocktail_launch_interceptor: MocktailLaunchInterceptor | None = None
+        self._cordial_launch_interceptor: CordialLaunchInterceptor | None = None
         if (
             sys.platform.startswith('linux')
             and proxy_master is not None
@@ -153,6 +178,27 @@ class RobloxExitMonitor(QObject):
                 ),
             )
             self._mocktail_launch_interceptor.start()
+            self._cordial_launch_interceptor = CordialLaunchInterceptor(
+                is_armed=self._cordial_interception_armed,
+                proxy_url=proxy_master.roblox_env_proxy_url,
+                proxy_environment=native_proxy_environment,
+                executable=lambda: cordial_engine_executable(
+                    installation.executable
+                    if (
+                        (
+                            installation := getattr(
+                                proxy_master, '_active_linux_client_installation', None
+                            )
+                        )
+                        is not None
+                        and installation.key == 'cordial'
+                        and installation.client.runtime == 'native'
+                    )
+                    else None
+                ),
+                on_replay=self._note_mocktail_replay,
+            )
+            self._cordial_launch_interceptor.start()
         macos_env_proxy_enabled = (
             sys.platform == 'darwin'
             and env_lifecycle is not None
@@ -204,6 +250,8 @@ class RobloxExitMonitor(QObject):
             self._rosemary_launch_interceptor.stop()
         if self._mocktail_launch_interceptor is not None:
             self._mocktail_launch_interceptor.stop()
+        if self._cordial_launch_interceptor is not None:
+            self._cordial_launch_interceptor.stop()
 
     def _rosemary_uri_interception_armed(self) -> bool:
         """Only replay Player after the Rosemary proxy is actually listening."""
@@ -228,6 +276,18 @@ class RobloxExitMonitor(QObject):
             and self.config_manager.proxy_mode == 'env'
             and self.config_manager.proxy_features_enabled
             and getattr(master, '_active_linux_client_key', None) in {'mocktail', 'nightcap'}
+            and (installation := get_selected_linux_client_installation()) is not None
+            and installation.client.runtime == 'native'
+            and master.wait_for_env_proxy_ready(timeout=0.0)
+        )
+
+    def _cordial_interception_armed(self) -> bool:
+        master = self._proxy_master
+        return bool(
+            master is not None
+            and self.config_manager.proxy_mode == 'env'
+            and self.config_manager.proxy_features_enabled
+            and getattr(master, '_active_linux_client_key', None) == 'cordial'
             and (installation := get_selected_linux_client_installation()) is not None
             and installation.client.runtime == 'native'
             and master.wait_for_env_proxy_ready(timeout=0.0)
@@ -460,9 +520,20 @@ class RobloxExitMonitor(QObject):
             # The replacement Flatpak launcher has not appeared yet
             # Do not bounce the proxy back to Rosemary during this handoff
             return False
+        handoff = self._community_handoff
+        if (
+            handoff is not None
+            and selected.key != handoff[0]
+            and getattr(proxy, '_active_linux_client_key', None) == handoff[0]
+            and time.monotonic() < handoff[1]
+        ):
+            # The newly replayed Flatpak is not visible yet; retain its proxy
+            return False
         self._linux_auto_observed_running = is_linux_client_running(selected)
         if selected.key == 'sober' and self._linux_auto_observed_running:
             self._sober_handoff_until = 0.0
+        if handoff is not None and selected.key == handoff[0] and self._linux_auto_observed_running:
+            self._community_handoff = None
         if not self._linux_auto_observed_running:
             return True
         if selected.key == getattr(proxy, '_active_linux_client_key', None):
@@ -477,6 +548,20 @@ class RobloxExitMonitor(QObject):
                 or self._sober_preexisting_ambiguous
             ):
                 pending_sober = None
+        pending_community = ()
+        if (
+            selected.key in {'nightcap', 'cordial'}
+            and selected.client.runtime == 'flatpak'
+            and callable(getattr(proxy, 'roblox_env_proxy_url', None))
+        ):
+            preexisting = self._community_preexisting_scopes.get(selected.key, frozenset())
+            pending_community = tuple(
+                snapshot
+                for snapshot in capture_community_flatpak_launches(
+                    selected, proxy_url=proxy.roblox_env_proxy_url()
+                )
+                if snapshot.scope not in preexisting and not snapshot.already_proxied
+            )
         if not proxy.wait_for_env_proxy_ready(timeout=0.0):
             # The initial owner may still be starting; retry on the next poll
             return False
@@ -515,6 +600,27 @@ class RobloxExitMonitor(QObject):
                 self._sober_handoff_until = time.monotonic() + 10.0
                 proxy.rearm_custom_fflag_delivery_for_player_launch()
                 # The next poll sees the replacement as a new adopted Player
+                self._player_was_running = False
+                self.was_running = False
+                self._linux_auto_observed_running = None
+                return False
+
+        if (
+            pending_community
+            and getattr(proxy, '_linux_env_proxy_override_client_key', None) == selected.key
+            and getattr(proxy, '_active_linux_client_key', None) == selected.key
+        ):
+            replayed = False
+            for snapshot in pending_community:
+                # Avoid an automatic cache purge while Flatpak exits
+                self._mocktail_replay_suppress_until = time.monotonic() + 5.0
+                if replay_community_flatpak_launch(
+                    selected, snapshot, proxy_url=proxy.roblox_env_proxy_url()
+                ):
+                    replayed = True
+            if replayed:
+                self._community_handoff = (selected.key, time.monotonic() + 10.0)
+                proxy.rearm_custom_fflag_delivery_for_player_launch()
                 self._player_was_running = False
                 self.was_running = False
                 self._linux_auto_observed_running = None

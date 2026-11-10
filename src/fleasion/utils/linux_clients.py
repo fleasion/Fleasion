@@ -630,6 +630,7 @@ def running_cordial_players(
     proc_root: Path = Path('/proc'),
     executable: Path | None = None,
     flatpak_id: str | None = None,
+    native_only: bool = False,
 ) -> tuple[MocktailSession, ...]:
     """Find only Cordial engine processes, not its GTK launcher or plugins."""
     try:
@@ -656,9 +657,11 @@ def running_cordial_players(
             argv = (process / 'cmdline').read_bytes().split(b'\0')
             if not argv or Path(os.fsdecode(argv[0])).name != 'cordial-run':
                 continue
-            if flatpak_id is not None:
+            if flatpak_id is not None or native_only:
                 cgroup = (process / 'cgroup').read_text(encoding='utf-8', errors='replace')
-                if f'app-flatpak-{flatpak_id}-' not in cgroup:
+                if native_only and 'app-flatpak-' in cgroup:
+                    continue
+                if flatpak_id is not None and f'app-flatpak-{flatpak_id}-' not in cgroup:
                     continue
             with (process / 'maps').open(encoding='utf-8', errors='replace') as maps:
                 if not any('libroblox.so' in line.lower() for line in maps):
@@ -670,6 +673,23 @@ def running_cordial_players(
         except OSError, IndexError, ValueError:
             continue
     return tuple(sorted(sessions, key=lambda session: session.pid))
+
+
+def running_installed_cordial_players(
+    installation: LinuxClientInstallation, *, proc_root: Path = Path('/proc')
+) -> tuple[MocktailSession, ...]:
+    """Enumerate engines belonging to this exact native or Flatpak installation."""
+    if installation.key != 'cordial':
+        return ()
+    if installation.client.runtime == 'flatpak':
+        return running_cordial_players(proc_root=proc_root, flatpak_id=installation.app_id)
+    shell = installation.executable
+    if shell is None or shell.name != 'cordial-shell':
+        return ()
+    engine = shell.with_name('cordial-run')
+    if not engine.is_file():
+        return ()
+    return running_cordial_players(proc_root=proc_root, executable=engine, native_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1140,12 +1160,7 @@ def select_linux_client(
                 starts[key] = max(session.start_ticks for session in (*sessions, *launchers))
         if 'cordial' in by_key:
             installation = by_key['cordial']
-            sessions = running_cordial_players(
-                proc_root=proc_root,
-                flatpak_id=installation.app_id
-                if installation.client.runtime == 'flatpak'
-                else None,
-            )
+            sessions = running_installed_cordial_players(installation, proc_root=proc_root)
             launchers = running_community_launchers(
                 'cordial-shell',
                 proc_root=proc_root,
