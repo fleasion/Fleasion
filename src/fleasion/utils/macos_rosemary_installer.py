@@ -20,10 +20,16 @@ from fleasion.utils.paths import CONFIG_DIR
 
 PINNED_UPSTREAM_BASE = '04cc76cd4c73e492ac3e780903c078d3b6115a63'
 PINNED_RELEASE_TAG = 'fleasion-rosemary-v1'
-# Filled only after the secure-IPC fork build passes both macOS runners and is released
-PINNED_SOURCE_COMMIT = ''
-PINNED_ARCHIVE_SHA256: dict[str, str] = {}
-PINNED_MANIFEST_SHA256: dict[str, str] = {}
+# Pinned to the published fleasion-rosemary-v1 prerelease assets
+PINNED_SOURCE_COMMIT = '7ea9941de8a0ea4435189d1f24159d707187d21f'
+PINNED_ARCHIVE_SHA256: dict[str, str] = {
+    'arm64': '630928fe9848120fa57c1745c0e664604b8c289962c381dc9afc0ca105e65b49',
+    'x86_64': 'e1c3ce9b317f8cbede02b4af624bfce21286347b9e86905b3eb4a938ae97adb1',
+}
+PINNED_MANIFEST_SHA256: dict[str, str] = {
+    'arm64': '3140c65340d8e74c309d6ff5e669acb129be858726810fd4a4c6290692343c99',
+    'x86_64': 'ef2c6a3ec8711bf4ea087a101779a5b795f8f2727e56acef60920735ec9949f2',
+}
 
 _REPO_RELEASES = 'https://github.com/Spencer0187/rosemary/releases/download'
 _REQUIRED_FILES = frozenset(

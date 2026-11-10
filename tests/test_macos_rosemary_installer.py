@@ -64,6 +64,19 @@ def _manifest_hash(archive: Path) -> str:
         return hashlib.sha256(manifest.read()).hexdigest()
 
 
+
+def test_v1_prerelease_pins_are_complete_for_both_macos_architectures() -> None:
+    assert installer.PINNED_BUILD.available
+    assert installer.PINNED_BUILD.source_commit == '7ea9941de8a0ea4435189d1f24159d707187d21f'
+    assert installer.PINNED_BUILD.release_tag == 'fleasion-rosemary-v1'
+    for arch in ('arm64', 'x86_64'):
+        assert len(installer.PINNED_BUILD.archive_sha256[arch]) == 64
+        assert len(installer.PINNED_BUILD.manifest_sha256[arch]) == 64
+        assert installer.release_url(installer.PINNED_BUILD, arch).endswith(
+            f'/Rosemary-Fleasion-7ea9941de8a0-macos-{arch}.tar.gz'
+        )
+
+
 def test_unpublished_release_refuses_download(pin: installer.PinnedBuild, tmp_path: Path) -> None:
     unconfigured = installer.PinnedBuild('', pin.upstream_base, pin.release_tag, {})
     assert installer.installed_binary(unconfigured, config_dir=tmp_path) is None
