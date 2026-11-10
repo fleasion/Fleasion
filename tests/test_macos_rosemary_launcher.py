@@ -87,6 +87,7 @@ def test_managed_launch_starts_proxy_before_rosemary_and_attaches_ipc(
     events: list[str] = []
     monkeypatch.setattr(launcher.macos_rosemary_installer, 'install_pinned_runtime', lambda: runtime)
     monkeypatch.setattr(launcher, 'native_update_if_needed', lambda **_kwargs: events.append('native-check') or app)
+    monkeypatch.setattr(launcher, 'ensure_managed_prefix', lambda *_args, **_kw: events.append('prefix-ready'))
     monkeypatch.setattr(launcher.platform_macos, 'is_roblox_running', lambda: False)
     monkeypatch.setattr(launcher.macos_rosemary_memory, 'active_session', lambda: None)
     config = SimpleNamespace(macos_rosemary_enabled=False, proxy_mode='hosts', proxy_features_enabled=False)
@@ -130,7 +131,7 @@ def test_managed_launch_starts_proxy_before_rosemary_and_attaches_ipc(
     monkeypatch.setattr(launcher.macos_rosemary_memory, 'set_active_session', lambda _session: events.append('registered'))
     result = launcher.launch_managed(cast('object', config), cast('object', Proxy()))
     assert result is session
-    assert events == ['native-check', 'proxy-start', 'proxy-ready', 'rosemary-launch', 'registered']
+    assert events == ['native-check', 'prefix-ready', 'proxy-start', 'proxy-ready', 'rosemary-launch', 'registered']
     assert config.macos_rosemary_enabled
     assert config.proxy_mode == 'env'
     assert config.proxy_features_enabled
@@ -143,6 +144,7 @@ def test_managed_launch_fails_closed_when_proxy_never_ready(
     app = _installed_app(tmp_path, '0.746.0.7461264')
     monkeypatch.setattr(launcher.macos_rosemary_installer, 'install_pinned_runtime', lambda: tmp_path / 'rosemary')
     monkeypatch.setattr(launcher, 'native_update_if_needed', lambda **_kwargs: app)
+    monkeypatch.setattr(launcher, 'ensure_managed_prefix', lambda *_args, **_kw: None)
     monkeypatch.setattr(launcher.platform_macos, 'is_roblox_running', lambda: False)
     monkeypatch.setattr(launcher.macos_rosemary_memory, 'active_session', lambda: None)
     monkeypatch.setattr(launcher.macos_rosemary_memory, 'launch_with_private_memory', lambda *_args, **_kwargs: pytest.fail('should not spawn'))
@@ -158,3 +160,34 @@ def test_managed_launch_fails_closed_when_proxy_never_ready(
 
     with pytest.raises(launcher.ManagedLaunchError, match='did not become ready'):
         launcher.launch_managed(cast('object', config), cast('object', Proxy()))
+
+
+def test_first_run_provisions_prefix_before_ipc_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(launcher, 'managed_prefix_directory', lambda: tmp_path / 'isolated-prefix')
+    observed: list[tuple[list[str], dict[str, str], int]] = []
+
+    def prefix_create(command: list[str], **kwargs: object) -> SimpleNamespace:
+        observed.append((command, cast('dict[str, str]', kwargs['env']), cast('int', kwargs['timeout'])))
+        return SimpleNamespace(returncode=0, stderr=b'')
+
+    monkeypatch.setattr(launcher.subprocess, 'run', prefix_create)
+    launcher.ensure_managed_prefix(tmp_path / 'Rosemary/bin/rosemary')
+    command, env, timeout = observed.pop()
+    assert command == [str(tmp_path / 'Rosemary/bin/rosemary'), 'prefix', 'create', str(tmp_path / 'isolated-prefix')]
+    assert env['ROSEMARY_PREFIX_SETUP'] == 'download'
+    assert env['ROSEMARY_OBJC'] == 'builtin'
+    assert env['ROSEMARY_LIBC'] == 'builtin'
+    assert timeout > 25
+
+
+def test_failed_prefix_provision_does_not_continue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        launcher.subprocess, 'run',
+        lambda *_a, **_kw: SimpleNamespace(returncode=1, stderr=b'missing verified MiniDarwin base'),
+    )
+    with pytest.raises(launcher.ManagedLaunchError, match='missing verified MiniDarwin base'):
+        launcher.ensure_managed_prefix(tmp_path / 'Rosemary/bin/rosemary')

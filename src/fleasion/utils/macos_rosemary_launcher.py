@@ -152,6 +152,38 @@ def managed_prefix_directory() -> Path:
     return CONFIG_DIR / 'runtimes' / 'rosemary' / 'prefix'
 
 
+def ensure_managed_prefix(
+    runtime_executable: Path, *, announce: Callable[[str], None] | None = None
+) -> None:
+    """Provision Rosemary's verified Darwin base before the IPC startup deadline."""
+    prefix = managed_prefix_directory()
+    if announce:
+        announce('Preparing the isolated Rosemary prefix and verified MiniDarwin base...')
+    env = os.environ.copy()
+    env.update(
+        {
+            'ROSEMARY_PREFIX_SETUP': 'download',
+            'ROSEMARY_OBJC': 'builtin',
+            'ROSEMARY_LIBC': 'builtin',
+        }
+    )
+    try:
+        result = subprocess.run(
+            [str(runtime_executable), 'prefix', 'create', str(prefix)],
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=600,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        msg = 'Could not finish preparing the Rosemary prefix'
+        raise ManagedLaunchError(msg) from exc
+    if result.returncode:
+        detail = result.stderr.decode(errors='replace')[-500:].strip()
+        msg = f'Rosemary prefix preparation failed: {detail}'
+        raise ManagedLaunchError(msg)
+
+
 def _rosemary_environment(proxy_url: str, *, runtime_executable: Path) -> dict[str, str]:
     env = os.environ.copy()
     env.update(_proxy_environment(proxy_url))
@@ -196,6 +228,7 @@ def launch_managed(
     if announce:
         announce('Checking native Roblox updates...')
     app = native_update_if_needed(announce=announce)
+    ensure_managed_prefix(executable, announce=announce)
     if platform_macos.is_roblox_running() and (
         not platform_macos.terminate_roblox() or not platform_macos.wait_for_roblox_exit(timeout=10)
     ):
