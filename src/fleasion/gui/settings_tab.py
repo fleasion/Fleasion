@@ -560,7 +560,10 @@ class SettingsTab(QWidget):
         limits_widget.setLayout(limits_row)
         section.add_widget(limits_widget)
 
-        if sys.platform == 'darwin':
+        if sys.platform == 'darwin' and self._config.macos_rosemary_enabled:
+            self._proxy_warning_label.setText(tr('settings.proxy.macos_managed'))
+            self._proxy_mode_combo.setEnabled(False)
+        elif sys.platform == 'darwin':
             self._proxy_warning_label.setText(tr('settings.proxy.macos_unavailable'))
             for control in (
                 self._proxy_features_chk,

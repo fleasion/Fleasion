@@ -1669,6 +1669,17 @@ class ReplacerConfigWindow(QDialog):
 
         footer_layout.addStretch()
 
+        if sys.platform == 'darwin':
+            from .macos_rosemary_launch import ManagedRobloxLaunch
+
+            self._macos_rosemary_launch = ManagedRobloxLaunch(
+                self, self.config_manager, self.proxy_master
+            )
+            launch_btn = QPushButton(tr('macos_rosemary.button'))
+            launch_btn.setObjectName('LaunchRobloxWithFleasion')
+            launch_btn.clicked.connect(self._macos_rosemary_launch.launch)
+            footer_layout.addWidget(launch_btn)
+
         self._conflict_badge = ConflictBadge(self.config_manager)
         footer_layout.addWidget(self._conflict_badge)
 

@@ -102,6 +102,7 @@ from fleasion.utils import (
     start_update_check,
     time_tracker,
 )
+from fleasion.utils.macos_rosemary_memory import shutdown_active_session
 from fleasion.utils.microprofiler import start_microprofiler
 from fleasion.utils.qt_diagnostics import install_qt_message_logging
 
@@ -627,6 +628,12 @@ def run_application() -> None:
     # Setup Roblox exit monitor for auto cache deletion (before tray to pass to it)
     roblox_monitor = RobloxExitMonitor(config_manager, proxy_master, mod_manager, env_lifecycle)
     app.aboutToQuit.connect(roblox_monitor.stop)
+    if sys.platform == 'darwin':
+        app.aboutToQuit.connect(
+            lambda: shutdown_active_session(
+                terminate=config_manager.close_env_proxy_roblox_on_exit
+            )
+        )
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
@@ -864,15 +871,25 @@ def run_application() -> None:
 
     schedule_startup_auth_check(config_manager, tray, app)
 
-    if sys.platform == 'darwin':
-        QTimer.singleShot(
-            0,
-            lambda: QMessageBox.information(
+    if (
+        sys.platform == 'darwin'
+        and not suppress_dashboard
+        and not config_manager.settings.get('macos_rosemary_notice_shown', False)
+    ):
+
+        def _show_macos_rosemary_notice() -> None:
+            if QApplication.activeModalWidget() is not None:
+                QTimer.singleShot(250, _show_macos_rosemary_notice)
+                return
+            QMessageBox.information(
                 visible_parent_widget(),
-                tr('app.macos_proxy_unavailable.title'),
-                tr('app.macos_proxy_unavailable.message'),
-            ),
-        )
+                tr('macos_rosemary.title'),
+                tr('macos_rosemary.notice'),
+            )
+            config_manager.settings['macos_rosemary_notice_shown'] = True
+            config_manager.save()
+
+        QTimer.singleShot(3500, _show_macos_rosemary_notice)
 
     # Run application
     sys.exit(app.exec())

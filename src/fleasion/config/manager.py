@@ -436,6 +436,8 @@ DEFAULT_SETTINGS: JsonObject = {
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
+    'macos_rosemary_enabled': False,
+    'macos_rosemary_notice_shown': False,
     'proxy_mode': 'env',
     # Linux client selection is registry-backed; auto follows a running Player or desktop handler.
     'linux_client': 'auto',
@@ -732,7 +734,11 @@ class ConfigManager:
         self.settings = self._load_settings()
         self._ensure_default_config()
         self.reconcile_configs(save=False)
-        if sys.platform == 'darwin' and self.settings.get('proxy_features_enabled') is not False:
+        if (
+            sys.platform == 'darwin'
+            and not self.macos_rosemary_enabled
+            and self.settings.get('proxy_features_enabled') is not False
+        ):
             self.settings['proxy_features_enabled'] = False
             self._save_settings()
 
@@ -1195,16 +1201,28 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def macos_rosemary_enabled(self) -> bool:
+        """Whether the user opted into Fleasion-managed Rosemary on macOS."""
+        return bool_value(self.settings.get('macos_rosemary_enabled', False), default=False)
+
+    @macos_rosemary_enabled.setter
+    def macos_rosemary_enabled(self, value: bool) -> None:
+        self.settings['macos_rosemary_enabled'] = bool(value)
+        self._save_settings()
+
+    @property
     def proxy_features_enabled(self) -> bool:
-        """Get proxy feature toggle; native macOS does not support interception."""
-        if sys.platform == 'darwin':
+        """Get proxy feature toggle; macOS requires managed Rosemary."""
+        if sys.platform == 'darwin' and not self.macos_rosemary_enabled:
             return False
         return bool_value(self.settings.get('proxy_features_enabled', True), default=True)
 
     @proxy_features_enabled.setter
     def proxy_features_enabled(self, value: bool) -> None:
-        """Set proxy feature toggle, except on unsupported native macOS."""
-        self.settings['proxy_features_enabled'] = bool(value) and sys.platform != 'darwin'
+        """Set proxy toggle; macOS is restricted to the managed launch path."""
+        self.settings['proxy_features_enabled'] = bool(value) and (
+            sys.platform != 'darwin' or self.macos_rosemary_enabled
+        )
         self._save_settings()
 
     @property

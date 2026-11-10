@@ -237,6 +237,9 @@ class RobloxExitMonitor(QObject):
         """Return whether it is safe to stop and replay a browser URI launch."""
         if sys.platform != 'darwin' or self._proxy_master is None or self.env_lifecycle is None:
             return False
+        if self.config_manager.macos_rosemary_enabled:
+            # Browser/deeplink replay is not implemented for pinned Rosemary.
+            return False
         if (
             self.config_manager.proxy_mode != 'env'
             or not self.config_manager.proxy_features_enabled

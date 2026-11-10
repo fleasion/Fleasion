@@ -4614,7 +4614,7 @@ class ProxyMaster:
         if IS_WINDOWS:
             return True
         if IS_MACOS:
-            return False
+            return bool(getattr(self.config_manager, 'macos_rosemary_enabled', False))
         if IS_LINUX:
             # Proxy startup normally precedes Player startup. Select the splice
             # backend from the configured client, not only a running process.
@@ -5951,8 +5951,10 @@ class ProxyMaster:
         raise _RetryProxyWithWindowsSelectorError
 
     def start(self) -> None:
-        if IS_MACOS:
-            log_buffer.log('Proxy', 'Native macOS proxy support is disabled; skipping startup')
+        if IS_MACOS and not bool(
+            getattr(getattr(self, 'config_manager', None), 'macos_rosemary_enabled', False)
+        ):
+            log_buffer.log('Proxy', 'macOS proxy requires an opted-in managed Rosemary launch')
             return
         with self._lock:
             if self._running:
