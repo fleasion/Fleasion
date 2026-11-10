@@ -84,7 +84,7 @@ from fleasion.config.manager import (
 from fleasion.config.rules import is_group_rule, is_profile_rule, is_rule_entry as _is_rule_entry
 from fleasion.gui.appearance_controls import ACCENT_KEYS, choice_label
 from fleasion.localization import tr, tr_count
-from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
+from fleasion.utils import format_count, get_icon_path, log_buffer, macos_rosemary_gate, open_folder
 from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.http import http_head_status
 from fleasion.utils.json_types import as_object_list, require_json_value
@@ -1669,7 +1669,7 @@ class ReplacerConfigWindow(QDialog):
 
         footer_layout.addStretch()
 
-        if sys.platform == 'darwin':
+        if sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
             from .macos_rosemary_launch import ManagedRobloxLaunch
 
             self._macos_rosemary_launch = ManagedRobloxLaunch(

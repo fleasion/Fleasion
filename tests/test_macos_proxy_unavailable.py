@@ -19,6 +19,9 @@ from fleasion.config import manager as config_module
 from fleasion.gui.settings_tab import SettingsTab
 from fleasion.localization import tr
 from fleasion.proxy import master as proxy_module
+from fleasion.proxy import splice_keys
+from fleasion.utils import macos_rosemary_gate
+from fleasion.utils import macos_rosemary_launcher as managed_launcher
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -156,3 +159,56 @@ def test_env_proxy_migration_persists_silently_and_preserves_later_choice(
         reloaded.proxy_mode = 'hosts'
         assert prepare_env_proxy_migration(reloaded) is False
         assert config_module.ConfigManager().proxy_mode == 'hosts'
+
+
+def test_stale_managed_rosemary_opt_in_is_revoked_until_rendering_is_ready(
+    monkeypatch: pytest.MonkeyPatch, config_paths: Path
+) -> None:
+    assert macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE is False
+    config_paths.parent.mkdir(parents=True)
+    config_paths.write_text(
+        json.dumps({'proxy_features_enabled': True, 'macos_rosemary_enabled': True}),
+        encoding='utf-8',
+    )
+    with monkeypatch.context() as macos:
+        macos.setattr(config_module.sys, 'platform', 'darwin')
+        config = config_module.ConfigManager()
+        assert config.macos_rosemary_enabled is False
+        assert config.proxy_features_enabled is False
+        assert json.loads(config_paths.read_text(encoding='utf-8')) == {
+            **config.settings,
+            'proxy_features_enabled': False,
+            'macos_rosemary_enabled': False,
+        }
+        config.macos_rosemary_enabled = True
+        config.proxy_features_enabled = True
+        assert config.macos_rosemary_enabled is False
+        assert config.proxy_features_enabled is False
+        assert config.settings['macos_rosemary_enabled'] is False
+        assert config.settings['proxy_features_enabled'] is False
+
+
+def test_dormant_macos_proxy_rejects_direct_stale_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    assert macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE is False
+    monkeypatch.setattr(proxy_module, 'IS_MACOS', True)
+    proxy = proxy_module.ProxyMaster.__new__(proxy_module.ProxyMaster)
+    proxy.config_manager = cast('object', SimpleNamespace(macos_rosemary_enabled=True))
+    proxy.start()
+    assert not hasattr(proxy, '_thread')
+    assert proxy._use_splice_transport() is False
+
+
+def test_dormant_macos_does_not_scan_guest_memory_for_tls_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(splice_keys.sys, 'platform', 'darwin')
+    monkeypatch.setattr(
+        splice_keys,
+        'scan_active',
+        lambda **_kwargs: pytest.fail('disabled macOS attempted memory IPC'),
+    )
+    assert splice_keys.KeyProvider()._read('00' * 32) == {}

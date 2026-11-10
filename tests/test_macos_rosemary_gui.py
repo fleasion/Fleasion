@@ -13,11 +13,17 @@ from PySide6.QtWidgets import QApplication, QPushButton
 
 from fleasion.config import manager as config_module
 from fleasion.gui import replacer_config as replacer_module
+from fleasion.utils import macos_rosemary_gate
 from fleasion.gui.replacer_config import ReplacerConfigWindow
 from fleasion.localization import tr
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def enable_managed_gui_for_internal_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(macos_rosemary_gate, 'MACOS_ROSEMARY_AVAILABLE', True)
 
 
 @pytest.fixture
@@ -70,4 +76,23 @@ def test_replacer_footer_has_managed_roblox_button_only_on_mac(
         other = ReplacerConfigWindow(config_module.ConfigManager())
         assert other.findChild(QPushButton, 'LaunchRobloxWithFleasion') is None
         other.close()
+    app.processEvents()
+
+
+def test_dormant_macos_gui_hides_managed_launch(
+    monkeypatch: pytest.MonkeyPatch, config_paths: Path
+) -> None:
+    monkeypatch.setattr(macos_rosemary_gate, 'MACOS_ROSEMARY_AVAILABLE', False)
+    app = QApplication.instance()
+    if not isinstance(app, QApplication):
+        app = QApplication([])
+    with monkeypatch.context() as macos:
+        macos.setattr(replacer_module.sys, 'platform', 'darwin')
+        macos.setattr(config_module.sys, 'platform', 'darwin')
+        config = config_module.ConfigManager()
+        window = ReplacerConfigWindow(config)
+        assert window.findChild(QPushButton, 'LaunchRobloxWithFleasion') is None
+        assert not hasattr(window, '_macos_rosemary_launch')
+        assert config.proxy_features_enabled is False
+        window.close()
     app.processEvents()

@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from fleasion.localization import tr
-from fleasion.utils import platform_macos
+from fleasion.utils import macos_rosemary_gate, platform_macos
 from fleasion.utils.logging import log_buffer
 from fleasion.utils.macos_rosemary_installer import (
     PINNED_BUILD,
@@ -51,7 +51,9 @@ class ManagedRobloxLaunch(QObject):
         return self._busy
 
     @Slot()
-    def launch(self) -> None:
+    def launch(self) -> None:  # ruff: ignore[too-many-return-statements]
+        if not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+            return
         if self._busy:
             return
         if (session := active_session()) is not None:

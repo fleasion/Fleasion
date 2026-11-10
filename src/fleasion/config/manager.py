@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeGuard, TypeIs
 
 from fleasion.appearance import accent_name, appearance_style, color_mode
+from fleasion.utils import macos_rosemary_gate
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object, is_json_value
 from fleasion.utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
 
@@ -528,8 +529,12 @@ def _write_json(path: Path, data: JsonValue) -> None:
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode='w', encoding='utf-8', dir=path.parent,
-            prefix=f'.{path.name}.', suffix='.tmp', delete=False,
+            mode='w',
+            encoding='utf-8',
+            dir=path.parent,
+            prefix=f'.{path.name}.',
+            suffix='.tmp',
+            delete=False,
         ) as handle:
             temporary_path = Path(handle.name)
             json.dump(data, handle, indent=2)
@@ -736,6 +741,14 @@ class ConfigManager:
         self.reconcile_configs(save=False)
         if (
             sys.platform == 'darwin'
+            and not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
+            and self.settings.get('macos_rosemary_enabled') is True
+        ):
+            # Do not reactivate a prior beta opt-in when support is restored
+            self.settings['macos_rosemary_enabled'] = False
+            self._save_settings()
+        if (
+            sys.platform == 'darwin'
             and not self.macos_rosemary_enabled
             and self.settings.get('proxy_features_enabled') is not False
         ):
@@ -807,10 +820,14 @@ class ConfigManager:
         try:
             loaded_value = self._load_json_file(self._config_file)
         except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError) as exc:
-            raise SettingsLoadError(self._config_file, 'Could not read existing Fleasion settings') from exc
+            raise SettingsLoadError(
+                self._config_file, 'Could not read existing Fleasion settings'
+            ) from exc
         loaded = as_json_object(loaded_value)
         if loaded is None:
-            raise SettingsLoadError(self._config_file, 'Existing Fleasion settings are not a JSON object')
+            raise SettingsLoadError(
+                self._config_file, 'Existing Fleasion settings are not a JSON object'
+            )
         return self._settings_from_loaded(loaded)
 
     @staticmethod
@@ -1203,11 +1220,15 @@ class ConfigManager:
     @property
     def macos_rosemary_enabled(self) -> bool:
         """Whether the user opted into Fleasion-managed Rosemary on macOS."""
-        return bool_value(self.settings.get('macos_rosemary_enabled', False), default=False)
+        return macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE and bool_value(
+            self.settings.get('macos_rosemary_enabled', False), default=False
+        )
 
     @macos_rosemary_enabled.setter
     def macos_rosemary_enabled(self, value: bool) -> None:
-        self.settings['macos_rosemary_enabled'] = bool(value)
+        self.settings['macos_rosemary_enabled'] = (
+            bool(value) and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
+        )
         self._save_settings()
 
     @property

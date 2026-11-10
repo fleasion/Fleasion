@@ -10,6 +10,12 @@ import pytest
 
 from fleasion.utils import macos_rosemary_launcher as launcher
 
+
+@pytest.fixture(autouse=True)
+def enable_managed_launch_for_internal_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(launcher.macos_rosemary_gate, 'MACOS_ROSEMARY_AVAILABLE', True)
+
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -191,3 +197,27 @@ def test_failed_prefix_provision_does_not_continue(
     )
     with pytest.raises(launcher.ManagedLaunchError, match='missing verified MiniDarwin base'):
         launcher.ensure_managed_prefix(tmp_path / 'Rosemary/bin/rosemary')
+
+
+def test_managed_launch_is_disabled_before_any_network_or_system_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(launcher.macos_rosemary_gate, 'MACOS_ROSEMARY_AVAILABLE', False)
+    monkeypatch.setattr(launcher.sys, 'platform', 'darwin')
+    monkeypatch.setattr(
+        launcher.macos_rosemary_installer,
+        'install_pinned_runtime',
+        lambda: pytest.fail('disabled launch attempted to download Rosemary'),
+    )
+    monkeypatch.setattr(
+        launcher,
+        'native_update_if_needed',
+        lambda **_kwargs: pytest.fail('disabled launch attempted to update Roblox'),
+    )
+    monkeypatch.setattr(
+        launcher,
+        'ensure_managed_prefix',
+        lambda *_args, **_kwargs: pytest.fail('disabled launch attempted to provision a prefix'),
+    )
+    with pytest.raises(launcher.ManagedLaunchError, match='disabled until Roblox rendering works'):
+        launcher.launch_managed(cast('object', object()), cast('object', object()))

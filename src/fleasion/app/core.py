@@ -98,6 +98,7 @@ from fleasion.utils import (
     LOG_FILE,
     get_icon_path,
     log_buffer,
+    macos_rosemary_gate,
     run_in_thread,
     start_update_check,
     time_tracker,
@@ -628,11 +629,9 @@ def run_application() -> None:
     # Setup Roblox exit monitor for auto cache deletion (before tray to pass to it)
     roblox_monitor = RobloxExitMonitor(config_manager, proxy_master, mod_manager, env_lifecycle)
     app.aboutToQuit.connect(roblox_monitor.stop)
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
         app.aboutToQuit.connect(
-            lambda: shutdown_active_session(
-                terminate=config_manager.close_env_proxy_roblox_on_exit
-            )
+            lambda: shutdown_active_session(terminate=config_manager.close_env_proxy_roblox_on_exit)
         )
 
     # Create system tray
@@ -871,7 +870,16 @@ def run_application() -> None:
 
     schedule_startup_auth_check(config_manager, tray, app)
 
-    if (
+    if sys.platform == 'darwin' and not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+        QTimer.singleShot(
+            0,
+            lambda: QMessageBox.information(
+                visible_parent_widget(),
+                tr('app.macos_proxy_unavailable.title'),
+                tr('app.macos_proxy_unavailable.message'),
+            ),
+        )
+    elif (
         sys.platform == 'darwin'
         and not suppress_dashboard
         and not config_manager.settings.get('macos_rosemary_notice_shown', False)

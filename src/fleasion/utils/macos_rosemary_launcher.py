@@ -12,7 +12,12 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from fleasion.utils import macos_rosemary_installer, macos_rosemary_memory, platform_macos
+from fleasion.utils import (
+    macos_rosemary_gate,
+    macos_rosemary_installer,
+    macos_rosemary_memory,
+    platform_macos,
+)
 from fleasion.utils.logging import log_buffer
 from fleasion.utils.paths import CONFIG_DIR
 
@@ -220,6 +225,9 @@ def launch_managed(
     """Download with consent beforehand, update the native app, then launch via Rosemary."""
     if sys.platform != 'darwin':
         msg = 'Managed macOS Rosemary launches are only available on macOS'
+        raise ManagedLaunchError(msg)
+    if not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+        msg = 'Managed macOS Rosemary support is disabled until Roblox rendering works'
         raise ManagedLaunchError(msg)
     if macos_rosemary_memory.active_session() is not None:
         msg = 'Roblox is already running through Fleasion-managed Rosemary'
