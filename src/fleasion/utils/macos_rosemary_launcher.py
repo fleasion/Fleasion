@@ -10,7 +10,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fleasion.utils import macos_rosemary_installer, macos_rosemary_memory, platform_macos
 from fleasion.utils.logging import log_buffer
@@ -37,10 +37,11 @@ class ManagedLaunchError(RuntimeError):
 def installed_roblox_version(app: Path = _ROBLOX_APP) -> str | None:
     try:
         with (app / 'Contents' / 'Info.plist').open('rb') as source:
-            info = plistlib.load(source)
+            info_value: object = plistlib.load(source)
     except OSError, ValueError, plistlib.InvalidFileException:
         return None
-    version = info.get('CFBundleShortVersionString') if isinstance(info, dict) else None
+    info = cast('dict[str, object]', info_value) if isinstance(info_value, dict) else {}
+    version = info.get('CFBundleShortVersionString')
     return version if isinstance(version, str) and version.startswith('0.') else None
 
 
@@ -50,11 +51,12 @@ def latest_roblox_version() -> str:
     )
     try:
         with urllib.request.urlopen(request, timeout=12) as response:  # ruff: ignore[suspicious-url-open-usage]
-            data = json.load(response)
+            data_value: object = json.load(response)
     except (OSError, ValueError, TimeoutError) as exc:
         msg = f'Could not check Roblox for updates: {exc}'
         raise ManagedLaunchError(msg) from exc
-    version = data.get('version') if isinstance(data, dict) else None
+    data = cast('dict[str, object]', data_value) if isinstance(data_value, dict) else {}
+    version = data.get('version')
     if not isinstance(version, str) or not version.startswith('0.') or len(version) > 50:
         msg = 'Roblox returned an invalid MacPlayer version'
         raise ManagedLaunchError(msg)

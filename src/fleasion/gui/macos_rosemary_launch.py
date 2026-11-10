@@ -110,7 +110,11 @@ class ManagedRobloxLaunch(QObject):
         from fleasion.utils.macos_rosemary_launcher import launch_managed
 
         try:
-            launch_managed(self._config_manager, self._proxy_master, announce=self.progress.emit)
+            proxy_master = self._proxy_master
+            if proxy_master is None:
+                msg = 'The Fleasion proxy is unavailable'
+                raise PinnedRuntimeError(msg)
+            launch_managed(self._config_manager, proxy_master, announce=self.progress.emit)
         except (OSError, RuntimeError, ValueError, PinnedRuntimeError) as error:
             log_buffer.log('Launcher', f'Managed macOS Rosemary launch failed: {error}')
             self.finished.emit(False, str(error))  # ruff: ignore[boolean-positional-value-in-call]

@@ -13,6 +13,7 @@ import tempfile
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlsplit
 
 from fleasion.utils.paths import CONFIG_DIR
@@ -44,13 +45,17 @@ class PinnedRuntimeError(RuntimeError):
     """The pinned runtime could not be verified or installed safely."""
 
 
+def _empty_manifests() -> dict[str, str]:
+    return {}
+
+
 @dataclass(frozen=True, slots=True)
 class PinnedBuild:
     source_commit: str
     upstream_base: str
     release_tag: str
     archive_sha256: dict[str, str]
-    manifest_sha256: dict[str, str] = field(default_factory=dict)
+    manifest_sha256: dict[str, str] = field(default_factory=_empty_manifests)
 
     @property
     def available(self) -> bool:
@@ -115,11 +120,15 @@ def _validated_manifest(root: Path, pin: PinnedBuild, arch: str) -> Path:
         if _sha256(source_path) != pin.manifest_sha256[arch].lower():
             msg = 'Pinned Rosemary source manifest checksum mismatch'
             raise PinnedRuntimeError(msg)
-        manifest = json.loads(source_path.read_text(encoding='utf-8'))
+        manifest_value: object = json.loads(source_path.read_text(encoding='utf-8'))
     except (OSError, ValueError, UnicodeDecodeError) as exc:
         msg = 'Pinned Rosemary source manifest is unreadable'
         raise PinnedRuntimeError(msg) from exc
-    if not isinstance(manifest, dict) or any(
+    if not isinstance(manifest_value, dict):
+        msg = 'Pinned Rosemary source manifest is not a JSON object'
+        raise PinnedRuntimeError(msg)
+    manifest = cast('dict[str, object]', manifest_value)
+    if any(
         manifest.get(key) != expected
         for key, expected in (
             ('schema_version', 1),
@@ -139,14 +148,12 @@ def _validated_manifest(root: Path, pin: PinnedBuild, arch: str) -> Path:
         msg = 'Pinned Rosemary executable checksum mismatch'
         raise PinnedRuntimeError(msg)
     graphics_hash = manifest.get('vulkan_library_sha256')
-    valid_graphics_metadata = (
-        manifest.get('vulkan_library') == 'MoltenVK'
-        and manifest.get('vulkan_version') == '1.4.2'
-        and isinstance(graphics_hash, str)
-        and len(graphics_hash) == 64
-    )
+    if not isinstance(graphics_hash, str) or len(graphics_hash) != 64:
+        msg = 'Pinned Rosemary Vulkan library hash is missing'
+        raise PinnedRuntimeError(msg)
     if (
-        not valid_graphics_metadata
+        manifest.get('vulkan_library') != 'MoltenVK'
+        or manifest.get('vulkan_version') != '1.4.2'
         or graphics.stat().st_size > _MAX_BINARY_BYTES
         or _sha256(graphics) != graphics_hash.lower()
     ):
@@ -188,7 +195,7 @@ def _download_archive(url: str, destination: Path, expected_sha256: str) -> None
     digest = hashlib.sha256()
     received = 0
     with urllib.request.urlopen(request, timeout=45) as source, destination.open('xb') as output:  # ruff: ignore[suspicious-url-open-usage]
-        if urlsplit(source.geturl()).scheme != 'https':
+        if urlsplit(str(source.geturl())).scheme != 'https':
             msg = 'Pinned Rosemary download redirected outside HTTPS'
             raise PinnedRuntimeError(msg)
         while chunk := source.read(_READ_CHUNK):
@@ -209,7 +216,7 @@ def _extract_archive(archive: Path, destination: Path) -> None:
     with tarfile.open(archive, 'r:gz') as compressed:
         members = {m.name.rstrip('/'): m for m in compressed.getmembers()}
         files = {name for name, member in members.items() if member.isfile()}
-        if files != _REQUIRED_FILES or set(members) - _REQUIRED_FILES - {
+        if files != set(_REQUIRED_FILES) or set(members) - _REQUIRED_FILES - {
             'Rosemary',
             'Rosemary/bin',
             'Rosemary/lib',
