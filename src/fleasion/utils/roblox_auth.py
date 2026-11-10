@@ -25,6 +25,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from .json_types import JsonObject, as_json_object
 from .linux_clients import (
     MOCKTAIL_CLIENT,
+    NIGHTCAP_CLIENT,
     SOBER_CLIENT,
     LinuxClientInstallation,
     running_mocktail_players,
@@ -865,11 +866,22 @@ def _mocktail_plaintext_store_allowed(path: Path) -> bool:  # ruff: ignore[too-m
         return False
 
     installation = _selected_linux_client_installation()
-    if installation is not None and installation.key == MOCKTAIL_CLIENT.key:
+    if installation is not None and installation.key in {MOCKTAIL_CLIENT.key, NIGHTCAP_CLIENT.key}:
+        root = (
+            installation.paths.flatpak_root
+            if installation.key == MOCKTAIL_CLIENT.key
+            else installation.paths.data_root.parent.parent
+        )
+        if path != root / 'auth' / 'roblox.cookie':
+            return False
         config = installation.paths.config_file
     else:
         # Recognize only the standard, isolated Mocktail auth layout
-        if path.name != 'roblox.cookie' or path.parent.name != 'auth' or path.parent.parent.name != 'mocktail':
+        if (
+            path.name != 'roblox.cookie'
+            or path.parent.name != 'auth'
+            or path.parent.parent.name != 'mocktail'
+        ):
             return False
         try:
             home = path.parents[4]
@@ -882,7 +894,7 @@ def _mocktail_plaintext_store_allowed(path: Path) -> bool:  # ruff: ignore[too-m
         return True
     try:
         source = config.read_text(encoding='utf-8')
-    except (OSError, UnicodeError):
+    except OSError, UnicodeError:
         return False
     # Fail closed on YAML syntax we cannot identify without a YAML parser
     values = [
@@ -892,14 +904,17 @@ def _mocktail_plaintext_store_allowed(path: Path) -> bool:  # ruff: ignore[too-m
     ]
     if any(match is None for match in values):
         return False
-    return not any(match is not None and match.group(1).lower() in {'true', '1'} for match in values)
+    return not any(
+        match is not None and match.group(1).lower() in {'true', '1'} for match in values
+    )
 
 
 def _rewrite_mocktail_cookie_header(payload: bytes, cookie: str) -> bytes:
     """Change the one Roblox credential, preserving other Mocktail cookies."""
     if (
-        not cookie or len(cookie) > 4096
-        or any(ord(char) <= 0x20 or ord(char) >= 0x7f or char == ';' for char in cookie)
+        not cookie
+        or len(cookie) > 4096
+        or any(ord(char) <= 0x20 or ord(char) >= 0x7F or char == ';' for char in cookie)
     ):
         code = 'invalid_cookie_value'
         raise _mocktail_auth_error(
@@ -924,12 +939,12 @@ def _rewrite_mocktail_cookie_header(payload: bytes, cookie: str) -> bytes:
         )
     segments = body.split(';')
     credential_indices = [
-        index for index, segment in enumerate(segments)
+        index
+        for index, segment in enumerate(segments)
         if segment.strip().startswith('.ROBLOSECURITY=')
     ]
     if len(credential_indices) != 1 or any(
-        '=' not in segment or not segment.split('=', 1)[0].strip()
-        for segment in segments
+        '=' not in segment or not segment.split('=', 1)[0].strip() for segment in segments
     ):
         code = 'cookie_store_unknown_format'
         raise _mocktail_auth_error(
@@ -1010,14 +1025,20 @@ class MocktailLocalAuthProvider:
                     stack.callback(os.close, dir_fd)
                     opened_dir = os.fstat(dir_fd)
                     if (opened_dir.st_dev, opened_dir.st_ino) != (
-                        directory_info.st_dev, directory_info.st_ino
+                        directory_info.st_dev,
+                        directory_info.st_ino,
                     ):
                         code = 'cookie_store_changed_during_write'
                         raise _mocktail_auth_error(
                             code,
                             'Mocktail auth directory changed during account switching.',
                         )
-                    lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
+                    lock_flags = (
+                        os.O_RDWR
+                        | os.O_CREAT
+                        | getattr(os, 'O_NOFOLLOW', 0)
+                        | getattr(os, 'O_CLOEXEC', 0)
+                    )
                     lock_fd = os.open(_MOCKTAIL_LOCK_FILENAME, lock_flags, 0o600, dir_fd=dir_fd)
                     stack.callback(os.close, lock_fd)
                     lock_info = os.fstat(lock_fd)
@@ -1052,7 +1073,9 @@ class MocktailLocalAuthProvider:
                             code, 'Mocktail login data is currently in use.'
                         ) from exc
                     opened = os.fstat(file_fd)
-                    if _linux_cookie_write_identity(opened) != _linux_cookie_write_identity(metadata):
+                    if _linux_cookie_write_identity(opened) != _linux_cookie_write_identity(
+                        metadata
+                    ):
                         code = 'cookie_store_changed_during_write'
                         raise _mocktail_auth_error(
                             code,
@@ -1068,7 +1091,9 @@ class MocktailLocalAuthProvider:
                     updated = _rewrite_mocktail_cookie_header(payload, cookie)
                     if len(updated) > _MOCKTAIL_MAX_COOKIE_BYTES:
                         code = 'cookie_store_too_large'
-                        raise _mocktail_auth_error(code, 'Updated Mocktail cookie data is too large.')
+                        raise _mocktail_auth_error(
+                            code, 'Updated Mocktail cookie data is too large.'
+                        )
                     if running_mocktail_players():
                         code = 'mocktail_running'
                         raise _mocktail_auth_error(
@@ -1078,15 +1103,36 @@ class MocktailLocalAuthProvider:
                     _atomic_replace_linux_cookie_file(path, updated, opened)
             except LinuxAuthWriteError as exc:
                 if 'Sober' in str(exc):
-                    raise LinuxAuthWriteError(exc.code, str(exc).replace('Sober', 'Mocktail')) from exc
+                    raise LinuxAuthWriteError(
+                        exc.code, str(exc).replace('Sober', 'Mocktail')
+                    ) from exc
                 raise
             except OSError as exc:
                 error = _linux_auth_os_error(exc)
-                raise LinuxAuthWriteError(error.code, str(error).replace('Sober', 'Mocktail')) from exc
+                raise LinuxAuthWriteError(
+                    error.code, str(error).replace('Sober', 'Mocktail')
+                ) from exc
         return True
 
 
+class NightcapLocalAuthProvider(MocktailLocalAuthProvider):
+    """Nightcap uses Mocktail's credential format in its own installation root."""
+
+    client_key = NIGHTCAP_CLIENT.key
+    source_name = NIGHTCAP_CLIENT.display_name
+
+    def cookie_path(self, installation: LinuxClientInstallation) -> Path:
+        return installation.paths.data_root.parent.parent / 'auth' / 'roblox.cookie'
+
+    def write_roblosecurity(self, path: Path, cookie: str) -> bool:
+        try:
+            return super().write_roblosecurity(path, cookie)
+        except LinuxAuthWriteError as exc:
+            raise LinuxAuthWriteError(exc.code, str(exc).replace('Mocktail', 'Nightcap')) from exc
+
+
 MOCKTAIL_LOCAL_AUTH_PROVIDER = MocktailLocalAuthProvider()
+NIGHTCAP_LOCAL_AUTH_PROVIDER = NightcapLocalAuthProvider()
 
 
 ROSEMARY_LOCAL_AUTH_PROVIDER = RosemaryLocalAuthProvider()
@@ -1106,6 +1152,7 @@ LINUX_LOCAL_AUTH_PROVIDERS_BY_KEY: Mapping[
         SOBER_LOCAL_AUTH_PROVIDER.client_key: SOBER_LOCAL_AUTH_PROVIDER,
         ROSEMARY_LOCAL_AUTH_PROVIDER.client_key: ROSEMARY_LOCAL_AUTH_PROVIDER,
         MOCKTAIL_LOCAL_AUTH_PROVIDER.client_key: MOCKTAIL_LOCAL_AUTH_PROVIDER,
+        NIGHTCAP_LOCAL_AUTH_PROVIDER.client_key: NIGHTCAP_LOCAL_AUTH_PROVIDER,
     }
 )
 
@@ -1175,7 +1222,10 @@ def _selected_linux_client_installation() -> LinuxClientInstallation | None:
     return _platform_linux.get_selected_linux_client_installation()
 
 
-def _selected_linux_local_auth_candidate() -> tuple[LinuxLocalAuthProvider | RosemaryLocalAuthProvider | MocktailLocalAuthProvider, Path] | None:
+def _selected_linux_local_auth_candidate() -> (
+    tuple[LinuxLocalAuthProvider | RosemaryLocalAuthProvider | MocktailLocalAuthProvider, Path]
+    | None
+):
     """Return the selected client's opt-in local auth provider and path."""
     try:
         installation = _selected_linux_client_installation()
@@ -2151,10 +2201,14 @@ def get_roblosecurity(
     if browser_cookie:
         return browser_cookie
 
-    selected_candidate = _selected_linux_local_auth_candidate() if sys.platform.startswith('linux') else None
+    selected_candidate = (
+        _selected_linux_local_auth_candidate() if sys.platform.startswith('linux') else None
+    )
     failure_details: dict[str, object] = {
         'local_appdata': str(LOCAL_APPDATA),
-        'default_cookie_path': str(selected_candidate[1] if selected_candidate else ROBLOX_COOKIES_PATH),
+        'default_cookie_path': str(
+            selected_candidate[1] if selected_candidate else ROBLOX_COOKIES_PATH
+        ),
         'userprofile': os.environ.get('USERPROFILE') or '',
         'username': os.environ.get('USERNAME') or '',
         'home': str(USER_HOME),

@@ -24,8 +24,10 @@ from typing import TYPE_CHECKING, Literal, TypedDict, Unpack, overload
 from fleasion.localization import tr
 
 from .linux_clients import (
+    CORDIAL_CLIENT,
     LINUX_CLIENTS_BY_KEY,
     MOCKTAIL_CLIENT,
+    NIGHTCAP_CLIENT,
     ROSEMARY_CLIENT,
     SOBER_CLIENT,
     LinuxClientDescriptor,
@@ -35,6 +37,8 @@ from .linux_clients import (
     get_linux_client,
     read_rosemary_session,
     rosemary_guest_home,
+    running_community_launchers,
+    running_cordial_players,
     running_mocktail_players,
     running_rosemary_players,
     running_rosemary_studios,
@@ -175,7 +179,7 @@ _linux_client_preference: str | None = None
 _last_auto_linux_client_key: str | None = None
 _active_linux_proxy_client_key: str | None = None
 _active_rosemary_proxy_url: str | None = None
-_active_mocktail_proxy_url: str | None = None
+_active_native_proxy_url: str | None = None
 _rosemary_app_path: str | None = None
 _rosemary_binary_path: str | None = None
 _rosemary_prefix_path: str | None = None
@@ -396,8 +400,11 @@ def _write_recent_auto_linux_client(key: str) -> None:
     try:
         LAST_AUTO_LINUX_CLIENT_STATE.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-            mode='w', encoding='utf-8', dir=LAST_AUTO_LINUX_CLIENT_STATE.parent,
-            prefix='.last-auto-client-', delete=False,
+            mode='w',
+            encoding='utf-8',
+            dir=LAST_AUTO_LINUX_CLIENT_STATE.parent,
+            prefix='.last-auto-client-',
+            delete=False,
         ) as stream:
             temporary = Path(stream.name)
             stream.write(f'{key}\n')
@@ -428,8 +435,7 @@ def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
         observed_running_starts=detected_starts,
     )
     if selected is not None and (
-        selected.key in detected_starts
-        or (len(installed) <= 1 and bool(_client_pids(selected)))
+        selected.key in detected_starts or (len(installed) <= 1 and bool(_client_pids(selected)))
     ):
         # Do not turn a fallback desktop handler into a persistent selection
         if selected.key != recent:
@@ -541,10 +547,24 @@ def linux_client_main_process(
         if sessions and ticks_per_second > 0:
             session = sessions[0]
             return session.pid, session.start_ticks / ticks_per_second
-    elif installation.key == MOCKTAIL_CLIENT.key:
-        sessions = running_mocktail_players(
-            proc_root=PROC_ROOT, executable=installation.executable
-        )
+    elif installation.key in {MOCKTAIL_CLIENT.key, NIGHTCAP_CLIENT.key, CORDIAL_CLIENT.key}:
+        if installation.key == CORDIAL_CLIENT.key:
+            sessions = running_cordial_players(
+                proc_root=PROC_ROOT,
+                flatpak_id=installation.app_id
+                if installation.client.runtime == 'flatpak'
+                else None,
+            )
+        else:
+            sessions = running_mocktail_players(
+                proc_root=PROC_ROOT,
+                executable=installation.executable
+                if installation.client.runtime == 'native'
+                else None,
+                flatpak_id=installation.app_id
+                if installation.client.runtime == 'flatpak'
+                else None,
+            )
         try:
             ticks_per_second = float(os.sysconf('SC_CLK_TCK'))
         except AttributeError, OSError, ValueError:
@@ -564,13 +584,26 @@ def _client_pids(installation: LinuxClientInstallation) -> list[int]:
             for session in running_rosemary_players(proc_root=PROC_ROOT)
             if installation.app_bundle is None or session.bundle == installation.app_bundle
         ]
-    if installation.key == MOCKTAIL_CLIENT.key:
-        return [
-            session.pid
-            for session in running_mocktail_players(
-                proc_root=PROC_ROOT, executable=installation.executable
-            )
-        ]
+    if installation.key == CORDIAL_CLIENT.key:
+        flatpak_id = installation.app_id if installation.client.runtime == 'flatpak' else None
+        engines = running_cordial_players(proc_root=PROC_ROOT, flatpak_id=flatpak_id)
+        launchers = running_community_launchers(
+            'cordial-shell',
+            proc_root=PROC_ROOT,
+            executable=installation.executable if installation.client.runtime == 'native' else None,
+            flatpak_id=flatpak_id,
+        )
+        return list(dict.fromkeys(session.pid for session in (*engines, *launchers)))
+    if installation.key in {MOCKTAIL_CLIENT.key, NIGHTCAP_CLIENT.key}:
+        executable = installation.executable if installation.client.runtime == 'native' else None
+        flatpak_id = installation.app_id if installation.client.runtime == 'flatpak' else None
+        engines = running_mocktail_players(
+            proc_root=PROC_ROOT, executable=executable, flatpak_id=flatpak_id
+        )
+        launchers = running_community_launchers(
+            'mocktail', proc_root=PROC_ROOT, executable=executable, flatpak_id=flatpak_id
+        )
+        return list(dict.fromkeys(session.pid for session in (*engines, *launchers)))
     found: list[int] = []
     seen: set[int] = set()
     for name in installation.client.process_names:
@@ -592,7 +625,8 @@ def _client_pids(installation: LinuxClientInstallation) -> list[int]:
     if installation.key == SOBER_CLIENT.key:
         # Sober's Android engine may outlive the native launcher
         found.extend(
-            session.pid for session in running_sober_players(proc_root=PROC_ROOT)
+            session.pid
+            for session in running_sober_players(proc_root=PROC_ROOT)
             if session.pid not in seen
         )
     return found
@@ -683,7 +717,8 @@ def _terminate_verified_rosemary_player(  # ruff: ignore[too-many-return-stateme
         if select.select([fd], [], [], 1.5)[0]:
             return True
         log_buffer.log(
-            'Launcher', 'Rosemary Player did not exit after SIGTERM; escalating verified Player to SIGKILL'
+            'Launcher',
+            'Rosemary Player did not exit after SIGTERM; escalating verified Player to SIGKILL',
         )
         signal.pidfd_send_signal(fd, signal.SIGKILL)
         if select.select([fd], [], [], 2.0)[0]:
@@ -838,9 +873,7 @@ def _rosemary_cache_targets(
     return tuple(targets)
 
 
-def _clear_rosemary_cache(
-    installation: LinuxClientInstallation, messages: list[str]
-) -> None:
+def _clear_rosemary_cache(installation: LinuxClientInstallation, messages: list[str]) -> None:
     targets = _rosemary_cache_targets(installation)
     if targets is None:
         messages.append('Rosemary guest cache path could not be verified; no Roblox cache deleted')
@@ -852,10 +885,8 @@ def _clear_rosemary_cache(
         _delete_path(path, messages, label)
 
 
-def _mocktail_cache_target_is_safe(
-    installation: LinuxClientInstallation, target: Path
-) -> bool:
-    """Reject redirects through symlinks outside Mocktail's owned cache roots."""
+def _mocktail_cache_target_is_safe(installation: LinuxClientInstallation, target: Path) -> bool:
+    """Reject symlink redirects outside a selected community client's cache roots."""
     for base in (installation.paths.flatpak_root, installation.paths.cache_root):
         if not target.is_relative_to(base):
             continue
@@ -873,12 +904,50 @@ def _mocktail_cache_target_is_safe(
 def _delete_client_cache_path(
     installation: LinuxClientInstallation, path: Path, messages: list[str], label: str
 ) -> None:
-    if installation.key == MOCKTAIL_CLIENT.key and not _mocktail_cache_target_is_safe(
-        installation, path
-    ):
-        messages.append(f'{label} is outside a safe Mocktail storage path; deletion skipped')
+    if installation.key in {
+        MOCKTAIL_CLIENT.key,
+        NIGHTCAP_CLIENT.key,
+        CORDIAL_CLIENT.key,
+    } and not _mocktail_cache_target_is_safe(installation, path):
+        messages.append(
+            f'{label} is outside a safe {installation.display_name} storage path; deletion skipped'
+        )
         return
     _delete_path(path, messages, label)
+
+
+def _clear_cordial_profile_caches(
+    installation: LinuxClientInstallation,
+    messages: list[str],
+) -> None:
+    """Delete only Roblox cache directories for Cordial's independent profiles."""
+    profiles = installation.paths.data_root / 'profiles'
+    if profiles.is_symlink() or not profiles.is_dir():
+        messages.append('Cordial profile cache root is unavailable or unsafe; deletion skipped')
+        return
+    try:
+        entries = sorted(profiles.iterdir())
+    except OSError:
+        messages.append('Cordial profile list could not be read; deletion skipped')
+        return
+    for profile in entries:
+        if (
+            profile.is_symlink()
+            or not profile.is_dir()
+            or not 0 < len(profile.name) <= 64
+            or not all(
+                character.isascii() and (character.isalnum() or character in '-_')
+                for character in profile.name
+            )
+        ):
+            continue
+        for target, label in (
+            (profile / 'data/cache', 'Runtime cache'),
+            (profile / 'data/files/appData/rbx-storage', 'Roblox asset cache'),
+        ):
+            _delete_client_cache_path(
+                installation, target, messages, f'Cordial {profile.name} {label}'
+            )
 
 
 def delete_cache(*, terminate_running: bool = True) -> list[str]:
@@ -920,14 +989,16 @@ def delete_cache(*, terminate_running: bool = True) -> list[str]:
 
     if installation.client.runtime == 'rosemary':
         _clear_rosemary_cache(installation, messages)
-    elif installation.key == MOCKTAIL_CLIENT.key:
-        # Mocktail keeps Android rbx-storage outside its appData directory.
+    elif installation.key in {MOCKTAIL_CLIENT.key, NIGHTCAP_CLIENT.key}:
+        # Mocktail and Nightcap keep Android storage outside appData.
         # Never remove its managed APK payloads, auth cookies or client settings.
         target = installation.paths.data_root / 'rbx-storage'
         if target.is_symlink() or installation.paths.data_root.is_symlink():
-            messages.append('Mocktail Android storage is a symbolic link; deletion skipped')
+            messages.append(f'{client_name} Android storage is a symbolic link; deletion skipped')
         else:
-            _delete_client_cache_path(installation, target, messages, 'Mocktail Android rbx-storage')
+            _delete_client_cache_path(
+                installation, target, messages, f'{client_name} Android rbx-storage'
+            )
 
     storage_db = installation.paths.storage_db
     storage_folder: Path | None = None
@@ -936,13 +1007,18 @@ def delete_cache(*, terminate_running: bool = True) -> list[str]:
         for suffix in ('-wal', '-shm'):
             sidecar = Path(str(storage_db) + suffix)
             if sidecar.exists():
-                _delete_client_cache_path(installation, sidecar, messages, f'Storage database {suffix}')
+                _delete_client_cache_path(
+                    installation, sidecar, messages, f'Storage database {suffix}'
+                )
 
         storage_folder = storage_db.parent / 'rbx-storage'
         _delete_client_cache_path(installation, storage_folder, messages, 'Storage folder')
     cache_storage = installation.paths.cache_storage_dir
     if cache_storage is not None and cache_storage != storage_folder:
         _delete_client_cache_path(installation, cache_storage, messages, 'Cache storage folder')
+
+    if installation.key == CORDIAL_CLIENT.key:
+        _clear_cordial_profile_caches(installation, messages)
 
     if APP_CACHE_DIR.exists():
         _clear_fleasion_obj_cache(messages)
@@ -971,7 +1047,10 @@ def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
 
     resource_roots = installation.paths.resource_roots
     if (
-        installation.client.runtime == 'flatpak'
+        (
+            installation.client.runtime == 'flatpak'
+            or installation.key in {NIGHTCAP_CLIENT.key, CORDIAL_CLIENT.key}
+        )
         and installation.paths.data_root.exists()
         and resource_roots
     ):
@@ -1205,9 +1284,8 @@ def _launch_roblox_uri(target: str) -> bool:
     if installation is None:
         log_buffer.log('Launch', 'Cannot launch Roblox URI: selected client not found')
         return False
-    needs_inherited_proxy = (
-        installation.client.runtime == 'rosemary'
-        and bool(_active_rosemary_proxy_url)
+    needs_inherited_proxy = installation.client.runtime == 'rosemary' and bool(
+        _active_rosemary_proxy_url
     )
     command = installation.launch_command(
         target, require_inherited_environment=needs_inherited_proxy
@@ -1228,8 +1306,8 @@ def _launch_roblox_uri(target: str) -> bool:
                 nutmeg_launcher=Path(command[0]).name == 'gtk-launch'
             ),
         )
-    elif installation.key == MOCKTAIL_CLIENT.key:
-        _standard_user_popen(command, extra_env=mocktail_proxy_environment())
+    elif installation.client.runtime == 'native':
+        _standard_user_popen(command, extra_env=native_proxy_environment(installation))
     else:
         _standard_user_popen(command)
     return True
@@ -1252,13 +1330,10 @@ def _launch_selected_linux_client_target(
     )
     if not is_client_request:
         return None
-    needs_inherited_proxy = (
-        installation.client.runtime == 'rosemary'
-        and bool(_active_rosemary_proxy_url)
+    needs_inherited_proxy = installation.client.runtime == 'rosemary' and bool(
+        _active_rosemary_proxy_url
     )
-    command = installation.launch_command(
-        require_inherited_environment=needs_inherited_proxy
-    )
+    command = installation.launch_command(require_inherited_environment=needs_inherited_proxy)
     if command is None:
         if needs_inherited_proxy:
             log_buffer.log(
@@ -1274,8 +1349,8 @@ def _launch_selected_linux_client_target(
                 nutmeg_launcher=Path(command[0]).name == 'gtk-launch'
             ),
         )
-    elif installation.key == MOCKTAIL_CLIENT.key:
-        _standard_user_popen(command, extra_env=mocktail_proxy_environment())
+    elif installation.client.runtime == 'native':
+        _standard_user_popen(command, extra_env=native_proxy_environment(installation))
     else:
         _standard_user_popen(command)
     return True
@@ -1323,9 +1398,10 @@ def _rosemary_proxy_environment(*, nutmeg_launcher: bool = False) -> dict[str, s
             raise ValueError(msg)
         launch_environment['ROSEMARY_PREFIX'] = str(prefix)
         selected = get_selected_linux_client_installation()
-        if selected is not None and rosemary_guest_home(
-            selected, prefix_path=prefix
-        ) == selected.paths.home:
+        if (
+            selected is not None
+            and rosemary_guest_home(selected, prefix_path=prefix) == selected.paths.home
+        ):
             launch_environment['ROSEMARY_PREFIX_HOME'] = 'host'
     proxy_url = _active_rosemary_proxy_url
     if not proxy_url:
@@ -1353,23 +1429,39 @@ def _rosemary_proxy_environment(*, nutmeg_launcher: bool = False) -> dict[str, s
         'all_proxy': proxy_url,
         'NO_PROXY': bypass,
         'no_proxy': bypass,
-        'ROSEMARY_ENVIRON': '\n'.join((
-            os.environ.get('ROSEMARY_ENVIRON', ''),
-            'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
-            'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
-        )).lstrip('\n'),
+        'ROSEMARY_ENVIRON': '\n'.join(
+            (
+                os.environ.get('ROSEMARY_ENVIRON', ''),
+                'HTTP_PROXY',
+                'HTTPS_PROXY',
+                'ALL_PROXY',
+                'NO_PROXY',
+                'http_proxy',
+                'https_proxy',
+                'all_proxy',
+                'no_proxy',
+            )
+        ).lstrip('\n'),
     }
 
 
-def mocktail_proxy_environment() -> dict[str, str]:
-    """Scoped proxy environment for native Mocktail launches."""
-    url = _active_mocktail_proxy_url
+def native_proxy_environment(
+    installation: LinuxClientInstallation | None = None,
+) -> dict[str, str]:
+    """Scoped environment for a selected native community client launch."""
+    url = _active_native_proxy_url
     if not url:
         return {}
-    return _proxy_environment_for_installation(
-        LinuxClientInstallation(MOCKTAIL_CLIENT, MOCKTAIL_CLIENT.paths(home=USER_HOME), None),
-        url,
-    )
+    if installation is None:
+        installation = get_selected_linux_client_installation()
+    if installation is None or installation.client.runtime != 'native':
+        return {}
+    return _proxy_environment_for_installation(installation, url)
+
+
+def mocktail_proxy_environment() -> dict[str, str]:
+    """Backward-compatible environment for Mocktail's native interceptor."""
+    return native_proxy_environment()
 
 
 def rosemary_proxy_environment() -> dict[str, str]:
@@ -1483,8 +1575,10 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
             globals()['_active_rosemary_proxy_url'] = proxy_url
             log_buffer.log('Launcher', 'Rosemary Env Proxy armed for Nutmeg launches')
         else:
-            globals()['_active_mocktail_proxy_url'] = proxy_url
-            log_buffer.log('Launcher', 'Mocktail Env Proxy armed for native Fleasion launches')
+            globals()['_active_native_proxy_url'] = proxy_url
+            log_buffer.log(
+                'Launcher', f'{installation.display_name} Env Proxy armed for native launches'
+            )
         _set_active_linux_proxy_client_key(installation.key)
         return True
 
@@ -1505,7 +1599,9 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
         try:  # ruff: ignore[too-many-statements-in-try-clause]
             previous_override = _standard_user_run(
                 [flatpak, 'override', '--user', '--show', installation.app_id],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if previous_override.returncode != 0:
                 log_buffer.log('Launcher', 'Could not inspect prior Sober TLS key-log override')
@@ -1576,17 +1672,21 @@ def clear_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-state
 ) -> bool:
     """Clear only the exact client environment names managed by Fleasion."""
     key = client_key or _active_linux_proxy_client_key or _read_linux_proxy_override_state()
-    if key is None or key in {'rosemary', 'mocktail'}:
+    installation = _installation_for_client_key(key) if key is not None else None
+    if (
+        key is None
+        or key == 'rosemary'
+        or (installation is not None and installation.client.runtime == 'native')
+    ):
         if key == 'rosemary':
             if not nutmeg_proxy_override.clear(NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE):
                 return False
             globals()['_active_rosemary_proxy_url'] = None
-        elif key == 'mocktail':
-            globals()['_active_mocktail_proxy_url'] = None
+        elif installation is not None and installation.client.runtime == 'native':
+            globals()['_active_native_proxy_url'] = None
         if key is not None and _active_linux_proxy_client_key == key:
             _set_active_linux_proxy_client_key(None)
         return True
-    installation = _installation_for_client_key(key)
     if installation is None:
         return False
     names = installation.client.proxy_environment_names

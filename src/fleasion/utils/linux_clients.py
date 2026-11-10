@@ -1,7 +1,7 @@
 """Registry and discovery for supported Linux Roblox clients.
 
-Sober uses Flatpak metadata and app-scoped proxy settings. Mocktail uses a
-native Linux executable and isolated XDG data/cache roots. Rosemary uses a
+Sober, Nightcap and Cordial support Flatpak metadata and app-scoped proxy
+settings. Mocktail and native community clients use isolated XDG roots. Rosemary uses a
 native executable and the macOS Roblox.app bundle supplied by Nutmeg, process
 arguments, or user-configured paths.
 """
@@ -83,7 +83,7 @@ def _home_path(home: str | Path | None, environ: Mapping[str, str]) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class LinuxClientDescriptor:
-    """Static Flatpak identity and capabilities for one Linux client."""
+    """Static identity and capabilities for one Linux client."""
 
     key: str
     display_name: str
@@ -112,18 +112,20 @@ class LinuxClientDescriptor:
         home: str | Path | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> LinuxClientPaths:
-        """Resolve the host-visible Flatpak paths for this descriptor."""
+        """Resolve the host-visible native or Flatpak paths for this descriptor."""
         environment = os.environ if environ is None else environ
         resolved_home = _home_path(home, environment)
         if self.runtime == 'native':
             flatpak_root = resolved_home / '.local' / 'share' / self.xdg_namespace
             config_root = resolved_home / '.config' / self.xdg_namespace
-            data_root = flatpak_root / 'android' / 'data'
+            data_root = flatpak_root if self.key == 'cordial' else flatpak_root / 'android' / 'data'
             cache_root = resolved_home / '.cache' / self.xdg_namespace
         else:
             flatpak_root = resolved_home / '.var' / 'app' / self.app_id
             config_root = flatpak_root / 'config' / self.xdg_namespace
             data_root = flatpak_root / 'data' / self.xdg_namespace
+            if self.key == 'nightcap':
+                data_root = data_root / 'android' / 'data'
             cache_root = flatpak_root / 'cache' / self.xdg_namespace
         return LinuxClientPaths(
             client=self,
@@ -133,7 +135,13 @@ class LinuxClientDescriptor:
             data_root=data_root,
             cache_root=cache_root,
             config_file=config_root / self.config_filename,
-            resource_roots=tuple(data_root / relative for relative in self.resource_relative_paths),
+            resource_roots=(
+                (data_root.parent.parent / 'asset_overlay',)
+                if self.key == 'nightcap'
+                else (config_root / 'overlay',)
+                if self.key == 'cordial'
+                else tuple(data_root / relative for relative in self.resource_relative_paths)
+            ),
             storage_db=(
                 data_root / self.storage_db_relative_path
                 if self.storage_db_relative_path is not None
@@ -149,7 +157,7 @@ class LinuxClientDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class LinuxClientPaths:
-    """Host-visible paths for one concrete Flatpak client installation."""
+    """Host-visible paths for one concrete Linux client installation."""
 
     client: LinuxClientDescriptor
     home: Path
@@ -223,7 +231,10 @@ class LinuxClientInstallation:
             if self.client.runtime == 'rosemary':
                 command.extend(('-protocolString', uri))
             elif self.client.runtime == 'native':
-                command.extend(('--launch-uri', uri))
+                if self.key == 'cordial':
+                    command.append(uri)
+                else:
+                    command.extend(('--launch-uri', uri))
             else:
                 command.append(uri)
         return command
@@ -291,6 +302,39 @@ MOCKTAIL_CLIENT = LinuxClientDescriptor(
 )
 
 
+NIGHTCAP_CLIENT = LinuxClientDescriptor(
+    key='nightcap',
+    display_name='Nightcap',
+    app_id='io.github.CoderDayton.nightcap',
+    desktop_ids=('io.github.CoderDayton.nightcap.desktop',),
+    xdg_namespace='mocktail',
+    process_names=('mocktail',),
+    engine_process_names=('Main',),
+    cgroup_marker='app-flatpak-io.github.CoderDayton.nightcap',
+    config_filename='config.yaml',
+    resource_relative_paths=(),
+    storage_db_relative_path=Path('appData/rbx-storage.db'),
+    cache_storage_relative_path=Path('android/rbx-storage'),
+    proxy_environment_names=MOCKTAIL_CLIENT.proxy_environment_names,
+)
+
+CORDIAL_CLIENT = LinuxClientDescriptor(
+    key='cordial',
+    display_name='Cordial',
+    app_id='io.github.luohoa97.Cordial',
+    desktop_ids=('io.github.luohoa97.Cordial.desktop',),
+    xdg_namespace='cordial',
+    process_names=('cordial-run',),
+    engine_process_names=('cordial-run',),
+    cgroup_marker='app-flatpak-io.github.luohoa97.Cordial',
+    config_filename='shell.json',
+    # Cordial's game storage/flags belong to individual named profiles
+    # Never treat its build store or profiles as disposable shared cache
+    resource_relative_paths=(),
+    proxy_environment_names=MOCKTAIL_CLIENT.proxy_environment_names,
+)
+
+
 ROSEMARY_CLIENT = LinuxClientDescriptor(
     key='rosemary',
     display_name='Rosemary (macOS Roblox)',
@@ -305,7 +349,7 @@ ROSEMARY_CLIENT = LinuxClientDescriptor(
     runtime='rosemary',
 )
 
-LINUX_CLIENTS = (SOBER_CLIENT, MOCKTAIL_CLIENT, ROSEMARY_CLIENT)
+LINUX_CLIENTS = (SOBER_CLIENT, MOCKTAIL_CLIENT, NIGHTCAP_CLIENT, CORDIAL_CLIENT, ROSEMARY_CLIENT)
 LINUX_CLIENTS_BY_KEY: Mapping[str, LinuxClientDescriptor] = MappingProxyType(
     {client.key: client for client in LINUX_CLIENTS}
 )
@@ -480,7 +524,7 @@ class MocktailSession:
 
 
 def read_mocktail_session(  # ruff: ignore[too-many-return-statements]
-    process: Path, *, executable: Path | None = None
+    process: Path, *, executable: Path | None = None, flatpak_id: str | None = None
 ) -> MocktailSession | None:
     """Reject helpers, updaters, and PID reuse using /proc/exe and stat."""
     try:  # ruff: ignore[too-many-statements-in-try-clause]
@@ -489,11 +533,15 @@ def read_mocktail_session(  # ruff: ignore[too-many-return-statements]
             return None
         if process.stat().st_uid != os.getuid():
             return None
-        linked_exe = (process / 'exe').resolve(strict=True)
+        linked_exe = (process / 'exe').readlink()
         if linked_exe.name != 'mocktail':
             return None
         if executable is not None and not linked_exe.samefile(executable):
             return None
+        if flatpak_id is not None:
+            cgroup = (process / 'cgroup').read_text(encoding='utf-8', errors='replace')
+            if f'app-flatpak-{flatpak_id}-' not in cgroup:
+                return None
         command_line = (process / 'cmdline').read_bytes()
         argv = [arg for arg in command_line.split(b'\0') if arg]
         if not argv or Path(os.fsdecode(argv[0])).name != 'mocktail':
@@ -509,7 +557,10 @@ def read_mocktail_session(  # ruff: ignore[too-many-return-statements]
 
 
 def running_mocktail_players(
-    *, proc_root: Path = Path('/proc'), executable: Path | None = None
+    *,
+    proc_root: Path = Path('/proc'),
+    executable: Path | None = None,
+    flatpak_id: str | None = None,
 ) -> tuple[MocktailSession, ...]:
     """Return only a real Mocktail Player binary, never associated helpers."""
     try:
@@ -520,9 +571,105 @@ def running_mocktail_players(
         session
         for entry in entries
         if entry.name.isdecimal()
-        if (session := read_mocktail_session(entry, executable=executable)) is not None
+        if (session := read_mocktail_session(entry, executable=executable, flatpak_id=flatpak_id))
+        is not None
     )
     return tuple(sorted(matches, key=lambda session: session.pid))
+
+
+def running_community_launchers(
+    binary_name: Literal['mocktail', 'cordial-shell'],
+    *,
+    proc_root: Path = Path('/proc'),
+    executable: Path | None = None,
+    flatpak_id: str | None = None,
+) -> tuple[MocktailSession, ...]:
+    """Locate only the selected installation's startup launcher.
+
+    The Roblox engine may not have mapped libroblox.so yet; detect the
+    strictly verified launcher to arm automatic client switching in time.
+    """
+    if executable is None and flatpak_id is None:
+        return ()
+    try:
+        processes = proc_root.iterdir()
+    except OSError:
+        return ()
+    sessions: list[MocktailSession] = []
+    for proc in processes:
+        if not proc.name.isdecimal():
+            continue
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            if proc.stat().st_uid != os.getuid():
+                continue
+            if (proc / 'comm').read_text(encoding='utf-8').strip() != binary_name:
+                continue
+            exe = proc / 'exe'
+            if exe.readlink().name != binary_name:
+                continue
+            if executable is not None and not exe.samefile(executable):
+                continue
+            cmdline = (proc / 'cmdline').read_bytes().split(b'\0')
+            if not cmdline or Path(os.fsdecode(cmdline[0])).name != binary_name:
+                continue
+            if flatpak_id is not None:
+                cgroup = (proc / 'cgroup').read_text(encoding='utf-8', errors='replace')
+                if f'app-flatpak-{flatpak_id}-' not in cgroup:
+                    continue
+            fields = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+            if fields[0] in {'Z', 'X', 'x'}:
+                continue
+            sessions.append(MocktailSession(int(proc.name), int(fields[19])))
+        except OSError, IndexError, ValueError:
+            continue
+    return tuple(sorted(sessions, key=lambda session: session.pid))
+
+
+def running_cordial_players(
+    *,
+    proc_root: Path = Path('/proc'),
+    executable: Path | None = None,
+    flatpak_id: str | None = None,
+) -> tuple[MocktailSession, ...]:
+    """Find only Cordial engine processes, not its GTK launcher or plugins."""
+    try:
+        processes = list(proc_root.iterdir())
+    except OSError:
+        return ()
+    sessions: list[MocktailSession] = []
+    for process in processes:
+        if not process.name.isdecimal():
+            continue
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            if process.stat().st_uid != os.getuid():
+                continue
+            if (process / 'comm').read_text(encoding='utf-8').strip() not in {
+                'cordial-run',
+                'Main',
+            }:
+                continue
+            exe = (process / 'exe').readlink()
+            if exe.name != 'cordial-run':
+                continue
+            if executable is not None and not (process / 'exe').samefile(executable):
+                continue
+            argv = (process / 'cmdline').read_bytes().split(b'\0')
+            if not argv or Path(os.fsdecode(argv[0])).name != 'cordial-run':
+                continue
+            if flatpak_id is not None:
+                cgroup = (process / 'cgroup').read_text(encoding='utf-8', errors='replace')
+                if f'app-flatpak-{flatpak_id}-' not in cgroup:
+                    continue
+            with (process / 'maps').open(encoding='utf-8', errors='replace') as maps:
+                if not any('libroblox.so' in line.lower() for line in maps):
+                    continue
+            fields = (process / 'stat').read_text().rsplit(')', 1)[1].split()
+            if fields[0] in {'Z', 'X', 'x'}:
+                continue
+            sessions.append(MocktailSession(int(process.name), int(fields[19])))
+        except OSError, IndexError, ValueError:
+            continue
+    return tuple(sorted(sessions, key=lambda session: session.pid))
 
 
 @dataclass(frozen=True, slots=True)
@@ -767,6 +914,30 @@ def _rosemary_installation(
     )
 
 
+def native_nightcap_desktop(home: Path, environ: Mapping[str, str]) -> bool:
+    roots = [home / '.local/share/applications']
+    roots.extend(
+        Path(root) / 'applications'
+        for root in environ.get('XDG_DATA_DIRS', '/usr/local/share:/usr/share').split(':')
+        if root
+    )
+    for root in roots:
+        desktop = root / NIGHTCAP_CLIENT.desktop_id
+        if (root / MOCKTAIL_CLIENT.desktop_id).is_file():
+            continue
+        try:
+            contents = desktop.read_text(encoding='utf-8')
+        except OSError:
+            continue
+        # Ignore Flatpak-exported desktop files that still name the app ID
+        if any(
+            line.startswith('Exec=') and 'mocktail' in line and 'flatpak' not in line
+            for line in contents.splitlines()
+        ):
+            return True
+    return False
+
+
 def detect_installed_clients(
     *,
     home: str | Path | None = None,
@@ -777,7 +948,7 @@ def detect_installed_clients(
     rosemary_app_path: str | Path | None = None,
     rosemary_binary_path: str | Path | None = None,
 ) -> tuple[LinuxClientInstallation, ...]:
-    """Detect Flatpak clients and native Rosemary independently."""
+    """Detect installed Flatpak and native Linux Roblox clients."""
     environment = os.environ if environ is None else environ
     find_executable = shutil.which if which is None else which
     flatpak = find_executable('flatpak')
@@ -804,11 +975,29 @@ def detect_installed_clients(
     if mocktail_binary:
         binary = Path(mocktail_binary)
         if binary.is_file() and os.access(binary, os.X_OK):
+            native_nightcap = native_nightcap_desktop(resolved_home, environment)
+            native_client = (
+                replace(NIGHTCAP_CLIENT, runtime='native') if native_nightcap else MOCKTAIL_CLIENT
+            )
+            if not any(item.key == native_client.key for item in detected):
+                detected.append(
+                    LinuxClientInstallation(
+                        client=native_client,
+                        paths=native_client.paths(home=home, environ=environment),
+                        executable=binary,
+                    )
+                )
+    # The Cordial shell, not cordial-run, is the public CLI/deep-link entry
+    cordial_shell = find_executable('cordial-shell')
+    if cordial_shell and not any(item.key == 'cordial' for item in detected):
+        shell = Path(cordial_shell)
+        if shell.is_file() and os.access(shell, os.X_OK):
+            native = replace(CORDIAL_CLIENT, runtime='native')
             detected.append(
                 LinuxClientInstallation(
-                    client=MOCKTAIL_CLIENT,
-                    paths=MOCKTAIL_CLIENT.paths(home=home, environ=environment),
-                    executable=binary,
+                    client=native,
+                    paths=native.paths(home=home, environ=environment),
+                    executable=shell,
                 )
             )
     rosemary_proc_root = (
@@ -924,12 +1113,51 @@ def select_linux_client(
             )
             if rosemary_sessions:
                 starts['rosemary'] = max(session.start_ticks for session in rosemary_sessions)
-        if 'mocktail' in by_key:
-            mocktail_sessions = running_mocktail_players(
-                proc_root=proc_root, executable=by_key['mocktail'].executable
+        for key in ('mocktail', 'nightcap'):
+            if key not in by_key:
+                continue
+            installation = by_key[key]
+            sessions = running_mocktail_players(
+                proc_root=proc_root,
+                executable=installation.executable
+                if installation.client.runtime == 'native'
+                else None,
+                flatpak_id=installation.app_id
+                if installation.client.runtime == 'flatpak'
+                else None,
             )
-            if mocktail_sessions:
-                starts['mocktail'] = max(session.start_ticks for session in mocktail_sessions)
+            launchers = running_community_launchers(
+                'mocktail',
+                proc_root=proc_root,
+                executable=installation.executable
+                if installation.client.runtime == 'native'
+                else None,
+                flatpak_id=installation.app_id
+                if installation.client.runtime == 'flatpak'
+                else None,
+            )
+            if sessions or launchers:
+                starts[key] = max(session.start_ticks for session in (*sessions, *launchers))
+        if 'cordial' in by_key:
+            installation = by_key['cordial']
+            sessions = running_cordial_players(
+                proc_root=proc_root,
+                flatpak_id=installation.app_id
+                if installation.client.runtime == 'flatpak'
+                else None,
+            )
+            launchers = running_community_launchers(
+                'cordial-shell',
+                proc_root=proc_root,
+                executable=installation.executable
+                if installation.client.runtime == 'native'
+                else None,
+                flatpak_id=installation.app_id
+                if installation.client.runtime == 'flatpak'
+                else None,
+            )
+            if sessions or launchers:
+                starts['cordial'] = max(session.start_ticks for session in (*sessions, *launchers))
         if 'sober' in by_key:
             # The native Sober window runs before its Android Main process starts
             # It still represents the most recently opened Roblox client

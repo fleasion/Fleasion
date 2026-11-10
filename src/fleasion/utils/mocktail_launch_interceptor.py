@@ -76,16 +76,14 @@ def capture_mocktail_launch(  # ruff: ignore[too-many-return-statements]
         cwd = (proc / 'cwd').readlink()
         if not cwd.is_dir():
             return None
-    except (OSError, ValueError, UnicodeError):
+    except OSError, ValueError, UnicodeError:
         return None
     return MocktailLaunchSnapshot(
         session=session, executable=executable, argv=argv, cwd=cwd, env=variables
     )
 
 
-def _mocktail_child_pids(
-    snapshot: MocktailLaunchSnapshot, *, proc_root: Path
-) -> tuple[int, ...]:
+def _mocktail_child_pids(snapshot: MocktailLaunchSnapshot, *, proc_root: Path) -> tuple[int, ...]:
     """Find only exact-binary children owned by the original engine."""
     try:
         entries = list(proc_root.iterdir())
@@ -106,7 +104,7 @@ def _mocktail_child_pids(
             if not (entry / 'exe').samefile(snapshot.executable):
                 continue
             pids.append(int(entry.name))
-        except (OSError, IndexError, ValueError):
+        except OSError, IndexError, ValueError:
             continue
     return tuple(sorted(pids))
 
@@ -117,9 +115,7 @@ def _wait_pid_exit(fd: int, timeout_ms: int) -> bool:
     return bool(watcher.poll(timeout_ms))
 
 
-def _stop_mocktail_children(
-    snapshot: MocktailLaunchSnapshot, *, proc_root: Path
-) -> bool:
+def _stop_mocktail_children(snapshot: MocktailLaunchSnapshot, *, proc_root: Path) -> bool:
     """Close lock-holding Mocktail children before replacing their parent."""
     for child_pid in _mocktail_child_pids(snapshot, proc_root=proc_root):
         try:
@@ -156,7 +152,7 @@ def replay_mocktail_launch(  # ruff: ignore[too-many-return-statements]
     proc = proc_root / str(session.pid)
     try:
         fd = os.pidfd_open(session.pid, 0)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return False
     try:  # ruff: ignore[too-many-statements-in-try-clause]
         if (
@@ -214,12 +210,15 @@ class MocktailLaunchInterceptor:
         proxy_url: Callable[[], str],
         proxy_environment: Callable[[], dict[str, str]],
         on_replay: Callable[[], None] | None = None,
+        executable: Callable[[], Path | None] | None = None,
         proc_root: Path = Path('/proc'),
     ) -> None:
         self._is_armed = is_armed
         self._proxy_url = proxy_url
         self._proxy_environment = proxy_environment
         self._on_replay = on_replay
+        self._executable = executable
+        self._armed_executable: Path | None = None
         self._proc_root = proc_root
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -228,11 +227,18 @@ class MocktailLaunchInterceptor:
             for session in running_mocktail_players(proc_root=proc_root)
         }
 
+    def _sessions(self) -> tuple[MocktailSession, ...]:
+        if self._executable is None:
+            return running_mocktail_players(proc_root=self._proc_root)
+        path = self._executable()
+        if path is None:
+            return ()
+        return running_mocktail_players(proc_root=self._proc_root, executable=path)
+
     def _poll_once(self) -> None:
-        sessions = running_mocktail_players(proc_root=self._proc_root)
+        sessions = self._sessions()
         new = [
-            session for session in sessions
-            if (session.pid, session.start_ticks) not in self._seen
+            session for session in sessions if (session.pid, session.start_ticks) not in self._seen
         ]
         self._seen = {(session.pid, session.start_ticks) for session in sessions}
         if not new or not self._is_armed():
@@ -264,12 +270,12 @@ class MocktailLaunchInterceptor:
         """Skip expensive process enumeration unless Mocktail proxy is armed."""
         if not self._is_armed():
             return False
-        if not previously_armed:
-            # Do not replay Players already open when Auto switches to Mocktail
-            self._seen = {
-                (session.pid, session.start_ticks)
-                for session in running_mocktail_players(proc_root=self._proc_root)
-            }
+        current_executable = self._executable() if self._executable is not None else None
+        if not previously_armed or current_executable != self._armed_executable:
+            # Rebase when auto switches identities: never replay a Player
+            # that was already open for a different native installation.
+            self._armed_executable = current_executable
+            self._seen = {(session.pid, session.start_ticks) for session in self._sessions()}
             return True
         self._poll_once()
         return True

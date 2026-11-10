@@ -20,6 +20,7 @@ def test_find_android_community_pid_synthetic(monkeypatch: pytest.MonkeyPatch, t
     p100 = tmp_path / '100'
     p100.mkdir()
     (p100 / 'cmdline').write_bytes(b'/usr/bin/mocktail\x00')
+    (p100 / 'exe').symlink_to('/usr/bin/mocktail')
     (p100 / 'status').write_text('Name:\tmocktail\nState:\tS (sleeping)\n')
     (p100 / 'statm').write_text('1000 800 0 0 0 0 0\n')
     (p100 / 'maps').write_text(
@@ -30,6 +31,7 @@ def test_find_android_community_pid_synthetic(monkeypatch: pytest.MonkeyPatch, t
     p200 = tmp_path / '200'
     p200.mkdir()
     (p200 / 'cmdline').write_bytes(b'/usr/bin/cordial\x00')
+    (p200 / 'exe').symlink_to('/usr/bin/cordial')
     (p200 / 'status').write_text('Name:\tcordial\nState:\tS (sleeping)\n')
     (p200 / 'statm').write_text('1000 500 0 0 0 0 0\n')
     (p200 / 'maps').write_text('7f79b0440000-7f79b6fbe000 r-xp 00000000 103:03 8131164 /usr/lib64/libc.so\n')
@@ -38,6 +40,7 @@ def test_find_android_community_pid_synthetic(monkeypatch: pytest.MonkeyPatch, t
     p300 = tmp_path / '300'
     p300.mkdir()
     (p300 / 'cmdline').write_bytes(b'/usr/bin/nightcap\x00')
+    (p300 / 'exe').symlink_to('/usr/bin/nightcap')
     (p300 / 'status').write_text('Name:\tnightcap\nState:\tZ (zombie)\n')
     (p300 / 'statm').write_text('1000 900 0 0 0 0 0\n')
     (p300 / 'maps').write_text(

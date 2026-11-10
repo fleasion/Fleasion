@@ -8,10 +8,14 @@ Layout validated against OpenSSL 3.5.0 in Android NDK x86_64 (LP64).
 from __future__ import annotations
 
 import logging
+import os
+import pathlib
 import struct
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from fleasion.utils.linux_clients import native_nightcap_desktop
 
 from .rosemary_keys import STRUCT_SIZE, validate_openssl_struct
 from .tls12_session import LP64_OPENSSL_350, TLS12_VERSION, validate_tls12_session
@@ -63,6 +67,34 @@ def _read_process_rss_if_active(entry: Path) -> int | None:
         return None
 
 
+def _client_identity(  # ruff: ignore[too-many-return-statements]
+    entry: Path, ident: tuple[str, str, str]
+) -> str | None:
+    """Identify the loaded engine, distinguishing Nightcap's mocktail binary."""
+    cmdline, exe, _comm = ident
+    first_arg = cmdline.split(' ', 1)[0].rsplit('/', 1)[-1]
+    if exe == 'cordial-run' and first_arg == 'cordial-run':
+        return 'cordial'
+    if exe != 'mocktail' or first_arg != 'mocktail':
+        return None
+    try:
+        cgroup = (entry / 'cgroup').read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        cgroup = ''
+    if 'app-flatpak-io.github.CoderDayton.nightcap-' in cgroup:
+        return 'nightcap'
+    if 'app-flatpak-space.bigrat.mocktail-' in cgroup:
+        return 'mocktail'
+    if 'app-flatpak-' in cgroup:
+        # Unknown Flatpak engines are never silently attributed to Mocktail
+        return None
+    # Native Nightcap and Mocktail ship the same executable name and cannot
+    # coexist as distribution packages. The native desktop identity decides.
+    if native_nightcap_desktop(pathlib.Path.home(), os.environ):
+        return 'nightcap'
+    return 'mocktail'
+
+
 def find_android_community_pid(client: str | None = None) -> tuple[int, str] | None:
     """Find the primary community Android Roblox process PID on Linux.
 
@@ -87,6 +119,8 @@ def find_android_community_pid(client: str | None = None) -> tuple[int, str] | N
         return None
 
     targets = frozenset({client.strip().lower()}) if client else COMMUNITY_TARGETS
+    if not targets <= COMMUNITY_TARGETS:
+        return None
     candidates: list[tuple[int, int, str]] = []
 
     for entry in entries:
@@ -97,17 +131,16 @@ def find_android_community_pid(client: str | None = None) -> tuple[int, str] | N
         except ValueError:
             continue
 
+        try:
+            if entry.stat().st_uid != os.getuid():
+                continue
+        except OSError:
+            continue
         ident = _read_process_ident(entry)
         if ident is None:
             continue
-        cmdline, exe, comm = ident
-
-        matched_client: str | None = None
-        for target in targets:
-            if target in cmdline or target in exe or target in comm:
-                matched_client = target
-                break
-        if not matched_client:
+        matched_client = _client_identity(entry, ident)
+        if matched_client not in targets:
             continue
 
         rss = _read_process_rss_if_active(entry)

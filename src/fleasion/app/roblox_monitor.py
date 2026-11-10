@@ -138,6 +138,19 @@ class RobloxExitMonitor(QObject):
                 proxy_url=proxy_master.roblox_env_proxy_url,
                 proxy_environment=mocktail_proxy_environment,
                 on_replay=self._note_mocktail_replay,
+                executable=lambda: (
+                    installation.executable
+                    if (
+                        (
+                            installation := getattr(
+                                proxy_master, '_active_linux_client_installation', None
+                            )
+                        )
+                        is not None
+                        and installation.client.runtime == 'native'
+                    )
+                    else None
+                ),
             )
             self._mocktail_launch_interceptor.start()
         macos_env_proxy_enabled = (
@@ -214,7 +227,9 @@ class RobloxExitMonitor(QObject):
             master is not None
             and self.config_manager.proxy_mode == 'env'
             and self.config_manager.proxy_features_enabled
-            and getattr(master, '_active_linux_client_key', None) == 'mocktail'
+            and getattr(master, '_active_linux_client_key', None) in {'mocktail', 'nightcap'}
+            and (installation := get_selected_linux_client_installation()) is not None
+            and installation.client.runtime == 'native'
             and master.wait_for_env_proxy_ready(timeout=0.0)
         )
 

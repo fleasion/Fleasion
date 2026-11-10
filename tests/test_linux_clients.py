@@ -11,6 +11,8 @@ from fleasion.utils.linux_clients import (
     LINUX_CLIENTS_BY_KEY,
     SOBER_CLIENT,
     MOCKTAIL_CLIENT,
+    NIGHTCAP_CLIENT,
+    CORDIAL_CLIENT,
     ROSEMARY_CLIENT,
     CommandRunner,
     LinuxClientDescriptor,
@@ -43,10 +45,14 @@ def _no_which(_name: str) -> None:
     return None
 
 
-def test_registry_contains_sober_mocktail_and_rosemary() -> None:
-    assert LINUX_CLIENTS == (SOBER_CLIENT, MOCKTAIL_CLIENT, ROSEMARY_CLIENT)
+def test_registry_contains_supported_linux_clients() -> None:
+    assert LINUX_CLIENTS == (
+        SOBER_CLIENT, MOCKTAIL_CLIENT, NIGHTCAP_CLIENT, CORDIAL_CLIENT, ROSEMARY_CLIENT
+    )
     assert dict(LINUX_CLIENTS_BY_KEY) == {
-        'sober': SOBER_CLIENT, 'mocktail': MOCKTAIL_CLIENT, 'rosemary': ROSEMARY_CLIENT
+        'sober': SOBER_CLIENT, 'mocktail': MOCKTAIL_CLIENT,
+        'nightcap': NIGHTCAP_CLIENT, 'cordial': CORDIAL_CLIENT,
+        'rosemary': ROSEMARY_CLIENT
     }
     assert get_linux_client('SOBER') is SOBER_CLIENT
     assert SOBER_CLIENT.app_id == 'org.vinegarhq.Sober'
@@ -92,7 +98,9 @@ def test_detect_installed_clients_uses_flatpak_info(tmp_path: Path) -> None:
         del env, capture_output, text, timeout
         command_list = list(command)
         commands.append(command_list)
-        return subprocess.CompletedProcess(command_list, 0, '', '')
+        return subprocess.CompletedProcess(
+            command_list, 0 if command_list[-1] == SOBER_CLIENT.app_id else 1, '', ''
+        )
 
     installed = detect_installed_clients(
         home=tmp_path,
@@ -102,7 +110,10 @@ def test_detect_installed_clients_uses_flatpak_info(tmp_path: Path) -> None:
     )
 
     assert [item.key for item in installed] == ['sober']
-    assert commands == [['/usr/bin/flatpak', 'info', 'org.vinegarhq.Sober']]
+    assert commands == [
+        ['/usr/bin/flatpak', 'info', client.app_id]
+        for client in LINUX_CLIENTS if client.runtime == 'flatpak'
+    ]
     assert installed[0].launch_command('roblox://experiences/start?placeId=1818') == [
         '/usr/bin/flatpak',
         'run',
@@ -132,7 +143,9 @@ def test_detect_installed_clients_strips_pyinstaller_library_path(
         del capture_output, text, timeout
         command_list = list(command)
         calls.append((command_list, env))
-        return subprocess.CompletedProcess(command_list, 0, '', '')
+        return subprocess.CompletedProcess(
+            command_list, 0 if command_list[-1] == SOBER_CLIENT.app_id else 1, '', ''
+        )
 
     installed = detect_installed_clients(
         home=tmp_path,

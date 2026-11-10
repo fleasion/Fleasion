@@ -95,8 +95,8 @@ class KeyProvider:
         if sys.platform == 'linux':
             # Never read another client's secrets merely because its process
             # is running. The active Fleasion selection owns this proxy.
-            if self.linux_client_key == 'mocktail':
-                match = find_android_community_pid('mocktail')
+            if self.linux_client_key in {'mocktail', 'nightcap', 'cordial'}:
+                match = find_android_community_pid(self.linux_client_key)
                 return (
                     scan_android_community(match[0], stop=self._stop, client_random=client_random)
                     if match

@@ -1075,11 +1075,7 @@ def _probe_splice_route(host: str, port: int, *, explicit_proxy: bool) -> None:
         if not explicit_proxy:
             return
         connection.sendall(
-            (
-                f'CONNECT {host}:443 HTTP/1.1\r\n'
-                f'Host: {host}:443\r\n'
-                '\r\n'
-            ).encode('ascii')
+            (f'CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n').encode('ascii')
         )
         response = bytearray()
         while b'\r\n\r\n' not in response and len(response) < 4096:
@@ -4348,7 +4344,13 @@ def _splice_ca_patch_unneeded() -> bool:
         return False
     if IS_LINUX:
         installation = _selected_linux_client_installation()
-        return installation is not None and installation.key in {'rosemary', 'sober', 'mocktail'}
+        return installation is not None and installation.key in {
+            'rosemary',
+            'sober',
+            'mocktail',
+            'nightcap',
+            'cordial',
+        }
     return False
 
 
@@ -4617,11 +4619,17 @@ class ProxyMaster:
             # Proxy startup normally precedes Player startup. Select the splice
             # backend from the configured client, not only a running process.
             active_client_key = getattr(self, '_active_linux_client_key', None)
-            if active_client_key in {'rosemary', 'sober', 'mocktail'}:
+            if active_client_key in {'rosemary', 'sober', 'mocktail', 'nightcap', 'cordial'}:
                 return True
             if active_client_key is None:
                 selected = _selected_linux_client_installation()
-                if selected is not None and selected.key in {'rosemary', 'sober', 'mocktail'}:
+                if selected is not None and selected.key in {
+                    'rosemary',
+                    'sober',
+                    'mocktail',
+                    'nightcap',
+                    'cordial',
+                }:
                     return True
             return self._has_active_linux_splice_target(splice_env)
         return False
@@ -6746,9 +6754,8 @@ class ProxyMaster:
                 'Callable[..., bool]',
                 _lazy_attr('fleasion.utils.linux_proxy_helper', 'start_helper'),
             )
-            require_linux_system_ca = (
-                not self._use_splice_transport()
-                and bool(active_hosts & USERNAME_SPOOFER_INTERCEPT_HOSTS)
+            require_linux_system_ca = not self._use_splice_transport() and bool(
+                active_hosts & USERNAME_SPOOFER_INTERCEPT_HOSTS
             )
             if not start_helper(
                 active_hosts,
