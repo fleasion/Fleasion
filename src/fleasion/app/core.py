@@ -103,7 +103,6 @@ from fleasion.utils import (
     start_update_check,
     time_tracker,
 )
-from fleasion.utils.macos_rosemary_memory import shutdown_active_session
 from fleasion.utils.microprofiler import start_microprofiler
 from fleasion.utils.qt_diagnostics import install_qt_message_logging
 
@@ -630,6 +629,10 @@ def run_application() -> None:
     roblox_monitor = RobloxExitMonitor(config_manager, proxy_master, mod_manager, env_lifecycle)
     app.aboutToQuit.connect(roblox_monitor.stop)
     if sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+        from fleasion.utils.macos_rosemary_memory import (  # ruff: ignore[import-outside-top-level]
+            shutdown_active_session,
+        )
+
         app.aboutToQuit.connect(
             lambda: shutdown_active_session(terminate=config_manager.close_env_proxy_roblox_on_exit)
         )

@@ -163,3 +163,16 @@ def test_live_rosemary_process_scanning() -> None:
         assert len(client_random) == 64
         assert 'CLIENT_TRAFFIC_SECRET_0' in secrets
         assert 'SERVER_TRAFFIC_SECRET_0' in secrets
+
+
+def test_invalid_client_random_skips_linux_memory_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.proxy import rosemary_keys
+
+    monkeypatch.setattr(
+        rosemary_keys,
+        '_module_bounds',
+        lambda _pid: pytest.fail('invalid random reached Linux memory inspection'),
+    )
+    assert rosemary_keys.scan(99999, client_random='invalid') == {}

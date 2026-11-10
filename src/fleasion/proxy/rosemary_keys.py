@@ -22,8 +22,8 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     class SeekableMemory(Protocol):
-        def seek(self, offset: int, whence: int = 0) -> int: ...
-        def read(self, size: int = -1) -> bytes: ...
+        def seek(self, offset: int, whence: int = 0, /) -> int: ...
+        def read(self, size: int = -1, /) -> bytes: ...
 
 
 log = logging.getLogger(__name__)
@@ -492,17 +492,32 @@ def scan(
     SecretMap
         Recovered TLS 1.3 traffic secrets keyed by client random.
     """
-    module_bounds = _module_bounds(pid)
+    wanted: bytes | None = None
+    if client_random is not None:
+        try:
+            wanted = bytes.fromhex(client_random) if len(client_random) == 64 else None
+        except ValueError:
+            wanted = None
+        if wanted is None:
+            return {}
+
+    needle = wanted or b'\x04\x03\x00\x00'
+    field_offset = 0x188 if wanted is not None else 0x48
+    found: SecretMap = {}
+    module_base, module_end = _module_bounds(pid)
     mem_path = Path(f'/proc/{pid}/mem')
     try:
         with mem_path.open('rb') as mem:
-            return scan_mapped_regions(
+            return _scan_ordered_regions(
                 mem,
                 pid,
-                _regions(pid),
-                stop=stop,
+                needle=needle,
+                field_offset=field_offset,
+                module_base=module_base,
+                module_end=module_end,
                 client_random=client_random,
-                module_bounds=module_bounds,
+                stop=stop,
+                found=found,
             )
     except OSError, PermissionError, ProcessLookupError:
-        return {}
+        return found

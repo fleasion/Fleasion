@@ -437,8 +437,6 @@ DEFAULT_SETTINGS: JsonObject = {
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
-    'macos_rosemary_enabled': False,
-    'macos_rosemary_notice_shown': False,
     'proxy_mode': 'env',
     # Linux client selection is registry-backed; auto follows a running Player or desktop handler.
     'linux_client': 'auto',

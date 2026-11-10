@@ -206,9 +206,51 @@ def test_dormant_macos_does_not_scan_guest_memory_for_tls_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(splice_keys.sys, 'platform', 'darwin')
+    from fleasion.utils import macos_rosemary_memory
+
     monkeypatch.setattr(
-        splice_keys,
+        macos_rosemary_memory,
         'scan_active',
         lambda **_kwargs: pytest.fail('disabled macOS attempted memory IPC'),
     )
     assert splice_keys.KeyProvider()._read('00' * 32) == {}
+
+
+def test_disabled_startup_does_not_import_macos_rosemary_memory() -> None:
+    """Regular app imports must not register experimental memory cleanup."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            'import sys; import fleasion.app.core; '
+            'assert not ({'
+            '"fleasion.utils.macos_rosemary_memory", '
+            '"fleasion.utils.macos_rosemary_installer", '
+            '"fleasion.utils.macos_rosemary_launcher", '
+            '"fleasion.gui.macos_rosemary_launch"'
+            '} & set(sys.modules))',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_dormant_settings_add_no_new_default_keys(
+    monkeypatch: pytest.MonkeyPatch, config_paths: Path
+) -> None:
+    with monkeypatch.context() as macos:
+        macos.setattr(config_module.sys, 'platform', 'darwin')
+        config = config_module.ConfigManager()
+        assert config.proxy_features_enabled is False
+        assert 'macos_rosemary_enabled' not in config.settings
+        assert 'macos_rosemary_notice_shown' not in config.settings
+        assert config_paths.is_file()
+        on_disk = json.loads(config_paths.read_text(encoding='utf-8'))
+        assert 'macos_rosemary_enabled' not in on_disk
+        assert 'macos_rosemary_notice_shown' not in on_disk

@@ -133,6 +133,7 @@ class RosemarySession:
 
 _active: RosemarySession | None = None
 _active_lock = threading.Lock()
+_cleanup_registered = threading.Event()
 
 
 def active_session() -> RosemarySession | None:
@@ -145,6 +146,9 @@ def active_session() -> RosemarySession | None:
 def set_active_session(session: RosemarySession | None) -> None:
     global _active
     with _active_lock:
+        if session is not None and not _cleanup_registered.is_set():
+            atexit.register(shutdown_active_session)
+            _cleanup_registered.set()
         previous, _active = _active, session
     if previous is not None and previous is not session:
         previous.close()
@@ -212,6 +216,3 @@ def scan_active(
     except (OSError, ValueError) as exc:
         log_buffer.log('TLS', f'Pinned macOS Rosemary memory scan unavailable: {exc}')
         return {}
-
-
-atexit.register(shutdown_active_session)

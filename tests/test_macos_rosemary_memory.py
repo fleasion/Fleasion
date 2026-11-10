@@ -133,3 +133,30 @@ def test_inherited_descriptor_is_not_inherited_without_explicit_opt_in() -> None
     finally:
         session.close()
         session.process.wait(timeout=3)
+
+
+def test_owned_session_cleanup_registration_is_lazy_and_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    registrations: list[object] = []
+    monkeypatch.setattr(memory, '_cleanup_registered', threading.Event())
+    monkeypatch.setattr(memory.atexit, 'register', lambda fn: registrations.append(fn))
+    memory.set_active_session(None)
+    assert registrations == []
+
+    class Session:
+        def __init__(self) -> None:
+            self.process = SimpleNamespace(pid=8765, poll=lambda: 0)
+        @property
+        def running(self) -> bool:
+            return False
+        def close(self) -> None:
+            pass
+
+    session = Session()
+    memory.set_active_session(session)  # type: ignore[arg-type]
+    memory.set_active_session(session)  # type: ignore[arg-type]
+    assert registrations == [memory.shutdown_active_session]
+    memory.shutdown_active_session(terminate=False)
