@@ -165,6 +165,7 @@ def _rosemary_environment(proxy_url: str, *, runtime_executable: Path) -> dict[s
             # The first-run installer consent also covers the verified MiniDarwin base.
             'ROSEMARY_PREFIX_SETUP': 'download',
             'ROSEMARY_BUNDLED': '1',
+            'FLEASION_MANAGED_ROSEMARY': '1',
             'ROSEMARY_VULKAN_LIBRARY': str(
                 runtime_executable.parent.parent / 'lib' / 'libMoltenVK.dylib'
             ),

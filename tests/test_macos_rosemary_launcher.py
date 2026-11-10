@@ -119,6 +119,7 @@ def test_managed_launch_starts_proxy_before_rosemary_and_attaches_ipc(
         assert env['ROSEMARY_PREFIX'] == str(launcher.managed_prefix_directory())
         assert env['ROSEMARY_PREFIX_HOME'] == 'host'
         assert env['ROSEMARY_BUNDLED'] == '1'
+        assert env['FLEASION_MANAGED_ROSEMARY'] == '1'
         assert env['ROSEMARY_PREFIX_SETUP'] == 'download'
         assert env['ROSEMARY_VULKAN_LIBRARY'] == str(runtime.parent.parent / 'lib' / 'libMoltenVK.dylib')
         assert env['HTTPS_PROXY'] == 'http://127.0.0.1:58443'
