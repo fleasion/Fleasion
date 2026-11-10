@@ -41,6 +41,7 @@ from fleasion.utils import (
     CONFIG_DIR,
     get_roblox_player_exe_path,
     log_buffer,
+    macos_rosemary_gate,
     run_in_thread,
 )
 from fleasion.utils.autostart import sync_autostart, windows_autostart_privilege_hint
@@ -560,7 +561,14 @@ class SettingsTab(QWidget):
         limits_widget.setLayout(limits_row)
         section.add_widget(limits_widget)
 
-        if sys.platform == 'darwin':
+        if (
+            sys.platform == 'darwin'
+            and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
+            and self._config.macos_rosemary_enabled
+        ):
+            self._proxy_warning_label.setText(tr('settings.proxy.macos_managed'))
+            self._proxy_mode_combo.setEnabled(False)
+        elif sys.platform == 'darwin':
             self._proxy_warning_label.setText(tr('settings.proxy.macos_unavailable'))
             for control in (
                 self._proxy_features_chk,

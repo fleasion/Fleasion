@@ -87,6 +87,7 @@ from fleasion.utils import (
     launch_as_standard_user,
     log_buffer,
     macos_proxy_helper,
+    macos_rosemary_gate,
     run_in_thread,
     terminate_roblox,
     wait_for_roblox_exit,
@@ -4614,7 +4615,9 @@ class ProxyMaster:
         if IS_WINDOWS:
             return True
         if IS_MACOS:
-            return False
+            return macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE and bool(
+                getattr(self.config_manager, 'macos_rosemary_enabled', False)
+            )
         if IS_LINUX:
             # Proxy startup normally precedes Player startup. Select the splice
             # backend from the configured client, not only a running process.
@@ -5951,8 +5954,13 @@ class ProxyMaster:
         raise _RetryProxyWithWindowsSelectorError
 
     def start(self) -> None:
-        if IS_MACOS:
+        if IS_MACOS and not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
             log_buffer.log('Proxy', 'Native macOS proxy support is disabled; skipping startup')
+            return
+        if IS_MACOS and not bool(
+            getattr(getattr(self, 'config_manager', None), 'macos_rosemary_enabled', False)
+        ):
+            log_buffer.log('Proxy', 'macOS proxy requires an opted-in managed Rosemary launch')
             return
         with self._lock:
             if self._running:

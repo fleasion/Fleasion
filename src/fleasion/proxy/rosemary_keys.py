@@ -18,8 +18,13 @@ from .tls12_session import LP64_OPENSSL_350, TLS12_VERSION, validate_tls12_sessi
 from .tls_records import expand_label
 
 if TYPE_CHECKING:
-    import io
     from collections.abc import Callable
+    from typing import Protocol
+
+    class SeekableMemory(Protocol):
+        def seek(self, offset: int, whence: int = 0) -> int: ...
+        def read(self, size: int = -1) -> bytes: ...
+
 
 log = logging.getLogger(__name__)
 
@@ -270,7 +275,7 @@ def _regions(pid: int) -> list[tuple[int, int]]:
 
 
 def _scan_candidate(  # ruff: ignore[too-many-return-statements]
-    mem: io.BufferedReader,
+    mem: SeekableMemory,
     buf: bytes,
     *,
     start: int,
@@ -321,7 +326,7 @@ def _scan_candidate(  # ruff: ignore[too-many-return-statements]
 
 
 def _scan_region(
-    mem: io.BufferedReader,
+    mem: SeekableMemory,
     start: int,
     size: int,
     *,
@@ -367,7 +372,7 @@ def _scan_region(
 
 
 def _scan_ordered_regions(
-    mem: io.BufferedReader,
+    mem: SeekableMemory,
     pid: int,
     *,
     needle: bytes,
@@ -377,8 +382,11 @@ def _scan_ordered_regions(
     client_random: str | None,
     stop: threading.Event | None,
     found: SecretMap,
+    regions: list[tuple[int, int]] | None = None,
 ) -> SecretMap:
-    regions = _prioritize_regions(pid, _regions(pid), targeted=client_random is not None)
+    regions = _prioritize_regions(
+        pid, regions if regions is not None else _regions(pid), targeted=client_random is not None
+    )
     if client_random is not None:
         # Look near recently validated OpenSSL allocations before scanning
         # multi-gigabyte regions again. A miss always falls back to full coverage
@@ -426,6 +434,42 @@ def _scan_ordered_regions(
     return found
 
 
+def scan_mapped_regions(
+    memory: SeekableMemory,
+    pid: int,
+    regions: list[tuple[int, int]],
+    *,
+    stop: threading.Event | None = None,
+    client_random: str | None = None,
+    module_bounds: tuple[int, int] = (0, 0),
+) -> SecretMap:
+    """Scan externally supplied mapped regions with the shared OpenSSL validators."""
+    wanted: bytes | None = None
+    if client_random is not None:
+        try:
+            wanted = bytes.fromhex(client_random) if len(client_random) == 64 else None
+        except ValueError:
+            wanted = None
+        if wanted is None:
+            return {}
+    found: SecretMap = {}
+    try:
+        return _scan_ordered_regions(
+            memory,
+            pid,
+            needle=wanted or b'\x04\x03\x00\x00',
+            field_offset=0x188 if wanted is not None else 0x48,
+            module_base=module_bounds[0],
+            module_end=module_bounds[1],
+            client_random=client_random,
+            stop=stop,
+            found=found,
+            regions=regions,
+        )
+    except OSError, PermissionError, ProcessLookupError:
+        return found
+
+
 def scan(
     pid: int,
     *,
@@ -448,32 +492,17 @@ def scan(
     SecretMap
         Recovered TLS 1.3 traffic secrets keyed by client random.
     """
-    wanted: bytes | None = None
-    if client_random is not None:
-        try:
-            wanted = bytes.fromhex(client_random) if len(client_random) == 64 else None
-        except ValueError:
-            wanted = None
-        if wanted is None:
-            return {}
-
-    needle = wanted or b'\x04\x03\x00\x00'
-    field_offset = 0x188 if wanted is not None else 0x48
-    found: SecretMap = {}
-    module_base, module_end = _module_bounds(pid)
+    module_bounds = _module_bounds(pid)
     mem_path = Path(f'/proc/{pid}/mem')
     try:
         with mem_path.open('rb') as mem:
-            return _scan_ordered_regions(
+            return scan_mapped_regions(
                 mem,
                 pid,
-                needle=needle,
-                field_offset=field_offset,
-                module_base=module_base,
-                module_end=module_end,
-                client_random=client_random,
+                _regions(pid),
                 stop=stop,
-                found=found,
+                client_random=client_random,
+                module_bounds=module_bounds,
             )
     except OSError, PermissionError, ProcessLookupError:
-        return found
+        return {}

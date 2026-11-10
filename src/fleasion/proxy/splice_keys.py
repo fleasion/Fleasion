@@ -9,7 +9,9 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from fleasion.utils import macos_rosemary_gate
 from fleasion.utils.logging import log_buffer
+from fleasion.utils.macos_rosemary_memory import scan_active
 
 from .android_community_keys import find_android_community_pid, scan as scan_android_community
 from .live_keys import find_roblox_pid, scan
@@ -89,6 +91,12 @@ class KeyProvider:
                 native_keys = self._read_keylog(self.sober_native_keylog)
             if client_random in native_keys:
                 return native_keys
+        if sys.platform == 'darwin':
+            return (
+                scan_active(client_random=client_random, stop=self._stop)
+                if macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
+                else {}
+            )
         if sys.platform == 'win32':
             pid = find_roblox_pid()
             return scan(pid, stop=self._stop, client_random=client_random) if pid else {}
