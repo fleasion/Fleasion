@@ -1314,7 +1314,7 @@ ENGLISH: dict[str, str] = {
     'ui.gui.modifications_tab.browse_2': 'Browse…',
     'ui.gui.modifications_tab.browse_and_add_fastflags_currently_published_by': 'Browse and add FastFlags currently published by Roblox.',
     'ui.gui.modifications_tab.browse_fastflags': 'Browse FastFlags…',
-    'ui.gui.modifications_tab.browse_fastflags_found_across_roblox_clientsettings_releases': 'Browse FastFlags found across Roblox ClientSettings releases and public client tracker lists. Entries without a current PC value are added blank.',
+    'ui.gui.modifications_tab.browse_fastflags_found_across_roblox_clientsettings_releases': 'Browse FastFlags from current Roblox ClientSettings and actively maintained client binary inventories. Entries without a current PC value are added blank.',
     'ui.gui.modifications_tab.browse_roblox_dir': 'Browse Roblox Dir…',
     'ui.gui.modifications_tab.browse_roblox_fastflags': 'Browse Roblox FastFlags',
     'ui.gui.modifications_tab.cancel': 'Cancel',

@@ -1,4 +1,5 @@
 import inspect
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -247,6 +248,19 @@ def test_fflag_browser_extracts_tracker_only_fastvariables() -> None:
         'DFIntTaskSchedulerTargetFps': None,
     }
 
+    assert _extract_tracker_flags(
+        b'SFFlagServerSynced\n'
+        b'[Lua] FFlagNewLuauFlag\n'
+        b'[Com] FStringAnotherFlag\n'
+        b'FFlag\n'
+        b'FFlagWith-Dash\n'
+        b'InvalidFlag\n'
+    ) == {
+        'SFFlagServerSynced': None,
+        'FFlagNewLuauFlag': None,
+        'FStringAnotherFlag': None,
+    }
+
 
 def test_fflag_browser_adds_tracker_only_fastvariables_blank(
     monkeypatch: pytest.MonkeyPatch,
@@ -311,8 +325,8 @@ def test_fflag_browser_merges_live_values_with_the_tracker_lists(
             return b'{"applicationSettings":{"DFIntTaskSchedulerTargetFps":"60"}}'
         if url == _tracker_url('_TRACKER_VARIABLES_URL'):
             return b'[C++] DFFlagDebugDrawBroadPhaseAABBs\n'
-        if url == _tracker_url('_HISTORICAL_TRACKER_VARIABLES_URL'):
-            return b'[C++] DFIntTaskSchedulerTargetFps\n'
+        if url == _tracker_url('_PLAYER_VARIABLES_URL'):
+            return b'DFIntTaskSchedulerTargetFps\n'
         msg = f'unexpected URL: {url}'
         raise AssertionError(msg)
 
@@ -325,7 +339,50 @@ def test_fflag_browser_merges_live_values_with_the_tracker_lists(
             'DFIntTaskSchedulerTargetFps': None,
         }
     ]
+    assert _read_cache() == fetched[0]
     assert app is not None
+
+
+def test_fflag_browser_still_loads_when_public_settings_are_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
+    dialog = FFlagBrowserDialog()
+
+    def fake_http_get(
+        url: str, timeout: int = 15, headers: dict[str, str] | None = None
+    ) -> bytes:
+        del timeout, headers
+        if url == _tracker_url('_TRACKER_VARIABLES_URL'):
+            return b'[C++] FFlagStudioOnly\n'
+        if url == _tracker_url('_PLAYER_VARIABLES_URL'):
+            return b'FFlagPlayerOnly\n'
+        raise OSError('public endpoint unavailable')
+
+    monkeypatch.setattr(modifications_tab, 'http_get', fake_http_get)
+    assert dialog._collect_flags() == {  # pyright: ignore[reportPrivateUsage]
+        'FFlagStudioOnly': None,
+        'FFlagPlayerOnly': None,
+    }
+
+
+def test_fflag_browser_filters_malformed_clientsettings_names() -> None:
+    assert _extract_flags({
+        'applicationSettings': {
+            'FFlagValid': True,
+            'FFlagInvalid-Name': False,
+            'FFlagOther': [],
+        },
+    }) == {'FFlagValid': 'True'}
+
+
+def test_fflag_browser_settings_enumerate_current_channels_and_platforms() -> None:
+    urls = _settings_urls()
+    assert len(urls) == len(set(urls)) == 70
+    assert _settings_url() in urls
+    assert any('PCDesktopClientCJV' in url for url in urls)
+    assert any(url.endswith('/bucket/zlive') for url in urls)
+    assert any(url.endswith('/bucket/zbeta') for url in urls)
 
 
 def test_fflag_browser_cache_expires_after_one_hour(
@@ -333,12 +390,23 @@ def test_fflag_browser_cache_expires_after_one_hour(
 ) -> None:
     cache_path = tmp_path / 'fflag_browser.json'
     monkeypatch.setattr(FFlagBrowserDialog, '_CACHE_PATH', cache_path)
-    flags = {'DFFlagDebugDrawBroadPhaseAABBs': None, 'FFlagExample': 'True'}
+    flags = {
+        'DFFlagDebugDrawBroadPhaseAABBs': None,
+        'SFFlagServerSynced': None,
+        'FFlagExample': 'True',
+        'BareNameFromClientSettings': 'on',
+    }
 
     _write_cache(flags, now=10_000)
 
     assert _read_cache(now=13_599) == flags
     assert _read_cache(now=13_600) is None
+
+    # Old caches included a pinned historical inventory and must be discarded
+    stale = json.loads(cache_path.read_text(encoding='utf-8'))
+    stale['version'] = 1
+    cache_path.write_text(json.dumps(stale), encoding='utf-8')
+    assert _read_cache(now=10_001) is None
 
 
 def test_fflag_browser_refresh_bypasses_a_fresh_cache(monkeypatch: pytest.MonkeyPatch) -> None:

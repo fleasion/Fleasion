@@ -1946,6 +1946,7 @@ class FFlagBrowserDialog(QDialog):
     _SETTINGS_URL = 'https://clientsettingscdn.roblox.com/v2/settings/application/PCDesktopClient'
     _SETTINGS_APPLICATIONS = (
         'PCDesktopClient',
+        'PCDesktopClientCJV',
         'MacDesktopClient',
         'PlayStationClient',
         'XboxClient',
@@ -1959,26 +1960,37 @@ class FFlagBrowserDialog(QDialog):
         'PCClientBootstrapper',
         'MacClientBootstrapper',
     )
-    _SETTINGS_BUCKETS = ('', '/bucket/zcanary', '/bucket/zintegration')
+    _SETTINGS_BUCKETS = (
+        '',
+        '/bucket/zcanary',
+        '/bucket/zintegration',
+        '/bucket/zlive',
+        '/bucket/zbeta',
+    )
     _TRACKER_VARIABLES_URL = (
         'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox/FVariables.txt'
     )
-    _HISTORICAL_TRACKER_VARIABLES_URL = (
-        'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/'
-        '03a46e5f35e7aa5d85310189b477caee20b20761/FVariables.txt'
+    _PLAYER_VARIABLES_URL = (
+        'https://raw.githubusercontent.com/MoraineArchive/RobloxPlayer-Datamining/'
+        'main/current/FastVariables/cpp.txt'
     )
     _BYPASS_CUSTOM_FFLAGS_HEADER: ClassVar[dict[str, str]] = {
         'X-Fleasion-Bypass-Custom-FFlags': '1'
     }
     _CACHE_PATH = APP_CACHE_DIR / 'fflag_browser.json'
     _CACHE_TTL_SECONDS = 60 * 60
-    _CACHE_VERSION = 1
+    _CACHE_VERSION = 2
     _FAMILIES = (
         'DFFlag',
         'DFInt',
         'DFLog',
         'DFString',
         'DFFloat',
+        'SFFlag',
+        'SFInt',
+        'SFLog',
+        'SFString',
+        'SFFloat',
         'FFlag',
         'FInt',
         'FLog',
@@ -2088,7 +2100,11 @@ class FFlagBrowserDialog(QDialog):
         flags: dict[str, str] = {}
         for raw_name, raw_value in settings.items():
             name = str(raw_name).strip()
-            if not name or not isinstance(raw_value, str | int | float | bool):
+            if (
+                not name.isascii()
+                or not name.isidentifier()
+                or not isinstance(raw_value, str | int | float | bool)
+            ):
                 continue
             flags[name] = (
                 'True' if raw_value is True else 'False' if raw_value is False else str(raw_value)
@@ -2100,7 +2116,7 @@ class FFlagBrowserDialog(QDialog):
 
     @classmethod
     def _extract_tracker_flags(cls, payload: bytes) -> dict[str, None]:
-        """Extract known FastVariable names from the public Client Tracker list."""
+        """Extract names from current Studio or Player binary inventories."""
         try:
             lines = payload.decode('utf-8').splitlines()
         except UnicodeDecodeError as exc:
@@ -2109,12 +2125,16 @@ class FFlagBrowserDialog(QDialog):
 
         flags: dict[str, None] = {}
         for line in lines:
-            # The tracker currently writes entries as ``[C++] FFlagExample``.
+            # Studio uses [C++]/[Lua] annotations; Player lists bare names
             _, marker, raw_name = line.partition('] ')
-            if not marker:
-                continue
-            name = raw_name.strip()
-            if name.startswith(cls._FAMILIES):
+            name = (raw_name if marker else line).strip()
+            if (
+                name.isascii()
+                and name.isidentifier()
+                and any(
+                    name.startswith(family) and len(name) > len(family) for family in cls._FAMILIES
+                )
+            ):
                 flags[name] = None
         if not flags:
             msg = 'The FastVariable tracker returned no usable FastFlags.'
@@ -2123,7 +2143,7 @@ class FFlagBrowserDialog(QDialog):
 
     @classmethod
     def _settings_urls(cls) -> tuple[str, ...]:
-        """Return the live, canary, and integration endpoints used by the tracker."""
+        """Enumerate current application settings, including published channel buckets."""
         base_url = 'https://clientsettingscdn.roblox.com/v2/settings/application/'
         urls = [cls._SETTINGS_URL]
         urls.extend(
@@ -2158,7 +2178,7 @@ class FFlagBrowserDialog(QDialog):
         flags: dict[str, str | None] = {}
         for raw_name, value in raw_flags.items():
             name = raw_name.strip()
-            if name.startswith(cls._FAMILIES) and (value is None or isinstance(value, str)):
+            if name.isascii() and name.isidentifier() and (value is None or isinstance(value, str)):
                 flags[name] = value
         return flags or None
 
@@ -2204,6 +2224,7 @@ class FFlagBrowserDialog(QDialog):
         threading.Thread(target=self._fetch_flags, daemon=True).start()
 
     def _collect_flags(self) -> dict[str, str | None]:
+        """Merge current public settings and binary names, preferring live PC values."""
         flags: dict[str, str | None] = {}
         settings_urls = self._settings_urls()
         with ThreadPoolExecutor(max_workers=8) as executor:
@@ -2228,9 +2249,10 @@ class FFlagBrowserDialog(QDialog):
                 else:
                     flags.update({name: None for name in settings if name not in flags})
 
+        # Only current binary inventories: historical snapshots retain removed flags
         for tracker_url in (
             self._TRACKER_VARIABLES_URL,
-            self._HISTORICAL_TRACKER_VARIABLES_URL,
+            self._PLAYER_VARIABLES_URL,
         ):
             try:
                 tracker_flags = self._extract_tracker_flags(http_get(tracker_url, timeout=20))
