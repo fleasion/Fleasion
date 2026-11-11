@@ -59,7 +59,7 @@ def _apply_flags(dialog: FFlagBrowserDialog, flags: BrowserFlags) -> None:
 def _extract_flags(payload: object) -> dict[str, str]:
     callback = cast(
         'Callable[[object], dict[str, str]]',
-        FFlagBrowserDialog.__dict__['_extract_flags'],
+        getattr(FFlagBrowserDialog, '_extract_flags'),
     )
     return callback(payload)
 
@@ -257,7 +257,6 @@ def test_fflag_browser_extracts_tracker_only_fastvariables() -> None:
         b'FFlagWith-Dash\n'
         b'InvalidFlag\n'
     ) == {
-        'SFFlagServerSynced': None,
         'FFlagNewLuauFlag': None,
         'FStringAnotherFlag': None,
     }
@@ -372,6 +371,8 @@ def test_fflag_browser_filters_malformed_clientsettings_names() -> None:
         'applicationSettings': {
             'FFlagValid': True,
             'FFlagInvalid-Name': False,
+            'SFFlagServerSynced': False,
+            'BareNameFromClientSettings': True,
             'FFlagOther': [],
         },
     }) == {'FFlagValid': 'True'}
@@ -400,7 +401,10 @@ def test_fflag_browser_cache_expires_after_one_hour(
 
     _write_cache(flags, now=10_000)
 
-    assert _read_cache(now=13_599) == flags
+    assert _read_cache(now=13_599) == {
+        'DFFlagDebugDrawBroadPhaseAABBs': None,
+        'FFlagExample': 'True',
+    }
     assert _read_cache(now=13_600) is None
 
     # Old caches included a pinned historical inventory and must be discarded

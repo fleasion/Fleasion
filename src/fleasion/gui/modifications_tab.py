@@ -2008,18 +2008,13 @@ class FFlagBrowserDialog(QDialog):
     }
     _CACHE_PATH = APP_CACHE_DIR / 'fflag_browser.json'
     _CACHE_TTL_SECONDS = 60 * 60
-    _CACHE_VERSION = 2
+    _CACHE_VERSION = 3
     _FAMILIES = (
         'DFFlag',
         'DFInt',
         'DFLog',
         'DFString',
         'DFFloat',
-        'SFFlag',
-        'SFInt',
-        'SFLog',
-        'SFString',
-        'SFFloat',
         'FFlag',
         'FInt',
         'FLog',
@@ -2034,8 +2029,8 @@ class FFlagBrowserDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.modifications_tab.browse_roblox_fastflags'))
         self.setMinimumSize(820, 580)
-        # ``None`` means the variable is known to exist in the client, but
-        # Roblox has not published a current value through ClientSettings.
+        # ``None`` means no current PCDesktopClient value was retrieved
+        # Other published settings or tracker inventories may contain stale flags
         self._flags: dict[str, str | None] = {}
         self._cache_loaded = False
         self.selected_flags: dict[str, str] = {}
@@ -2115,8 +2110,8 @@ class FFlagBrowserDialog(QDialog):
         """Keep the canonical unpublished sentinel as None and translate only presentation."""
         return value if value is not None else tr('modifications.fastflags.no_value')
 
-    @staticmethod
-    def _extract_flags(payload: JsonValue) -> dict[str, str]:
+    @classmethod
+    def _extract_flags(cls, payload: JsonValue) -> dict[str, str]:
         """Validate the public ClientSettings response without accepting arbitrary JSON."""
         if type(payload) is not dict:
             msg = 'Roblox returned an invalid FastFlag response.'
@@ -2132,6 +2127,9 @@ class FFlagBrowserDialog(QDialog):
             if (
                 not name.isascii()
                 or not name.isidentifier()
+                or not any(
+                    name.startswith(family) and len(name) > len(family) for family in cls._FAMILIES
+                )
                 or not isinstance(raw_value, str | int | float | bool)
             ):
                 continue
@@ -2207,7 +2205,14 @@ class FFlagBrowserDialog(QDialog):
         flags: dict[str, str | None] = {}
         for raw_name, value in raw_flags.items():
             name = raw_name.strip()
-            if name.isascii() and name.isidentifier() and (value is None or isinstance(value, str)):
+            if (
+                name.isascii()
+                and name.isidentifier()
+                and any(
+                    name.startswith(family) and len(name) > len(family) for family in cls._FAMILIES
+                )
+                and (value is None or isinstance(value, str))
+            ):
                 flags[name] = value
         return flags or None
 
