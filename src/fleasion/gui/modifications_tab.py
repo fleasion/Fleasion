@@ -5046,7 +5046,6 @@ class ModificationsTab(QWidget):
             status_label.setText(
                 tr(
                     'ui.gui.modifications_tab.value_value_applied_value_detected',
-                    value0=applied,
                     value1=noun,
                     value2=tr_count(
                         roblox_count,

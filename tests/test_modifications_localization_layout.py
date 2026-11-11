@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -510,3 +511,29 @@ def test_preloaded_tab_background_respects_theme(
         parent.deleteLater()
         app.processEvents()
         app.setPalette(original_palette)
+
+
+@pytest.mark.parametrize('language', tuple(localization.LANGUAGES))
+@pytest.mark.parametrize('applied, roblox_count', [(0, 0), (1, 1), (3, 3), (11, 2)])
+def test_modifications_footer_renders_each_count_once(
+    language: str, applied: int, roblox_count: int
+) -> None:
+    _qapp()
+    previous_language = get_language()
+    set_language(language)
+    try:
+        label = QLabel()
+        fake = SimpleNamespace(
+            _manager=SimpleNamespace(
+                entries=[{'status': 'applied'}] * applied,
+                roblox_dirs=[f'dir{index}' for index in range(roblox_count)],
+            ),
+            _status_label=label,
+        )
+        ModificationsTab._update_status_bar(cast('ModificationsTab', fake))  # pyright: ignore[reportPrivateUsage]
+        status_parts = label.text().split(' • ')
+        assert len(status_parts) == 2
+        assert status_parts[0].count(str(applied)) == 1
+        assert status_parts[1].count(str(roblox_count)) == 1
+    finally:
+        set_language(previous_language)

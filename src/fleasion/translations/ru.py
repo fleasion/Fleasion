@@ -1459,7 +1459,7 @@ RUSSIAN: dict[str, str] = {
     'ui.gui.modifications_tab.turn_this_off_to_merge_the_profile': 'Отключите это, чтобы объединить профиль с текущими флагами.',
     'ui.gui.modifications_tab.update_from_current': 'Обновить из текущих',
     'ui.gui.modifications_tab.value_value': '{value0} ({value1:,})',
-    'ui.gui.modifications_tab.value_value_applied_value_detected': '{value0} {value1} применено • обнаружено {value2}',
+    'ui.gui.modifications_tab.value_value_applied_value_detected': '{value1} применено • обнаружено {value2}',
     'ui.gui.modifications_tab.vulkan': 'Vulkan',
     'ui.gui.modifications_tab.waiting_for_a_key_combination': 'Ожидание сочетания клавиш…',
     'ui.gui.prejsons_dialog.12345': '12345',

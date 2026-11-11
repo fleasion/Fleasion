@@ -1459,7 +1459,7 @@ ENGLISH: dict[str, str] = {
     'ui.gui.modifications_tab.turn_this_off_to_merge_the_profile': 'Turn this off to merge the profile into the current flags.',
     'ui.gui.modifications_tab.update_from_current': 'Update from Current',
     'ui.gui.modifications_tab.value_value': '{value0} ({value1:,})',
-    'ui.gui.modifications_tab.value_value_applied_value_detected': '{value0} {value1} applied • {value2} detected',
+    'ui.gui.modifications_tab.value_value_applied_value_detected': '{value1} applied • {value2} detected',
     'ui.gui.modifications_tab.vulkan': 'Vulkan',
     'ui.gui.modifications_tab.waiting_for_a_key_combination': 'Waiting for a key combination…',
     'ui.gui.prejsons_dialog.12345': '12345',
