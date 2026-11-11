@@ -953,7 +953,24 @@ class FastFlagValueDelegate(QStyledItemDelegate):
             editor.addItem(tr('ui.gui.modifications_tab.false'), 'False')
             editor.activated.connect(partial(self._commit_and_close_boolean_editor, editor))
             return editor
-        return super().createEditor(parent, option, index)
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            # Inline editors must cover the underlying cell text completely
+            # and align with the row rather than using the platform input frame
+            editor.setFrame(False)
+            editor.setAutoFillBackground(True)
+            editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            editor.setTextMargins(4, 0, 4, 0)
+            editor.setStyleSheet(
+                'QLineEdit { background-color: palette(base); border: 0; margin: 0; padding: 0; }'
+            )
+            # The live editor must write through while typing, not only on Enter
+            # or focus loss, since closing Fleasion can destroy an open editor
+            editor.textEdited.connect(partial(self._commit_text_editor, editor))
+        return editor
+
+    def _commit_text_editor(self, editor: QLineEdit, _text: str) -> None:
+        self.commitData.emit(editor)
 
     def _commit_and_close_boolean_editor(self, editor: QComboBox, _selected_index: int) -> None:
         """Finish the table edit as soon as a boolean is picked from its popup."""
@@ -989,6 +1006,18 @@ class FastFlagValueDelegate(QStyledItemDelegate):
             )
             model.setData(index, display, Qt.ItemDataRole.DisplayRole)
             model.setData(index, value, Qt.ItemDataRole.UserRole)
+            return
+        if isinstance(editor, QLineEdit):
+            value = editor.text()
+            if isinstance(model, VirtualFastFlagModel):
+                model.setData(index, value, Qt.ItemDataRole.EditRole)
+            else:
+                # Update both the visible text and the authoritative UserRole
+                # before notifying the table, so one save sees the new value
+                with QSignalBlocker(model):
+                    model.setData(index, value, Qt.ItemDataRole.UserRole)
+                    model.setData(index, value, Qt.ItemDataRole.EditRole)
+                model.dataChanged.emit(index, index)
             return
         super().setModelData(editor, model, index)
 
@@ -3265,7 +3294,9 @@ class CustomFFlagEditor(QWidget):
             checkbox_width = table.style().pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth)
             status_width = max(
                 135,
-                checkbox_width + 28 + max(
+                checkbox_width
+                + 28
+                + max(
                     metrics.horizontalAdvance(tr('ui.gui.modifications_tab.enabled')),
                     metrics.horizontalAdvance('Disabled'),
                 ),
@@ -3453,6 +3484,7 @@ class CustomFFlagEditor(QWidget):
         self._loading = True
         try:
             value_item = self._table.item(row, 1)
+            # Boolean flag families use canonical True/False values
             normalized_value = (
                 'True'
                 if str(value).strip().lower() == 'true'

@@ -208,12 +208,17 @@ class VirtualFastFlagModel(QAbstractTableModel):
                 self.invalid_name.emit(new_name)
                 return False
             if new_name != name:
-                self._flags[new_name] = self._flags.pop(name)
+                updated = previous
+                if new_name.startswith(('FFlag', 'DFFlag')):
+                    updated = 'True' if str(previous).strip().lower() == 'true' else 'False'
+                self._flags.pop(name)
+                self._flags[new_name] = updated or ''
                 if name in self._grouped:
                     self._grouped.remove(name)
                     self._grouped.add(new_name)
-                self.entries[entry_index] = (kind, new_name, previous)
+                self.entries[entry_index] = (kind, new_name, updated)
                 self.dataChanged.emit(index, index)
+                self.dataChanged.emit(index.sibling(index.row(), 1), index.sibling(index.row(), 1))
                 self.name_changed.emit(name, new_name)
             return True
         if column == 1:

@@ -10,6 +10,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -781,6 +782,161 @@ def test_create_folder_rejects_existing_name_without_changing_membership(
     assert config.custom_fflag_folders == {'Visual': ['FFlagOne']}
     assert warnings
     assert app is not None
+
+
+def test_fastflag_rename_preserves_same_family_values_and_converts_to_boolean() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={
+                'DFIntSpeed': '360',
+                'FStringMessage': 'hello world',
+                'FFlagEnabled': 'True',
+            },
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    table = _editor_table(editor)
+    try:
+        for old_name, new_name, expected in (
+            ('DFIntSpeed', 'DFIntRenamedSpeed', '360'),
+            ('FStringMessage', 'FStringRenamedMessage', 'hello world'),
+            ('FFlagEnabled', 'DFFlagEnabled', 'True'),
+        ):
+            row = next(r for r in range(table.rowCount()) if editor._row_name(r) == old_name)  # pyright: ignore[reportPrivateUsage]
+            name_item = table.item(row, 0)
+            assert name_item is not None
+            name_item.setText(new_name)
+            app.processEvents()
+            assert config.custom_fflags[new_name] == expected
+            assert editor._value_from_row(row) == expected  # pyright: ignore[reportPrivateUsage]
+            assert old_name not in config.custom_fflags
+        row = next(r for r in range(table.rowCount()) if editor._row_name(r) == 'DFIntRenamedSpeed')  # pyright: ignore[reportPrivateUsage]
+        name_item = table.item(row, 0)
+        assert name_item is not None
+        name_item.setText('FFlagSpeed')
+        app.processEvents()
+        assert config.custom_fflags['FFlagSpeed'] == 'False'
+    finally:
+        editor.close()
+
+
+def test_fastflag_text_edits_update_stored_value_before_editor_closes() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'DFIntTaskSchedulerTargetFps': ''},
+            custom_fflags_enabled=False,
+        ),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    try:
+        editor.show()
+        app.processEvents()
+        table = _editor_table(editor)
+        index = table.model().index(0, 1)
+        table.edit(index)
+        app.processEvents()
+        text_editors = table.viewport().findChildren(QLineEdit)
+        assert len(text_editors) == 1
+        text_editor = text_editors[0]
+        text_editor.setFocus()
+        QTest.keyClicks(text_editor, '50')
+        app.processEvents()
+        assert text_editor.text() == '50'
+        assert table.item(0, 1).text() == '50'
+        assert table.item(0, 1).data(Qt.ItemDataRole.UserRole) == '50'
+        assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
+        editor._load_flags()  # pyright: ignore[reportPrivateUsage]
+        app.processEvents()
+        assert table.item(0, 1).text() == '50'
+        assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
+    finally:
+        editor.close()
+
+
+def test_fastflag_text_edit_survives_configuration_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fleasion.config import manager as config_manager_module
+
+    app = _qapp()
+    config_dir = tmp_path / 'Fleasion'
+    config_file = config_dir / 'settings.json'
+    monkeypatch.setattr(config_manager_module, 'CONFIG_DIR', config_dir)
+    monkeypatch.setattr(config_manager_module, 'CONFIG_FILE', config_file)
+    monkeypatch.setattr(config_manager_module, 'CONFIGS_FOLDER', config_dir / 'configs')
+    config = config_manager_module.ConfigManager()
+    config.custom_fflags = {'DFIntTaskSchedulerTargetFps': ''}
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    try:
+        editor.show()
+        app.processEvents()
+        table = _editor_table(editor)
+        table.edit(table.model().index(0, 1))
+        app.processEvents()
+        text_editor = table.viewport().findChildren(QLineEdit)[0]
+        text_editor.setFocus()
+        QTest.keyClicks(text_editor, '50')
+        app.processEvents()
+        assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
+        assert json.loads(config_file.read_text(encoding='utf-8'))['custom_fflags'][
+            'DFIntTaskSchedulerTargetFps'
+        ] == '50'
+        reloaded = config_manager_module.ConfigManager()
+        assert reloaded.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
+    finally:
+        editor.close()
+
+
+def test_inline_fastflag_text_editor_is_opaque_and_vertically_aligned() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(custom_fflags={'FStringMessage': 'original text'}, custom_fflags_enabled=False),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    try:
+        editor.resize(1100, 540)
+        editor.show()
+        app.processEvents()
+        table = _editor_table(editor)
+        index = table.model().index(0, 1)
+        assert table.edit(index) is None
+        app.processEvents()
+        text_editors = table.viewport().findChildren(QLineEdit)
+        assert len(text_editors) == 1
+        text_editor = text_editors[0]
+        assert text_editor.text() == 'original text'
+        assert 'background-color: palette(base)' in text_editor.styleSheet()
+        assert not text_editor.hasFrame()
+        assert text_editor.alignment() & Qt.AlignmentFlag.AlignVCenter
+        assert text_editor.textMargins().top() == 0
+        assert text_editor.textMargins().bottom() == 0
+        assert text_editor.geometry() == table.visualRect(index)
+    finally:
+        editor.close()
 
 
 def test_inline_duplicate_fastflag_rename_is_reverted(

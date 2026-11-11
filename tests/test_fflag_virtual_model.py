@@ -92,6 +92,24 @@ def test_virtual_table_keeps_its_viewport_bounded_and_data_editable(
     editor.close()
 
 
+def test_virtual_fastflag_rename_preserves_value_or_converts_boolean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app()
+    monkeypatch.setattr(CustomFFlagEditor, '_VIRTUAL_THRESHOLD', 1)
+    editor, config = _editor({'DFIntSpeed': '360', 'FStringOther': 'hello'})
+    try:
+        model = editor._virtual_model  # pyright: ignore[reportPrivateUsage]
+        index = model.index(0, 0)
+        assert model.setData(index, 'DFIntRenamedSpeed', Qt.ItemDataRole.EditRole)
+        assert config.custom_fflags['DFIntRenamedSpeed'] == '360'
+        assert model.setData(index, 'FFlagSpeed', Qt.ItemDataRole.EditRole)
+        assert config.custom_fflags['FFlagSpeed'] == 'False'
+        assert 'DFIntSpeed' not in config.custom_fflags
+    finally:
+        editor.close()
+
+
 def test_virtual_table_preserves_folder_and_selected_row_actions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
