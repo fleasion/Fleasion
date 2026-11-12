@@ -1626,14 +1626,17 @@ def _launch_as_standard_user_impl(target_str: str) -> bool:
 def launch_as_standard_user(target: str | Path) -> bool:
     """Launch a Roblox URI, app bundle, or executable without elevation."""
     target_str = str(target)
+    # Authenticated Roblox URIs contain short-lived tickets; never log the URI
+    label = 'Roblox URI' if target_str.startswith(('roblox:', 'roblox-player:')) else target_str
     try:
         launched = _launch_as_standard_user_impl(target_str)
     except (OSError, ValueError) as exc:
-        log_buffer.log('Launch', f'Failed to launch {target_str}: {exc}')
+        detail = type(exc).__name__ if label == 'Roblox URI' else str(exc)
+        log_buffer.log('Launch', f'Failed to launch {label}: {detail}')
         return False
     if launched:
         return True
-    log_buffer.log('Launch', f'Launch target not found: {target_str}')
+    log_buffer.log('Launch', f'Launch target not found: {label}')
     return False
 
 

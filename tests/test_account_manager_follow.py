@@ -249,3 +249,22 @@ def test_follow_uses_selected_non_linux_launcher(
     launcher = cast('Callable[[str], bool]', tab.__dict__['_launch_follow_user_uri'])
     assert launcher('roblox-player:1+launchmode:play')
     assert calls == ['roblox-player:1+launchmode:play']
+
+
+def test_macos_launch_failures_never_log_auth_tickets(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fleasion.utils import platform_macos
+
+    logs: list[str] = []
+
+    def fail(_target: str) -> bool:
+        msg = 'failed to open roblox-player:1+gameinfo:SECRET_TICKET'
+        raise OSError(msg)
+
+    def capture(_kind: str, message: str) -> None:
+        logs.append(message)
+
+    monkeypatch.setattr(platform_macos, '_launch_as_standard_user_impl', fail)
+    monkeypatch.setattr(platform_macos.log_buffer, 'log', capture)
+    assert not platform_macos.launch_as_standard_user('roblox-player:1+gameinfo:SECRET_TICKET')
+    assert logs and all('SECRET_TICKET' not in message for message in logs)
+    assert 'Roblox URI' in logs[0]
