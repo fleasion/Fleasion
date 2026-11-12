@@ -2501,13 +2501,18 @@ class TextureStripper:
         pending = self._pending.get(pending_key)
         if pending is None or pending[0] not in {'local', 'cdn'}:
             return False
-        if 'locations' in item and not isinstance(item['locations'], list):
+        errors = item.get('errors')
+        if not isinstance(errors, list) or not any(isinstance(error, dict) for error in errors):
+            return False
+        # Only synthesize for a genuinely absent location, not malformed or
+        # partially populated CDN representations that we cannot interpret
+        if 'locations' in item and item['locations'] != []:
             return False
         if item.get('location') or batch_response_locations(item):
             return False
 
         url = f'https://fts.rbxcdn.com{_SYNTHETIC_CDN_PATH_PREFIX}{secrets.token_hex(24)}'
-        errors = item.pop('errors', None)
+        item.pop('errors', None)
         if 'locations' in item:
             item['locations'] = [{'location': url}]
         else:
@@ -2527,7 +2532,7 @@ class TextureStripper:
         while len(self._synthetic_routes) > _SYNTHETIC_CDN_ROUTE_LIMIT:
             self._synthetic_routes.popitem(last=False)
 
-        first_error = as_json_object(errors[0]) if isinstance(errors, list) and errors else None
+        first_error = as_json_object(errors[0]) if errors else None
         reason = (
             f' ({first_error.get("code")}: {first_error.get("message")})'
             if first_error is not None

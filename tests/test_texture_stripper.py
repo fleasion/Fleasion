@@ -1091,3 +1091,26 @@ def test_unavailable_asset_v3_envelope_roundtrip_preserves_metadata(tmp_path: Pa
     assert stripper.check_cdn_request('fts.rbxcdn.com', location.removeprefix('https://fts.rbxcdn.com')) == (
         'local', str(replacement)
     )
+
+
+@pytest.mark.parametrize(
+    'response_item',
+    [
+        {'requestId': 'a', 'locations': [{'unexpected': 'format'}], 'errors': [{'code': 403}]},
+        {'requestId': 'a', 'locations': None, 'errors': [{'code': 403}]},
+        {'requestId': 'a', 'locations': [], 'errors': 'unexpected'},
+        {'requestId': 'a', 'locations': [], 'errors': [None]},
+    ],
+)
+def test_unavailable_asset_does_not_rewrite_malformed_responses(
+    tmp_path: Path, response_item: dict[str, object]
+) -> None:
+    replacement = tmp_path / 'replacement.ogg'
+    replacement.write_bytes(b'OggS')
+    config = _ReplacementConfig(({}, set(), {}, {1234: str(replacement)}))
+    stripper = _make_stripper(config)
+    request = b'[{"assetId":1234,"assetType":"Audio","requestId":"a"}]'
+    outbound, _ = _process_batch_request(stripper, request, {}, config.get_all_replacements(), 'bad')
+    response = json.dumps([response_item]).encode()
+
+    assert stripper.process_batch_response(outbound, response, {}, 'bad') is None
