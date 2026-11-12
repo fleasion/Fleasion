@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         ReplacementMaps as _ReplacementMaps,
     )
     from fleasion.utils.logging import LogBuffer
+    from fleasion.utils.replacement_filters import FilteredRoute
 
     from .addons.cache_scraper import CacheScraper
     from .addons.custom_fflags import CustomFFlagModifier
@@ -3664,9 +3665,12 @@ class FleasionProxy:
             resp_headers: dict[bytes, bytes],
             resp_body_raw: bytes,
             short_circuit: tuple[str, object] | None,
-        ) -> tuple[bytes, bool]:
+        ) -> tuple[bytes, bool, bytes | None]:
+            """Return the body, whether it changed, and a redirect to send instead."""
             full_url = f'https://{host}{path}'
             response_modified = False
+            redirect: bytes | None = None
+            original_body_for_cache: bytes | None = None
             if short_circuit is not None and short_circuit[0] in {'solid', 'solid_v3'}:
                 resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
                 cdn_base_url = full_url.partition('?')[0]
@@ -3680,6 +3684,26 @@ class FleasionProxy:
                     prefer_v3,
                 )
                 response_modified = True
+            elif short_circuit is not None and short_circuit[0] == 'filtered':
+                original_body = _decompress_body(resp_body_raw, resp_headers)
+                original_body_for_cache = original_body
+                filtered_route = await asyncio.get_event_loop().run_in_executor(
+                    self._executor,
+                    self.texture_stripper.choose_filtered_route,
+                    cast('tuple[FilteredRoute, ...]', short_circuit[1]),
+                    original_body,
+                    full_url,
+                )
+                if filtered_route is not None and filtered_route.mode == 'cdn':
+                    redirect = _make_redirect(filtered_route.value)
+                elif filtered_route is not None:
+                    replacement_body = await asyncio.get_event_loop().run_in_executor(
+                        self._executor, _read_local_bytes, filtered_route.value
+                    )
+                    # A missing replacement file keeps the original
+                    if replacement_body:
+                        resp_body_raw = replacement_body
+                        response_modified = True
             elif short_circuit is not None and short_circuit[0] == 'anim_rig':
                 anim_repl_path, required_rig = cast('_AnimPendingValue', short_circuit[1])
                 orig_bytes = _decompress_body(resp_body_raw, resp_headers)
@@ -3694,13 +3718,17 @@ class FleasionProxy:
 
             if self.cache_scraper.enabled:
                 resp_body_for_cache = (
-                    resp_body_raw
-                    if response_modified
-                    else _decompress_body(resp_body_raw, resp_headers)
+                    original_body_for_cache
+                    if original_body_for_cache is not None
+                    else (
+                        resp_body_raw
+                        if response_modified
+                        else _decompress_body(resp_body_raw, resp_headers)
+                    )
                 )
                 ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
                 self.cache_scraper.process_cdn_response(full_url, path, resp_body_for_cache, ct)
-            return resp_body_raw, response_modified
+            return resp_body_raw, response_modified, redirect
 
         async def run_session_loop() -> None:
             nonlocal pending_req
@@ -3889,6 +3917,7 @@ class FleasionProxy:
                 )
                 batch_requires_hooks = is_batch and (
                     any(replacements_tuple)
+                    or self.texture_stripper.has_filtered_replacements()
                     or self.cache_scraper.enabled
                     or self._asset_trace.enabled
                 )
@@ -3943,7 +3972,9 @@ class FleasionProxy:
                         if snapshot is not None:
                             changed_snapshot = False
                             previous_snapshot = snapshot
-                            desired_signature = tuple(sorted(custom_fflag_modifier.runtime_flags().items()))
+                            desired_signature = tuple(
+                                sorted(custom_fflag_modifier.runtime_flags().items())
+                            )
                             if desired_signature != snapshot.signature:
                                 (
                                     new_body,
@@ -3955,15 +3986,20 @@ class FleasionProxy:
                                 )
                                 if new_signature == desired_signature:
                                     encoding = (
-                                        new_encoding if changed
+                                        new_encoding
+                                        if changed
                                         else snapshot.headers.get(b'content-encoding')
                                     )
                                     new_etag, new_response = make_local_client_settings_response(
                                         new_body, encoding, snapshot.status_line, snapshot.headers
                                     )
                                     snapshot = replace(
-                                        snapshot, delivered_body=new_body, encoding=encoding,
-                                        signature=new_signature, etag=new_etag, response=new_response,
+                                        snapshot,
+                                        delivered_body=new_body,
+                                        encoding=encoding,
+                                        signature=new_signature,
+                                        etag=new_etag,
+                                        response=new_response,
                                     )
                                     changed_snapshot = True
                                 else:
@@ -4201,9 +4237,7 @@ class FleasionProxy:
                 resp_first, resp_headers = resp_raw.first_line, resp_raw.headers
                 status_code = _parse_status_code(resp_first)
                 if status_code == 304 and cache_key is not None and cache is not None:
-                    cache.note_not_modified(
-                        cache_key, custom_fflag_modifier.delivery_generation()
-                    )
+                    cache.note_not_modified(cache_key, custom_fflag_modifier.delivery_generation())
                 if status_code == 101:
                     # After Switching Protocols the connection is no longer HTTP
                     response_writer.write(resp_raw.raw_header_block)
@@ -4344,6 +4378,8 @@ class FleasionProxy:
                 response_modified = False
                 modified_content_encoding: bytes | None = None
                 custom_fflag_delivered_signature: tuple[tuple[str, str], ...] | None = None
+                # A filtered CDN-URL replacement answers with a redirect instead
+                filtered_redirect: bytes | None = None
 
                 if batch_requires_hooks:
                     # Batch response: forward raw to Roblox, decompress only for addon hooks
@@ -4413,8 +4449,17 @@ class FleasionProxy:
                             )
 
                 elif host in CDN_HOSTS:
-                    resp_body_raw, response_modified = await modify_cdn_response(
-                        path, resp_headers, resp_body_raw, short_circuit
+                    # A partial, bodyless, or trailer-bearing response is not a
+                    # complete original asset: do not evaluate its filters
+                    cdn_route = (
+                        None
+                        if short_circuit is not None
+                        and short_circuit[0] == 'filtered'
+                        and (status_code != 200 or resp_body.has_trailers)
+                        else short_circuit
+                    )
+                    resp_body_raw, response_modified, filtered_redirect = await modify_cdn_response(
+                        path, resp_headers, resp_body_raw, cdn_route
                     )
 
                 elif custom_fflag_response_enabled and 200 <= status_code < 300 and resp_body_raw:
@@ -4503,7 +4548,9 @@ class FleasionProxy:
                     and cache is not None
                     and custom_fflag_delivered_signature is not None
                 )
-                if (
+                if filtered_redirect is not None:
+                    outgoing_response = filtered_redirect
+                elif (
                     eligible_snapshot
                     and may_cache_client_settings_response(
                         status_code, resp_headers, upstream_settings_body
@@ -4525,7 +4572,9 @@ class FleasionProxy:
                         upstream_body=upstream_settings_body,
                         delivered_body=resp_body_raw,
                         encoding=delivered_encoding,
-                        signature=cast('tuple[tuple[str, str], ...]', custom_fflag_delivered_signature),
+                        signature=cast(
+                            'tuple[tuple[str, str], ...]', custom_fflag_delivered_signature
+                        ),
                         generation=custom_fflag_request_generation or 0,
                         checked_at=time.monotonic(),
                         etag=etag,
@@ -4581,7 +4630,8 @@ class FleasionProxy:
                     and cache is not None
                     and cache_key is not None
                     and not delivery_ack_deferred
-                    and custom_fflag_request_generation == custom_fflag_modifier.delivery_generation()
+                    and custom_fflag_request_generation
+                    == custom_fflag_modifier.delivery_generation()
                 ):
                     cache.store(cache_key, cache_candidate)
 

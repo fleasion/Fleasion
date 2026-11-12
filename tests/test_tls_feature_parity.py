@@ -98,6 +98,7 @@ def _fake_addons(
             config_manager=SimpleNamespace(get_all_replacements=_empty_replacements),
             check_cdn_request=check_cdn_request,
             has_pending=lambda: False,
+            has_filtered_replacements=lambda: False,
             process_batch_request=process_batch_request,
             process_batch_response=process_batch_response,
             process_solidmodel_response=process_solid_model,

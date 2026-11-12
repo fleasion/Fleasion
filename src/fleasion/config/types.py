@@ -36,6 +36,7 @@ class ProfileRule(TypedDict, total=False):
     with_id: int
     cdn_url: str
     local_path: str
+    filters: dict[str, float]
 
 
 class GroupRule(TypedDict):
