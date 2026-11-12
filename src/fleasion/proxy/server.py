@@ -4449,8 +4449,17 @@ class FleasionProxy:
                             )
 
                 elif host in CDN_HOSTS:
+                    # A partial, bodyless, or trailer-bearing response is not a
+                    # complete original asset: do not evaluate its filters
+                    cdn_route = (
+                        None
+                        if short_circuit is not None
+                        and short_circuit[0] == 'filtered'
+                        and (status_code != 200 or resp_body.has_trailers)
+                        else short_circuit
+                    )
                     resp_body_raw, response_modified, filtered_redirect = await modify_cdn_response(
-                        path, resp_headers, resp_body_raw, short_circuit
+                        path, resp_headers, resp_body_raw, cdn_route
                     )
 
                 elif custom_fflag_response_enabled and 200 <= status_code < 300 and resp_body_raw:

@@ -28,7 +28,7 @@ def _positive_number(value: object) -> float | None:
         return None
     try:
         number = float(value)
-    except ValueError:
+    except OverflowError, ValueError:
         return None
     return number if math.isfinite(number) and number > 0 else None
 
@@ -105,7 +105,13 @@ def audio_duration_seconds(data: bytes) -> float | None:
         # Not audio, or a format libsndfile cannot read
         return None
     duration = getattr(info, 'duration', None)
-    return float(duration) if isinstance(duration, int | float) and duration > 0 else None
+    if not isinstance(duration, int | float):
+        return None
+    try:
+        result = float(duration)
+    except OverflowError:
+        return None
+    return result if math.isfinite(result) and result > 0 else None
 
 
 def choose_route(routes: Iterable[FilteredRoute], original: bytes) -> FilteredRoute | None:

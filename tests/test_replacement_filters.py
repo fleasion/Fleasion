@@ -188,3 +188,24 @@ def test_nonfinite_filter_values_are_ignored() -> None:
     assert ReplacementFilter.from_config({'max_seconds': float('inf')}) is None
     assert ReplacementFilter.from_config({'min_kb': 'Infinity'}) is None
     assert ReplacementFilter.from_config({'max_kb': float('nan')}) is None
+
+
+@pytest.mark.parametrize('duration', [float('inf'), float('-inf'), float('nan'), 10**1000])
+def test_untrusted_audio_metadata_cannot_satisfy_duration_filters(
+    monkeypatch: pytest.MonkeyPatch, duration: float | int
+) -> None:
+    from types import SimpleNamespace
+
+    def fake_info(_data: io.BytesIO) -> SimpleNamespace:
+        return SimpleNamespace(duration=duration)
+
+    monkeypatch.setattr(soundfile, 'info', fake_info)
+    assert audio_duration_seconds(b'untrusted-audio') is None
+    assert choose_route(
+        (FilteredRoute(ReplacementFilter(min_seconds=1), 'local', 'replacement.ogg'),),
+        b'untrusted-audio',
+    ) is None
+
+
+def test_oversized_numeric_config_bound_does_not_raise() -> None:
+    assert ReplacementFilter.from_config({'max_seconds': 10**1000}) is None

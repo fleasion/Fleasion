@@ -197,7 +197,7 @@ def test_scraper_reads_v2_locations_without_http_fetch(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize('version', ('v1', 'v2', 'v3'))
-@pytest.mark.parametrize('kind', ('v2_local', 'gzip_passthrough', 'zstd_passthrough', 'br_passthrough', 'dcz_passthrough', 'gzip_modified', 'zstd_modified', 'gzip_response_local', 'filtered_only', 'filtered_cached', 'filtered_nomatch'))
+@pytest.mark.parametrize('kind', ('v2_local', 'gzip_passthrough', 'zstd_passthrough', 'br_passthrough', 'dcz_passthrough', 'gzip_modified', 'zstd_modified', 'gzip_response_local', 'filtered_only', 'filtered_cached', 'filtered_nomatch', 'filtered_partial', 'filtered_not_modified', 'filtered_error'))
 def test_proxy_batch_transport_compat(
     version: str, kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -205,6 +205,8 @@ def test_proxy_batch_transport_compat(
         monkeypatch.setenv('FLEASION_ASSET_SYNTHETIC_CDN', '1')
     if kind == 'gzip_response_local' and version != 'v3':
         pytest.skip('Only the V3 compressed response envelope is under test')
+    if kind in {'filtered_partial', 'filtered_not_modified', 'filtered_error'} and version != 'v1':
+        pytest.skip('Only one version is needed for upstream CDN status preservation')
     async def run() -> None:
         TextureStripper.reset_routes()
         local = tmp_path / 'replacement.png'
@@ -265,8 +267,19 @@ def test_proxy_batch_transport_compat(
             else:
                 body = b'ROBLOX-ORIGINAL-IMAGE'
                 encoding_header = b''
+                if kind == 'filtered_partial':
+                    body = b'ROBLOX-PARTIAL'
+                elif kind == 'filtered_not_modified':
+                    body = b''
+                elif kind == 'filtered_error':
+                    body = b'ROBLOX-ERROR'
+            status = {
+                'filtered_partial': '206 Partial Content',
+                'filtered_not_modified': '304 Not Modified',
+                'filtered_error': '403 Forbidden',
+            }.get(kind if host == _CDN else '', '200 OK')
             reader.feed_data(
-                f'HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n'.encode()
+                f'HTTP/1.1 {status}\r\nContent-Length: {len(body)}\r\n'.encode()
                 + encoding_header
                 + b'Connection: close\r\n\r\n' + body
             )
@@ -347,7 +360,7 @@ def test_proxy_batch_transport_compat(
                 if kind in {'v2_local', 'gzip_response_local', 'filtered_only', 'filtered_cached', 'filtered_nomatch'}:
                     client_response = json.loads(response.partition(b'\r\n\r\n')[2])
                     assert client_response['extra'] == {'preserved': True}
-            if kind in {'v2_local', 'gzip_response_local', 'filtered_only', 'filtered_cached', 'filtered_nomatch'}:
+            if kind in {'v2_local', 'gzip_response_local', 'filtered_only', 'filtered_cached', 'filtered_nomatch', 'filtered_partial', 'filtered_not_modified', 'filtered_error'}:
                 response_body = response.partition(b'\r\n\r\n')[2]
                 assert b'content-encoding:' not in response.partition(b'\r\n\r\n')[0].lower()
                 if kind == 'gzip_response_local':
@@ -363,11 +376,18 @@ def test_proxy_batch_transport_compat(
                     f'GET {target_path}?other-sig=1 HTTP/1.1\r\nHost: {_CDN}\r\n'
                     'Connection: close\r\n\r\n'.encode(),
                 )
-                expected = (
-                    b'ROBLOX-ORIGINAL-IMAGE'
-                    if kind == 'filtered_nomatch'
-                    else b'LOCAL-IMAGE-REPLACEMENT'
-                )
+                expected = {
+                    'filtered_nomatch': b'ROBLOX-ORIGINAL-IMAGE',
+                    'filtered_partial': b'ROBLOX-PARTIAL',
+                    'filtered_not_modified': b'',
+                    'filtered_error': b'ROBLOX-ERROR',
+                }.get(kind, b'LOCAL-IMAGE-REPLACEMENT')
+                status = {
+                    'filtered_partial': b'206',
+                    'filtered_not_modified': b'304',
+                    'filtered_error': b'403',
+                }.get(kind, b'200')
+                assert cdn.startswith(b'HTTP/1.1 ' + status + b' ')
                 assert cdn.endswith(b'\r\n\r\n' + expected)
                 assert len(upstream_writes) == (2 if kind.startswith('filtered_') else 1)
                 if kind == 'filtered_cached':
