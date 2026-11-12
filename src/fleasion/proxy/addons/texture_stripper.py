@@ -2340,7 +2340,8 @@ class TextureStripper:
         cdn_replacements: dict[_ReplacementKey, str],
         orm_overrides: dict[int | str, dict[str, str | None]],
         normal_overrides: dict[int | str, str | int | None],
-    ) -> None:
+    ) -> bool:
+        """Register CDN routes and indicate whether this response item was rewritten."""
         req_id_raw = str(item.get('requestId', ''))
         # V1 has one location; V2 supplies per-format locations
         base_locs = tuple(
@@ -2393,7 +2394,7 @@ class TextureStripper:
                             f'Will serve local for {base_locs[0][:60]}... '
                             f'(key=ORM[{", ".join(sorted(orm_chs))}], slot={map_index}, file={Path(comp).name})',
                         )
-                        return
+                        return False
 
             slot_key = f'{aid}:{map_index}'
             wildcard_key = f'TexturePack:{map_index}'
@@ -2419,7 +2420,7 @@ class TextureStripper:
                     f'Will serve local for {base_locs[0][:60]}... '
                     f'(key={local_key}, slot={map_index}, file={Path(local_path).name})',
                 )
-                return
+                return False
             if cdn_key is not None:
                 if not (
                     self._synthetic_cdn_enabled
@@ -2433,10 +2434,12 @@ class TextureStripper:
                     'CDN',
                     f'Will redirect {base_locs[0][:60]}... (key={cdn_key}, slot={map_index})',
                 )
-                return
+                return False
 
+        if not base_locs and pending_key and item.get('errors'):
+            return self._route_unavailable_asset_locked(item, req_item, aid, pending_key)
         if not base_locs or not pending_key:
-            return
+            return False
         url_type, url_value = self._pending.pop(pending_key)
         with self._anim_lock:
             anim_pending = self._anim_local_pending.pop(pending_key, None)
@@ -2449,6 +2452,8 @@ class TextureStripper:
                 self._register_batch_response_route_locked(
                     base_loc, url_type, url_value, anim_pending
                 )
+
+        return False
 
     def _register_batch_response_route_locked(
         self,
@@ -2479,6 +2484,65 @@ class TextureStripper:
             self._solidmodel_injections[base_loc] = url_value
             self._solidmodel_force_v3.add(base_loc)
             log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
+
+    def _route_unavailable_asset_locked(
+        self,
+        item: _JsonObject,
+        req_item: _JsonObject,
+        aid: int | str | None,
+        pending_key: str,
+    ) -> bool:
+        """Serve an explicit local/CDN replacement even if the original is unavailable.
+
+        A moderated or private asset has no CDN location in its batch result.
+        Generate a proxy-owned CDN URL, retaining the existing route's target.
+        This must run under ``self._lock`` and never forward the source error.
+        """
+        pending = self._pending.get(pending_key)
+        if pending is None or pending[0] not in {'local', 'cdn'}:
+            return False
+        errors = item.get('errors')
+        if not isinstance(errors, list) or not any(isinstance(error, dict) for error in errors):
+            return False
+        # Only synthesize for a genuinely absent location, not malformed or
+        # partially populated CDN representations that we cannot interpret
+        if 'locations' in item and item['locations'] != []:
+            return False
+        if item.get('location') or batch_response_locations(item):
+            return False
+
+        url = f'https://fts.rbxcdn.com{_SYNTHETIC_CDN_PATH_PREFIX}{secrets.token_hex(24)}'
+        item.pop('errors', None)
+        if 'locations' in item:
+            item['locations'] = [{'location': url}]
+        else:
+            item['location'] = url
+        if 'assetTypeId' not in item:
+            type_id = req_item.get('assetTypeId') or self._REVERSE.get(
+                str(req_item.get('assetType', '')).lower()
+            )
+            if type_id is not None:
+                item['assetTypeId'] = type_id
+
+        self._pending.pop(pending_key)
+        with self._anim_lock:
+            # Without the original, animation rig detection cannot run
+            self._anim_local_pending.pop(pending_key, None)
+        self._synthetic_routes[url] = pending
+        while len(self._synthetic_routes) > _SYNTHETIC_CDN_ROUTE_LIMIT:
+            self._synthetic_routes.popitem(last=False)
+
+        first_error = as_json_object(errors[0]) if errors else None
+        reason = (
+            f' ({first_error.get("code")}: {first_error.get("message")})'
+            if first_error is not None
+            else ''
+        )
+        log_buffer.log(
+            'Replacer',
+            f'Asset {aid} unavailable upstream{reason}; serving its replacement',
+        )
+        return True
 
     # Batch response (called from server MITM thread)
 
@@ -2557,6 +2621,7 @@ class TextureStripper:
                     slot_target_ids.add(int(pk))
         texpack_request_slots = self._build_texpack_request_slot_map(req_data, slot_target_ids)
 
+        rewritten_unavailable = False
         with self._lock:
             original_locations = (
                 tuple(
@@ -2571,7 +2636,7 @@ class TextureStripper:
             for idx, item in enumerate(resp_data):
                 if not isinstance(item, dict):
                     continue
-                self._process_batch_response_entry_locked(
+                rewritten_unavailable |= self._process_batch_response_entry_locked(
                     idx=idx,
                     item=item,
                     batch_id=batch_id,
@@ -2583,8 +2648,12 @@ class TextureStripper:
                     orm_overrides=orm_overrides,
                     normal_overrides=normal_overrides,
                 )
-            if self._synthetic_cdn_enabled and original_locations != tuple(
-                batch_response_locations(item) for item in resp_data if isinstance(item, dict)
+            if rewritten_unavailable or (
+                self._synthetic_cdn_enabled
+                and original_locations
+                != tuple(
+                    batch_response_locations(item) for item in resp_data if isinstance(item, dict)
+                )
             ):
                 rewritten = _dumps(resp_data)
                 return rewritten if rewritten != resp_body else None
