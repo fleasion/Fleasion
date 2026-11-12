@@ -805,3 +805,37 @@ def test_windows_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scannin
     monkeypatch.setattr(modifications_manager, 'get_roblox_player_exe_path', player_exe_path)
 
     assert _find_roblox_dirs() == [valid_dir]
+
+
+class _RecordingGlobalSettings:
+    def __init__(self, calls: list[tuple[str, ...] | tuple[str, int]]) -> None:
+        self._calls = calls
+
+    @staticmethod
+    def read_framerate_cap() -> int:
+        return 240
+
+    def write(self, value: int) -> None:
+        self._calls.append(('write', value))
+
+    def restore(self) -> None:
+        self._calls.append(('restore',))
+
+
+def test_sync_does_not_take_over_the_cap_roblox_already_has() -> None:
+    calls: list[tuple[str, ...] | tuple[str, int]] = []
+    manager = ModificationManager.__new__(ModificationManager)
+    data: dict[str, object] = {'global_settings': {}, 'fast_flags': {}}
+    manager.__dict__['_data'] = data
+    manager.__dict__['global_settings_manager'] = _RecordingGlobalSettings(calls)
+
+    # The UI shows Roblox's own value, but nothing was chosen in Fleasion
+    assert manager.framerate_cap == 240
+    manager.sync_saved_global_settings()
+
+    assert calls == [('restore',)]
+
+    data['global_settings'] = {'framerate_cap': 144}
+    manager.sync_saved_global_settings()
+
+    assert calls[-1] == ('write', 144)
