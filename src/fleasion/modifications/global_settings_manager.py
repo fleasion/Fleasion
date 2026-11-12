@@ -187,11 +187,11 @@ class GlobalSettingsManager:
                 return cap
         return None
 
-    def _write_framerate_cap(self, xml_path: Path, framerate: int) -> None:
+    def _write_framerate_cap(self, xml_path: Path, framerate: int) -> bool:
         """Write the FramerateCap value to GlobalBasicSettings_13.xml."""
         if not xml_path.exists():
             log_buffer.log('GlobalSettings', f'XML file not found: {xml_path}')
-            return
+            return False
 
         was_read_only = self._get_read_only_state(xml_path)
         if was_read_only:
@@ -203,24 +203,26 @@ class GlobalSettingsManager:
             log_buffer.log('GlobalSettings', f'Error reading framerate cap: {exc}')
             if was_read_only:
                 self._set_read_only(xml_path, read_only=True)
-            return
+            return False
 
         element = _framerate_element(tree.getroot())
         if element is None:
             log_buffer.log('GlobalSettings', 'FramerateCap element not found in XML')
             if was_read_only:
                 self._set_read_only(xml_path, read_only=True)
-            return
+            return False
         element.text = str(framerate)
         try:
             tree.write(xml_path, encoding='utf-8', xml_declaration=True)
         except OSError as exc:
             log_buffer.log('GlobalSettings', f'Error writing framerate cap: {exc}')
+            return False
         else:
             log_buffer.log(
                 'GlobalSettings',
                 f'Updated FramerateCap to {framerate} in {xml_path.name}',
             )
+            return True
         finally:
             if was_read_only:
                 self._set_read_only(xml_path, read_only=True)
@@ -246,13 +248,16 @@ class GlobalSettingsManager:
                         pass  # Touch file
                     self._set_read_only(stash, read_only=True)
 
-            # Write the framerate cap
-            if dst.exists():
-                self._write_framerate_cap(dst, framerate)
-                if stash.exists():
-                    # Remember Fleasion's value so restore can tell it from a
-                    # cap the user picked in Roblox afterwards
-                    _written_cap_path(stash).write_text(str(framerate), encoding='utf-8')
+            # Record only values actually written, not an attempted update
+            if dst.exists() and self._write_framerate_cap(dst, framerate) and stash.exists():
+                # A failed sidecar write makes ownership ambiguous on restore
+                written_path = _written_cap_path(stash)
+                try:
+                    written_path.write_text(str(framerate), encoding='utf-8')
+                except OSError as exc:
+                    log_buffer.log('GlobalSettings', f'Could not record managed cap: {exc}')
+                    with contextlib.suppress(OSError):
+                        written_path.unlink(missing_ok=True)
 
         log_buffer.log(
             'GlobalSettings',
@@ -308,13 +313,20 @@ class GlobalSettingsManager:
             current = self._read_framerate_cap(dst) if dst.exists() else None
             if current is None or original is None:
                 pass
-            elif written is not None and current != written:
+            elif written is None:
+                # Legacy stashes or failed writes cannot establish ownership
+                log_buffer.log(
+                    'GlobalSettings',
+                    f'Kept FramerateCap={current}; managed value was not recorded',
+                )
+            elif current != written:
                 log_buffer.log(
                     'GlobalSettings',
                     f'Kept FramerateCap={current} set in Roblox instead of restoring {original}',
                 )
-            elif current != original:
-                self._write_framerate_cap(dst, original)
+            elif current != original and not self._write_framerate_cap(dst, original):
+                # Preserve the stash and ownership marker so restoration can retry
+                continue
 
             self._remove_read_only(stash)
             stash.unlink()
