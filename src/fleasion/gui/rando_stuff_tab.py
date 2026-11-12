@@ -519,33 +519,58 @@ def _build_place_launcher_url(
     return 'https://www.roblox.com/Game/PlaceLauncher.ashx?' + urlencode(params)
 
 
-_PROFILE_LINK_USER_ID_RE = re.compile(r'roblox\.com/users/(\d+)', re.IGNORECASE)
+_PROFILE_LINK_PATH_RE = re.compile(r'/users/([0-9]+)(?:/profile)?/?', re.IGNORECASE)
 # userPresenceType from presence.roblox.com: 0 offline, 1 website, 2 in game,
 # 3 in Studio, 4 invisible
 _PRESENCE_IN_GAME = 2
 
 
-def _resolve_user_id(target: str) -> tuple[int, str] | None:
+def _resolve_user_id(target: str) -> tuple[int, str] | None:  # ruff: ignore[too-many-return-statements]
     """Resolve a username, profile link or numeric user ID to ``(id, name)``."""
     raw = target.strip().removeprefix('@')
-    if match := _PROFILE_LINK_USER_ID_RE.search(raw):
-        return int(match.group(1)), raw
-    if raw.isdigit():
-        return int(raw), raw
+    if raw.isascii() and raw.isdigit():
+        return (int(raw), raw) if int(raw) > 0 else None
     if not raw:
         return None
+    if '://' in raw or '/' in raw:
+        try:
+            parsed = urlparse(raw if '://' in raw else f'https://{raw}')
+            hostname = parsed.hostname
+        except ValueError:
+            return None
+        if parsed.scheme not in {'http', 'https'} or hostname not in {
+            'roblox.com',
+            'www.roblox.com',
+        }:
+            return None
+        match = _PROFILE_LINK_PATH_RE.fullmatch(parsed.path)
+        user_id = int(match.group(1)) if match else 0
+        return (user_id, raw) if user_id > 0 else None
     try:
         resp = _requests.post(
             'https://users.roblox.com/v1/usernames/users',
             json={'usernames': [raw], 'excludeBannedUsers': True},
             timeout=10,
         )
-        users = resp.json().get('data') if resp.status_code == 200 else None
+        payload = resp.json() if resp.status_code == 200 else None
     except _requests.RequestException, ValueError:
         return None
-    if not users:
+    if not isinstance(payload, dict):
         return None
-    return int(users[0]['id']), str(users[0].get('name') or raw)
+    users = cast('dict[str, object]', payload).get('data')
+    if not isinstance(users, list) or not users or not isinstance(users[0], dict):
+        return None
+    user = cast('dict[str, object]', users[0])
+    identifier = user.get('id')
+    if not isinstance(identifier, (int, str)):
+        return None
+    try:
+        user_id = int(identifier)
+    except ValueError:
+        return None
+    if user_id <= 0:
+        return None
+    return user_id, str(user.get('name') or raw)
 
 
 def _get_user_presence_type(user_id: int, cookie: str) -> int | None:
@@ -557,13 +582,29 @@ def _get_user_presence_type(user_id: int, cookie: str) -> int | None:
         if resp.status_code == 403 and 'x-csrf-token' in resp.headers:
             headers['X-CSRF-TOKEN'] = resp.headers['x-csrf-token']
             resp = _requests.post(url, headers=headers, json={'userIds': [user_id]}, timeout=10)
-        presences = resp.json().get('userPresences') if resp.status_code == 200 else None
+        payload = resp.json() if resp.status_code == 200 else None
     except _requests.RequestException, ValueError:
         return None
-    if not presences:
+    if not isinstance(payload, dict):
         return None
-    presence_type = presences[0].get('userPresenceType')
+    presences = cast('dict[str, object]', payload).get('userPresences')
+    if not isinstance(presences, list) or not presences or not isinstance(presences[0], dict):
+        return None
+    presence_type = cast('dict[str, object]', presences[0]).get('userPresenceType')
     return presence_type if isinstance(presence_type, int) else None
+
+
+def _launch_follow_user_uri(uri: str) -> bool:
+    """Use the selected platform's Roblox launcher for an authenticated follow."""
+    if IS_LINUX:
+        from fleasion.utils.platform_linux import launch_as_standard_user as linux_launch
+
+        return linux_launch(uri)
+    if IS_MACOS:
+        from fleasion.utils.platform_macos import launch_as_standard_user as macos_launch
+
+        return macos_launch(uri)
+    return launch_as_standard_user(uri)
 
 
 def _build_auth_ticket_follow_uri(
@@ -2209,6 +2250,22 @@ class RandoStuffTab(QWidget):
         ).start()
 
     def _follow_user_thread(self, cookie: str, target: str) -> None:
+        try:
+            self._follow_user_thread_impl(cookie, target)
+        except Exception as exc:  # ruff: ignore[blind-except]
+            # Never strand the Follow button after an unexpected API/launch error
+            log_buffer.log('accounts', f'Follow failed unexpectedly: {type(exc).__name__}')
+            self._on_main(
+                lambda: QMessageBox.warning(
+                    self,
+                    tr('ui.gui.rando_stuff_tab.follow_failed'),
+                    tr('ui.gui.rando_stuff_tab.follow_failed'),
+                )
+            )
+        finally:
+            self._on_main(lambda: self._follow_user_btn.setEnabled(True))
+
+    def _follow_user_thread_impl(self, cookie: str, target: str) -> None:
         def _fail(message: str) -> None:
             def _show() -> None:
                 self._follow_user_btn.setEnabled(True)
@@ -2239,9 +2296,8 @@ class RandoStuffTab(QWidget):
             _fail(tr('ui.gui.rando_stuff_tab.follow_ticket_failed', value0=name))
             return
         log_buffer.log('accounts', f'Launching Roblox URI to follow userId={user_id}')
-        if not launch_as_standard_user(_build_auth_ticket_follow_uri(ticket, user_id)):
+        if not _launch_follow_user_uri(_build_auth_ticket_follow_uri(ticket, user_id)):
             log_buffer.log('accounts', 'Failed to launch Roblox follow URI without elevation')
-        self._on_main(lambda: self._follow_user_btn.setEnabled(True))
 
     def _on_switch_account(self) -> None:
         idx = self._account_list.currentRow()

@@ -138,3 +138,114 @@ def test_follow_uri_requests_follow_user() -> None:
         'joinAttemptId': ['attempt'],
         'joinAttemptOrigin': ['followUser'],
     }
+
+
+@pytest.mark.parametrize(
+    'target',
+    [
+        'https://evilroblox.com/users/156/profile',
+        'https://roblox.com.evil.example/users/156/profile',
+        'https://roblox.com@evil.example/users/156/profile',
+        'https://www.roblox.com/users/156/other',
+        'https://[bad/users/156/profile',
+        '0',
+    ],
+)
+def test_spoofed_or_malformed_profiles_are_not_followed(
+    monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    _patch_post(monkeypatch, _no_lookup)
+
+    assert _resolve_user_id(target) is None
+
+
+@pytest.mark.parametrize(
+    'users',
+    [None, 'invalid', [None], [{}], [{'id': 'not-a-number'}], [{'id': 0}]],
+)
+def test_malformed_username_results_do_not_crash_follow_worker(
+    monkeypatch: pytest.MonkeyPatch, users: object
+) -> None:
+    def post(*_args: object, **_kwargs: object) -> _Response:
+        return _Response(200, {'data': users})
+
+    _patch_post(monkeypatch, post)
+    assert _resolve_user_id('Roblox') is None
+
+
+def test_malformed_presence_results_are_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    def post(*_args: object, **_kwargs: object) -> _Response:
+        return _Response(200, {'userPresences': [None]})
+
+    _patch_post(monkeypatch, post)
+    assert _get_user_presence_type(42, 'cookie') is None
+
+
+def test_follow_uses_linux_client_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fleasion.utils import platform_linux
+
+    calls: list[str] = []
+
+    def launch(uri: str) -> bool:
+        calls.append(uri)
+        return True
+
+    monkeypatch.setattr(tab, 'IS_LINUX', True)
+    monkeypatch.setattr(tab, 'IS_MACOS', False)
+    monkeypatch.setattr(platform_linux, 'launch_as_standard_user', launch)
+    launcher = cast('Callable[[str], bool]', tab.__dict__['_launch_follow_user_uri'])
+    assert launcher('roblox-player:1+launchmode:play')
+    assert calls == ['roblox-player:1+launchmode:play']
+
+
+def test_unexpected_worker_error_still_reenables_follow() -> None:
+    class Button:
+        enabled = False
+
+        def setEnabled(self, enabled: bool) -> None:  # ruff: ignore[invalid-function-name]
+            self.enabled = enabled
+
+    class BrokenWorker:
+        _follow_user_btn = Button()
+        callbacks: list[Callable[[], object]] = []
+
+        def _follow_user_thread_impl(self, _cookie: str, _target: str) -> None:
+            msg = 'broken external response'
+            raise ValueError(msg)
+
+        def _on_main(self, callback: Callable[[], object]) -> bool:
+            self.callbacks.append(callback)
+            return True
+
+    worker = BrokenWorker()
+    callback = cast(
+        'Callable[[tab.RandoStuffTab, str, str], None]',
+        tab.RandoStuffTab.__dict__['_follow_user_thread'],
+    )
+    callback(cast('tab.RandoStuffTab', worker), 'cookie', 'target')
+    assert len(worker.callbacks) == 2
+    worker.callbacks[-1]()
+    assert cast('Button', getattr(worker, '_follow_user_btn')).enabled
+
+
+@pytest.mark.parametrize('platform', ['macos', 'windows'])
+def test_follow_uses_selected_non_linux_launcher(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    from fleasion.utils import platform_macos
+
+    calls: list[str] = []
+
+    def launch(uri: str) -> bool:
+        calls.append(uri)
+        return True
+
+    monkeypatch.setattr(tab, 'IS_LINUX', False)
+    monkeypatch.setattr(tab, 'IS_MACOS', platform == 'macos')
+    if platform == 'macos':
+        monkeypatch.setattr(platform_macos, 'launch_as_standard_user', launch)
+    else:
+        monkeypatch.setattr(tab, 'launch_as_standard_user', launch)
+    launcher = cast('Callable[[str], bool]', tab.__dict__['_launch_follow_user_uri'])
+    assert launcher('roblox-player:1+launchmode:play')
+    assert calls == ['roblox-player:1+launchmode:play']
