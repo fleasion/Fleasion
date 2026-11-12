@@ -28,7 +28,14 @@ def test_detects_the_import_error_python_raises_for_a_blocked_module() -> None:
 
     assert startup_errors.blocked_by_application_control(error)
     assert startup_errors.blocked_file(error) == 'shiboken6.Shiboken'
-    assert 'shiboken6.Shiboken' in startup_errors.application_control_message(error)
+    message = startup_errors.application_control_message(error)
+    assert 'shiboken6.Shiboken' in message
+    assert startup_errors.SOURCE_URL in message
+    assert startup_errors.STATUS_URL in message
+    assert 'Smart App Control' in message
+    assert 'may require resetting or reinstalling Windows' in message
+    assert 'may still block unsigned Python dependencies' in message
+    assert 'signed build' not in message.lower()
 
 
 def test_detects_the_windows_error_code_through_the_exception_chain() -> None:

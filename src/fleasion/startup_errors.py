@@ -24,17 +24,20 @@ if TYPE_CHECKING:
 _APP_CONTROL_WINERROR = 4551
 _APP_CONTROL_TEXT = 'Application Control policy has blocked'
 STATUS_URL = 'https://github.com/fleasion/Fleasion/issues/82'
+SOURCE_URL = 'https://github.com/fleasion/Fleasion/blob/main/CONTRIBUTING.md'
 
 _TITLE = 'Windows blocked Fleasion'
 _MESSAGE = (
     'Windows Smart App Control (or another application control policy) blocked a '
     'file Fleasion needs to start:\n\n{blocked}\n\n'
-    "Fleasion's bundled files are not code-signed yet, so Windows has no reputation "
-    'for them, and Fleasion cannot work around the block itself.\n\n'
-    'If you trust this download, you can turn Smart App Control off in Windows '
-    'Security > App & browser control > Smart App Control settings. On some Windows '
-    'versions it cannot be turned back on without reinstalling Windows.\n\n'
-    'Progress on a signed build: {url}'
+    'To run Fleasion, you can turn off Smart App Control under Windows Security '
+    '> App & browser control > Smart App Control settings. This reduces protection '
+    'against other untrusted apps. Depending on your Windows version and settings, '
+    'turning it back on may require resetting or reinstalling Windows.\n\n'
+    'Alternatively, run Fleasion from source following {source}. Running from source '
+    'avoids the standalone executable, but application control may still block '
+    'unsigned Python dependencies.\n\n'
+    'Issue details: {url}'
 )
 
 
@@ -67,7 +70,7 @@ def blocked_file(exc: BaseException) -> str:
 
 def application_control_message(exc: BaseException) -> str:
     """The explanation shown to the user."""
-    return _MESSAGE.format(blocked=blocked_file(exc), url=STATUS_URL)
+    return _MESSAGE.format(blocked=blocked_file(exc), source=SOURCE_URL, url=STATUS_URL)
 
 
 def report_blocked_startup(exc: BaseException) -> bool:
