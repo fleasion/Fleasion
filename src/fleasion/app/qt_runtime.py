@@ -70,7 +70,12 @@ def report_linux_gui_dependencies(missing: list[str]) -> bool:
 
 
 def install_gui_sigint_handler(app: QApplication) -> QTimer:
-    """Exit the Qt event loop cleanly when the console receives Ctrl+C."""
+    """Exit the Qt event loop cleanly on Ctrl+C, SIGTERM or SIGHUP.
+
+    SIGTERM/SIGHUP arrive on logout, shutdown or ``kill``. Python's default
+    action for them ends the process without running atexit, which leaves the
+    Linux client's flatpak proxy override armed after Fleasion is gone.
+    """
 
     def _handle_sigint(signum: int, _frame: object) -> None:
         app.exit(128 + signum)
@@ -81,7 +86,9 @@ def install_gui_sigint_handler(app: QApplication) -> QTimer:
         # into an arbitrary Qt callback
         return None
 
-    signal.signal(signal.SIGINT, _handle_sigint)
+    for name in ('SIGINT', 'SIGTERM', 'SIGHUP'):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), _handle_sigint)
     timer = QTimer(app)
     timer.setInterval(200)
     timer.timeout.connect(_poll_python_signals)
