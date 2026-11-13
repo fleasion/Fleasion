@@ -633,6 +633,8 @@ FRENCH: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Chaque valeur de FastFlag doit être une chaîne, un nombre ou un booléen.',
     'modifications.fastflag.name': 'Nom',
     'modifications.fastflag.value': 'Valeur',
+    'modifications.fastflags.untyped_name_tooltip': 'This name appears in installed-client records, but its type is unknown. Fleasion will try these client types: {types}.',
+    'modifications.fastflags.name_not_found_tooltip': 'No matching FastFlag was found in the currently available inventories.',
     'modifications.fastflags.disable_bootstrapper_flag_management': 'If you are using a bootstrapper, you must disable its FastFlag management for allowlisted presets, else it will overwrite Fleasion.',
     'modifications.fastflags.public_catalog': 'Public catalog',
     'modifications.fastflags.client_source': 'Client - {client}',

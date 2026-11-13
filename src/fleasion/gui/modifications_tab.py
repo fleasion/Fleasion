@@ -130,7 +130,9 @@ from fleasion.utils import APP_CACHE_DIR, log_buffer, open_folder
 from fleasion.utils.fflag_resolution import (
     FFLAG_CATALOG_CACHE_TTL_SECONDS,
     full_prefix,
+    invalidate_selected_player_cache,
     known_typed_names,
+    known_untyped_names,
     qualified_matches,
 )
 from fleasion.utils.http import http_get
@@ -2380,6 +2382,9 @@ class FFlagBrowserDialog(QDialog):
         self._installed_source = binary
         self._cache_loaded = cached
         self._apply_flags(catalog.flags)
+        # The editor can now update warnings from this selected-client scan
+        invalidate_selected_player_cache()
+        self.flags_loaded.emit(catalog.flags)
 
     @classmethod
     def _family_for(cls, name: str) -> str:
@@ -3470,7 +3475,7 @@ class FastFlagActionsDialog(QDialog):
 
 
 class CustomFFlagNameDelegate(QStyledItemDelegate):
-    """Show prefix-resolution warnings in the Custom FastFlags name column."""
+    """Warn only when a custom name is ambiguous, untyped, or absent from catalogs."""
 
     @override
     def createEditor(
@@ -3484,9 +3489,15 @@ class CustomFFlagNameDelegate(QStyledItemDelegate):
             _style_fastflag_text_editor(editor)
         return editor
 
-    def __init__(self, parent: QTableView, names: Callable[[], frozenset[str] | None]) -> None:
+    def __init__(
+        self,
+        parent: QTableView,
+        names: Callable[[], frozenset[str] | None],
+        raw_names: Callable[[], frozenset[str]] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._known_names = names
+        self._raw_names = raw_names or frozenset
 
     @staticmethod
     def _warning_rect(rect: QRect) -> QRect:
@@ -3498,19 +3509,37 @@ class CustomFFlagNameDelegate(QStyledItemDelegate):
         name = index.data(_FFLAG_CANONICAL_NAME_ROLE)
         if not isinstance(name, str) or full_prefix(name):
             return ()
-        # No downloaded inventory means we cannot determine whether a name
-        # actually collides; trying prefixes at runtime is not a UI warning
-        known_names = self._known_names()
-        if not known_names:
+        names = self._known_names()
+        if names is None:
             return ()
-        return qualified_matches(name, known_names)
+        return qualified_matches(name, names)
+
+    def _warning_kind(self, index: QModelIndex | QPersistentModelIndex) -> str | None:
+        """White means uncertain type; orange means absent from available inventories."""
+        name = index.data(_FFLAG_CANONICAL_NAME_ROLE)
+        names = self._known_names()
+        if (
+            index.data(_FFLAG_ROW_KIND_ROLE) != _FFLAG_ROW_FLAG
+            or not isinstance(name, str)
+            or names is None
+        ):
+            return None
+        if full_prefix(name):
+            return None if name in names else 'missing'
+        matches = self._matches(index)
+        known_matches = tuple(match for match in matches if match in names)
+        if len(known_matches) == 1:
+            return None
+        if len(known_matches) > 1:
+            return 'multiple'
+        return 'untyped' if name in self._raw_names() else 'missing'
 
     @override
     def initStyleOption(
         self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
     ) -> None:
         super().initStyleOption(option, index)
-        if len(self._matches(index)) > 1:
+        if self._warning_kind(index) is not None:
             option.text = option.fontMetrics.elidedText(
                 option.text, Qt.TextElideMode.ElideRight, max(0, option.rect.width() - 30)
             )
@@ -3523,14 +3552,12 @@ class CustomFFlagNameDelegate(QStyledItemDelegate):
         index: QModelIndex | QPersistentModelIndex,
     ) -> None:
         super().paint(painter, option, index)
-        matches = self._matches(index)
-        if len(matches) < 2:
+        warning = self._warning_kind(index)
+        if warning is None:
             return
         rect = self._warning_rect(option.rect)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        known = self._known_names()
-        confirmed = known is not None and any(match in known for match in matches)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         cx, top = rect.center().x(), rect.top()
         triangle = QPolygonF(
@@ -3540,11 +3567,11 @@ class CustomFFlagNameDelegate(QStyledItemDelegate):
                 QPointF(rect.right() - 1, rect.bottom() - 1),
             ]
         )
-        if confirmed:
-            # Dark outline preserves contrast for a white warning in light themes
+        if warning != 'missing':
+            # A dark outline keeps the white indicator visible on light themes
             painter.setPen(QPen(QColor('#444444'), 3))
             painter.drawPolygon(triangle)
-        painter.setPen(QPen(QColor('#ffffff' if confirmed else '#ff9d40'), 1.3))
+        painter.setPen(QPen(QColor('#ff9d40' if warning == 'missing' else '#ffffff'), 1.3))
         painter.drawPolygon(triangle)
         painter.drawLine(cx, top + 5, cx, top + 9)
         painter.drawPoint(cx, top + 11)
@@ -3558,20 +3585,23 @@ class CustomFFlagNameDelegate(QStyledItemDelegate):
         option: QStyleOptionViewItem,
         index: QModelIndex | QPersistentModelIndex,
     ) -> bool:
-        matches = self._matches(index)
+        warning = self._warning_kind(index)
         if (
             event.type() == QEvent.Type.ToolTip
-            and len(matches) > 1
+            and warning is not None
             and self._warning_rect(option.rect).contains(event.pos())
         ):
-            prefixes = ', '.join(prefix for match in matches if (prefix := full_prefix(match)))
-            known = self._known_names()
-            confirmed = known is not None and any(match in known for match in matches)
-            tooltip = (
-                tr('modifications.fastflags.multiple_types_tooltip', types=prefixes)
-                if confirmed
-                else tr('modifications.fastflags.possible_types_tooltip', types=prefixes)
-            )
+            if warning == 'missing':
+                tooltip = tr('modifications.fastflags.name_not_found_tooltip')
+            else:
+                prefixes = ', '.join(
+                    prefix for match in self._matches(index) if (prefix := full_prefix(match))
+                )
+                tooltip = (
+                    tr('modifications.fastflags.multiple_types_tooltip', types=prefixes)
+                    if warning == 'multiple'
+                    else tr('modifications.fastflags.untyped_name_tooltip', types=prefixes)
+                )
             QToolTip.showText(event.globalPos(), tooltip, view)
             return True
         return super().helpEvent(event, view, option, index)
@@ -3645,9 +3675,11 @@ class CustomFFlagEditor(QWidget):
     def _reload_known_flag_names(self) -> None:
         """Update existing warnings when a browser download finishes."""
         names = known_typed_names()
-        if names == self._known_flag_names:
+        raw_names = known_untyped_names()
+        if names == self._known_flag_names and raw_names == self._known_untyped_names:
             return
         self._known_flag_names = names
+        self._known_untyped_names = raw_names
         self._table.viewport().update()
         self._virtual_table.viewport().update()
 
@@ -3763,7 +3795,12 @@ class CustomFFlagEditor(QWidget):
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setMinimumHeight(180)
         self._table.setItemDelegateForColumn(
-            0, CustomFFlagNameDelegate(self._table, lambda: self._known_flag_names)
+            0,
+            CustomFFlagNameDelegate(
+                self._table,
+                lambda: self._known_flag_names,
+                lambda: self._known_untyped_names,
+            ),
         )
         self._table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._table))
         self._table.clicked.connect(self._edit_value_cell)
@@ -3785,7 +3822,12 @@ class CustomFFlagEditor(QWidget):
         self._virtual_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._virtual_table.setEditTriggers(self._table.editTriggers())
         self._virtual_table.setItemDelegateForColumn(
-            0, CustomFFlagNameDelegate(self._virtual_table, lambda: self._known_flag_names)
+            0,
+            CustomFFlagNameDelegate(
+                self._virtual_table,
+                lambda: self._known_flag_names,
+                lambda: self._known_untyped_names,
+            ),
         )
         self._virtual_table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._virtual_table))
         virtual_header = self._virtual_table.horizontalHeader()
@@ -3925,6 +3967,7 @@ class CustomFFlagEditor(QWidget):
     def _load_flags(self, sync_hotkeys: bool = True) -> None:
         previous_names = getattr(self, '_known_flag_names', None)
         self._known_flag_names = known_typed_names()
+        self._known_untyped_names = known_untyped_names()
         if previous_names is None and self._known_flag_names is not None:
             log_buffer.log(
                 'FastFlags', f'Loaded {len(self._known_flag_names):,} cached names for warnings'

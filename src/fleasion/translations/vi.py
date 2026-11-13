@@ -633,6 +633,8 @@ VIETNAMESE: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Mỗi giá trị FastFlag phải là chuỗi, số hoặc giá trị boolean.',
     'modifications.fastflag.name': 'Tên',
     'modifications.fastflag.value': 'Giá trị',
+    'modifications.fastflags.untyped_name_tooltip': 'This name appears in installed-client records, but its type is unknown. Fleasion will try these client types: {types}.',
+    'modifications.fastflags.name_not_found_tooltip': 'No matching FastFlag was found in the currently available inventories.',
     'modifications.fastflags.disable_bootstrapper_flag_management': 'If you are using a bootstrapper, you must disable its FastFlag management for allowlisted presets, else it will overwrite Fleasion.',
     'modifications.fastflags.public_catalog': 'Public catalog',
     'modifications.fastflags.client_source': 'Client - {client}',
