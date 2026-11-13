@@ -112,15 +112,28 @@ ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
 GAMEJOIN_HOST = 'gamejoin.roblox.com'
 PROFILE_API_HOST = 'apis.roblox.com'
 PROFILE_API_PATH_FRAGMENT = '/v1/user/profiles/get-profiles'
+THUMBNAILS_API_HOST = 'thumbnails.roblox.com'
+THUMBNAILS_API_PATH_FRAGMENTS: tuple[str, ...] = (
+    '/v1/batch',
+    '/v1/users/avatar-headshot',
+    '/v1/users/avatar-bust',
+)
+# JSON API hosts whose responses are handed to the module interceptors.
+MODULE_API_HOSTS: frozenset[str] = frozenset({PROFILE_API_HOST, THUMBNAILS_API_HOST})
 CLIENT_SETTINGS_HOSTS: frozenset[str] = frozenset(
     {'clientsettingscdn.roblox.com', 'clientsettings.roblox.com'}
 )
 CDN_HOSTS: frozenset[str] = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
 BASE_INTERCEPT_HOSTS: frozenset[str] = frozenset({ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS})
 USERNAME_SPOOFER_INTERCEPT_HOSTS: frozenset[str] = frozenset({PROFILE_API_HOST})
+PROFILE_PICTURE_SPOOFER_INTERCEPT_HOSTS: frozenset[str] = frozenset({THUMBNAILS_API_HOST})
+# Every optional, module-driven host (used where WebView-visible trust matters).
+MODULE_INTERCEPT_HOSTS: frozenset[str] = (
+    USERNAME_SPOOFER_INTERCEPT_HOSTS | PROFILE_PICTURE_SPOOFER_INTERCEPT_HOSTS
+)
 CUSTOM_FFLAGS_INTERCEPT_HOSTS: frozenset[str] = CLIENT_SETTINGS_HOSTS
 INTERCEPT_HOSTS: frozenset[str] = (
-    BASE_INTERCEPT_HOSTS | USERNAME_SPOOFER_INTERCEPT_HOSTS | CUSTOM_FFLAGS_INTERCEPT_HOSTS
+    BASE_INTERCEPT_HOSTS | MODULE_INTERCEPT_HOSTS | CUSTOM_FFLAGS_INTERCEPT_HOSTS
 )
 ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS = 20.0
 UPSTREAM_ENDPOINT_REFRESH_COOLDOWN_SECONDS = 5.0
@@ -1891,6 +1904,16 @@ def _call_module_interceptor(
     )
 
 
+def _is_module_api_request(host: str, path: str) -> bool:
+    """Whether *host*/*path* is an API call that module interceptors may rewrite."""
+    if host == PROFILE_API_HOST:
+        return PROFILE_API_PATH_FRAGMENT in path
+    if host == THUMBNAILS_API_HOST:
+        route = path.split('?', 1)[0]
+        return any(route.startswith(fragment) for fragment in THUMBNAILS_API_PATH_FRAGMENTS)
+    return False
+
+
 class FleasionProxy:
     """Direct TLS-terminating asyncio proxy for Roblox asset hosts."""
 
@@ -2003,6 +2026,7 @@ class FleasionProxy:
         self._upstream_host_limits = {
             ASSET_DELIVERY_HOST: asyncio.Semaphore(asset_limit),
             PROFILE_API_HOST: asyncio.Semaphore(asset_limit),
+            THUMBNAILS_API_HOST: asyncio.Semaphore(asset_limit),
             'clientsettingscdn.roblox.com': asyncio.Semaphore(asset_limit),
             'clientsettings.roblox.com': asyncio.Semaphore(asset_limit),
             'contentdelivery.roblox.com': asyncio.Semaphore(asset_limit),
@@ -2444,14 +2468,16 @@ class FleasionProxy:
     def _preserve_unmodified_wire_for_host(self, host: str) -> bool:
         """Whether untouched traffic for *host* must retain its original wire form.
 
-        Browser calls to ``apis.roblox.com`` include CORS preflights and can
+        Browser calls to ``apis.roblox.com`` (and ``thumbnails.roblox.com``)
+        include CORS preflights and can
         depend on repeated response headers.  Reassembling an untouched API
         response from the normalized header map drops repeated headers, which
         makes the browser report a CORS failure even when Roblox accepted the
-        request.  The Username Spoofer still receives and can modify its one
-        profile endpoint; only untouched API traffic gets raw passthrough.
+        request.  The Username and Profile Picture spoofers still receive and can
+        modify their own endpoints; only untouched API traffic gets raw
+        passthrough.
         """
-        return self._wire_preserving_passthrough or host == PROFILE_API_HOST
+        return self._wire_preserving_passthrough or host in MODULE_API_HOSTS
 
     def upstream_endpoints_for_hosts(
         self,
@@ -4174,11 +4200,7 @@ class FleasionProxy:
                         break
                     if gamejoin_action == 'continue':
                         continue
-                elif (
-                    host == PROFILE_API_HOST
-                    and PROFILE_API_PATH_FRAGMENT in path
-                    and self._module_interceptors
-                ):
+                elif _is_module_api_request(host, path) and self._module_interceptors:
                     req_body_plain_ = _decompress_body(req_body_raw, req_headers)
                     if not await ensure_upstream(path):
                         break
@@ -4487,7 +4509,7 @@ class FleasionProxy:
                         resp_body_raw = gamejoin_response.content
                         response_modified = True
                 elif (
-                    host == PROFILE_API_HOST
+                    host in MODULE_API_HOSTS
                     and profile_flow is not None
                     and self._module_interceptors
                 ):

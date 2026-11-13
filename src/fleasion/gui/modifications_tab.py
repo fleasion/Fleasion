@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QIcon,
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
@@ -99,6 +101,7 @@ from fleasion.modifications.platform_targets import (
 from fleasion.modifications.stash_paths import resource_stash_dir
 from fleasion.utils import APP_CACHE_DIR, log_buffer, open_folder
 from fleasion.utils.http import http_get
+from fleasion.utils.json_types import as_json_object
 from fleasion.utils.threading import run_in_thread
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
@@ -109,7 +112,7 @@ from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Generator, Mapping, Sequence
     from typing import ClassVar, TypeIs
 
     from fleasion.app.roblox_monitor import RobloxExitMonitor
@@ -131,7 +134,7 @@ if TYPE_CHECKING:
         NewModificationEntry as _NewModificationEntry,
     )
     from fleasion.proxy.master import ProxyMaster
-    from fleasion.utils.json_types import JsonValue
+    from fleasion.utils.json_types import JsonObject, JsonValue
 
 
 type _HotkeyCapture = Callable[[str], tuple[bool, _HotkeyBinding | None]]
@@ -4742,6 +4745,13 @@ class FFlagSection(QWidget):
 class ModificationsTab(QWidget):
     """The entire Modifications tab, added to the dashboard's QTabWidget."""
 
+    # Emitted from the background username-lookup thread; queued
+    # automatically across the thread boundary since this is a QObject,
+    # so the connected slot always runs safely on the GUI thread.
+    _pfp_username_resolved = Signal(str, str)  # target_id, username
+    _pfp_image_loaded = Signal(str, bytes)  # cache key, raw image bytes (empty on failure)
+    _pfp_self_id_resolved = Signal(str)  # logged-in user id ('' if unknown)
+
     def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
         mod_manager: ModificationManager,
@@ -4761,6 +4771,15 @@ class ModificationsTab(QWidget):
         self._hotkey_controller = hotkey_controller
         self._row_widgets: dict[str, ModRowWidget] = {}  # target_path -> widget
         self._custom_rows: list[ModRowWidget] = []
+        self._pfp_username_cache: dict[str, str] = {}
+        self._pfp_username_inflight: set[str] = set()
+        self._pfp_username_resolved.connect(self._on_pfp_username_resolved)
+        self._pfp_image_loaded.connect(self._on_pfp_image_loaded)
+        self._pfp_self_id_resolved.connect(self._on_pfp_self_id_resolved)
+        self._pfp_pixmaps: dict[str, QPixmap] = {}
+        self._pfp_image_inflight: set[str] = set()
+        self._pfp_self_id: str | None = None
+        self._pfp_self_id_inflight = False
 
         if not defer_setup:
             for _ in self.build_ui():
@@ -4945,6 +4964,14 @@ class ModificationsTab(QWidget):
         self._container_layout.addWidget(font_section)
         yield
 
+        # Profile Pictures
+        pfp_section = CollapsibleSection(
+            tr('modifications.section.profile_pictures'), expanded=False
+        )
+        pfp_section.add_widget(self._build_profile_picture_widget())
+        self._container_layout.addWidget(pfp_section)
+        yield
+
         # Rebuild persisted head variant rows (headA-headP added in a previous session)
         head_variant_set = set(HEAD_VARIANTS)
         for entry in self._manager.entries:
@@ -5061,6 +5088,561 @@ class ModificationsTab(QWidget):
             )
         except RuntimeError:
             return
+
+    # Section: Profile Pictures
+
+    _PFP_COL_ENABLED = 0
+    _PFP_COL_TARGET = 1
+    _PFP_COL_USERNAME = 2
+    _PFP_COL_IMAGE_URL = 3
+    _PFP_SELF = '__self__'
+    _PFP_ICON_SIZE = 32
+    _PFP_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+    def _build_profile_picture_widget(self) -> QWidget:
+        wrapper = QWidget()
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        hint = QLabel(tr('ui.gui.modifications_tab.pfp_hint'))
+        hint.setWordWrap(True)
+        hint.setStyleSheet('color: #888;')
+        layout.addWidget(hint)
+
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(
+            [
+                tr('ui.gui.modifications_tab.pfp_col_enabled'),
+                tr('ui.gui.modifications_tab.pfp_col_target'),
+                tr('ui.gui.modifications_tab.pfp_col_username'),
+                tr('ui.gui.modifications_tab.pfp_col_image_url'),
+            ]
+        )
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        table.setAlternatingRowColors(True)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(self._PFP_COL_ENABLED, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self._PFP_COL_TARGET, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(self._PFP_COL_USERNAME, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(self._PFP_COL_IMAGE_URL, QHeaderView.ResizeMode.Stretch)
+        table.setColumnWidth(self._PFP_COL_TARGET, 160)
+        table.setColumnWidth(self._PFP_COL_USERNAME, 160)
+        table.setMinimumHeight(140)
+        table.setIconSize(QSize(self._PFP_ICON_SIZE, self._PFP_ICON_SIZE))
+        table.verticalHeader().setDefaultSectionSize(self._PFP_ICON_SIZE + 8)
+        self._pfp_table = table
+        self._pfp_loading = False
+
+        button_row = QHBoxLayout()
+        add_me_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_add_me'))
+        add_me_btn.clicked.connect(self._on_pfp_add_me)
+        add_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_add_row'))
+        add_btn.clicked.connect(self._on_pfp_add_row)
+        remove_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_remove_selected'))
+        remove_btn.clicked.connect(self._on_pfp_remove_selected)
+        browse_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_browse_local_image'))
+        browse_btn.clicked.connect(self._on_pfp_browse_local_image)
+        export_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_export'))
+        export_btn.clicked.connect(self._on_pfp_export)
+        import_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_import'))
+        import_btn.clicked.connect(self._on_pfp_import)
+        button_row.addWidget(add_me_btn)
+        button_row.addWidget(add_btn)
+        button_row.addWidget(browse_btn)
+        button_row.addWidget(remove_btn)
+        button_row.addStretch()
+        button_row.addWidget(export_btn)
+        button_row.addWidget(import_btn)
+
+        layout.addWidget(table)
+        layout.addLayout(button_row)
+
+        self._load_pfp_rows()
+        table.itemChanged.connect(self._on_pfp_item_changed)
+        return wrapper
+
+    def _load_pfp_rows(self) -> None:
+        entries = (
+            self._config_manager.profile_picture_entries if self._config_manager is not None else []
+        )
+        self._pfp_loading = True
+        try:
+            for entry in entries:
+                self._append_pfp_row(entry)
+        finally:
+            self._pfp_loading = False
+        self._push_pfp_entries(entries)
+
+    def _append_pfp_row(self, entry: Mapping[str, object]) -> None:
+        table = self._pfp_table
+        row = table.rowCount()
+        table.insertRow(row)
+
+        enabled_item = QTableWidgetItem()
+        enabled_item.setFlags(
+            Qt.ItemFlag.ItemIsUserCheckable
+            | Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+        )
+        enabled_item.setCheckState(
+            Qt.CheckState.Checked if entry.get('enabled', True) else Qt.CheckState.Unchecked
+        )
+        table.setItem(row, self._PFP_COL_ENABLED, enabled_item)
+
+        target = self._normalize_pfp_target(str(entry.get('target', '')))
+        target_display = (
+            tr('ui.gui.modifications_tab.pfp_target_me') if target == self._PFP_SELF else target
+        )
+        table.setItem(row, self._PFP_COL_TARGET, QTableWidgetItem(target_display))
+
+        username_item = QTableWidgetItem('')
+        username_item.setFlags(username_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        table.setItem(row, self._PFP_COL_USERNAME, username_item)
+
+        table.setItem(
+            row, self._PFP_COL_IMAGE_URL, QTableWidgetItem(str(entry.get('image_url', '')))
+        )
+        self._request_pfp_username(row, target)
+        self._refresh_pfp_row_icons(row)
+
+    def _set_pfp_username_text(self, item: QTableWidgetItem, text: str) -> None:
+        """Set a Username cell without it counting as a user edit."""
+        previous = self._pfp_loading
+        self._pfp_loading = True
+        try:
+            item.setText(text)
+        finally:
+            self._pfp_loading = previous
+
+    def _request_pfp_username(self, row: int, target: str) -> None:
+        """Kick off a background username lookup for a Player ID cell, if
+        it looks like a numeric Roblox user id we haven't already resolved.
+        """
+        username_item = self._pfp_table.item(row, self._PFP_COL_USERNAME)
+        if username_item is None:
+            return
+        if target == self._PFP_SELF:
+            self._set_pfp_username_text(username_item, tr('ui.gui.modifications_tab.pfp_target_me'))
+            return
+        if not target.isdigit():
+            self._set_pfp_username_text(username_item, '')
+            return
+        cached = self._pfp_username_cache.get(target)
+        if cached is not None:
+            self._set_pfp_username_text(username_item, cached)
+            return
+        self._set_pfp_username_text(username_item, '…')
+        if target in self._pfp_username_inflight:
+            return
+        self._pfp_username_inflight.add(target)
+        threading.Thread(
+            target=self._resolve_pfp_username_worker,
+            args=(target,),
+            name=f'FleasionPfpUsernameLookup-{target}',
+            daemon=True,
+        ).start()
+
+    def _resolve_pfp_username_worker(self, target: str) -> None:
+        import requests
+
+        username = ''
+        try:
+            resp = requests.get(f'https://users.roblox.com/v1/users/{target}', timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                username = str(data.get('name') or '')
+        except requests.RequestException, ValueError, AttributeError:
+            username = ''
+        finally:
+            self._pfp_username_inflight.discard(target)
+        try:
+            self._pfp_username_resolved.emit(target, username)
+        except RuntimeError:
+            # The tab was destroyed while the lookup was in flight.
+            return
+
+    def _on_pfp_username_resolved(self, target: str, username: str) -> None:
+        display = username or tr('ui.gui.modifications_tab.pfp_username_not_found')
+        self._pfp_username_cache[target] = display
+        table = self._pfp_table
+        for row in range(table.rowCount()):
+            target_item = table.item(row, self._PFP_COL_TARGET)
+            if target_item is not None and target_item.text().strip() == target:
+                username_item = table.item(row, self._PFP_COL_USERNAME)
+                if username_item is not None:
+                    self._set_pfp_username_text(username_item, display)
+
+    # Preview icons: the player's current avatar next to the username, and the
+    # replacement image next to its link/path.
+
+    def _pfp_image_source(self, raw: str) -> tuple[str, str, str] | None:
+        """Return (cache key, kind, source) for a replacement image cell."""
+        from fleasion.proxy.addons.profile_picture_spoofer import (
+            clean_local_path,
+            is_remote_image_url,
+        )
+
+        text = raw.strip()
+        if not text:
+            return None
+        if is_remote_image_url(text):
+            return f'url:{text}', 'remote', text
+        path = Path(clean_local_path(text))
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        return f'file:{path}|{mtime}', 'local', str(path)
+
+    def _set_pfp_icon(self, item: QTableWidgetItem | None, pixmap: QPixmap | None) -> None:
+        """Set or clear a cell's icon without it counting as a user edit."""
+        if item is None:
+            return
+        previous = self._pfp_loading
+        self._pfp_loading = True
+        try:
+            item.setIcon(QIcon(pixmap) if pixmap is not None and not pixmap.isNull() else QIcon())
+        finally:
+            self._pfp_loading = previous
+
+    def _refresh_pfp_row_icons(self, row: int) -> None:
+        table = self._pfp_table
+        target_item = table.item(row, self._PFP_COL_TARGET)
+        target = self._normalize_pfp_target(target_item.text()) if target_item is not None else ''
+        if target == self._PFP_SELF:
+            target = self._pfp_self_id or ''
+            if not target:
+                self._request_pfp_self_id()
+        avatar_key = f'avatar:{target}' if target.isdigit() else None
+        self._apply_pfp_icon(
+            table.item(row, self._PFP_COL_USERNAME),
+            avatar_key,
+            ('avatar', target) if avatar_key else None,
+        )
+
+        image_item = table.item(row, self._PFP_COL_IMAGE_URL)
+        source = self._pfp_image_source(image_item.text()) if image_item is not None else None
+        self._apply_pfp_icon(
+            image_item,
+            source[0] if source else None,
+            (source[1], source[2]) if source else None,
+        )
+
+    def _apply_pfp_icon(
+        self,
+        item: QTableWidgetItem | None,
+        key: str | None,
+        fetch: tuple[str, str] | None,
+    ) -> None:
+        if key is None or fetch is None:
+            self._set_pfp_icon(item, None)
+            return
+        pixmap = self._pfp_pixmaps.get(key)
+        if pixmap is not None:
+            self._set_pfp_icon(item, pixmap)
+            return
+        self._set_pfp_icon(item, None)
+        if key in self._pfp_image_inflight:
+            return
+        self._pfp_image_inflight.add(key)
+        threading.Thread(
+            target=self._fetch_pfp_image_worker,
+            args=(key, fetch[0], fetch[1]),
+            name='FleasionPfpImageLoad',
+            daemon=True,
+        ).start()
+
+    def _fetch_pfp_image_worker(self, key: str, kind: str, source: str) -> None:
+        import requests
+
+        try:
+            data = self._load_pfp_image_bytes(kind, source)
+        except requests.RequestException, OSError, ValueError, AttributeError, IndexError:
+            data = b''
+        try:
+            self._pfp_image_loaded.emit(key, data)
+        except RuntimeError:
+            # The tab was destroyed while the download was in flight.
+            return
+
+    def _load_pfp_image_bytes(self, kind: str, source: str) -> bytes:
+        import requests
+
+        if kind == 'local':
+            path = Path(source)
+            return path.read_bytes() if path.stat().st_size <= self._PFP_MAX_IMAGE_BYTES else b''
+        url = self._fetch_pfp_avatar_url(source) if kind == 'avatar' else source
+        if not url:
+            return b''
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200 or len(resp.content) > self._PFP_MAX_IMAGE_BYTES:
+            return b''
+        return resp.content
+
+    @staticmethod
+    def _fetch_pfp_avatar_url(user_id: str) -> str:
+        import requests
+
+        meta = requests.get(
+            'https://thumbnails.roblox.com/v1/users/avatar-headshot',
+            params={'userIds': user_id, 'size': '150x150', 'format': 'Png'},
+            timeout=8,
+        )
+        if meta.status_code != 200:
+            return ''
+        entries = meta.json().get('data')
+        return str(entries[0].get('imageUrl') or '') if entries else ''
+
+    def _on_pfp_image_loaded(self, key: str, data: bytes) -> None:
+        self._pfp_image_inflight.discard(key)
+        pixmap = QPixmap()
+        if data:
+            pixmap.loadFromData(data)
+        if not pixmap.isNull():
+            size = self._PFP_ICON_SIZE * 2
+            pixmap = pixmap.scaled(
+                size,
+                size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        # A failed load is cached as a null pixmap so it isn't retried forever.
+        self._pfp_pixmaps[key] = pixmap
+        for row in range(self._pfp_table.rowCount()):
+            self._refresh_pfp_row_icons(row)
+
+    def _request_pfp_self_id(self) -> None:
+        if self._pfp_self_id_inflight:
+            return
+        spoofer = getattr(self._proxy_master, 'profile_picture_spoofer', None)
+        if spoofer is None:
+            return
+        self._pfp_self_id_inflight = True
+        threading.Thread(
+            target=self._resolve_pfp_self_id_worker,
+            args=(spoofer,),
+            name='FleasionPfpSelfId',
+            daemon=True,
+        ).start()
+
+    def _resolve_pfp_self_id_worker(self, spoofer: object) -> None:
+        user_id = ''
+        try:
+            getter = getattr(spoofer, 'current_user_id', None)
+            user_id = str(getter() or '') if callable(getter) else ''
+        except AttributeError, OSError, ValueError, TypeError:
+            user_id = ''
+        try:
+            self._pfp_self_id_resolved.emit(user_id)
+        except RuntimeError:
+            return
+
+    def _on_pfp_self_id_resolved(self, user_id: str) -> None:
+        self._pfp_self_id_inflight = False
+        if not user_id:
+            return
+        self._pfp_self_id = user_id
+        for row in range(self._pfp_table.rowCount()):
+            self._refresh_pfp_row_icons(row)
+
+    def _on_pfp_add_me(self) -> None:
+        self._add_pfp_row(target=self._PFP_SELF)
+
+    def _on_pfp_add_row(self) -> None:
+        self._add_pfp_row()
+
+    def _add_pfp_row(self, target: str = '', image_url: str = '') -> None:
+        self._pfp_loading = True
+        try:
+            self._append_pfp_row({'enabled': True, 'target': target, 'image_url': image_url})
+        finally:
+            self._pfp_loading = False
+        self._save_pfp_rows()
+        table = self._pfp_table
+        row = table.rowCount() - 1
+        column = self._PFP_COL_IMAGE_URL if target else self._PFP_COL_TARGET
+        table.setCurrentCell(row, column)
+        table.scrollToBottom()
+        item = table.item(row, column)
+        if item is not None and not item.text():
+            table.editItem(item)
+
+    def _on_pfp_browse_local_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr('ui.gui.modifications_tab.pfp_browse_local_image'),
+            '',
+            _file_filter_text(IMAGE_FILTER),
+        )
+        if not path:
+            return
+        self._add_pfp_row(image_url=path)
+
+    def _on_pfp_export(self) -> None:
+        entries = [
+            entry for entry in self._pfp_rows_to_entries() if entry['target'] and entry['image_url']
+        ]
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            tr('ui.gui.modifications_tab.pfp_export'),
+            'fleasion-profile-pictures.json',
+            tr('ui.gui.modifications_tab.json_files_json_all_files'),
+        )
+        if not path:
+            return
+        if not path.lower().endswith('.json'):
+            path += '.json'
+        try:
+            Path(path).write_text(
+                json.dumps(entries, indent=2, ensure_ascii=False), encoding='utf-8'
+            )
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.pfp_export'),
+                tr('ui.gui.modifications_tab.pfp_export_failed', error=exc),
+            )
+            return
+        QMessageBox.information(
+            self,
+            tr('ui.gui.modifications_tab.pfp_export'),
+            tr('ui.gui.modifications_tab.pfp_export_success', count=len(entries), path=path),
+        )
+
+    def _on_pfp_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr('ui.gui.modifications_tab.pfp_import'),
+            '',
+            tr('ui.gui.modifications_tab.json_files_json_all_files'),
+        )
+        if not path:
+            return
+        try:
+            raw = json.loads(Path(path).read_text(encoding='utf-8'))
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.pfp_import'),
+                tr('ui.gui.modifications_tab.pfp_import_failed', error=exc),
+            )
+            return
+        if not isinstance(raw, list):
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.pfp_import'),
+                tr(
+                    'ui.gui.modifications_tab.pfp_import_failed',
+                    error=tr('ui.gui.modifications_tab.pfp_import_not_a_list'),
+                ),
+            )
+            return
+
+        imported = 0
+        self._pfp_loading = True
+        try:
+            for item in cast('list[object]', raw):
+                row = as_json_object(item)
+                if row is None:
+                    continue
+                target = str(row.get('target', '')).strip()
+                image_url = str(row.get('image_url', '')).strip()
+                if not target or not image_url:
+                    continue
+                self._append_pfp_row(
+                    {
+                        'enabled': bool(row.get('enabled', True)),
+                        'target': self._normalize_pfp_target(target),
+                        'image_url': image_url,
+                    }
+                )
+                imported += 1
+        finally:
+            self._pfp_loading = False
+        self._save_pfp_rows()
+        QMessageBox.information(
+            self,
+            tr('ui.gui.modifications_tab.pfp_import'),
+            tr('ui.gui.modifications_tab.pfp_import_success', count=imported, path=path),
+        )
+
+    def _on_pfp_remove_selected(self) -> None:
+        rows = sorted({idx.row() for idx in self._pfp_table.selectedIndexes()}, reverse=True)
+        if not rows:
+            return
+        self._pfp_loading = True
+        try:
+            for row in rows:
+                self._pfp_table.removeRow(row)
+        finally:
+            self._pfp_loading = False
+        self._save_pfp_rows()
+
+    def _on_pfp_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._pfp_loading:
+            return
+        if item.column() == self._PFP_COL_TARGET:
+            target = self._normalize_pfp_target(item.text())
+            self._request_pfp_username(item.row(), target)
+        if item.column() in {self._PFP_COL_TARGET, self._PFP_COL_IMAGE_URL}:
+            self._refresh_pfp_row_icons(item.row())
+        self._save_pfp_rows()
+
+    @staticmethod
+    def _normalize_pfp_target(raw: str) -> str:
+        """Canonical Player ID cell value: ``__self__``, a numeric id, or the
+        text as typed when it is neither (so the user can keep editing it).
+        """
+        text = raw.strip()
+        me_label = tr('ui.gui.modifications_tab.pfp_target_me').strip().lower()
+        if text.lower() in {ModificationsTab._PFP_SELF, 'me', 'self', me_label}:
+            return ModificationsTab._PFP_SELF
+        # Accept a pasted profile link such as roblox.com/users/123456/profile.
+        match = re.search(r'/users/(\d+)', text)
+        return match.group(1) if match else text
+
+    def _pfp_rows_to_entries(self) -> list[dict[str, object]]:
+        table = self._pfp_table
+        entries: list[dict[str, object]] = []
+        for row in range(table.rowCount()):
+            enabled_item = table.item(row, self._PFP_COL_ENABLED)
+            target_item = table.item(row, self._PFP_COL_TARGET)
+            image_item = table.item(row, self._PFP_COL_IMAGE_URL)
+            entries.append(
+                {
+                    'enabled': (
+                        enabled_item is not None
+                        and enabled_item.checkState() == Qt.CheckState.Checked
+                    ),
+                    'target': self._normalize_pfp_target(
+                        target_item.text() if target_item is not None else ''
+                    ),
+                    'image_url': image_item.text().strip() if image_item is not None else '',
+                }
+            )
+        return entries
+
+    def _save_pfp_rows(self) -> None:
+        if self._pfp_loading:
+            return
+        entries = self._pfp_rows_to_entries()
+        if self._config_manager is not None:
+            self._config_manager.profile_picture_entries = cast('list[JsonObject]', entries)
+        self._push_pfp_entries(entries)
+
+    def _push_pfp_entries(self, entries: Sequence[Mapping[str, object]]) -> None:
+        """Hand the rows to the running proxy and refresh which hosts it intercepts."""
+        proxy_master = self._proxy_master
+        spoofer = getattr(proxy_master, 'profile_picture_spoofer', None)
+        if spoofer is None:
+            return
+        spoofer.set_entries(entries)
+        refresh = getattr(proxy_master, 'refresh_username_spoofer_interception', None)
+        if callable(refresh):
+            refresh()
 
     # Section: Avatar Meshes — Add Head Variant
 

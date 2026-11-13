@@ -121,6 +121,7 @@ ALLOWED_PROXY_HOSTS = frozenset(
         'clientsettingscdn.roblox.com',
         'fts.rbxcdn.com',
         'gamejoin.roblox.com',
+        'thumbnails.roblox.com',
     }
 )
 SYSTEM_CA_NAME = 'fleasion-proxy-ca.crt'
