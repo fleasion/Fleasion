@@ -1362,13 +1362,8 @@ class ColumnFilterPopup(QMenu):
         self, parent: QWidget | None = None, active_cols: Collection[str] | None = None
     ) -> None:
         super().__init__(parent)
-        self.setStyleSheet("""
-            QMenu { background-color: palette(window); border: 1px solid palette(mid);
-                    border-radius: 4px; color: palette(window-text); }
-            QWidget#ColContainer { background-color: palette(window); }
-            QCheckBox { padding: 2px 4px; color: palette(window-text); font-size: 12px; }
-            QCheckBox::indicator { width: 14px; height: 14px; }
-        """)
+        self._sync_surface_stylesheet()
+        self.aboutToShow.connect(self._sync_surface_stylesheet)
         self.active_cols = (
             set(active_cols) if active_cols is not None else set(_DEFAULT_SEARCH_COL_KEYS)
         )
@@ -1403,6 +1398,24 @@ class ColumnFilterPopup(QMenu):
         wa = QWidgetAction(self)
         wa.setDefaultWidget(container)
         self.addAction(wa)
+
+    def _sync_surface_stylesheet(self) -> None:
+        """Paint the entire widget-backed menu, even with Glass's transparent Window role."""
+        surface = self.palette().window().color()
+        if surface.alpha() == 0:
+            # Match CategoryFilterPopup: the underlying cache table must not
+            # show through the menu or its embedded checkbox container
+            surface = self.palette().toolTipBase().color()
+        color = surface.name()
+        stylesheet = f"""
+            QMenu {{ background-color: {color}; border: 1px solid palette(mid);
+                    border-radius: 4px; color: palette(window-text); }}
+            QWidget#ColContainer {{ background-color: {color}; }}
+            QCheckBox {{ padding: 2px 4px; color: palette(window-text); font-size: 12px; }}
+            QCheckBox::indicator {{ width: 14px; height: 14px; }}
+        """
+        if self.styleSheet() != stylesheet:
+            self.setStyleSheet(stylesheet)
 
     def _on_toggle(self, key: str, checked: bool) -> None:
         if checked:
