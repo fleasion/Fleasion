@@ -97,10 +97,11 @@ def test_new_preferences_win_over_legacy_values(config: manager.ConfigManager) -
 
 def test_defaults_validation_and_persistence(config: manager.ConfigManager) -> None:
     assert (config.appearance_style, config.color_mode, config.accent_color) == (
-        'Fusion',
-        'System',
+        'Glass',
+        'Dark',
         'Ice',
     )
+    assert config.glass_opacity == 1.0
     config.appearance_style = 'Glass'
     config.color_mode = 'Light'
     config.accent_color = 'Coral'
@@ -141,6 +142,7 @@ def test_switching_style_preserves_mode_accent_and_glass_settings(
     config.accent_color = 'Amber'
     config.glass_opacity = 0.68
     config.glass_backdrop = 'wallpaper'
+    config.appearance_style = 'Fusion'
     for style in ('Glass', 'Fusion', 'Glass'):
         ThemeManager.set_preference(config, 'style', style)
         assert config.color_mode == 'Light'

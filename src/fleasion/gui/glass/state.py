@@ -18,7 +18,7 @@ BACKDROPS: Final[tuple[Backdrop, ...]] = ('desktop', 'wallpaper')
 
 DEFAULT_BACKDROP: Final[Backdrop] = 'desktop'
 # Background opacity over the selected backdrop
-DEFAULT_OPACITY: Final = 0.45
+DEFAULT_OPACITY: Final = 1.0
 MIN_OPACITY: Final = 0.2
 MAX_OPACITY: Final = 1.0
 

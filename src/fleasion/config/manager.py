@@ -444,9 +444,10 @@ DEFAULT_SETTINGS: JsonObject = {
     'strip_textures': False,
     'enabled_configs': [],
     'last_config': 'Default',
-    'appearance_style': 'Fusion',
-    'color_mode': 'System',
+    'appearance_style': 'Glass',
+    'color_mode': 'Dark',
     'accent_color': 'Ice',
+    'glass_opacity': 1.0,
     'custom_accent_color': '#a17dff',
     'language': 'en',
     'audio_volume': 70,  # 0-100
@@ -1137,9 +1138,9 @@ class ConfigManager:
     @property
     def glass_opacity(self) -> float:
         """Glass background opacity, from 0.2 to fully opaque at 1.0."""
-        value = self.settings.get('glass_opacity', 0.45)
+        value = self.settings.get('glass_opacity', 1.0)
         if isinstance(value, bool) or not isinstance(value, int | float):
-            value = 0.45
+            value = 1.0
         return min(1.0, max(0.2, float(value)))
 
     @glass_opacity.setter
