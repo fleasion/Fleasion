@@ -67,6 +67,7 @@ if TYPE_CHECKING:
         ProxyRequestLogEntry as ProxyRequestLogEntry,
     )
 
+from .addons.profile_picture_spoofer import PFP_MAX_IMAGE_BYTES, is_pfp_route
 from .addons.texture_stripper import is_synthetic_cdn_request
 from .asset_batch import (
     decode_v3_request,
@@ -1536,14 +1537,20 @@ def _same_local_file_version(before: os.stat_result, after: os.stat_result) -> b
     return before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns
 
 
-def _serve_local_file_range(path: Path, range_header: bytes, content_type: str) -> bytes | None:
+def _serve_local_file_range(
+    path: Path, range_header: bytes, content_type: str, max_bytes: int | None = None
+) -> bytes | None:
     match = re.fullmatch(rb'bytes=(\d*)-(\d*)', range_header.strip(), flags=re.IGNORECASE)
     if match is None or not (match[1] or match[2]):
         return None
     with path.open('rb') as source:
         info = os.fstat(source.fileno())
         # Small virtual files can report a regular-file mode with a fabricated size
-        if not stat.S_ISREG(info.st_mode) or info.st_size < _LOCAL_FILE_FAST_MIN_SIZE:
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_size < _LOCAL_FILE_FAST_MIN_SIZE
+            or (max_bytes is not None and info.st_size > max_bytes)
+        ):
             return None
         total = info.st_size
         bounds = _local_range_bounds(match, total)
@@ -1570,11 +1577,12 @@ def _serve_local_file_range(path: Path, range_header: bytes, content_type: str) 
     ).encode('ascii') + content
 
 
-def _serve_local_file(
+def _serve_local_file(  # ruff: ignore[too-many-return-statements]
     local_path: str,
     range_header: bytes | None = None,
     if_range: bytes | None = None,
     head_only: bool = False,
+    max_bytes: int | None = None,
 ) -> bytes:
     path = Path(local_path)
     if path.suffix.lower() == '.obj':
@@ -1594,6 +1602,10 @@ def _serve_local_file(
         path_info = path.stat()
     except OSError, ValueError:
         return b'HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n'
+    if max_bytes is not None and (
+        not stat.S_ISREG(path_info.st_mode) or path_info.st_size > max_bytes
+    ):
+        return _make_local_response(413)
     ext = path.suffix.lower()
     ct_map = {
         '.png': 'image/png',
@@ -1617,6 +1629,7 @@ def _serve_local_file(
             info = os.fstat(source.fileno())
             if (
                 stat.S_ISREG(info.st_mode)
+                and (max_bytes is None or info.st_size <= max_bytes)
                 and info.st_size >= _LOCAL_FILE_FAST_MIN_SIZE
                 and _same_local_file_version(info, os.fstat(source.fileno()))
             ):
@@ -1632,10 +1645,20 @@ def _serve_local_file(
         and if_range is None
         and len(range_header) <= 128
     ):
-        partial = _serve_local_file_range(path, range_header, ct)
+        partial = _serve_local_file_range(path, range_header, ct, max_bytes)
         if partial is not None:
             return partial.partition(b'\r\n\r\n')[0] + b'\r\n\r\n' if head_only else partial
-    content = strip_roblox_metadata(path, path.read_bytes())
+    if max_bytes is None:
+        content = path.read_bytes()
+    else:
+        with path.open('rb') as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+                return _make_local_response(413)
+            content = source.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            return _make_local_response(413)
+    content = strip_roblox_metadata(path, content)
     status = '200 OK'
     content_range = ''
     if range_header is not None and if_range is None and len(range_header) <= 128:
@@ -1675,6 +1698,7 @@ def _make_local_response(status_code: int = 204, body: bytes = b'') -> bytes:
         404: 'Not Found',
         405: 'Method Not Allowed',
         410: 'Gone',
+        413: 'Content Too Large',
         500: 'Internal Server Error',
     }
     reason = reason_map.get(status_code, 'OK')
@@ -3528,6 +3552,7 @@ class FleasionProxy:
                     None if is_head else req_headers.get(b'range'),
                     None if is_head else req_headers.get(b'if-range'),
                     is_head,
+                    PFP_MAX_IMAGE_BYTES if is_pfp_route(host, path) else None,
                 )
                 status_line = (
                     response.split(b'\r\n', 1)[0].decode('ascii', errors='replace')

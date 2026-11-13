@@ -5269,7 +5269,7 @@ class ModificationsTab(QWidget):
         table = self._pfp_table
         for row in range(table.rowCount()):
             target_item = table.item(row, self._PFP_COL_TARGET)
-            if target_item is not None and target_item.text().strip() == target:
+            if target_item is not None and self._normalize_pfp_target(target_item.text()) == target:
                 username_item = table.item(row, self._PFP_COL_USERNAME)
                 if username_item is not None:
                     self._set_pfp_username_text(username_item, display)
@@ -5380,7 +5380,11 @@ class ModificationsTab(QWidget):
             if resp.status_code != 200:
                 return b''
             declared_length = resp.headers.get('Content-Length', '')
-            if declared_length.isascii() and declared_length.isdecimal() and int(declared_length) > limit:
+            if (
+                declared_length.isascii()
+                and declared_length.isdecimal()
+                and int(declared_length) > limit
+            ):
                 return b''
             chunks: list[bytes] = []
             total = 0
@@ -5391,19 +5395,14 @@ class ModificationsTab(QWidget):
                 chunks.append(chunk)
             return b''.join(chunks)
 
-    @staticmethod
-    def _fetch_pfp_avatar_url(user_id: str) -> str:
-        import requests
+    def _fetch_pfp_avatar_url(self, user_id: str) -> str:
+        """Bypass Fleasion's own interception when displaying Roblox's original avatar."""
+        from fleasion.proxy.original_thumbnail import fetch_original_avatar_url
 
-        meta = requests.get(
-            'https://thumbnails.roblox.com/v1/users/avatar-headshot',
-            params={'userIds': user_id, 'size': '150x150', 'format': 'Png'},
-            timeout=8,
-        )
-        if meta.status_code != 200:
+        proxy_master = self._proxy_master
+        if proxy_master is None:
             return ''
-        entries = meta.json().get('data')
-        return str(entries[0].get('imageUrl') or '') if entries else ''
+        return fetch_original_avatar_url(user_id, proxy_master.original_thumbnail_upstreams())
 
     def _on_pfp_image_loaded(self, key: str, data: bytes) -> None:
         self._pfp_image_inflight.discard(key)

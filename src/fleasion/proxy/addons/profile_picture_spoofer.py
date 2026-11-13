@@ -53,6 +53,8 @@ _AVATAR_PATH_FRAGMENTS = ('/v1/users/avatar-headshot', '/v1/users/avatar-bust')
 PFP_ROUTE_HOST = 'fts.rbxcdn.com'
 PFP_ROUTE_PREFIX = '/__fleasion__/pfp/'
 _PFP_ROUTE_LIMIT = 1024
+PFP_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_PFP_IMAGE_EXTENSIONS = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.webp'})
 _LOG_SEEN_LIMIT = 30
 _SELF_ID_RETRY_SECONDS = 60.0
 _SELF_ID_REFRESH_SECONDS = 120.0
@@ -139,10 +141,15 @@ def is_pfp_route(host: str, path: str) -> bool:
 def register_local_image(path: Path) -> str:
     """Expose *path* under a proxy-owned CDN URL and return that URL."""
     resolved = path.resolve()
-    try:
-        mtime = resolved.stat().st_mtime_ns
-    except OSError:
-        mtime = 0
+    info = resolved.stat()
+    if (
+        not resolved.is_file()
+        or info.st_size > PFP_MAX_IMAGE_BYTES
+        or resolved.suffix.lower() not in _PFP_IMAGE_EXTENSIONS
+    ):
+        msg = 'Profile picture must be a supported image file no larger than 10 MiB'
+        raise ValueError(msg)
+    mtime = info.st_mtime_ns
     # mtime is part of the token so editing the file yields a new URL and the
     # client can't keep showing a stale cached copy.
     token = hashlib.sha256(f'{resolved}|{mtime}'.encode()).hexdigest()[:32]
@@ -160,7 +167,14 @@ def lookup_local_image(host: str, path: str) -> str | None:
     if not is_pfp_route(host, path):
         return None
     with _routes_lock:
-        return _routes.get(path.split('?', 1)[0])
+        image_path = _routes.get(path.split('?', 1)[0])
+    if image_path is None:
+        return None
+    try:
+        info = Path(image_path).stat()
+    except OSError:
+        return None
+    return image_path if info.st_size <= PFP_MAX_IMAGE_BYTES else None
 
 
 def clear_local_images() -> None:
@@ -204,7 +218,6 @@ class ProfilePictureSpoofer:
         self._self_lookup_failed_at = 0.0
         self._self_lookup_generation = 0
         self._self_lookup_event: threading.Event | None = None
-        self._preferred_cookie: str | None = None
         self._log_seen = 0
         self._config_loaded = config_manager is None
 
@@ -247,15 +260,12 @@ class ProfilePictureSpoofer:
         with self._lock:
             return self._current_user_id
 
-    def _invalidate_current_user(
-        self, *, cookie: str | None, verified_id: str | None = None
-    ) -> None:
+    def _invalidate_current_user(self, *, verified_id: str | None = None) -> None:
         """Discard obsolete lookups and atomically install any verified identity."""
         with self._lock:
             previous = self._self_lookup_event
             self._self_lookup_generation += 1
             self._self_lookup_event = None
-            self._preferred_cookie = cookie
             self._current_user_id = str(verified_id) if verified_id else None
             self._self_id_verified_at = time.monotonic() if verified_id else 0.0
             self._self_lookup_failed_at = 0.0
@@ -264,15 +274,15 @@ class ProfilePictureSpoofer:
 
     def set_current_user(self, user_id: str | None) -> None:
         """Set a previously verified account id, or invalidate the active one."""
-        self._invalidate_current_user(cookie=None, verified_id=user_id)
+        self._invalidate_current_user(verified_id=user_id)
 
-    def set_current_user_from_cookie(self, cookie: str) -> None:
-        """Switch accounts without performing a network lookup on the caller."""
-        self._invalidate_current_user(cookie=cookie)
+    def notify_active_account_changed(self) -> None:
+        """Re-read the client cookie after a successful local account switch."""
+        self._invalidate_current_user()
         self._self_user_id()
 
     def shutdown(self) -> None:
-        self._invalidate_current_user(cookie=None)
+        self._invalidate_current_user()
         clear_local_images()
 
     def request(self, flow: ProxyFlow) -> None:
@@ -295,30 +305,39 @@ class ProfilePictureSpoofer:
             generation = self._self_lookup_generation
             completion = threading.Event()
             self._self_lookup_event = completion
-            preferred_cookie = self._preferred_cookie
 
         threading.Thread(
             target=self._resolve_self_user_worker,
-            args=(generation, completion, preferred_cookie),
+            args=(generation, completion),
             name='FleasionPfpCurrentUser',
             daemon=True,
         ).start()
         return None
 
-    def _resolve_self_user_worker(
-        self, generation: int, completion: threading.Event, preferred_cookie: str | None
-    ) -> None:
+    def _resolve_self_user_worker(self, generation: int, completion: threading.Event) -> None:
         """Resolve identity off the asyncio loop; discard obsolete account results."""
         user_id: int | None = None
         try:
-            cookie = preferred_cookie if preferred_cookie is not None else _get_roblosecurity()
+            cookie = _get_roblosecurity()
             if cookie:
                 user_id = _authenticated_user_id(cookie)
-        except (requests.RequestException, AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            log_buffer.log('profile-picture-spoofer', f'Could not resolve active account: {type(exc).__name__}')
+        except (
+            requests.RequestException,
+            AttributeError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            log_buffer.log(
+                'profile-picture-spoofer', f'Could not resolve active account: {type(exc).__name__}'
+            )
         finally:
             with self._lock:
-                if generation == self._self_lookup_generation and self._self_lookup_event is completion:
+                if (
+                    generation == self._self_lookup_generation
+                    and self._self_lookup_event is completion
+                ):
                     self._current_user_id = str(user_id) if user_id is not None else None
                     self._self_id_verified_at = time.monotonic() if user_id is not None else 0.0
                     self._self_lookup_failed_at = time.monotonic() if user_id is None else 0.0
@@ -343,7 +362,13 @@ class ProfilePictureSpoofer:
                 f'(resolved path: {path})',
             )
             return None
-        return register_local_image(path)
+        try:
+            return register_local_image(path)
+        except (OSError, ValueError) as exc:
+            log_buffer.log(
+                'profile-picture-spoofer', f'Ignoring local picture: {type(exc).__name__}'
+            )
+            return None
 
     def _replacements(self) -> dict[str, str]:
         """Map user id -> final image URL for every enabled, usable entry."""

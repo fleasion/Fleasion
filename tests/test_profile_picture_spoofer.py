@@ -302,16 +302,17 @@ def test_account_switch_discards_older_inflight_lookup(monkeypatch: pytest.Monke
         new_done.set()
         return 2
 
-    def unexpected_cookie_discovery() -> str:
-        pytest.fail('Manual account selection must use the selected cookie')
-
-    monkeypatch.setattr(module, '_get_roblosecurity', unexpected_cookie_discovery)
+    # Discovery must always follow the client's active cookie, not a cookie
+    # deliberately selected for a future ticket-based launch
+    active = {'cookie': 'account-a'}
+    monkeypatch.setattr(module, '_get_roblosecurity', lambda: active['cookie'])
     monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
     spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
     try:
-        spoofer.set_current_user_from_cookie('account-a')
+        spoofer.notify_active_account_changed()
         assert old_started.wait(timeout=2)
-        spoofer.set_current_user_from_cookie('account-b')
+        active['cookie'] = 'account-b'
+        spoofer.notify_active_account_changed()
         assert new_done.wait(timeout=2)
         assert spoofer.current_user_id() == '2'
     finally:
@@ -343,7 +344,13 @@ def test_expired_identity_is_not_used_before_revalidation(
         assert release.wait(timeout=3)
         return 2
 
-    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'new-cookie')
+    discoveries: list[str] = []
+
+    def discover() -> str:
+        discoveries.append('new-cookie')
+        return 'new-cookie'
+
+    monkeypatch.setattr(module, '_get_roblosecurity', discover)
     monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
     spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
     monkeypatch.setattr(spoofer, '_self_id_verified_at', time.monotonic() - 3600)
@@ -358,6 +365,7 @@ def test_expired_identity_is_not_used_before_revalidation(
     new_flow = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
     spoofer.response(new_flow)
     assert _image_urls(new_flow) == [REMOTE]
+    assert discoveries == ['new-cookie']
 
 
 def test_shutdown_invalidates_inflight_identity_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -429,3 +437,68 @@ def test_thumbnails_logging_does_not_expose_signed_image_urls(
     assert seen
     assert all('PRIVATE-SIGNED-VALUE' not in message for message in seen)
     assert any('image_host=tr.rbxcdn.com' in message for message in seen)
+
+
+def test_local_image_size_limit_applies_at_registration_and_after_growth(
+    tmp_path: Path,
+) -> None:
+    from fleasion.proxy.addons.profile_picture_spoofer import (
+        PFP_MAX_IMAGE_BYTES,
+        register_local_image,
+    )
+
+    image = tmp_path / 'picture.png'
+    image.write_bytes(b'png')
+    url = register_local_image(image)
+    path = url.removeprefix(f'https://{PFP_ROUTE_HOST}')
+    assert lookup_local_image(PFP_ROUTE_HOST, path) == str(image.resolve())
+
+    with image.open('r+b') as file:
+        file.truncate(PFP_MAX_IMAGE_BYTES + 1)
+    assert lookup_local_image(PFP_ROUTE_HOST, path) is None
+    with pytest.raises(ValueError, match='10 MiB'):
+        register_local_image(image)
+
+    spoofer = _spoofer({'enabled': True, 'target': '5', 'image_url': str(image)})
+    flow = _flow(AVATAR_URL, {'data': [{'targetId': 5, 'imageUrl': 'original'}]})
+    spoofer.response(flow)
+    assert _image_urls(flow) == ['original']
+
+
+@pytest.mark.parametrize('method', ['GET', 'HEAD', 'RANGE'])
+def test_profile_image_serving_bounds_actual_file_bytes(
+    tmp_path: Path, method: str
+) -> None:
+    from fleasion.proxy import server
+
+    image = tmp_path / 'image.png'
+    image.write_bytes(b'123456')
+    response = server._serve_local_file(  # pyright: ignore[reportPrivateUsage]
+        str(image),
+        range_header=b'bytes=0-2' if method == 'RANGE' else None,
+        head_only=method == 'HEAD',
+        max_bytes=5,
+    )
+    assert response.startswith(b'HTTP/1.1 413 ')
+    assert response.endswith(b'\r\n\r\n')
+    image.write_bytes(b'1234')
+    response = server._serve_local_file(  # pyright: ignore[reportPrivateUsage]
+        str(image),
+        range_header=b'bytes=0-2' if method == 'RANGE' else None,
+        head_only=method == 'HEAD',
+        max_bytes=5,
+    )
+    assert response.startswith(b'HTTP/1.1 200 ') or response.startswith(b'HTTP/1.1 206 ')
+
+
+def test_local_picture_rejects_non_image_file_even_when_small(tmp_path: Path) -> None:
+    from fleasion.proxy.addons.profile_picture_spoofer import register_local_image
+
+    script = tmp_path / 'not-an-image.obj'
+    script.write_bytes(b'v 0 0 0')
+    with pytest.raises(ValueError, match='supported image'):
+        register_local_image(script)
+    spoofer = _spoofer({'enabled': True, 'target': '5', 'image_url': str(script)})
+    flow = _flow(AVATAR_URL, {'data': [{'targetId': 5, 'imageUrl': 'original'}]})
+    spoofer.response(flow)
+    assert _image_urls(flow) == ['original']

@@ -123,6 +123,7 @@ from .server import (
     MODULE_INTERCEPT_HOSTS,
     PROFILE_PICTURE_SPOOFER_INTERCEPT_HOSTS,
     PROXY_TLS_MAX_VERSION,
+    THUMBNAILS_API_HOST,
     USERNAME_SPOOFER_INTERCEPT_HOSTS,
     FleasionProxy,
 )
@@ -5028,6 +5029,18 @@ class ProxyMaster:
             # Do not use this as evidence that Windows should enable it globally.
             return True
         return self.config_manager.wire_preserving_passthrough
+
+    def original_thumbnail_upstreams(self) -> list[UpstreamEndpoint]:
+        """Return real thumbnail endpoints for verified, unspoofed GUI previews."""
+        with self._lock:
+            proxy = self._proxy
+        if proxy is not None:
+            endpoints = proxy.upstream_endpoints_for_hosts([THUMBNAILS_API_HOST]).get(
+                THUMBNAILS_API_HOST, []
+            )
+            if endpoints:
+                return endpoints
+        return _resolve_real_endpoints({THUMBNAILS_API_HOST}).get(THUMBNAILS_API_HOST, [])
 
     def register_module_interceptor(self, module: _ModuleInterceptor) -> None:
         """Register a module whose request()/response() methods are called for gamejoin traffic."""

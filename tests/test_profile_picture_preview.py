@@ -126,9 +126,68 @@ def test_account_change_invalidates_cached_preview_and_stale_completion() -> Non
     assert fake.refreshes == [0, 1, 0, 1]
 
 
-def test_account_manager_forwards_selected_cookie_to_spoofer() -> None:
-    cookies: list[str] = []
-    spoofer = SimpleNamespace(set_current_user_from_cookie=cookies.append)
+def test_account_manager_refreshes_active_identity_without_selected_cookie() -> None:
+    notifications: list[str] = []
+    spoofer = SimpleNamespace(notify_active_account_changed=lambda: notifications.append('refresh'))
     fake = SimpleNamespace(_proxy_master=SimpleNamespace(profile_picture_spoofer=spoofer))
-    RandoStuffTab._push_profile_picture_current_account(cast('RandoStuffTab', fake), 'secret')
-    assert cookies == ['secret']
+    RandoStuffTab._push_profile_picture_current_account(cast('RandoStuffTab', fake))
+    assert notifications == ['refresh']
+
+
+def test_profile_link_lookup_updates_real_qt_username_cell() -> None:
+    from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
+
+    app = QApplication.instance() or QApplication([])
+    table = QTableWidget(1, 4)
+    table.setItem(0, ModificationsTab._PFP_COL_TARGET, QTableWidgetItem('https://www.roblox.com/users/123/profile'))
+    table.setItem(0, ModificationsTab._PFP_COL_USERNAME, QTableWidgetItem('…'))
+    def set_username(item: QTableWidgetItem, value: str) -> None:
+        item.setText(value)
+
+    fake = SimpleNamespace(
+        _pfp_username_inflight={'123'},
+        _pfp_username_cache={},
+        _pfp_table=table,
+        _PFP_COL_TARGET=ModificationsTab._PFP_COL_TARGET,
+        _PFP_COL_USERNAME=ModificationsTab._PFP_COL_USERNAME,
+        _normalize_pfp_target=ModificationsTab._normalize_pfp_target,
+        _set_pfp_username_text=set_username,
+    )
+    ModificationsTab._on_pfp_username_resolved(cast('ModificationsTab', fake), '123', 'Alice')
+    item = table.item(0, ModificationsTab._PFP_COL_USERNAME)
+    assert item is not None and item.text() == 'Alice'
+    assert fake._pfp_username_cache == {'123': 'Alice'}
+    table.deleteLater()
+    app.processEvents()
+
+
+def test_ticket_launch_account_selection_does_not_change_active_self_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.gui import rando_stuff_tab as account_module
+
+    changes: list[str] = []
+    selected: list[str] = []
+    spoofer = SimpleNamespace(notify_active_account_changed=lambda: changes.append('changed'))
+    account = {'username': 'SelectedForLaunchOnly', 'cookie': 'encrypted'}
+
+    class FakeAccountUI:
+        _account_list = SimpleNamespace(currentRow=lambda: 0)
+        _accounts = [account]
+        _last_switched_account: object | None = None
+        _proxy_master = SimpleNamespace(profile_picture_spoofer=spoofer)
+
+        def _set_selected_account(self, username: str) -> None:
+            selected.append(username)
+
+    monkeypatch.setattr(account_module, 'IS_MACOS', True)
+    monkeypatch.setattr(account_module, '_is_rosemary_client', lambda: False)
+    def decrypt(_encrypted: str) -> str:
+        return 'auth-cookie'
+
+    monkeypatch.setattr(account_module, '_decrypt_cookie', decrypt)
+    fake = FakeAccountUI()
+    RandoStuffTab._on_switch_account(cast('RandoStuffTab', fake))
+    assert selected == ['SelectedForLaunchOnly']
+    assert fake._last_switched_account is account
+    assert changes == []
