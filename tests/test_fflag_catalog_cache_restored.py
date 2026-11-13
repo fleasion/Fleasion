@@ -56,7 +56,7 @@ def test_public_cache_is_reused_on_three_consecutive_browser_opens_without_netwo
         try:
             assert dialog._cache_loaded  # pyright: ignore[reportPrivateUsage]
             assert dialog._table.rowCount() == 2  # pyright: ignore[reportPrivateUsage]
-            assert 'cached' in dialog._count.text()  # pyright: ignore[reportPrivateUsage]
+            assert 'cached' not in dialog._count.text()  # pyright: ignore[reportPrivateUsage]
             assert 'Retriev' not in dialog._count.text()  # pyright: ignore[reportPrivateUsage]
         finally:
             dialog.close()
@@ -200,10 +200,33 @@ def test_warning_label_uses_its_own_height_without_blank_lines(
         assert item is not None
         label = item.widget()
         assert isinstance(label, QLabel)
-        assert label.text().count('\n') == 0
+        assert label.text().count('\n') == 1
+        assert 'If you are using a bootstrapper' in label.text()
+        assert 'for allowlisted presets' in label.text()
+        assert 'synchronizes detected' not in label.text()
         assert 'padding: 0' in label.styleSheet()
         assert label.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Maximum
-        assert label.height() <= label.fontMetrics().lineSpacing() + 1
+        assert label.height() == label.heightForWidth(label.width())
+        assert label.height() == label.fontMetrics().lineSpacing() * 2
+        preset_item = layout.itemAt(1)
+        assert preset_item is not None
+        preset = preset_item.widget()
+        assert preset is not None
+        assert preset.y() - label.y() - label.height() <= 6
+        # Narrow layouts reflow just the yellow preset notice, never the red warning
+        widget.resize(725, 900)
+        qt_app.processEvents()
+        qt_app.processEvents()
+        assert label.height() == label.heightForWidth(label.width())
+        widget.resize(900, 900)
+        qt_app.processEvents()
+        qt_app.processEvents()
+        assert label.height() == label.heightForWidth(label.width())
+        red_warning = widget._custom_fflag_editor.findChildren(QLabel)  # pyright: ignore[reportPrivateUsage]
+        assert any(
+            'background: rgba(180, 45, 45, 0.16)' in child.styleSheet()
+            for child in red_warning
+        )
     finally:
         widget.close()
 

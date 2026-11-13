@@ -633,6 +633,7 @@ KAZAKH: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Әр FastFlag мәні жол, сан немесе логикалық мән болуы керек.',
     'modifications.fastflag.name': 'Атауы',
     'modifications.fastflag.value': 'Мәні',
+    'modifications.fastflags.disable_bootstrapper_flag_management': 'If you are using a bootstrapper, you must disable its FastFlag management for allowlisted presets, else it will overwrite Fleasion.',
     'modifications.fastflags.public_catalog': 'Public catalog',
     'modifications.fastflags.client_source': 'Client - {client}',
     'modifications.fastflags.choose_exe': 'Choose EXE…',

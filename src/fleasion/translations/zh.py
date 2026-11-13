@@ -633,6 +633,7 @@ CHINESE: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': '每个 FastFlag 值都必须是字符串、数字或布尔值。',
     'modifications.fastflag.name': '名称',
     'modifications.fastflag.value': '值',
+    'modifications.fastflags.disable_bootstrapper_flag_management': 'If you are using a bootstrapper, you must disable its FastFlag management for allowlisted presets, else it will overwrite Fleasion.',
     'modifications.fastflags.public_catalog': 'Public catalog',
     'modifications.fastflags.client_source': 'Client - {client}',
     'modifications.fastflags.choose_exe': 'Choose EXE…',

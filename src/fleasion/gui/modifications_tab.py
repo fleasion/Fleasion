@@ -53,6 +53,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QPolygonF,
+    QResizeEvent,
     QShortcut,
     QShowEvent,
     QWheelEvent,
@@ -2758,14 +2759,13 @@ class FFlagBrowserDialog(QDialog):
                 if no_pc_value_count
                 else tr('modifications.fastflags.retrieved_from_roblox')
             )
-            cache_detail = tr('modifications.fastflags.cached_suffix') if self._cache_loaded else ''
             self._count.setText(
                 tr(
                     'ui.gui.modifications_tab.showing_value_fastflags_value_value_value',
                     value0=visible_count,
                     value1=len(self._flags),
                     value2=source_detail,
-                    value3=cache_detail,
+                    value3='',
                 )
             )
             self._count.setStyleSheet('color: #999;')
@@ -4959,19 +4959,24 @@ class FFlagSection(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        # Warning
+        # Both warnings concern only the allowlisted preset settings, not custom FastFlags
         warn = QLabel(
             tr(
                 'ui.gui.modifications_tab.fast_flags_are_written_to_clientsettings_clientappsettings'
             )
+            + '\n'
+            + tr('modifications.fastflags.disable_bootstrapper_flag_management')
         )
         warn.setWordWrap(True)
         warn.setTextFormat(Qt.TextFormat.PlainText)
         warn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         warn.setStyleSheet('color: #c90; padding: 0;')
+        self._preset_warning = warn
         layout.addWidget(warn)
 
         grid = QGridLayout()
+        margins = grid.contentsMargins()
+        grid.setContentsMargins(margins.left(), 0, margins.right(), margins.bottom())
         grid.setSpacing(8)
         row = 0
 
@@ -5134,6 +5139,17 @@ class FFlagSection(QWidget):
         layout.addWidget(self._custom_fflag_editor)
 
         self.setLayout(layout)
+
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        # QLabel's wrapped sizeHint reserves three lines even when only two fit
+        # Keep this preset-only notice exactly as tall as its rendered text
+        warning = self._preset_warning
+        width = max(1, self.contentsRect().width())
+        needed_height = warning.heightForWidth(width)
+        if needed_height > 0 and warning.height() != needed_height:
+            warning.setFixedHeight(needed_height)
 
     def set_presets_enabled(self, enabled: bool) -> None:
         """Enable the allowlisted/local controls without disabling the proxy editor."""

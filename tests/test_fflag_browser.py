@@ -426,7 +426,7 @@ def test_fflag_browser_refresh_bypasses_a_fresh_cache(monkeypatch: pytest.Monkey
     )
     dialog = FFlagBrowserDialog()
     assert _dialog_flags(dialog) == cached_flags
-    assert _dialog_count(dialog).text().endswith('cached')
+    assert 'cached' not in _dialog_count(dialog).text()
 
     fetched: list[bool] = []
     monkeypatch.setattr(dialog, '_fetch_flags', lambda: _record_fetch(fetched))
