@@ -245,3 +245,75 @@ def test_deferred_profile_picture_tab_handles_identity_change_before_table_exist
         tab.close()
         tab.deleteLater()
         app.processEvents()
+
+
+def test_failed_preview_retries_and_recovers_in_existing_qt_tab(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A temporary download failure must not leave a permanent blank preview."""
+    import time
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
+
+    app = QApplication.instance() or QApplication([])
+    manager = cast('ModificationManager', object())
+    tab = ModificationsTab(manager, defer_setup=True)
+    tab._pfp_loading = False  # pyright: ignore[reportPrivateUsage]
+    tab._pfp_table = QTableWidget(1, 4, tab)  # pyright: ignore[reportPrivateUsage]
+    tab._PFP_RETRY_DELAY_SECONDS = 0.05  # pyright: ignore[reportPrivateUsage]
+    tab._pfp_table.setItem(  # pyright: ignore[reportPrivateUsage]
+        0,
+        tab._PFP_COL_TARGET,
+        QTableWidgetItem(''),  # pyright: ignore[reportPrivateUsage]
+    )
+    replacement = QTableWidgetItem('https://example.com/profile.png')
+    tab._pfp_table.setItem(  # pyright: ignore[reportPrivateUsage]
+        0,
+        tab._PFP_COL_IMAGE_URL,
+        replacement,  # pyright: ignore[reportPrivateUsage]
+    )
+    image = QImage(1, 1, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.red)
+    image_path = tmp_path / 'preview.png'
+    assert image.save(str(image_path))
+    png = image_path.read_bytes()
+    calls: list[str] = []
+
+    def fetch(kind: str, source: str) -> bytes:
+        assert kind == 'remote'
+        calls.append(source)
+        return b'' if len(calls) == 1 else png
+
+    monkeypatch.setattr(tab, '_load_pfp_image_bytes', fetch)
+    key = 'url:https://example.com/profile.png'
+    try:
+        tab._refresh_pfp_row_icons(0)  # pyright: ignore[reportPrivateUsage]
+        first_deadline = time.monotonic() + 2
+        while time.monotonic() < first_deadline:
+            app.processEvents()
+            if key in tab._pfp_failed_until:  # pyright: ignore[reportPrivateUsage]
+                break
+            QTest.qWait(5)
+        assert len(calls) == 1
+        assert key in tab._pfp_failed_until  # pyright: ignore[reportPrivateUsage]
+        assert replacement.icon().isNull()
+        assert tab._pfp_retry_timer.isActive()  # pyright: ignore[reportPrivateUsage]
+
+        # Do not call refresh manually: the tab must retry and paint by itself
+        recovery_deadline = time.monotonic() + 3
+        while time.monotonic() < recovery_deadline:
+            app.processEvents()
+            if len(calls) >= 2 and not replacement.icon().isNull():
+                break
+            QTest.qWait(5)
+        assert len(calls) == 2
+        assert not replacement.icon().isNull()
+        assert key in tab._pfp_pixmaps  # pyright: ignore[reportPrivateUsage]
+        assert key not in tab._pfp_failed_until  # pyright: ignore[reportPrivateUsage]
+    finally:
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()

@@ -4780,6 +4780,10 @@ class ModificationsTab(QWidget):
         self._pfp_identity_changed.connect(self.invalidate_profile_picture_preview)
         self._pfp_pixmaps: dict[str, QPixmap] = {}
         self._pfp_image_inflight: set[str] = set()
+        self._pfp_failed_until: dict[str, float] = {}
+        self._pfp_retry_timer = QTimer(self)
+        self._pfp_retry_timer.setSingleShot(True)
+        self._pfp_retry_timer.timeout.connect(self._retry_failed_pfp_images)
         self._pfp_self_id: str | None = None
         self._pfp_self_id_inflight = False
         self._pfp_self_id_lookup_generation = 0
@@ -5116,6 +5120,7 @@ class ModificationsTab(QWidget):
     _PFP_SELF = '__self__'
     _PFP_ICON_SIZE = 32
     _PFP_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+    _PFP_RETRY_DELAY_SECONDS = 5.0
 
     def _build_profile_picture_widget(self) -> QWidget:
         wrapper = QWidget()
@@ -5357,10 +5362,35 @@ class ModificationsTab(QWidget):
             self._set_pfp_icon(item, pixmap)
             return
         self._set_pfp_icon(item, None)
+        retry_at = self._pfp_failed_until.get(key)
+        if retry_at is not None:
+            if time.monotonic() < retry_at:
+                return
+            self._pfp_failed_until.pop(key, None)
         if key in self._pfp_image_inflight:
             return
         self._pfp_image_inflight.add(key)
         self._pfp_executor.submit(self._fetch_pfp_image_worker, key, fetch[0], fetch[1])
+
+    def _schedule_pfp_preview_retry(self) -> None:
+        """Schedule a single Qt timer for the earliest failed preview retry."""
+        if not self._pfp_failed_until:
+            self._pfp_retry_timer.stop()
+            return
+        remaining = min(self._pfp_failed_until.values()) - time.monotonic()
+        self._pfp_retry_timer.start(max(1, int(remaining * 1000) + 1))
+
+    def _retry_failed_pfp_images(self) -> None:
+        """Allow expired failures to retry without reopening the tab."""
+        now = time.monotonic()
+        for key, retry_at in tuple(self._pfp_failed_until.items()):
+            if retry_at <= now:
+                del self._pfp_failed_until[key]
+        table = getattr(self, '_pfp_table', None)
+        if table is not None:
+            for row in range(table.rowCount()):
+                self._refresh_pfp_row_icons(row)
+        self._schedule_pfp_preview_retry()
 
     def _fetch_pfp_image_worker(self, key: str, kind: str, source: str) -> None:
         import requests
@@ -5430,8 +5460,14 @@ class ModificationsTab(QWidget):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-        # A failed load is cached as a null pixmap so it isn't retried forever.
-        self._pfp_pixmaps[key] = pixmap
+        if pixmap.isNull():
+            # Transient network/decoder failures must not permanently blank an icon
+            self._pfp_pixmaps.pop(key, None)
+            self._pfp_failed_until[key] = time.monotonic() + self._PFP_RETRY_DELAY_SECONDS
+            self._schedule_pfp_preview_retry()
+        else:
+            self._pfp_failed_until.pop(key, None)
+            self._pfp_pixmaps[key] = pixmap
         for row in range(self._pfp_table.rowCount()):
             self._refresh_pfp_row_icons(row)
 
