@@ -1113,11 +1113,11 @@ class RandoStuffTab(QWidget):
                 self._username_spoofer_current_username,
             )
 
-    def _push_profile_picture_current_account(self) -> None:
-        """Refresh picture identity from the active client, not a selected launch cookie."""
+    def _push_profile_picture_current_account(self, cookie: str) -> None:
+        """Map me to the deliberately selected Account Manager entry."""
         spoofer = getattr(getattr(self, '_proxy_master', None), 'profile_picture_spoofer', None)
-        if spoofer is not None and hasattr(spoofer, 'notify_active_account_changed'):
-            spoofer.notify_active_account_changed()
+        if spoofer is not None and hasattr(spoofer, 'select_account_cookie'):
+            spoofer.select_account_cookie(cookie)
 
     def _on_username_spoofer_changed(self) -> None:
         state = self._username_spoofer_state_from_widgets()
@@ -2001,10 +2001,16 @@ class RandoStuffTab(QWidget):
             self._username_spoofer_current_user_id = str(user_id) if user_id is not None else None
             self._username_spoofer_current_username = str(username or '')
         self._push_username_spoofer_current_user()
+        spoofer = getattr(getattr(self, '_proxy_master', None), 'profile_picture_spoofer', None)
+        if spoofer is not None and hasattr(spoofer, 'adopt_initial_account'):
+            spoofer.adopt_initial_account(str(user_id) if user_id is not None else None)
         if username:
 
             def _update(u: str = str(username)) -> None:
-                self._set_selected_account(u)
+                # Do not replace the user's deliberate Account Manager selection
+                # if startup cookie discovery finishes after they switch accounts
+                if self._last_switched_account is None:
+                    self._set_selected_account(u)
 
             self._on_main(_update)
 
@@ -2346,6 +2352,7 @@ class RandoStuffTab(QWidget):
         if IS_MACOS or _is_rosemary_client():
             # Selection only changes future ticket launches, not the active client
             self._last_switched_account = acc
+            self._push_profile_picture_current_account(cookie)
             self._set_selected_account(username)
             platform_name = 'Rosemary' if _is_rosemary_client() else 'macOS'
             log_buffer.log(
@@ -2357,7 +2364,7 @@ class RandoStuffTab(QWidget):
         def _switch() -> None:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
-            self._push_profile_picture_current_account()
+            self._push_profile_picture_current_account(cookie)
             self._set_selected_account(username)
             platform_name = _linux_client_display_name() if IS_LINUX else 'Roblox'
             log_buffer.log(
@@ -2422,22 +2429,9 @@ class RandoStuffTab(QWidget):
         uri: str,
         launcher: Callable[[str], bool] | None = None,
     ) -> bool:
-        """Track ticket launch separately from selection and actual client confirmation."""
+        """Dispatch the selected account ticket without changing the me mapping."""
         dispatch = launcher or launch_as_standard_user
-        spoofer = getattr(getattr(self, '_proxy_master', None), 'profile_picture_spoofer', None)
-        # Windows writes the active cookie locally; other platforms may retain
-        # account A's cookie while launching B via an authentication ticket
-        if IS_WINDOWS or spoofer is None:
-            return dispatch(uri)
-        generation = spoofer.begin_ticket_launch()
-        launched = False
-        try:
-            launched = dispatch(uri)
-            return launched
-        finally:
-            # The spoofer monitors a new Player generation off-thread before
-            # accepting the ticket identity, and fails closed if unconfirmed
-            spoofer.finish_ticket_launch(generation, launched)
+        return dispatch(uri)
 
     def _launch_account_thread(
         self,
@@ -2452,8 +2446,6 @@ class RandoStuffTab(QWidget):
 
             def _switch_launch_cookie() -> None:
                 self._write_cookie_to_dat(cookie)
-                # A successful local cookie write is an actual credential change
-                self._push_profile_picture_current_account()
 
             _run_contained_action(
                 _switch_launch_cookie,

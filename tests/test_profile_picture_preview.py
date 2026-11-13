@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -129,12 +130,12 @@ def test_account_change_invalidates_cached_preview_and_stale_completion() -> Non
     assert fake.refreshes == [0, 1, 0, 1]
 
 
-def test_account_manager_refreshes_active_identity_without_selected_cookie() -> None:
-    notifications: list[str] = []
-    spoofer = SimpleNamespace(notify_active_account_changed=lambda: notifications.append('refresh'))
+def test_account_manager_forwards_selected_cookie_to_spoofer() -> None:
+    selected: list[str] = []
+    spoofer = SimpleNamespace(select_account_cookie=selected.append)
     fake = SimpleNamespace(_proxy_master=SimpleNamespace(profile_picture_spoofer=spoofer))
-    RandoStuffTab._push_profile_picture_current_account(cast('RandoStuffTab', fake))
-    assert notifications == ['refresh']
+    RandoStuffTab._push_profile_picture_current_account(cast('RandoStuffTab', fake), 'cookie-B')
+    assert selected == ['cookie-B']
 
 
 def test_profile_link_lookup_updates_real_qt_username_cell() -> None:
@@ -164,102 +165,41 @@ def test_profile_link_lookup_updates_real_qt_username_cell() -> None:
     app.processEvents()
 
 
-def test_ticket_launch_account_selection_does_not_change_active_self_identity(
+def test_qt_preview_invalidated_on_selected_account_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fleasion.gui import rando_stuff_tab as account_module
-
-    changes: list[str] = []
-    selected: list[str] = []
-    spoofer = SimpleNamespace(notify_active_account_changed=lambda: changes.append('changed'))
-    account = {'username': 'SelectedForLaunchOnly', 'cookie': 'encrypted'}
-
-    class FakeAccountUI:
-        _account_list = SimpleNamespace(currentRow=lambda: 0)
-        _accounts = [account]
-        _last_switched_account: object | None = None
-        _proxy_master = SimpleNamespace(profile_picture_spoofer=spoofer)
-
-        def _set_selected_account(self, username: str) -> None:
-            selected.append(username)
-
-    monkeypatch.setattr(account_module, 'IS_MACOS', True)
-    monkeypatch.setattr(account_module, '_is_rosemary_client', lambda: False)
-    def decrypt(_encrypted: str) -> str:
-        return 'auth-cookie'
-
-    monkeypatch.setattr(account_module, '_decrypt_cookie', decrypt)
-    fake = FakeAccountUI()
-    RandoStuffTab._on_switch_account(cast('RandoStuffTab', fake))
-    assert selected == ['SelectedForLaunchOnly']
-    assert fake._last_switched_account is account
-    assert changes == []
-
-
-def test_qt_preview_tracks_pending_verified_and_replaced_player(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """GUI icon owner follows proxy session proof, not ticket or browser identity."""
-    import json
-
     from PySide6.QtWidgets import QApplication, QTableWidget
 
     from fleasion.proxy.addons import profile_picture_spoofer as module
-    from fleasion.proxy.server import ProxyFlow
 
     app = QApplication.instance() or QApplication([])
-    state: dict[str, object] = {'process': ('client-A', 1)}
-    monkeypatch.setattr(module, '_client_process_identity', lambda: state['process'])
+    entered = threading.Event()
+    release = threading.Event()
+
+    def resolve(_cookie: str) -> str:
+        entered.set()
+        assert release.wait(2)
+        return '2'
+
+    monkeypatch.setattr(module, '_selected_account_user_id', resolve)
     spoofer = module.ProfilePictureSpoofer()
     spoofer.set_entries([{'enabled': True, 'target': 'me', 'image_url': 'https://example.com/me.png'}])
+    spoofer.set_current_user('1')
     proxy_master = cast('ProxyMaster', SimpleNamespace(profile_picture_spoofer=spoofer))
     manager = cast('ModificationManager', object())
     tab = ModificationsTab(manager, proxy_master=proxy_master, defer_setup=True)
     tab._pfp_table = QTableWidget(0, 4)  # pyright: ignore[reportPrivateUsage]
-
-    def session(user_id: int) -> ProxyFlow:
-        return cast(
-            'ProxyFlow',
-            SimpleNamespace(
-                request=SimpleNamespace(pretty_url='https://gamejoin.roblox.com/v1/join-game'),
-                response=SimpleNamespace(
-                    status_code=200,
-                    content=json.dumps({'joinScript': {'UserId': user_id}}).encode(),
-                ),
-            ),
-        )
-
     try:
-        first = session(1)
-        spoofer.request(first)
-        spoofer.response(first)
-        app.processEvents()
         tab._pfp_self_id = '1'  # pyright: ignore[reportPrivateUsage]
-        generation_before = tab._pfp_self_id_lookup_generation  # pyright: ignore[reportPrivateUsage]
-        generation = spoofer.begin_ticket_launch()
+        previous = tab._pfp_self_id_lookup_generation  # pyright: ignore[reportPrivateUsage]
+        spoofer.select_account_cookie('cookie-B')
+        assert entered.wait(2)
         app.processEvents()
         assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
-        assert tab._pfp_self_id_lookup_generation > generation_before  # pyright: ignore[reportPrivateUsage]
+        assert tab._pfp_self_id_lookup_generation > previous  # pyright: ignore[reportPrivateUsage]
         assert spoofer.current_user_id() is None
-
-        spoofer.finish_ticket_launch(generation, True)
-        app.processEvents()
-        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
-
-        state['process'] = ('client-B', 2)
-        second = session(2)
-        spoofer.request(second)
-        spoofer.response(second)
-        app.processEvents()
-        assert spoofer.current_user_id() == '2'
-        tab._pfp_self_id = '2'  # pyright: ignore[reportPrivateUsage]
-        tab._pfp_last_observed_identity = '2'  # pyright: ignore[reportPrivateUsage]
-        state['process'] = ('client-C', 3)
-        tab._sync_pfp_identity()  # pyright: ignore[reportPrivateUsage]
-        app.processEvents()
-        assert spoofer.current_user_id() is None
-        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
     finally:
+        release.set()
         tab.close()
         tab.deleteLater()
         app.processEvents()

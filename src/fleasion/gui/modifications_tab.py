@@ -4783,7 +4783,6 @@ class ModificationsTab(QWidget):
         self._pfp_self_id: str | None = None
         self._pfp_self_id_inflight = False
         self._pfp_self_id_lookup_generation = 0
-        self._pfp_last_observed_identity: str | None = None
         # Importing many rows must not create an unbounded number of threads
         self._pfp_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='FleasionPfp')
         executor = self._pfp_executor
@@ -4799,11 +4798,6 @@ class ModificationsTab(QWidget):
 
             spoofer.add_identity_listener(on_identity_change)
             self.destroyed.connect(lambda: spoofer.remove_identity_listener(on_identity_change))
-        # Detect process exits/replacements even when Roblox sends no thumbnails
-        self._pfp_process_timer = QTimer(self)
-        self._pfp_process_timer.setInterval(1000)
-        self._pfp_process_timer.timeout.connect(self._sync_pfp_identity)
-        self._pfp_process_timer.start()
 
         if not defer_setup:
             for _ in self.build_ui():
@@ -5476,17 +5470,6 @@ class ModificationsTab(QWidget):
         self._pfp_self_id = user_id
         for row in range(self._pfp_table.rowCount()):
             self._refresh_pfp_row_icons(row)
-
-    def _sync_pfp_identity(self) -> None:
-        """Recheck process-bound account identity without network access."""
-        spoofer = getattr(self._proxy_master, 'profile_picture_spoofer', None)
-        if spoofer is None or not hasattr(self, '_pfp_table'):
-            return
-        current = spoofer.current_user_id()
-        if current != self._pfp_last_observed_identity:
-            self._pfp_last_observed_identity = current
-            if current != self._pfp_self_id:
-                self.invalidate_profile_picture_preview()
 
     def invalidate_profile_picture_preview(self) -> None:
         """Drop cached self-avatar state when the verified Player session changes."""

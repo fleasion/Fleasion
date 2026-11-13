@@ -4546,9 +4546,8 @@ class ProxyMaster:
         self._sober_fflag_timer_stop: threading.Event | None = None
         self._sober_fflag_timer_thread: threading.Thread | None = None
         self._module_interceptors: list[_ModuleInterceptor] = [
-            # Observe unmodified server-issued join identity before rewriting
-            self.profile_picture_spoofer,
             self.username_spoofer,
+            self.profile_picture_spoofer,
         ]
         self._cert_refresh_lock = threading.Lock()
         self._last_cert_refresh_by_exe: dict[Path, tuple[float, str]] = {}

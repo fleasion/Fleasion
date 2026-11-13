@@ -30,7 +30,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from urllib.parse import unquote, urlparse
 
-from fleasion.utils import get_roblox_process_identity, log_buffer
+import requests
+
+from fleasion.utils import log_buffer
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object
 
 if TYPE_CHECKING:
@@ -54,8 +56,6 @@ _PFP_ROUTE_GRACE_SECONDS = 120.0
 PFP_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PFP_IMAGE_EXTENSIONS = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.webp'})
 _LOG_SEEN_LIMIT = 30
-_GAMEJOIN_HOST = 'gamejoin.roblox.com'
-_GAMEJOIN_PATHS = frozenset({'/v1/join-game', '/v1/join-game-instance'})
 
 
 class PfpEntry(TypedDict):
@@ -191,9 +191,23 @@ def clear_local_images() -> None:
         _routes.clear()
 
 
-def _client_process_identity() -> object | None:
-    """Return the actual Roblox client process generation, not a launch attempt."""
-    return get_roblox_process_identity()
+def _selected_account_user_id(cookie: str) -> str | None:
+    """Resolve an explicitly selected Account Manager credential to its user ID."""
+    with requests.Session() as session:
+        session.trust_env = False
+        session.proxies = {}
+        session.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
+        response = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+        if response.status_code != 200:
+            return None
+        payload = as_json_object(response.json())
+        if payload is None:
+            return None
+        value = payload.get('id')
+        if isinstance(value, bool) or not isinstance(value, int | str):
+            return None
+        text = str(value)
+        return text if text.isascii() and text.isdecimal() and int(text) > 0 else None
 
 
 class ProfilePictureSpoofer:
@@ -204,10 +218,8 @@ class ProfilePictureSpoofer:
         self._lock = threading.Lock()
         self._entries: list[PfpEntry] = []
         self._current_user_id: str | None = None
-        self._current_process: object | None = None
-        self._ticket_generation = 0
-        self._ticket_pending: tuple[int, object | None] | None = None
-        self._ticket_uncertain = False
+        self._selection_generation = 0
+        self._has_explicit_selection = False
         self._identity_listeners: list[Callable[[], None]] = []
         self._log_seen = 0
         self._config_loaded = config_manager is None
@@ -236,7 +248,7 @@ class ProfilePictureSpoofer:
             self._entries = normalized
 
     def add_identity_listener(self, callback: Callable[[], None]) -> None:
-        """Register a GUI-safe notifier; callbacks are dispatched outside the state lock."""
+        """Notify GUI previews when Account Manager's selected identity changes."""
         with self._lock:
             if callback not in self._identity_listeners:
                 self._identity_listeners.append(callback)
@@ -253,139 +265,72 @@ class ProfilePictureSpoofer:
             try:
                 listener()
             except RuntimeError:
-                # A Qt receiver may have been destroyed during shutdown
                 continue
 
-    @staticmethod
-    def _active_process() -> object | None:
-        try:
-            return _client_process_identity()
-        except OSError, AttributeError, ValueError, RuntimeError:
-            return None
-
     def current_user_id(self) -> str | None:
-        """Return only the account in the currently observed Player session."""
-        return self._self_user_id()
+        """Return the selected Account Manager identity without network I/O."""
+        with self._lock:
+            return self._current_user_id
 
     def _self_user_id(self) -> str | None:
-        """Invalidate verified identity as soon as the bound process changes."""
-        process = self._active_process()
-        invalidated = False
-        with self._lock:
-            if self._current_process is not None and self._current_process != process:
-                self._current_process = None
-                self._current_user_id = None
-                self._ticket_uncertain = True
-                invalidated = True
-            result = (
-                self._current_user_id
-                if process is not None
-                and self._ticket_pending is None
-                and not self._ticket_uncertain
-                else None
-            )
-        if invalidated:
-            self._notify_identity_change()
-        return result
+        return self.current_user_id()
 
     def set_current_user(self, user_id: str | None) -> None:
-        """Accept an already verified Player account; never pass browser/launch identity."""
-        process = self._active_process() if user_id else None
+        """Update the selected account ID, as already resolved by Account Manager."""
+        normalized = str(user_id) if user_id else None
         with self._lock:
-            self._current_user_id = str(user_id) if user_id and process is not None else None
-            self._current_process = process if user_id else None
-            self._ticket_pending = None
-            self._ticket_uncertain = False
-            self._ticket_generation += 1
+            self._selection_generation += 1
+            self._has_explicit_selection = True
+            self._current_user_id = normalized
         self._notify_identity_change()
 
-    def notify_active_account_changed(self) -> None:
-        """Quarantine identity after a credential write until Player proves its account."""
-        self.set_current_user(None)
-
-    def begin_ticket_launch(self) -> int | None:
-        """Quarantine me during ticket dispatch; never infer the authenticated account."""
-        self._load_config_entries()
-        with self._lock:
-            if not any(e['enabled'] and e['target'] == SELF_TARGET for e in self._entries):
-                return None
-        before = self._active_process()
-        with self._lock:
-            self._ticket_generation += 1
-            generation = self._ticket_generation
-            self._ticket_pending = (generation, before)
-        self._notify_identity_change()
-        return generation
-
-    def finish_ticket_launch(self, generation: int | None, launched: bool) -> None:
-        """URI dispatch is only an attempt; await an upstream Player joinScript."""
-        if generation is None:
+    def adopt_initial_account(self, user_id: str | None) -> None:
+        """Adopt the Account Manager startup identity unless a user selected another."""
+        if not user_id:
             return
-        process = self._active_process()
         with self._lock:
-            pending = self._ticket_pending
-            if pending is None or pending[0] != generation:
+            if self._has_explicit_selection:
                 return
-            self._ticket_pending = None
-            # Failed dispatch restores the old observed identity only if the
-            # same Player generation is still alive
-            if not launched and process == pending[1] and self._current_process == process:
-                self._ticket_uncertain = False
-            else:
-                self._ticket_uncertain = True
-                self._current_user_id = None
-                self._current_process = None
+            self._current_user_id = str(user_id)
         self._notify_identity_change()
 
-    @staticmethod
-    def _join_user_id(content: bytes) -> str | None:
-        """Read Roblox-issued session identity, never request or creator IDs."""
-        if not content or len(content) > 4 * 1024 * 1024:
-            return None
-        try:
-            payload = as_json_object(json.loads(content))
-        except UnicodeDecodeError, ValueError:
-            return None
-        if payload is None:
-            return None
-        join_script = as_json_object(payload.get('joinScript'))
-        if join_script is None:
-            return None
-        user_id = join_script.get('UserId')
-        if isinstance(user_id, bool) or not isinstance(user_id, int | str):
-            return None
-        text = str(user_id)
-        return text if text.isascii() and text.isdecimal() and int(text) > 0 else None
-
-    def _observe_gamejoin(self, flow: ProxyFlow) -> None:
-        """Bind only a Player join identity issued by Roblox's upstream server."""
-        response = flow.response
-        if response is None or response.status_code != 200:
-            return
-        url = urlparse(flow.request.pretty_url)
-        if url.hostname != _GAMEJOIN_HOST or url.path not in _GAMEJOIN_PATHS:
-            return
-        user_id = self._join_user_id(response.content)
-        process = self._active_process()
-        requested_by = flow.pfp_request_process
-        if user_id is None or process is None or requested_by != process:
-            return
+    def select_account_cookie(self, cookie: str) -> None:
+        """Resolve the deliberate Account Manager selection away from the GUI thread."""
         with self._lock:
+            self._selection_generation += 1
+            generation = self._selection_generation
+            self._has_explicit_selection = True
+            self._current_user_id = None
+        self._notify_identity_change()
+        threading.Thread(
+            target=self._resolve_selected_account,
+            args=(cookie, generation),
+            name='FleasionPfpSelectedAccount',
+            daemon=True,
+        ).start()
+
+    def _resolve_selected_account(self, cookie: str, generation: int) -> None:
+        """Ignore stale lookup results if the user selected another account."""
+        user_id: str | None = None
+        try:
+            user_id = _selected_account_user_id(cookie)
+        except requests.RequestException, OSError, ValueError, TypeError, RuntimeError:
+            log_buffer.log('profile-picture-spoofer', 'Selected account lookup failed')
+        with self._lock:
+            if generation != self._selection_generation:
+                return
             self._current_user_id = user_id
-            self._current_process = process
-            self._ticket_pending = None
-            self._ticket_uncertain = False
         self._notify_identity_change()
 
     def shutdown(self) -> None:
-        self.set_current_user(None)
+        with self._lock:
+            self._selection_generation += 1
+            self._current_user_id = None
+        self._notify_identity_change()
         clear_local_images()
 
     def request(self, flow: ProxyFlow) -> None:
-        """Pin the Player generation at gamejoin request time for response matching."""
-        url = urlparse(flow.request.pretty_url)
-        if url.hostname == _GAMEJOIN_HOST and url.path in _GAMEJOIN_PATHS:
-            flow.pfp_request_process = self._active_process()
+        del flow
 
     def _resolve_image_url(self, raw_image_url: str) -> str | None:
         """Turn a configured image string into something Roblox Player can GET.
@@ -549,9 +494,6 @@ class ProfilePictureSpoofer:
         return f'{len(data)} entr{"y" if len(data) == 1 else "ies"}: ' + ' | '.join(parts)
 
     def response(self, flow: ProxyFlow) -> None:
-        # A verified upstream gamejoin response is the only automatic source
-        # of the active Player's account identity
-        self._observe_gamejoin(flow)
         response = flow.response
         if response is None or not response.content or not self.is_enabled():
             return
