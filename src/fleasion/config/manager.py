@@ -467,6 +467,7 @@ DEFAULT_SETTINGS: JsonObject = {
     'lock_roblox_files_read_only': False,
     'read_only_lock_migration_v1_complete': False,
     'close_env_proxy_roblox_on_exit': True,
+    'fflag_browser_source': 'public',
     'custom_fflags_enabled': False,
     'custom_fflags_warning_accepted': False,
     'custom_fflags': {},
@@ -1277,6 +1278,19 @@ class ConfigManager:
     def proxy_mode(self, value: str) -> None:
         value = str(value or 'env').lower()
         self.settings['proxy_mode'] = value if value in {'hosts', 'env'} else 'env'
+        self._save_settings()
+
+    @property
+    def fflag_browser_source(self) -> str:
+        """Last FastFlag browser source, independent of the current platform."""
+        return 'client' if self.settings.get('fflag_browser_source') == 'client' else 'public'
+
+    @fflag_browser_source.setter
+    def fflag_browser_source(self, value: str) -> None:
+        selected = 'client' if value == 'client' else 'public'
+        if self.fflag_browser_source == selected:
+            return
+        self.settings['fflag_browser_source'] = selected
         self._save_settings()
 
     @property

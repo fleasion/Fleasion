@@ -2060,6 +2060,7 @@ class FFlagBrowserDialog(QDialog):
     _CACHE_PATH = APP_CACHE_DIR / FFLAG_CATALOG_CACHE_FILENAME
     _CACHE_TTL_SECONDS = FFLAG_CATALOG_CACHE_TTL_SECONDS
     _CACHE_VERSION = 3
+    _COMBO_EXTRA_WIDTH = 40  # Glass arrow region (30px) + left padding and borders
     _FAMILIES = (
         'DFFlag',
         'DFInt',
@@ -2080,8 +2081,14 @@ class FFlagBrowserDialog(QDialog):
     installed_scan_failed = Signal(object)
     load_failed = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        config_manager: ConfigManager | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._config_manager = config_manager
         self.setWindowTitle(tr('ui.gui.modifications_tab.browse_roblox_fastflags'))
         self.setMinimumSize(820, 580)
         # ``None`` means no current PCDesktopClient value was retrieved
@@ -2120,6 +2127,7 @@ class FFlagBrowserDialog(QDialog):
 
         controls = QHBoxLayout()
         self._source_mode = QComboBox()
+        self._source_mode.setProperty('fflagBrowserCompact', 'true')
         self._source_mode.addItem(tr('modifications.fastflags.public_catalog'), 'public')
         self._source_mode.addItem(
             tr('modifications.fastflags.client_source', client=self._client_display_name()),
@@ -2127,11 +2135,14 @@ class FFlagBrowserDialog(QDialog):
         )
         self._source_mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._source_mode.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        if getattr(self._config_manager, 'fflag_browser_source', 'public') == 'client':
+            self._source_mode.setCurrentIndex(1)
+        self._fit_source_width()
         self._source_mode.currentIndexChanged.connect(self._on_source_changed)
         controls.addWidget(self._source_mode)
         self._choose_exe_button = QPushButton(tr('modifications.fastflags.choose_exe'))
         self._choose_exe_button.clicked.connect(self._choose_windows_exe)
-        self._choose_exe_button.setVisible(False)
+        self._choose_exe_button.setVisible(self._source_mode.currentData() == 'windows')
         controls.addWidget(self._choose_exe_button)
         self._search = QLineEdit()
         self._search.setPlaceholderText(
@@ -2141,8 +2152,11 @@ class FFlagBrowserDialog(QDialog):
         controls.addWidget(self._search, 1)
 
         self._family_filter = QComboBox()
+        self._family_filter.setProperty('fflagBrowserCompact', 'true')
         self._family_filter.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._family_filter.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._family_filter.addItem(tr('ui.gui.modifications_tab.all_fastflags'), '')
+        self._fit_combo_to_options(self._family_filter)
         self._family_filter.currentIndexChanged.connect(self._filter_rows)
         controls.addWidget(self._family_filter)
 
@@ -2159,7 +2173,9 @@ class FFlagBrowserDialog(QDialog):
         self._table.setHorizontalHeaderLabels(
             [
                 tr('ui.gui.modifications_tab.name'),
-                tr('ui.gui.modifications_tab.current_roblox_value'),
+                tr('modifications.fastflags.initial_value')
+                if self._source_mode.currentData() == 'windows'
+                else tr('modifications.table.value'),
             ]
         )
         header = self._table.horizontalHeader()
@@ -2179,6 +2195,21 @@ class FFlagBrowserDialog(QDialog):
         self._add_button.clicked.connect(self._add_selected)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    @classmethod
+    def _fit_combo_to_options(cls, combo: QComboBox) -> None:
+        """Reserve only the longest option and the standard Glass arrow/padding area."""
+        widest = max(
+            (
+                combo.fontMetrics().horizontalAdvance(combo.itemText(i))
+                for i in range(combo.count())
+            ),
+            default=0,
+        )
+        combo.setFixedWidth(widest + cls._COMBO_EXTRA_WIDTH)
+
+    def _fit_source_width(self) -> None:
+        self._fit_combo_to_options(self._source_mode)
 
     @staticmethod
     def _client_source_mode() -> str:
@@ -2200,6 +2231,7 @@ class FFlagBrowserDialog(QDialog):
         self._source_mode.setItemText(
             1, tr('modifications.fastflags.client_source', client=self._client_display_name())
         )
+        self._fit_source_width()
 
     @staticmethod
     def _detect_installed_windows_exe() -> Path | None:
@@ -2255,6 +2287,10 @@ class FFlagBrowserDialog(QDialog):
                     self._source_mode.setCurrentIndex(0)
                 self._choose_exe_button.setVisible(False)
                 local = False
+        if self._config_manager is not None:
+            self._config_manager.fflag_browser_source = (
+                'public' if self._source_mode.currentData() == 'public' else 'client'
+            )
         self._table.setHorizontalHeaderLabels(
             [
                 tr('ui.gui.modifications_tab.name'),
@@ -2696,6 +2732,7 @@ class FFlagBrowserDialog(QDialog):
                 )
             previous_index = self._family_filter.findData(current_family)
             self._family_filter.setCurrentIndex(max(0, previous_index))
+        self._fit_combo_to_options(self._family_filter)
         self._refresh_button.setEnabled(True)
         self._populate_table()
         self._filter_rows()
@@ -4626,7 +4663,7 @@ class CustomFFlagEditor(QWidget):
         self._reload_known_flag_names()
 
     def _browse_fflags(self) -> None:
-        dialog = FFlagBrowserDialog(self)
+        dialog = FFlagBrowserDialog(self, config_manager=self._config)
         dialog.flags_loaded.connect(self._on_browser_inventory_loaded)
         self._reload_known_flag_names()
         result = dialog.exec()

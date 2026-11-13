@@ -280,6 +280,10 @@ QComboBox::drop-down {
     width: 24px; margin-right: 3px; border: 0; background: transparent;
 }
 QComboBox::down-arrow { image: url($chevron_down); width: 14px; height: 14px; }
+/* Browser selectors fit the longest option rather than reserving the full generic gap */
+QComboBox[fflagBrowserCompact="true"] { padding-right: 12px; }
+QComboBox[fflagBrowserCompact="true"]::drop-down { width: 16px; margin-right: 1px; }
+QComboBox[fflagBrowserCompact="true"]::down-arrow { width: 12px; height: 12px; }
 QComboBox QAbstractItemView {
     background: rgba($popup_rgb,0.98); border: 1px solid transparent;
     border-radius: 10px; padding: 6px; selection-background-color: rgba($accent_rgb,0.35);

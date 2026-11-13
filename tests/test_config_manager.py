@@ -235,6 +235,20 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             manager.close_env_proxy_roblox_on_exit = False
             self.assertFalse(manager.close_env_proxy_roblox_on_exit)
 
+    def test_fflag_browser_source_persists_across_reloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module = self._load_manager_for(Path(tmp))
+            first = module.ConfigManager()
+            self.assertEqual(first.fflag_browser_source, 'public')
+            first.fflag_browser_source = 'client'
+            self.assertEqual(module.ConfigManager().fflag_browser_source, 'client')
+            second = module.ConfigManager()
+            second.fflag_browser_source = 'public'
+            self.assertEqual(module.ConfigManager().fflag_browser_source, 'public')
+            second.fflag_browser_source = 'invalid'
+            self.assertEqual(second.fflag_browser_source, 'public')
+            self.assertEqual(module.ConfigManager().fflag_browser_source, 'public')
+
     def test_linux_client_selection_is_validated_and_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))
