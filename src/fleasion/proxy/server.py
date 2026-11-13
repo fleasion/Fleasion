@@ -1813,6 +1813,9 @@ class ProxyFlow:
         self.drop_request: bool = False
         self.drop_status_code: int = 204
         self.drop_body: bytes = b''
+        # The profile-picture module uses the request-time Player generation
+        # to reject join responses from an already replaced client
+        self.pfp_request_process: object | None = None
 
 
 def _flow_response_after_callbacks(flow: ProxyFlow) -> _FlowResponse | None:

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from fleasion.proxy.addons import profile_picture_spoofer as pfp_module
 from fleasion.proxy.addons.profile_picture_spoofer import (
     PFP_ROUTE_HOST,
     PFP_ROUTE_PREFIX,
@@ -37,9 +38,25 @@ def _flow(url: str, payload: object, request_body: object = None) -> ProxyFlow:
                 pretty_url=url,
                 content=b'' if request_body is None else json.dumps(request_body).encode(),
             ),
-            response=SimpleNamespace(content=json.dumps(payload).encode()),
+            response=SimpleNamespace(content=json.dumps(payload).encode(), status_code=200),
         ),
     )
+
+
+def _gamejoin_flow(user_id: object, *, status: int = 200) -> ProxyFlow:
+    flow = _flow(
+        'https://gamejoin.roblox.com/v1/join-game',
+        {'joinScript': {'UserId': user_id, 'CreatorId': 999}},
+    )
+    assert flow.response is not None
+    flow.response.status_code = status
+    return flow
+
+
+def _deliver_gamejoin(spoofer: ProfilePictureSpoofer, user_id: object, *, status: int = 200) -> None:
+    flow = _gamejoin_flow(user_id, status=status)
+    spoofer.request(flow)
+    spoofer.response(flow)
 
 
 def _spoofer(*entries: dict[str, object], me: str | None = None) -> ProfilePictureSpoofer:
@@ -60,8 +77,9 @@ def _image_urls(flow: ProxyFlow) -> list[object]:
 
 
 @pytest.fixture(autouse=True)
-def reset_local_image_routes() -> None:
+def reset_local_image_routes(monkeypatch: pytest.MonkeyPatch) -> None:
     clear_local_images()
+    monkeypatch.setattr(pfp_module, '_client_process_identity', lambda: ('fixture-player', 1))
 
 
 def test_normalize_target_accepts_ids_and_me_aliases() -> None:
@@ -244,158 +262,93 @@ def test_clean_local_path_handles_quotes_and_file_urls() -> None:
     assert clean_local_path('file:///tmp/x.png') == '/tmp/x.png'
 
 
-def test_self_lookup_does_not_block_thumbnail_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A cookie/API lookup must run outside the proxy's asyncio response handler."""
-    import threading
-    import time
-
-    from fleasion.proxy.addons import profile_picture_spoofer as module
-
-    entered = threading.Event()
-    release = threading.Event()
-    calls: list[str] = []
-
-    def authenticated(cookie: str) -> int:
-        calls.append(cookie)
-        entered.set()
-        assert release.wait(timeout=3)
-        return 42
-
-    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'cookie-42')
-    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
-    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
-    first = _flow(AVATAR_URL, {'data': [{'targetId': 42, 'imageUrl': 'original'}]})
-    try:
-        started = time.perf_counter()
-        spoofer.response(first)
-        elapsed = time.perf_counter() - started
-        assert elapsed < 0.2, 'Proxy callback blocked on the authenticated-user request'
-        assert entered.wait(timeout=2)
-        assert _image_urls(first) == ['original']
-    finally:
-        release.set()
-    assert spoofer.current_user_id() == '42'
-    second = _flow(AVATAR_URL, {'data': [{'targetId': 42, 'imageUrl': 'original'}]})
-    spoofer.response(second)
-    assert _image_urls(second) == [REMOTE]
-    assert calls == ['cookie-42']
-
-
-def test_account_switch_discards_older_inflight_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A late response for account A must not overwrite selected account B."""
-    import threading
-
-    from fleasion.proxy.addons import profile_picture_spoofer as module
-
-    old_started = threading.Event()
-    release_old = threading.Event()
-    new_done = threading.Event()
-    cookies: list[str] = []
-
-    def authenticated(cookie: str) -> int:
-        cookies.append(cookie)
-        if cookie == 'account-a':
-            old_started.set()
-            assert release_old.wait(timeout=3)
-            return 1
-        assert cookie == 'account-b'
-        new_done.set()
-        return 2
-
-    # Discovery must always follow the client's active cookie, not a cookie
-    # deliberately selected for a future ticket-based launch
-    active = {'cookie': 'account-a'}
-    monkeypatch.setattr(module, '_get_roblosecurity', lambda: active['cookie'])
-    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
-    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
-    try:
-        spoofer.notify_active_account_changed()
-        assert old_started.wait(timeout=2)
-        active['cookie'] = 'account-b'
-        spoofer.notify_active_account_changed()
-        assert new_done.wait(timeout=2)
-        assert spoofer.current_user_id() == '2'
-    finally:
-        release_old.set()
-    assert spoofer.current_user_id() == '2'
-    old_flow = _flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]})
-    new_flow = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
-    spoofer.response(old_flow)
-    spoofer.response(new_flow)
-    assert _image_urls(old_flow) == ['original']
-    assert _image_urls(new_flow) == [REMOTE]
-    assert cookies == ['account-a', 'account-b']
-
-
-def test_expired_identity_is_not_used_before_revalidation(
+def test_browser_cookie_never_identifies_active_player(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An external account change cannot leave a cached self-id valid forever."""
-    import threading
-    import time
+    """Even a valid browser account cannot establish the Player identity."""
+    from fleasion.utils import roblox_auth
 
-    from fleasion.proxy.addons import profile_picture_spoofer as module
+    calls: list[str] = []
 
-    refresh_started = threading.Event()
-    release = threading.Event()
+    def reject_discovery() -> str:
+        calls.append('browser-discovery')
+        return 'browser-account-B'
 
-    def authenticated(_cookie: str) -> int:
-        refresh_started.set()
-        assert release.wait(timeout=3)
-        return 2
-
-    discoveries: list[str] = []
-
-    def discover() -> str:
-        discoveries.append('new-cookie')
-        return 'new-cookie'
-
-    monkeypatch.setattr(module, '_get_roblosecurity', discover)
-    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
-    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
-    monkeypatch.setattr(spoofer, '_self_id_verified_at', time.monotonic() - 3600)
-    old_flow = _flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]})
-    try:
-        spoofer.response(old_flow)
-        assert refresh_started.wait(timeout=2)
-        assert _image_urls(old_flow) == ['original']
-    finally:
-        release.set()
-    assert spoofer.current_user_id() == '2'
-    new_flow = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
-    spoofer.response(new_flow)
-    assert _image_urls(new_flow) == [REMOTE]
-    assert discoveries == ['new-cookie']
-
-
-def test_shutdown_invalidates_inflight_identity_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
-    import threading
-
-    from fleasion.proxy.addons import profile_picture_spoofer as module
-
-    entered = threading.Event()
-    release = threading.Event()
-
-    def authenticated(_cookie: str) -> int:
-        entered.set()
-        assert release.wait(timeout=3)
-        return 1
-
-    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'cookie')
-    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
+    monkeypatch.setattr(roblox_auth, 'get_roblosecurity', reject_discovery)
     spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
-    spoofer.response(_flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]}))
-    assert entered.wait(timeout=2)
-    workers = [
-        worker for worker in threading.enumerate()
-        if worker.name == 'FleasionPfpCurrentUser' and worker.is_alive()
-    ]
-    spoofer.shutdown()
-    release.set()
-    for worker in workers:
-        worker.join(timeout=2)
-        assert not worker.is_alive()
+    assert spoofer.current_user_id() is None
+    flow = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
+    spoofer.response(flow)
+    assert _image_urls(flow) == ['original']
+    assert calls == []
+
+
+def test_gamejoin_identity_is_issued_by_upstream_not_request_fields() -> None:
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
+    flow = _gamejoin_flow(42)
+    flow.request.raw_content = b'{"userId": 999}'
+    spoofer.request(flow)
+    spoofer.response(flow)
+    assert spoofer.current_user_id() == '42'
+    thumbnail = _flow(AVATAR_URL, {'data': [{'targetId': 42, 'imageUrl': 'original'}]})
+    spoofer.response(thumbnail)
+    assert _image_urls(thumbnail) == [REMOTE]
+
+
+@pytest.mark.parametrize('user_id', [None, -1, 0, True, 'abc', '', {'value': 5}])
+def test_malformed_or_missing_join_identity_never_sets_me(user_id: object) -> None:
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
+    _deliver_gamejoin(spoofer, user_id)
+    assert spoofer.current_user_id() is None
+
+
+def test_failed_gamejoin_http_status_does_not_establish_identity() -> None:
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
+    _deliver_gamejoin(spoofer, 42, status=403)
+    assert spoofer.current_user_id() is None
+
+
+def test_process_replacement_invalidates_cached_identity_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process: dict[str, object | None] = {'current': ('player-A', 1)}
+    monkeypatch.setattr(pfp_module, '_client_process_identity', lambda: process['current'])
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
+    _deliver_gamejoin(spoofer, 42)
+    assert spoofer.current_user_id() == '42'
+    process['current'] = ('player-B', 2)
+    assert spoofer.current_user_id() is None
     assert spoofer._current_user_id is None  # pyright: ignore[reportPrivateUsage]
+    process['current'] = None
+    assert spoofer.current_user_id() is None
+    process['current'] = ('player-C', 3)
+    assert spoofer.current_user_id() is None
+    _deliver_gamejoin(spoofer, 99)
+    assert spoofer.current_user_id() == '99'
+
+
+def test_identity_listener_notifies_while_quarantined_and_after_proof() -> None:
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
+    transitions: list[str | None] = []
+
+    def changed() -> None:
+        transitions.append(spoofer.current_user_id())
+
+    spoofer.add_identity_listener(changed)
+    _deliver_gamejoin(spoofer, 1)
+    generation = spoofer.begin_ticket_launch()
+    assert generation is not None
+    assert spoofer._self_user_id() is None  # pyright: ignore[reportPrivateUsage]
+    assert spoofer.current_user_id() is None
+    spoofer.finish_ticket_launch(generation, True)
+    assert spoofer.current_user_id() is None
+    _deliver_gamejoin(spoofer, 2)
+    assert transitions == ['1', None, None, '2']
+    assert transitions[-1] == '2'
+    spoofer.remove_identity_listener(changed)
+    recorded = len(transitions)
+    spoofer.set_current_user(None)
+    assert len(transitions) == recorded
 
 
 def test_spoofer_only_rewrites_real_thumbnails_host() -> None:
@@ -552,97 +505,68 @@ def test_full_route_registry_never_evicts_fresh_advertised_url(
         assert lookup_local_image(PFP_ROUTE_HOST, path) is not None
 
 
-def test_ticket_launch_requires_new_client_generation_and_keeps_identity_on_refresh(
+def test_ticket_process_change_does_not_prove_account_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import time
-
-    from fleasion.proxy.addons import profile_picture_spoofer as module
-
-    state: dict[str, object] = {'process': ('pid-A', 'session-A')}
-    cookie_discoveries: list[str] = []
-
-    def discover() -> str:
-        cookie_discoveries.append('cookie-A')
-        return 'cookie-A'
-
-    monkeypatch.setattr(module, '_client_process_identity', lambda: state['process'])
-    monkeypatch.setattr(module, '_get_roblosecurity', discover)
-    def authenticated(cookie: str) -> int:
-        return 2 if cookie == 'ticket-B' else 1
-
-    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
+    """Ticket B plus a new process that actually joins as A must identify A."""
+    process: dict[str, object] = {'value': ('player-A', 1)}
+    monkeypatch.setattr(pfp_module, '_client_process_identity', lambda: process['value'])
     spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
     generation = spoofer.begin_ticket_launch()
     assert generation is not None
-    assert spoofer._self_user_id() is None  # pyright: ignore[reportPrivateUsage]
-    state['process'] = ('pid-B', 'session-B')
-    pending = spoofer._ticket_pending  # pyright: ignore[reportPrivateUsage]
-    assert pending is not None
-    spoofer.finish_ticket_launch(generation, 'ticket-B')
-    assert pending[1].wait(3)
-    assert spoofer.current_user_id() == '2'
-    previous = spoofer._self_id_verified_at  # pyright: ignore[reportPrivateUsage]
-    assert previous > 0
-    monkeypatch.setattr(spoofer, '_self_id_verified_at', time.monotonic() - 3600)
-    assert spoofer.current_user_id() == '2'
-    assert cookie_discoveries == []
-    flow_b = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
-    flow_a = _flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]})
-    spoofer.response(flow_b)
-    spoofer.response(flow_a)
-    assert _image_urls(flow_b) == [REMOTE]
-    assert _image_urls(flow_a) == ['original']
-
-    # If the ticket-based client disappears, do not silently reassign me to A
-    state['process'] = None
-    monkeypatch.setattr(spoofer, '_self_id_verified_at', time.monotonic() - 3600)
+    process['value'] = ('player-B', 2)
+    spoofer.finish_ticket_launch(generation, True)
     assert spoofer.current_user_id() is None
-    assert spoofer._ticket_uncertain is True  # pyright: ignore[reportPrivateUsage]
-    assert cookie_discoveries == []
-
-
-def test_ticket_launch_failure_restores_preexisting_account(monkeypatch: pytest.MonkeyPatch) -> None:
-    from fleasion.proxy.addons import profile_picture_spoofer as module
-
-    monkeypatch.setattr(module, '_client_process_identity', lambda: ('pid-A', 'session-A'))
-    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'cookie-A')
-    def authenticated(cookie: str) -> int:
-        return 1 if cookie == 'cookie-A' else 2
-
-    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
-    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
-    generation = spoofer.begin_ticket_launch()
-    assert spoofer._self_user_id() is None  # pyright: ignore[reportPrivateUsage]
-    spoofer.finish_ticket_launch(generation, None)
+    _deliver_gamejoin(spoofer, 1)
     assert spoofer.current_user_id() == '1'
-    assert spoofer._ticket_uncertain is False  # pyright: ignore[reportPrivateUsage]
+    other = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
+    spoofer.response(other)
+    assert _image_urls(other) == ['original']
 
 
-def test_dispatched_ticket_without_new_process_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    from fleasion.proxy.addons import profile_picture_spoofer as module
-
-    monkeypatch.setattr(module, '_client_process_identity', lambda: ('pid-A', 'session-A'))
-    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'cookie-A')
-    def authenticated(_cookie: str) -> int:
-        return 2
-
-    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
-    monkeypatch.setattr(module, '_TICKET_SESSION_CONFIRM_SECONDS', 0.025)
-    monkeypatch.setattr(module, '_TICKET_SESSION_POLL_SECONDS', 0.001)
+def test_failed_ticket_dispatch_restores_existing_player_identity() -> None:
     spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
     generation = spoofer.begin_ticket_launch()
-    pending = spoofer._ticket_pending  # pyright: ignore[reportPrivateUsage]
-    assert pending is not None
-    spoofer.finish_ticket_launch(generation, 'cookie-B')
-    assert pending[1].wait(2)
+    assert spoofer.current_user_id() is None
+    spoofer.finish_ticket_launch(generation, False)
+    assert spoofer.current_user_id() == '1'
+
+
+def test_failed_dispatch_with_replaced_player_does_not_restore_old_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process: dict[str, object] = {'value': ('player-A', 1)}
+    monkeypatch.setattr(pfp_module, '_client_process_identity', lambda: process['value'])
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
+    generation = spoofer.begin_ticket_launch()
+    process['value'] = ('player-B', 2)
+    spoofer.finish_ticket_launch(generation, False)
     assert spoofer.current_user_id() is None
     assert spoofer._ticket_uncertain is True  # pyright: ignore[reportPrivateUsage]
-    a = _flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]})
-    b = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
-    spoofer.response(a)
-    spoofer.response(b)
-    assert _image_urls(a) == ['original']
-    assert _image_urls(b) == ['original']
-    spoofer.notify_active_account_changed()
+
+
+def test_older_ticket_completion_cannot_override_new_verified_session() -> None:
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
+    old = spoofer.begin_ticket_launch()
+    newer = spoofer.begin_ticket_launch()
+    spoofer.finish_ticket_launch(old, True)
+    assert spoofer.current_user_id() is None
+    _deliver_gamejoin(spoofer, 2)
+    spoofer.finish_ticket_launch(newer, True)
     assert spoofer.current_user_id() == '2'
+
+
+def test_gamejoin_response_from_replaced_client_cannot_verify_new_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A join begun by A must not bind A's UserId to process B."""
+    state: dict[str, object] = {'process': ('process-A', 1)}
+    monkeypatch.setattr(pfp_module, '_client_process_identity', lambda: state['process'])
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
+    flow = _gamejoin_flow(111)
+    spoofer.request(flow)
+    state['process'] = ('process-B', 2)
+    spoofer.response(flow)
+    assert spoofer.current_user_id() is None
+    _deliver_gamejoin(spoofer, 222)
+    assert spoofer.current_user_id() == '222'

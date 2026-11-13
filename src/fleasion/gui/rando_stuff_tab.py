@@ -2319,7 +2319,6 @@ class RandoStuffTab(QWidget):
             return
         log_buffer.log('accounts', f'Launching Roblox URI to follow userId={user_id}')
         if not self._dispatch_authenticated_ticket_uri(
-            cookie,
             _build_auth_ticket_follow_uri(ticket, user_id),
             _launch_follow_user_uri,
         ):
@@ -2420,7 +2419,6 @@ class RandoStuffTab(QWidget):
 
     def _dispatch_authenticated_ticket_uri(
         self,
-        cookie: str,
         uri: str,
         launcher: Callable[[str], bool] | None = None,
     ) -> bool:
@@ -2439,7 +2437,7 @@ class RandoStuffTab(QWidget):
         finally:
             # The spoofer monitors a new Player generation off-thread before
             # accepting the ticket identity, and fails closed if unconfirmed
-            spoofer.finish_ticket_launch(generation, cookie if launched else None)
+            spoofer.finish_ticket_launch(generation, launched)
 
     def _launch_account_thread(
         self,
@@ -2527,7 +2525,7 @@ class RandoStuffTab(QWidget):
                     'accounts',
                     f'Launching Roblox URI to placeId={launch_place_id} (private server)',
                 )
-                launch_ok = self._dispatch_authenticated_ticket_uri(cookie, roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
@@ -2575,7 +2573,7 @@ class RandoStuffTab(QWidget):
                     )
                 else:
                     log_buffer.log('accounts', f'Launching Roblox URI to placeId={launch_place_id}')
-                launch_ok = self._dispatch_authenticated_ticket_uri(cookie, roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
@@ -2616,7 +2614,7 @@ class RandoStuffTab(QWidget):
             if ticket:
                 roblox_player_uri = _build_auth_ticket_app_uri(ticket)
                 log_buffer.log('accounts', 'Launching Roblox app URI for selected account')
-                launch_ok = self._dispatch_authenticated_ticket_uri(cookie, roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox app URI without elevation')
                     if ticket_only_launch:

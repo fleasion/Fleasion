@@ -16,6 +16,9 @@ from fleasion.gui.rando_stuff_tab import RandoStuffTab
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from fleasion.modifications.manager import ModificationManager
+    from fleasion.proxy.master import ProxyMaster
+
 
 class _ImageResponse:
     status_code = 200
@@ -191,3 +194,72 @@ def test_ticket_launch_account_selection_does_not_change_active_self_identity(
     assert selected == ['SelectedForLaunchOnly']
     assert fake._last_switched_account is account
     assert changes == []
+
+
+def test_qt_preview_tracks_pending_verified_and_replaced_player(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GUI icon owner follows proxy session proof, not ticket or browser identity."""
+    import json
+
+    from PySide6.QtWidgets import QApplication, QTableWidget
+
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+    from fleasion.proxy.server import ProxyFlow
+
+    app = QApplication.instance() or QApplication([])
+    state: dict[str, object] = {'process': ('client-A', 1)}
+    monkeypatch.setattr(module, '_client_process_identity', lambda: state['process'])
+    spoofer = module.ProfilePictureSpoofer()
+    spoofer.set_entries([{'enabled': True, 'target': 'me', 'image_url': 'https://example.com/me.png'}])
+    proxy_master = cast('ProxyMaster', SimpleNamespace(profile_picture_spoofer=spoofer))
+    manager = cast('ModificationManager', object())
+    tab = ModificationsTab(manager, proxy_master=proxy_master, defer_setup=True)
+    tab._pfp_table = QTableWidget(0, 4)  # pyright: ignore[reportPrivateUsage]
+
+    def session(user_id: int) -> ProxyFlow:
+        return cast(
+            'ProxyFlow',
+            SimpleNamespace(
+                request=SimpleNamespace(pretty_url='https://gamejoin.roblox.com/v1/join-game'),
+                response=SimpleNamespace(
+                    status_code=200,
+                    content=json.dumps({'joinScript': {'UserId': user_id}}).encode(),
+                ),
+            ),
+        )
+
+    try:
+        first = session(1)
+        spoofer.request(first)
+        spoofer.response(first)
+        app.processEvents()
+        tab._pfp_self_id = '1'  # pyright: ignore[reportPrivateUsage]
+        generation_before = tab._pfp_self_id_lookup_generation  # pyright: ignore[reportPrivateUsage]
+        generation = spoofer.begin_ticket_launch()
+        app.processEvents()
+        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
+        assert tab._pfp_self_id_lookup_generation > generation_before  # pyright: ignore[reportPrivateUsage]
+        assert spoofer.current_user_id() is None
+
+        spoofer.finish_ticket_launch(generation, True)
+        app.processEvents()
+        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
+
+        state['process'] = ('client-B', 2)
+        second = session(2)
+        spoofer.request(second)
+        spoofer.response(second)
+        app.processEvents()
+        assert spoofer.current_user_id() == '2'
+        tab._pfp_self_id = '2'  # pyright: ignore[reportPrivateUsage]
+        tab._pfp_last_observed_identity = '2'  # pyright: ignore[reportPrivateUsage]
+        state['process'] = ('client-C', 3)
+        tab._sync_pfp_identity()  # pyright: ignore[reportPrivateUsage]
+        app.processEvents()
+        assert spoofer.current_user_id() is None
+        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
+    finally:
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()
