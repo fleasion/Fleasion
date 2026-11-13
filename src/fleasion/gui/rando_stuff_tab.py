@@ -1113,6 +1113,12 @@ class RandoStuffTab(QWidget):
                 self._username_spoofer_current_username,
             )
 
+    def _push_profile_picture_current_account(self, cookie: str) -> None:
+        """Update the active picture account without a network call on the GUI thread."""
+        spoofer = getattr(getattr(self, '_proxy_master', None), 'profile_picture_spoofer', None)
+        if spoofer is not None and hasattr(spoofer, 'set_current_user_from_cookie'):
+            spoofer.set_current_user_from_cookie(cookie)
+
     def _on_username_spoofer_changed(self) -> None:
         state = self._username_spoofer_state_from_widgets()
         self._set_username_spoofer_state(state)
@@ -2336,6 +2342,7 @@ class RandoStuffTab(QWidget):
         username = acc.get('username') or tr('rando.account.unknown_parenthesized')
         if IS_MACOS or _is_rosemary_client():
             self._last_switched_account = acc
+            self._push_profile_picture_current_account(cookie)
             self._set_selected_account(username)
             platform_name = 'Rosemary' if _is_rosemary_client() else 'macOS'
             log_buffer.log(
@@ -2347,6 +2354,7 @@ class RandoStuffTab(QWidget):
         def _switch() -> None:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
+            self._push_profile_picture_current_account(cookie)
             self._set_selected_account(username)
             platform_name = _linux_client_display_name() if IS_LINUX else 'Roblox'
             log_buffer.log(
@@ -2415,6 +2423,7 @@ class RandoStuffTab(QWidget):
         subplace_id: str = '',
     ) -> None:
         ticket_only_launch = IS_MACOS or _is_rosemary_client()
+        self._push_profile_picture_current_account(cookie)
         if IS_WINDOWS:
             _run_contained_action(
                 lambda: self._write_cookie_to_dat(cookie),

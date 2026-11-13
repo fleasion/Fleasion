@@ -55,6 +55,8 @@ PFP_ROUTE_PREFIX = '/__fleasion__/pfp/'
 _PFP_ROUTE_LIMIT = 1024
 _LOG_SEEN_LIMIT = 30
 _SELF_ID_RETRY_SECONDS = 60.0
+_SELF_ID_REFRESH_SECONDS = 120.0
+_SELF_ID_WAIT_SECONDS = 12.0
 _ROBLOSECURITY_GETTER_ATTR = 'get_roblosecurity'
 
 
@@ -173,15 +175,21 @@ def _get_roblosecurity() -> str | None:
 
 
 def _authenticated_user_id(cookie: str) -> int | None:
-    session = requests.Session()
-    session.trust_env = False
-    session.proxies = {}
-    session.cookies.set('.ROBLOSECURITY', cookie)
-    response = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-    if response.status_code != 200:
+    with requests.Session() as session:
+        session.trust_env = False
+        session.proxies = {}
+        session.cookies.set('.ROBLOSECURITY', cookie)
+        response = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+    if not isinstance(payload, dict):
         return None
-    user_id = response.json().get('id')
-    return int(user_id) if user_id is not None else None
+    raw_id = cast('dict[str, object]', payload).get('id')
+    if not isinstance(raw_id, int | str):
+        return None
+    value = str(raw_id)
+    return int(value) if value.isascii() and value.isdigit() and int(value) > 0 else None
 
 
 class ProfilePictureSpoofer:
@@ -192,7 +200,11 @@ class ProfilePictureSpoofer:
         self._lock = threading.Lock()
         self._entries: list[PfpEntry] = []
         self._current_user_id: str | None = None
+        self._self_id_verified_at = 0.0
         self._self_lookup_failed_at = 0.0
+        self._self_lookup_generation = 0
+        self._self_lookup_event: threading.Event | None = None
+        self._preferred_cookie: str | None = None
         self._log_seen = 0
         self._config_loaded = config_manager is None
 
@@ -220,41 +232,98 @@ class ProfilePictureSpoofer:
             self._entries = normalized
 
     def current_user_id(self) -> str | None:
-        """The logged-in account's id (may block on a network lookup)."""
-        return self._self_user_id()
+        """Resolve the active account for the GUI's background preview worker.
+
+        This method may wait for a lookup. The proxy response hook must use
+        ``_self_user_id`` instead, which never waits for network I/O.
+        """
+        known = self._self_user_id()
+        if known:
+            return known
+        with self._lock:
+            pending = self._self_lookup_event
+        if pending is not None:
+            pending.wait(timeout=_SELF_ID_WAIT_SECONDS)
+        with self._lock:
+            return self._current_user_id
+
+    def _invalidate_current_user(
+        self, *, cookie: str | None, verified_id: str | None = None
+    ) -> None:
+        """Discard obsolete lookups and atomically install any verified identity."""
+        with self._lock:
+            previous = self._self_lookup_event
+            self._self_lookup_generation += 1
+            self._self_lookup_event = None
+            self._preferred_cookie = cookie
+            self._current_user_id = str(verified_id) if verified_id else None
+            self._self_id_verified_at = time.monotonic() if verified_id else 0.0
+            self._self_lookup_failed_at = 0.0
+        if previous is not None:
+            previous.set()
 
     def set_current_user(self, user_id: str | None) -> None:
-        with self._lock:
-            self._current_user_id = str(user_id) if user_id else None
+        """Set a previously verified account id, or invalidate the active one."""
+        self._invalidate_current_user(cookie=None, verified_id=user_id)
+
+    def set_current_user_from_cookie(self, cookie: str) -> None:
+        """Switch accounts without performing a network lookup on the caller."""
+        self._invalidate_current_user(cookie=cookie)
+        self._self_user_id()
 
     def shutdown(self) -> None:
+        self._invalidate_current_user(cookie=None)
         clear_local_images()
 
     def request(self, flow: ProxyFlow) -> None:
         del flow
 
     def _self_user_id(self) -> str | None:
+        """Get cached identity or schedule its refresh without blocking the proxy."""
         with self._lock:
-            known = self._current_user_id
-            failed_at = self._self_lookup_failed_at
-        if known:
-            return known
-        if failed_at and time.monotonic() - failed_at < _SELF_ID_RETRY_SECONDS:
-            return None
+            now = time.monotonic()
+            if self._current_user_id is not None:
+                if now - self._self_id_verified_at < _SELF_ID_REFRESH_SECONDS:
+                    return self._current_user_id
+                # A stale account must not remain active while revalidating
+                self._current_user_id = None
+            if self._self_lookup_event is not None or (
+                self._self_lookup_failed_at
+                and now - self._self_lookup_failed_at < _SELF_ID_RETRY_SECONDS
+            ):
+                return None
+            generation = self._self_lookup_generation
+            completion = threading.Event()
+            self._self_lookup_event = completion
+            preferred_cookie = self._preferred_cookie
+
+        threading.Thread(
+            target=self._resolve_self_user_worker,
+            args=(generation, completion, preferred_cookie),
+            name='FleasionPfpCurrentUser',
+            daemon=True,
+        ).start()
+        return None
+
+    def _resolve_self_user_worker(
+        self, generation: int, completion: threading.Event, preferred_cookie: str | None
+    ) -> None:
+        """Resolve identity off the asyncio loop; discard obsolete account results."""
         user_id: int | None = None
         try:
-            cookie = _get_roblosecurity()
+            cookie = preferred_cookie if preferred_cookie is not None else _get_roblosecurity()
             if cookie:
                 user_id = _authenticated_user_id(cookie)
-        except (requests.RequestException, AttributeError, TypeError, ValueError) as exc:
-            log_buffer.log('profile-picture-spoofer', f'Failed to fetch own user id: {exc}')
-        with self._lock:
-            if user_id is None:
-                self._self_lookup_failed_at = time.monotonic()
-                return None
-            self._current_user_id = str(user_id)
-            self._self_lookup_failed_at = 0.0
-            return self._current_user_id
+        except (requests.RequestException, AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            log_buffer.log('profile-picture-spoofer', f'Could not resolve active account: {type(exc).__name__}')
+        finally:
+            with self._lock:
+                if generation == self._self_lookup_generation and self._self_lookup_event is completion:
+                    self._current_user_id = str(user_id) if user_id is not None else None
+                    self._self_id_verified_at = time.monotonic() if user_id is not None else 0.0
+                    self._self_lookup_failed_at = time.monotonic() if user_id is None else 0.0
+                    self._self_lookup_event = None
+            completion.set()
 
     def _resolve_image_url(self, raw_image_url: str) -> str | None:
         """Turn a configured image string into something Roblox Player can GET.
@@ -389,9 +458,14 @@ class ProfilePictureSpoofer:
             request_id = str(entry.get('requestId', ''))
             thumb_type = request_entries.get(request_id, ('?', ''))[0] or '?'
             url = str(entry.get('imageUrl') or '')
+            # URLs can carry signed query tokens; log only the hostname
+            try:
+                image_host = urlparse(url).hostname or '(none)'
+            except ValueError:
+                image_host = '(invalid)'
             parts.append(
                 f'id={entry.get("targetId")} type={thumb_type} '
-                f'req={request_id[:40]!r} url=...{url[-45:]}'
+                f'req={request_id[:40]!r} image_host={image_host}'
             )
         return f'{len(data)} entr{"y" if len(data) == 1 else "ies"}: ' + ' | '.join(parts)
 
@@ -399,10 +473,10 @@ class ProfilePictureSpoofer:
         response = flow.response
         if response is None or not response.content or not self.is_enabled():
             return
-        url = flow.request.pretty_url
-        if THUMBNAILS_HOST not in url:
+        url = urlparse(flow.request.pretty_url)
+        if url.hostname != THUMBNAILS_HOST or url.scheme != 'https':
             return
-        path = urlparse(url).path
+        path = url.path
         batch = path.startswith(_BATCH_PATH_FRAGMENT)
         if not batch and not any(path.startswith(fragment) for fragment in _AVATAR_PATH_FRAGMENTS):
             return

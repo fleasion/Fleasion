@@ -242,3 +242,190 @@ def test_clean_local_path_handles_quotes_and_file_urls() -> None:
     assert clean_local_path("'/tmp/x.png'") == '/tmp/x.png'
     assert clean_local_path('file:///C:/a%20b/c.png') == 'C:/a b/c.png'
     assert clean_local_path('file:///tmp/x.png') == '/tmp/x.png'
+
+
+def test_self_lookup_does_not_block_thumbnail_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cookie/API lookup must run outside the proxy's asyncio response handler."""
+    import threading
+    import time
+
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def authenticated(cookie: str) -> int:
+        calls.append(cookie)
+        entered.set()
+        assert release.wait(timeout=3)
+        return 42
+
+    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'cookie-42')
+    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
+    first = _flow(AVATAR_URL, {'data': [{'targetId': 42, 'imageUrl': 'original'}]})
+    try:
+        started = time.perf_counter()
+        spoofer.response(first)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 0.2, 'Proxy callback blocked on the authenticated-user request'
+        assert entered.wait(timeout=2)
+        assert _image_urls(first) == ['original']
+    finally:
+        release.set()
+    assert spoofer.current_user_id() == '42'
+    second = _flow(AVATAR_URL, {'data': [{'targetId': 42, 'imageUrl': 'original'}]})
+    spoofer.response(second)
+    assert _image_urls(second) == [REMOTE]
+    assert calls == ['cookie-42']
+
+
+def test_account_switch_discards_older_inflight_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A late response for account A must not overwrite selected account B."""
+    import threading
+
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    old_started = threading.Event()
+    release_old = threading.Event()
+    new_done = threading.Event()
+    cookies: list[str] = []
+
+    def authenticated(cookie: str) -> int:
+        cookies.append(cookie)
+        if cookie == 'account-a':
+            old_started.set()
+            assert release_old.wait(timeout=3)
+            return 1
+        assert cookie == 'account-b'
+        new_done.set()
+        return 2
+
+    def unexpected_cookie_discovery() -> str:
+        pytest.fail('Manual account selection must use the selected cookie')
+
+    monkeypatch.setattr(module, '_get_roblosecurity', unexpected_cookie_discovery)
+    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
+    try:
+        spoofer.set_current_user_from_cookie('account-a')
+        assert old_started.wait(timeout=2)
+        spoofer.set_current_user_from_cookie('account-b')
+        assert new_done.wait(timeout=2)
+        assert spoofer.current_user_id() == '2'
+    finally:
+        release_old.set()
+    assert spoofer.current_user_id() == '2'
+    old_flow = _flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]})
+    new_flow = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
+    spoofer.response(old_flow)
+    spoofer.response(new_flow)
+    assert _image_urls(old_flow) == ['original']
+    assert _image_urls(new_flow) == [REMOTE]
+    assert cookies == ['account-a', 'account-b']
+
+
+def test_expired_identity_is_not_used_before_revalidation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An external account change cannot leave a cached self-id valid forever."""
+    import threading
+    import time
+
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    refresh_started = threading.Event()
+    release = threading.Event()
+
+    def authenticated(_cookie: str) -> int:
+        refresh_started.set()
+        assert release.wait(timeout=3)
+        return 2
+
+    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'new-cookie')
+    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
+    monkeypatch.setattr(spoofer, '_self_id_verified_at', time.monotonic() - 3600)
+    old_flow = _flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]})
+    try:
+        spoofer.response(old_flow)
+        assert refresh_started.wait(timeout=2)
+        assert _image_urls(old_flow) == ['original']
+    finally:
+        release.set()
+    assert spoofer.current_user_id() == '2'
+    new_flow = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
+    spoofer.response(new_flow)
+    assert _image_urls(new_flow) == [REMOTE]
+
+
+def test_shutdown_invalidates_inflight_identity_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def authenticated(_cookie: str) -> int:
+        entered.set()
+        assert release.wait(timeout=3)
+        return 1
+
+    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'cookie')
+    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE})
+    spoofer.response(_flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]}))
+    assert entered.wait(timeout=2)
+    workers = [
+        worker for worker in threading.enumerate()
+        if worker.name == 'FleasionPfpCurrentUser' and worker.is_alive()
+    ]
+    spoofer.shutdown()
+    release.set()
+    for worker in workers:
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+    assert spoofer._current_user_id is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_spoofer_only_rewrites_real_thumbnails_host() -> None:
+    spoofer = _spoofer({'enabled': True, 'target': '5', 'image_url': REMOTE})
+    for host in ('thumbnails.roblox.com.evil.example', 'evil-thumbnails.roblox.com'):
+        flow = _flow(
+            f'https://{host}/v1/users/avatar-headshot?userIds=5',
+            {'data': [{'targetId': 5, 'imageUrl': 'original'}]},
+        )
+        spoofer.response(flow)
+        assert _image_urls(flow) == ['original']
+
+
+def test_thumbnails_logging_does_not_expose_signed_image_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    seen: list[str] = []
+
+    def record(_category: str, message: str) -> None:
+        seen.append(message)
+
+    monkeypatch.setattr(module.log_buffer, 'log', record)
+    spoofer = _spoofer({'enabled': True, 'target': '5', 'image_url': REMOTE})
+    flow = _flow(
+        AVATAR_URL,
+        {
+            'data': [
+                {
+                    'targetId': 5,
+                    'imageUrl': 'https://tr.rbxcdn.com/picture?auth=PRIVATE-SIGNED-VALUE',
+                }
+            ]
+        },
+    )
+    spoofer.response(flow)
+    assert _image_urls(flow) == [REMOTE]
+    assert seen
+    assert all('PRIVATE-SIGNED-VALUE' not in message for message in seen)
+    assert any('image_host=tr.rbxcdn.com' in message for message in seen)

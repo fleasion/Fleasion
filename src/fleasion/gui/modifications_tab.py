@@ -4750,7 +4750,7 @@ class ModificationsTab(QWidget):
     # so the connected slot always runs safely on the GUI thread.
     _pfp_username_resolved = Signal(str, str)  # target_id, username
     _pfp_image_loaded = Signal(str, bytes)  # cache key, raw image bytes (empty on failure)
-    _pfp_self_id_resolved = Signal(str)  # logged-in user id ('' if unknown)
+    _pfp_self_id_resolved = Signal(int, str)  # lookup generation, active user id
 
     def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
@@ -4780,6 +4780,11 @@ class ModificationsTab(QWidget):
         self._pfp_image_inflight: set[str] = set()
         self._pfp_self_id: str | None = None
         self._pfp_self_id_inflight = False
+        self._pfp_self_id_lookup_generation = 0
+        # Importing many rows must not create an unbounded number of threads
+        self._pfp_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='FleasionPfp')
+        executor = self._pfp_executor
+        self.destroyed.connect(lambda: executor.shutdown(wait=False, cancel_futures=True))
 
         if not defer_setup:
             for _ in self.build_ui():
@@ -5238,12 +5243,7 @@ class ModificationsTab(QWidget):
         if target in self._pfp_username_inflight:
             return
         self._pfp_username_inflight.add(target)
-        threading.Thread(
-            target=self._resolve_pfp_username_worker,
-            args=(target,),
-            name=f'FleasionPfpUsernameLookup-{target}',
-            daemon=True,
-        ).start()
+        self._pfp_executor.submit(self._resolve_pfp_username_worker, target)
 
     def _resolve_pfp_username_worker(self, target: str) -> None:
         import requests
@@ -5256,8 +5256,6 @@ class ModificationsTab(QWidget):
                 username = str(data.get('name') or '')
         except requests.RequestException, ValueError, AttributeError:
             username = ''
-        finally:
-            self._pfp_username_inflight.discard(target)
         try:
             self._pfp_username_resolved.emit(target, username)
         except RuntimeError:
@@ -5265,6 +5263,7 @@ class ModificationsTab(QWidget):
             return
 
     def _on_pfp_username_resolved(self, target: str, username: str) -> None:
+        self._pfp_username_inflight.discard(target)
         display = username or tr('ui.gui.modifications_tab.pfp_username_not_found')
         self._pfp_username_cache[target] = display
         table = self._pfp_table
@@ -5348,12 +5347,7 @@ class ModificationsTab(QWidget):
         if key in self._pfp_image_inflight:
             return
         self._pfp_image_inflight.add(key)
-        threading.Thread(
-            target=self._fetch_pfp_image_worker,
-            args=(key, fetch[0], fetch[1]),
-            name='FleasionPfpImageLoad',
-            daemon=True,
-        ).start()
+        self._pfp_executor.submit(self._fetch_pfp_image_worker, key, fetch[0], fetch[1])
 
     def _fetch_pfp_image_worker(self, key: str, kind: str, source: str) -> None:
         import requests
@@ -5371,16 +5365,31 @@ class ModificationsTab(QWidget):
     def _load_pfp_image_bytes(self, kind: str, source: str) -> bytes:
         import requests
 
+        limit = self._PFP_MAX_IMAGE_BYTES
         if kind == 'local':
-            path = Path(source)
-            return path.read_bytes() if path.stat().st_size <= self._PFP_MAX_IMAGE_BYTES else b''
+            # Bound the actual read even if the file grows after stat()
+            with Path(source).open('rb') as image_file:
+                content = image_file.read(limit + 1)
+            return content if len(content) <= limit else b''
         url = self._fetch_pfp_avatar_url(source) if kind == 'avatar' else source
         if not url:
             return b''
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200 or len(resp.content) > self._PFP_MAX_IMAGE_BYTES:
-            return b''
-        return resp.content
+        # requests.get(...).content downloads the entire file before we can
+        # check its size; stream chunks and reject an oversized image early
+        with requests.get(url, timeout=10, stream=True) as resp:
+            if resp.status_code != 200:
+                return b''
+            declared_length = resp.headers.get('Content-Length', '')
+            if declared_length.isascii() and declared_length.isdecimal() and int(declared_length) > limit:
+                return b''
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                total += len(chunk)
+                if total > limit:
+                    return b''
+                chunks.append(chunk)
+            return b''.join(chunks)
 
     @staticmethod
     def _fetch_pfp_avatar_url(user_id: str) -> str:
@@ -5421,14 +5430,11 @@ class ModificationsTab(QWidget):
         if spoofer is None:
             return
         self._pfp_self_id_inflight = True
-        threading.Thread(
-            target=self._resolve_pfp_self_id_worker,
-            args=(spoofer,),
-            name='FleasionPfpSelfId',
-            daemon=True,
-        ).start()
+        self._pfp_executor.submit(
+            self._resolve_pfp_self_id_worker, spoofer, self._pfp_self_id_lookup_generation
+        )
 
-    def _resolve_pfp_self_id_worker(self, spoofer: object) -> None:
+    def _resolve_pfp_self_id_worker(self, spoofer: object, generation: int) -> None:
         user_id = ''
         try:
             getter = getattr(spoofer, 'current_user_id', None)
@@ -5436,15 +5442,25 @@ class ModificationsTab(QWidget):
         except AttributeError, OSError, ValueError, TypeError:
             user_id = ''
         try:
-            self._pfp_self_id_resolved.emit(user_id)
+            self._pfp_self_id_resolved.emit(generation, user_id)
         except RuntimeError:
             return
 
-    def _on_pfp_self_id_resolved(self, user_id: str) -> None:
+    def _on_pfp_self_id_resolved(self, generation: int, user_id: str) -> None:
+        if generation != self._pfp_self_id_lookup_generation:
+            return
         self._pfp_self_id_inflight = False
         if not user_id:
             return
         self._pfp_self_id = user_id
+        for row in range(self._pfp_table.rowCount()):
+            self._refresh_pfp_row_icons(row)
+
+    def invalidate_profile_picture_preview(self) -> None:
+        """Drop cached self-avatar state when a different account is selected."""
+        self._pfp_self_id_lookup_generation += 1
+        self._pfp_self_id_inflight = False
+        self._pfp_self_id = None
         for row in range(self._pfp_table.rowCount()):
             self._refresh_pfp_row_icons(row)
 
