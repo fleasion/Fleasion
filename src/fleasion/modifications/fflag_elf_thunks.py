@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -43,6 +43,8 @@ class X86Registration:
     name: str
     variant: int
     type_id: int
+    storage_va: int | None = field(default=None, compare=False)
+    thunk_va: int | None = field(default=None, compare=False)
 
 
 def _signed_displacement(value: bytes) -> int:
@@ -132,5 +134,5 @@ def extract_x86_registration_thunks(
         ):
             continue
         key = (name, variant, type_id)
-        results[key] = X86Registration(*key)
+        results[key] = X86Registration(*key, storage, start)
     return list(results.values())

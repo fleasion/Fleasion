@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import math
 import os
 import re
 import struct
@@ -21,11 +22,19 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
+from fleasion.modifications.fflag_elf_strings import extract_elf_cstring_initializers
 from fleasion.modifications.fflag_elf_thunks import extract_x86_registration_thunks
+from fleasion.modifications.fflag_macho_arm64 import extract_arm64_flag_registrations
+from fleasion.modifications.fflag_macho_strings import extract_arm64_macho_string_initializers
+from fleasion.modifications.fflag_macho_x86_strings import (
+    extract_elf_x86_callee_saved_string_initializers,
+    extract_macho_x86_string_initializers,
+)
 from fleasion.modifications.fflag_pe import (
     companion_has_protection_metadata,
     inspect_pe,
 )
+from fleasion.modifications.fflag_x86_initializers import extract_x86_compiled_initializers
 from fleasion.utils.json_types import as_object_dict, as_object_list
 from fleasion.utils.paths import CONFIG_DIR, LOCAL_APPDATA
 
@@ -48,6 +57,7 @@ _KIND = Literal[
     'unknown',
 ]
 _MAX_BINARY_SIZE = 320 * 1024 * 1024
+_MAX_INITIAL_VALUE_LENGTH = 8192  # Match the ELF C-string proof limit
 _MAX_RECORDS = 150_000
 _RECORD_NAME = re.compile(rb'[A-Za-z_][A-Za-z_0-9]{2,111}\Z')
 _WINDOWS_LOG_CHANNEL_LABEL = re.compile(rb'\[(DFLog|FLog)::([A-Za-z_][A-Za-z0-9_]{2,111})\]')
@@ -100,6 +110,9 @@ class StaticRecord:
     variant: int | None = None
     kind: _KIND = 'unknown'
     verified_type: bool = False
+    initial_value: str | None = None
+    raw_initial_u64: int | None = None
+    compiled_raw_u32: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +136,7 @@ class StaticFlagCatalog:
     registrations: tuple[StaticRecord, ...] = ()
     candidate_strings: tuple[str, ...] = ()
     layout: Literal['structured', 'string-evidence'] = 'structured'
+    binary_values: bool = False
 
 
 def _unpack(fmt: str, data: bytes, at: int) -> tuple[int, ...]:
@@ -144,6 +158,7 @@ def _metadata_records(
     table_ranges: list[tuple[int, int]],
     matched_offsets: list[int] | None = None,
     matched_name_offsets: dict[str, tuple[int, int]] | None = None,
+    *, raw_value_offset: int | None = None,
 ) -> dict[str, StaticRecord]:
     """Recover name-pointer/length/value triplets from immutable Player tables."""
     records: dict[str, StaticRecord] = {}
@@ -162,7 +177,12 @@ def _metadata_records(
             )
             name = _name_at(data, name_offset, length)
             if name:
-                records.setdefault(name, StaticRecord(name))
+                raw = (
+                    _unpack('<Q', data, at + raw_value_offset)[0]
+                    if raw_value_offset is not None and at + raw_value_offset + 8 <= high
+                    else None
+                )
+                records.setdefault(name, StaticRecord(name, raw_initial_u64=raw))
                 if matched_offsets is not None:
                     matched_offsets.append(at)
                 if matched_name_offsets is not None:
@@ -357,11 +377,52 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
     if not strings or not tables:
         msg = 'Mach-O Player metadata sections not found'
         raise ValueError(msg)
-    records = _metadata_records(data, strings, tables)
+    records = _metadata_records(data, strings, tables, raw_value_offset=16)
     # x86-64 Player accessor thunks encode the F/DF namespace, but several
     # helpers are shared across value types, so a helper address alone does
     # not establish Bool/Int/Log/String
     cpu = _unpack('<I', data, 4)[0]
+    if cpu == 0x0100000C:
+        arm64 = extract_arm64_flag_registrations(data, sections)
+        string_defaults = extract_arm64_macho_string_initializers(
+            data, sections, {
+                registration.storage_va for registration in arm64.values()
+                if registration.type_id == 2 and registration.storage_va is not None
+            },
+        )
+        data_segments = [
+            (address, off, size)
+            for seg, sect, address, off, size in sections
+            if seg.startswith('__DATA') and sect not in {'__bss', '__common'}
+        ]
+        for name, registration in arm64.items():
+            existing = records.get(name, StaticRecord(name))
+            raw = existing.raw_initial_u64
+            if raw is None and registration.storage_va is not None:
+                for address, fileoff, length in data_segments:
+                    if address <= registration.storage_va <= address + length - 8:
+                        raw = _unpack('<Q', data, fileoff + registration.storage_va - address)[0]
+                        break
+            variant = registration.variant or existing.variant
+            verified_bool = registration.boolean_storage and variant in {1, 2}
+            kind_from_type: dict[int, _KIND] = {
+                1: 'log', 2: 'string', 3: 'numeric', 4: 'bool',
+            }
+            qualified_kind = kind_from_type.get(registration.type_id) if variant in {1, 2} and registration.type_id is not None else None
+            records[name] = replace(
+                existing,
+                variant=variant,
+                kind=qualified_kind or ('bool' if registration.boolean_storage else existing.kind),
+                verified_type=existing.verified_type or verified_bool or qualified_kind is not None,
+                raw_initial_u64=raw,
+                compiled_raw_u32=registration.compiled_u32,
+                initial_value=(
+                    string_defaults.get(registration.storage_va)
+                    if registration.type_id == 2 and registration.storage_va is not None
+                    else existing.initial_value
+                ),
+            )
+        return list(records.values())
     if cpu != 0x01000007:
         return list(records.values())
 
@@ -375,6 +436,15 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
         for seg, sect, address, off, size in sections
         if seg.startswith('__DATA') and sect in {'__const', '__data', '__static_data'}
     ]
+    # Mach-O __bss/__common are *virtual* storage sections. Their offset
+    # fields are zero and contain no file-backed defaults, but their virtual
+    # addresses can be proven by a typed accessor. Never decode bytes from
+    # file offset zero as if they initialized a string object.
+    zero_fill_storage = [
+        (address, size)
+        for seg, sect, address, _off, size in sections
+        if seg.startswith('__DATA') and sect in {'__bss', '__common'}
+    ]
 
     def file_offset(address: int, segments: list[tuple[int, int, int]]) -> int:
         return next(
@@ -387,7 +457,7 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
         )
 
     # Common getter: lea rdi, [record.value]; mov esi, F_or_DF; jmp helper
-    # This identifies the actual record and namespace without inferring type
+    # The helper's compiled type discriminator independently identifies kind
     direct_pattern = re.compile(
         rb'\x55\x48\x89\xe5\x48\x8d\x3d(.{4})'
         rb'\xbe(.{4})\x5d\xe9(.{4})',
@@ -401,24 +471,44 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
         re.DOTALL,
     )
     thunks: list[tuple[str, int, int | None]] = []
+    thunk_raw_slots: dict[tuple[str, int, int | None], int] = {}
+    thunk_storage: dict[tuple[str, int, int | None], int] = {}
     for code_va, code_off, code_size in code_segments:
         for match in direct_pattern.finditer(data, code_off, code_off + code_size):
             start = code_va + match.start() - code_off
             value_address = start + 11 + _unpack('<i', match.group(1), 0)[0]
             value_offset = file_offset(value_address, data_segments)
-            if value_offset < 16:
+            if value_offset < 0 or not any(
+                base <= value_address <= base + length - 24
+                and fileoff + length <= len(data)
+                for base, fileoff, length in data_segments
+            ):
                 continue
-            name_ptr, name_len = _unpack('<QQ', data, value_offset - 16)
+            # Direct numeric getters use [value, name pointer, name length]
+            # The typed helper reads the name at value + 8; the previous -16
+            # lookup assigned a flag's compiled default to its predecessor
+            name_ptr, name_len = _unpack('<QQ', data, value_offset + 8)
             name = _name_at(data, file_offset(name_ptr, strings), name_len)
             variant = _unpack('<i', match.group(2), 0)[0]
             if name and variant in {1, 2}:
-                thunks.append((name, variant, None))
+                # The direct getter is 22 bytes, not 21, including JMP rel32
+                target = start + 22 + _unpack('<i', match.group(3), 0)[0]
+                thunks.append((name, variant, target))
+                thunk_raw_slots[name, variant, target] = _unpack('<Q', data, value_offset)[0]
         for match in named_pattern.finditer(data, code_off, code_off + code_size):
             start = code_va + match.start() - code_off
             name_address = start + 11 + _unpack('<i', match.group(1), 0)[0]
             value_address = start + 18 + _unpack('<i', match.group(2), 0)[0]
             name_offset = file_offset(name_address, strings)
-            if file_offset(value_address, data_segments) < 0 or name_offset < 0:
+            value_offset = file_offset(value_address, data_segments)
+            if (
+                name_offset < 0 or (
+                    value_offset < 0 and not any(
+                        base <= value_address < base + length
+                        for base, length in zero_fill_storage
+                    )
+                )
+            ):
                 continue
             raw_name = data[name_offset : name_offset + 112].split(b'\0', 1)[0]
             if not _RECORD_NAME.fullmatch(raw_name):
@@ -428,67 +518,93 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
                 continue
             # The complete thunk is 29 bytes, including the five-byte JMP
             target = start + 29 + _unpack('<i', match.group(4), 0)[0]
-            thunks.append((raw_name.decode('ascii'), variant, target))
+            resolved_name = raw_name.decode('ascii')
+            thunks.append((resolved_name, variant, target))
+            thunk_storage[resolved_name, variant, target] = value_address
+            if value_offset >= 0 and value_offset + 8 <= len(data):
+                thunk_raw_slots[resolved_name, variant, target] = _unpack('<Q', data, value_offset)[0]
 
-    # Confirm the boolean helper only when two independent, known boolean
-    # registration anchors resolve to the same target in THIS binary. Numeric
-    # and log/string helpers are shared: never mark those types verified
+    # The Mach-O getters have two wrapper layouts. Both forward to helpers
+    # whose compiled type ID follows the same 1=Log, 2=String, 3=Int,
+    # 4=Flag convention as the Android registration thunks
     def helper_type_id(target: int) -> int | None:
-        """Decode a tail-call wrapper's compiled registration-type argument."""
+        """Recognize a getter wrapper and its literal type argument."""
         wrapper = file_offset(target, code_segments)
         if wrapper < 0 or data[wrapper : wrapper + 4] != b'\x55\x48\x89\xe5':
             return None
-        # push rbp; mov rbp,rsp; mov ecx,edx; mov rdx,rsi;
-        # mov rsi,rdi; mov rdi,[rip+disp32]; pop rbp; jmp rel32
-        if (
-            data[wrapper + 4 : wrapper + 15] != b'\x89\xd1\x48\x89\xf2\x48\x89\xfe\x48\x8b\x3d'
-            or data[wrapper + 19 : wrapper + 21] != b'\x5d\xe9'
-        ):
+        named_wrapper = (
+            data[wrapper + 4 : wrapper + 15]
+            == b'\x89\xd1\x48\x89\xf2\x48\x89\xfe\x48\x8b\x3d'
+            and data[wrapper + 19 : wrapper + 21] == b'\x5d\xe9'
+        )
+        direct_wrapper = (
+            data[wrapper + 4 : wrapper + 12]
+            == b'\x89\xf2\x48\x89\xfe\x48\x8b\x3d'
+            and data[wrapper + 16 : wrapper + 18] == b'\x5d\xe9'
+        )
+        if named_wrapper:
+            size, offset = 25, 21
+        elif direct_wrapper:
+            size, offset = 22, 18
+        else:
             return None
-        implementation = target + 25 + _unpack('<i', data, wrapper + 21)[0]
-        implementation_off = file_offset(implementation, code_segments)
-        if (
-            implementation_off < 0
-            or data[implementation_off : implementation_off + 6] != b'\x55\x48\x89\xe5\x41\xb8'
-        ):
+        implementation = target + size + _unpack('<i', data, wrapper + offset)[0]
+        actual = file_offset(implementation, code_segments)
+        if actual < 0 or data[actual : actual + 4] != b'\x55\x48\x89\xe5':
             return None
-        return _unpack('<I', data, implementation_off + 6)[0]
+        # Short implementation: push rbp; mov rbp,rsp; mov r8d,type
+        # Numeric implementation adds two argument-forwarding moves first
+        for immediate_at in (4, 13):
+            if data[actual + immediate_at : actual + immediate_at + 2] == b'\x41\xb8':
+                type_id = _unpack('<I', data, actual + immediate_at + 2)[0]
+                return type_id if type_id in {1, 2, 3, 4} else None
+        return None
 
-    bool_anchors = {'DebugDrawBroadPhaseAABBs', 'MacSyncWKCookieStoreToNSCookieStoreV2'}
-    anchor_targets = {
-        name: {
-            target
-            for candidate, _variant, target in thunks
-            if candidate == name and target is not None
-        }
-        for name in bool_anchors
-    }
-    anchored_bool_targets: set[int] = (
-        anchor_targets['DebugDrawBroadPhaseAABBs']
-        & anchor_targets['MacSyncWKCookieStoreToNSCookieStoreV2']
-    )
-    # Registration type 4 is the boolean specialization in current macOS
-    # Players; resolve it from the actual wrapper's machine code, not a VA
     type_ids = {
-        target: helper_type_id(target) for _name, _variant, target in thunks if target is not None
+        target: helper_type_id(target) for _name, _variant, target in thunks
+        if target is not None
     }
-    bool_targets = anchored_bool_targets | {
-        target for target, type_id in type_ids.items() if type_id == 4
+    string_storages = {
+        storage for (_name, _variant, target), storage in thunk_storage.items()
+        if target is not None and type_ids.get(target) == 2
     }
+    cstrings = next((
+        (va, off, size) for seg, sect, va, off, size in sections
+        if (seg, sect) == ('__TEXT', '__cstring')
+    ), None)
+    string_defaults = (
+        extract_elf_cstring_initializers(
+            data, {'.text': code_segments[0], '.rodata': cstrings},
+            string_storages,
+        ) if cstrings and code_segments and string_storages else {}
+    )
+    # Mach-O libc++ string initializers often keep the object and literal in
+    # callee-saved registers across neighboring registrations. A second
+    # independent constructor proof handles those patterns. If two proofs
+    # disagree, no compiled default is safe to display.
+    extra_defaults = extract_macho_x86_string_initializers(
+        data, sections, string_storages,
+    )
+    conflicting = {
+        storage for storage, value in extra_defaults.items()
+        if storage in string_defaults and string_defaults[storage] != value
+    }
+    string_defaults.update(extra_defaults)
+    for storage in conflicting:
+        string_defaults.pop(storage, None)
     typed: dict[tuple[str, int, _KIND], StaticRecord] = {}
     for name, variant, target in thunks:
-        is_boolean = target is not None and target in bool_targets
         type_id = type_ids.get(target) if target is not None else None
-        kind: _KIND = (
-            'bool'
-            if is_boolean
-            else 'numeric_or_log'
-            if type_id == 1
-            else 'string_or_log'
-            if type_id == 2
-            else 'unknown'
+        type_map: dict[int, _KIND] = {1: 'log', 2: 'string', 3: 'numeric', 4: 'bool'}
+        kind: _KIND = type_map.get(type_id, 'unknown') if type_id is not None else 'unknown'
+        storage = thunk_storage.get((name, variant, target))
+        record = StaticRecord(
+            name, variant, kind, verified_type=type_id is not None,
+            raw_initial_u64=thunk_raw_slots.get((name, variant, target)),
+            initial_value=(
+                string_defaults.get(storage) if type_id == 2 and storage is not None else None
+            ),
         )
-        record = StaticRecord(name, variant, kind, verified_type=is_boolean)
         typed[name, variant, kind] = record
         records.pop(name, None)
     return [*records.values(), *typed.values()]
@@ -581,6 +697,36 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
     records: dict[tuple[str, int, _KIND], StaticRecord] = {}
     section_addr, section_off, section_len = descriptors
     string_addr, string_off, string_len = rodata
+    # Descriptor +16 is a relocated POINTER to the scalar value storage,
+    # not the value itself. On-disk RELA slots are zero until the loader
+    # installs the packed Android relocation addends
+    pending_storage: dict[int, tuple[str, int, _KIND]] = {}
+    string_storage: dict[int, list[tuple[str, int, _KIND]]] = {}
+    scalar_storage = next(
+        ((address, off, size) for n, section_type, address, off, size in headers
+         if label(n) == b'.data' and section_type == 1 and off + size <= len(data)),
+        None,
+    )
+
+    def scalar_initializer(address: int, kind: _KIND) -> tuple[str | None, int | None]:
+        if scalar_storage is None:
+            return None, None
+        virtual, fileoff, length = scalar_storage
+        if not virtual <= address <= virtual + length - 8:
+            return None, None
+        at = fileoff + address - virtual
+        raw = _unpack('<Q', data, at)[0]
+        if kind == 'bool':
+            byte = data[at]
+            return ('True' if byte else 'False') if byte in {0, 1} else None, raw
+        if kind in {'numeric', 'log'}:
+            return str(_unpack('<i', data, at)[0]), raw
+        if kind == 'float':
+            number = struct.unpack_from('<f', data, at)[0]
+            return (str(number) if math.isfinite(number) else None), raw
+        # Nontrivial std::string object layouts must be decoded separately
+        return None, None
+
     processed = 0
     while processed < count:
         group_size, pos = _sleb(data, pos, end)
@@ -610,7 +756,19 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
             else:
                 addend = 0
             processed += 1
-            if (info & 0xFFFFFFFF) != relative_relocation or not (
+            if (info & 0xFFFFFFFF) != relative_relocation:
+                continue
+            if key := pending_storage.pop(offset, None):
+                # Dynamic relative relocations carry the true storage VA
+                # even though the corresponding qword is zero on disk
+                if key[2] == 'string':
+                    string_storage.setdefault(addend, []).append(key)
+                initial, raw = scalar_initializer(addend, key[2])
+                if initial is not None:
+                    records[key] = replace(
+                        records[key], initial_value=initial, raw_initial_u64=raw,
+                    )
+            if not (
                 section_addr <= offset <= section_addr + section_len - 32
                 and string_addr <= addend < string_addr + string_len
             ):
@@ -645,7 +803,15 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
             name_length = _unpack('<Q', data, fileoff + 8)[0]
             name = _name_at(data, string_off + addend - string_addr, name_length)
             if name:
-                records[name, variant, kind] = StaticRecord(name, variant, kind, verified_type=True)
+                # The ELF descriptor's zero slot is a storage placeholder,
+                # not proof that the constructor default is zero
+                disk_value = _unpack('<Q', data, fileoff + 16)[0]
+                key = (name, variant, kind)
+                records[key] = StaticRecord(
+                    name, variant, kind, verified_type=True,
+                    raw_initial_u64=disk_value or None,
+                )
+                pending_storage[offset + 16] = key
                 if len(records) > _MAX_RECORDS:
                     msg = 'Excessive Android FastFlag records'
                     raise ValueError(msg)
@@ -657,8 +823,38 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
             label(n).decode('ascii', 'replace'): (address, off, size)
             for n, _type, address, off, size in headers
         }
+        strings = extract_elf_cstring_initializers(data, sections, string_storage.keys())
+        for address, initial in strings.items():
+            for key in string_storage[address]:
+                records[key] = replace(records[key], initial_value=initial)
         thunks = extract_x86_registration_thunks(data, sections)
+        compiled = extract_x86_compiled_initializers(data, sections, thunks)
+        # Android clients with code-generated registration thunks (Mocktail,
+        # Nightcap and Cordial) use the same compiled C-string constructor as
+        # relocation-descriptor clients. Match its destination to the thunk's
+        # independently verified string storage, never an adjacent name.
+        thunk_string_storage = {
+            registration.storage_va for registration in thunks
+            if registration.type_id == 2 and registration.storage_va is not None
+        }
+        thunk_strings = extract_elf_cstring_initializers(
+            data, sections, thunk_string_storage,
+        ) if len(records) < 1000 and len(thunks) >= 1000 else {}
         if len(records) < 1000 and len(thunks) >= 1000:
+            # Some Android clients, like macOS, reuse a C-string address in
+            # a callee-saved GPR across nearby static registrations. The
+            # x86-64 libc++ constructor proof uses THIS ELF's typed storage
+            # and literal, never a guessed default from another build.
+            extra_strings = extract_elf_x86_callee_saved_string_initializers(
+                data, sections, thunk_string_storage,
+            )
+            conflicts = {
+                address for address, value in extra_strings.items()
+                if address in thunk_strings and thunk_strings[address] != value
+            }
+            thunk_strings.update(extra_strings)
+            for address in conflicts:
+                thunk_strings.pop(address, None)
             typed: dict[tuple[str, int, _KIND], StaticRecord] = {}
             for registration in thunks:
                 kind: _KIND = (
@@ -671,15 +867,29 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
                     else 'bool'
                 )
                 typed[registration.name, registration.variant, kind] = StaticRecord(
-                    registration.name, registration.variant, kind, verified_type=True
+                    registration.name, registration.variant, kind, verified_type=True,
+                    initial_value=(
+                        thunk_strings.get(registration.storage_va)
+                        if registration.type_id == 2 and registration.storage_va is not None else
+                        compiled.get((registration.name, registration.variant, registration.type_id))
+                    ),
                 )
             return list(typed.values())
         if len(records) >= 1000 and len(thunks) >= 100:
             for registration in thunks:
                 if registration.type_id != 1:
                     continue
+                disk_initial, disk_raw = scalar_initializer(
+                    registration.storage_va if registration.storage_va is not None else -1,
+                    'log',
+                )
                 record = StaticRecord(
-                    registration.name, registration.variant, 'log', verified_type=True
+                    registration.name, registration.variant, 'log', verified_type=True,
+                    initial_value=(
+                        compiled.get((registration.name, registration.variant, registration.type_id))
+                        or disk_initial
+                    ),
+                    raw_initial_u64=disk_raw,
                 )
                 records[registration.name, registration.variant, 'log'] = record
 
@@ -728,15 +938,38 @@ def _typed_candidates(
     return ((matched[0], False),)
 
 
+def _display_raw_initializer(qualified: str, raw: int | None) -> str | None:
+    """Decode a disk slot only for scalar types, never C++ string objects."""
+    if raw is None:
+        return None
+    if qualified.startswith(('FFlag', 'DFFlag')):
+        return ('True' if raw else 'False') if raw in {0, 1} else None
+    if qualified.startswith(('FInt', 'DFInt', 'FLog', 'DFLog')):
+        if raw >> 32 not in {0, 0xFFFFFFFF}:
+            return None
+        return str(struct.unpack('<i', struct.pack('<I', raw & 0xFFFFFFFF))[0])
+    if qualified.startswith(('FFloat', 'DFFloat')) and raw >> 32 == 0:
+        value = struct.unpack('<f', struct.pack('<I', raw & 0xFFFFFFFF))[0]
+        return str(value) if math.isfinite(value) else None
+    return None
+
+
 def _resolve_records(
-    records: list[StaticRecord], published: Mapping[str, str | None]
+    records: list[StaticRecord], published: Mapping[str, str | None], *, binary_values: bool = False
 ) -> tuple[dict[str, str | None], set[str]]:
     """Retain distinct qualified flags sharing the same unprefixed suffix."""
     flags: dict[str, str | None] = {}
     verified: set[str] = set()
     for record in records:
         for qualified, confirmed in _typed_candidates(record, published):
-            flags[qualified] = published.get(qualified)
+            flags[qualified] = (
+                (
+                    record.initial_value
+                    if record.initial_value is not None else
+                    _display_raw_initializer(qualified, record.compiled_raw_u32)
+                    or _display_raw_initializer(qualified, record.raw_initial_u64)
+                ) if binary_values else published.get(qualified)
+            )
             if confirmed:
                 verified.add(qualified)
     return flags, verified
@@ -800,7 +1033,8 @@ def scan_binary(
     if not records or (len(data) > 20 * 1024 * 1024 and len(records) < minimum_records):
         msg = 'This Player build uses an unsupported FastFlag registration layout'
         raise ValueError(msg)
-    flags, verified = _resolve_records(records, published or {})
+    binary_values = data[:2] != b'MZ'
+    flags, verified = _resolve_records(records, published or {}, binary_values=binary_values)
     if not flags:
         msg = 'No qualified FastFlags resolved; public type inventory may be needed'
         raise ValueError(msg)
@@ -830,6 +1064,7 @@ def scan_binary(
         tuple(records),
         tuple(sorted(embedded_strings)),
         'string-evidence' if layouts else 'structured',
+        binary_values,
     )
 
 
@@ -948,7 +1183,7 @@ def save_scan(catalog: StaticFlagCatalog) -> None:
         temp.write_text(
             json.dumps(
                 {
-                    'version': 8,
+                    'version': 24 if catalog.binary_values else 8,
                     'client': catalog.client,
                     'label': catalog.label,
                     'source': catalog.source,
@@ -964,11 +1199,14 @@ def save_scan(catalog: StaticFlagCatalog) -> None:
                     'companion_sha256': catalog.companion_sha256,
                     'companion_metadata_recognized': catalog.companion_metadata_recognized,
                     'registrations': [
-                        [rec.name, rec.variant, rec.kind, rec.verified_type]
+                        [rec.name, rec.variant, rec.kind, rec.verified_type, rec.initial_value, rec.raw_initial_u64, rec.compiled_raw_u32]
+                        if catalog.binary_values
+                        else [rec.name, rec.variant, rec.kind, rec.verified_type]
                         for rec in catalog.registrations
                     ],
                     'candidate_strings': catalog.candidate_strings,
                     'layout': catalog.layout,
+                    **({'binary_values': True} if catalog.binary_values else {}),
                 },
                 separators=(',', ':'),
             ),
@@ -1011,16 +1249,28 @@ def _validated_registrations(value: object) -> tuple[StaticRecord, ...] | None:
     records: list[StaticRecord] = []
     for item in raw:
         fields = as_object_list(item)
-        if fields is None or len(fields) != 4:
+        if fields is None or len(fields) not in {4, 5, 6, 7}:
             return None
-        name, variant, kind, typed = fields
+        name, variant, kind, typed = fields[:4]
+        initial = fields[4] if len(fields) >= 5 else None
+        raw = fields[5] if len(fields) >= 6 else None
+        compiled = fields[6] if len(fields) == 7 else None
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{1,111}', name):
             return None
         if variant is not None and (type(variant) is not int or variant not in {1, 2}):
             return None
-        if not isinstance(kind, str) or kind not in _VALID_KINDS or type(typed) is not bool:
+        valid_initial = (
+            initial is None or (isinstance(initial, str) and len(initial) <= _MAX_INITIAL_VALUE_LENGTH)
+        ) and (raw is None or (type(raw) is int and 0 <= raw < 1 << 64))
+        valid_compiled = compiled is None or (type(compiled) is int and 0 <= compiled < 1 << 32)
+        if not (isinstance(kind, str) and kind in _VALID_KINDS and type(typed) is bool and valid_initial and valid_compiled):
             return None
-        records.append(StaticRecord(name, variant, cast('_KIND', kind), typed))
+        records.append(StaticRecord(
+            name, variant, cast('_KIND', kind), typed,
+            initial if isinstance(initial, str) else None,
+            raw if type(raw) is int else None,
+            compiled if type(compiled) is int else None,
+        ))
     return tuple(records)
 
 
@@ -1046,7 +1296,7 @@ def resolve_catalog_from_snapshot(
             for name in sorted(_string_flag_candidates(set(catalog.candidate_strings), published))
             if name not in present_names
         )
-    flags, verified = _resolve_records(records, published)
+    flags, verified = _resolve_records(records, published, binary_values=catalog.binary_values)
     return replace(
         catalog,
         flags=flags,
@@ -1073,31 +1323,29 @@ def _validated_candidate_strings(value: object) -> tuple[str, ...] | None:
 
 def _parse_cached_scan(client: str, payload: object) -> StaticFlagCatalog | None:
     mapping = as_object_dict(payload)
-    # Previously verified Sober-family snapshots may contain 13 unrelated
-    # relocation descriptors masquerading as booleans; rescan that family
-    if (
-        mapping is None
-        or mapping.get('client') != client
-        or mapping.get('version') not in {6, 7, 8}
-        or (client in {'sober', 'mocktail', 'nightcap', 'cordial'} and mapping.get('version') != 8)
-    ):
+    # Historical Android scans lack verified binary values and must be rescanned
+    expected_versions = {6, 7, 8} if client == 'windows' else {24}
+    if mapping is None or mapping.get('client') != client or mapping.get('version') not in expected_versions:
         return None
     flags = _validated_flags(mapping.get('flags'))
     raw_verified = as_object_list(mapping.get('verified'))
     registrations = _validated_registrations(mapping.get('registrations'))
     candidate_strings = _validated_candidate_strings(mapping.get('candidate_strings'))
     layout = mapping.get('layout', 'structured')
+    binary_values = mapping.get('binary_values', False)
     verified_names_valid = (
         flags is not None
         and raw_verified is not None
         and all(isinstance(name, str) and name in flags for name in raw_verified)
     )
+    valid_binary_mode = type(binary_values) is bool and binary_values == (client != 'windows')
+    valid_layout = layout in {'structured', 'string-evidence'} and verified_names_valid
     if (
         flags is None
         or raw_verified is None
         or registrations is None
         or candidate_strings is None
-        or not (layout in {'structured', 'string-evidence'} and verified_names_valid)
+        or not (valid_layout and valid_binary_mode)
     ):
         return None
     label, source, member = (mapping.get(key) for key in ('label', 'source', 'member'))
@@ -1150,6 +1398,7 @@ def _parse_cached_scan(client: str, payload: object) -> StaticFlagCatalog | None
         registrations,
         candidate_strings,
         cast("Literal['structured', 'string-evidence']", layout),
+        cast('bool', binary_values),
     )
 
 

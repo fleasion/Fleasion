@@ -74,7 +74,7 @@ def test_static_pe_and_macho_recover_record_without_inventing_prefixes(
         binary.write_bytes(factory(base))
         source = ClientBinary(label, label, binary)
         result = scan_binary(source, {'DFFlag' + base: None})
-        assert result.flags == {'DFFlag' + base: None}
+        assert result.flags == {'DFFlag' + base: ('False' if label == 'mac' else None)}
         assert result.verified == frozenset()
         assert result.records == 1
         with pytest.raises(ValueError, match='qualified FastFlags'):
@@ -132,6 +132,7 @@ def test_companion_scan_fills_qualifier_only_when_selected_binary_has_name(
         {'DFIntTaskSchedulerTargetFps': None, 'DFIntTextureQualityOverride': None},
         frozenset({'DFIntTaskSchedulerTargetFps', 'DFIntTextureQualityOverride'}),
         2, 0, 1.0, stat.st_size, stat.st_mtime_ns, None,
+        binary_values=True,
     ))
     mac = tmp_path / 'RobloxPlayer'
     mac.write_bytes(_fake_macho('TaskSchedulerTargetFps'))
@@ -139,7 +140,7 @@ def test_companion_scan_fills_qualifier_only_when_selected_binary_has_name(
     assert hints == frozenset({'DFIntTaskSchedulerTargetFps', 'DFIntTextureQualityOverride'})
     assert cached_cross_client_type_hints('sober') == frozenset()
     catalog = scan_binary(ClientBinary('rosemary', 'Rosemary', mac), dict.fromkeys(hints))
-    assert catalog.flags == {'DFIntTaskSchedulerTargetFps': None}
+    assert catalog.flags == {'DFIntTaskSchedulerTargetFps': '0'}
     assert catalog.verified == frozenset()
     assert catalog.unresolved == 0
 
@@ -457,7 +458,9 @@ def test_offline_real_player_binary_when_fixture_present(
         assert 'DFFlagCollisionScalingDefaultStudTenths' not in result.flags
 
 
-def _fake_macho_with_named_getters(*, second_anchor: bool = True) -> bytes:
+def _fake_macho_with_named_getters(
+    *, second_anchor: bool = True, auxiliary_type: int = 99,
+) -> bytes:
     """Build two boolean thunks and one ambiguous int/log thunk offline."""
     data = bytearray(8192)
     data[:4] = b'\xcf\xfa\xed\xfe'
@@ -526,7 +529,9 @@ def _fake_macho_with_named_getters(*, second_anchor: bool = True) -> bytes:
         b'\x48\x8b\x3d\x00\x00\x00\x00\x5d\xe9'
         + struct.pack('<i', 0x6c0 - (0x680 + 25))
     )
-    data[0x6c0:0x6ca] = b'\x55\x48\x89\xe5\x41\xb8' + struct.pack('<I', 1)
+    data[0x6c0:0x6ca] = (
+        b'\x55\x48\x89\xe5\x41\xb8' + struct.pack('<I', auxiliary_type)
+    )
     return bytes(data)
 
 
@@ -543,12 +548,63 @@ def test_macho_named_getter_distinguishes_boolean_from_shared_untyped_helper(
     })
     assert 'DFIntSomeUncertainNumber' not in without_public.flags
     with_public = scan_binary(source, {'DFIntSomeUncertainNumber': '12'})
-    assert with_public.flags['DFIntSomeUncertainNumber'] == '12'
+    assert with_public.flags['DFIntSomeUncertainNumber'] == '0'
     assert 'DFIntSomeUncertainNumber' not in with_public.verified
     assert len(with_public.verified) == 2
-    # The numeric/log helper excludes a conflicting boolean public alias
+    # Unknown machine-code helper types cannot reject externally hinted kinds
     with_wrong_public = scan_binary(source, {'DFFlagSomeUncertainNumber': 'True'})
-    assert 'DFFlagSomeUncertainNumber' not in with_wrong_public.flags
+    assert 'DFFlagSomeUncertainNumber' not in with_wrong_public.verified
+
+
+def test_macho_getter_recovers_log_type_from_compiled_helper(tmp_path: Path) -> None:
+    binary = tmp_path / 'RobloxPlayer'
+    binary.write_bytes(_fake_macho_with_named_getters(auxiliary_type=1))
+    catalog = scan_binary(ClientBinary('macos', 'macOS', binary))
+    assert 'DFLogSomeUncertainNumber' in catalog.verified
+    assert catalog.flags['DFLogSomeUncertainNumber'] == '0'
+    assert 'DFIntSomeUncertainNumber' not in catalog.flags
+
+
+def test_macho_direct_getter_recovers_integer_without_cross_client_hints(
+    tmp_path: Path,
+) -> None:
+    data = bytearray(_fake_macho_with_named_getters())
+    code_va = 0x100000560
+    # Mac direct accessors address [value, name pointer, name length]. The
+    # preceding descriptor also looks plausible but belongs to another flag.
+    value_va = 0x1000020F0
+    name_va = 0x100001080
+    previous_name = 'PreviousNeighborFlag'
+    data[0x8B0:0x8B0 + len(previous_name) + 1] = previous_name.encode() + b'\0'
+    struct.pack_into('<QQQ', data, 0xCE0, 0x1000010B0, len(previous_name), 67)
+    struct.pack_into('<QQ', data, 0xCF8, name_va, len('SomeUncertainNumber'))
+    helper_va = 0x100000680
+    code = (
+        b'\x55\x48\x89\xe5\x48\x8d\x3d'
+        + struct.pack('<i', value_va - (code_va + 11))
+        + b'\xbe' + struct.pack('<I', 2)
+        + b'\x5d\xe9' + struct.pack('<i', helper_va - (code_va + 22))
+    )
+    assert len(code) == 22
+    data[0x560:0x560 + 29] = code + b'\x90' * 7
+    data[0x680:0x680 + 22] = (
+        b'\x55\x48\x89\xe5\x89\xf2\x48\x89\xfe'
+        b'\x48\x8b\x3d\x00\x00\x00\x00\x5d\xe9'
+        + struct.pack('<i', 0x6C0 - (0x680 + 22))
+    )
+    data[0x6C0:0x6D3] = (
+        b'\x55\x48\x89\xe5\x89\xd1\x48\x89\xf2'
+        b'\x48\x8b\x76\x08\x41\xb8'
+        + struct.pack('<I', 3)
+    )
+    binary = tmp_path / 'RobloxPlayer'
+    binary.write_bytes(data)
+    catalog = scan_binary(ClientBinary('macos', 'macOS', binary))
+    assert 'DFIntSomeUncertainNumber' in catalog.verified
+    assert catalog.flags['DFIntSomeUncertainNumber'] == '67'
+    assert 'DFLogSomeUncertainNumber' not in catalog.flags
+    assert 'DFIntPreviousNeighborFlag' not in catalog.verified
+    assert 'DFIntPreviousNeighborFlag' not in catalog.flags
 
 
 def test_macho_boolean_type_discriminator_works_without_name_anchors(
@@ -562,9 +618,27 @@ def test_macho_boolean_type_discriminator_works_without_name_anchors(
         'FFlagUnlistedBooleanFlag',
     })
     assert result.flags == {
-        'DFFlagDebugDrawBroadPhaseAABBs': None,
-        'FFlagUnlistedBooleanFlag': None,
+        'DFFlagDebugDrawBroadPhaseAABBs': 'False',
+        'FFlagUnlistedBooleanFlag': 'False',
     }
+
+
+def test_real_macos_x86_direct_getters_bind_the_correct_neighbor_if_present() -> None:
+    path = Path.home() / (
+        '.local/share/nutmeg/versions/version-8001f8762ae44efe-x86_64/'
+        'Roblox.app/Contents/MacOS/RobloxPlayer'
+    )
+    if not path.is_file():
+        pytest.skip('No independently installed macOS x86-64 Player fixture')
+    catalog = scan_binary(ClientBinary('nutmeg', 'Nutmeg', path))
+    assert len(catalog.verified) >= 14_000
+    assert catalog.flags['DFIntImmersiveAdDeveloperFallbackImageUsedEventThrottleHundrethsPercent'] == '0'
+    assert catalog.flags['DFIntAdGuiVideoInteractivityControlTransparencyThousandths'] == '800'
+    assert catalog.flags['DFIntSmoothFullscreenZoomDurationMs'] == '2000'
+    assert catalog.flags['DFIntProximityVolume'] == '10'
+    assert catalog.flags['DFIntFullscreenVolume'] == '0'
+    assert catalog.flags['DFIntGamePassPrefetchRefreshSeconds'] == '55'
+    assert catalog.flags['DFIntThirdPartyInMemoryCacheCapacity'] == '3'
 
 
 def test_real_macos_fps_prefix_recovers_from_sober_static_evidence_if_present() -> None:
@@ -581,6 +655,247 @@ def test_real_macos_fps_prefix_recovers_from_sober_static_evidence_if_present() 
         ClientBinary('rosemary', 'Rosemary', mac),
         dict.fromkeys(sober_catalog.verified),
     )
-    assert 'DFIntTaskSchedulerTargetFps' in mac_catalog.flags
-    assert 'DFIntTaskSchedulerTargetFps' not in mac_catalog.verified
+    assert mac_catalog.flags['DFIntTaskSchedulerTargetFps'] == '0'
+    assert 'DFIntTaskSchedulerTargetFps' in mac_catalog.verified
     assert 'DFIntTextureQualityOverride' not in mac_catalog.flags
+
+
+def test_binary_values_survive_cache_re_resolving_without_public_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(fflag_static, '_SCAN_CACHE_DIR', tmp_path / 'scans')
+    original = StaticFlagCatalog(
+        'mocktail', 'Mocktail', '/fake/libroblox.so',
+        {'DFIntTaskSchedulerTargetFps': '67', 'DFFlagDebugDrawBroadPhaseAABBs': None},
+        frozenset({'DFIntTaskSchedulerTargetFps', 'DFFlagDebugDrawBroadPhaseAABBs'}),
+        2, 0, 1234.0, 120000000, 12, None,
+        registrations=(
+            StaticRecord('TaskSchedulerTargetFps', 2, 'numeric', True, '67'),
+            StaticRecord('DebugDrawBroadPhaseAABBs', 2, 'bool', True),
+        ),
+        binary_values=True,
+    )
+    save_scan(original)
+    saved = load_scan('mocktail')
+    assert saved is not None and saved == original
+    refreshed = resolve_catalog_from_snapshot(saved, {
+        'DFIntTaskSchedulerTargetFps': '240',
+        'DFFlagDebugDrawBroadPhaseAABBs': 'True',
+    })
+    assert refreshed.flags == original.flags
+    cache = tmp_path / 'scans/mocktail.json'
+    old = json.loads(cache.read_text())
+    for previous_version in (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23):
+        old['version'] = previous_version
+        cache.write_text(json.dumps(old))
+        assert load_scan('mocktail') is None
+
+
+def test_raw_initializer_does_not_invent_string_or_invalid_scalar_values() -> None:
+    decode = fflag_static._display_raw_initializer  # pyright: ignore[reportPrivateUsage]
+    assert decode('FFlagEnabled', 1) == 'True'
+    assert decode('FFlagEnabled', 2) is None
+    assert decode('DFIntCount', 0xFFFFFFFF) == '-1'
+    assert decode('DFIntCount', 0x100000001) is None
+    assert decode('DFStringText', 0) is None
+    assert decode('DFFloatRatio', 0x3FC00000) == '1.5'
+    assert decode('DFFloatRatio', 0x7F800000) is None
+
+
+def test_compiled_arm64_values_round_trip_cache_and_override_disk_slots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(fflag_static, '_SCAN_CACHE_DIR', tmp_path / 'scans')
+    original = StaticFlagCatalog(
+        'rosemary', 'Rosemary', '/fake/RobloxPlayer',
+        {
+            'DFIntCollisionScalingDefaultStudTenths': '67',
+            'DFFlagDebugDrawBroadPhaseAABBs': 'False',
+        },
+        frozenset({'DFFlagDebugDrawBroadPhaseAABBs'}),
+        2, 0, 1234.0, 123000000, 120, None,
+        registrations=(
+            StaticRecord(
+                'CollisionScalingDefaultStudTenths', 2, 'unknown', False,
+                raw_initial_u64=0, compiled_raw_u32=67,
+            ),
+            StaticRecord(
+                'DebugDrawBroadPhaseAABBs', 2, 'bool', True,
+                raw_initial_u64=1, compiled_raw_u32=0,
+            ),
+        ),
+        binary_values=True,
+    )
+    save_scan(original)
+    loaded = load_scan('rosemary')
+    assert loaded is not None and loaded == original
+    refreshed = resolve_catalog_from_snapshot(loaded, {
+        'DFIntCollisionScalingDefaultStudTenths': '999',
+        'DFFlagDebugDrawBroadPhaseAABBs': 'True',
+    })
+    assert refreshed.flags == original.flags
+    cached_path = tmp_path / 'scans/rosemary.json'
+    malformed = json.loads(cached_path.read_text())
+    malformed['registrations'][0][-1] = 1 << 32
+    cached_path.write_text(json.dumps(malformed))
+    assert load_scan('rosemary') is None
+
+
+def test_real_macos_x86_helper_types_if_fixture_present() -> None:
+    binary = Path.home() / (
+        '.local/share/nutmeg/versions/version-8001f8762ae44efe-x86_64/'
+        'Roblox.app/Contents/MacOS/RobloxPlayer'
+    )
+    if not binary.is_file():
+        pytest.skip('The local official x86-64 macOS Player is unavailable')
+    catalog = scan_binary(ClientBinary('macos', 'macOS', binary))
+    assert len(catalog.verified) > 13_000
+    assert catalog.flags['DFIntS2PhysicsSenderRate'] == '15'
+    assert 'DFIntS2PhysicsSenderRate' in catalog.verified
+    assert 'DFLogMacEmbeddedWebView' in catalog.verified
+    assert catalog.flags['FLogCookieStore'] == '768'
+
+
+def test_binary_string_cache_preserves_empty_and_long_compiled_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(fflag_static, '_SCAN_CACHE_DIR', tmp_path / 'scans')
+    long_literal = 'x' * 1800
+    original = StaticFlagCatalog(
+        'mocktail', 'Mocktail', '/fake/libroblox.so',
+        {'FStringShortDefault': '', 'DFStringLongDefault': long_literal},
+        frozenset({'FStringShortDefault', 'DFStringLongDefault'}),
+        2, 0, 1234.0, 120000000, 12, None,
+        registrations=(
+            StaticRecord('ShortDefault', 1, 'string', True, ''),
+            StaticRecord('LongDefault', 2, 'string', True, long_literal),
+        ),
+        binary_values=True,
+    )
+    save_scan(original)
+    loaded = load_scan('mocktail')
+    assert loaded == original
+    assert loaded is not None
+    recalculated = resolve_catalog_from_snapshot(loaded, {
+        'FStringShortDefault': 'wrong', 'DFStringLongDefault': 'wrong',
+    })
+    assert recalculated.flags == original.flags
+    path = tmp_path / 'scans/mocktail.json'
+    corrupted = json.loads(path.read_text())
+    corrupted['registrations'][1][4] = 'x' * 8193
+    path.write_text(json.dumps(corrupted))
+    assert load_scan('mocktail') is None
+
+
+@pytest.mark.parametrize('runtime', ['native', 'flatpak'])
+def test_nightcap_and_cordial_binary_discovery_tracks_the_selected_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, runtime: str,
+) -> None:
+    from dataclasses import replace  # noqa: PLC0415
+
+    from fleasion.utils import platform_linux  # noqa: PLC0415
+    from fleasion.utils.linux_clients import (  # noqa: PLC0415
+        CORDIAL_CLIENT, NIGHTCAP_CLIENT, LinuxClientInstallation,
+    )
+
+    instances: dict[str, tuple[LinuxClientInstallation, Path]] = {}
+    for client in (NIGHTCAP_CLIENT, CORDIAL_CLIENT):
+        installed = replace(client, runtime=runtime)
+        paths = installed.paths(home=tmp_path)
+        installation = LinuxClientInstallation(installed, paths, executable=None)
+        if client.key == 'nightcap':
+            binary = (
+                paths.flatpak_root / 'data/mocktail/payloads/test/libroblox.so'
+                if runtime == 'flatpak'
+                else paths.flatpak_root / 'payloads/test/libroblox.so'
+            )
+        else:
+            binary = paths.data_root / 'builds/2.746.0.1266/libroblox.so'
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(client.key.encode())
+        instances[client.key] = (installation, binary)
+
+    # Neither global downloads nor another client's newer binary may override
+    # the selected installation when a user asks to scan its compiled defaults.
+    for key in ('nightcap', 'cordial'):
+        installation, expected = instances[key]
+        monkeypatch.setattr(
+            platform_linux, 'get_selected_linux_client_installation',
+            lambda installation=installation: installation,
+        )
+        found = fflag_static._detect_linux_binary()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        assert found is not None
+        assert found.client == key
+        assert found.path == expected
+
+
+@pytest.mark.parametrize(('client', 'environment'), [
+    ('nightcap', 'FLEASION_NIGHTCAP_PLAYER_PATH'),
+    ('cordial', 'FLEASION_CORDIAL_PLAYER_PATH'),
+])
+def test_installed_community_android_client_can_extract_its_own_compiled_defaults(
+    client: str, environment: str,
+) -> None:
+    binary = os.environ.get(environment)
+    if not binary or not Path(binary).is_file():
+        pytest.skip(f'No independently downloaded {client} Roblox binary fixture')
+    actual = scan_binary(ClientBinary(client, client.title(), Path(binary)))
+    assert len(actual.verified) > 14_000
+    assert len(actual.flags) == len(actual.verified)
+    assert sum(value is not None for value in actual.flags.values()) / len(actual.flags) > 0.95
+    assert actual.flags['FStringLuaErrorsInfluxSeries'] == 'LuaShellErrors'
+
+
+def test_macho_x86_named_string_getter_accepts_zero_fill_storage_without_default(
+    tmp_path: Path,
+) -> None:
+    # The code has the name, storage address, namespace, and helper type=2.
+    # The std::string storage itself occupies __DATA,__common: offset zero
+    # is not file-backed. It must never be interpreted as an empty literal.
+    data = bytearray(_fake_macho_with_named_getters(auxiliary_type=2))
+    struct.pack_into('<II', data, 16, 2, 464)  # two load commands, 232 bytes each
+    segment = 32 + 232
+    struct.pack_into('<II', data, segment, 0x19, 232)
+    struct.pack_into('<I', data, segment + 64, 2)
+    at = segment + 152
+    data[at:at + 16] = b'__common'.ljust(16, b'\0')
+    data[at + 16:at + 32] = b'__DATA'.ljust(16, b'\0')
+    struct.pack_into('<QQI', data, at + 32, 0x100003000, 0x200, 0)
+    getter = 0x100000560
+    storage = 0x100003020
+    struct.pack_into('<i', data, 0x560 + 14, storage - (getter + 18))
+    binary = tmp_path / 'RobloxPlayer'
+    binary.write_bytes(data)
+    catalog = scan_binary(ClientBinary('macos', 'macOS x86', binary))
+    assert 'DFStringSomeUncertainNumber' in catalog.verified
+    assert catalog.flags['DFStringSomeUncertainNumber'] is None
+    string = next(
+        r for r in catalog.registrations if r.name == 'SomeUncertainNumber'
+        and r.kind == 'string'
+    )
+    assert string.raw_initial_u64 is None
+    assert string.initial_value is None
+
+
+def test_real_macos_string_flag_recovery_works_without_other_clients_if_present() -> None:
+    builds = [
+        ('x86-64', Path.home() / (
+            '.local/share/nutmeg/versions/version-8001f8762ae44efe-x86_64/'
+            'Roblox.app/Contents/MacOS/RobloxPlayer'
+        ), 750, 748),
+        ('ARM64', Path('/tmp/roblox-arm64-player'), 760, 675),
+    ]
+    available = [(name, path, minimum, defaults) for name, path, minimum, defaults in builds
+                 if path.is_file()]
+    if not available:
+        pytest.skip('No independently installed macOS Player reference binaries')
+    for name, path, minimum, defaults in available:
+        catalog = scan_binary(ClientBinary('macos', f'macOS {name}', path))
+        strings = {key: value for key, value in catalog.flags.items()
+                   if key.startswith(('FString', 'DFString'))}
+        assert len(strings) >= minimum
+        assert sum(value is not None for value in strings.values()) >= defaults
+        assert all(key in catalog.verified for key in strings)
+        assert strings['FStringLuaErrorsInfluxSeries'] == 'LuaShellErrors'
+        assert strings['DFStringTelemetryV2Url'] == 'https://ecsv2.roblox.com/client/pbe'
+        assert strings['FStringAdUnitDefaultNames'] == ''

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import struct
 from pathlib import Path
 
@@ -116,8 +117,8 @@ def test_elf_type_metadata_is_after_the_name_and_not_previous_record(
         'FStringLogOrString': 'text',
         'DFStringFStringOnly': 'value',
     })
-    assert corrected.flags['FStringLogOrString'] == 'text'
-    assert corrected.flags['DFStringFStringOnly'] == 'value'
+    assert corrected.flags['FStringLogOrString'] is None
+    assert corrected.flags['DFStringFStringOnly'] is None
     assert 'FLogLogOrString' not in corrected.flags
     assert corrected.verified == catalog.verified
 
@@ -185,3 +186,116 @@ def test_elf_truncated_relocations_fail_cleanly(tmp_path: Path) -> None:
     path.write_bytes(content)
     with pytest.raises(ValueError):
         scan_binary(ClientBinary('sober', 'Sober', path))
+
+
+def _make_elf_with_relocated_storage(*, invalid_boolean_address: bool = False) -> bytes:
+    """Add an actual writable scalar section and loader-resolved storage pointers."""
+    binary = bytearray(_make_elf())
+    struct.pack_into('<H', binary, 60, 6)
+    old_shstr = b'\0.rodata\0.data.rel.ro\0.android.rela.dyn\0.shstrtab\0'
+    name_offset = len(old_shstr)
+    binary[0x800:0x800 + name_offset + 6] = old_shstr + b'.data\0'
+    struct.pack_into('<Q', binary, 0x900 + 4 * 64 + 32, name_offset + 6)
+    header = 0x900 + 5 * 64
+    struct.pack_into('<II', binary, header, name_offset, 1)
+    struct.pack_into('<QQQ', binary, header + 16, 0x6000, 0x700, 0x80)
+    binary[0x700] = 1
+    struct.pack_into('<i', binary, 0x708, -15)
+
+    packed = bytearray(b'APS2')
+    names = ('BooleanCorrect', 'IntegerCorrect', 'LogOrString',
+             'FStringOnly', 'IgnoredServer')
+    targets: list[tuple[int, int]] = []
+    position = 0x2000
+    for index, name in enumerate(names):
+        targets.append((0x5000 + index * 32, position))
+        storage = 0x6000 + index * 8
+        if invalid_boolean_address and index == 0:
+            storage = 0x4000
+        targets.append((0x5000 + index * 32 + 16, storage))
+        position += len(name) + 1
+    packed.extend(_sleb(len(targets)))
+    packed.extend(_sleb(0x5000))
+    current_offset, current_addend = 0x5000, 0
+    for offset, target in targets:
+        packed.extend(_sleb(1))
+        packed.extend(_sleb(8))
+        packed.extend(_sleb(offset - current_offset))
+        packed.extend(_sleb(8))
+        packed.extend(_sleb(target - current_addend))
+        current_offset, current_addend = offset, target
+    assert len(packed) < 0x100
+    binary[0x600:0x600 + len(packed)] = packed
+    struct.pack_into('<Q', binary, 0x900 + 3 * 64 + 32, len(packed))
+    return bytes(binary)
+
+
+def test_sober_relocated_storage_recovers_actual_disk_scalar_values(tmp_path: Path) -> None:
+    binary = tmp_path / 'libroblox.so'
+    binary.write_bytes(_make_elf_with_relocated_storage())
+    catalog = scan_binary(ClientBinary('sober', 'Sober', binary))
+    assert catalog.flags['DFFlagBooleanCorrect'] == 'True'
+    assert catalog.flags['DFIntIntegerCorrect'] == '-15'
+    assert catalog.flags['FStringLogOrString'] is None
+    assert catalog.flags['DFStringFStringOnly'] is None
+    assert catalog.verified == frozenset(catalog.flags)
+
+
+def test_relocated_storage_outside_writable_data_is_not_interpreted(tmp_path: Path) -> None:
+    binary = tmp_path / 'libroblox.so'
+    binary.write_bytes(_make_elf_with_relocated_storage(invalid_boolean_address=True))
+    catalog = scan_binary(ClientBinary('sober', 'Sober', binary))
+    assert catalog.flags['DFFlagBooleanCorrect'] is None
+    assert catalog.flags['DFIntIntegerCorrect'] == '-15'
+
+
+@pytest.mark.parametrize('client', ['sober', 'mocktail', 'nightcap', 'cordial'])
+def test_android_clients_share_relocated_storage_decoder(client: str, tmp_path: Path) -> None:
+    binary = tmp_path / 'libroblox.so'
+    binary.write_bytes(_make_elf_with_relocated_storage())
+    catalog = scan_binary(ClientBinary(client, client, binary))
+    assert catalog.flags['DFFlagBooleanCorrect'] == 'True'
+    assert catalog.flags['DFIntIntegerCorrect'] == '-15'
+    assert catalog.flags['FStringLogOrString'] is None
+
+
+def test_real_sober_scalar_and_log_defaults_if_fixture_supplied() -> None:
+    pathname = os.environ.get('FLEASION_SOBER_PLAYER_PATH')
+    if not pathname or not (binary := Path(pathname)).is_file():
+        pytest.skip('No independently supplied Sober ELF fixture')
+    catalog = scan_binary(ClientBinary('sober', 'Sober', binary))
+    assert len(catalog.verified) > 13_000
+    assert sum(value is not None for value in catalog.flags.values()) > 13_000
+    assert catalog.flags['DFIntCollisionScalingDefaultStudTenths'] == '67'
+    assert catalog.flags['DFIntS2PhysicsSenderRate'] == '15'
+    assert catalog.flags['FLogCrash'] == '769'
+    assert catalog.flags['DFLogWriteOnlyBuffer'] == '518'
+    assert catalog.flags['FStringLuaErrorsInfluxSeries'] == 'LuaShellErrors'
+
+
+def test_elf_relocated_string_defaults_include_valid_empty_strings(tmp_path: Path) -> None:
+    binary = bytearray(_make_elf_with_relocated_storage())
+    struct.pack_into('<H', binary, 60, 7)
+    name_table = b'\0.rodata\0.data.rel.ro\0.android.rela.dyn\0.shstrtab\0.data\0.text\0'
+    binary[0x800:0x800 + len(name_table)] = name_table
+    struct.pack_into('<Q', binary, 0x900 + 4 * 64 + 32, len(name_table))
+    struct.pack_into('<II', binary, 0x900 + 6 * 64, name_table.index(b'.text'), 1)
+    struct.pack_into('<QQQ', binary, 0x900 + 6 * 64 + 16, 0x7000, 0xC00, 0x100)
+    binary[0x270:0x27F] = b'compiled-value\0'
+    binary[0x280] = 0
+    binary[0xC80:0xC80 + 21] = bytes.fromhex(
+        '554889e5415741564154534989f74889fb4889f7e8'
+    )
+    for idx, (dest, literal) in enumerate(((0x6010, 0x2170), (0x6018, 0x2180))):
+        va = 0x7000 + idx * 19
+        raw = (
+            b'\x48\x8d\x3d' + struct.pack('<i', dest - (va + 7))
+            + b'\x48\x8d\x35' + struct.pack('<i', literal - (va + 14))
+            + b'\xe8' + struct.pack('<i', 0x7080 - (va + 19))
+        )
+        binary[0xC00 + idx * 19:0xC00 + (idx + 1) * 19] = raw
+    path = tmp_path / 'libroblox.so'
+    path.write_bytes(binary)
+    catalog = scan_binary(ClientBinary('sober', 'Sober', path))
+    assert catalog.flags['FStringLogOrString'] == 'compiled-value'
+    assert catalog.flags['DFStringFStringOnly'] == ''

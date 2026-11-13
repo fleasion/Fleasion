@@ -2174,7 +2174,7 @@ class FFlagBrowserDialog(QDialog):
             [
                 tr('ui.gui.modifications_tab.name'),
                 tr('modifications.fastflags.initial_value')
-                if self._source_mode.currentData() == 'windows'
+                if self._source_mode.currentData() != 'public'
                 else tr('modifications.table.value'),
             ]
         )
@@ -2295,7 +2295,7 @@ class FFlagBrowserDialog(QDialog):
             [
                 tr('ui.gui.modifications_tab.name'),
                 tr('modifications.fastflags.initial_value')
-                if local
+                if self._source_mode.currentData() != 'public'
                 else tr('modifications.table.value'),
             ]
         )
