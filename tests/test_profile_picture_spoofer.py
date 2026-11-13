@@ -502,3 +502,147 @@ def test_local_picture_rejects_non_image_file_even_when_small(tmp_path: Path) ->
     flow = _flow(AVATAR_URL, {'data': [{'targetId': 5, 'imageUrl': 'original'}]})
     spoofer.response(flow)
     assert _image_urls(flow) == ['original']
+
+
+def test_large_import_resolves_only_advertised_avatar_routes(tmp_path: Path) -> None:
+    """1,025 imported images must not evict the first advertised URL."""
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    entries: list[dict[str, object]] = []
+    for user_id in range(1, 1026):
+        path = tmp_path / f'picture-{user_id}.png'
+        path.write_bytes(b'png')
+        entries.append({'enabled': True, 'target': str(user_id), 'image_url': str(path)})
+    spoofer = ProfilePictureSpoofer()
+    spoofer.set_entries(entries)
+    flow = _flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]})
+    spoofer.response(flow)
+    url = str(_image_urls(flow)[0])
+    assert url.startswith(f'https://{PFP_ROUTE_HOST}{PFP_ROUTE_PREFIX}')
+    assert lookup_local_image(PFP_ROUTE_HOST, url.removeprefix(f'https://{PFP_ROUTE_HOST}')) == str(
+        (tmp_path / 'picture-1.png').resolve()
+    )
+    assert len(module.__dict__['_routes']) == 1
+
+
+def test_full_route_registry_never_evicts_fresh_advertised_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    monkeypatch.setattr(module, '_PFP_ROUTE_LIMIT', 4)
+    entries: list[dict[str, object]] = []
+    for user_id in range(1, 6):
+        path = tmp_path / f'{user_id}.png'
+        path.write_bytes(b'img')
+        entries.append({'enabled': True, 'target': str(user_id), 'image_url': str(path)})
+    spoofer = ProfilePictureSpoofer()
+    spoofer.set_entries(entries)
+    advertised: list[str] = []
+    for user_id in range(1, 5):
+        flow = _flow(AVATAR_URL, {'data': [{'targetId': user_id, 'imageUrl': 'original'}]})
+        spoofer.response(flow)
+        advertised.append(str(_image_urls(flow)[0]))
+    fifth = _flow(AVATAR_URL, {'data': [{'targetId': 5, 'imageUrl': 'original'}]})
+    spoofer.response(fifth)
+    assert _image_urls(fifth) == ['original']
+    assert len(module.__dict__['_routes']) == 4
+    for url in advertised:
+        path = url.removeprefix(f'https://{PFP_ROUTE_HOST}')
+        assert lookup_local_image(PFP_ROUTE_HOST, path) is not None
+
+
+def test_ticket_launch_requires_new_client_generation_and_keeps_identity_on_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    state: dict[str, object] = {'process': ('pid-A', 'session-A')}
+    cookie_discoveries: list[str] = []
+
+    def discover() -> str:
+        cookie_discoveries.append('cookie-A')
+        return 'cookie-A'
+
+    monkeypatch.setattr(module, '_client_process_identity', lambda: state['process'])
+    monkeypatch.setattr(module, '_get_roblosecurity', discover)
+    def authenticated(cookie: str) -> int:
+        return 2 if cookie == 'ticket-B' else 1
+
+    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
+    generation = spoofer.begin_ticket_launch()
+    assert generation is not None
+    assert spoofer._self_user_id() is None  # pyright: ignore[reportPrivateUsage]
+    state['process'] = ('pid-B', 'session-B')
+    pending = spoofer._ticket_pending  # pyright: ignore[reportPrivateUsage]
+    assert pending is not None
+    spoofer.finish_ticket_launch(generation, 'ticket-B')
+    assert pending[1].wait(3)
+    assert spoofer.current_user_id() == '2'
+    previous = spoofer._self_id_verified_at  # pyright: ignore[reportPrivateUsage]
+    assert previous > 0
+    monkeypatch.setattr(spoofer, '_self_id_verified_at', time.monotonic() - 3600)
+    assert spoofer.current_user_id() == '2'
+    assert cookie_discoveries == []
+    flow_b = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
+    flow_a = _flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]})
+    spoofer.response(flow_b)
+    spoofer.response(flow_a)
+    assert _image_urls(flow_b) == [REMOTE]
+    assert _image_urls(flow_a) == ['original']
+
+    # If the ticket-based client disappears, do not silently reassign me to A
+    state['process'] = None
+    monkeypatch.setattr(spoofer, '_self_id_verified_at', time.monotonic() - 3600)
+    assert spoofer.current_user_id() is None
+    assert spoofer._ticket_uncertain is True  # pyright: ignore[reportPrivateUsage]
+    assert cookie_discoveries == []
+
+
+def test_ticket_launch_failure_restores_preexisting_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    monkeypatch.setattr(module, '_client_process_identity', lambda: ('pid-A', 'session-A'))
+    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'cookie-A')
+    def authenticated(cookie: str) -> int:
+        return 1 if cookie == 'cookie-A' else 2
+
+    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
+    generation = spoofer.begin_ticket_launch()
+    assert spoofer._self_user_id() is None  # pyright: ignore[reportPrivateUsage]
+    spoofer.finish_ticket_launch(generation, None)
+    assert spoofer.current_user_id() == '1'
+    assert spoofer._ticket_uncertain is False  # pyright: ignore[reportPrivateUsage]
+
+
+def test_dispatched_ticket_without_new_process_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    monkeypatch.setattr(module, '_client_process_identity', lambda: ('pid-A', 'session-A'))
+    monkeypatch.setattr(module, '_get_roblosecurity', lambda: 'cookie-A')
+    def authenticated(_cookie: str) -> int:
+        return 2
+
+    monkeypatch.setattr(module, '_authenticated_user_id', authenticated)
+    monkeypatch.setattr(module, '_TICKET_SESSION_CONFIRM_SECONDS', 0.025)
+    monkeypatch.setattr(module, '_TICKET_SESSION_POLL_SECONDS', 0.001)
+    spoofer = _spoofer({'enabled': True, 'target': 'me', 'image_url': REMOTE}, me='1')
+    generation = spoofer.begin_ticket_launch()
+    pending = spoofer._ticket_pending  # pyright: ignore[reportPrivateUsage]
+    assert pending is not None
+    spoofer.finish_ticket_launch(generation, 'cookie-B')
+    assert pending[1].wait(2)
+    assert spoofer.current_user_id() is None
+    assert spoofer._ticket_uncertain is True  # pyright: ignore[reportPrivateUsage]
+    a = _flow(AVATAR_URL, {'data': [{'targetId': 1, 'imageUrl': 'original'}]})
+    b = _flow(AVATAR_URL, {'data': [{'targetId': 2, 'imageUrl': 'original'}]})
+    spoofer.response(a)
+    spoofer.response(b)
+    assert _image_urls(a) == ['original']
+    assert _image_urls(b) == ['original']
+    spoofer.notify_active_account_changed()
+    assert spoofer.current_user_id() == '2'

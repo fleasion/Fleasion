@@ -2318,7 +2318,11 @@ class RandoStuffTab(QWidget):
             _fail(tr('ui.gui.rando_stuff_tab.follow_ticket_failed', value0=name))
             return
         log_buffer.log('accounts', f'Launching Roblox URI to follow userId={user_id}')
-        if not _launch_follow_user_uri(_build_auth_ticket_follow_uri(ticket, user_id)):
+        if not self._dispatch_authenticated_ticket_uri(
+            cookie,
+            _build_auth_ticket_follow_uri(ticket, user_id),
+            _launch_follow_user_uri,
+        ):
             log_buffer.log('accounts', 'Failed to launch Roblox follow URI without elevation')
 
     def _on_switch_account(self) -> None:
@@ -2414,6 +2418,29 @@ class RandoStuffTab(QWidget):
             log_buffer.log('accounts', f'Auth-ticket retrieval failed for {mode} launch')
         return ticket
 
+    def _dispatch_authenticated_ticket_uri(
+        self,
+        cookie: str,
+        uri: str,
+        launcher: Callable[[str], bool] | None = None,
+    ) -> bool:
+        """Track ticket launch separately from selection and actual client confirmation."""
+        dispatch = launcher or launch_as_standard_user
+        spoofer = getattr(getattr(self, '_proxy_master', None), 'profile_picture_spoofer', None)
+        # Windows writes the active cookie locally; other platforms may retain
+        # account A's cookie while launching B via an authentication ticket
+        if IS_WINDOWS or spoofer is None:
+            return dispatch(uri)
+        generation = spoofer.begin_ticket_launch()
+        launched = False
+        try:
+            launched = dispatch(uri)
+            return launched
+        finally:
+            # The spoofer monitors a new Player generation off-thread before
+            # accepting the ticket identity, and fails closed if unconfirmed
+            spoofer.finish_ticket_launch(generation, cookie if launched else None)
+
     def _launch_account_thread(
         self,
         cookie: str,
@@ -2500,7 +2527,7 @@ class RandoStuffTab(QWidget):
                     'accounts',
                     f'Launching Roblox URI to placeId={launch_place_id} (private server)',
                 )
-                launch_ok = launch_as_standard_user(roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(cookie, roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
@@ -2548,7 +2575,7 @@ class RandoStuffTab(QWidget):
                     )
                 else:
                     log_buffer.log('accounts', f'Launching Roblox URI to placeId={launch_place_id}')
-                launch_ok = launch_as_standard_user(roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(cookie, roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
@@ -2589,7 +2616,7 @@ class RandoStuffTab(QWidget):
             if ticket:
                 roblox_player_uri = _build_auth_ticket_app_uri(ticket)
                 log_buffer.log('accounts', 'Launching Roblox app URI for selected account')
-                launch_ok = launch_as_standard_user(roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(cookie, roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox app URI without elevation')
                     if ticket_only_launch:

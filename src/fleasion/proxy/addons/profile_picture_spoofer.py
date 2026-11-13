@@ -33,7 +33,7 @@ from urllib.parse import unquote, urlparse
 
 import requests
 
-from fleasion.utils import log_buffer
+from fleasion.utils import get_roblox_process_identity, log_buffer
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object
 
 if TYPE_CHECKING:
@@ -53,12 +53,15 @@ _AVATAR_PATH_FRAGMENTS = ('/v1/users/avatar-headshot', '/v1/users/avatar-bust')
 PFP_ROUTE_HOST = 'fts.rbxcdn.com'
 PFP_ROUTE_PREFIX = '/__fleasion__/pfp/'
 _PFP_ROUTE_LIMIT = 1024
+_PFP_ROUTE_GRACE_SECONDS = 120.0
 PFP_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PFP_IMAGE_EXTENSIONS = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.webp'})
 _LOG_SEEN_LIMIT = 30
 _SELF_ID_RETRY_SECONDS = 60.0
 _SELF_ID_REFRESH_SECONDS = 120.0
 _SELF_ID_WAIT_SECONDS = 12.0
+_TICKET_SESSION_CONFIRM_SECONDS = 8.0
+_TICKET_SESSION_POLL_SECONDS = 0.1
 _ROBLOSECURITY_GETTER_ATTR = 'get_roblosecurity'
 
 
@@ -129,7 +132,7 @@ def clean_local_path(raw: str) -> str:
 
 _clean_local_path = clean_local_path
 
-_routes: OrderedDict[str, str] = OrderedDict()
+_routes: OrderedDict[str, tuple[str, float]] = OrderedDict()
 _routes_lock = threading.Lock()
 
 
@@ -155,10 +158,18 @@ def register_local_image(path: Path) -> str:
     token = hashlib.sha256(f'{resolved}|{mtime}'.encode()).hexdigest()[:32]
     route = f'{PFP_ROUTE_PREFIX}{token}{resolved.suffix.lower()}'
     with _routes_lock:
-        _routes[route] = str(resolved)
+        now = time.monotonic()
+        if route not in _routes:
+            # Only evict routes old enough for Roblox to have fetched them
+            # Unused imports must not break URLs already given to the client
+            while len(_routes) >= _PFP_ROUTE_LIMIT:
+                oldest, (_path, touched) = next(iter(_routes.items()))
+                if now - touched < _PFP_ROUTE_GRACE_SECONDS:
+                    msg = 'Profile picture CDN route capacity is temporarily full'
+                    raise ValueError(msg)
+                del _routes[oldest]
+        _routes[route] = str(resolved), now
         _routes.move_to_end(route)
-        while len(_routes) > _PFP_ROUTE_LIMIT:
-            _routes.popitem(last=False)
     return f'https://{PFP_ROUTE_HOST}{route}'
 
 
@@ -167,9 +178,14 @@ def lookup_local_image(host: str, path: str) -> str | None:
     if not is_pfp_route(host, path):
         return None
     with _routes_lock:
-        image_path = _routes.get(path.split('?', 1)[0])
-    if image_path is None:
+        route = path.split('?', 1)[0]
+        found = _routes.get(route)
+        if found is not None:
+            _routes[route] = found[0], time.monotonic()
+            _routes.move_to_end(route)
+    if found is None:
         return None
+    image_path = found[0]
     try:
         info = Path(image_path).stat()
     except OSError:
@@ -180,6 +196,11 @@ def lookup_local_image(host: str, path: str) -> str | None:
 def clear_local_images() -> None:
     with _routes_lock:
         _routes.clear()
+
+
+def _client_process_identity() -> object | None:
+    """Return the actual Roblox client process generation, not a launch attempt."""
+    return get_roblox_process_identity()
 
 
 def _get_roblosecurity() -> str | None:
@@ -218,6 +239,11 @@ class ProfilePictureSpoofer:
         self._self_lookup_failed_at = 0.0
         self._self_lookup_generation = 0
         self._self_lookup_event: threading.Event | None = None
+        self._ticket_session: tuple[str, object] | None = None
+        self._ticket_pending: tuple[int, threading.Event] | None = None
+        self._ticket_generation = 0
+        self._ticket_launch_before: object | None = None
+        self._ticket_uncertain = False
         self._log_seen = 0
         self._config_loaded = config_manager is None
 
@@ -261,25 +287,116 @@ class ProfilePictureSpoofer:
             return self._current_user_id
 
     def _invalidate_current_user(self, *, verified_id: str | None = None) -> None:
-        """Discard obsolete lookups and atomically install any verified identity."""
+        """Discard old lookup and ticket generations when a local credential changes."""
         with self._lock:
             previous = self._self_lookup_event
+            pending = self._ticket_pending
             self._self_lookup_generation += 1
+            self._ticket_generation += 1
+            self._ticket_pending = None
+            self._ticket_session = None
+            self._ticket_uncertain = False
             self._self_lookup_event = None
             self._current_user_id = str(verified_id) if verified_id else None
             self._self_id_verified_at = time.monotonic() if verified_id else 0.0
             self._self_lookup_failed_at = 0.0
         if previous is not None:
             previous.set()
+        if pending is not None:
+            pending[1].set()
 
     def set_current_user(self, user_id: str | None) -> None:
-        """Set a previously verified account id, or invalidate the active one."""
+        """Set a verified local identity, or invalidate the active account."""
         self._invalidate_current_user(verified_id=user_id)
 
     def notify_active_account_changed(self) -> None:
-        """Re-read the client cookie after a successful local account switch."""
+        """Re-read the local client cookie after a successful local account switch."""
         self._invalidate_current_user()
         self._self_user_id()
+
+    def begin_ticket_launch(self) -> int | None:
+        """Quarantine me while a ticket launch is attempted, without claiming success."""
+        self._load_config_entries()
+        with self._lock:
+            if not any(e['enabled'] and e['target'] == SELF_TARGET for e in self._entries):
+                return None
+        before = _client_process_identity()
+        with self._lock:
+            previous = self._self_lookup_event
+            old_pending = self._ticket_pending
+            self._self_lookup_generation += 1
+            self._self_lookup_event = None
+            self._ticket_generation += 1
+            generation = self._ticket_generation
+            cancel = threading.Event()
+            self._ticket_pending = (generation, cancel)
+            self._ticket_uncertain = False
+            # Save the observed client generation for the pending ticket
+            self._ticket_launch_before = before
+        if previous is not None:
+            previous.set()
+        if old_pending is not None:
+            old_pending[1].set()
+        return generation
+
+    def finish_ticket_launch(self, generation: int | None, cookie: str | None) -> None:
+        """Only an accepted URI may start asynchronous client-generation verification."""
+        if generation is None:
+            return
+        with self._lock:
+            pending = self._ticket_pending
+            if pending is None or pending[0] != generation:
+                return
+            if cookie is None:
+                self._ticket_pending = None
+                pending[1].set()
+                self._self_id_verified_at = 0.0
+                return
+            before = self._ticket_launch_before
+            cancel = pending[1]
+        threading.Thread(
+            target=self._verify_ticket_session,
+            args=(generation, cookie, before, cancel),
+            daemon=True,
+            name='FleasionPfpTicketConfirmation',
+        ).start()
+
+    def _verify_ticket_session(
+        self, generation: int, cookie: str, before: object | None, cancel: threading.Event
+    ) -> None:
+        """Bind me to a verified ticket account only after a new client appears."""
+        user_id: int | None = None
+        try:
+            user_id = _authenticated_user_id(cookie)
+        except requests.RequestException, OSError, ValueError, TypeError:
+            pass
+        observed: object | None = None
+        if user_id is not None:
+            deadline = time.monotonic() + _TICKET_SESSION_CONFIRM_SECONDS
+            while not cancel.is_set() and time.monotonic() < deadline:
+                current = _client_process_identity()
+                if current is not None and current != before:
+                    observed = current
+                    break
+                cancel.wait(_TICKET_SESSION_POLL_SECONDS)
+        with self._lock:
+            if self._ticket_pending is None or self._ticket_pending[0] != generation:
+                return
+            self._ticket_pending = None
+            if user_id is not None and observed is not None and not cancel.is_set():
+                self._ticket_session = (str(user_id), observed)
+                self._ticket_uncertain = False
+                self._current_user_id = str(user_id)
+                self._self_id_verified_at = time.monotonic()
+                self._self_lookup_failed_at = 0.0
+            else:
+                # URI dispatch or ticket authentication does not prove that the
+                # current Player accepted this identity: never silently use A
+                self._ticket_session = None
+                self._ticket_uncertain = True
+                self._current_user_id = None
+                self._self_id_verified_at = 0.0
+        cancel.set()
 
     def shutdown(self) -> None:
         self._invalidate_current_user()
@@ -289,13 +406,14 @@ class ProfilePictureSpoofer:
         del flow
 
     def _self_user_id(self) -> str | None:
-        """Get cached identity or schedule its refresh without blocking the proxy."""
+        """Resolve the active identity off the proxy loop, never using an ambiguous one."""
         with self._lock:
+            if self._ticket_pending is not None or self._ticket_uncertain:
+                return None
             now = time.monotonic()
             if self._current_user_id is not None:
                 if now - self._self_id_verified_at < _SELF_ID_REFRESH_SECONDS:
                     return self._current_user_id
-                # A stale account must not remain active while revalidating
                 self._current_user_id = None
             if self._self_lookup_event is not None or (
                 self._self_lookup_failed_at
@@ -305,22 +423,39 @@ class ProfilePictureSpoofer:
             generation = self._self_lookup_generation
             completion = threading.Event()
             self._self_lookup_event = completion
+            ticket_session = self._ticket_session
 
         threading.Thread(
             target=self._resolve_self_user_worker,
-            args=(generation, completion),
+            args=(generation, completion, ticket_session),
             name='FleasionPfpCurrentUser',
             daemon=True,
         ).start()
         return None
 
-    def _resolve_self_user_worker(self, generation: int, completion: threading.Event) -> None:
-        """Resolve identity off the asyncio loop; discard obsolete account results."""
+    @staticmethod
+    def _resolve_session_identity(
+        ticket_session: tuple[str, object] | None,
+    ) -> tuple[int | None, bool]:
+        """Use observed ticket session, or fall back to locally verified identity."""
+        if ticket_session is not None:
+            if _client_process_identity() == ticket_session[1]:
+                return int(ticket_session[0]), False
+            return None, True
+        cookie = _get_roblosecurity()
+        return (_authenticated_user_id(cookie) if cookie else None), False
+
+    def _resolve_self_user_worker(
+        self,
+        generation: int,
+        completion: threading.Event,
+        ticket_session: tuple[str, object] | None,
+    ) -> None:
+        """Revalidate a ticket against the live process, otherwise use local auth."""
         user_id: int | None = None
+        lost_ticket_session = False
         try:
-            cookie = _get_roblosecurity()
-            if cookie:
-                user_id = _authenticated_user_id(cookie)
+            user_id, lost_ticket_session = self._resolve_session_identity(ticket_session)
         except (
             requests.RequestException,
             AttributeError,
@@ -338,6 +473,11 @@ class ProfilePictureSpoofer:
                     generation == self._self_lookup_generation
                     and self._self_lookup_event is completion
                 ):
+                    if lost_ticket_session:
+                        # An unobserved new client may be on any account
+                        self._ticket_session = None
+                        self._ticket_uncertain = True
+                        user_id = None
                     self._current_user_id = str(user_id) if user_id is not None else None
                     self._self_id_verified_at = time.monotonic() if user_id is not None else 0.0
                     self._self_lookup_failed_at = time.monotonic() if user_id is None else 0.0
@@ -370,18 +510,29 @@ class ProfilePictureSpoofer:
             )
             return None
 
-    def _replacements(self) -> dict[str, str]:
-        """Map user id -> final image URL for every enabled, usable entry."""
+    def _replacements(self, requested_ids: set[str]) -> dict[str, str]:
+        """Resolve only configured avatars included in this upstream response.
+
+        Local-file registration creates proxy-owned CDN routes. Registering all
+        configured files before knowing which avatars were requested evicts
+        still-advertised routes when importing large configurations.
+        """
+        if not requested_ids:
+            return {}
         self._load_config_entries()
         with self._lock:
             entries = [entry for entry in self._entries if entry['enabled']]
         if not entries:
             return {}
-        self_id = self._self_user_id() if any(e['target'] == SELF_TARGET for e in entries) else None
+        self_id = (
+            self._self_user_id()
+            if any(entry['target'] == SELF_TARGET for entry in entries)
+            else None
+        )
         replacements: dict[str, str] = {}
         for entry in entries:
             target = self_id if entry['target'] == SELF_TARGET else entry['target']
-            if not target or target in replacements:
+            if not target or target not in requested_ids or target in replacements:
                 continue
             url = self._resolve_image_url(entry['image_url'])
             if url is not None:
@@ -527,7 +678,20 @@ class ProfilePictureSpoofer:
         """Rewrite *payload* in place and return how many entries changed."""
         request_entries = self._request_entries(flow) if batch else {}
         self._log_once(f'{path} response, {self._describe_sample(payload, request_entries)}')
-        replacements = self._replacements()
+        data = payload.get('data')
+        requested_ids: set[str] = set()
+        if isinstance(data, list):
+            for item in data:
+                entry = as_json_object(item)
+                if entry is None or not self._is_avatar_entry(
+                    entry, batch=batch, request_entries=request_entries
+                ):
+                    continue
+                requested = request_entries.get(str(entry.get('requestId', '')))
+                target = str(entry.get('targetId') or (requested[1] if requested else ''))
+                if target:
+                    requested_ids.add(target)
+        replacements = self._replacements(requested_ids)
         if not replacements:
             self._log_once(f'{path}: no usable entry (check the Player ID and image)')
             return 0
