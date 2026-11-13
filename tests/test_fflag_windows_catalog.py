@@ -204,11 +204,16 @@ def test_gui_local_scan_separates_unknowns_from_actionable_hints(
         del self, force
 
     monkeypatch.setattr(FFlagBrowserDialog, '_refresh', no_refresh)
+    monkeypatch.setattr(
+        FFlagBrowserDialog, '_client_source_mode', staticmethod(lambda: 'windows')
+    )
     browser = FFlagBrowserDialog()
     try:
         browser._local_exe = fake_exe  # pyright: ignore[reportPrivateUsage]
         browser._source_mode.setCurrentIndex(1)  # pyright: ignore[reportPrivateUsage]
         assert browser._source_mode.currentData() == 'windows'  # pyright: ignore[reportPrivateUsage]
+        assert browser._source_mode.count() == 2  # pyright: ignore[reportPrivateUsage]
+        assert browser._source_mode.itemText(1) == 'Client - Windows'  # pyright: ignore[reportPrivateUsage]
         catalog = scan_windows_player(
             fake_exe, qualified_type_hints=_hints(), hint_source='fvariables'
         )
@@ -250,6 +255,9 @@ def test_gui_optional_inventory_request_failure_leaves_raw_slots(
         del self, force
 
     monkeypatch.setattr(FFlagBrowserDialog, '_refresh', no_refresh)
+    monkeypatch.setattr(
+        FFlagBrowserDialog, '_client_source_mode', staticmethod(lambda: 'windows')
+    )
     browser = FFlagBrowserDialog()
     try:
         browser._local_exe = fake_exe  # pyright: ignore[reportPrivateUsage]
@@ -352,6 +360,9 @@ def test_browser_ignores_stale_scans_and_invalidates_earlier_file_selection(
         refresh_calls.append(force)
 
     monkeypatch.setattr(FFlagBrowserDialog, '_refresh', record_refresh)
+    monkeypatch.setattr(
+        FFlagBrowserDialog, '_client_source_mode', staticmethod(lambda: 'windows')
+    )
     browser = FFlagBrowserDialog()
     try:
         browser._local_exe = fake_exe  # pyright: ignore[reportPrivateUsage]

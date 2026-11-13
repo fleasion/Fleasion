@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
@@ -209,7 +210,8 @@ def test_fflag_browser_reports_retrieved_and_filtered_totals(
 
     assert _dialog_count(dialog).text() == 'Showing 6 FastFlags • 6 retrieved from Roblox'
     assert _dialog_table(dialog).columnCount() == 2
-    assert _dialog_family_filter(dialog).minimumWidth() == 165
+    assert _dialog_family_filter(dialog).sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+    assert _dialog_family_filter(dialog).sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToContents
 
     _dialog_family_filter(dialog).setCurrentIndex(_dialog_family_filter(dialog).findData('DFFlag'))
     assert _dialog_count(dialog).text() == 'Showing 2 FastFlags • 6 retrieved from Roblox'

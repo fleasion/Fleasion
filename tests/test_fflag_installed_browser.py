@@ -73,7 +73,9 @@ def test_installed_source_exists_and_uses_selected_client(
     dialog = FFlagBrowserDialog()
     try:
         installed = dialog._source_mode.findData('installed')  # pyright: ignore[reportPrivateUsage]
-        assert installed >= 0
+        assert installed == 1
+        assert dialog._source_mode.count() == 2  # pyright: ignore[reportPrivateUsage]
+        assert dialog._source_mode.itemText(1) == 'Client - Sober'  # pyright: ignore[reportPrivateUsage]
         dialog._source_mode.setCurrentIndex(installed)  # pyright: ignore[reportPrivateUsage]
         generation = dialog._local_generation  # pyright: ignore[reportPrivateUsage]
         dialog._apply_installed_scan((generation, catalog, client, False))  # pyright: ignore[reportPrivateUsage]
@@ -82,10 +84,10 @@ def test_installed_source_exists_and_uses_selected_client(
         assert dialog._table.rowCount() == 2  # pyright: ignore[reportPrivateUsage]
         assert '1 independently verified types' in dialog._count.text()  # pyright: ignore[reportPrivateUsage]
         assert 'Sober' in dialog._count.text()  # pyright: ignore[reportPrivateUsage]
-        assert 'not scanned runtime defaults' in dialog._count.text()  # pyright: ignore[reportPrivateUsage]
+        assert 'not scanned runtime defaults' not in dialog._count.text()  # pyright: ignore[reportPrivateUsage]
         header = dialog._table.horizontalHeaderItem(1)  # pyright: ignore[reportPrivateUsage]
         assert header is not None
-        assert header.text() == 'Published value (not a scanned runtime default)'
+        assert header.text() == 'Value'
         assert dialog._source_mode.currentData() == 'installed'  # pyright: ignore[reportPrivateUsage]
         assert not dialog._choose_exe_button.isVisible()  # pyright: ignore[reportPrivateUsage]
         app.processEvents()
@@ -103,7 +105,7 @@ def test_installed_outdated_thread_result_is_ignored_after_source_switch(
     monkeypatch.setattr(modifications_tab, 'detect_client_binary', lambda: client)
     dialog = FFlagBrowserDialog()
     try:
-        dialog._source_mode.setCurrentIndex(2)  # pyright: ignore[reportPrivateUsage]
+        dialog._source_mode.setCurrentIndex(1)  # pyright: ignore[reportPrivateUsage]
         old = dialog._local_generation  # pyright: ignore[reportPrivateUsage]
         dialog._source_mode.setCurrentIndex(0)  # pyright: ignore[reportPrivateUsage]
         assert dialog._installed_catalog is None  # pyright: ignore[reportPrivateUsage]
@@ -111,7 +113,7 @@ def test_installed_outdated_thread_result_is_ignored_after_source_switch(
         dialog._apply_installed_error((old, 'stale failure'))  # pyright: ignore[reportPrivateUsage]
         assert dialog._installed_catalog is None  # pyright: ignore[reportPrivateUsage]
         assert dialog._flags == {}  # pyright: ignore[reportPrivateUsage]
-        dialog._source_mode.setCurrentIndex(2)  # pyright: ignore[reportPrivateUsage]
+        dialog._source_mode.setCurrentIndex(1)  # pyright: ignore[reportPrivateUsage]
         assert dialog._installed_catalog is None  # pyright: ignore[reportPrivateUsage]
         app.processEvents()
     finally:

@@ -2066,7 +2066,9 @@ class FFlagBrowserDialog(QDialog):
         self._local_generation = 0
         self._local_exe: Path | None = self._detect_installed_windows_exe()
         self._installed_catalog: StaticFlagCatalog | None = None
-        self._installed_source: ClientBinary | None = None
+        self._installed_source: ClientBinary | None = (
+            detect_client_binary() if self._client_source_mode() == 'installed' else None
+        )
         self.selected_flags: dict[str, str] = {}
         self._setup_ui()
         self.flags_loaded.connect(self._apply_public_flags)
@@ -2092,8 +2094,11 @@ class FFlagBrowserDialog(QDialog):
         controls = QHBoxLayout()
         self._source_mode = QComboBox()
         self._source_mode.addItem('Public catalog', 'public')
-        self._source_mode.addItem('Windows EXE · initial slots', 'windows')
-        self._source_mode.addItem('Installed client · registrations', 'installed')
+        self._source_mode.addItem(
+            f'Client - {self._client_display_name()}', self._client_source_mode()
+        )
+        self._source_mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._source_mode.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._source_mode.currentIndexChanged.connect(self._on_source_changed)
         controls.addWidget(self._source_mode)
         self._choose_exe_button = QPushButton('Choose EXE…')
@@ -2108,7 +2113,8 @@ class FFlagBrowserDialog(QDialog):
         controls.addWidget(self._search, 1)
 
         self._family_filter = QComboBox()
-        self._family_filter.setMinimumWidth(165)
+        self._family_filter.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._family_filter.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._family_filter.currentIndexChanged.connect(self._filter_rows)
         controls.addWidget(self._family_filter)
 
@@ -2145,6 +2151,23 @@ class FFlagBrowserDialog(QDialog):
         self._add_button.clicked.connect(self._add_selected)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    @staticmethod
+    def _client_source_mode() -> str:
+        """Use one platform-appropriate local client source in the browser."""
+        return 'windows' if sys.platform == 'win32' else 'installed'
+
+    def _client_display_name(self) -> str:
+        """Name the selected client rather than its scanning implementation."""
+        if self._client_source_mode() == 'windows':
+            return 'Windows'
+        source = self._installed_source
+        if source is None:
+            return 'Unavailable'
+        return 'macOS' if source.client == 'macos' else source.label
+
+    def _update_client_source_label(self) -> None:
+        self._source_mode.setItemText(1, f'Client - {self._client_display_name()}')
 
     @staticmethod
     def _detect_installed_windows_exe() -> Path | None:
@@ -2192,6 +2215,7 @@ class FFlagBrowserDialog(QDialog):
         self._table.setRowCount(0)
         if self._source_mode.currentData() == 'installed':
             self._installed_source = detect_client_binary()
+            self._update_client_source_label()
         if local and self._local_exe is None:
             self._choose_windows_exe()
             if self._local_exe is None:
@@ -2202,11 +2226,7 @@ class FFlagBrowserDialog(QDialog):
         self._table.setHorizontalHeaderLabels(
             [
                 tr('ui.gui.modifications_tab.name'),
-                'On-disk initial slot (not a runtime default)'
-                if local
-                else 'Published value (not a scanned runtime default)'
-                if self._source_mode.currentData() == 'installed'
-                else tr('ui.gui.modifications_tab.current_roblox_value'),
+                'Initial value' if local else 'Value',
             ]
         )
         self._refresh()
@@ -2475,6 +2495,8 @@ class FFlagBrowserDialog(QDialog):
             return
         if self._source_mode.currentData() == 'installed':
             source = detect_client_binary()
+            self._installed_source = source
+            self._update_client_source_label()
             if source is None:
                 self._count.setText('No supported installed Player was found')
                 self._refresh_button.setEnabled(True)
@@ -2646,7 +2668,7 @@ class FFlagBrowserDialog(QDialog):
                 self._count.setText(
                     f'Showing {visible_count:,} of {len(self._flags):,} registered flags'
                     f' · {len(catalog.verified):,} independently verified types'
-                    f' · {catalog.label} · not scanned runtime defaults'
+                    f' · {catalog.label}'
                 )
                 self._count.setStyleSheet('color: #999;')
                 self._update_selection_button()
@@ -2655,7 +2677,6 @@ class FFlagBrowserDialog(QDialog):
                 self._count.setText(
                     f'Showing {visible_count:,} of {len(self._flags):,} initial Windows slots'
                     f' · {self._local_catalog.hinted:,} FVariables type hints (unverified)'
-                    ' · not effective runtime defaults'
                 )
                 self._count.setStyleSheet('color: #999;')
                 self._update_selection_button()
@@ -2703,8 +2724,7 @@ class FFlagBrowserDialog(QDialog):
                     name_item.setToolTip(
                         f'{slot.name}\nType: {source}\n'
                         f'Value RVA: 0x{slot.value_rva:X}\n'
-                        f'Raw initialized qword: 0x{slot.raw_u64:016X}\n'
-                        'Not a verified constructor or runtime default'
+                        f'Raw initialized qword: 0x{slot.raw_u64:016X}'
                     )
                 self._table.setItem(row, 0, name_item)
                 value_item = QTableWidgetItem(self._display_value(value))
@@ -4696,15 +4716,6 @@ class FFlagSection(QWidget):
         warn.setWordWrap(True)
         warn.setStyleSheet('color: #c90; padding: 4px;')
         layout.addWidget(warn)
-
-        warn2 = QLabel(
-            tr(
-                'ui.gui.modifications_tab.fleasion_synchronizes_detected_bootstrapper_launch_settings_if'
-            )
-        )
-        warn2.setWordWrap(True)
-        warn2.setStyleSheet('color: #c90; padding: 4px;')
-        layout.addWidget(warn2)
 
         grid = QGridLayout()
         grid.setSpacing(8)

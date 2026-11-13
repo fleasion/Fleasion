@@ -4,13 +4,14 @@ Fleasion provides **read-only offline Player scanning** without launching Roblox
 
 ## FastFlag browser sources
 
-The FastFlag browser offers three explicit sources:
+The FastFlag browser offers **two** sources, with the local client labeled for the current platform or selected installation:
 
-- **Public catalog** (default): Published ClientSettings values and public FastVariables inventories; it is not tied to one installed Player
-- **Windows EXE · initial slots**: Read a selected `RobloxPlayerBeta.exe` and display every coherent name/value/length table record. The 64-bit values are **initial on-disk storage**, not verified compiled constructor or runtime defaults. An optional `FVariables.txt` download supplies **unverified cross-build type hints**, accepted only when one qualified name matches the local suffix and the raw storage is compatible with a bool or signed 32-bit integer. Unknown types remain visible as hexadecimal data, but cannot be added under fabricated qualified names. The browser can select the newest installed Windows Player automatically, or users can choose another EXE
-- **Installed client · registrations**: Detect the currently selected local Roblox Player, read its structured registrations, and recover qualified names and types where the *selected binary itself* contains sufficient evidence. Sober, Mocktail, Nightcap, and Cordial are supported via Android ELF metadata and x86-64 registration thunks; native macOS and Rosemary-selected macOS Player bundles use Mach-O metadata; Windows uses PE records and qualified log labels. Other types can be **inferred** from public inventories or independently verified cached clients, but are not marked native-verified. Displayed values are from the published catalog and may be absent; they are not claimed to be initialized or effective local defaults
+- **Public catalog** (default): Published ClientSettings values and public FastVariables inventories; it is not tied to a single installed Player
+- **Client - Windows / Sober / Mocktail / Nightcap / Cordial / macOS**: Detect the installed Roblox Player and scan the platform-appropriate binary. On **Windows**, read the installed `RobloxPlayerBeta.exe` and display the coherent 24-byte name/value records as initialized on-disk storage. Optional `FVariables.txt` matches provide unverified cross-build type hints; ambiguously typed entries remain visible in hexadecimal but cannot be added under invented qualified names. A Windows-specific **Choose EXE** control can select a different installed binary. On **Linux**, inspect the selected Android-client ELF metadata and registration thunks; on **macOS**, inspect Mach-O registrations. Those platforms recover qualified names and native types when available, with remaining types inferred cautiously from public inventories or independently verified client caches
 
-The installed-client source stores immutable snapshots under Fleasion's per-client FastFlag scan cache, detects changed binaries using SHA-256, and can reuse a matching scan without another binary read. Selecting a different source does not overwrite a pending source's results. The browser's explicit **Refresh** action rescans the currently selected Player. A stale or unsupported format fails conservatively rather than producing invented registrations.
+The Linux and macOS dialogs do **not** show a Windows EXE source. The source and family dropdowns are content-sized so the search box retains the remaining row width.
+
+Native-client scans store immutable snapshots under Fleasion's per-client FastFlag scan cache, validate changed binaries using SHA-256, and reuse a matching scan without another binary read. Source changes invalidate pending results. The explicit **Refresh** action rescans the selected Player. A stale or unsupported format fails conservatively rather than producing invented registrations.
 
 ## Offline Windows JSON export
 
