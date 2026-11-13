@@ -144,3 +144,94 @@ def test_saved_config_load_cannot_overwrite_concurrent_gui_update() -> None:
     with spoofer._lock:  # pyright: ignore[reportPrivateUsage]
         assert [entry['target'] for entry in spoofer._entries] == ['2']  # pyright: ignore[reportPrivateUsage]
     assert spoofer.is_enabled()
+
+
+def test_concurrent_initial_readers_wait_until_configuration_is_published(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second is_enabled() must never observe an incomplete initial load."""
+    read_started = threading.Event()
+    release_read = threading.Event()
+    waiting_for_load = threading.Event()
+    first_done = threading.Event()
+    second_done = threading.Event()
+    results: dict[str, bool] = {}
+
+    class SlowConfig:
+        @property
+        def profile_picture_entries(self) -> list[JsonObject]:
+            read_started.set()
+            assert release_read.wait(timeout=3)
+            return [{'enabled': True, 'target': '1', 'image_url': 'https://example.com/yes.png'}]
+
+    spoofer = ProfilePictureSpoofer(SlowConfig())
+    condition = spoofer._config_condition  # pyright: ignore[reportPrivateUsage]
+    original_wait = condition.wait
+
+    def record_wait(timeout: float | None = None) -> bool:
+        waiting_for_load.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(condition, 'wait', record_wait)
+
+    def first_reader() -> None:
+        results['first'] = spoofer.is_enabled()
+        first_done.set()
+
+    def second_reader() -> None:
+        results['second'] = spoofer.is_enabled()
+        second_done.set()
+
+    first = threading.Thread(target=first_reader, daemon=True)
+    second = threading.Thread(target=second_reader, daemon=True)
+    first.start()
+    try:
+        assert read_started.wait(timeout=2)
+        with spoofer._lock:  # pyright: ignore[reportPrivateUsage]
+            assert not spoofer._config_loaded  # pyright: ignore[reportPrivateUsage]
+            assert spoofer._config_loading  # pyright: ignore[reportPrivateUsage]
+        second.start()
+        assert waiting_for_load.wait(timeout=2)
+        assert not second_done.is_set()
+    finally:
+        release_read.set()
+        first.join(timeout=2)
+        if second.ident is not None:
+            second.join(timeout=2)
+
+    assert first_done.is_set()
+    assert second_done.is_set()
+    assert results == {'first': True, 'second': True}
+
+
+def test_concurrent_reader_uses_gui_snapshot_even_if_initial_disk_read_is_pending() -> None:
+    """A GUI update should release waiting readers without waiting for disk I/O."""
+    read_started = threading.Event()
+    release_read = threading.Event()
+    results: list[bool] = []
+
+    class SlowConfig:
+        @property
+        def profile_picture_entries(self) -> list[JsonObject]:
+            read_started.set()
+            assert release_read.wait(timeout=3)
+            return [{'enabled': False, 'target': '1', 'image_url': 'https://example.com/old.png'}]
+
+    spoofer = ProfilePictureSpoofer(SlowConfig())
+    first = threading.Thread(target=spoofer.is_enabled, daemon=True)
+    first.start()
+    try:
+        assert read_started.wait(timeout=2)
+        spoofer.set_entries(
+            [{'enabled': True, 'target': '2', 'image_url': 'https://example.com/new.png'}]
+        )
+        # The completed GUI snapshot is available while the disk getter is blocked
+        results.append(spoofer.is_enabled())
+    finally:
+        release_read.set()
+        first.join(timeout=2)
+
+    assert results == [True]
+    assert spoofer.is_enabled()
+    with spoofer._lock:  # pyright: ignore[reportPrivateUsage]
+        assert [entry['target'] for entry in spoofer._entries] == ['2']  # pyright: ignore[reportPrivateUsage]

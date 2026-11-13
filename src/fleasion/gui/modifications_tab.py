@@ -5472,11 +5472,15 @@ class ModificationsTab(QWidget):
             self._refresh_pfp_row_icons(row)
 
     def invalidate_profile_picture_preview(self) -> None:
-        """Drop cached self-avatar state when the verified Player session changes."""
+        """Invalidate selection previews even before the deferred UI exists."""
         self._pfp_self_id_lookup_generation += 1
         self._pfp_self_id_inflight = False
         self._pfp_self_id = None
-        for row in range(self._pfp_table.rowCount()):
+        table = getattr(self, '_pfp_table', None)
+        if table is None:
+            # Persist the invalidated state; row creation will read the new ID
+            return
+        for row in range(table.rowCount()):
             self._refresh_pfp_row_icons(row)
 
     def _on_pfp_add_me(self) -> None:

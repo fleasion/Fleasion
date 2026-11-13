@@ -69,6 +69,10 @@ class _ConfigSource(Protocol):
     def profile_picture_entries(self) -> list[JsonObject]: ...
 
 
+class _CookieJarWithSet(Protocol):
+    def set(self, name: str, value: str, *, domain: str) -> object: ...
+
+
 def is_remote_image_url(value: str) -> bool:
     """Whether *value* is an http(s) URL rather than a local file path."""
     return value.lower().startswith(('http://', 'https://'))
@@ -196,7 +200,10 @@ def _selected_account_user_id(cookie: str) -> str | None:
     with requests.Session() as session:
         session.trust_env = False
         session.proxies = {}
-        session.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
+        # Requests exposes a partially untyped cookie setter in some stub versions
+        cast('_CookieJarWithSet', session.cookies).set(
+            '.ROBLOSECURITY', cookie, domain='.roblox.com'
+        )
         response = session.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
         if response.status_code != 200:
             return None
@@ -216,6 +223,8 @@ class ProfilePictureSpoofer:
     def __init__(self, config_manager: _ConfigSource | None = None) -> None:
         self._config = config_manager
         self._lock = threading.Lock()
+        self._config_condition = threading.Condition(self._lock)
+        self._config_loading = False
         self._entries: list[PfpEntry] = []
         self._current_user_id: str | None = None
         self._selection_generation = 0
@@ -226,19 +235,31 @@ class ProfilePictureSpoofer:
         self._entries_revision = 0
 
     def _load_config_entries(self) -> None:
-        """Load saved rows once, without replacing a concurrent GUI update."""
-        with self._lock:
+        """Publish a completed load atomically, or accept a newer GUI update."""
+        with self._config_condition:
+            while self._config_loading and not self._config_loaded:
+                # Release the lock so the loader or a GUI update can complete
+                self._config_condition.wait()
             if self._config_loaded:
                 return
-            self._config_loaded = True
+            self._config_loading = True
             revision = self._entries_revision
-        config = self._config
-        if config is None:
-            return
-        entries = normalize_entries(list(config.profile_picture_entries))
-        with self._lock:
-            if self._entries_revision == revision:
-                self._entries = entries
+
+        entries: list[PfpEntry] | None = None
+        try:
+            config = self._config
+            entries = (
+                normalize_entries(list(config.profile_picture_entries))
+                if config is not None
+                else []
+            )
+        finally:
+            with self._config_condition:
+                if entries is not None and self._entries_revision == revision:
+                    self._entries = entries
+                    self._config_loaded = True
+                self._config_loading = False
+                self._config_condition.notify_all()
 
     def is_enabled(self) -> bool:
         self._load_config_entries()
@@ -247,10 +268,12 @@ class ProfilePictureSpoofer:
 
     def set_entries(self, entries: Iterable[object]) -> None:
         normalized = normalize_entries(list(entries))
-        with self._lock:
+        with self._config_condition:
             self._config_loaded = True
             self._entries_revision += 1
             self._entries = normalized
+            # Readers blocked on an older disk load can now use the GUI snapshot
+            self._config_condition.notify_all()
 
     def add_identity_listener(self, callback: Callable[[], None]) -> None:
         """Notify GUI previews when Account Manager's selected identity changes."""

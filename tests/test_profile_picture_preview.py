@@ -68,6 +68,7 @@ def test_preview_rejects_oversized_content_length_without_reading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     response = _ImageResponse([b'NEVER-DOWNLOAD'], declared_size='10000000')
+
     def get(_url: str, **_kwargs: object) -> _ImageResponse:
         return response
 
@@ -81,26 +82,26 @@ def test_preview_rejects_oversized_content_length_without_reading(
 
 def test_preview_reassembles_small_stream(monkeypatch: pytest.MonkeyPatch) -> None:
     response = _ImageResponse([b'12', b'34'], declared_size='4')
+
     def get(_url: str, **_kwargs: object) -> _ImageResponse:
         return response
 
     monkeypatch.setattr(requests, 'get', get)
-    assert ModificationsTab._load_pfp_image_bytes(
-        _preview_loader(5), 'remote', 'https://example.com/small.png'
-    ) == b'1234'
+    assert (
+        ModificationsTab._load_pfp_image_bytes(
+            _preview_loader(5), 'remote', 'https://example.com/small.png'
+        )
+        == b'1234'
+    )
     assert response.closed
 
 
 def test_preview_caps_local_file_reads(tmp_path: Path) -> None:
     file = tmp_path / 'image.png'
     file.write_bytes(b'123456')
-    assert not ModificationsTab._load_pfp_image_bytes(
-        _preview_loader(5), 'local', str(file)
-    )
+    assert not ModificationsTab._load_pfp_image_bytes(_preview_loader(5), 'local', str(file))
     file.write_bytes(b'1234')
-    assert ModificationsTab._load_pfp_image_bytes(
-        _preview_loader(5), 'local', str(file)
-    ) == b'1234'
+    assert ModificationsTab._load_pfp_image_bytes(_preview_loader(5), 'local', str(file)) == b'1234'
 
 
 def test_account_change_invalidates_cached_preview_and_stale_completion() -> None:
@@ -143,8 +144,13 @@ def test_profile_link_lookup_updates_real_qt_username_cell() -> None:
 
     app = QApplication.instance() or QApplication([])
     table = QTableWidget(1, 4)
-    table.setItem(0, ModificationsTab._PFP_COL_TARGET, QTableWidgetItem('https://www.roblox.com/users/123/profile'))
+    table.setItem(
+        0,
+        ModificationsTab._PFP_COL_TARGET,
+        QTableWidgetItem('https://www.roblox.com/users/123/profile'),
+    )
     table.setItem(0, ModificationsTab._PFP_COL_USERNAME, QTableWidgetItem('…'))
+
     def set_username(item: QTableWidgetItem, value: str) -> None:
         item.setText(value)
 
@@ -183,7 +189,9 @@ def test_qt_preview_invalidated_on_selected_account_change(
 
     monkeypatch.setattr(module, '_selected_account_user_id', resolve)
     spoofer = module.ProfilePictureSpoofer()
-    spoofer.set_entries([{'enabled': True, 'target': 'me', 'image_url': 'https://example.com/me.png'}])
+    spoofer.set_entries(
+        [{'enabled': True, 'target': 'me', 'image_url': 'https://example.com/me.png'}]
+    )
     spoofer.set_current_user('1')
     proxy_master = cast('ProxyMaster', SimpleNamespace(profile_picture_spoofer=spoofer))
     manager = cast('ModificationManager', object())
@@ -200,6 +208,40 @@ def test_qt_preview_invalidated_on_selected_account_change(
         assert spoofer.current_user_id() is None
     finally:
         release.set()
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()
+
+
+def test_deferred_profile_picture_tab_handles_identity_change_before_table_exists() -> None:
+    """An Account Manager callback during deferred build cannot access an absent table."""
+    from PySide6.QtWidgets import QApplication, QTableWidget
+
+    from fleasion.proxy.addons.profile_picture_spoofer import ProfilePictureSpoofer
+
+    app = QApplication.instance() or QApplication([])
+    spoofer = ProfilePictureSpoofer()
+    proxy_master = cast('ProxyMaster', SimpleNamespace(profile_picture_spoofer=spoofer))
+    manager = cast('ModificationManager', object())
+    tab = ModificationsTab(manager, proxy_master=proxy_master, defer_setup=True)
+    try:
+        assert not hasattr(tab, '_pfp_table')
+        # Direct invocation must not raise: Qt signal callbacks otherwise only
+        # report failures through the application exception hook
+        tab.invalidate_profile_picture_preview()
+        previous = tab._pfp_self_id_lookup_generation  # pyright: ignore[reportPrivateUsage]
+        spoofer.set_current_user('42')
+        app.processEvents()
+        assert tab._pfp_self_id_lookup_generation > previous  # pyright: ignore[reportPrivateUsage]
+        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
+        assert not hasattr(tab, '_pfp_table')
+        # The deferred UI now exists: subsequent notifications refresh its rows
+        tab._pfp_table = QTableWidget(0, 4, tab)  # pyright: ignore[reportPrivateUsage]
+        tab._pfp_self_id = '42'  # pyright: ignore[reportPrivateUsage]
+        spoofer.set_current_user('43')
+        app.processEvents()
+        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
+    finally:
         tab.close()
         tab.deleteLater()
         app.processEvents()
