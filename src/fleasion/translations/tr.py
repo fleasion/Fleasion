@@ -633,6 +633,8 @@ TURKISH: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Her FastFlag değeri bir dize, sayı veya boolean olmalıdır.',
     'modifications.fastflag.name': 'Ad',
     'modifications.fastflag.value': 'Değer',
+    'modifications.fastflags.multiple_types_tooltip': 'Bu öneksiz FastFlag birden fazla türe karşılık geliyor: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'Geçerli envanterde eşleşen tür bulunamadı. Fleasion şu istemci türlerini deneyecek: {types}.',
     'modifications.fastflags.cached_suffix': ' • önbellekte',
     'modifications.fastflags.load_failed': 'Roblox FastFlags alınamadı: {error}',
     'modifications.fastflags.no_current_pc_values': ' • güncel PC değeri olmayan {count:,}',

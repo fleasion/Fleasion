@@ -633,6 +633,8 @@ FILIPINO: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Dapat string, numero, o boolean ang bawat halaga ng FastFlag.',
     'modifications.fastflag.name': 'Pangalan',
     'modifications.fastflag.value': 'Halaga',
+    'modifications.fastflags.multiple_types_tooltip': 'Ang FastFlag na walang prefix ay tumutugma sa maraming uri: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'Walang katugmang uri sa kasalukuyang listahan. Susubukan ng Fleasion ang mga uri na ito: {types}.',
     'modifications.fastflags.cached_suffix': ' • nasa cache',
     'modifications.fastflags.load_failed': 'Hindi makuha ang mga Roblox FastFlag: {error}',
     'modifications.fastflags.no_current_pc_values': ' • {count:,} na walang kasalukuyang halaga sa PC',

@@ -11,6 +11,10 @@ The FastFlag browser offers **two** sources, with the local client labeled for t
 
 The Linux and macOS dialogs do **not** show a Windows EXE source. The source and family dropdowns are content-sized so the search box retains the remaining row width.
 
+**Public catalog caching:** The merged public inventory is cached in `fflag_browser.json` for **24 hours**, shared across Fleasion launches and the custom FastFlag editor. A valid cached inventory is loaded directly when the browser opens; it is never downloaded on each opening. Opening the Modifications tab, or enabling custom FastFlags, also triggers a bounded background prefetch **only when custom flags are enabled and the catalog is stale**. Prefetching uses a shared in-process lock, prevents immediate repeated attempts after failures (15-minute backoff), and refreshes unprefixed-name warnings when the inventory becomes available. Explicit **Refresh** forces an update. Cache writes are atomic and logged, and the catalog survives Fleasion's normal object-cache clearing actions on Linux, macOS and Windows.
+
+Unprefixed custom FastFlags are resolved to qualified client families from the cached inventory only when delivered to Roblox, without rewriting their saved names. Name-column ambiguity warnings require actual inventory evidence, avoiding orange warnings for types that have not been downloaded yet.
+
 Native-client scans store immutable snapshots under Fleasion's per-client FastFlag scan cache, validate changed binaries using SHA-256, and reuse a matching scan without another binary read. Source changes invalidate pending results. The explicit **Refresh** action rescans the selected Player. A stale or unsupported format fails conservatively rather than producing invented registrations.
 
 ## Offline Windows JSON export

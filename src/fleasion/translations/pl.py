@@ -633,6 +633,8 @@ POLISH: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Każda wartość FastFlag musi być ciągiem znaków, liczbą lub wartością logiczną.',
     'modifications.fastflag.name': 'Nazwa',
     'modifications.fastflag.value': 'Wartość',
+    'modifications.fastflags.multiple_types_tooltip': 'Ten FastFlag bez prefiksu pasuje do kilku typów: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'Nie znaleziono typu w bieżącym wykazie. Fleasion wypróbuje te typy klienta: {types}.',
     'modifications.fastflags.cached_suffix': ' • buforowane',
     'modifications.fastflags.load_failed': 'Nie można pobrać FastFlags Roblox: {error}',
     'modifications.fastflags.no_current_pc_values': ' • {count:,} bez aktualnej wartości PC',

@@ -27,18 +27,21 @@ from PySide6.QtCore import (
     QPersistentModelIndex,
     QPointF,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QSignalBlocker,
     QSize,
     Qt,
     QTimer,
     Signal,
+    Slot,
 )
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
     QFont,
     QFontMetrics,
+    QHelpEvent,
     QIcon,
     QKeyEvent,
     QKeySequence,
@@ -47,9 +50,11 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPalette,
+    QPen,
     QPixmap,
     QPolygonF,
     QShortcut,
+    QShowEvent,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -88,6 +93,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QTabWidget,
     QTextEdit,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -120,8 +126,15 @@ from fleasion.modifications.platform_targets import (
 )
 from fleasion.modifications.stash_paths import resource_stash_dir
 from fleasion.utils import APP_CACHE_DIR, log_buffer, open_folder
+from fleasion.utils.fflag_resolution import (
+    FFLAG_CATALOG_CACHE_TTL_SECONDS,
+    full_prefix,
+    known_typed_names,
+    qualified_matches,
+)
 from fleasion.utils.http import http_get
 from fleasion.utils.json_types import as_json_object
+from fleasion.utils.paths import FFLAG_CATALOG_CACHE_FILENAME
 from fleasion.utils.threading import run_in_thread
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
@@ -951,6 +964,17 @@ class CompactBooleanComboBox(QComboBox):
         arrow_y = self.height() // 2
         painter.drawLine(arrow_x - 3, arrow_y - 1, arrow_x, arrow_y + 2)
         painter.drawLine(arrow_x, arrow_y + 2, arrow_x + 3, arrow_y - 1)
+
+
+def _style_fastflag_text_editor(editor: QLineEdit) -> None:
+    """Cover the underlying table text and align inline edits with their row."""
+    editor.setFrame(False)
+    editor.setAutoFillBackground(True)
+    editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    editor.setTextMargins(4, 0, 4, 0)
+    editor.setStyleSheet(
+        'QLineEdit { background-color: palette(base); border: 0; margin: 0; padding: 0; }'
+    )
 
 
 class FastFlagValueDelegate(QStyledItemDelegate):
@@ -2030,8 +2054,8 @@ class FFlagBrowserDialog(QDialog):
     _BYPASS_CUSTOM_FFLAGS_HEADER: ClassVar[dict[str, str]] = {
         'X-Fleasion-Bypass-Custom-FFlags': '1'
     }
-    _CACHE_PATH = APP_CACHE_DIR / 'fflag_browser.json'
-    _CACHE_TTL_SECONDS = 60 * 60
+    _CACHE_PATH = APP_CACHE_DIR / FFLAG_CATALOG_CACHE_FILENAME
+    _CACHE_TTL_SECONDS = FFLAG_CATALOG_CACHE_TTL_SECONDS
     _CACHE_VERSION = 3
     _FAMILIES = (
         'DFFlag',
@@ -2466,9 +2490,11 @@ class FFlagBrowserDialog(QDialog):
         return flags or None
 
     @classmethod
-    def _write_cache(cls, flags: dict[str, str | None], *, now: float | None = None) -> None:
-        """Atomically persist a successfully resolved union for the next hour."""
-        temporary_path = cls._CACHE_PATH.with_name(f'.{cls._CACHE_PATH.name}.tmp')
+    def _write_cache(cls, flags: dict[str, str | None], *, now: float | None = None) -> bool:
+        """Atomically persist a successfully resolved union for the next 24 hours."""
+        temporary_path = cls._CACHE_PATH.with_name(
+            f'.{cls._CACHE_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp'
+        )
         try:
             cls._CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
             temporary_path.write_text(
@@ -2483,12 +2509,30 @@ class FFlagBrowserDialog(QDialog):
                 encoding='utf-8',
             )
             temporary_path.replace(cls._CACHE_PATH)
-        except OSError:
-            # The browser remains useful if its optional cache cannot be written.
-            pass
+        except OSError as exc:
+            log_buffer.log('FastFlags', f'Could not save catalog cache: {exc}')
+            return False
+        else:
+            log_buffer.log(
+                'FastFlags', f'Saved {len(flags):,} FastFlags to catalog cache: {cls._CACHE_PATH}'
+            )
+            return True
         finally:
             with contextlib.suppress(OSError):
                 temporary_path.unlink(missing_ok=True)
+
+    @classmethod
+    def cache_is_current(cls) -> bool:
+        """Whether the shared inventory has been refreshed within 24 hours."""
+        return cls._read_cache() is not None
+
+    @classmethod
+    def refresh_cache_if_stale(cls) -> bool:
+        """Refresh a stale inventory without constructing or displaying the browser."""
+        if cls.cache_is_current():
+            return False
+        flags = cls._collect_flags()
+        return cls._write_cache(flags)
 
     def _refresh(self, force: bool = False) -> None:  # ruff: ignore[too-many-return-statements]
         if self._refresh_button.isEnabled() is False:
@@ -2538,6 +2582,9 @@ class FFlagBrowserDialog(QDialog):
             cached_flags = self._read_cache()
             if cached_flags is not None:
                 self._cache_loaded = True
+                log_buffer.log(
+                    'FastFlags', f'Loaded {len(cached_flags):,} FastFlags from catalog cache'
+                )
                 self.flags_loaded.emit(cached_flags)
                 return
 
@@ -2547,39 +2594,40 @@ class FFlagBrowserDialog(QDialog):
         self._count.setStyleSheet('color: #999;')
         threading.Thread(target=self._fetch_flags, daemon=True).start()
 
-    def _collect_flags(self) -> dict[str, str | None]:
+    @classmethod
+    def _collect_flags(cls) -> dict[str, str | None]:
         """Merge current public settings and binary names, preferring live PC values."""
         flags: dict[str, str | None] = {}
-        settings_urls = self._settings_urls()
+        settings_urls = cls._settings_urls()
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {
                 executor.submit(
                     http_get,
                     url,
                     20,
-                    self._BYPASS_CUSTOM_FFLAGS_HEADER,
+                    cls._BYPASS_CUSTOM_FFLAGS_HEADER,
                 ): url
                 for url in settings_urls
             }
             for future in as_completed(futures):
                 url = futures[future]
                 try:
-                    settings = self._extract_flags(json.loads(future.result()))
+                    settings = cls._extract_flags(json.loads(future.result()))
                 except OSError, TypeError, ValueError, json.JSONDecodeError:
                     # Some platform/channel combinations are intentionally unavailable.
                     continue
-                if url == self._SETTINGS_URL:
+                if url == cls._SETTINGS_URL:
                     flags.update(settings)
                 else:
                     flags.update({name: None for name in settings if name not in flags})
 
         # Only current binary inventories: historical snapshots retain removed flags
         for tracker_url in (
-            self._TRACKER_VARIABLES_URL,
-            self._PLAYER_VARIABLES_URL,
+            cls._TRACKER_VARIABLES_URL,
+            cls._PLAYER_VARIABLES_URL,
         ):
             try:
-                tracker_flags = self._extract_tracker_flags(http_get(tracker_url, timeout=20))
+                tracker_flags = cls._extract_tracker_flags(http_get(tracker_url, timeout=20))
             except OSError, ValueError:
                 # A tracker snapshot is optional; published values remain useful.
                 continue
@@ -2589,6 +2637,7 @@ class FFlagBrowserDialog(QDialog):
         if not flags:
             msg = 'No configured FastFlag source returned usable data.'
             raise ValueError(msg)
+        log_buffer.log('FastFlags', f'Downloaded {len(flags):,} FastFlags from public sources')
         return flags
 
     def _fetch_flags(self) -> None:
@@ -3397,9 +3446,120 @@ class FastFlagActionsDialog(QDialog):
             self._refresh(name)
 
 
+class CustomFFlagNameDelegate(QStyledItemDelegate):
+    """Show prefix-resolution warnings in the Custom FastFlags name column."""
+
+    @override
+    def createEditor(
+        self,
+        parent: QWidget,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> QWidget:
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            _style_fastflag_text_editor(editor)
+        return editor
+
+    def __init__(self, parent: QTableView, names: Callable[[], frozenset[str] | None]) -> None:
+        super().__init__(parent)
+        self._known_names = names
+
+    @staticmethod
+    def _warning_rect(rect: QRect) -> QRect:
+        return QRect(rect.right() - 22, rect.center().y() - 7, 15, 15)
+
+    def _matches(self, index: QModelIndex | QPersistentModelIndex) -> tuple[str, ...]:
+        if index.data(_FFLAG_ROW_KIND_ROLE) != _FFLAG_ROW_FLAG:
+            return ()
+        name = index.data(_FFLAG_CANONICAL_NAME_ROLE)
+        if not isinstance(name, str) or full_prefix(name):
+            return ()
+        # No downloaded inventory means we cannot determine whether a name
+        # actually collides; trying prefixes at runtime is not a UI warning
+        known_names = self._known_names()
+        if not known_names:
+            return ()
+        return qualified_matches(name, known_names)
+
+    @override
+    def initStyleOption(
+        self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
+    ) -> None:
+        super().initStyleOption(option, index)
+        if len(self._matches(index)) > 1:
+            option.text = option.fontMetrics.elidedText(
+                option.text, Qt.TextElideMode.ElideRight, max(0, option.rect.width() - 30)
+            )
+
+    @override
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> None:
+        super().paint(painter, option, index)
+        matches = self._matches(index)
+        if len(matches) < 2:
+            return
+        rect = self._warning_rect(option.rect)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        known = self._known_names()
+        confirmed = known is not None and any(match in known for match in matches)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        cx, top = rect.center().x(), rect.top()
+        triangle = QPolygonF(
+            [
+                QPointF(cx, top + 1),
+                QPointF(rect.left() + 1, rect.bottom() - 1),
+                QPointF(rect.right() - 1, rect.bottom() - 1),
+            ]
+        )
+        if confirmed:
+            # Dark outline preserves contrast for a white warning in light themes
+            painter.setPen(QPen(QColor('#444444'), 3))
+            painter.drawPolygon(triangle)
+        painter.setPen(QPen(QColor('#ffffff' if confirmed else '#ff9d40'), 1.3))
+        painter.drawPolygon(triangle)
+        painter.drawLine(cx, top + 5, cx, top + 9)
+        painter.drawPoint(cx, top + 11)
+        painter.restore()
+
+    @override
+    def helpEvent(
+        self,
+        event: QHelpEvent,
+        view: QAbstractItemView,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> bool:
+        matches = self._matches(index)
+        if (
+            event.type() == QEvent.Type.ToolTip
+            and len(matches) > 1
+            and self._warning_rect(option.rect).contains(event.pos())
+        ):
+            prefixes = ', '.join(prefix for match in matches if (prefix := full_prefix(match)))
+            known = self._known_names()
+            confirmed = known is not None and any(match in known for match in matches)
+            tooltip = (
+                tr('modifications.fastflags.multiple_types_tooltip', types=prefixes)
+                if confirmed
+                else tr('modifications.fastflags.possible_types_tooltip', types=prefixes)
+            )
+            QToolTip.showText(event.globalPos(), tooltip, view)
+            return True
+        return super().helpEvent(event, view, option, index)
+
+
 class CustomFFlagEditor(QWidget):
     """Fishstrap-style name/value editor backed by Fleasion's proxy settings."""
 
+    _catalog_updated = Signal()
+    _catalog_prefetch_lock = threading.Lock()
+    _catalog_retry_not_before = 0.0
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
     _VIRTUAL_THRESHOLD = 10_000
 
@@ -3456,6 +3616,54 @@ class CustomFFlagEditor(QWidget):
         self._virtual_flags: dict[str, str] = {}
         self._setup_ui()
         self._load_flags()
+        self._catalog_updated.connect(self._reload_known_flag_names)
+
+    @Slot()
+    def _reload_known_flag_names(self) -> None:
+        """Update existing warnings when a browser download finishes."""
+        names = known_typed_names()
+        if names == self._known_flag_names:
+            return
+        self._known_flag_names = names
+        self._table.viewport().update()
+        self._virtual_table.viewport().update()
+
+    def prefetch_flag_catalog_if_needed(self) -> None:
+        """Fetch current browser data only with custom FastFlags active and cache stale."""
+        self._reload_known_flag_names()
+        if not (self._config and getattr(self._config, 'custom_fflags_enabled', False)):
+            return
+        if FFlagBrowserDialog.cache_is_current():
+            return
+        if time.monotonic() < self._catalog_retry_not_before:
+            return
+        if not self._catalog_prefetch_lock.acquire(blocking=False):
+            return
+        try:
+            threading.Thread(target=self._prefetch_flag_catalog, daemon=True).start()
+        except RuntimeError:
+            self._catalog_prefetch_lock.release()
+            raise
+
+    def _report_catalog_refresh_result(self, stored: bool) -> None:
+        if stored:
+            # The window may have closed while the background fetch ran
+            with contextlib.suppress(RuntimeError):
+                self._catalog_updated.emit()
+        elif not FFlagBrowserDialog.cache_is_current():
+            # A failed cache write must not cause an immediate retry loop
+            self._catalog_retry_not_before = time.monotonic() + 15 * 60
+
+    def _prefetch_flag_catalog(self) -> None:
+        try:
+            # The refresh method rechecks freshness in case another download won the race
+            stored = FFlagBrowserDialog.refresh_cache_if_stale()
+            self._report_catalog_refresh_result(stored)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._catalog_retry_not_before = time.monotonic() + 15 * 60
+            log_buffer.log('CustomFFlags', f'Could not refresh FastFlag catalog: {exc}')
+        finally:
+            self._catalog_prefetch_lock.release()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -3531,6 +3739,9 @@ class CustomFFlagEditor(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setMinimumHeight(180)
+        self._table.setItemDelegateForColumn(
+            0, CustomFFlagNameDelegate(self._table, lambda: self._known_flag_names)
+        )
         self._table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._table))
         self._table.clicked.connect(self._edit_value_cell)
         self._table.cellChanged.connect(self._on_cell_changed)
@@ -3550,6 +3761,9 @@ class CustomFFlagEditor(QWidget):
         self._virtual_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._virtual_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._virtual_table.setEditTriggers(self._table.editTriggers())
+        self._virtual_table.setItemDelegateForColumn(
+            0, CustomFFlagNameDelegate(self._virtual_table, lambda: self._known_flag_names)
+        )
         self._virtual_table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._virtual_table))
         virtual_header = self._virtual_table.horizontalHeader()
         virtual_header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
@@ -3686,6 +3900,12 @@ class CustomFFlagEditor(QWidget):
         return super().eventFilter(watched, event)
 
     def _load_flags(self, sync_hotkeys: bool = True) -> None:
+        previous_names = getattr(self, '_known_flag_names', None)
+        self._known_flag_names = known_typed_names()
+        if previous_names is None and self._known_flag_names is not None:
+            log_buffer.log(
+                'FastFlags', f'Loaded {len(self._known_flag_names):,} cached names for warnings'
+            )
         flags = dict(getattr(self._config, 'custom_fflags', {}) or {}) if self._config else {}
         if len(flags) > self._VIRTUAL_THRESHOLD:
             self._virtual_active = True
@@ -4283,6 +4503,8 @@ class CustomFFlagEditor(QWidget):
             self._config.custom_fflags_warning_accepted = True
 
         self._config.custom_fflags_enabled = checked
+        if checked:
+            self.prefetch_flag_catalog_if_needed()
         self._sync_hotkeys()
         self._refresh_proxy_hosts()
         self._update_status()
@@ -4334,9 +4556,16 @@ class CustomFFlagEditor(QWidget):
         )
         self._set_flags(flags)
 
+    def _on_browser_inventory_loaded(self, _flags: object) -> None:
+        self._reload_known_flag_names()
+
     def _browse_fflags(self) -> None:
         dialog = FFlagBrowserDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.selected_flags:
+        dialog.flags_loaded.connect(self._on_browser_inventory_loaded)
+        self._reload_known_flag_names()
+        result = dialog.exec()
+        self._reload_known_flag_names()
+        if result != QDialog.DialogCode.Accepted or not dialog.selected_flags:
             return
         flags = self._flags_from_table()
         flags.update(dialog.selected_flags)
@@ -4714,7 +4943,9 @@ class FFlagSection(QWidget):
             )
         )
         warn.setWordWrap(True)
-        warn.setStyleSheet('color: #c90; padding: 4px;')
+        warn.setTextFormat(Qt.TextFormat.PlainText)
+        warn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        warn.setStyleSheet('color: #c90; padding: 0;')
         layout.addWidget(warn)
 
         grid = QGridLayout()
@@ -5148,6 +5379,13 @@ class ModificationsTab(QWidget):
         if not defer_setup:
             for _ in self.build_ui():
                 pass
+
+    @override
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        editor = getattr(getattr(self, '_fflag_widget', None), '_custom_fflag_editor', None)
+        if editor is not None:
+            editor.prefetch_flag_catalog_if_needed()
 
     def build_ui(self) -> Generator[None]:
         yield from self._build_ui()

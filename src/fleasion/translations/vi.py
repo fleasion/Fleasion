@@ -633,6 +633,8 @@ VIETNAMESE: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Mỗi giá trị FastFlag phải là chuỗi, số hoặc giá trị boolean.',
     'modifications.fastflag.name': 'Tên',
     'modifications.fastflag.value': 'Giá trị',
+    'modifications.fastflags.multiple_types_tooltip': 'FastFlag không có tiền tố này khớp với nhiều loại: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'Không tìm thấy loại phù hợp trong danh sách hiện tại. Fleasion sẽ thử các loại phía máy khách: {types}.',
     'modifications.fastflags.cached_suffix': ' • đã lưu đệm',
     'modifications.fastflags.load_failed': 'Không thể lấy FastFlag Roblox: {error}',
     'modifications.fastflags.no_current_pc_values': ' • {count:,} mục không có giá trị PC hiện tại',

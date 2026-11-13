@@ -27,6 +27,7 @@ from defusedxml.common import DefusedXmlException
 from .logging import log_buffer
 from .paths import (
     APP_CACHE_DIR,
+    FFLAG_CATALOG_CACHE_FILENAME,
     LOCAL_APPDATA,
     ROBLOX_PROCESS,
     ROBLOX_STUDIO_PROCESS,
@@ -2001,9 +2002,9 @@ def _summarize_cache_messages(messages: list[str]) -> list[str]:
 
 
 def _delete_app_cache_contents(app_cache_dir: Path) -> None:
-    preserve = app_cache_dir / 'predownloaded'
+    preserve = {app_cache_dir / 'predownloaded', app_cache_dir / FFLAG_CATALOG_CACHE_FILENAME}
     for child in app_cache_dir.iterdir():
-        if child == preserve:
+        if child in preserve:
             continue
         if child.is_dir():
             cast('Callable[..., None]', shutil.rmtree)(child, onerror=_rmtree_clear_readonly_retry)

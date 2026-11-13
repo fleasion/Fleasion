@@ -334,6 +334,7 @@ def _load_platform_windows(
 
     paths = types.ModuleType('fleasion.utils.paths')
     paths.__dict__['APP_CACHE_DIR'] = Path('/nonexistent/fleasion-test-cache')
+    paths.__dict__['FFLAG_CATALOG_CACHE_FILENAME'] = 'fflag_browser.json'
     paths.__dict__['LOCAL_APPDATA'] = ''
     paths.__dict__['ROBLOX_PROCESS'] = 'RobloxPlayerBeta.exe'
     paths.__dict__['ROBLOX_STUDIO_PROCESS'] = 'RobloxStudioBeta.exe'
@@ -1633,3 +1634,25 @@ def test_extract_exe_from_command_fallback_has_shlex_available(
     module = _load_platform_windows(monkeypatch)
 
     assert module.extract_exe_from_command('launcher --flag') == Path('launcher')
+
+
+def test_windows_cache_cleanup_preserves_flag_catalog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    cache_dir = tmp_path / 'cache'
+    downloads = cache_dir / 'predownloaded'
+    converted = cache_dir / 'converted'
+    downloads.mkdir(parents=True)
+    converted.mkdir()
+    (downloads / 'keep.dat').write_text('keep', encoding='utf-8')
+    (converted / 'remove.obj').write_text('delete', encoding='utf-8')
+    catalog = cache_dir / 'fflag_browser.json'
+    catalog.write_text('keep flags', encoding='utf-8')
+
+    cleanup = cast('Callable[[Path], None]', module.raw.__dict__['_delete_app_cache_contents'])
+    cleanup(cache_dir)
+
+    assert catalog.read_text(encoding='utf-8') == 'keep flags'
+    assert (downloads / 'keep.dat').exists()
+    assert not converted.exists()

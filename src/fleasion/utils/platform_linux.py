@@ -61,6 +61,7 @@ from .paths import (
     APP_CACHE_DIR,
     CONFIG_DIR,
     CONFIG_FILE,
+    FFLAG_CATALOG_CACHE_FILENAME,
     USER_HOME,
     get_icon_path,
 )
@@ -815,7 +816,7 @@ def _delete_path(path: Path, messages: list[str], label: str) -> None:
 
 
 def _clear_cache_directory_contents() -> None:
-    preserve = {APP_CACHE_DIR / 'predownloaded'}
+    preserve = {APP_CACHE_DIR / 'predownloaded', APP_CACHE_DIR / FFLAG_CATALOG_CACHE_FILENAME}
     for child in APP_CACHE_DIR.iterdir():
         if child in preserve:
             continue

@@ -633,6 +633,8 @@ DUTCH: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Elke FastFlag-waarde moet een tekenreeks, getal of booleaanse waarde zijn.',
     'modifications.fastflag.name': 'Naam',
     'modifications.fastflag.value': 'Waarde',
+    'modifications.fastflags.multiple_types_tooltip': 'Deze FastFlag zonder voorvoegsel komt overeen met meerdere typen: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'Geen overeenkomstig type in de huidige inventaris gevonden. Fleasion probeert deze clienttypen: {types}.',
     'modifications.fastflags.cached_suffix': ' • in cache',
     'modifications.fastflags.load_failed': 'Roblox-FastFlags ophalen mislukt: {error}',
     'modifications.fastflags.no_current_pc_values': ' • {count:,} zonder actuele pc-waarde',

@@ -633,6 +633,8 @@ RUSSIAN: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Каждое значение FastFlag должно быть строкой, числом или логическим значением.',
     'modifications.fastflag.name': 'Имя',
     'modifications.fastflag.value': 'Значение',
+    'modifications.fastflags.multiple_types_tooltip': 'Этот FastFlag без префикса соответствует нескольким типам: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'В текущем списке не найдено совпадающих типов. Fleasion попробует эти клиентские типы: {types}.',
     'modifications.fastflags.cached_suffix': ' • кэшировано',
     'modifications.fastflags.load_failed': 'Не удалось получить FastFlags Roblox: {error}',
     'modifications.fastflags.no_current_pc_values': ' • {count:,} без текущего значения PC',

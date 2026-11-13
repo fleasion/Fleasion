@@ -633,6 +633,8 @@ PORTUGUESE: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Todo valor de FastFlag deve ser uma string, um número ou um booleano.',
     'modifications.fastflag.name': 'Nome',
     'modifications.fastflag.value': 'Valor',
+    'modifications.fastflags.multiple_types_tooltip': 'Esta FastFlag sem prefixo corresponde a vários tipos: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'Nenhum tipo correspondente no inventário atual. O Fleasion tentará estes tipos de cliente: {types}.',
     'modifications.fastflags.cached_suffix': ' • em cache',
     'modifications.fastflags.load_failed': 'Não foi possível obter os FastFlags do Roblox: {error}',
     'modifications.fastflags.no_current_pc_values': ' • {count:,} sem um valor atual de PC',

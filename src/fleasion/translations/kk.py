@@ -633,6 +633,8 @@ KAZAKH: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Әр FastFlag мәні жол, сан немесе логикалық мән болуы керек.',
     'modifications.fastflag.name': 'Атауы',
     'modifications.fastflag.value': 'Мәні',
+    'modifications.fastflags.multiple_types_tooltip': 'Бұл префикссіз FastFlag бірнеше түрге сәйкес келеді: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'Ағымдағы тізімнен сәйкес түр табылмады. Fleasion осы клиент түрлерін тексереді: {types}.',
     'modifications.fastflags.cached_suffix': ' • кэштелген',
     'modifications.fastflags.load_failed': 'Roblox FastFlags мәндерін алу мүмкін болмады: {error}',
     'modifications.fastflags.no_current_pc_values': ' • ағымдағы PC мәні жоқ {count:,}',

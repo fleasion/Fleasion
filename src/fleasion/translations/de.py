@@ -633,6 +633,8 @@ GERMAN: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'Jeder FastFlag-Wert muss eine Zeichenfolge, Zahl oder ein boolescher Wert sein.',
     'modifications.fastflag.name': 'Name',
     'modifications.fastflag.value': 'Wert',
+    'modifications.fastflags.multiple_types_tooltip': 'Dieses FastFlag ohne Präfix entspricht mehreren Typen: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'Kein entsprechender Typ im aktuellen Inventar gefunden. Fleasion versucht diese Clienttypen: {types}.',
     'modifications.fastflags.cached_suffix': ' • im Cache',
     'modifications.fastflags.load_failed': 'Roblox-FastFlags konnten nicht abgerufen werden: {error}',
     'modifications.fastflags.no_current_pc_values': ' • {count:,} ohne aktuellen PC-Wert',

@@ -633,6 +633,8 @@ CHINESE: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': '每个 FastFlag 值都必须是字符串、数字或布尔值。',
     'modifications.fastflag.name': '名称',
     'modifications.fastflag.value': '值',
+    'modifications.fastflags.multiple_types_tooltip': '此无前缀 FastFlag 匹配多种类型：{types}。',
+    'modifications.fastflags.possible_types_tooltip': '当前标志清单中没有匹配类型。Fleasion 将尝试以下客户端类型：{types}。',
     'modifications.fastflags.cached_suffix': ' • 已缓存',
     'modifications.fastflags.load_failed': '无法获取 Roblox FastFlags：{error}',
     'modifications.fastflags.no_current_pc_values': ' • {count:,} 个没有当前 PC 值',

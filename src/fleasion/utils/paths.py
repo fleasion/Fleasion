@@ -97,6 +97,7 @@ STORAGE_DB_GDK = _storage_db_gdk
 # Application directories
 CONFIG_DIR = _get_config_dir()
 APP_CACHE_DIR = CONFIG_DIR / 'cache'
+FFLAG_CATALOG_CACHE_FILENAME = 'fflag_browser.json'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 CONFIGS_FOLDER = CONFIG_DIR / 'configs'
 FASTFLAG_PROFILES_FOLDER = CONFIG_DIR / 'FastFlagProfiles'

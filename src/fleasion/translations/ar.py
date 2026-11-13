@@ -635,6 +635,8 @@ ARABIC: dict[str, str] = {
     'modifications.fastflag.import_values_invalid': 'يجب أن تكون كل قيمة FastFlag نصًا أو رقمًا أو قيمة منطقية.',
     'modifications.fastflag.name': 'الاسم',
     'modifications.fastflag.value': 'القيمة',
+    'modifications.fastflags.multiple_types_tooltip': 'هذا المتغير دون بادئة يطابق أنواعًا متعددة: {types}.',
+    'modifications.fastflags.possible_types_tooltip': 'لم يُعثر على نوع مطابق في قائمة المتغيرات الحالية. سيجرب Fleasion أنواع العميل التالية: {types}.',
     'modifications.fastflags.cached_suffix': '  • مخزّن مؤقتًا',
     'modifications.fastflags.load_failed': 'تعذر استرداد FastFlags من Roblox: {error}',
     'modifications.fastflags.no_current_pc_values': ' • {count:,} دون قيمة حالية لنسخة الحاسوب',

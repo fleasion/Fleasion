@@ -25,6 +25,7 @@ from .json_types import as_json_object
 from .logging import log_buffer
 from .paths import (
     APP_CACHE_DIR,
+    FFLAG_CATALOG_CACHE_FILENAME,
     STORAGE_DB,
     STORAGE_DB_GDK,
     USER_HOME,
@@ -1195,9 +1196,9 @@ def _delete_path(path: Path, messages: list[str], label: str) -> None:
 
 
 def _delete_app_cache_contents() -> None:
-    preserve = APP_CACHE_DIR / 'predownloaded'
+    preserve = {APP_CACHE_DIR / 'predownloaded', APP_CACHE_DIR / FFLAG_CATALOG_CACHE_FILENAME}
     for child in APP_CACHE_DIR.iterdir():
-        if child == preserve:
+        if child in preserve:
             continue
         if child.is_dir():
             shutil.rmtree(child)

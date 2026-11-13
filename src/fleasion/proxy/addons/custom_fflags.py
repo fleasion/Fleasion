@@ -15,6 +15,7 @@ if sys.platform == 'darwin':
     from fleasion.utils.platform_macos import find_roblox_resource_dirs
 
 from fleasion.utils import log_buffer
+from fleasion.utils.fflag_resolution import expand_unprefixed_fflags
 from fleasion.utils.json_types import (
     JsonObject,
     JsonValue,
@@ -279,6 +280,7 @@ class CustomFFlagModifier:
             members = as_json_array(folder_mapping.get(folder_name, [])) or []
             disabled_names.update(str(name).strip() for name in members)
         flags = {name: value for name, value in flags.items() if name not in disabled_names}
+        flags = expand_unprefixed_fflags(flags)
         # Roblox/Sober reads the reloader interval before applying the response
         # it has just fetched. Therefore, when this companion flag first
         # arrives through Sober's 120-second dynamic fetch, its next wait can

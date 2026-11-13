@@ -389,7 +389,7 @@ def test_fflag_browser_settings_enumerate_current_channels_and_platforms() -> No
     assert any(url.endswith('/bucket/zbeta') for url in urls)
 
 
-def test_fflag_browser_cache_expires_after_one_hour(
+def test_fflag_browser_cache_expires_after_24_hours(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     cache_path = tmp_path / 'fflag_browser.json'
@@ -403,11 +403,11 @@ def test_fflag_browser_cache_expires_after_one_hour(
 
     _write_cache(flags, now=10_000)
 
-    assert _read_cache(now=13_599) == {
+    assert _read_cache(now=10_000 + 86_399) == {
         'DFFlagDebugDrawBroadPhaseAABBs': None,
         'FFlagExample': 'True',
     }
-    assert _read_cache(now=13_600) is None
+    assert _read_cache(now=10_000 + 86_400) is None
 
     # Old caches included a pinned historical inventory and must be discarded
     stale = json.loads(cache_path.read_text(encoding='utf-8'))
