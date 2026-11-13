@@ -6039,11 +6039,9 @@ class ProxyMaster:
         texture_stripper = getattr(self, '_texture_stripper', None)
         if texture_stripper is not None:
             texture_stripper.reset_routes('proxy stop')
-        pfp_spoofer = getattr(self, 'profile_picture_spoofer', None)
-        if pfp_spoofer is not None:
-            # Drop the loopback image server so a restart rebuilds its TLS
-            # context from whichever CA the next run uses.
-            pfp_spoofer.shutdown()
+        # Profile pictures are application-scoped, not bound to a proxy listener
+        # Preserve selected-account identity and already-advertised CDN routes
+        # across mode switches; final application teardown calls shutdown()
         self._stop_linux_sober_custom_fflag_timer()
         self._cleanup_linux_client_proxy_state()
         with self._lock:

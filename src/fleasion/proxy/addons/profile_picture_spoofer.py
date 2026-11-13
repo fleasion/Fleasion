@@ -223,18 +223,22 @@ class ProfilePictureSpoofer:
         self._identity_listeners: list[Callable[[], None]] = []
         self._log_seen = 0
         self._config_loaded = config_manager is None
+        self._entries_revision = 0
 
     def _load_config_entries(self) -> None:
-        """Read the saved rows on first use so construction never touches the config."""
-        if self._config_loaded:
-            return
-        self._config_loaded = True
+        """Load saved rows once, without replacing a concurrent GUI update."""
+        with self._lock:
+            if self._config_loaded:
+                return
+            self._config_loaded = True
+            revision = self._entries_revision
         config = self._config
         if config is None:
             return
         entries = normalize_entries(list(config.profile_picture_entries))
         with self._lock:
-            self._entries = entries
+            if self._entries_revision == revision:
+                self._entries = entries
 
     def is_enabled(self) -> bool:
         self._load_config_entries()
@@ -242,9 +246,10 @@ class ProfilePictureSpoofer:
             return any(entry['enabled'] for entry in self._entries)
 
     def set_entries(self, entries: Iterable[object]) -> None:
-        self._config_loaded = True
         normalized = normalize_entries(list(entries))
         with self._lock:
+            self._config_loaded = True
+            self._entries_revision += 1
             self._entries = normalized
 
     def add_identity_listener(self, callback: Callable[[], None]) -> None:
