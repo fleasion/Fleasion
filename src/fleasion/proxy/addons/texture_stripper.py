@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast
 from urllib.parse import parse_qsl, urlparse, urlsplit
 
 from fleasion.config.manager import ANIMATION_TYPE_KEYS
+from fleasion.proxy.addons.profile_picture_spoofer import is_pfp_route, lookup_local_image
 from fleasion.proxy.asset_delivery import (
     batch_response_locations,
     direct_asset_id,
@@ -66,8 +67,9 @@ _SYNTHETIC_CDN_HOSTS = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'
 
 def is_synthetic_cdn_request(host: str, path: str) -> bool:
     """Identify proxy-owned CDN paths, including stale or malformed tokens."""
-    return host.lower() in _SYNTHETIC_CDN_HOSTS and path.split('?', 1)[0].startswith(
-        _SYNTHETIC_CDN_PATH_PREFIX
+    route = path.split('?', 1)[0]
+    return host.lower() in _SYNTHETIC_CDN_HOSTS and (
+        route.startswith(_SYNTHETIC_CDN_PATH_PREFIX) or is_pfp_route(host, route)
     )
 
 
@@ -2712,7 +2714,12 @@ class TextureStripper:
                 entry = self._synthetic_routes.get(base_url)
                 if entry is not None:
                     self._synthetic_routes.move_to_end(base_url)
-                return entry
+                    return entry
+            # Profile Picture spoofer images live in their own registry so a
+            # replacement-config change (which clears the routes above) can't
+            # break a thumbnail Roblox already received.
+            pfp_file = lookup_local_image(host, path)
+            return ('local', pfp_file) if pfp_file is not None else None
 
         return self._check_legacy_cdn_request(base_url)
 

@@ -1726,6 +1726,7 @@ def test_intercept_configuration_log_distinguishes_tls_coverage_from_active_rout
                 'Startup routing selection: custom_fflags=disabled; '
                 'clientsettings_intercepted=no; username_spoofer=enabled; '
                 'profile_api_intercepted=yes; '
+                'thumbnails_api_intercepted=no; '
                 'hosts=apis.roblox.com, assetdelivery.roblox.com, '
                 'contentdelivery.roblox.com, fts.rbxcdn.com, gamejoin.roblox.com'
             ),

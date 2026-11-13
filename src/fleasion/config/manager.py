@@ -521,6 +521,7 @@ DEFAULT_SETTINGS: JsonObject = {
     'scraper_blacklist': [],
     'subplace_blacklist': [],
     'subplace_blacklist_mode': 'block',
+    'profile_picture_entries': [],
     'username_spoofer': {
         'save_settings': False,
         'others_name': '',
@@ -1799,6 +1800,39 @@ class ConfigManager:
     def subplace_blacklist(self, value: list[str]) -> None:
         values: list[JsonValue] = [*value]
         self.settings['subplace_blacklist'] = values
+        self._save_settings()
+
+    @property
+    def profile_picture_entries(self) -> list[JsonObject]:
+        """Saved Profile Picture rows: ``{enabled, target, image_url}`` objects."""
+        saved = self.settings.get('profile_picture_entries', [])
+        if not isinstance(saved, list):
+            return []
+        entries: list[JsonObject] = []
+        for item in saved:
+            row = as_json_object(item)
+            if row is None:
+                continue
+            entries.append(
+                {
+                    'enabled': bool_value(row.get('enabled', True), default=True),
+                    'target': str_value(row.get('target', '')).strip(),
+                    'image_url': str_value(row.get('image_url', '')).strip(),
+                }
+            )
+        return entries
+
+    @profile_picture_entries.setter
+    def profile_picture_entries(self, value: list[JsonObject]) -> None:
+        rows: list[JsonValue] = [
+            {
+                'enabled': bool_value(row.get('enabled', True), default=True),
+                'target': str_value(row.get('target', '')).strip(),
+                'image_url': str_value(row.get('image_url', '')).strip(),
+            }
+            for row in value
+        ]
+        self.settings['profile_picture_entries'] = rows
         self._save_settings()
 
     @property

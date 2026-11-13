@@ -1113,6 +1113,12 @@ class RandoStuffTab(QWidget):
                 self._username_spoofer_current_username,
             )
 
+    def _push_profile_picture_current_account(self, cookie: str) -> None:
+        """Map me to the deliberately selected Account Manager entry."""
+        spoofer = getattr(getattr(self, '_proxy_master', None), 'profile_picture_spoofer', None)
+        if spoofer is not None and hasattr(spoofer, 'select_account_cookie'):
+            spoofer.select_account_cookie(cookie)
+
     def _on_username_spoofer_changed(self) -> None:
         state = self._username_spoofer_state_from_widgets()
         self._set_username_spoofer_state(state)
@@ -1995,10 +2001,16 @@ class RandoStuffTab(QWidget):
             self._username_spoofer_current_user_id = str(user_id) if user_id is not None else None
             self._username_spoofer_current_username = str(username or '')
         self._push_username_spoofer_current_user()
+        spoofer = getattr(getattr(self, '_proxy_master', None), 'profile_picture_spoofer', None)
+        if spoofer is not None and hasattr(spoofer, 'adopt_initial_account'):
+            spoofer.adopt_initial_account(str(user_id) if user_id is not None else None)
         if username:
 
             def _update(u: str = str(username)) -> None:
-                self._set_selected_account(u)
+                # Do not replace the user's deliberate Account Manager selection
+                # if startup cookie discovery finishes after they switch accounts
+                if self._last_switched_account is None:
+                    self._set_selected_account(u)
 
             self._on_main(_update)
 
@@ -2312,7 +2324,10 @@ class RandoStuffTab(QWidget):
             _fail(tr('ui.gui.rando_stuff_tab.follow_ticket_failed', value0=name))
             return
         log_buffer.log('accounts', f'Launching Roblox URI to follow userId={user_id}')
-        if not _launch_follow_user_uri(_build_auth_ticket_follow_uri(ticket, user_id)):
+        if not self._dispatch_authenticated_ticket_uri(
+            _build_auth_ticket_follow_uri(ticket, user_id),
+            _launch_follow_user_uri,
+        ):
             log_buffer.log('accounts', 'Failed to launch Roblox follow URI without elevation')
 
     def _on_switch_account(self) -> None:
@@ -2335,7 +2350,9 @@ class RandoStuffTab(QWidget):
             return
         username = acc.get('username') or tr('rando.account.unknown_parenthesized')
         if IS_MACOS or _is_rosemary_client():
+            # Selection only changes future ticket launches, not the active client
             self._last_switched_account = acc
+            self._push_profile_picture_current_account(cookie)
             self._set_selected_account(username)
             platform_name = 'Rosemary' if _is_rosemary_client() else 'macOS'
             log_buffer.log(
@@ -2347,6 +2364,7 @@ class RandoStuffTab(QWidget):
         def _switch() -> None:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
+            self._push_profile_picture_current_account(cookie)
             self._set_selected_account(username)
             platform_name = _linux_client_display_name() if IS_LINUX else 'Roblox'
             log_buffer.log(
@@ -2406,6 +2424,15 @@ class RandoStuffTab(QWidget):
             log_buffer.log('accounts', f'Auth-ticket retrieval failed for {mode} launch')
         return ticket
 
+    def _dispatch_authenticated_ticket_uri(
+        self,
+        uri: str,
+        launcher: Callable[[str], bool] | None = None,
+    ) -> bool:
+        """Dispatch the selected account ticket without changing the me mapping."""
+        dispatch = launcher or launch_as_standard_user
+        return dispatch(uri)
+
     def _launch_account_thread(
         self,
         cookie: str,
@@ -2416,8 +2443,12 @@ class RandoStuffTab(QWidget):
     ) -> None:
         ticket_only_launch = IS_MACOS or _is_rosemary_client()
         if IS_WINDOWS:
+
+            def _switch_launch_cookie() -> None:
+                self._write_cookie_to_dat(cookie)
+
             _run_contained_action(
-                lambda: self._write_cookie_to_dat(cookie),
+                _switch_launch_cookie,
                 lambda exc: log_buffer.log('accounts', f'Failed to write cookie file: {exc}'),
             )
         else:
@@ -2486,7 +2517,7 @@ class RandoStuffTab(QWidget):
                     'accounts',
                     f'Launching Roblox URI to placeId={launch_place_id} (private server)',
                 )
-                launch_ok = launch_as_standard_user(roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
@@ -2534,7 +2565,7 @@ class RandoStuffTab(QWidget):
                     )
                 else:
                     log_buffer.log('accounts', f'Launching Roblox URI to placeId={launch_place_id}')
-                launch_ok = launch_as_standard_user(roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
@@ -2575,7 +2606,7 @@ class RandoStuffTab(QWidget):
             if ticket:
                 roblox_player_uri = _build_auth_ticket_app_uri(ticket)
                 log_buffer.log('accounts', 'Launching Roblox app URI for selected account')
-                launch_ok = launch_as_standard_user(roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox app URI without elevation')
                     if ticket_only_launch:

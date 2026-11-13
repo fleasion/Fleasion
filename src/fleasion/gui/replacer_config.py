@@ -1234,6 +1234,9 @@ class ReplacerConfigWindow(QDialog):
                 defer_setup=True,
             )
             yield from tab.build_ui()
+            self._rando_stuff_tab.selected_account_changed.connect(
+                tab.invalidate_profile_picture_preview
+            )
             self._install_tab('modifications', tab)
 
     def _open_palette_tab(self, index: int) -> None:

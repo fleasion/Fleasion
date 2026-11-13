@@ -106,7 +106,13 @@ from fleasion.utils.roblox_dirs import (
     save_saved_roblox_dirs,
 )
 
-from .addons import CacheScraper, CustomFFlagModifier, TextureStripper, UsernameSpoofer
+from .addons import (
+    CacheScraper,
+    CustomFFlagModifier,
+    ProfilePictureSpoofer,
+    TextureStripper,
+    UsernameSpoofer,
+)
 from .server import (
     ASSET_DELIVERY_HOST,
     BASE_INTERCEPT_HOSTS,
@@ -114,7 +120,10 @@ from .server import (
     CUSTOM_FFLAGS_INTERCEPT_HOSTS,
     GAMEJOIN_HOST,
     INTERCEPT_HOSTS,
+    MODULE_INTERCEPT_HOSTS,
+    PROFILE_PICTURE_SPOOFER_INTERCEPT_HOSTS,
     PROXY_TLS_MAX_VERSION,
+    THUMBNAILS_API_HOST,
     USERNAME_SPOOFER_INTERCEPT_HOSTS,
     FleasionProxy,
 )
@@ -1808,7 +1817,7 @@ def _use_linux_privileged_helper() -> bool:
 
 def _ensure_linux_system_trust_for_hosts(hosts: set[str], ca_cert_path: Path) -> bool:
     """Best-effort Linux system trust install before intercepting WebView-visible hosts."""
-    if not IS_LINUX or not (set(hosts) & USERNAME_SPOOFER_INTERCEPT_HOSTS):
+    if not IS_LINUX or not (set(hosts) & MODULE_INTERCEPT_HOSTS):
         return True
     if not ca_cert_path.is_file():
         log_buffer.log(
@@ -4495,6 +4504,7 @@ class ProxyMaster:
         # Wire scraper into cache_manager for private asset downloads
         self.cache_manager.set_scraper(self.cache_scraper)
         self.username_spoofer = UsernameSpoofer(config_manager)
+        self.profile_picture_spoofer = ProfilePictureSpoofer(config_manager)
         self.custom_fflag_modifier = CustomFFlagModifier(
             config_manager, reload_settings_from_disk=True
         )
@@ -4535,7 +4545,10 @@ class ProxyMaster:
         self._watchdog_thread: threading.Thread | None = None
         self._sober_fflag_timer_stop: threading.Event | None = None
         self._sober_fflag_timer_thread: threading.Thread | None = None
-        self._module_interceptors: list[_ModuleInterceptor] = [self.username_spoofer]
+        self._module_interceptors: list[_ModuleInterceptor] = [
+            self.username_spoofer,
+            self.profile_picture_spoofer,
+        ]
         self._cert_refresh_lock = threading.Lock()
         self._last_cert_refresh_by_exe: dict[Path, tuple[float, str]] = {}
 
@@ -5017,6 +5030,18 @@ class ProxyMaster:
             return True
         return self.config_manager.wire_preserving_passthrough
 
+    def original_thumbnail_upstreams(self) -> list[UpstreamEndpoint]:
+        """Return real thumbnail endpoints for verified, unspoofed GUI previews."""
+        with self._lock:
+            proxy = self._proxy
+        if proxy is not None:
+            endpoints = proxy.upstream_endpoints_for_hosts([THUMBNAILS_API_HOST]).get(
+                THUMBNAILS_API_HOST, []
+            )
+            if endpoints:
+                return endpoints
+        return _resolve_real_endpoints({THUMBNAILS_API_HOST}).get(THUMBNAILS_API_HOST, [])
+
     def register_module_interceptor(self, module: _ModuleInterceptor) -> None:
         """Register a module whose request()/response() methods are called for gamejoin traffic."""
         with self._lock:
@@ -5058,6 +5083,9 @@ class ProxyMaster:
         spoofer_enabled = spoofer is not None and spoofer.is_enabled()
         if spoofer_enabled:
             hosts.update(USERNAME_SPOOFER_INTERCEPT_HOSTS)
+        pfp_spoofer = getattr(self, 'profile_picture_spoofer', None)
+        if pfp_spoofer is not None and pfp_spoofer.is_enabled():
+            hosts.update(PROFILE_PICTURE_SPOOFER_INTERCEPT_HOSTS)
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
         if (
             custom_modifier is not None
@@ -5087,6 +5115,8 @@ class ProxyMaster:
             f'username_spoofer={"enabled" if username_spoofer_enabled else "disabled"}; '
             'profile_api_intercepted='
             f'{"yes" if bool(set(hosts) & USERNAME_SPOOFER_INTERCEPT_HOSTS) else "no"}; '
+            'thumbnails_api_intercepted='
+            f'{"yes" if bool(set(hosts) & PROFILE_PICTURE_SPOOFER_INTERCEPT_HOSTS) else "no"}; '
             f'hosts={", ".join(sorted(hosts))}',
         )
 
@@ -5229,9 +5259,7 @@ class ProxyMaster:
     def _startup_intercept_hosts(self) -> set[str]:
         hosts = self._desired_intercept_hosts()
         if IS_LINUX:
-            manual_webui_hosts = (
-                _hosts_file_loopback_hosts(set(USERNAME_SPOOFER_INTERCEPT_HOSTS)) - hosts
-            )
+            manual_webui_hosts = _hosts_file_loopback_hosts(set(MODULE_INTERCEPT_HOSTS)) - hosts
             if manual_webui_hosts:
                 hosts.update(manual_webui_hosts)
                 log_buffer.log(
@@ -5366,7 +5394,7 @@ class ProxyMaster:
                 self._active_intercept_hosts = set(desired_hosts)
                 return
 
-        if IS_LINUX and (desired_hosts & USERNAME_SPOOFER_INTERCEPT_HOSTS):
+        if IS_LINUX and (desired_hosts & MODULE_INTERCEPT_HOSTS):
             ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
             if not _ensure_linux_system_trust_for_hosts(desired_hosts, ca_cert_path):
                 log_buffer.log(
@@ -6011,6 +6039,9 @@ class ProxyMaster:
         texture_stripper = getattr(self, '_texture_stripper', None)
         if texture_stripper is not None:
             texture_stripper.reset_routes('proxy stop')
+        # Profile pictures are application-scoped, not bound to a proxy listener
+        # Preserve selected-account identity and already-advertised CDN routes
+        # across mode switches; final application teardown calls shutdown()
         self._stop_linux_sober_custom_fflag_timer()
         self._cleanup_linux_client_proxy_state()
         with self._lock:
@@ -6763,7 +6794,7 @@ class ProxyMaster:
                 _lazy_attr('fleasion.utils.linux_proxy_helper', 'start_helper'),
             )
             require_linux_system_ca = not self._use_splice_transport() and bool(
-                active_hosts & USERNAME_SPOOFER_INTERCEPT_HOSTS
+                active_hosts & MODULE_INTERCEPT_HOSTS
             )
             if not start_helper(
                 active_hosts,

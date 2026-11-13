@@ -512,6 +512,9 @@ def run_application() -> None:
 
     # Initialize proxy master
     proxy_master = ProxyMaster(config_manager, on_proxy_start_error=_on_proxy_start_error)
+    # The spoofer survives proxy stop/start; only release identity and
+    # advertised local-image URLs when the application actually exits
+    app.aboutToQuit.connect(proxy_master.profile_picture_spoofer.shutdown)
     proxy_error_invoker.retry_proxy.connect(proxy_master.start)
 
     # Initialize modification manager (pass cache_scraper for asset-id resolution)

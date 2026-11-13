@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from types import FrameType
 
-HELPER_VERSION = 7
+HELPER_VERSION = 8
 HELPER_CAPABILITIES = ('hosts', 'relay', 'patch_ca', 'probe_backend')
 HOSTS_FILE = Path('/etc/hosts')
 HOSTS_MARKER = '# Fleasion proxy entry'
@@ -43,6 +43,7 @@ ALLOWED_HOSTS = {
     'clientsettingscdn.roblox.com',
     'fts.rbxcdn.com',
     'gamejoin.roblox.com',
+    'thumbnails.roblox.com',
 }
 LEASE_SECONDS = 20.0
 _PEM_CERT_BLOCK_RE = re.compile(

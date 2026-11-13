@@ -67,6 +67,7 @@ if TYPE_CHECKING:
         ProxyRequestLogEntry as ProxyRequestLogEntry,
     )
 
+from .addons.profile_picture_spoofer import PFP_MAX_IMAGE_BYTES, is_pfp_route
 from .addons.texture_stripper import is_synthetic_cdn_request
 from .asset_batch import (
     decode_v3_request,
@@ -112,15 +113,28 @@ ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
 GAMEJOIN_HOST = 'gamejoin.roblox.com'
 PROFILE_API_HOST = 'apis.roblox.com'
 PROFILE_API_PATH_FRAGMENT = '/v1/user/profiles/get-profiles'
+THUMBNAILS_API_HOST = 'thumbnails.roblox.com'
+THUMBNAILS_API_PATH_FRAGMENTS: tuple[str, ...] = (
+    '/v1/batch',
+    '/v1/users/avatar-headshot',
+    '/v1/users/avatar-bust',
+)
+# JSON API hosts whose responses are handed to the module interceptors.
+MODULE_API_HOSTS: frozenset[str] = frozenset({PROFILE_API_HOST, THUMBNAILS_API_HOST})
 CLIENT_SETTINGS_HOSTS: frozenset[str] = frozenset(
     {'clientsettingscdn.roblox.com', 'clientsettings.roblox.com'}
 )
 CDN_HOSTS: frozenset[str] = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
 BASE_INTERCEPT_HOSTS: frozenset[str] = frozenset({ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS})
 USERNAME_SPOOFER_INTERCEPT_HOSTS: frozenset[str] = frozenset({PROFILE_API_HOST})
+PROFILE_PICTURE_SPOOFER_INTERCEPT_HOSTS: frozenset[str] = frozenset({THUMBNAILS_API_HOST})
+# Every optional, module-driven host (used where WebView-visible trust matters).
+MODULE_INTERCEPT_HOSTS: frozenset[str] = (
+    USERNAME_SPOOFER_INTERCEPT_HOSTS | PROFILE_PICTURE_SPOOFER_INTERCEPT_HOSTS
+)
 CUSTOM_FFLAGS_INTERCEPT_HOSTS: frozenset[str] = CLIENT_SETTINGS_HOSTS
 INTERCEPT_HOSTS: frozenset[str] = (
-    BASE_INTERCEPT_HOSTS | USERNAME_SPOOFER_INTERCEPT_HOSTS | CUSTOM_FFLAGS_INTERCEPT_HOSTS
+    BASE_INTERCEPT_HOSTS | MODULE_INTERCEPT_HOSTS | CUSTOM_FFLAGS_INTERCEPT_HOSTS
 )
 ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS = 20.0
 UPSTREAM_ENDPOINT_REFRESH_COOLDOWN_SECONDS = 5.0
@@ -1523,14 +1537,20 @@ def _same_local_file_version(before: os.stat_result, after: os.stat_result) -> b
     return before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns
 
 
-def _serve_local_file_range(path: Path, range_header: bytes, content_type: str) -> bytes | None:
+def _serve_local_file_range(
+    path: Path, range_header: bytes, content_type: str, max_bytes: int | None = None
+) -> bytes | None:
     match = re.fullmatch(rb'bytes=(\d*)-(\d*)', range_header.strip(), flags=re.IGNORECASE)
     if match is None or not (match[1] or match[2]):
         return None
     with path.open('rb') as source:
         info = os.fstat(source.fileno())
         # Small virtual files can report a regular-file mode with a fabricated size
-        if not stat.S_ISREG(info.st_mode) or info.st_size < _LOCAL_FILE_FAST_MIN_SIZE:
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_size < _LOCAL_FILE_FAST_MIN_SIZE
+            or (max_bytes is not None and info.st_size > max_bytes)
+        ):
             return None
         total = info.st_size
         bounds = _local_range_bounds(match, total)
@@ -1557,11 +1577,12 @@ def _serve_local_file_range(path: Path, range_header: bytes, content_type: str) 
     ).encode('ascii') + content
 
 
-def _serve_local_file(
+def _serve_local_file(  # ruff: ignore[too-many-return-statements]
     local_path: str,
     range_header: bytes | None = None,
     if_range: bytes | None = None,
     head_only: bool = False,
+    max_bytes: int | None = None,
 ) -> bytes:
     path = Path(local_path)
     if path.suffix.lower() == '.obj':
@@ -1581,6 +1602,10 @@ def _serve_local_file(
         path_info = path.stat()
     except OSError, ValueError:
         return b'HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n'
+    if max_bytes is not None and (
+        not stat.S_ISREG(path_info.st_mode) or path_info.st_size > max_bytes
+    ):
+        return _make_local_response(413)
     ext = path.suffix.lower()
     ct_map = {
         '.png': 'image/png',
@@ -1604,6 +1629,7 @@ def _serve_local_file(
             info = os.fstat(source.fileno())
             if (
                 stat.S_ISREG(info.st_mode)
+                and (max_bytes is None or info.st_size <= max_bytes)
                 and info.st_size >= _LOCAL_FILE_FAST_MIN_SIZE
                 and _same_local_file_version(info, os.fstat(source.fileno()))
             ):
@@ -1619,10 +1645,20 @@ def _serve_local_file(
         and if_range is None
         and len(range_header) <= 128
     ):
-        partial = _serve_local_file_range(path, range_header, ct)
+        partial = _serve_local_file_range(path, range_header, ct, max_bytes)
         if partial is not None:
             return partial.partition(b'\r\n\r\n')[0] + b'\r\n\r\n' if head_only else partial
-    content = strip_roblox_metadata(path, path.read_bytes())
+    if max_bytes is None:
+        content = path.read_bytes()
+    else:
+        with path.open('rb') as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+                return _make_local_response(413)
+            content = source.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            return _make_local_response(413)
+    content = strip_roblox_metadata(path, content)
     status = '200 OK'
     content_range = ''
     if range_header is not None and if_range is None and len(range_header) <= 128:
@@ -1662,6 +1698,7 @@ def _make_local_response(status_code: int = 204, body: bytes = b'') -> bytes:
         404: 'Not Found',
         405: 'Method Not Allowed',
         410: 'Gone',
+        413: 'Content Too Large',
         500: 'Internal Server Error',
     }
     reason = reason_map.get(status_code, 'OK')
@@ -1891,6 +1928,16 @@ def _call_module_interceptor(
     )
 
 
+def _is_module_api_request(host: str, path: str) -> bool:
+    """Whether *host*/*path* is an API call that module interceptors may rewrite."""
+    if host == PROFILE_API_HOST:
+        return PROFILE_API_PATH_FRAGMENT in path
+    if host == THUMBNAILS_API_HOST:
+        route = path.split('?', 1)[0]
+        return any(route.startswith(fragment) for fragment in THUMBNAILS_API_PATH_FRAGMENTS)
+    return False
+
+
 class FleasionProxy:
     """Direct TLS-terminating asyncio proxy for Roblox asset hosts."""
 
@@ -2003,6 +2050,7 @@ class FleasionProxy:
         self._upstream_host_limits = {
             ASSET_DELIVERY_HOST: asyncio.Semaphore(asset_limit),
             PROFILE_API_HOST: asyncio.Semaphore(asset_limit),
+            THUMBNAILS_API_HOST: asyncio.Semaphore(asset_limit),
             'clientsettingscdn.roblox.com': asyncio.Semaphore(asset_limit),
             'clientsettings.roblox.com': asyncio.Semaphore(asset_limit),
             'contentdelivery.roblox.com': asyncio.Semaphore(asset_limit),
@@ -2444,14 +2492,16 @@ class FleasionProxy:
     def _preserve_unmodified_wire_for_host(self, host: str) -> bool:
         """Whether untouched traffic for *host* must retain its original wire form.
 
-        Browser calls to ``apis.roblox.com`` include CORS preflights and can
+        Browser calls to ``apis.roblox.com`` (and ``thumbnails.roblox.com``)
+        include CORS preflights and can
         depend on repeated response headers.  Reassembling an untouched API
         response from the normalized header map drops repeated headers, which
         makes the browser report a CORS failure even when Roblox accepted the
-        request.  The Username Spoofer still receives and can modify its one
-        profile endpoint; only untouched API traffic gets raw passthrough.
+        request.  The Username and Profile Picture spoofers still receive and can
+        modify their own endpoints; only untouched API traffic gets raw
+        passthrough.
         """
-        return self._wire_preserving_passthrough or host == PROFILE_API_HOST
+        return self._wire_preserving_passthrough or host in MODULE_API_HOSTS
 
     def upstream_endpoints_for_hosts(
         self,
@@ -3502,6 +3552,7 @@ class FleasionProxy:
                     None if is_head else req_headers.get(b'range'),
                     None if is_head else req_headers.get(b'if-range'),
                     is_head,
+                    PFP_MAX_IMAGE_BYTES if is_pfp_route(host, path) else None,
                 )
                 status_line = (
                     response.split(b'\r\n', 1)[0].decode('ascii', errors='replace')
@@ -4174,11 +4225,7 @@ class FleasionProxy:
                         break
                     if gamejoin_action == 'continue':
                         continue
-                elif (
-                    host == PROFILE_API_HOST
-                    and PROFILE_API_PATH_FRAGMENT in path
-                    and self._module_interceptors
-                ):
+                elif _is_module_api_request(host, path) and self._module_interceptors:
                     req_body_plain_ = _decompress_body(req_body_raw, req_headers)
                     if not await ensure_upstream(path):
                         break
@@ -4487,7 +4534,7 @@ class FleasionProxy:
                         resp_body_raw = gamejoin_response.content
                         response_modified = True
                 elif (
-                    host == PROFILE_API_HOST
+                    host in MODULE_API_HOSTS
                     and profile_flow is not None
                     and self._module_interceptors
                 ):
