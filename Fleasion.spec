@@ -182,6 +182,19 @@ _HOST_AUDIO_LIB_PREFIXES = (
 
 _HOST_FONTCONFIG_LIB_PREFIXES = ('libfontconfig.so',)
 
+# The Linux virtual-keyboard input plugin is the only consumer of this QML/
+# Qt Quick chain. Fleasion uses Qt Widgets, so its inclusion is unnecessary
+_UNUSED_LINUX_QT_VIRTUAL_KEYBOARD_NAMES = {
+    'libQt6Qml.so.6',
+    'libQt6QmlMeta.so.6',
+    'libQt6QmlModels.so.6',
+    'libQt6QmlWorkerScript.so.6',
+    'libQt6Quick.so.6',
+    'libQt6VirtualKeyboard.so.6',
+    'libQt6VirtualKeyboardQml.so.6',
+    'libqtvirtualkeyboardplugin.so',
+}
+
 
 def _run_pyinstaller_spec(spec_path: str, *, env: dict[str, str] | None = None) -> None:
     build_env = os.environ.copy()
@@ -418,6 +431,17 @@ a = Analysis(
 a.binaries = _drop_entries(a.binaries, _is_unused_qt_runtime_entry)
 a.datas = _drop_entries(a.datas, _is_unused_qt_runtime_entry)
 if sys.platform.startswith('linux'):
+    # The Qt virtual-keyboard plugin pulls in otherwise unused QML/Qt Quick
+    # libraries; retain desktop input-method plugins such as IBus and Compose
+    a.binaries = _drop_entries(
+        a.binaries,
+        lambda entry: _entry_name_matches(entry, _UNUSED_LINUX_QT_VIRTUAL_KEYBOARD_NAMES),
+    )
+    # PyInstaller also emits top-level SONAME symlinks for these libraries
+    a.datas = _drop_entries(
+        a.datas,
+        lambda entry: _entry_name_matches(entry, _UNUSED_LINUX_QT_VIRTUAL_KEYBOARD_NAMES),
+    )
     # The sounddevice hook and dependency scan can collect the build machine's
     # audio backend stack. That can silence playback on other distros, so the
     # GUI player uses host PortAudio and host audio backend libraries.

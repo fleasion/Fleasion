@@ -141,6 +141,42 @@ def test_packaging_drops_only_linux_gtk_platform_theme_from_qt_gui_hook() -> Non
     assert 'QtQuick' not in qt_gui_hook
 
 
+def test_linux_packaging_prunes_only_the_optional_qt_virtual_keyboard_chain() -> None:
+    root = Path(__file__).resolve().parents[1]
+    tree = ast.parse((root / 'Fleasion.spec').read_text(encoding='utf-8'))
+    removed_files = next(
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == '_UNUSED_LINUX_QT_VIRTUAL_KEYBOARD_NAMES'
+            for target in node.targets
+        )
+    )
+    assert isinstance(removed_files, ast.Set)
+    assert {element.value for element in removed_files.elts if isinstance(element, ast.Constant)} == {
+        'libQt6Qml.so.6',
+        'libQt6QmlMeta.so.6',
+        'libQt6QmlModels.so.6',
+        'libQt6QmlWorkerScript.so.6',
+        'libQt6Quick.so.6',
+        'libQt6VirtualKeyboard.so.6',
+        'libQt6VirtualKeyboardQml.so.6',
+        'libqtvirtualkeyboardplugin.so',
+    }
+    spec_source = (root / 'Fleasion.spec').read_text(encoding='utf-8')
+    linux_section = spec_source.split("if sys.platform.startswith('linux'):", 1)[-1].split(
+        'pyz = PYZ(a.pure)', 1
+    )[0]
+    assert 'a.binaries = _drop_entries(' in linux_section
+    assert 'a.datas = _drop_entries(' in linux_section
+    assert linux_section.count(
+        '_entry_name_matches(entry, _UNUSED_LINUX_QT_VIRTUAL_KEYBOARD_NAMES)'
+    ) == 2
+    assert "'libQt6Widgets.so.6'" not in linux_section
+
+
 def test_packaging_uses_only_zstandard_c_extension() -> None:
     root = Path(__file__).resolve().parents[1]
     spec_source = (root / 'Fleasion.spec').read_text(encoding='utf-8')

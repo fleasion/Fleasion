@@ -244,6 +244,11 @@ jobs:
             exit 1
           fi
 
+          if grep -Eq 'libQt6(Qml|Quick|VirtualKeyboard)|libqtvirtualkeyboardplugin' <<< "$archive_listing"; then
+            echo "Linux package must not bundle unused Qt virtual-keyboard/QML libraries." >&2
+            exit 1
+          fi
+
           helper_listing="$(uv run pyi-archive_viewer -r -b -l dist/fleasion-linux-proxy-helper)"
           for required_module in cryptography.x509 cryptography.x509.oid; do
             if ! grep -Eq "(^|[[:space:]'])${required_module}([[:space:]']|$)" <<< "$helper_listing"; then
