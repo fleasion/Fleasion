@@ -2117,15 +2117,16 @@ class FFlagBrowserDialog(QDialog):
 
         controls = QHBoxLayout()
         self._source_mode = QComboBox()
-        self._source_mode.addItem('Public catalog', 'public')
+        self._source_mode.addItem(tr('modifications.fastflags.public_catalog'), 'public')
         self._source_mode.addItem(
-            f'Client - {self._client_display_name()}', self._client_source_mode()
+            tr('modifications.fastflags.client_source', client=self._client_display_name()),
+            self._client_source_mode(),
         )
         self._source_mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._source_mode.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._source_mode.currentIndexChanged.connect(self._on_source_changed)
         controls.addWidget(self._source_mode)
-        self._choose_exe_button = QPushButton('Choose EXE…')
+        self._choose_exe_button = QPushButton(tr('modifications.fastflags.choose_exe'))
         self._choose_exe_button.clicked.connect(self._choose_windows_exe)
         self._choose_exe_button.setVisible(False)
         controls.addWidget(self._choose_exe_button)
@@ -2184,14 +2185,18 @@ class FFlagBrowserDialog(QDialog):
     def _client_display_name(self) -> str:
         """Name the selected client rather than its scanning implementation."""
         if self._client_source_mode() == 'windows':
-            return 'Windows'
+            return tr('modifications.fastflags.client_windows')
         source = self._installed_source
         if source is None:
-            return 'Unavailable'
-        return 'macOS' if source.client == 'macos' else source.label
+            return tr('modifications.fastflags.client_unavailable')
+        return (
+            tr('modifications.fastflags.client_macos') if source.client == 'macos' else source.label
+        )
 
     def _update_client_source_label(self) -> None:
-        self._source_mode.setItemText(1, f'Client - {self._client_display_name()}')
+        self._source_mode.setItemText(
+            1, tr('modifications.fastflags.client_source', client=self._client_display_name())
+        )
 
     @staticmethod
     def _detect_installed_windows_exe() -> Path | None:
@@ -2212,9 +2217,9 @@ class FFlagBrowserDialog(QDialog):
         """Select a Player EXE; never read or modify a running process."""
         chosen, _filter = QFileDialog.getOpenFileName(
             self,
-            'Choose a Windows RobloxPlayerBeta.exe',
+            tr('modifications.fastflags.choose_windows_exe'),
             str(self._local_exe.parent if self._local_exe else Path.home()),
-            'Windows executable (*.exe)',
+            tr('modifications.fastflags.windows_executable_filter'),
         )
         if not chosen:
             return
@@ -2250,7 +2255,9 @@ class FFlagBrowserDialog(QDialog):
         self._table.setHorizontalHeaderLabels(
             [
                 tr('ui.gui.modifications_tab.name'),
-                'Initial value' if local else 'Value',
+                tr('modifications.fastflags.initial_value')
+                if local
+                else tr('modifications.table.value'),
             ]
         )
         self._refresh()
@@ -2283,7 +2290,7 @@ class FFlagBrowserDialog(QDialog):
         generation, message = payload
         if generation != self._local_generation or self._source_mode.currentData() != 'windows':
             return
-        self._show_load_error(f'Windows Player scan failed: {message}')
+        self._show_load_error(tr('modifications.fastflags.windows_scan_failed', error=message))
 
     def _apply_local_scan(self, payload: tuple[int, WindowsStaticFlagCatalog]) -> None:
         generation, catalog = payload
@@ -2293,7 +2300,9 @@ class FFlagBrowserDialog(QDialog):
         flags: dict[str, str | None] = {}
         records: dict[str, WindowsValueSlot] = {}
         for slot in catalog.entries:
-            label = slot.qualifier_hint or f'[type unknown] {slot.name}'
+            label = slot.qualifier_hint or tr(
+                'modifications.fastflags.type_unknown_label', name=slot.name
+            )
             if label in records:
                 label = f'{label} [RVA {slot.value_rva:08X}]'
             flags[label] = display_initial_value(slot)
@@ -2358,7 +2367,7 @@ class FFlagBrowserDialog(QDialog):
         generation, message = payload
         if generation != self._local_generation or self._source_mode.currentData() != 'installed':
             return
-        self._show_load_error(f'Installed Player scan failed: {message}')
+        self._show_load_error(tr('modifications.fastflags.installed_scan_failed', error=message))
 
     def _apply_installed_scan(
         self, payload: tuple[int, StaticFlagCatalog, ClientBinary, bool]
@@ -2542,7 +2551,7 @@ class FFlagBrowserDialog(QDialog):
             self._installed_source = source
             self._update_client_source_label()
             if source is None:
-                self._count.setText('No supported installed Player was found')
+                self._count.setText(tr('modifications.fastflags.no_installed_player'))
                 self._refresh_button.setEnabled(True)
                 return
             self._installed_source = source
@@ -2554,7 +2563,9 @@ class FFlagBrowserDialog(QDialog):
             self._local_generation += 1
             generation = self._local_generation
             self._refresh_button.setEnabled(False)
-            self._count.setText(f'Reading installed {source.label} Player registrations…')
+            self._count.setText(
+                tr('modifications.fastflags.reading_installed', client=source.label)
+            )
             threading.Thread(
                 target=self._fetch_installed_scan,
                 args=(generation, source, force),
@@ -2563,7 +2574,7 @@ class FFlagBrowserDialog(QDialog):
             return
         if self._source_mode.currentData() == 'windows':
             if self._local_exe is None:
-                self._count.setText('Select a Windows RobloxPlayerBeta.exe to inspect')
+                self._count.setText(tr('modifications.fastflags.select_windows_exe'))
                 return
             if self._local_catalog is not None and not force:
                 self._apply_local_scan((self._local_generation, self._local_catalog))
@@ -2571,7 +2582,7 @@ class FFlagBrowserDialog(QDialog):
             self._local_generation += 1
             generation = self._local_generation
             self._refresh_button.setEnabled(False)
-            self._count.setText('Reading Windows Player and FVariables hints…')
+            self._count.setText(tr('modifications.fastflags.reading_windows'))
             threading.Thread(
                 target=self._fetch_local_scan,
                 args=(generation, self._local_exe),
@@ -2715,17 +2726,25 @@ class FFlagBrowserDialog(QDialog):
             ):
                 catalog = self._installed_catalog
                 self._count.setText(
-                    f'Showing {visible_count:,} of {len(self._flags):,} registered flags'
-                    f' · {len(catalog.verified):,} independently verified types'
-                    f' · {catalog.label}'
+                    tr(
+                        'modifications.fastflags.registered_summary',
+                        visible=f'{visible_count:,}',
+                        total=f'{len(self._flags):,}',
+                        verified=f'{len(catalog.verified):,}',
+                        client=catalog.label,
+                    )
                 )
                 self._count.setStyleSheet('color: #999;')
                 self._update_selection_button()
                 return
             if self._local_catalog is not None:
                 self._count.setText(
-                    f'Showing {visible_count:,} of {len(self._flags):,} initial Windows slots'
-                    f' · {self._local_catalog.hinted:,} FVariables type hints (unverified)'
+                    tr(
+                        'modifications.fastflags.windows_summary',
+                        visible=f'{visible_count:,}',
+                        total=f'{len(self._flags):,}',
+                        hinted=f'{self._local_catalog.hinted:,}',
+                    )
                 )
                 self._count.setStyleSheet('color: #999;')
                 self._update_selection_button()
@@ -2766,14 +2785,18 @@ class FFlagBrowserDialog(QDialog):
                     name_item.setToolTip(name)
                 else:
                     source = (
-                        'FVariables (unverified cross-build hint)'
+                        tr('modifications.fastflags.unverified_fvariables_hint')
                         if slot.qualifier_hint
-                        else 'Unknown'
+                        else tr('modifications.fastflags.type_unknown')
                     )
                     name_item.setToolTip(
-                        f'{slot.name}\nType: {source}\n'
-                        f'Value RVA: 0x{slot.value_rva:X}\n'
-                        f'Raw initialized qword: 0x{slot.raw_u64:016X}'
+                        tr(
+                            'modifications.fastflags.raw_slot_tooltip',
+                            name=slot.name,
+                            source=source,
+                            rva=f'{slot.value_rva:X}',
+                            raw=f'{slot.raw_u64:016X}',
+                        )
                     )
                 self._table.setItem(row, 0, name_item)
                 value_item = QTableWidgetItem(self._display_value(value))
