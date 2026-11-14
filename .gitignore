@@ -237,7 +237,6 @@ __marimo__/
 # Agents
 .claude/
 .codex/
-CLAUDE.md
 !AGENTS.md
 .mcp.json
 
