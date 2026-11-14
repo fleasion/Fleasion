@@ -43,7 +43,7 @@ from fleasion.app.elevation import (
     relaunch_as_admin as _relaunch_as_admin,
 )
 from fleasion.app.restart import restart_fleasion_normally
-from fleasion.appearance import COLOR_MODES, STYLES
+from fleasion.appearance import ACCENT_KEYS, COLOR_MODES, STYLES
 from fleasion.gui import (
     AboutWindow,
     DeleteCacheWindow,
@@ -51,7 +51,7 @@ from fleasion.gui import (
     ReplacerConfigWindow,
     ThemeManager,
 )
-from fleasion.gui.appearance_controls import ACCENT_KEYS, choice_label, swatch_icon
+from fleasion.gui.appearance_controls import choice_label, swatch_icon
 from fleasion.localization import tr
 from fleasion.utils import (
     APP_DISCORD,

@@ -1,4 +1,4 @@
-"""Built-in color themes, described by a few base colors and resolved into roles."""
+"""Resolve the theme table into Qt colors and palettes."""
 
 from __future__ import annotations
 
@@ -8,12 +8,10 @@ from typing import TYPE_CHECKING, Final
 
 from PySide6.QtGui import QColor, QPalette
 
-from .choices import ACCENTS, FALLBACK_ACCENT
+from .catalog import ACCENTS, FALLBACK_ACCENT, THEMES_BY_NAME
 
 if TYPE_CHECKING:
-    from .choices import ColorMode
-
-type Roles = tuple[tuple[str, str], ...]
+    from .catalog import ColorMode, Palette, Roles
 
 # Qt's built-in accent, which a platform leaves in place when it reports none
 _QT_DEFAULT_ACCENT: Final = QColor('#308cc6')
@@ -62,126 +60,35 @@ class ThemeColors:
     disabled_roles: Roles = ()
 
 
-@dataclass(frozen=True, slots=True)
-class Palette:
-    """Base colors of a built-in theme; the remaining roles are blended from them.
-
-    ``window`` is the main background and ``base`` the background of inputs and lists.
-    Dark themes recess ``base`` below ``window``, light themes raise it above.
-    """
-
-    window: str
-    base: str
-    text: str
-    accent: str
-    raised: str | None = None
-    section: str | None = None
-    section_border: str | None = None
-    muted_mix: float = 0.63
-    border_mix: float = 0.13
-    # Exact Qt palette roles, by role name, for themes copied from a desktop scheme
-    roles: Roles = ()
-    disabled_roles: Roles = ()
-
-    def resolve(self) -> ThemeColors:
-        window, base, text = QColor(self.window), QColor(self.base), QColor(self.text)
-        section = QColor(self.section) if self.section else mix(window, base, 0.5)
-        return ThemeColors(
-            window=window,
-            base=base,
-            raised=QColor(self.raised) if self.raised else mix(window, text, 0.065),
-            text=text,
-            muted=mix(window, text, self.muted_mix),
-            border=mix(window, text, self.border_mix),
-            section=section,
-            section_border=QColor(self.section_border)
-            if self.section_border
-            else mix(section, text, self.border_mix * 0.8),
-            accent=QColor(self.accent),
-            dark=is_dark(window),
-            roles=self.roles,
-            disabled_roles=self.disabled_roles,
-        )
-
-
-# Dark and Light keep Fleasion's original palettes exactly
-PALETTES: Final[dict[ColorMode, Palette]] = {
-    'Dark': Palette(
-        '#323232',
-        '#242424',
-        '#f0f0f0',
-        '#308cc6',
-        raised='#323232',
-        section='#272727',
-        section_border='#3a3a3a',
-    ),
-    'Light': Palette(
-        '#efefef',
-        '#ffffff',
-        '#000000',
-        '#308cc6',
-        raised='#efefef',
-        section='#f0f0f0',
-        section_border='#d0d0d0',
-    ),
-    'Charcoal': Palette('#1f2024', '#18191c', '#e8e8eb', '#a3bea4'),
-    'Midnight': Palette('#161c2a', '#0f141f', '#e0e7f4', '#88a6f3'),
-    # Every role matches the KDE Sweet color scheme, not only the base colors
-    'Sweet': Palette(
-        '#181b28',
-        '#161925',
-        '#d3dae3',
-        ACCENTS['Sweet'],
-        raised='#1e2233',
-        section='#1f2333',
-        section_border='#282d44',
-        muted_mix=0.65,
-        border_mix=0.16,
-        roles=(
-            ('AlternateBase', '#1f2333'),
-            ('ToolTipBase', '#353945'),
-            ('ToolTipText', '#d3dae3'),
-            ('ButtonText', '#c3c7d1'),
-            ('BrightText', '#4b4b4b'),
-            ('Light', '#0f1119'),
-            ('Midlight', '#171a26'),
-            ('Dark', '#3c4466'),
-            ('Mid', '#282d44'),
-            ('Shadow', '#191919'),
-            ('PlaceholderText', '#666a73'),
-        ),
-        disabled_roles=(
-            ('WindowText', '#3c4466'),
-            ('Text', '#3c4466'),
-            ('ButtonText', '#3c4466'),
-            ('Base', '#1e2233'),
-            ('Window', '#1e2233'),
-            ('Shadow', '#252525'),
-            ('BrightText', '#ffffff'),
-            ('Highlight', '#282d44'),
-            ('HighlightedText', '#171a26'),
-            ('Link', '#5294e2'),
-        ),
-    ),
-    'Nord': Palette('#2e3440', '#242a35', '#eceff4', '#88c0d0'),
-    'Catppuccin': Palette('#1e1e2e', '#181825', '#cdd6f4', '#cba6f7'),
-    'Dracula': Palette('#282a36', '#1e1f2a', '#f8f8f2', '#bd93f9'),
-    'Forest': Palette('#1b2622', '#141d1b', '#e0ebde', '#a3be8c'),
-    'OLED': Palette('#0c0c0f', '#000000', '#ececf0', '#b9aeeb'),
-    'Paper': Palette('#f2f3f5', '#fcfcfd', '#242830', '#5867ad'),
-    'Sand': Palette('#ebe7df', '#f8f5ee', '#36312d', '#94634b'),
-    'Latte': Palette('#e6e9ef', '#eff1f5', '#4c4f69', '#8839ef', muted_mix=0.75),
-    'HighContrast': Palette('#0a0a0a', '#000000', '#ffffff', '#ffdd52', border_mix=0.65),
-}
+def resolve(palette: Palette) -> ThemeColors:
+    """Blend the roles a theme's palette leaves out."""
+    window, base, text = QColor(palette.window), QColor(palette.base), QColor(palette.text)
+    section = QColor(palette.section) if palette.section else mix(window, base, 0.5)
+    return ThemeColors(
+        window=window,
+        base=base,
+        raised=QColor(palette.raised) if palette.raised else mix(window, text, 0.065),
+        text=text,
+        muted=mix(window, text, palette.muted_mix),
+        border=mix(window, text, palette.border_mix),
+        section=section,
+        section_border=QColor(palette.section_border)
+        if palette.section_border
+        else mix(section, text, palette.border_mix * 0.8),
+        accent=QColor(palette.accent),
+        dark=is_dark(window),
+        roles=palette.roles,
+        disabled_roles=palette.disabled_roles,
+    )
 
 
 def theme_colors(mode: ColorMode, native: QPalette | None = None) -> ThemeColors:
     """Resolve a theme; System reads the platform palette when one is available."""
-    palette = PALETTES.get(mode)
+    palette = THEMES_BY_NAME[mode].palette
     if palette is not None:
-        return palette.resolve()
+        return resolve(palette)
     if native is None:
-        return PALETTES['Dark'].resolve()
+        return theme_colors('Dark')
     window, base = native.window().color(), native.base().color()
     text = native.windowText().color()
     section = native.alternateBase().color()

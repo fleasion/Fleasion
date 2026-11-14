@@ -78,14 +78,14 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from fleasion.appearance import COLOR_MODES, STYLES
+from fleasion.appearance import ACCENT_KEYS, COLOR_MODES, STYLES
 from fleasion.cache.cache_viewer import CacheViewerTab
 from fleasion.config.manager import (
     local_replacement_path_for_storage,
     resolve_local_replacement_path,
 )
 from fleasion.config.rules import is_group_rule, is_profile_rule, is_rule_entry as _is_rule_entry
-from fleasion.gui.appearance_controls import ACCENT_KEYS, choice_label
+from fleasion.gui.appearance_controls import choice_label
 from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, macos_rosemary_gate, open_folder
 from fleasion.utils.gui_work import GuiWork

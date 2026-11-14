@@ -26,12 +26,16 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.appearance import (
+    ACCENT_KEYS,
     ACCENTS,
     COLOR_MODES,
+    CUSTOM_ACCENT,
     DEFAULT_CUSTOM_ACCENT,
     SYSTEM_ACCENT,
     THEME_ACCENT,
+    accent_label,
     accent_name,
+    theme_label,
 )
 from fleasion.appearance.colors import on_accent
 from fleasion.appearance.palettes import mix
@@ -47,9 +51,6 @@ if TYPE_CHECKING:
     from fleasion.appearance.palettes import ThemeColors
 
 
-CUSTOM_ACCENT = 'Custom'
-ACCENT_KEYS = (THEME_ACCENT, SYSTEM_ACCENT, *ACCENTS, CUSTOM_ACCENT)
-
 # Sized to sit beside ordinary controls rather than to dominate the section
 _SWATCH_SIZE = 33
 _SWATCH_INSET = 2.0
@@ -63,20 +64,10 @@ _CARD_RADIUS = 6.0
 
 
 def choice_label(name: str) -> str:
-    return {
-        'Glass': tr('settings.appearance.theme.glass'),
-        'Dark': tr('settings.appearance.theme.dark'),
-        'Light': tr('settings.appearance.theme.light'),
-        'System': tr('settings.appearance.theme.system'),
-        'Charcoal': tr('settings.appearance.theme.charcoal'),
-        'Midnight': tr('settings.appearance.theme.midnight'),
-        'Forest': tr('settings.appearance.theme.forest'),
-        'Paper': tr('settings.appearance.theme.paper'),
-        'Sand': tr('settings.appearance.theme.sand'),
-        'HighContrast': tr('settings.appearance.theme.high_contrast'),
-        THEME_ACCENT: tr('settings.appearance.accent.theme'),
-        CUSTOM_ACCENT: tr('settings.appearance.custom'),
-    }.get(name, name)
+    """Label a style, theme, or accent choice."""
+    if name == 'Glass':
+        return tr('settings.appearance.theme.glass')
+    return theme_label(name) or accent_label(name) or name
 
 
 def accent_tooltip(name: str) -> str:

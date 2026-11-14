@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtGui import QColor, QPalette
 
-from .choices import ACCENTS, FALLBACK_ACCENT, SYSTEM_ACCENT, THEME_ACCENT, accent_name
+from .catalog import ACCENTS, FALLBACK_ACCENT, SYSTEM_ACCENT, THEME_ACCENT, accent_name
 
 
 def luminance(color: QColor) -> float:
