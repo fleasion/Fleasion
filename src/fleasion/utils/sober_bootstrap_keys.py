@@ -19,9 +19,7 @@ class KeylogOverrideState(TypedDict):
 def native_keylog_path(runtime_dir: Path | None = None) -> Path:
     """Return the Sober-visible, host-visible private tmpfs key-log path."""
     if runtime_dir is None:
-        runtime_dir = Path(
-            os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
-        )
+        runtime_dir = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}'))
     return runtime_dir / 'app' / 'org.vinegarhq.Sober' / '.fleasion-native-tls.keys'
 
 
@@ -43,9 +41,7 @@ def _valid_owned_file(path: Path) -> bool:
     except FileNotFoundError:
         return False
     return (
-        stat.S_ISREG(metadata.st_mode)
-        and metadata.st_uid == os.getuid()
-        and metadata.st_nlink == 1
+        stat.S_ISREG(metadata.st_mode) and metadata.st_uid == os.getuid() and metadata.st_nlink == 1
     )
 
 
@@ -109,9 +105,7 @@ def read_state(state_path: Path) -> KeylogOverrideState | None:
 
 
 def _create_private_file(path: Path) -> int:
-    return os.open(
-        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
-    )
+    return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
 
 
 def arm(path: Path, state_path: Path, previous: KeylogOverrideState) -> bool:
@@ -146,7 +140,7 @@ def restore_option(state_path: Path) -> str | None:
     if previous is None:
         return None
     if previous['previous_present']:
-        return f"--env=SSLKEYLOGFILE={previous['previous_value']}"
+        return f'--env=SSLKEYLOGFILE={previous["previous_value"]}'
     return '--unset-env=SSLKEYLOGFILE'
 
 
@@ -154,7 +148,7 @@ def clear(path: Path, state_path: Path) -> bool:
     """Delete only Fleasion-owned private TLS secrets after Flatpak is restored."""
     try:
         state = read_state(state_path)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return False
     if state is None:
         return True

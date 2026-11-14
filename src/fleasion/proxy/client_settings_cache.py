@@ -54,7 +54,11 @@ def may_cache_client_settings_response(
     status: int, headers: dict[bytes, bytes], upstream_body: bytes
 ) -> bool:
     """Avoid caching malformed, private, or unexpectedly large documents."""
-    if status != 200 or not upstream_body or len(upstream_body) > CLIENT_SETTINGS_MAX_SNAPSHOT_BYTES:
+    if (
+        status != 200
+        or not upstream_body
+        or len(upstream_body) > CLIENT_SETTINGS_MAX_SNAPSHOT_BYTES
+    ):
         return False
     if b'set-cookie' in headers or b'www-authenticate' in headers:
         return False
@@ -63,33 +67,43 @@ def may_cache_client_settings_response(
         return False
     vary = headers.get(b'vary', b'').strip().lower()
     return not vary or all(
-        token.strip() in {b'accept-encoding', b'accept-language'}
-        for token in vary.split(b',')
+        token.strip() in {b'accept-encoding', b'accept-language'} for token in vary.split(b',')
     )
 
 
 def make_local_client_settings_response(
-    body: bytes, encoding: bytes | None, status_line: bytes, headers: dict[bytes, bytes],
+    body: bytes,
+    encoding: bytes | None,
+    status_line: bytes,
+    headers: dict[bytes, bytes],
 ) -> tuple[bytes, bytes]:
     """Build a strong local ETag for the *modified* representation."""
     checksum = hashlib.sha256((encoding or b'') + b'\x00' + body).hexdigest().encode('ascii')
     etag = b'"fleasion-' + checksum + b'"'
     excluded = {
-        b'content-length', b'transfer-encoding', b'content-encoding', b'etag',
-        b'content-md5', b'x-signature-ed25519', b'connection', b'cache-control',
-        b'proxy-connection', b'proxy-authenticate', b'proxy-authorization',
+        b'content-length',
+        b'transfer-encoding',
+        b'content-encoding',
+        b'etag',
+        b'content-md5',
+        b'x-signature-ed25519',
+        b'connection',
+        b'cache-control',
+        b'proxy-connection',
+        b'proxy-authenticate',
+        b'proxy-authorization',
     }
-    header_lines = [
-        key + b': ' + value for key, value in headers.items() if key not in excluded
-    ]
+    header_lines = [key + b': ' + value for key, value in headers.items() if key not in excluded]
     if encoding is not None:
         header_lines.append(b'content-encoding: ' + encoding)
-    header_lines.extend((
-        b'etag: ' + etag,
-        b'cache-control: no-cache',
-        b'content-length: ' + str(len(body)).encode('ascii'),
-        b'connection: keep-alive',
-    ))
+    header_lines.extend(
+        (
+            b'etag: ' + etag,
+            b'cache-control: no-cache',
+            b'content-length: ' + str(len(body)).encode('ascii'),
+            b'connection: keep-alive',
+        )
+    )
     return etag, b'\r\n'.join([status_line, *header_lines]) + b'\r\n\r\n' + body
 
 
@@ -104,7 +118,8 @@ def local_client_settings_reply(
     ):
         return (
             b'HTTP/1.1 304 Not Modified\r\n'
-            b'ETag: ' + snapshot.etag
+            b'ETag: '
+            + snapshot.etag
             + b'\r\nCache-Control: no-cache\r\nContent-Length: 0'
             + b'\r\nConnection: keep-alive\r\n\r\n',
             False,

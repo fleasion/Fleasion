@@ -154,7 +154,7 @@ def _read_bones(data: bytes, offset: int, count: int) -> tuple[list[_BoneRecord]
     _require(data, offset, count * 60, 'bone table')
     records: list[_BoneRecord] = []
     for _ in range(count):
-        records.append(cast('_BoneRecord', struct.unpack_from('<IHHf12f', data, offset)))
+        records.append(struct.unpack_from('<IHHf12f', data, offset))
         offset += 60
     return records, offset
 
@@ -498,7 +498,7 @@ def _decode_draco_vertices(
                 dtype=dtype,
             )
             return values.reshape(-1, width) if values.ndim == 1 else values
-        except (KeyError, RuntimeError, TypeError, ValueError):
+        except KeyError, RuntimeError, TypeError, ValueError:
             return None
 
     normals: NDArray[np.float32] | None = attribute(1, 3, np.float32)
@@ -730,7 +730,7 @@ def has_embedded_rig(data: bytes) -> bool:
     """Return whether a payload contains valid embedded bones and vertex weights."""
     try:
         return _has_embedded_rig_unchecked(data)
-    except (MeshRigError, ValueError, struct.error):
+    except MeshRigError, ValueError, struct.error:
         return False
 
 

@@ -208,7 +208,9 @@ def rbxm_to_rbxmx(data: bytes) -> bytes:
     deserializer = importlib.import_module(
         'fleasion.cache.tools.solidmodel_converter.rbxm.deserializer'
     )
-    xml_writer = importlib.import_module('fleasion.cache.tools.solidmodel_converter.rbxm.xml_writer')
+    xml_writer = importlib.import_module(
+        'fleasion.cache.tools.solidmodel_converter.rbxm.xml_writer'
+    )
     return xml_writer.write_rbxmx(deserializer.RbxmDeserializer().deserialize(data))
 
 
@@ -297,7 +299,7 @@ def _load_rbxmx_instances(
             if md5 and text:
                 try:
                     shared_strings[md5] = base64.b64decode(text)
-                except (binascii.Error, ValueError):
+                except binascii.Error, ValueError:
                     continue
 
     def parse_props(props_elem: ET.Element, inst: _Instance) -> None:
@@ -325,7 +327,7 @@ def _load_rbxmx_instances(
             elif tag == 'BinaryString':
                 try:
                     inst.properties[pname] = base64.b64decode(text) if text else b''
-                except (binascii.Error, ValueError):
+                except binascii.Error, ValueError:
                     inst.properties[pname] = b''
             elif tag == 'SharedString':
                 inst.properties[pname] = shared_strings.get(text, b'')
@@ -510,7 +512,7 @@ def _parse_markers(data: bytes, curve_name: str) -> list[tuple[float, str, str]]
         if count > 10_000:
             return []
         return _read_markers(data, curve_name, count, 4)
-    except (struct.error, UnicodeDecodeError):
+    except struct.error, UnicodeDecodeError:
         return []
 
 
@@ -692,7 +694,9 @@ def _instance_to_xml(inst: _Instance, parent_elem: ET.Element) -> None:
         if pname == 'Name':
             _xml_sub_element(props, 'string', attrib={'name': 'Name'}).text = str(val)
         elif pname == 'Loop':
-            _xml_sub_element(props, 'bool', attrib={'name': 'Loop'}).text = 'true' if val else 'false'
+            _xml_sub_element(props, 'bool', attrib={'name': 'Loop'}).text = (
+                'true' if val else 'false'
+            )
         elif pname == 'Priority':
             _xml_sub_element(props, 'token', attrib={'name': 'Priority'}).text = str(val)
         elif pname == 'Time' and inst.class_name == 'Keyframe':

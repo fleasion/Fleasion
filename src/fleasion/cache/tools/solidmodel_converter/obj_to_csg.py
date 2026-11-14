@@ -57,7 +57,9 @@ def _parse_vertex_color(parts: list[str]) -> tuple[int, int, int]:
 
 
 def _compute_tangent(
-    vertices: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+    vertices: tuple[
+        tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
+    ],
     uvs: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
 ) -> tuple[float, float, float]:
     """Compute a simple tangent vector for a triangle (Lengyel's method).

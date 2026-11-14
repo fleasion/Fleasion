@@ -65,7 +65,7 @@ def _forward_to_previous_handler(
             level = _message_level(message_type)
             category = getattr(context, 'category', None) or 'qt'
             print(f'Qt {level} [{category}] {message}', file=sys.stderr)
-        except (OSError, RuntimeError, UnicodeError, ValueError):
+        except OSError, RuntimeError, UnicodeError, ValueError:
             return
 
 

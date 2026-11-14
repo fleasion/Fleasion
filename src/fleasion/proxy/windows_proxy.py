@@ -28,7 +28,9 @@ def _winreg_module() -> _WinregModule:
     return cast('_WinregModule', importlib.import_module('winreg'))
 
 
-def _run_text_command(args: list[str], *, timeout: float, creationflags: int = 0) -> subprocess.CompletedProcess[str]:
+def _run_text_command(
+    args: list[str], *, timeout: float, creationflags: int = 0
+) -> subprocess.CompletedProcess[str]:
     executable = shutil.which(args[0]) or args[0]
     return subprocess.run(
         [executable, *args[1:]],
@@ -76,7 +78,7 @@ def _read_wininet_registry() -> tuple[bool, str | None, str | None]:
             enabled = bool(int(proxy_enable))
             proxy_server = query(key, 'ProxyServer')
             auto_config_url = query(key, 'AutoConfigURL')
-    except (ImportError, OSError, TypeError, ValueError):
+    except ImportError, OSError, TypeError, ValueError:
         return False, None, None
     return (
         enabled,
@@ -102,7 +104,7 @@ def _read_winhttp_proxy() -> str | None:
             timeout=5,
             creationflags=creationflags,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
 
     text = (result.stdout or '') + '\n' + (result.stderr or '')
@@ -162,7 +164,7 @@ def _read_macos_proxies() -> tuple[bool, str | None, bool, str | None, str | Non
 
     try:
         result = _run_text_command(['scutil', '--proxy'], timeout=5)
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return False, None, False, None, None
 
     return _parse_scutil_proxy_output((result.stdout or '') + '\n' + (result.stderr or ''))

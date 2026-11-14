@@ -410,6 +410,7 @@ class RbxmDeserializer:
                 log.warning('Unhandled property format: %s', fmt)
                 values = [None] * count
         return values
+
     # --- Property readers ---
 
     def _read_strings(self, data: bytes, offset: int, count: int) -> list[str | bytes]:

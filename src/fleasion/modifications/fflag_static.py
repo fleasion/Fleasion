@@ -158,7 +158,8 @@ def _metadata_records(
     table_ranges: list[tuple[int, int]],
     matched_offsets: list[int] | None = None,
     matched_name_offsets: dict[str, tuple[int, int]] | None = None,
-    *, raw_value_offset: int | None = None,
+    *,
+    raw_value_offset: int | None = None,
 ) -> dict[str, StaticRecord]:
     """Recover name-pointer/length/value triplets from immutable Player tables."""
     records: dict[str, StaticRecord] = {}
@@ -385,8 +386,11 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
     if cpu == 0x0100000C:
         arm64 = extract_arm64_flag_registrations(data, sections)
         string_defaults = extract_arm64_macho_string_initializers(
-            data, sections, {
-                registration.storage_va for registration in arm64.values()
+            data,
+            sections,
+            {
+                registration.storage_va
+                for registration in arm64.values()
                 if registration.type_id == 2 and registration.storage_va is not None
             },
         )
@@ -406,9 +410,16 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
             variant = registration.variant or existing.variant
             verified_bool = registration.boolean_storage and variant in {1, 2}
             kind_from_type: dict[int, _KIND] = {
-                1: 'log', 2: 'string', 3: 'numeric', 4: 'bool',
+                1: 'log',
+                2: 'string',
+                3: 'numeric',
+                4: 'bool',
             }
-            qualified_kind = kind_from_type.get(registration.type_id) if variant in {1, 2} and registration.type_id is not None else None
+            qualified_kind = (
+                kind_from_type.get(registration.type_id)
+                if variant in {1, 2} and registration.type_id is not None
+                else None
+            )
             records[name] = replace(
                 existing,
                 variant=variant,
@@ -479,8 +490,7 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
             value_address = start + 11 + _unpack('<i', match.group(1), 0)[0]
             value_offset = file_offset(value_address, data_segments)
             if value_offset < 0 or not any(
-                base <= value_address <= base + length - 24
-                and fileoff + length <= len(data)
+                base <= value_address <= base + length - 24 and fileoff + length <= len(data)
                 for base, fileoff, length in data_segments
             ):
                 continue
@@ -501,12 +511,10 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
             value_address = start + 18 + _unpack('<i', match.group(2), 0)[0]
             name_offset = file_offset(name_address, strings)
             value_offset = file_offset(value_address, data_segments)
-            if (
-                name_offset < 0 or (
-                    value_offset < 0 and not any(
-                        base <= value_address < base + length
-                        for base, length in zero_fill_storage
-                    )
+            if name_offset < 0 or (
+                value_offset < 0
+                and not any(
+                    base <= value_address < base + length for base, length in zero_fill_storage
                 )
             ):
                 continue
@@ -522,7 +530,9 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
             thunks.append((resolved_name, variant, target))
             thunk_storage[resolved_name, variant, target] = value_address
             if value_offset >= 0 and value_offset + 8 <= len(data):
-                thunk_raw_slots[resolved_name, variant, target] = _unpack('<Q', data, value_offset)[0]
+                thunk_raw_slots[resolved_name, variant, target] = _unpack('<Q', data, value_offset)[
+                    0
+                ]
 
     # The Mach-O getters have two wrapper layouts. Both forward to helpers
     # whose compiled type ID follows the same 1=Log, 2=String, 3=Int,
@@ -533,13 +543,11 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
         if wrapper < 0 or data[wrapper : wrapper + 4] != b'\x55\x48\x89\xe5':
             return None
         named_wrapper = (
-            data[wrapper + 4 : wrapper + 15]
-            == b'\x89\xd1\x48\x89\xf2\x48\x89\xfe\x48\x8b\x3d'
+            data[wrapper + 4 : wrapper + 15] == b'\x89\xd1\x48\x89\xf2\x48\x89\xfe\x48\x8b\x3d'
             and data[wrapper + 19 : wrapper + 21] == b'\x5d\xe9'
         )
         direct_wrapper = (
-            data[wrapper + 4 : wrapper + 12]
-            == b'\x89\xf2\x48\x89\xfe\x48\x8b\x3d'
+            data[wrapper + 4 : wrapper + 12] == b'\x89\xf2\x48\x89\xfe\x48\x8b\x3d'
             and data[wrapper + 16 : wrapper + 18] == b'\x5d\xe9'
         )
         if named_wrapper:
@@ -561,32 +569,42 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
         return None
 
     type_ids = {
-        target: helper_type_id(target) for _name, _variant, target in thunks
-        if target is not None
+        target: helper_type_id(target) for _name, _variant, target in thunks if target is not None
     }
     string_storages = {
-        storage for (_name, _variant, target), storage in thunk_storage.items()
+        storage
+        for (_name, _variant, target), storage in thunk_storage.items()
         if target is not None and type_ids.get(target) == 2
     }
-    cstrings = next((
-        (va, off, size) for seg, sect, va, off, size in sections
-        if (seg, sect) == ('__TEXT', '__cstring')
-    ), None)
+    cstrings = next(
+        (
+            (va, off, size)
+            for seg, sect, va, off, size in sections
+            if (seg, sect) == ('__TEXT', '__cstring')
+        ),
+        None,
+    )
     string_defaults = (
         extract_elf_cstring_initializers(
-            data, {'.text': code_segments[0], '.rodata': cstrings},
+            data,
+            {'.text': code_segments[0], '.rodata': cstrings},
             string_storages,
-        ) if cstrings and code_segments and string_storages else {}
+        )
+        if cstrings and code_segments and string_storages
+        else {}
     )
     # Mach-O libc++ string initializers often keep the object and literal in
     # callee-saved registers across neighboring registrations. A second
     # independent constructor proof handles those patterns. If two proofs
     # disagree, no compiled default is safe to display.
     extra_defaults = extract_macho_x86_string_initializers(
-        data, sections, string_storages,
+        data,
+        sections,
+        string_storages,
     )
     conflicting = {
-        storage for storage, value in extra_defaults.items()
+        storage
+        for storage, value in extra_defaults.items()
         if storage in string_defaults and string_defaults[storage] != value
     }
     string_defaults.update(extra_defaults)
@@ -599,7 +617,10 @@ def _macho_records(data: bytes) -> list[StaticRecord]:
         kind: _KIND = type_map.get(type_id, 'unknown') if type_id is not None else 'unknown'
         storage = thunk_storage.get((name, variant, target))
         record = StaticRecord(
-            name, variant, kind, verified_type=type_id is not None,
+            name,
+            variant,
+            kind,
+            verified_type=type_id is not None,
             raw_initial_u64=thunk_raw_slots.get((name, variant, target)),
             initial_value=(
                 string_defaults.get(storage) if type_id == 2 and storage is not None else None
@@ -703,8 +724,11 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
     pending_storage: dict[int, tuple[str, int, _KIND]] = {}
     string_storage: dict[int, list[tuple[str, int, _KIND]]] = {}
     scalar_storage = next(
-        ((address, off, size) for n, section_type, address, off, size in headers
-         if label(n) == b'.data' and section_type == 1 and off + size <= len(data)),
+        (
+            (address, off, size)
+            for n, section_type, address, off, size in headers
+            if label(n) == b'.data' and section_type == 1 and off + size <= len(data)
+        ),
         None,
     )
 
@@ -766,7 +790,9 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
                 initial, raw = scalar_initializer(addend, key[2])
                 if initial is not None:
                     records[key] = replace(
-                        records[key], initial_value=initial, raw_initial_u64=raw,
+                        records[key],
+                        initial_value=initial,
+                        raw_initial_u64=raw,
                     )
             if not (
                 section_addr <= offset <= section_addr + section_len - 32
@@ -808,7 +834,10 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
                 disk_value = _unpack('<Q', data, fileoff + 16)[0]
                 key = (name, variant, kind)
                 records[key] = StaticRecord(
-                    name, variant, kind, verified_type=True,
+                    name,
+                    variant,
+                    kind,
+                    verified_type=True,
                     raw_initial_u64=disk_value or None,
                 )
                 pending_storage[offset + 16] = key
@@ -834,22 +863,32 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
         # relocation-descriptor clients. Match its destination to the thunk's
         # independently verified string storage, never an adjacent name.
         thunk_string_storage = {
-            registration.storage_va for registration in thunks
+            registration.storage_va
+            for registration in thunks
             if registration.type_id == 2 and registration.storage_va is not None
         }
-        thunk_strings = extract_elf_cstring_initializers(
-            data, sections, thunk_string_storage,
-        ) if len(records) < 1000 and len(thunks) >= 1000 else {}
+        thunk_strings = (
+            extract_elf_cstring_initializers(
+                data,
+                sections,
+                thunk_string_storage,
+            )
+            if len(records) < 1000 and len(thunks) >= 1000
+            else {}
+        )
         if len(records) < 1000 and len(thunks) >= 1000:
             # Some Android clients, like macOS, reuse a C-string address in
             # a callee-saved GPR across nearby static registrations. The
             # x86-64 libc++ constructor proof uses THIS ELF's typed storage
             # and literal, never a guessed default from another build.
             extra_strings = extract_elf_x86_callee_saved_string_initializers(
-                data, sections, thunk_string_storage,
+                data,
+                sections,
+                thunk_string_storage,
             )
             conflicts = {
-                address for address, value in extra_strings.items()
+                address
+                for address, value in extra_strings.items()
                 if address in thunk_strings and thunk_strings[address] != value
             }
             thunk_strings.update(extra_strings)
@@ -867,11 +906,16 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
                     else 'bool'
                 )
                 typed[registration.name, registration.variant, kind] = StaticRecord(
-                    registration.name, registration.variant, kind, verified_type=True,
+                    registration.name,
+                    registration.variant,
+                    kind,
+                    verified_type=True,
                     initial_value=(
                         thunk_strings.get(registration.storage_va)
-                        if registration.type_id == 2 and registration.storage_va is not None else
-                        compiled.get((registration.name, registration.variant, registration.type_id))
+                        if registration.type_id == 2 and registration.storage_va is not None
+                        else compiled.get(
+                            (registration.name, registration.variant, registration.type_id)
+                        )
                     ),
                 )
             return list(typed.values())
@@ -884,9 +928,14 @@ def _elf_records(data: bytes) -> list[StaticRecord]:
                     'log',
                 )
                 record = StaticRecord(
-                    registration.name, registration.variant, 'log', verified_type=True,
+                    registration.name,
+                    registration.variant,
+                    'log',
+                    verified_type=True,
                     initial_value=(
-                        compiled.get((registration.name, registration.variant, registration.type_id))
+                        compiled.get(
+                            (registration.name, registration.variant, registration.type_id)
+                        )
                         or disk_initial
                     ),
                     raw_initial_u64=disk_raw,
@@ -965,10 +1014,12 @@ def _resolve_records(
             flags[qualified] = (
                 (
                     record.initial_value
-                    if record.initial_value is not None else
-                    _display_raw_initializer(qualified, record.compiled_raw_u32)
+                    if record.initial_value is not None
+                    else _display_raw_initializer(qualified, record.compiled_raw_u32)
                     or _display_raw_initializer(qualified, record.raw_initial_u64)
-                ) if binary_values else published.get(qualified)
+                )
+                if binary_values
+                else published.get(qualified)
             )
             if confirmed:
                 verified.add(qualified)
@@ -1199,7 +1250,15 @@ def save_scan(catalog: StaticFlagCatalog) -> None:
                     'companion_sha256': catalog.companion_sha256,
                     'companion_metadata_recognized': catalog.companion_metadata_recognized,
                     'registrations': [
-                        [rec.name, rec.variant, rec.kind, rec.verified_type, rec.initial_value, rec.raw_initial_u64, rec.compiled_raw_u32]
+                        [
+                            rec.name,
+                            rec.variant,
+                            rec.kind,
+                            rec.verified_type,
+                            rec.initial_value,
+                            rec.raw_initial_u64,
+                            rec.compiled_raw_u32,
+                        ]
                         if catalog.binary_values
                         else [rec.name, rec.variant, rec.kind, rec.verified_type]
                         for rec in catalog.registrations
@@ -1260,17 +1319,29 @@ def _validated_registrations(value: object) -> tuple[StaticRecord, ...] | None:
         if variant is not None and (type(variant) is not int or variant not in {1, 2}):
             return None
         valid_initial = (
-            initial is None or (isinstance(initial, str) and len(initial) <= _MAX_INITIAL_VALUE_LENGTH)
+            initial is None
+            or (isinstance(initial, str) and len(initial) <= _MAX_INITIAL_VALUE_LENGTH)
         ) and (raw is None or (type(raw) is int and 0 <= raw < 1 << 64))
         valid_compiled = compiled is None or (type(compiled) is int and 0 <= compiled < 1 << 32)
-        if not (isinstance(kind, str) and kind in _VALID_KINDS and type(typed) is bool and valid_initial and valid_compiled):
+        if not (
+            isinstance(kind, str)
+            and kind in _VALID_KINDS
+            and type(typed) is bool
+            and valid_initial
+            and valid_compiled
+        ):
             return None
-        records.append(StaticRecord(
-            name, variant, cast('_KIND', kind), typed,
-            initial if isinstance(initial, str) else None,
-            raw if type(raw) is int else None,
-            compiled if type(compiled) is int else None,
-        ))
+        records.append(
+            StaticRecord(
+                name,
+                variant,
+                cast('_KIND', kind),
+                typed,
+                initial if isinstance(initial, str) else None,
+                raw if type(raw) is int else None,
+                compiled if type(compiled) is int else None,
+            )
+        )
     return tuple(records)
 
 
@@ -1325,7 +1396,11 @@ def _parse_cached_scan(client: str, payload: object) -> StaticFlagCatalog | None
     mapping = as_object_dict(payload)
     # Historical Android scans lack verified binary values and must be rescanned
     expected_versions = {6, 7, 8} if client == 'windows' else {24}
-    if mapping is None or mapping.get('client') != client or mapping.get('version') not in expected_versions:
+    if (
+        mapping is None
+        or mapping.get('client') != client
+        or mapping.get('version') not in expected_versions
+    ):
         return None
     flags = _validated_flags(mapping.get('flags'))
     raw_verified = as_object_list(mapping.get('verified'))

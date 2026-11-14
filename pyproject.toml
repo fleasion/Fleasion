@@ -1,5 +1,5 @@
 [build-system]
-requires = ['uv_build>=0.11.0,<0.12.0']
+requires = ['uv_build>=0.13.8,<0.14.0']
 build-backend = 'uv_build'
 
 [project]
@@ -48,10 +48,10 @@ build = 'fleasion.scripts.build:main'
 
 [dependency-groups]
 dev = [
-    "pyinstaller>=6.19.0",
-    "pyright>=1.1.411",
-    "pytest>=9.0.0",
-    "ruff>=0.16.5",
+    "pyinstaller>=6.22.3",
+    "pyright>=1.1.414",
+    "pytest>=9.2.0",
+    "ruff>=0.17.5",
 ]
 
 [tool.pyright]
@@ -83,7 +83,7 @@ ignore = [
     "DOC",
     "any-type",
     "missing-return-type-special-method",
-    "missing-return-type-undocumented-public-function",
+    "missing-return-type-public-function",
     "missing-return-type-private-function",
 
     # Imports and package structure

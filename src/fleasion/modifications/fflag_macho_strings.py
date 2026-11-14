@@ -21,24 +21,37 @@ _MAX_LITERAL = 8192
 # Verified libc++ basic_string(const char*) constructor, immediately before
 # it invokes strlen. Branch/call displacements below this prefix vary by build.
 _STRING_CTOR_PREFIX = (
-    0xA9BC5FF8, 0xA90157F6, 0xA9024FF4, 0xA9037BFD,
-    0x9100C3FD, 0xAA0103F5, 0xAA0003F3, 0xAA0103E0,
+    0xA9BC5FF8,
+    0xA90157F6,
+    0xA9024FF4,
+    0xA9037BFD,
+    0x9100C3FD,
+    0xAA0103F5,
+    0xAA0003F3,
+    0xAA0103E0,
 )
 
 
 def extract_arm64_macho_string_initializers(
-    data: bytes, sections: Sequence[_Section], storage_addresses: AbstractSet[int],
+    data: bytes,
+    sections: Sequence[_Section],
+    storage_addresses: AbstractSet[int],
 ) -> dict[int, str]:
     """Return proven compiled strings indexed by verified accessor storage VA."""
-    text = next((
-        (va, fileoff, size) for seg, sect, va, fileoff, size in sections
-        if (seg, sect) == ('__TEXT', '__text')
-    ), None)
+    text = next(
+        (
+            (va, fileoff, size)
+            for seg, sect, va, fileoff, size in sections
+            if (seg, sect) == ('__TEXT', '__text')
+        ),
+        None,
+    )
     # Some Clang C-string byte arrays live in immutable __const rather
     # than __cstring. The constructor and exact X1 pointer still provide
     # the necessary proof of string content and destination.
     literals = [
-        (va, off, size) for seg, sect, va, off, size in sections
+        (va, off, size)
+        for seg, sect, va, off, size in sections
         if (seg, sect) in {('__TEXT', '__cstring'), ('__TEXT', '__const')}
         and off + size <= len(data)
     ]
@@ -48,7 +61,7 @@ def extract_arm64_macho_string_initializers(
     if size < 24 or fileoff + size > len(data):
         return {}
     count = size // 4
-    code = memoryview(data)[fileoff:fileoff + size]
+    code = memoryview(data)[fileoff : fileoff + size]
 
     def word(index: int) -> int:
         return struct.unpack_from('<I', code, index * 4)[0]
@@ -78,10 +91,9 @@ def extract_arm64_macho_string_initializers(
         if relative & (1 << 25):
             relative -= 1 << 26
         destination = callsite + relative
-        return (
-            0 <= destination <= count - len(_STRING_CTOR_PREFIX)
-            and all(word(destination + i) == instruction
-                    for i, instruction in enumerate(_STRING_CTOR_PREFIX))
+        return 0 <= destination <= count - len(_STRING_CTOR_PREFIX) and all(
+            word(destination + i) == instruction
+            for i, instruction in enumerate(_STRING_CTOR_PREFIX)
         )
 
     def literal_at(address: int) -> str | None:
@@ -99,7 +111,8 @@ def extract_arm64_macho_string_initializers(
         return None
 
     def preserves(  # ruff: ignore[too-many-return-statements]
-        instruction: int, source: int,
+        instruction: int,
+        source: int,
     ) -> bool:
         """Accept only instructions that cannot overwrite a callee-saved Xn.
 
@@ -126,10 +139,7 @@ def extract_arm64_macho_string_initializers(
             return instruction & 31 != source
         if instruction & 0x3B200000 in {0x39000000, 0x38000000}:
             is_load = (instruction >> 22) & 3 != 0
-            writeback = (
-                instruction & 0x3B200000 == 0x38000000
-                and (instruction >> 10) & 3 in {1, 3}
-            )
+            writeback = instruction & 0x3B200000 == 0x38000000 and (instruction >> 10) & 3 in {1, 3}
             return not (
                 (is_load and instruction & 31 == source)
                 or (writeback and (instruction >> 5) & 31 == source)
@@ -137,10 +147,11 @@ def extract_arm64_macho_string_initializers(
         if instruction & 0x3B000000 in {0x29000000, 0x28000000}:
             writeback = (instruction >> 23) & 3 in {1, 3}
             return not (
-                (instruction & 0x00400000 and (
-                    instruction & 31 == source
-                    or (instruction >> 10) & 31 == source
-                )) or (writeback and (instruction >> 5) & 31 == source)
+                (
+                    instruction & 0x00400000
+                    and (instruction & 31 == source or (instruction >> 10) & 31 == source)
+                )
+                or (writeback and (instruction >> 5) & 31 == source)
             )
         if instruction & 0x1FE00000 == 0x1A800000:
             return instruction & 31 != source
@@ -213,10 +224,7 @@ def extract_arm64_macho_string_initializers(
                 if displacement & (1 << 25):
                     displacement -= 1 << 26
                 target = i + displacement
-            elif (
-                instruction & 0xFF000010 == 0x54000000
-                or instruction & 0x7E000000 == 0x34000000
-            ):
+            elif instruction & 0xFF000010 == 0x54000000 or instruction & 0x7E000000 == 0x34000000:
                 displacement = (instruction >> 5) & 0x7FFFF
                 if displacement & (1 << 18):
                     displacement -= 1 << 19
@@ -232,4 +240,6 @@ def extract_arm64_macho_string_initializers(
             if not any(i in alternate_entries for i in range(seed + 1, end + 1)):
                 candidates[address].add(value)
     # Conflicting constructors are ambiguous even if all are real calls.
-    return {address: next(iter(values)) for address, values in candidates.items() if len(values) == 1}
+    return {
+        address: next(iter(values)) for address, values in candidates.items() if len(values) == 1
+    }

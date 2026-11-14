@@ -38,7 +38,12 @@ _MAX_CONSTRUCTOR_DISTANCE = 128
 
 
 def _adjacent_register_literal(
-    code: memoryview, at: int, register: int, *, width: int, store_rex: bool,
+    code: memoryview,
+    at: int,
+    register: int,
+    *,
+    width: int,
+    store_rex: bool,
 ) -> int | None:
     """Decode adjacent register constants without crossing intervening code."""
     lower = register & 7
@@ -57,27 +62,32 @@ def _adjacent_register_literal(
                 and modrm & 0xC0 == 0xC0
                 and (modrm >> 3) & 7 == lower
                 and modrm & 7 == lower
-                and (register < 8 if rex is None else
-                     bool(rex & 4) == (register >= 8) and bool(rex & 1) == (register >= 8))
+                and (
+                    register < 8
+                    if rex is None
+                    else bool(rex & 4) == (register >= 8) and bool(rex & 1) == (register >= 8)
+                )
             ):
                 return 0
     if width == 2:
         if register < 8 and at >= 4 and code[at - 4] == 0x66 and code[at - 3] == 0xB8 + lower:
             return struct.unpack_from('<H', code, at - 2)[0]
         if (
-            register >= 8 and at >= 5 and code[at - 5] == 0x66
-            and code[at - 4] == 0x41 and code[at - 3] == 0xB8 + lower
+            register >= 8
+            and at >= 5
+            and code[at - 5] == 0x66
+            and code[at - 4] == 0x41
+            and code[at - 3] == 0xB8 + lower
         ):
             return struct.unpack_from('<H', code, at - 2)[0]
     if (
-        register < 8 and at >= 5 and code[at - 5] == 0xB8 + lower
+        register < 8
+        and at >= 5
+        and code[at - 5] == 0xB8 + lower
         and (at < 6 or not 0x40 <= code[at - 6] <= 0x4F)
     ):
         return struct.unpack_from('<I', code, at - 4)[0]
-    if (
-        register >= 8 and at >= 6
-        and code[at - 6] == 0x41 and code[at - 5] == 0xB8 + lower
-    ):
+    if register >= 8 and at >= 6 and code[at - 6] == 0x41 and code[at - 5] == 0xB8 + lower:
         return struct.unpack_from('<I', code, at - 4)[0]
     return None
 
@@ -88,7 +98,10 @@ _TRACE_LOOKBACK_BYTES = 16384
 
 
 def _constant_register_seed(  # ruff: ignore[too-many-return-statements]
-    code: memoryview, at: int, register: int, store_width: int,
+    code: memoryview,
+    at: int,
+    register: int,
+    store_width: int,
 ) -> tuple[int, int] | None:
     """Recognize a whole-register immediate or self-XOR before a store."""
     if at + 2 > len(code):
@@ -102,7 +115,8 @@ def _constant_register_seed(  # ruff: ignore[too-many-return-statements]
         if register < 4 and prefix == 0xB0 + low:
             return at + 2, code[at + 1]
         if (
-            at + 3 <= len(code) and 0x40 <= prefix <= 0x4F
+            at + 3 <= len(code)
+            and 0x40 <= prefix <= 0x4F
             and bool(prefix & 1) == (register >= 8)
             and code[at + 1] == 0xB0 + low
         ):
@@ -111,22 +125,23 @@ def _constant_register_seed(  # ruff: ignore[too-many-return-statements]
         if register < 8 and code[at + 1] == 0xB8 + low and store_width <= 2:
             return at + 4, struct.unpack_from('<H', code, at + 2)[0]
         if (
-            register >= 8 and at + 5 <= len(code)
-            and code[at + 1] == 0x41 and code[at + 2] == 0xB8 + low
+            register >= 8
+            and at + 5 <= len(code)
+            and code[at + 1] == 0x41
+            and code[at + 2] == 0xB8 + low
             and store_width <= 2
         ):
             return at + 5, struct.unpack_from('<H', code, at + 3)[0]
     previous_prefix = code[at - 1] if at else 0
     if (
-        register < 8 and prefix == 0xB8 + low and at + 5 <= len(code)
+        register < 8
+        and prefix == 0xB8 + low
+        and at + 5 <= len(code)
         and previous_prefix != 0x66
         and not 0x40 <= previous_prefix <= 0x4F
     ):
         return at + 5, struct.unpack_from('<I', code, at + 1)[0]
-    if (
-        register >= 8 and prefix == 0x41 and at + 6 <= len(code)
-        and code[at + 1] == 0xB8 + low
-    ):
+    if register >= 8 and prefix == 0x41 and at + 6 <= len(code) and code[at + 1] == 0xB8 + low:
         return at + 6, struct.unpack_from('<I', code, at + 2)[0]
     # XOR reg,reg is a zeroing idiom, but do not accept xor reg,other
     offset = 1 if 0x40 <= prefix <= 0x4F else 0
@@ -189,7 +204,10 @@ def _direct_branch_edges(code: memoryview, at: int) -> tuple[int, ...] | None:
 
 
 def _guarded_preserving_block(
-    code: memoryview, start: int, target: int, register: int,
+    code: memoryview,
+    start: int,
+    target: int,
+    register: int,
 ) -> bool:
     """Prove all paths through a bounded forward branch preserve one GPR.
 
@@ -223,7 +241,11 @@ def _guarded_preserving_block(
 
 
 def safe_x86_preserving_step(  # ruff: ignore[too-many-return-statements]
-    code: memoryview, at: int, source_register: int, *, allow_guard: bool = True,
+    code: memoryview,
+    at: int,
+    source_register: int,
+    *,
+    allow_guard: bool = True,
 ) -> int | None:
     """Skip only understood straight-line instructions preserving a register."""
     if at >= len(code):
@@ -243,9 +265,21 @@ def safe_x86_preserving_step(  # ruff: ignore[too-many-return-statements]
     # caller-saved RAX/RCX/RDX/RSI/RDI/R8-R11. A negative source is used
     # for instruction-boundary checks only.
     if not operand16 and not rex and op == 0xE8:
-        return at + 4 if at + 4 <= len(code) and source_register in {
-            -1, 3, 5, 12, 13, 14, 15,
-        } else None
+        return (
+            at + 4
+            if at + 4 <= len(code)
+            and source_register
+            in {
+                -1,
+                3,
+                5,
+                12,
+                13,
+                14,
+                15,
+            }
+            else None
+        )
     if allow_guard and source_register >= 0 and not operand16 and not rex:
         # Jcc rel8 and Jcc rel32 are safe only when both paths reconverge
         if 0x70 <= op <= 0x7F and at < len(code):
@@ -264,7 +298,8 @@ def safe_x86_preserving_step(  # ruff: ignore[too-many-return-statements]
         operand_at = at + int(bool(lock_rex))
         if (
             operand_at + 3 <= len(code)
-            and code[operand_at] == 0x0F and code[operand_at + 1] == 0xB1
+            and code[operand_at] == 0x0F
+            and code[operand_at + 1] == 0xB1
         ):
             modrm = code[operand_at + 2]
             # CMPXCHG memory writes the implicit accumulator on failure,
@@ -298,10 +333,7 @@ def safe_x86_preserving_step(  # ruff: ignore[too-many-return-statements]
         low = op - 0xB0
         # Without REX, encodings 4-7 mean AH/CH/DH/BH, not SIL/DIL.
         # With REX, all eight encodings select low-byte GPRs.
-        destination = (
-            low + rm_extension if rex or low < 4
-            else low - 4
-        )
+        destination = low + rm_extension if rex or low < 4 else low - 4
         return at + 1 if destination != source_register else None
     if 0xB8 <= op <= 0xBF:
         width = 2 if operand16 else 8 if rex & 8 else 4
@@ -332,8 +364,7 @@ def safe_x86_preserving_step(  # ruff: ignore[too-many-return-statements]
                 at += 2 if operand16 else 4
             return at if dest != source_register and at <= len(code) else None
         return None
-    if op in {0x31, 0x33, 0x29, 0x2B, 0x01, 0x03, 0x09, 0x0B, 0x21, 0x23,
-              0x39, 0x3B, 0x85}:
+    if op in {0x31, 0x33, 0x29, 0x2B, 0x01, 0x03, 0x09, 0x0B, 0x21, 0x23, 0x39, 0x3B, 0x85}:
         if at >= len(code):
             return None
         modrm = code[at]
@@ -380,7 +411,8 @@ def safe_x86_preserving_step(  # ruff: ignore[too-many-return-statements]
 
 
 def _literal_after_complete_rip_store_ret(  # ruff: ignore[too-many-return-statements]
-    code: memoryview, at: int,
+    code: memoryview,
+    at: int,
 ) -> bool:
     """Prove a MOV imm32 starts after a completed RIP store and RET.
 
@@ -402,19 +434,22 @@ def _literal_after_complete_rip_store_ret(  # ruff: ignore[too-many-return-state
         if length == 7 and code[start] == 0x89 and code[start + 1] & 0xC7 == 0x05:
             return True  # MOV [RIP+disp32],r32; RET
         if (
-            length == 8 and code[start] in {0x48, 0x4C}
-            and code[start + 1] == 0x89 and code[start + 2] & 0xC7 == 0x05
+            length == 8
+            and code[start] in {0x48, 0x4C}
+            and code[start + 1] == 0x89
+            and code[start + 2] & 0xC7 == 0x05
         ):
             return True  # MOV [RIP+disp32],r64; RET
-        if length == 11 and bytes(code[start:start + 2]) == b'\xC7\x05':
+        if length == 11 and bytes(code[start : start + 2]) == b'\xc7\x05':
             return True  # MOV dword [RIP+disp32],imm32; RET
-        if length == 12 and bytes(code[start:start + 3]) == b'\x48\xC7\x05':
+        if length == 12 and bytes(code[start : start + 3]) == b'\x48\xc7\x05':
             return True  # MOV qword [RIP+disp32],imm32; RET
     return False
 
 
 def _seed_inside_instruction(  # ruff: ignore[too-many-return-statements]
-    code: memoryview, at: int,
+    code: memoryview,
+    at: int,
 ) -> bool:
     """Reject apparent opcodes embedded in a recognized previous instruction.
 
@@ -432,30 +467,33 @@ def _seed_inside_instruction(  # ruff: ignore[too-many-return-statements]
     # a self-XOR: treating an arbitrary MOV immediate as aligned here has
     # produced spurious values in unrelated call displacements.
     if (
-        at >= 6 and code[at - 5] == 0xE8
+        at >= 6
+        and code[at - 5] == 0xE8
         and (
             code[at - 6] == 0xC3  # ret; call rel32; xor reg,reg
-            or (at >= 8 and bytes(code[at - 8:at - 5]) in {
-                b'\x48\x89\xc7',  # MOV RDI,RAX; CALL; XOR
-                b'\x48\x89\x02',  # MOV [RDX],RAX; CALL; XOR
-            })
+            or (
+                at >= 8
+                and bytes(code[at - 8 : at - 5])
+                in {
+                    b'\x48\x89\xc7',  # MOV RDI,RAX; CALL; XOR
+                    b'\x48\x89\x02',  # MOV [RDX],RAX; CALL; XOR
+                }
+            )
         )
     ):
         rex = code[at] if at < len(code) and 0x40 <= code[at] <= 0x4F else 0
         op_at = at + int(bool(rex))
         if op_at + 1 < len(code) and code[op_at] in {0x31, 0x33}:
             modrm = code[op_at + 1]
-            if (
-                modrm & 0xC0 == 0xC0
-                and ((modrm >> 3) & 7) + (8 if rex & 4 else 0)
-                == (modrm & 7) + (8 if rex & 1 else 0)
-            ):
+            if modrm & 0xC0 == 0xC0 and ((modrm >> 3) & 7) + (8 if rex & 4 else 0) == (
+                modrm & 7
+            ) + (8 if rex & 1 else 0):
                 return False
     # A 16-bit logging level can be initialized directly after CALL rel32
     # or RET. Prove the boundary using a complete previous instruction
     # ending exactly at the call/return, not just an isolated E8/C3 byte:
     # either byte can also occur inside a displacement or immediate.
-    if at + 4 <= len(code) and bytes(code[at:at + 2]) == b'\x66\xb8':
+    if at + 4 <= len(code) and bytes(code[at : at + 2]) == b'\x66\xb8':
         for length, opcode in ((1, 0xC3), (5, 0xE8)):
             boundary = at - length
             if boundary < 1 or code[boundary] != opcode:
@@ -470,9 +508,10 @@ def _seed_inside_instruction(  # ruff: ignore[too-many-return-statements]
     # LEA EDX,[RAX+1]; XOR ECX,ECX. Do not mistake bytes in the MOV
     # displacement for an overlapping instruction covering the XOR seed.
     if (
-        at >= 9 and bytes(code[at - 9:at - 7]) == b'\x8b\x05'
-        and bytes(code[at - 3:at]) == b'\x8d\x50\x01'
-        and bytes(code[at:at + 2]) == b'\x31\xc9'
+        at >= 9
+        and bytes(code[at - 9 : at - 7]) == b'\x8b\x05'
+        and bytes(code[at - 3 : at]) == b'\x8d\x50\x01'
+        and bytes(code[at : at + 2]) == b'\x31\xc9'
     ):
         return False
     # A new constructor may begin immediately after an earlier one ends in
@@ -480,7 +519,8 @@ def _seed_inside_instruction(  # ruff: ignore[too-many-return-statements]
     # RET are exact, contiguous instruction encodings; reject an isolated
     # RET-looking byte inside an immediate or displacement.
     if (
-        at >= 8 and code[at - 1] == 0xC3
+        at >= 8
+        and code[at - 1] == 0xC3
         and code[at - 8] in {0x48, 0x4C}
         and code[at - 7] == 0x89
         and code[at - 6] & 0xC7 == 0x05
@@ -489,22 +529,22 @@ def _seed_inside_instruction(  # ruff: ignore[too-many-return-statements]
         opcode_at = at + int(bool(rex))
         if opcode_at + 1 < len(code) and code[opcode_at] in {0x31, 0x33}:
             modrm = code[opcode_at + 1]
-            if (
-                modrm & 0xC0 == 0xC0
-                and ((modrm >> 3) & 7) + (8 if rex & 4 else 0)
-                == (modrm & 7) + (8 if rex & 1 else 0)
-            ):
+            if modrm & 0xC0 == 0xC0 and ((modrm >> 3) & 7) + (8 if rex & 4 else 0) == (
+                modrm & 7
+            ) + (8 if rex & 1 else 0):
                 return False
     # An actual 16-bit immediate follows a four-byte stack-slot spill in
     # Clang's FLog initializers. This boundary establishes the MOV AX seed
     # even if an overlapping decode starts in the preceding instruction.
     if (
-        at >= 4 and bytes(code[at - 4:at]) == b'\x48\x89\x45\xe8'
-        and bytes(code[at:at + 2]) == b'\x66\xb8'
+        at >= 4
+        and bytes(code[at - 4 : at]) == b'\x48\x89\x45\xe8'
+        and bytes(code[at : at + 2]) == b'\x66\xb8'
     ):
         return False
     if (
-        at >= 7 and code[at - 7] in {0x48, 0x4C}
+        at >= 7
+        and code[at - 7] in {0x48, 0x4C}
         and code[at - 6] in {0x8D, 0x89, 0x8B}
         and code[at - 5] in {0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x35, 0x3D}
     ):
@@ -517,7 +557,11 @@ def _seed_inside_instruction(  # ruff: ignore[too-many-return-statements]
 
 
 def verified_x86_preserving_trace(
-    code: memoryview, seed_start: int, seed_end: int, use: int, register: int,
+    code: memoryview,
+    seed_start: int,
+    seed_end: int,
+    use: int,
+    register: int,
 ) -> bool:
     """Prove a callee-saved register keeps its value from seed to use.
 
@@ -538,12 +582,19 @@ def verified_x86_preserving_trace(
             return False
         current = following
     return current == use and not _seed_may_be_skipped(
-        code, seed_start, use, register,
+        code,
+        seed_start,
+        use,
+        register,
     )
 
 
 def _candidate_seed_sites(
-    data: bytes, code_offset: int, at: int, register: int, width: int,
+    data: bytes,
+    code_offset: int,
+    at: int,
+    register: int,
+    width: int,
 ) -> list[int]:
     """Index only possible literal opcodes using native bytes.find().
 
@@ -615,9 +666,7 @@ def _seed_may_be_skipped(code: memoryview, start: int, at: int, register: int) -
             if branch + 2 > start:
                 continue
             target = branch + 2 + struct.unpack_from('<b', code, branch + 1)[0]
-        elif op == 0xE9 or (
-            op == 0x0F and branch + 1 < start and 0x80 <= code[branch + 1] <= 0x8F
-        ):
+        elif op == 0xE9 or (op == 0x0F and branch + 1 < start and 0x80 <= code[branch + 1] <= 0x8F):
             length = 6 if op == 0x0F else 5
             if branch + length > start:
                 continue
@@ -644,7 +693,13 @@ def _seed_may_be_skipped(code: memoryview, start: int, at: int, register: int) -
 
 
 def _bounded_register_literal(
-    data: bytes, code: memoryview, at: int, register: int, width: int, *, code_offset: int,
+    data: bytes,
+    code: memoryview,
+    at: int,
+    register: int,
+    width: int,
+    *,
+    code_offset: int,
 ) -> int | None:
     """Trace a literal through recognized non-clobbering instructions only."""
     resolved: set[int] = set()
@@ -659,7 +714,8 @@ def _bounded_register_literal(
                 break
             current = following
         if (
-            current == at and not _seed_inside_instruction(code, start)
+            current == at
+            and not _seed_inside_instruction(code, start)
             and not _seed_may_be_skipped(code, start, at, register)
         ):
             resolved.add(raw)
@@ -710,17 +766,20 @@ def extract_x86_compiled_initializers(
     if off + size > len(data):
         return {}
     thunk_by_address = {
-        reg.thunk_va: reg for reg in registrations
+        reg.thunk_va: reg
+        for reg in registrations
         if reg.thunk_va is not None and reg.storage_va is not None
     }
     if not thunk_by_address:
         return {}
-    code_bytes = memoryview(data)[off:off + size]
+    code_bytes = memoryview(data)[off : off + size]
     references: dict[int, list[int]] = defaultdict(list)
     for match in _RIP_LEA.finditer(code_bytes):
         site = base + match.start()
         target = site + 7 + struct.unpack('<i', match.group(1))[0]
-        if (registration := thunk_by_address.get(target)) is not None and registration.storage_va is not None:
+        if (
+            registration := thunk_by_address.get(target)
+        ) is not None and registration.storage_va is not None:
             references[registration.storage_va].append(site)
     if not references:
         return {}
@@ -743,14 +802,20 @@ def extract_x86_compiled_initializers(
         reg = ((match.group(4)[0] >> 3) & 7) + (8 if rex & 4 else 0)
         width = 1 if match.group(3) == b'\x88' else 2 if match.group(1) else 8 if rex & 8 else 4
         raw = _adjacent_register_literal(
-            code_bytes, match.start(), reg,
-            width=width, store_rex=bool(match.group(2)),
+            code_bytes,
+            match.start(),
+            reg,
+            width=width,
+            store_rex=bool(match.group(2)),
         )
         if (
-            raw is None and width in {1, 2, 4}
+            raw is None
+            and width in {1, 2, 4}
             and not (width == 1 and 4 <= reg <= 7 and not match.group(2))
         ):
-            raw = _bounded_register_literal(data, code_bytes, match.start(), reg, width, code_offset=off)
+            raw = _bounded_register_literal(
+                data, code_bytes, match.start(), reg, width, code_offset=off
+            )
         if raw is not None:
             mask = (1 << (width * 8)) - 1
             writes[destination].append((site, raw & mask, width))

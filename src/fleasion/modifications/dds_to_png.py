@@ -39,5 +39,5 @@ def tex_to_png_bytes(data: bytes) -> bytes | None:
         buf = io.BytesIO()
         img.convert('RGBA').save(buf, format='PNG')
         return buf.getvalue()
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None

@@ -538,7 +538,7 @@ def _query_process_command_line(pid: int) -> str:
         return ''
     try:
         return _query_process_command_line_from_handle(handle)
-    except (AttributeError, OSError, TypeError, UnicodeError, ValueError):
+    except AttributeError, OSError, TypeError, UnicodeError, ValueError:
         return ''
     finally:
         k32.CloseHandle(handle)
@@ -793,7 +793,7 @@ def _get_roblox_gdk_package_identity(exe_path: Path) -> tuple[str, str] | None:
     publisher_id = package_full_name.split('__', 1)[1]
     try:
         manifest = DefusedElementTree.parse(package_root / 'AppxManifest.xml').getroot()
-    except (DefusedElementTree.ParseError, DefusedXmlException, OSError):
+    except DefusedElementTree.ParseError, DefusedXmlException, OSError:
         return None
     if manifest is None:
         return None
@@ -830,8 +830,10 @@ def _find_installed_roblox_gdk_package_identity(
                 '-ExecutionPolicy',
                 'Bypass',
                 '-Command',
-                ("(Get-AppxPackage -Name 'ROBLOXCorporation.RobloxGDK' | "
-                'Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation)'),
+                (
+                    "(Get-AppxPackage -Name 'ROBLOXCorporation.RobloxGDK' | "
+                    'Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation)'
+                ),
             ],
             encoding='utf-8',
             timeout=20,
@@ -1404,7 +1406,7 @@ def _extract_roblox_deeplink(command_line: str, marker: str = 'roblox-player:') 
 def _process_info_pid(process: _ProcessInfo) -> int:
     try:
         return int(process.get('ProcessId') or 0)
-    except (AttributeError, TypeError, ValueError):
+    except AttributeError, TypeError, ValueError:
         return 0
 
 
@@ -1630,7 +1632,9 @@ def _relaunch_roblox_exe_with_proxy_env(
         break
 
     if relaunch_result is None:
-        log_buffer.log('Launcher', f'{label} Env Proxy relaunch skipped: no {label} executable found')
+        log_buffer.log(
+            'Launcher', f'{label} Env Proxy relaunch skipped: no {label} executable found'
+        )
     return relaunch_result is True
 
 
@@ -2000,7 +2004,6 @@ def _summarize_cache_messages(messages: list[str]) -> list[str]:
     return summary
 
 
-
 def _delete_app_cache_contents(app_cache_dir: Path) -> None:
     preserve = {app_cache_dir / 'predownloaded', app_cache_dir / FFLAG_CATALOG_CACHE_FILENAME}
     for child in app_cache_dir.iterdir():
@@ -2079,7 +2082,7 @@ def _is_process_elevated() -> bool:
         return False
     try:
         return bool(_windll().shell32.IsUserAnAdmin())
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return False
 
 

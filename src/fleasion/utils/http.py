@@ -38,7 +38,7 @@ def _log_http(message: str) -> None:
 def _certifi_context() -> ssl.SSLContext | None:
     try:
         return ssl.create_default_context(cafile=certifi.where())
-    except (OSError, ssl.SSLError):
+    except OSError, ssl.SSLError:
         return None
 
 
@@ -54,7 +54,7 @@ def _tls12_context() -> ssl.SSLContext:
 def _certifi_tls12_context() -> ssl.SSLContext | None:
     try:
         ctx = ssl.create_default_context(cafile=certifi.where())
-    except (OSError, ssl.SSLError):
+    except OSError, ssl.SSLError:
         return None
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.maximum_version = ssl.TLSVersion.TLSv1_2
@@ -89,7 +89,9 @@ def _is_tls_record_layer_error(exc: BaseException) -> bool:
     return 'RECORD_LAYER_FAILURE' in text or 'RECORD LAYER FAILURE' in text
 
 
-def _request(url: str, headers: dict[str, str], *, method: str | None = None) -> urllib.request.Request:
+def _request(
+    url: str, headers: dict[str, str], *, method: str | None = None
+) -> urllib.request.Request:
     _validate_http_url(url)
     return urllib.request.Request(  # ruff: ignore[suspicious-url-open-usage] - scheme validated above
         url,

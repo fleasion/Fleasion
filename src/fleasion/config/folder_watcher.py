@@ -19,8 +19,6 @@ if TYPE_CHECKING:
 _WATCH_RETRY_INTERVAL_MS = 2000
 
 
-
-
 def _collect_watched_directories(folder: Path) -> set[str]:
     watched = {str(folder)}
     for current_root, directory_names, _file_names in os.walk(folder):

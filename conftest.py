@@ -19,15 +19,16 @@ class _PytestConfigIsolation:
     original_value: str | None = None
 
 
-
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Keep all Fleasion config paths in an isolated tree during pytest."""
     del session
     if 'fleasion.utils.paths' in sys.modules:
         pytest.exit('Fleasion paths were initialized before pytest could isolate the user config')
     key = (
-        'LOCALAPPDATA' if sys.platform == 'win32'
-        else 'FLEASION_USER_HOME' if sys.platform == 'darwin'
+        'LOCALAPPDATA'
+        if sys.platform == 'win32'
+        else 'FLEASION_USER_HOME'
+        if sys.platform == 'darwin'
         else 'XDG_CONFIG_HOME'
     )
     _PytestConfigIsolation.environment_key = key
@@ -48,7 +49,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if _PytestConfigIsolation.config_home is not None:
         _PytestConfigIsolation.config_home.cleanup()
         _PytestConfigIsolation.config_home = None
-
 
 
 class _ThreadFactory(Protocol):

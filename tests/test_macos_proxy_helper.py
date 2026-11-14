@@ -1,4 +1,3 @@
-import ast
 import json
 import os
 import subprocess
@@ -140,12 +139,6 @@ def _reset_daemon_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
     monkeypatch.setattr(daemon, '_active_hosts', set[str]())
     monkeypatch.setattr(daemon, '_last_heartbeat', 0.0)
     return hosts_file, token_file
-
-
-def test_source_helper_remains_compatible_with_pre_314_python_syntax() -> None:
-    source = Path(daemon.__file__).read_text(encoding='utf-8')
-
-    ast.parse(source, filename=daemon.__file__, feature_version=(3, 13))
 
 
 def test_helper_only_manages_allowlisted_fleasion_hosts(

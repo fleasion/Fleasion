@@ -62,7 +62,7 @@ def _nutmeg_stdout_log(proc: Path, home: Path) -> Path | None:
             or path.is_symlink()
         ):
             return None
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     else:
         return path
@@ -79,10 +79,10 @@ def _launched_by_nutmeg(proc: Path) -> bool:
         )
         command = (proc.parent / str(parent) / 'cmdline').read_bytes().split(b'\0')
         names = [Path(part.decode('utf-8', errors='replace')).name for part in command if part]
-    except (OSError, ValueError, StopIteration):
+    except OSError, ValueError, StopIteration:
         return False
     return 'nutmeg' in names or any(
-        names[i:i + 2] == ['-m', 'nutmeg'] for i in range(len(names) - 1)
+        names[i : i + 2] == ['-m', 'nutmeg'] for i in range(len(names) - 1)
     )
 
 
@@ -101,10 +101,7 @@ def capture_rosemary_launch(  # ruff: ignore[too-many-return-statements]
             return None
         cmdline = (proc / 'cmdline').read_bytes()
         environment = (proc / 'environ').read_bytes()
-        if not (
-            0 < len(cmdline) <= _MAX_CMDLINE_BYTES
-            and 0 < len(environment) <= _MAX_ENV_BYTES
-        ):
+        if not (0 < len(cmdline) <= _MAX_CMDLINE_BYTES and 0 < len(environment) <= _MAX_ENV_BYTES):
             return None
         argv = _decode_nul_items(cmdline)
         variables = _decode_nul_items(environment)
@@ -129,7 +126,7 @@ def capture_rosemary_launch(  # ruff: ignore[too-many-return-statements]
             if not name or name in env or '\0' in value:
                 return None
             env[name] = value
-    except (OSError, ValueError, PermissionError):
+    except OSError, ValueError, PermissionError:
         return None
     owner_home = Path.home() if home is None else home
     nutmeg_log = _nutmeg_stdout_log(proc, owner_home) if proc_root == Path('/proc') else None
@@ -234,9 +231,7 @@ class RosemaryLaunchInterceptor:
     def _poll_once(self) -> None:
         sessions = running_rosemary_players(proc_root=self._proc_root)
         new = [
-            session
-            for session in sessions
-            if (session.pid, session.start_ticks) not in self._seen
+            session for session in sessions if (session.pid, session.start_ticks) not in self._seen
         ]
         self._seen = {(session.pid, session.start_ticks) for session in sessions}
         if not new or not self._is_armed():

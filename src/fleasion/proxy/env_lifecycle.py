@@ -495,10 +495,7 @@ class EnvProxyLifecycleController:
             # Only reclaim a scope that sent verified decrypted proxy traffic
             verified = getattr(self._proxy_master, 'verified_sober_session_identity', None)
             verified_identity = verified() if callable(verified) else None
-            if (
-                current_identity[0] == 'sober-session'
-                and current_identity == verified_identity
-            ):
+            if current_identity[0] == 'sober-session' and current_identity == verified_identity:
                 owned_identity = current_identity
                 log_buffer.log(
                     'Launcher',

@@ -44,7 +44,7 @@ def _is_sober_resource_path(resource_dir: Path) -> bool:
     try:
         platform_linux = importlib.import_module('fleasion.utils.platform_linux')
         return platform_linux.is_sober_resource_dir(resource_dir)
-    except (AttributeError, ImportError):
+    except AttributeError, ImportError:
         return False
 
 

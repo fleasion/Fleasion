@@ -176,7 +176,7 @@ class GlobalSettingsManager:
             return None
         try:
             return int(element.text or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
     def read_framerate_cap(self) -> int | None:

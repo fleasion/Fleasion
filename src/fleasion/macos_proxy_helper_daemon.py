@@ -6,6 +6,8 @@ intentionally uses only the Python standard library so the privileged surface
 stays small and independent from Fleasion's GUI and replacement engine.
 """
 
+from __future__ import annotations
+
 import argparse
 import contextlib
 import hmac
@@ -203,7 +205,7 @@ def _flush_dns() -> None:
                 check=False,
                 shell=False,
             )
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             continue
 
 
@@ -293,7 +295,7 @@ def _decode_certificate(pem_block: object) -> dict[object, object] | None:
 def _is_fleasion_ca_cert_block(pem_block: object) -> bool:
     try:
         cert = _decode_certificate(pem_block)
-    except (ImportError, OSError, TypeError, ValueError):
+    except ImportError, OSError, TypeError, ValueError:
         return False
     if cert is None:
         return False

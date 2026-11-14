@@ -116,15 +116,16 @@ def extract_elf_cstring_initializers(
         loc = code_off + target - code_va
         return (
             code_off <= loc <= code_end - len(_CSTRING_CONSTRUCTOR_PREFIX)
-            and data[loc:loc + len(_CSTRING_CONSTRUCTOR_PREFIX)]
-            == _CSTRING_CONSTRUCTOR_PREFIX
+            and data[loc : loc + len(_CSTRING_CONSTRUCTOR_PREFIX)] == _CSTRING_CONSTRUCTOR_PREFIX
         )
 
     def literal_at(address: int) -> str | None:
         if not string_va <= address < string_va + string_size:
             return None
         offset = string_off + address - string_va
-        end = data.find(b'\0', offset, min(offset + _MAX_LITERAL_SIZE + 1, string_off + string_size))
+        end = data.find(
+            b'\0', offset, min(offset + _MAX_LITERAL_SIZE + 1, string_off + string_size)
+        )
         if end < 0:
             return None
         try:
@@ -144,8 +145,12 @@ def extract_elf_cstring_initializers(
             recovered[destination] = initial
 
     for pattern in (
-        _DIRECT_CALL, _DIRECT_JUMP, _DIRECT_R15_SAVE, _R14_DEST_DIRECT,
-        _R15_DEST_DIRECT, _RBX_DEST_DIRECT,
+        _DIRECT_CALL,
+        _DIRECT_JUMP,
+        _DIRECT_R15_SAVE,
+        _R14_DEST_DIRECT,
+        _R15_DEST_DIRECT,
+        _RBX_DEST_DIRECT,
     ):
         for match in pattern.finditer(data, code_off, code_end):
             site = code_va + match.start() - code_off

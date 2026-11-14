@@ -379,7 +379,9 @@ def _write_vector3(parent: ET.Element, tag: str, prop: RbxProperty) -> None:
     _xml_sub_element(el, 'Z').text = _fmt_float(prop.value['Z'])
 
 
-def _write_vector_int(parent: ET.Element, tag: str, prop: RbxProperty, axes: tuple[str, ...]) -> None:
+def _write_vector_int(
+    parent: ET.Element, tag: str, prop: RbxProperty, axes: tuple[str, ...]
+) -> None:
     el = _xml_sub_element(parent, tag)
     el.set('name', prop.name)
     for axis in axes:

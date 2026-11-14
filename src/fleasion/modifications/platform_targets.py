@@ -90,7 +90,7 @@ def _linux_resource_client_key(resource_dir: Path) -> str | None:
         # installations whose Flatpak metadata is temporarily unavailable.
         if platform_linux.is_sober_resource_dir(root):
             return 'sober'
-    except (ImportError, AttributeError, OSError):
+    except ImportError, AttributeError, OSError:
         return None
     return None
 
@@ -162,14 +162,14 @@ def _read_zip_member(archive_path: Path, member: str) -> bytes | None:
     try:
         with zipfile.ZipFile(archive_path) as archive:
             return archive.read(member)
-    except (KeyError, OSError, zipfile.BadZipFile):
+    except KeyError, OSError, zipfile.BadZipFile:
         return None
 
 
 def _sober_platform_paths() -> tuple[Path, Path] | None:
     try:
         platform_linux = importlib.import_module('fleasion.utils.platform_linux')
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         return None
     return platform_linux.SOBER_DATA_DIR, platform_linux.SOBER_LEGACY_EXE_DIR
 
@@ -232,7 +232,7 @@ def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, by
     for apk in apks:
         try:
             archive = zipfile.ZipFile(apk)
-        except (OSError, zipfile.BadZipFile):
+        except OSError, zipfile.BadZipFile:
             continue
         with archive:
             for member in archive.namelist():
@@ -252,7 +252,7 @@ def _selected_linux_client_key() -> str:
     try:
         platform_linux = importlib.import_module('fleasion.utils.platform_linux')
         return platform_linux.selected_linux_client_key()
-    except (ImportError, AttributeError, OSError, ValueError):
+    except ImportError, AttributeError, OSError, ValueError:
         return 'sober'
 
 

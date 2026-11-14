@@ -65,8 +65,11 @@ def extract_arm64_flag_registrations(
         Names with optional independently corroborated namespace and scalar
     """
     text = next(
-        ((va, off, size) for seg, sect, va, off, size in sections
-         if (seg, sect) == ('__TEXT', '__text')),
+        (
+            (va, off, size)
+            for seg, sect, va, off, size in sections
+            if (seg, sect) == ('__TEXT', '__text')
+        ),
         None,
     )
     if text is None:
@@ -74,10 +77,7 @@ def extract_arm64_flag_registrations(
     base, off, size = text
     if size < 24 or off + size > len(data):
         return {}
-    writable = [
-        (va, size) for seg, _sect, va, _off, size in sections
-        if seg.startswith('__DATA')
-    ]
+    writable = [(va, size) for seg, _sect, va, _off, size in sections if seg.startswith('__DATA')]
     names: dict[int, str] = {}
     for seg, sect, address, fileoff, length in sections:
         if seg != '__TEXT' or sect not in {'__cstring', '__const'}:
@@ -87,7 +87,7 @@ def extract_arm64_flag_registrations(
     if not names or not writable:
         return {}
 
-    code = memoryview(data)[off:off + size]
+    code = memoryview(data)[off : off + size]
     count = size // 4
 
     def word(index: int) -> int:
@@ -182,7 +182,9 @@ def extract_arm64_flag_registrations(
         return destination if 0 <= destination < count else None
 
     def typed_getter(  # ruff: ignore[too-many-return-statements]
-        getter_va: int, storage_va: int, name_va: int,
+        getter_va: int,
+        storage_va: int,
+        name_va: int,
     ) -> tuple[int, int] | None:
         """Prove a getter's namespace and helper's literal type discriminator.
 
@@ -214,10 +216,7 @@ def extract_arm64_flag_registrations(
             return None
         # The ABI adapter forwards either two or three arguments into a
         # common typed implementation, loading the same flag-manager pointer.
-        prefix = (
-            (0xAA0203E3, 0xAA0103E2, 0xAA0003E1)
-            if named else (0xAA0103E2, 0xAA0003E1)
-        )
+        prefix = (0xAA0203E3, 0xAA0103E2, 0xAA0003E1) if named else (0xAA0103E2, 0xAA0003E1)
         if wrapper + len(prefix) + 2 >= count or any(
             word(wrapper + j) != expected for j, expected in enumerate(prefix)
         ):
@@ -226,24 +225,27 @@ def extract_arm64_flag_registrations(
         if adrp & 0x9F00001F != 0x90000008 or load & 0xFFC003FF != 0xF9400100:
             return None
         implementation = branch_target(wrapper + len(prefix) + 2)
-        if implementation is None or implementation + 10 >= count or (
-            word(implementation), word(implementation + 1)
-        ) != (0xA9BF7BFD, 0x910003FD):
+        if (
+            implementation is None
+            or implementation + 10 >= count
+            or (word(implementation), word(implementation + 1)) != (0xA9BF7BFD, 0x910003FD)
+        ):
             return None
         for j in range(implementation + 2, implementation + 7):
             type_id = literal(j, 4)
             if type_id not in {1, 2, 3, 4}:
                 continue
-            if (
-                branch_target(j + 1, link=True) is not None
-                and (word(j + 2), word(j + 3), word(j + 4))
-                == (0x52800020, 0xA8C17BFD, 0xD65F03C0)
-            ):
+            if branch_target(j + 1, link=True) is not None and (
+                word(j + 2),
+                word(j + 3),
+                word(j + 4),
+            ) == (0x52800020, 0xA8C17BFD, 0xD65F03C0):
                 return variant, type_id
         return None
 
     def register_preserved(  # ruff: ignore[too-many-return-statements]
-        instruction: int, source: int,
+        instruction: int,
+        source: int,
     ) -> bool:
         """Allow only AArch64 forms proven not to write a callee-saved GPR.
 
@@ -252,8 +254,7 @@ def extract_arm64_flag_registrations(
         """
         if instruction in {0xD503201F, 0xD50320FF}:  # NOP, YIELD
             return True
-        if (instruction & 0xFC000000 == 0x94000000
-                or instruction & 0xFFFFFC1F == 0xD63F0000):
+        if instruction & 0xFC000000 == 0x94000000 or instruction & 0xFFFFFC1F == 0xD63F0000:
             return 19 <= source <= 28
         if (
             instruction & 0x7C000000 == 0x14000000  # B (not BL)
@@ -275,10 +276,7 @@ def extract_arm64_flag_registrations(
             is_load = (instruction >> 22) & 3 != 0
             # Unscaled pre/post-indexed STR also writes its base Rn. The
             # scaled unsigned-offset form never writes back.
-            writeback = (
-                instruction & 0x3B200000 == 0x38000000
-                and (instruction >> 10) & 3 in {1, 3}
-            )
+            writeback = instruction & 0x3B200000 == 0x38000000 and (instruction >> 10) & 3 in {1, 3}
             return not (
                 (is_load and instruction & 31 == source)
                 or (writeback and (instruction >> 5) & 31 == source)
@@ -288,9 +286,11 @@ def extract_arm64_flag_registrations(
             # data registers merely supply values for a store.
             writeback = (instruction >> 23) & 3 in {1, 3}
             return not (
-                (instruction & 0x00400000 and (
-                    instruction & 31 == source or (instruction >> 10) & 31 == source
-                )) or (writeback and (instruction >> 5) & 31 == source)
+                (
+                    instruction & 0x00400000
+                    and (instruction & 31 == source or (instruction >> 10) & 31 == source)
+                )
+                or (writeback and (instruction >> 5) & 31 == source)
             )
         if instruction & 0x1FE00000 == 0x1A800000:  # CSEL/CSINC
             return instruction & 31 != source
@@ -313,8 +313,14 @@ def extract_arm64_flag_registrations(
     pending_traces: list[tuple[str, _Initializer, _Initializer, int, int]] = []
 
     def accept_traced(
-        name: str, storage: int, raw: int | None, source: int,
-        store_site: int, *, boolean: bool = False, halfword: bool = False,
+        name: str,
+        storage: int,
+        raw: int | None,
+        source: int,
+        store_site: int,
+        *,
+        boolean: bool = False,
+        halfword: bool = False,
     ) -> _Initializer:
         """Keep unproven traces pending until all external branch targets are checked."""
         original = _Initializer(storage, raw, boolean)
@@ -322,7 +328,8 @@ def extract_arm64_flag_registrations(
             # Even adjacent MOVZ/MOVK instructions can be entered midway
             # by a branch. Require the MOVZ seed to dominate the final STR.
             if (
-                source != 31 and store_site >= 2
+                source != 31
+                and store_site >= 2
                 and word(store_site - 1) & 0x7F800000 == 0x72800000
                 and word(store_site - 1) & 31 == source
             ):
@@ -361,8 +368,7 @@ def extract_arm64_flag_registrations(
             if instruction & 0xFC000000 in {_ARM64_B, 0x94000000}:
                 offset = instruction & 0x03FFFFFF
                 target = at + (offset - (1 << 26) if offset & (1 << 25) else offset)
-            elif (instruction & 0xFF000010 == 0x54000000
-                  or instruction & 0x7E000000 == 0x34000000):
+            elif instruction & 0xFF000010 == 0x54000000 or instruction & 0x7E000000 == 0x34000000:
                 offset = (instruction >> 5) & 0x7FFFF
                 target = at + (offset - (1 << 19) if offset & (1 << 18) else offset)
             elif instruction & 0x7E000000 == 0x36000000:
@@ -410,7 +416,8 @@ def extract_arm64_flag_registrations(
             storage_pair = pair(i + 2)
             if (
                 storage_pair is not None
-                and storage_pair[0] == 1 and is_writable(storage_pair[1])
+                and storage_pair[0] == 1
+                and is_writable(storage_pair[1])
                 and (variant := literal(i + 4, 2)) in {1, 2}
                 and word(i + 5) & 0xFC000000 == _ARM64_B
             ):
@@ -442,21 +449,27 @@ def extract_arm64_flag_registrations(
             # written by STR Xn, [Xm,#8] and a separate STRH numeric level.
             # The independently registered getter proves the type, so this
             # shape must not be confused with a generic pointer assignment.
-            pointer_write = next((
-                (j, (w >> 5) & 31)
-                for distance in (2, 3) for j in (i + distance,)
-                for w in (word(j),)
-                if w & 0xFFC00000 == 0xF9000000
-                and w & 31 == name_reg and (w >> 10) & 4095 == 1
-            ), None)
+            pointer_write = next(
+                (
+                    (j, (w >> 5) & 31)
+                    for distance in (2, 3)
+                    for j in (i + distance,)
+                    for w in (word(j),)
+                    if w & 0xFFC00000 == 0xF9000000 and w & 31 == name_reg and (w >> 10) & 4095 == 1
+                ),
+                None,
+            )
             if pointer_write is None:
                 continue
             pointer_site, storage_reg = pointer_write
-            storage = next((
-                candidate[1]
-                for j in range(i - 1, max(i - 13, -1), -1)
-                if (candidate := pair(j)) is not None and candidate[0] == storage_reg
-            ), None)
+            storage = next(
+                (
+                    candidate[1]
+                    for j in range(i - 1, max(i - 13, -1), -1)
+                    if (candidate := pair(j)) is not None and candidate[0] == storage_reg
+                ),
+                None,
+            )
             if storage is None or not is_writable(storage):
                 continue
             link_getter(name, name_pair[1], storage, pointer_site)
@@ -485,7 +498,8 @@ def extract_arm64_flag_registrations(
                     break
             original = (
                 accept_traced(name, storage, raw, store_source, level_store, halfword=True)
-                if level_store is not None else _Initializer(storage, None, is_boolean=False)
+                if level_store is not None
+                else _Initializer(storage, None, is_boolean=False)
             )
             constructors[name].add(original)
             if len(getters) + len(constructors) > _MAX_RECORDS:
@@ -494,8 +508,11 @@ def extract_arm64_flag_registrations(
             continue
         storage_reg, stp_site = stp
         initializer_site = next(
-            (j for j in range(i - 1, max(i - 12, -1), -1)
-             if (stored := store(j)) is not None and stored[0] == storage_reg),
+            (
+                j
+                for j in range(i - 1, max(i - 12, -1), -1)
+                if (stored := store(j)) is not None and stored[0] == storage_reg
+            ),
             None,
         )
         if initializer_site is None:
@@ -504,8 +521,11 @@ def extract_arm64_flag_registrations(
         if stored is None:
             continue
         storage = next(
-            (candidate[1] for j in range(initializer_site - 2, max(initializer_site - 9, -1), -1)
-             if (candidate := pair(j)) is not None and candidate[0] == storage_reg),
+            (
+                candidate[1]
+                for j in range(initializer_site - 2, max(initializer_site - 9, -1), -1)
+                if (candidate := pair(j)) is not None and candidate[0] == storage_reg
+            ),
             None,
         )
         if storage is None or not is_writable(storage):
@@ -521,7 +541,8 @@ def extract_arm64_flag_registrations(
         )
         initial = (
             accept_traced(name, storage, raw, source, initializer_site, boolean=stored[2])
-            if type_proven or raw is not None else _Initializer(storage, raw, stored[2])
+            if type_proven or raw is not None
+            else _Initializer(storage, raw, stored[2])
         )
         constructors[name].add(initial)
         if len(getters) + len(constructors) > _MAX_RECORDS:
@@ -547,8 +568,8 @@ def extract_arm64_flag_registrations(
         )
         boolean = bool(initializers) and all(item.is_boolean for item in initializers)
         candidate_types = {
-            type_id for proposed_variant, proposed_storage, type_id
-            in typed_getters.get(name, ())
+            type_id
+            for proposed_variant, proposed_storage, type_id in typed_getters.get(name, ())
             if proposed_variant == variant and proposed_storage == storage
         }
         type_id = next(iter(candidate_types)) if len(candidate_types) == 1 else None

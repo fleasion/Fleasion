@@ -328,11 +328,7 @@ def _socks5_negotiate_auth(
             msg = 'SOCKS5 username/password too long'
             raise OSError(msg)
         sock.sendall(
-            b'\x01'
-            + bytes([len(user_bytes)])
-            + user_bytes
-            + bytes([len(pass_bytes)])
-            + pass_bytes
+            b'\x01' + bytes([len(user_bytes)]) + user_bytes + bytes([len(pass_bytes)]) + pass_bytes
         )
         auth = _recv_exact(sock, 2)
         if auth != b'\x01\x00':
@@ -349,8 +345,7 @@ def _socks5_connect_target(sock: socket.socket, target_host: str, target_port: i
         msg = 'SOCKS5 target host too long'
         raise OSError(msg)
     request = (
-        b'\x05\x01\x00'
-        b'\x03' + bytes([len(host_bytes)]) + host_bytes + target_port.to_bytes(2, 'big')
+        b'\x05\x01\x00\x03' + bytes([len(host_bytes)]) + host_bytes + target_port.to_bytes(2, 'big')
     )
     sock.sendall(request)
 

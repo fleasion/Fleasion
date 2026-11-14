@@ -1904,7 +1904,9 @@ class SubplaceJoinerTab(QWidget):
                 try:
                     value = selected_account()
                     if value is not None and not isinstance(value, str):
-                        log_buffer.log('subplace', 'Selected account returned an invalid token type')
+                        log_buffer.log(
+                            'subplace', 'Selected account returned an invalid token type'
+                        )
                         return
                     selected_cookie = value
                 except ValueError as exc:

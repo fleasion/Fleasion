@@ -47,9 +47,7 @@ def prompt_reset_unreadable_settings(error_path: str) -> bool:
     prompt.setWindowTitle(tr('app.settings_load_failed.title'))
     prompt.setIcon(QMessageBox.Icon.Warning)
     prompt.setText(tr('app.settings_load_failed.message'))
-    prompt.setInformativeText(
-        tr('app.settings_load_failed.details', path=error_path)
-    )
+    prompt.setInformativeText(tr('app.settings_load_failed.details', path=error_path))
     exit_button = prompt.addButton(
         tr('app.settings_load_failed.exit'), QMessageBox.ButtonRole.RejectRole
     )
@@ -350,11 +348,7 @@ def prompt_first_linux_client_choice(config_manager: ConfigManager, tray: System
     choices.extend((item.display_name, item.key) for item in installed)
     # Preselect the configured preference, not auto mode's current fallback
     initial = next(
-        (
-            index
-            for index, (_, key) in enumerate(choices)
-            if key == config_manager.linux_client
-        ),
+        (index for index, (_, key) in enumerate(choices) if key == config_manager.linux_client),
         0,
     )
     choice, accepted = QInputDialog.getItem(
