@@ -74,13 +74,13 @@ def test_interrupted_section_reopen_does_not_squash_children(app: QApplication) 
 
 def test_custom_and_system_accent_selection(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
     selector = AccentSelector(custom_color='#aa22bb')
-    assert selector.accent() == 'Ice'
+    assert selector.accent() == 'Theme'
     selector.set_accent('System')
     assert selector.accent() == 'System'
     selector.set_accent('#ABCDEF')
     assert selector.accent() == '#abcdef'
     assert accent_name('#ABCDEF') == '#abcdef'
-    assert accent_name('#abcdef00') == 'Ice'
+    assert accent_name('#abcdef00') == 'Theme'
 
     emitted: list[str] = []
     selector.accent_changed.connect(emitted.append)
@@ -319,7 +319,7 @@ def test_dashboard_restores_original_zero_outer_margins(
         window.deleteLater()
 
 
-def test_accent_is_only_offered_while_glass_is_selected(
+def test_accent_is_offered_for_both_styles(
     app: QApplication, isolated_config: ConfigManager,
     monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -344,9 +344,9 @@ def test_accent_is_only_offered_while_glass_is_selected(
     assert accent_menu is not None
     try:
         app.processEvents()
-        assert not tab._accent_selector.isVisible()  # pyright: ignore[reportPrivateUsage]
-        assert not accent_menu.menuAction().isVisible()
-        assert not any(
+        assert tab._accent_selector.isVisible()  # pyright: ignore[reportPrivateUsage]
+        assert accent_menu.menuAction().isVisible()
+        assert any(
             command.kind == tr('settings.appearance.accent')
             for command in window._palette_commands()  # pyright: ignore[reportPrivateUsage]
         )
@@ -364,8 +364,8 @@ def test_accent_is_only_offered_while_glass_is_selected(
         ThemeManager.set_preference(isolated_config, 'style', 'Fusion')
         tray._sync_appearance_actions()  # pyright: ignore[reportPrivateUsage]
         app.processEvents()
-        assert not tab._accent_selector.isVisible()  # pyright: ignore[reportPrivateUsage]
-        assert not accent_menu.menuAction().isVisible()
+        assert tab._accent_selector.isVisible()  # pyright: ignore[reportPrivateUsage]
+        assert accent_menu.menuAction().isVisible()
     finally:
         window.close()
         tab.close()

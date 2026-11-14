@@ -17,7 +17,13 @@ from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeGuard, TypeIs
 
-from fleasion.appearance import accent_name, appearance_style, color_mode
+from fleasion.appearance import (
+    DEFAULT_ACCENT,
+    DEFAULT_COLOR_MODE,
+    accent_name,
+    appearance_style,
+    color_mode,
+)
 from fleasion.utils import macos_rosemary_gate
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object, is_json_value
 from fleasion.utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
@@ -445,8 +451,8 @@ DEFAULT_SETTINGS: JsonObject = {
     'enabled_configs': [],
     'last_config': 'Default',
     'appearance_style': 'Glass',
-    'color_mode': 'Dark',
-    'accent_color': 'Ice',
+    'color_mode': DEFAULT_COLOR_MODE,
+    'accent_color': DEFAULT_ACCENT,
     'glass_opacity': 1.0,
     'custom_accent_color': '#a17dff',
     'language': 'en',

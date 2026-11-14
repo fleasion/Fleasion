@@ -32,9 +32,9 @@ from PySide6.QtWidgets import (
 
 from fleasion.app.dialogs.startup import show_run_on_boot_failure
 from fleasion.app.roblox_launch import arm_windows_gdk_env_proxy_when_ready
-from fleasion.appearance import COLOR_MODES, STYLES
+from fleasion.appearance import STYLES
 from fleasion.gui import glass
-from fleasion.gui.appearance_controls import AccentSelector, choice_label
+from fleasion.gui.appearance_controls import AccentSelector, ThemeSelector, choice_label
 from fleasion.gui.theme import ThemeManager
 from fleasion.localization import available_languages, get_language, tr
 from fleasion.utils import (
@@ -278,61 +278,44 @@ class SettingsTab(QWidget):
         section = CollapsibleSection(tr('settings.appearance.section'), expanded=True)
 
         self._style_buttons: dict[str, QRadioButton] = {}
-        self._color_buttons: dict[str, QRadioButton] = {}
         options = QWidget()
         rows = QGridLayout(options)
         rows.setContentsMargins(0, 0, 0, 0)
         rows.setHorizontalSpacing(18)
         rows.setVerticalSpacing(12)
         rows.setColumnStretch(1, 1)
-        for row_index, (key, label, choices, current, buttons) in enumerate(
-            (
-                (
-                    'style',
-                    tr('settings.appearance.style'),
-                    STYLES,
-                    self._config.appearance_style,
-                    self._style_buttons,
-                ),
-                (
-                    'color_mode',
-                    tr('settings.appearance.color_mode'),
-                    COLOR_MODES,
-                    self._config.color_mode,
-                    self._color_buttons,
-                ),
-            )
-        ):
-            group = QButtonGroup(self)
-            group.setExclusive(True)
-            row = QHBoxLayout()
-            row.setSpacing(16)
-            for name in choices:
-                text = choice_label(name)
-                button = QRadioButton(text)
-                button.setObjectName(f'Appearance{name}')
-                button.setChecked(name == current)
-                button.toggled.connect(partial(self._on_appearance_choice, key, name))
-                group.addButton(button)
-                row.addWidget(button)
-                buttons[name] = button
-            row.addStretch()
-            rows.addWidget(QLabel(label), row_index, 0)
-            rows.addLayout(row, row_index, 1)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        for name in STYLES:
+            button = QRadioButton(choice_label(name))
+            button.setObjectName(f'Appearance{name}')
+            button.setChecked(name == self._config.appearance_style)
+            button.toggled.connect(partial(self._on_appearance_choice, 'style', name))
+            group.addButton(button)
+            row.addWidget(button)
+            self._style_buttons[name] = button
+        row.addStretch()
+        rows.addWidget(QLabel(tr('settings.appearance.style')), 0, 0)
+        rows.addLayout(row, 0, 1)
+        self._theme_selector = ThemeSelector()
+        self._theme_selector.set_theme(self._config.color_mode)
+        self._theme_selector.theme_changed.connect(partial(self._set_appearance, 'color_mode'))
+        theme_label = QLabel(tr('settings.appearance.color_mode'))
+        theme_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        rows.addWidget(theme_label, 1, 0)
+        rows.addWidget(self._theme_selector, 1, 1)
         self._accent_selector = AccentSelector(custom_color=self._config.custom_accent_color)
         self._accent_selector.set_accent(self._config.accent_color)
         self._accent_selector.accent_changed.connect(partial(self._set_appearance, 'accent'))
         accent_label = QLabel(tr('settings.appearance.accent'))
         accent_label.setAlignment(Qt.AlignmentFlag.AlignTop)
         rows.addWidget(accent_label, 2, 0)
-        rows.addWidget(self._accent_selector, 2, 1, alignment=Qt.AlignmentFlag.AlignLeft)
-        self._glass_widgets = (
-            accent_label,
-            self._accent_selector,
-            *self._build_glass_controls(rows, visible=self._config.appearance_style == 'Glass'),
+        rows.addWidget(self._accent_selector, 2, 1)
+        self._glass_widgets = self._build_glass_controls(
+            rows, visible=self._config.appearance_style == 'Glass'
         )
-        for widget in (accent_label, self._accent_selector):
-            widget.setVisible(self._config.appearance_style == 'Glass')
         section.add_widget(options)
         ThemeManager.events().changed.connect(self._refresh_appearance)
 
@@ -957,13 +940,10 @@ class SettingsTab(QWidget):
     def _refresh_appearance(self) -> None:
         for widget in self._glass_widgets:
             widget.setVisible(self._config.appearance_style == 'Glass')
-        for buttons, current in (
-            (self._style_buttons, self._config.appearance_style),
-            (self._color_buttons, self._config.color_mode),
-        ):
-            for name, button in buttons.items():
-                with QSignalBlocker(button):
-                    button.setChecked(name == current)
+        for name, button in self._style_buttons.items():
+            with QSignalBlocker(button):
+                button.setChecked(name == self._config.appearance_style)
+        self._theme_selector.set_theme(self._config.color_mode)
         self._accent_selector.set_custom_color(self._config.custom_accent_color)
         self._accent_selector.set_accent(self._config.accent_color)
         self._refresh_blur_button()

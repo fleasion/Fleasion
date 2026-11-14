@@ -13,8 +13,14 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QColorDialog, QStyle, QWidget
 
-from fleasion.appearance import accent_name
+from fleasion.appearance import DEFAULT_ACCENT, accent_name, color_mode
 from fleasion.appearance.colors import apply_accent, luminance
+from fleasion.appearance.palettes import (
+    ThemeColors,
+    native_accent,
+    theme_colors as resolve_theme_colors,
+    to_qpalette,
+)
 from fleasion.localization import tr
 from fleasion.widgets.style import LayoutStyle
 
@@ -73,7 +79,8 @@ class ThemeManager:
     _system_palette: ClassVar[QPalette | None] = None
     _style: ClassVar[AppearanceStyle] = 'Fusion'
     _color_mode: ClassVar[ColorMode] = 'System'
-    _accent: ClassVar[str] = 'Ice'
+    _accent: ClassVar[str] = DEFAULT_ACCENT
+    _theme_accent: ClassVar[QColor | None] = None
     _applying: ClassVar[bool] = False
     _events: ClassVar[AppearanceEvents | None] = None
 
@@ -181,7 +188,7 @@ class ThemeManager:
         from . import glass
         from .glass.state import state
 
-        native_accent = ThemeManager._system_palette.highlight().color()
+        native_accent = ThemeManager.system_accent_color()
         state.system_accent = QColor(native_accent)
         ThemeManager._applying = True
         try:
@@ -189,15 +196,22 @@ class ThemeManager:
                 glass.theme.disable(app)
             base, widget_style = ThemeManager._resolve_palette(app, style, color_mode)
             ThemeManager.ensure_widget_style(app, widget_style)
+            ThemeManager._theme_accent = ThemeManager.theme_colors().accent
+            state.theme_accent = QColor(ThemeManager._theme_accent)
             if style == 'Glass':
-                state.base_palette = (
-                    base if color_mode == 'System' and sys.platform != 'win32' else None
-                )
+                # Glass keeps its own surfaces for Dark and Light and tints them otherwise
+                follows_palette = ThemeManager._effective_theme not in {'Dark', 'Light'}
+                state.base_palette = base if follows_palette else None
                 state.dark = luminance(base.window().color()) < 0.3
                 glass.theme.enable(app, accent=ThemeManager._accent, base_palette=base)
             else:
                 app.setPalette(
-                    apply_accent(base, ThemeManager._accent, system_accent=native_accent)
+                    apply_accent(
+                        base,
+                        ThemeManager._accent,
+                        system_accent=native_accent,
+                        theme_accent=ThemeManager._theme_accent,
+                    )
                 )
             ThemeManager._refresh_widgets(app)
         finally:
@@ -209,11 +223,11 @@ class ThemeManager:
         app: QApplication, style: AppearanceStyle, color_mode: ColorMode
     ) -> tuple[QPalette, str]:
         """Resolve colors without installing an intermediate application palette."""
-        ThemeManager._set_color_scheme(app, 'Unknown' if color_mode == 'System' else color_mode)
-        if color_mode == 'Dark':
-            return ThemeManager._dark_palette(), 'Fusion'
-        if color_mode == 'Light':
-            return ThemeManager._light_palette(), 'Fusion'
+        if color_mode != 'System':
+            colors = resolve_theme_colors(color_mode)
+            ThemeManager._set_color_scheme(app, 'Dark' if colors.dark else 'Light')
+            return ThemeManager._theme_palette(color_mode), 'Fusion'
+        ThemeManager._set_color_scheme(app, 'Unknown')
         if sys.platform == 'win32':
             effective = ThemeManager._windows_system_theme(app)
             ThemeManager._effective_theme = effective
@@ -231,6 +245,10 @@ class ThemeManager:
         return QPalette(ThemeManager._system_palette), widget_style
 
     @staticmethod
+    def current_color_mode() -> ColorMode:
+        return ThemeManager._color_mode
+
+    @staticmethod
     def follows_system() -> bool:
         return ThemeManager._color_mode == 'System' and not ThemeManager._applying
 
@@ -238,11 +256,29 @@ class ThemeManager:
     def system_accent_color() -> QColor:
         palette = ThemeManager._system_palette
         if palette is not None:
-            return QColor(palette.highlight().color())
+            return native_accent(palette)
         app = QApplication.instance()
         if isinstance(app, QApplication):
-            return QColor(app.style().standardPalette().highlight().color())
+            return native_accent(app.style().standardPalette())
         return QColor('#8ab4ff')
+
+    @staticmethod
+    def theme_accent_color() -> QColor:
+        if ThemeManager._theme_accent is not None:
+            return QColor(ThemeManager._theme_accent)
+        return ThemeManager.theme_colors().accent
+
+    @staticmethod
+    def theme_colors(mode: str | None = None) -> ThemeColors:
+        """Colors of a theme, or of the current one, with System resolved for this platform."""
+        if mode is None:
+            mode = ThemeManager._effective_theme
+        resolved = color_mode(mode)
+        if resolved == 'System':
+            if sys.platform != 'win32':
+                return resolve_theme_colors('System', ThemeManager._system_palette)
+            resolved = 'Light' if _windows_apps_use_light_theme() else 'Dark'
+        return resolve_theme_colors(resolved)
 
     @staticmethod
     def set_accent(name: str) -> None:
@@ -344,6 +380,14 @@ class ThemeManager:
             app.setPalette(ThemeManager._light_palette())
         else:
             app.setPalette(app.style().standardPalette())
+
+    @staticmethod
+    def _theme_palette(mode: ColorMode) -> QPalette:
+        if mode == 'Dark':
+            return ThemeManager._dark_palette()
+        if mode == 'Light':
+            return ThemeManager._light_palette()
+        return to_qpalette(resolve_theme_colors(mode))
 
     @staticmethod
     def _dark_palette() -> QPalette:
@@ -506,10 +550,9 @@ class ThemeManager:
                 container_background=QColor(0, 0, 0, 0),
             )
 
-        is_dark = panel_theme == 'Dark'
+        colors = resolve_theme_colors(color_mode(panel_theme))
         return PanelThemeColors(
-            section_background=QColor('#272727') if is_dark else QColor('#f0f0f0'),
-            section_border=QColor('#3a3a3a') if is_dark else QColor('#d0d0d0'),
+            section_background=colors.section, section_border=colors.section_border
         )
 
     @staticmethod

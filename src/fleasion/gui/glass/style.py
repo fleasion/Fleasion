@@ -49,7 +49,12 @@ def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
         text = native.windowText().color()
         well = native.base().color()
         popup = QColor(well)
-    accent = accent_color(settings.accent, surface, system_accent=state.system_accent)
+    accent = accent_color(
+        settings.accent,
+        surface,
+        system_accent=state.system_accent,
+        theme_accent=state.theme_accent,
+    )
     return GlassColors(
         text,
         QColor('#ffffff' if dark else '#1b2030'),
@@ -116,7 +121,9 @@ def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) ->
     placeholder = QColor(colors.text)
     placeholder.setAlpha(128)
     pal.setColor(role.PlaceholderText, placeholder)
-    pal = apply_accent(pal, settings.accent, system_accent=state.system_accent)
+    pal = apply_accent(
+        pal, settings.accent, system_accent=state.system_accent, theme_accent=state.theme_accent
+    )
     # GlassWindows paints the surface; inherited widget backgrounds stay transparent
     window = QColor(colors.surface)
     window.setAlpha(0)

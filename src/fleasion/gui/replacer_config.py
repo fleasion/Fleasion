@@ -1274,9 +1274,8 @@ class ReplacerConfigWindow(QDialog):
         appearance_choices: list[tuple[str, tuple[str, ...], str]] = [
             ('style', STYLES, tr('settings.appearance.style')),
             ('color_mode', COLOR_MODES, tr('settings.appearance.color_mode')),
+            ('accent', ACCENT_KEYS, tr('settings.appearance.accent')),
         ]
-        if config.appearance_style == 'Glass':
-            appearance_choices.append(('accent', ACCENT_KEYS, tr('settings.appearance.accent')))
         for key, choices, label in appearance_choices:
             commands.extend(
                 Command(

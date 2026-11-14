@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtGui import QColor, QPalette
 
-from . import ACCENTS, DEFAULT_ACCENT, accent_name
+from .choices import ACCENTS, FALLBACK_ACCENT, SYSTEM_ACCENT, THEME_ACCENT, accent_name
 
 
 def luminance(color: QColor) -> float:
@@ -28,13 +28,24 @@ def on_accent(color: QColor) -> QColor:
     return dark if contrast(color, dark) >= contrast(color, light) else light
 
 
-def accent_color(name: str, background: QColor, *, system_accent: QColor | None = None) -> QColor:
-    """Resolve a native, custom, or preset accent against its surface."""
+def accent_color(
+    name: str,
+    background: QColor,
+    *,
+    system_accent: QColor | None = None,
+    theme_accent: QColor | None = None,
+) -> QColor:
+    """Resolve a theme, native, custom, or preset accent against its surface."""
     resolved = accent_name(name)
-    if resolved == 'System':
-        return (
-            QColor(system_accent) if system_accent is not None else QColor(ACCENTS[DEFAULT_ACCENT])
+    fallback = QColor(ACCENTS[FALLBACK_ACCENT])
+    if resolved == SYSTEM_ACCENT:
+        return QColor(system_accent) if system_accent is not None else fallback
+    if resolved == THEME_ACCENT:
+        # Theme accents are chosen for their own surfaces, and System passes the desktop's through
+        source = next(
+            (color for color in (theme_accent, system_accent) if color is not None), fallback
         )
+        return QColor(source)
     color = QColor(resolved if resolved.startswith('#') else ACCENTS[resolved])
     dark_surface = luminance(background) < 0.3
     for _ in range(40):
@@ -44,9 +55,17 @@ def accent_color(name: str, background: QColor, *, system_accent: QColor | None 
     return color
 
 
-def apply_accent(palette: QPalette, name: str, *, system_accent: QColor | None = None) -> QPalette:
+def apply_accent(
+    palette: QPalette,
+    name: str,
+    *,
+    system_accent: QColor | None = None,
+    theme_accent: QColor | None = None,
+) -> QPalette:
     result = QPalette(palette)
-    accent = accent_color(name, result.window().color(), system_accent=system_accent)
+    accent = accent_color(
+        name, result.window().color(), system_accent=system_accent, theme_accent=theme_accent
+    )
     link = QColor(accent)
     for _ in range(40):
         if (

@@ -12,10 +12,11 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QMenu, QPushButton
+from PySide6.QtWidgets import QApplication, QMenu
 
-from fleasion.appearance import ACCENTS, COLOR_MODES, STYLES
+from fleasion.appearance import ACCENTS, COLOR_MODES, DEFAULT_COLOR_MODE, STYLES
 from fleasion.appearance.colors import contrast
+from fleasion.appearance.palettes import PALETTES, to_qpalette
 from fleasion.app.tray import SystemTray
 from fleasion.config import manager
 from fleasion.gui import glass
@@ -24,7 +25,7 @@ from fleasion.gui.glass.state import state
 from fleasion.gui.settings_tab import SettingsTab
 from fleasion.gui.theme import ThemeManager
 from fleasion.gui.replacer_config import ReplacerConfigWindow
-from fleasion.gui.appearance_controls import choice_label
+from fleasion.gui.appearance_controls import ACCENT_KEYS, AccentSwatch, choice_label
 from fleasion.localization import tr
 
 if TYPE_CHECKING:
@@ -98,8 +99,8 @@ def test_new_preferences_win_over_legacy_values(config: manager.ConfigManager) -
 def test_defaults_validation_and_persistence(config: manager.ConfigManager) -> None:
     assert (config.appearance_style, config.color_mode, config.accent_color) == (
         'Glass',
-        'Dark',
-        'Ice',
+        DEFAULT_COLOR_MODE,
+        'Theme',
     )
     assert config.glass_opacity == 1.0
     config.appearance_style = 'Glass'
@@ -115,7 +116,7 @@ def test_defaults_validation_and_persistence(config: manager.ConfigManager) -> N
     assert (config.appearance_style, config.color_mode, config.accent_color) == (
         'Fusion',
         'System',
-        'Ice',
+        'Theme',
     )
 
 
@@ -132,7 +133,7 @@ def test_all_combinations_have_readable_palettes(
     assert contrast(palette.highlightedText().color(), palette.highlight().color()) >= 4.5
     assert contrast(palette.link().color(), palette.base().color()) >= 4.5
     if mode != 'System':
-        assert (palette.window().color().lightness() < 128) == (mode == 'Dark')
+        assert (palette.window().color().lightness() < 128) == PALETTES[mode].resolve().dark
 
 
 def test_switching_style_preserves_mode_accent_and_glass_settings(
@@ -218,7 +219,7 @@ def test_swatches_apply_live_and_settings_refresh_without_writes(
     ThemeManager.apply_from_config(config)
     tab = SettingsTab(config)
     try:
-        button = tab.findChild(QPushButton, 'AccentTeal')
+        button = tab.findChild(AccentSwatch, 'AccentTeal')
         assert button is not None
         button.click()
         assert config.accent_color == 'Teal'
@@ -226,7 +227,7 @@ def test_swatches_apply_live_and_settings_refresh_without_writes(
         ThemeManager.set_preference(config, 'style', 'Glass')
         ThemeManager.set_preference(config, 'color_mode', 'Light')
         assert tab._style_buttons['Glass'].isChecked()  # pyright: ignore[reportPrivateUsage]
-        assert tab._color_buttons['Light'].isChecked()  # pyright: ignore[reportPrivateUsage]
+        assert tab._theme_selector.theme() == 'Light'  # pyright: ignore[reportPrivateUsage]
         assert not tab._backdrop_combo.isHidden()  # pyright: ignore[reportPrivateUsage]
         saved = json.loads((manager.CONFIG_FILE).read_text())
         writes: list[bool] = []
@@ -260,7 +261,7 @@ def test_tray_actions_and_settings_stay_in_sync(
             'Coral',
         )
         assert tab._style_buttons['Glass'].isChecked()  # pyright: ignore[reportPrivateUsage]
-        assert tab._color_buttons['Light'].isChecked()  # pyright: ignore[reportPrivateUsage]
+        assert tab._theme_selector.theme() == 'Light'  # pyright: ignore[reportPrivateUsage]
         assert tab._accent_selector.accent() == 'Coral'  # pyright: ignore[reportPrivateUsage]
         ThemeManager.set_preference(config, 'style', 'Fusion')
         ThemeManager.set_preference(config, 'accent', 'Teal')
@@ -320,3 +321,94 @@ def test_backdrop_updates_opacity_label_from_settings_and_external_commands(
     finally:
         tab.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def test_theme_accent_follows_theme_and_system_theme_uses_desktop_accent(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fleasion.gui.theme as theme_module
+
+    monkeypatch.setattr(theme_module.sys, 'platform', 'linux')
+    # KDE reports its accent as Highlight and leaves Accent at Qt's default blue
+    native = QPalette(app.palette())
+    native.setColor(QPalette.ColorRole.Highlight, QColor('#e05a9a'))
+    native.setColor(QPalette.ColorRole.Accent, QColor('#308cc6'))
+    monkeypatch.setattr(ThemeManager, '_system_palette', native)
+    ThemeManager.apply_appearance('Fusion', 'Nord', 'Theme')
+    assert ThemeManager.theme_accent_color() == QColor(PALETTES['Nord'].accent)
+    assert ThemeManager.system_accent_color() == QColor('#e05a9a')
+    ThemeManager.apply_appearance('Fusion', 'System', 'Theme')
+    assert ThemeManager.theme_accent_color() == QColor('#e05a9a')
+    assert app.palette().accent().color() == ThemeManager.system_accent_color()
+
+
+@pytest.mark.parametrize('mode', ['Nord', 'Latte', 'HighContrast'])
+def test_glass_takes_surfaces_from_the_selected_theme(app: QApplication, mode: ColorMode) -> None:
+    ThemeManager.apply_appearance('Glass', mode, 'Theme')
+    colors = PALETTES[mode].resolve()
+    assert glass_style.glass_colors().surface.rgb() == colors.window.rgb()
+    assert glass_style.glass_colors().well.rgb() == colors.base.rgb()
+    assert state.dark == colors.dark
+
+
+def test_glass_keeps_its_own_surfaces_for_dark_and_light(app: QApplication) -> None:
+    ThemeManager.apply_appearance('Glass', 'Dark', 'Theme')
+    assert state.base_palette is None
+    assert glass_style.glass_colors().surface == QColor('#101118')
+
+
+def test_theme_cards_and_swatches_follow_preferences(
+    app: QApplication, config: manager.ConfigManager
+) -> None:
+    ThemeManager.apply_from_config(config)
+    tab = SettingsTab(config)
+    try:
+        selector = tab._theme_selector  # pyright: ignore[reportPrivateUsage]
+        selector.card('Dracula').click()
+        assert config.color_mode == 'Dracula'
+        assert app.palette().window().color().rgb() == QColor(PALETTES['Dracula'].window).rgb()
+        ThemeManager.set_preference(config, 'color_mode', 'Sand')
+        assert selector.theme() == 'Sand'
+        swatches = tab._accent_selector  # pyright: ignore[reportPrivateUsage]
+        assert swatches.button('Theme').color() == ThemeManager.theme_accent_color()
+        assert ACCENT_KEYS[:2] == ('Theme', 'System')
+        assert ACCENT_KEYS[-1] == 'Custom'
+    finally:
+        tab.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def test_every_theme_keeps_readable_text_and_section_colors() -> None:
+    for mode, palette in PALETTES.items():
+        colors = palette.resolve()
+        assert contrast(colors.text, colors.window) >= 4.5, mode
+        assert contrast(colors.text, colors.base) >= 4.5, mode
+        assert contrast(colors.muted, colors.window) >= 3.0, mode
+        assert contrast(colors.accent, colors.window) >= 3.0, mode
+
+
+def test_native_accent_reads_highlight_except_for_a_windows_accent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.appearance import palettes
+
+    native = QPalette()
+    native.setColor(QPalette.ColorRole.Highlight, QColor('#c50ed2'))
+    native.setColor(QPalette.ColorRole.Accent, QColor('#308cc6'))
+    for platform in ('linux', 'win32'):
+        monkeypatch.setattr(palettes.sys, 'platform', platform)
+        assert palettes.native_accent(native) == QColor('#c50ed2')
+    native.setColor(QPalette.ColorRole.Accent, QColor('#0067c0'))
+    assert palettes.native_accent(native) == QColor('#0067c0')
+    monkeypatch.setattr(palettes.sys, 'platform', 'linux')
+    assert palettes.native_accent(native) == QColor('#c50ed2')
+
+
+def test_sweet_uses_every_role_of_the_kde_scheme() -> None:
+    palette = to_qpalette(PALETTES['Sweet'].resolve())
+    role, group = QPalette.ColorRole, QPalette.ColorGroup
+    assert palette.color(role.ButtonText) == QColor('#c3c7d1')
+    assert palette.color(role.ToolTipBase) == QColor('#353945')
+    assert palette.color(role.Dark) == QColor('#3c4466')
+    assert palette.color(group.Disabled, role.Text) == QColor('#3c4466')
+    assert PALETTES['Sweet'].resolve().section == QColor('#1f2333')

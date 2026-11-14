@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
-from fleasion.appearance import ACCENTS as ACCENTS, DEFAULT_ACCENT as DEFAULT_ACCENT
+from fleasion.appearance import (
+    ACCENTS as ACCENTS,
+    DEFAULT_ACCENT as DEFAULT_ACCENT,
+    FALLBACK_ACCENT,
+)
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QColor, QPalette
@@ -38,7 +42,7 @@ class GlassSettings:
         return (
             self.accent
             if self.accent.startswith('#')
-            else ACCENTS.get(self.accent, ACCENTS[DEFAULT_ACCENT])
+            else ACCENTS.get(self.accent, ACCENTS[FALLBACK_ACCENT])
         )
 
 
@@ -49,6 +53,7 @@ class GlassState:
         self.settings = GlassSettings()
         self.base_palette: QPalette | None = None
         self.system_accent: QColor | None = None
+        self.theme_accent: QColor | None = None
         self.dark = True
         self._config: ConfigManager | None = None
 

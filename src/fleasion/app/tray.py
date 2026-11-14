@@ -476,7 +476,7 @@ class SystemTray:
             group = QActionGroup(submenu)
             group.setExclusive(True)
             for name in choices:
-                text = choice_label(name) if key != 'accent' and name != 'Fusion' else name
+                text = name if name == 'Fusion' else choice_label(name)
                 action = QAction(text, submenu)
                 if key == 'accent':
                     action.setIcon(
@@ -737,10 +737,6 @@ class SystemTray:
             self.dashboard_window.refresh_env_proxy_gate()
 
     def _sync_appearance_actions(self) -> None:
-        if self._accent_menu is not None:
-            self._accent_menu.menuAction().setVisible(
-                self.config_manager.appearance_style == 'Glass'
-            )
         for actions, current in (
             (self.style_actions, self.config_manager.appearance_style),
             (self.color_mode_actions, self.config_manager.color_mode),
@@ -748,10 +744,9 @@ class SystemTray:
         ):
             for name, action in actions.items():
                 action.setChecked(name == current or (name == 'Custom' and current.startswith('#')))
-        if custom := self.accent_actions.get('Custom'):
-            custom.setIcon(
-                swatch_icon('Custom', custom_color=self.config_manager.custom_accent_color)
-            )
+        # Theme and System swatches follow the active theme and desktop
+        for name, action in self.accent_actions.items():
+            action.setIcon(swatch_icon(name, custom_color=self.config_manager.custom_accent_color))
 
     def _set_appearance(self, key: str, value: str, _checked: bool = False) -> None:
         if key in {'style', 'color_mode', 'accent'}:
