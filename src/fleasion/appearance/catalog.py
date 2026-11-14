@@ -34,12 +34,8 @@ type ColorMode = Literal[
 ]
 type Roles = tuple[tuple[str, str], ...]
 
-# Shared by the Sweet theme and its accent swatch
-_SWEET: Final = '#c50ed2'
-
 
 def _label(name: str, label_key: str | None) -> str:
-    # The keys are literals in this module; test_appearance checks each one exists
     return name if label_key is None else translate(label_key)
 
 
@@ -61,7 +57,6 @@ class Palette:
     raised: str | None = None
     section: str | None = None
     section_border: str | None = None
-    muted_mix: float = 0.63
     border_mix: float = 0.13
     # Exact Qt palette roles, by role name, for themes copied from a desktop scheme
     roles: Roles = ()
@@ -129,11 +124,10 @@ THEMES: Final[tuple[Theme, ...]] = (
             window='#181b28',
             base='#161925',
             text='#d3dae3',
-            accent=_SWEET,
+            accent='#c50ed2',
             raised='#1e2233',
             section='#1f2333',
             section_border='#282d44',
-            muted_mix=0.65,
             border_mix=0.16,
             roles=(
                 ('AlternateBase', '#1f2333'),
@@ -195,9 +189,7 @@ THEMES: Final[tuple[Theme, ...]] = (
     ),
     Theme(
         name='Latte',
-        palette=Palette(
-            window='#e6e9ef', base='#eff1f5', text='#4c4f69', accent='#8839ef', muted_mix=0.75
-        ),
+        palette=Palette(window='#e6e9ef', base='#eff1f5', text='#4c4f69', accent='#8839ef'),
     ),
     Theme(
         name='HighContrast',
@@ -266,18 +258,20 @@ ACCENT_CHOICES: Final[tuple[Accent, ...]] = (
     Accent(name='Peach', color='#efac85'),
     Accent(name='Coral', color='#ff977a'),
     Accent(name='Signal', color='#ff5a68'),
-    Accent(name='Sweet', color=_SWEET),
+    Accent(name='Sweet', color='#c50ed2'),
     Accent(name='Rose', color='#f59ac2'),
     Accent(name='Mono', color='#f2f4f8'),
     Accent(name=CUSTOM_ACCENT, label_key='settings.appearance.custom'),
 )
 
 ACCENT_KEYS: Final[tuple[str, ...]] = tuple(accent.name for accent in ACCENT_CHOICES)
+
 # Preset colors by name, without the runtime-resolved choices
 ACCENTS: Final[dict[str, str]] = {
     accent.name: accent.color for accent in ACCENT_CHOICES if accent.color is not None
 }
 DEFAULT_ACCENT: Final = THEME_ACCENT
+
 # Used when neither the theme nor the platform provides an accent
 FALLBACK_ACCENT: Final = 'Ice'
 DEFAULT_CUSTOM_ACCENT: Final = '#a17dff'

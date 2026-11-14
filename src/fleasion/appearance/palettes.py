@@ -50,8 +50,6 @@ class ThemeColors:
     base: QColor
     raised: QColor
     text: QColor
-    muted: QColor
-    border: QColor
     section: QColor
     section_border: QColor
     accent: QColor
@@ -69,8 +67,6 @@ def resolve(palette: Palette) -> ThemeColors:
         base=base,
         raised=QColor(palette.raised) if palette.raised else mix(window, text, 0.065),
         text=text,
-        muted=mix(window, text, palette.muted_mix),
-        border=mix(window, text, palette.border_mix),
         section=section,
         section_border=QColor(palette.section_border)
         if palette.section_border
@@ -98,8 +94,6 @@ def theme_colors(mode: ColorMode, native: QPalette | None = None) -> ThemeColors
         base=base,
         raised=native.button().color(),
         text=text,
-        muted=mix(window, text, 0.63),
-        border=mix(window, text, 0.13),
         section=section,
         section_border=native.mid().color(),
         accent=accent if accent.isValid() else QColor(ACCENTS[FALLBACK_ACCENT]),

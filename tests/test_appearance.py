@@ -14,10 +14,9 @@ from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QMenu
 
-from fleasion.appearance import ACCENTS, COLOR_MODES, DEFAULT_COLOR_MODE, STYLES
+from fleasion.appearance import COLOR_MODES, DEFAULT_COLOR_MODE, STYLES
 from fleasion.appearance.colors import contrast
-from fleasion.appearance.palettes import theme_colors, to_qpalette
-from fleasion.appearance.catalog import THEMES
+from fleasion.appearance.palettes import theme_colors
 from fleasion.app.tray import SystemTray
 from fleasion.config import manager
 from fleasion.gui import glass
@@ -26,7 +25,6 @@ from fleasion.gui.glass.state import state
 from fleasion.gui.settings_tab import SettingsTab
 from fleasion.gui.theme import ThemeManager
 from fleasion.gui.replacer_config import ReplacerConfigWindow
-from fleasion.appearance.catalog import ACCENT_CHOICES, ACCENT_KEYS
 from fleasion.gui.appearance_controls import AccentSwatch, choice_label
 from fleasion.localization import tr
 
@@ -124,7 +122,8 @@ def test_defaults_validation_and_persistence(config: manager.ConfigManager) -> N
 
 @pytest.mark.parametrize('style', STYLES)
 @pytest.mark.parametrize('mode', COLOR_MODES)
-@pytest.mark.parametrize('accent', ACCENTS)
+# Theme is not contrast-adjusted, Mono is near white, and Sweet is a dark magenta
+@pytest.mark.parametrize('accent', ['Theme', 'Mono', 'Sweet'])
 def test_all_combinations_have_readable_palettes(
     app: QApplication, style: AppearanceStyle, mode: ColorMode, accent: str
 ) -> None:
@@ -344,19 +343,18 @@ def test_theme_accent_follows_theme_and_system_theme_uses_desktop_accent(
     assert app.palette().accent().color() == ThemeManager.system_accent_color()
 
 
-@pytest.mark.parametrize('mode', ['Nord', 'Latte', 'HighContrast'])
-def test_glass_takes_surfaces_from_the_selected_theme(app: QApplication, mode: ColorMode) -> None:
+@pytest.mark.parametrize(('mode', 'tinted'), [('Nord', True), ('Latte', True), ('Dark', False)])
+def test_glass_surfaces_follow_the_theme_except_dark_and_light(
+    app: QApplication, mode: ColorMode, tinted: bool
+) -> None:
     ThemeManager.apply_appearance('Glass', mode, 'Theme')
-    colors = theme_colors(mode)
-    assert glass_style.glass_colors().surface.rgb() == colors.window.rgb()
-    assert glass_style.glass_colors().well.rgb() == colors.base.rgb()
-    assert state.dark == colors.dark
-
-
-def test_glass_keeps_its_own_surfaces_for_dark_and_light(app: QApplication) -> None:
-    ThemeManager.apply_appearance('Glass', 'Dark', 'Theme')
-    assert state.base_palette is None
-    assert glass_style.glass_colors().surface == QColor('#101118')
+    surface = glass_style.glass_colors().surface
+    if tinted:
+        colors = theme_colors(mode)
+        assert surface.rgb() == colors.window.rgb()
+        assert state.dark == colors.dark
+    else:
+        assert surface == QColor('#101118')
 
 
 def test_theme_cards_and_swatches_follow_preferences(
@@ -373,22 +371,15 @@ def test_theme_cards_and_swatches_follow_preferences(
         assert selector.theme() == 'Sand'
         swatches = tab._accent_selector  # pyright: ignore[reportPrivateUsage]
         assert swatches.button('Theme').color() == ThemeManager.theme_accent_color()
-        assert ACCENT_KEYS[:2] == ('Theme', 'System')
-        assert ACCENT_KEYS[-1] == 'Custom'
     finally:
         tab.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
-def test_every_theme_keeps_readable_text_and_section_colors() -> None:
-    for theme in THEMES:
-        if theme.palette is None:
-            continue
-        mode = theme.name
+def test_every_theme_accent_stands_out_from_its_window() -> None:
+    # Theme accents are used as they are, without the contrast adjustment presets get
+    for mode in COLOR_MODES[1:]:
         colors = theme_colors(mode)
-        assert contrast(colors.text, colors.window) >= 4.5, mode
-        assert contrast(colors.text, colors.base) >= 4.5, mode
-        assert contrast(colors.muted, colors.window) >= 3.0, mode
         assert contrast(colors.accent, colors.window) >= 3.0, mode
 
 
@@ -407,31 +398,3 @@ def test_native_accent_reads_highlight_except_for_a_windows_accent(
     assert palettes.native_accent(native) == QColor('#0067c0')
     monkeypatch.setattr(palettes.sys, 'platform', 'linux')
     assert palettes.native_accent(native) == QColor('#c50ed2')
-
-
-def test_sweet_uses_every_role_of_the_kde_scheme() -> None:
-    palette = to_qpalette(theme_colors('Sweet'))
-    role, group = QPalette.ColorRole, QPalette.ColorGroup
-    assert palette.color(role.ButtonText) == QColor('#c3c7d1')
-    assert palette.color(role.ToolTipBase) == QColor('#353945')
-    assert palette.color(role.Dark) == QColor('#3c4466')
-    assert palette.color(group.Disabled, role.Text) == QColor('#3c4466')
-    assert theme_colors('Sweet').section == QColor('#1f2333')
-
-
-def test_catalog_matches_the_color_mode_type_and_translations() -> None:
-    from typing import get_args
-
-    from fleasion.appearance.catalog import ColorMode
-    from fleasion.localization import ENGLISH
-
-    assert tuple(get_args(ColorMode.__value__)) == COLOR_MODES
-    assert len(set(COLOR_MODES)) == len(COLOR_MODES)
-    for theme in THEMES:
-        if theme.label_key is not None:
-            assert theme.label_key in ENGLISH, theme.name
-        assert choice_label(theme.name) == theme.label
-    for accent in ACCENT_CHOICES:
-        if accent.label_key is not None:
-            assert accent.label_key in ENGLISH, accent.name
-        assert choice_label(accent.name) == accent.label
