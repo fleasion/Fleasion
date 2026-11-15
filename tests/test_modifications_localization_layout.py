@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, QPropertyAnimation, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -349,6 +350,36 @@ def test_framerate_cap_load_clamps_values_before_qspinbox(
         if tab is not None:
             tab.close()
             tab.deleteLater()
+        app.processEvents()
+
+
+def test_only_fast_flags_omits_section_header_separator() -> None:
+    app = _qapp()
+    tab = _make_tab(_FakeModificationManager())
+    try:
+        section_layout = cast('QVBoxLayout', tab.__dict__['_container_layout'])
+        sections: list[QWidget | None] = []
+        for i in range(section_layout.count()):
+            item = section_layout.itemAt(i)
+            assert item is not None
+            sections.append(item.widget())
+        assert isinstance(sections[0], CollapsibleSection)
+        assert isinstance(sections[1], CollapsibleSection)
+        for index, section in enumerate(sections[:2]):
+            assert isinstance(section, CollapsibleSection)
+            main_layout = section.layout()
+            assert main_layout is not None
+            second_item = main_layout.itemAt(1)
+            assert second_item is not None
+            second_widget = second_item.widget()
+            assert isinstance(second_widget, QWidget)
+            assert (
+                isinstance(second_widget, QFrame)
+                and second_widget.frameShape() == QFrame.Shape.HLine
+            ) is (index != 0)
+    finally:
+        tab.close()
+        tab.deleteLater()
         app.processEvents()
 
 

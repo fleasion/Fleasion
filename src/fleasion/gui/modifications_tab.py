@@ -744,6 +744,8 @@ class CollapsibleSection(QWidget):
         parent: QWidget | None = None,
         expanded: bool = True,
         header_widgets: list[QWidget] | None = None,
+        *,
+        show_separator: bool = True,
     ) -> None:
         super().__init__(parent)
         # A section should never absorb spare vertical space from its parent.
@@ -797,11 +799,6 @@ class CollapsibleSection(QWidget):
         if not expanded:
             self._content.setMaximumHeight(0)
 
-        # --- Separator ---
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFrameShadow(QFrame.Shadow.Sunken)
-
         # --- Assemble ---
         main = QVBoxLayout()
         # Keep the outer border clear of the header and its separator,
@@ -809,7 +806,11 @@ class CollapsibleSection(QWidget):
         main.setContentsMargins(1, 1, 1, 1)
         main.setSpacing(0)
         main.addWidget(self._header_widget)
-        main.addWidget(sep)
+        if show_separator:
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setFrameShadow(QFrame.Shadow.Sunken)
+            main.addWidget(sep)
         main.addWidget(self._content)
         # Absorb any transient excess section height below the content.  This
         # is important during collapse because the child maximumHeight can be
@@ -5620,6 +5621,7 @@ class ModificationsTab(QWidget):
             tr('modifications.section.fast_flags'),
             expanded=False,
             header_widgets=[self._fflag_toggle],
+            show_separator=False,
         )
         self._fflag_widget = FFlagSection(
             self._manager,
