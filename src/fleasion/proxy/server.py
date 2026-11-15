@@ -171,6 +171,29 @@ def _get_log_buffer() -> LogBuffer:
     return cast('LogBuffer', getattr(utils, _LOG_BUFFER_ATTR))
 
 
+def _roblox_player_running_for_disconnect() -> bool:
+    """Check the real Player process only after a connection-level failure."""
+    utils = importlib.import_module('fleasion.utils')
+    return bool(utils.is_roblox_running())
+
+
+async def _was_splice_disconnected_by_player_exit(exc: BaseException) -> bool:
+    """Treat TCP resets from a closed Player as ordinary socket teardown.
+
+    A Player exit can reset every open TLS stream together. Checking the process
+    after a short grace period distinguishes that from a real proxy failure
+    without slowing the active request path or suppressing malformed TLS.
+    """
+    if not isinstance(exc, ConnectionResetError | BrokenPipeError | ConnectionAbortedError):
+        return False
+    await asyncio.sleep(0.15)
+    try:
+        return not await asyncio.to_thread(_roblox_player_running_for_disconnect)
+    except OSError, RuntimeError, AttributeError, ImportError:
+        # On an unavailable process detector, retain the original diagnosis.
+        return False
+
+
 def _best_effort_log(category: str, message: str) -> None:
     try:
         _get_log_buffer().log(category, message)
@@ -2501,7 +2524,11 @@ class FleasionProxy:
         modify their own endpoints; only untouched API traffic gets raw
         passthrough.
         """
-        return self._wire_preserving_passthrough or host in MODULE_API_HOSTS
+        # Game-join requests may carry duplicate or signed headers, so never
+        # reconstruct an unchanged request/response from the normalized map
+        return (
+            self._wire_preserving_passthrough or host == GAMEJOIN_HOST or host in MODULE_API_HOSTS
+        )
 
     def upstream_endpoints_for_hosts(
         self,
@@ -3015,12 +3042,13 @@ class FleasionProxy:
                     f'({connection.passthrough_reason})',
                 )
         except (OSError, ValueError, TimeoutError) as exc:
-            self._asset_trace.splice(host, 'error', detail=type(exc).__name__)
-            log_buffer.log(
-                'Proxy',
-                f'TLS splice failed for {host}: {type(exc).__name__}: {exc}; '
-                f'{connection.diagnostic_state()}',
-            )
+            if not await _was_splice_disconnected_by_player_exit(exc):
+                self._asset_trace.splice(host, 'error', detail=type(exc).__name__)
+                log_buffer.log(
+                    'Proxy',
+                    f'TLS splice failed for {host}: {type(exc).__name__}: {exc}; '
+                    f'{connection.diagnostic_state()}',
+                )
         finally:
             self._asset_trace.splice(host, 'closed', detail=connection.diagnostic_state())
             result.writer.close()
@@ -3042,7 +3070,8 @@ class FleasionProxy:
         except asyncio.IncompleteReadError, TimeoutError:
             writer.close()
         except (OSError, ValueError) as exc:
-            log_buffer.log('Proxy', f'Direct TLS splice failed: {exc}')
+            if not await _was_splice_disconnected_by_player_exit(exc):
+                log_buffer.log('Proxy', f'Direct TLS splice failed: {exc}')
             writer.close()
 
     async def serve_spliced_session(
@@ -3613,7 +3642,7 @@ class FleasionProxy:
             if not self._module_interceptors:
                 if not await ensure_upstream(path):
                     return None, 'break'
-                if self._wire_preserving_passthrough:
+                if self._preserve_unmodified_wire_for_host(host):
                     outgoing = req_raw.raw_header_block + req_body.wire
                 else:
                     outgoing = _reassemble_raw_request(req_first, req_headers, req_body_raw)
@@ -3621,6 +3650,7 @@ class FleasionProxy:
                 return None, 'sent'
 
             gamejoin_flow = ProxyFlow(req_first, req_headers, req_body_plain, host)
+            original_flow_headers = gamejoin_flow.request.headers.to_bytes_dict()
             for interceptor in list(self._module_interceptors):
                 _call_module_interceptor(interceptor, gamejoin_flow, response=False)
             if gamejoin_flow.drop_request:
@@ -3636,15 +3666,20 @@ class FleasionProxy:
 
             new_first = _flow_request_modified_first_line(gamejoin_flow.request, req_first)
             new_body = gamejoin_flow.request.raw_content
+            new_headers = gamejoin_flow.request.headers.to_bytes_dict()
+            request_changed = (
+                new_first != req_first
+                or new_body != req_body_plain
+                or new_headers != original_flow_headers
+            )
+            if request_changed and req_body.has_trailers:
+                msg = 'Cannot modify gamejoin requests carrying chunked trailers'
+                raise ValueError(msg)
             if not await ensure_upstream(path):
                 return gamejoin_flow, 'break'
-            if new_first != req_first or new_body != req_body_plain:
-                outgoing = _build_modified_request(
-                    new_first,
-                    gamejoin_flow.request.headers.to_bytes_dict(),
-                    new_body,
-                )
-            elif self._wire_preserving_passthrough:
+            if request_changed:
+                outgoing = _build_modified_request(new_first, new_headers, new_body)
+            elif self._preserve_unmodified_wire_for_host(host):
                 outgoing = req_raw.raw_header_block + req_body.wire
             else:
                 outgoing = _reassemble_raw_request(req_first, req_headers, req_body_raw)
@@ -4214,9 +4249,6 @@ class FleasionProxy:
                             _build_modified_request(req_first, req_headers, outgoing_body)
                         )
                 elif host == GAMEJOIN_HOST:
-                    if request_has_trailers:
-                        msg = 'Cannot process gamejoin requests carrying chunked trailers'
-                        raise ValueError(msg)
                     # Module interceptors may modify or locally drop gamejoin requests.
                     gamejoin_flow, gamejoin_action = await forward_gamejoin_request(
                         path, req_raw, req_body, req_body_raw
