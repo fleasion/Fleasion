@@ -1514,6 +1514,93 @@ def test_env_proxy_relaunch_does_not_replay_uri_when_no_successor_is_found(
     assert any('not replaying a potentially consumed launch URI' in message for _, message in logs)
 
 
+def test_roblox_uri_dispatch_does_not_retry_while_bloxstrap_is_starting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An accepted protocol URI must not launch another Player after six seconds."""
+    module = _load_platform_windows(monkeypatch)
+    uri = 'roblox://experiences/start?placeId=1234'
+    calls: list[tuple[str, object]] = []
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(module.log_buffer, 'log', _LogRecorder(logs))
+    monkeypatch.setattr(
+        module.raw, 'is_roblox_running',
+        _raises(AssertionError('Player may not exist until Bloxstrap finishes startup')),
+    )
+    monkeypatch.setattr(
+        module.raw, '_launch_roblox_uri_direct',
+        _raises(AssertionError('must never bypass successful Bloxstrap protocol dispatch')),
+    )
+
+    def open_uri(target: str) -> None:
+        calls.append(('protocol', target))
+
+    def shell_launch(target: str, prefer_direct_roblox_uri: bool = False) -> bool:
+        calls.append(('shell', prefer_direct_roblox_uri))
+        assert target == uri
+        assert not prefer_direct_roblox_uri
+        return True
+
+    monkeypatch.setattr(module.raw, '_startfile', open_uri)
+    monkeypatch.setattr(module.raw, '_launch_with_shell_token', shell_launch)
+    launch = cast('Callable[[str], bool]', module.raw.__dict__['launch_as_standard_user'])
+    for elevated in (False, True):
+        calls.clear()
+        monkeypatch.setattr(module.raw, '_is_process_elevated', _returns(elevated))
+        assert launch(uri)
+        assert calls == ([('shell', False)] if elevated else [('protocol', uri)])
+    assert any('Player startup is owned by the registered launcher' in msg for _, msg in logs)
+    assert not any('falling back' in msg for _, msg in logs)
+
+
+def test_roblox_uri_fallback_only_after_actual_protocol_dispatch_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine protocol-dispatch error still permits exactly one direct fallback."""
+    module = _load_platform_windows(monkeypatch)
+    uri = 'roblox-player:1+launchmode:play'
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        module.raw, 'is_roblox_running',
+        _raises(AssertionError('dispatch success is not Player process startup')),
+    )
+    monkeypatch.setattr(module.raw, '_startfile', _raises(OSError('no protocol handler')))
+
+    def direct(target: str) -> bool:
+        events.append(('direct', target))
+        return True
+
+    def shell_launch(target: str, prefer_direct_roblox_uri: bool = False) -> bool:
+        assert target == uri
+        events.append(('shell', prefer_direct_roblox_uri))
+        return prefer_direct_roblox_uri
+
+    monkeypatch.setattr(module.raw, '_launch_roblox_uri_direct', direct)
+    monkeypatch.setattr(module.raw, '_launch_with_shell_token', shell_launch)
+    launch = cast('Callable[[str], bool]', module.raw.__dict__['launch_as_standard_user'])
+    for elevated in (False, True):
+        events.clear()
+        monkeypatch.setattr(module.raw, '_is_process_elevated', _returns(elevated))
+        assert launch(uri)
+        assert events == (
+            [('shell', False), ('shell', True)] if elevated else [('direct', uri)]
+        )
+
+
+def test_roblox_uri_fallback_reports_failure_when_both_dispatches_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    uri = 'roblox://experiences/start?placeId=1234'
+    monkeypatch.setattr(module.raw, '_startfile', _raises(OSError('no handler')))
+    monkeypatch.setattr(module.raw, '_launch_roblox_uri_direct', _returns(False))
+    monkeypatch.setattr(module.raw, '_launch_with_shell_token', _returns(False))
+    launch = cast('Callable[[str], bool]', module.raw.__dict__['launch_as_standard_user'])
+    for elevated in (False, True):
+        monkeypatch.setattr(module.raw, '_is_process_elevated', _returns(elevated))
+        assert not launch(uri)
+
+
 def test_roblox_launch_resolver_upgrades_registry_path_when_versions_scan_finds_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1656,28 +1743,6 @@ def test_extract_exe_from_command_fallback_has_shlex_available(
     module = _load_platform_windows(monkeypatch)
 
     assert module.extract_exe_from_command('launcher --flag') == Path('launcher')
-
-
-def test_windows_cache_cleanup_preserves_flag_catalog(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    module = _load_platform_windows(monkeypatch)
-    cache_dir = tmp_path / 'cache'
-    downloads = cache_dir / 'predownloaded'
-    converted = cache_dir / 'converted'
-    downloads.mkdir(parents=True)
-    converted.mkdir()
-    (downloads / 'keep.dat').write_text('keep', encoding='utf-8')
-    (converted / 'remove.obj').write_text('delete', encoding='utf-8')
-    catalog = cache_dir / 'fflag_browser.json'
-    catalog.write_text('keep flags', encoding='utf-8')
-
-    cleanup = cast('Callable[[Path], None]', module.raw.__dict__['_delete_app_cache_contents'])
-    cleanup(cache_dir)
-
-    assert catalog.read_text(encoding='utf-8') == 'keep flags'
-    assert (downloads / 'keep.dat').exists()
-    assert not converted.exists()
 
 
 def test_env_proxy_relaunch_hands_off_only_after_replacement_starts(

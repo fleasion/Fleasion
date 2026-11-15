@@ -1469,9 +1469,7 @@ def _bloxstrap_process_snapshot() -> list[BloxstrapProcess]:
     for pid in _find_pids('Bloxstrap.exe'):
         executable = _query_exe_path(pid)
         if executable is not None and executable.name.casefold() == 'bloxstrap.exe':
-            processes.append(
-                BloxstrapProcess(pid, executable, _query_process_command_line(pid))
-            )
+            processes.append(BloxstrapProcess(pid, executable, _query_process_command_line(pid)))
     return processes
 
 
@@ -1720,9 +1718,7 @@ def _relaunch_roblox_exe_with_proxy_env(
         _env_proxy_relaunches[relaunch_key] = time.monotonic()
         if bloxstrap_handoff is not None:
             try:
-                _schedule_bloxstrap_watcher_handoff(
-                    bloxstrap_handoff, int(child.pid), cancel_event
-                )
+                _schedule_bloxstrap_watcher_handoff(bloxstrap_handoff, int(child.pid), cancel_event)
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 log_buffer.log(
                     'Launcher',
@@ -2678,80 +2674,52 @@ def _launch_with_shell_token(
         _close_handle(shell_process)
 
 
-def _wait_for_roblox_process_start(timeout: float = 6.0) -> bool:
-    """Wait briefly for RobloxPlayerBeta.exe to appear after a launch request."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if is_roblox_running():
-            return True
-        time.sleep(0.2)
-    return is_roblox_running()
-
-
-def _roblox_launch_confirmed(
-    launch_started: bool,
-    method: str,
-    *,
-    was_running_before: bool,
-) -> bool:
-    if not launch_started:
-        return False
-    if was_running_before:
-        log_buffer.log('Launcher', f'{method} dispatched while Roblox was already running')
-        return True
-    if _wait_for_roblox_process_start():
-        log_buffer.log('Launcher', f'{method} confirmed Roblox process start')
-        return True
-    log_buffer.log('Launcher', f'{method} did not start Roblox process within timeout')
-    return False
-
-
 def _launch_roblox_uri_as_standard_user(target_str: str) -> bool:
-    was_running_before = is_roblox_running()
+    """Dispatch once to the registered launcher, falling back only on dispatch errors.
 
-    def _confirmed(launch_started: bool, method: str) -> bool:
-        return _roblox_launch_confirmed(
-            launch_started,
-            method,
-            was_running_before=was_running_before,
-        )
-
-    # Protocol first, raw executable fallback only if protocol launch does not start Roblox.
+    A successful protocol dispatch launches the bootstrapper (often Bloxstrap),
+    not necessarily RobloxPlayerBeta.exe. Bloxstrap can take longer than six
+    seconds to initialize. Treating that delay as an error launches a second,
+    untracked Roblox Player directly and breaks Bloxstrap integrations.
+    """
     if _is_process_elevated():
-        protocol_started = _launch_with_shell_token(target_str, prefer_direct_roblox_uri=False)
-        if _confirmed(protocol_started, 'Protocol launch (shell token)'):
+        if _launch_with_shell_token(target_str, prefer_direct_roblox_uri=False):
+            log_buffer.log(
+                'Launcher',
+                'Roblox protocol dispatched via desktop shell token; '
+                'Player startup is owned by the registered launcher',
+            )
             return True
 
         log_buffer.log(
             'Launcher',
-            'Protocol launch failed to start Roblox; falling back to direct executable launch',
+            'Roblox protocol dispatch failed; falling back to direct executable launch',
         )
-        direct_started = _launch_with_shell_token(target_str, prefer_direct_roblox_uri=True)
-        if _confirmed(direct_started, 'Direct executable launch (shell token)'):
+        if _launch_with_shell_token(target_str, prefer_direct_roblox_uri=True):
+            log_buffer.log('Launcher', 'Direct Roblox executable dispatched via shell token')
             return True
-
         log_buffer.log('Launcher', 'Direct executable fallback via shell token failed')
         return False
 
     try:
         _startfile(target_str)
-        protocol_started = True
-        log_buffer.log('Launcher', 'Protocol launch dispatched via os.startfile')
     except OSError as exc:
-        protocol_started = False
         log_buffer.log('Launcher', f'Protocol launch via os.startfile failed: {exc}')
-
-    if _confirmed(protocol_started, 'Protocol launch (os.startfile)'):
+    else:
+        log_buffer.log(
+            'Launcher',
+            'Roblox protocol dispatched via os.startfile; '
+            'Player startup is owned by the registered launcher',
+        )
         return True
 
     log_buffer.log(
         'Launcher',
-        'Protocol launch failed to start Roblox; falling back to direct executable launch',
+        'Roblox protocol dispatch failed; falling back to direct executable launch',
     )
-    direct_started = _launch_roblox_uri_direct(target_str)
-    if _confirmed(direct_started, 'Direct executable launch'):
+    if _launch_roblox_uri_direct(target_str):
+        log_buffer.log('Launcher', 'Direct Roblox executable dispatched')
         return True
-
     log_buffer.log('Launcher', 'Direct executable fallback failed')
     return False
 
