@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QPalette,
 )
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QApplication,
     QHBoxLayout,
     QLabel,
@@ -42,6 +43,7 @@ from fleasion.app.elevation import (
     is_admin as _app_is_admin,
     relaunch_as_admin as _relaunch_as_admin,
 )
+from fleasion.app.linux_client_mismatch import LinuxClientMismatchWatcher
 from fleasion.app.restart import restart_fleasion_normally
 from fleasion.appearance import ACCENT_KEYS, COLOR_MODES, STYLES
 from fleasion.gui import (
@@ -65,6 +67,7 @@ from fleasion.utils import (
     open_folder,
     run_in_thread,
 )
+from fleasion.utils.linux_clients import LINUX_CLIENTS_BY_KEY
 
 if TYPE_CHECKING:
     from fleasion.app.roblox_monitor import RobloxExitMonitor
@@ -307,6 +310,8 @@ class SystemTray:
         self._notification_app_id: str | None = None
         self._xfce_notification: _XfceTrayNotification | None = None
         self._tray_cleaned_up = False
+        self._linux_client_mismatch_watcher: LinuxClientMismatchWatcher | None = None
+        self._linux_client_mismatch_dialog: QMessageBox | None = None
 
         # Create tray icon
         self.tray = QSystemTrayIcon()
@@ -337,6 +342,11 @@ class SystemTray:
                 'Tray',
                 'System tray/menu-bar host is available and icon visibility was requested',
             )
+
+        if sys.platform.startswith('linux'):
+            watcher = LinuxClientMismatchWatcher(config_manager, proxy_master, self.tray)
+            watcher.mismatch_detected.connect(self._show_linux_client_mismatch)
+            self._linux_client_mismatch_watcher = watcher
 
     def _set_icon(self) -> None:
         """Set the tray icon."""
@@ -1021,6 +1031,65 @@ class SystemTray:
         if not self._exiting and not self.config_manager.close_to_tray:
             self.exit_app()
 
+    def _open_linux_client_settings(self) -> None:
+        """Open the Client selector without automatically changing any settings."""
+        self.show_replacer_config()
+        if self.dashboard_window is not None:
+            self.dashboard_window.open_settings_tab()
+
+    def _show_linux_client_mismatch(self, selected: str, running: str) -> None:
+        if self._exiting or self._linux_client_mismatch_dialog is not None:
+            return
+        configured = LINUX_CLIENTS_BY_KEY.get(selected)
+        detected = LINUX_CLIENTS_BY_KEY.get(running)
+        if configured is None or detected is None:
+            return
+        log_buffer.log(
+            'Launcher',
+            f'Linux client mismatch: selected={selected}; running={running}; continuing proxy',
+        )
+        parent = (
+            self.dashboard_window
+            if self.dashboard_window is not None and self.dashboard_window.isVisible()
+            else None
+        )
+        dialog = QMessageBox(parent)
+        dialog.setWindowTitle(tr('app.linux_client.mismatch.title'))
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setText(
+            tr(
+                'app.linux_client.mismatch.message',
+                selected=configured.display_name,
+                running=detected.display_name,
+            )
+        )
+        dialog.setInformativeText(
+            tr('app.linux_client.mismatch.details', running=detected.display_name)
+        )
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        open_settings = dialog.addButton(
+            tr('app.linux_client.mismatch.open_settings'), QMessageBox.ButtonRole.ActionRole
+        )
+        dialog.addButton(tr('app.common.not_now'), QMessageBox.ButtonRole.RejectRole)
+        if icon_path := get_icon_path():
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        def on_button_clicked(button: QAbstractButton) -> None:
+            if button is open_settings:
+                self._open_linux_client_settings()
+
+        dialog.buttonClicked.connect(on_button_clicked)
+        dialog.finished.connect(self._on_linux_client_mismatch_closed)
+        self._linux_client_mismatch_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+
+    def _on_linux_client_mismatch_closed(self, _result: int) -> None:
+        dialog = self._linux_client_mismatch_dialog
+        self._linux_client_mismatch_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
+
     def _toggle_dashboard(self) -> None:
         """Toggle dashboard visibility."""
         if self.dashboard_window and self.dashboard_window.isVisible():
@@ -1308,6 +1377,10 @@ class SystemTray:
             return
 
         self._tray_cleaned_up = True
+        if watcher := getattr(self, '_linux_client_mismatch_watcher', None):
+            watcher.stop()
+        if mismatch_dialog := getattr(self, '_linux_client_mismatch_dialog', None):
+            mismatch_dialog.close()
         if notification := getattr(self, '_xfce_notification', None):
             notification.close()
             self._xfce_notification = None

@@ -1364,3 +1364,51 @@ def test_dutch_reviewed_asset_types_and_help_labels() -> None:
     assert DUTCH[
         'ui.gui.modifications_tab.move_selected_fastflags_to_folder'
     ] in DUTCH['ui.gui.modifications_tab.fastflag_folder_already_exists']
+
+
+def test_fastflag_scan_browser_labels_are_localized_in_every_language() -> None:
+    """Guard against English fallback for the user-facing FastFlag browser."""
+    keys = (
+        'untyped_name_tooltip',
+        'name_not_found_tooltip',
+        'disable_bootstrapper_flag_management',
+        'public_catalog',
+        'client_source',
+        'choose_exe',
+        'client_unavailable',
+        'choose_windows_exe',
+        'windows_executable_filter',
+        'initial_value',
+        'windows_scan_failed',
+        'installed_scan_failed',
+        'type_unknown_label',
+        'no_installed_player',
+        'reading_installed',
+        'select_windows_exe',
+        'reading_windows',
+        'registered_summary',
+        'windows_summary',
+        'unverified_fvariables_hint',
+        'raw_slot_tooltip',
+        'source_generic',
+        'source_local',
+        'recache',
+        'local_fallback',
+        'local_scanning',
+        'local_failed',
+        'local_stale',
+        'local_source',
+        'local_counts',
+        'local_confirmed',
+        'local_inferred',
+        'local_published_value',
+    )
+    for code, catalog in _TRANSLATED_CATALOGS.items():
+        for suffix in keys:
+            identifier = f'modifications.fastflags.{suffix}'
+            assert catalog[identifier] != localization.ENGLISH[identifier], (code, identifier)
+        for identifier in (
+            'ui.gui.settings_tab.roblox_env_proxy',
+            'ui.gui.rando_stuff_tab.warning_do_not_share_this_sharing_this',
+        ):
+            assert catalog[identifier] != localization.ENGLISH[identifier], (code, identifier)

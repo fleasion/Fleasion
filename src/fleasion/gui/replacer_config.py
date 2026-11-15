@@ -932,6 +932,7 @@ class ReplacerConfigWindow(QDialog):
         self._closed = False
         self._cache_viewer_tab: CacheViewerTab | None = None
         self._settings_tab: SettingsTab | None = None
+        self._pending_open_settings_tab = False
         self._rando_stuff_tab: RandoStuffTab | None = None
         self._subplace_tab: SubplaceJoinerTab | None = None
         self._registered_module_interceptors: list[RandoStuffTab | SubplaceJoinerTab] = []
@@ -1165,6 +1166,18 @@ class ReplacerConfigWindow(QDialog):
         self.tab_widget.setTabEnabled(self._tab_indices[name], enabled)
         glass.chrome.sync_dashboard_tabs(self)
         self.set_proxy_features_enabled(self.config_manager.proxy_features_enabled)
+        if name == 'settings' and self._pending_open_settings_tab:
+            self.open_settings_tab()
+
+    def open_settings_tab(self) -> None:
+        """Navigate to Settings, including while dashboard tabs are still loading."""
+        self._pending_open_settings_tab = True
+        if self._settings_tab is None:
+            return
+        index = self._tab_indices['settings']
+        if self.tab_widget.isTabEnabled(index):
+            self.tab_widget.setCurrentIndex(index)
+            self._pending_open_settings_tab = False
 
     def _preload_tabs(self) -> Generator[None]:
         config = self.config_manager

@@ -31,7 +31,6 @@ def test_vietnamese_catalog_is_complete_and_preserves_technical_data() -> None:
         'ui.gui.modifications_tab.content_sounds_oof_ogg',
         'ui.gui.replacer_config.value',
         'ui.gui.modifications_tab.text',
-        'ui.gui.rando_stuff_tab.warning_do_not_share_this_sharing_this',
     ):
         assert VIETNAMESE[identifier] == ENGLISH[identifier]
 
