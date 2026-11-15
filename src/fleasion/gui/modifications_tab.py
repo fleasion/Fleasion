@@ -2350,8 +2350,9 @@ class FFlagBrowserDialog(QDialog):
         self._cache_loaded = False
         self._apply_flags(flags)
 
-    def _compute_installed_scan(
-        self, binary: ClientBinary, force: bool
+    @staticmethod
+    def scan_installed_client(
+        binary: ClientBinary, force: bool
     ) -> tuple[StaticFlagCatalog, bool]:
         """Load an unchanged cached snapshot or rescan the selected Player."""
         cached = None if force else load_scan(binary.client)
@@ -2359,13 +2360,13 @@ class FFlagBrowserDialog(QDialog):
             catalog = cached
             saved = True
         else:
-            published = self._read_cache() or {}
+            published = FFlagBrowserDialog._read_cache() or {}
             try:
                 names = parse_fvariables(
                     http_get(
-                        self._TRACKER_VARIABLES_URL,
+                        FFlagBrowserDialog._TRACKER_VARIABLES_URL,
                         timeout=15,
-                        headers=self._BYPASS_CUSTOM_FFLAGS_HEADER,
+                        headers=FFlagBrowserDialog._BYPASS_CUSTOM_FFLAGS_HEADER,
                     )
                 )
                 for name in names:
@@ -2379,11 +2380,18 @@ class FFlagBrowserDialog(QDialog):
             save_scan(catalog)
             saved = False
         hints = dict(catalog.flags)
-        if published_cache := self._read_cache():
+        if published_cache := FFlagBrowserDialog._read_cache():
             hints.update(published_cache)
         for name in cached_cross_client_type_hints(binary.client):
             hints.setdefault(name, None)
         return resolve_catalog_from_snapshot(catalog, hints), saved
+
+    @staticmethod
+    def _compute_installed_scan(
+        binary: ClientBinary, force: bool
+    ) -> tuple[StaticFlagCatalog, bool]:
+        """Use the installed-client scanner shared with automatic cache recovery."""
+        return FFlagBrowserDialog.scan_installed_client(binary, force)
 
     def _fetch_installed_scan(self, generation: int, binary: ClientBinary, force: bool) -> None:
         """Perform offline scan and source validation off the GUI thread."""
@@ -3511,6 +3519,22 @@ class FastFlagActionsDialog(QDialog):
             self._refresh(name)
 
 
+def _custom_fflag_warning_kind(
+    name: str, names: frozenset[str] | None, raw_names: frozenset[str]
+) -> str | None:
+    """Classify the warnings shared by the editor and its name delegate."""
+    if names is None:
+        return None
+    if full_prefix(name):
+        return None if name in names else 'missing'
+    matches = tuple(match for match in qualified_matches(name, names) if match in names)
+    if len(matches) == 1:
+        return None
+    if len(matches) > 1:
+        return 'multiple'
+    return 'untyped' if name in raw_names else 'missing'
+
+
 class CustomFFlagNameDelegate(QStyledItemDelegate):
     """Warn only when a custom name is ambiguous, untyped, or absent from catalogs."""
 
@@ -3534,7 +3558,7 @@ class CustomFFlagNameDelegate(QStyledItemDelegate):
     ) -> None:
         super().__init__(parent)
         self._known_names = names
-        self._raw_names = raw_names or frozenset
+        self._raw_names = raw_names or cast('Callable[[], frozenset[str]]', frozenset)
 
     @staticmethod
     def _warning_rect(rect: QRect) -> QRect:
@@ -3561,15 +3585,7 @@ class CustomFFlagNameDelegate(QStyledItemDelegate):
             or names is None
         ):
             return None
-        if full_prefix(name):
-            return None if name in names else 'missing'
-        matches = self._matches(index)
-        known_matches = tuple(match for match in matches if match in names)
-        if len(known_matches) == 1:
-            return None
-        if len(known_matches) > 1:
-            return 'multiple'
-        return 'untyped' if name in self._raw_names() else 'missing'
+        return _custom_fflag_warning_kind(name, names, self._raw_names())
 
     @override
     def initStyleOption(
@@ -3650,6 +3666,8 @@ class CustomFFlagEditor(QWidget):
     _catalog_updated = Signal()
     _catalog_prefetch_lock = threading.Lock()
     _catalog_retry_not_before = 0.0
+    _missing_scan_lock = threading.Lock()
+    _missing_scan_retry_not_before = 0.0
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
     _VIRTUAL_THRESHOLD = 10_000
 
@@ -3719,10 +3737,59 @@ class CustomFFlagEditor(QWidget):
         self._known_untyped_names = raw_names
         self._table.viewport().update()
         self._virtual_table.viewport().update()
+        self._maybe_scan_missing_client_cache()
+
+    def _maybe_scan_missing_client_cache(self) -> None:
+        """Scan only when an orange custom name needs an uncached client inventory."""
+        flags = getattr(self._config, 'custom_fflags', {}) if self._config else {}
+        if (
+            not flags
+            or self._known_flag_names is None
+            or time.monotonic() < self._missing_scan_retry_not_before
+            or not any(
+                _custom_fflag_warning_kind(name, self._known_flag_names, self._known_untyped_names)
+                == 'missing'
+                for name in flags
+            )
+            or not self._missing_scan_lock.acquire(blocking=False)
+        ):
+            return
+        try:
+            threading.Thread(target=self._scan_missing_client_cache, daemon=True).start()
+        except RuntimeError:
+            self._missing_scan_lock.release()
+            raise
+
+    def _scan_missing_client_cache(self) -> None:
+        """Populate missing static scans in the background using the browser scanner."""
+        try:
+            source = detect_client_binary()
+            if source is None or load_scan(source.client) is not None:
+                return
+            FFlagBrowserDialog.scan_installed_client(source, force=False)
+            log_buffer.log('FastFlags', f'Automatically cached {source.label} FastFlag scan')
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            IndexError,
+            struct.error,
+            zipfile.BadZipFile,
+        ) as exc:
+            self._missing_scan_retry_not_before = time.monotonic() + 15 * 60
+            log_buffer.log('FastFlags', f'Could not automatically scan client FastFlags: {exc}')
+        else:
+            invalidate_selected_player_cache()
+            with contextlib.suppress(RuntimeError):
+                self._catalog_updated.emit()
+        finally:
+            self._missing_scan_lock.release()
 
     def prefetch_flag_catalog_if_needed(self) -> None:
         """Fetch current browser data only with custom FastFlags active and cache stale."""
         self._reload_known_flag_names()
+        self._maybe_scan_missing_client_cache()
         if not (self._config and getattr(self._config, 'custom_fflags_enabled', False)):
             return
         if FFlagBrowserDialog.cache_is_current():
@@ -4544,6 +4611,7 @@ class CustomFFlagEditor(QWidget):
         self._config.custom_fflags = flags
         self._prune_hotkey_settings(set(flags))
         self._update_status()
+        self._maybe_scan_missing_client_cache()
         if self._virtual_active:
             if self._search.text().strip():
                 QTimer.singleShot(0, lambda: self._filter_rows(self._search.text()))
@@ -4682,6 +4750,7 @@ class CustomFFlagEditor(QWidget):
         # Flag values are consumed directly from settings; only the master
         # enable toggle changes the interception route set.
         self._load_flags()
+        self._maybe_scan_missing_client_cache()
 
     def _import_mapping(self, payload: object) -> None:
         from fleasion.proxy.addons.custom_fflags import normalize_custom_fflags
