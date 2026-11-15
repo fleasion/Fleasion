@@ -544,6 +544,34 @@ def test_preloaded_tab_background_respects_theme(
         app.setPalette(original_palette)
 
 
+def test_modifications_tab_show_triggers_catalog_prefetch_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.gui.modifications_tab import CustomFFlagEditor
+
+    app = _qapp()
+    calls: list[CustomFFlagEditor] = []
+
+    def record_prefetch(editor: CustomFFlagEditor) -> None:
+        calls.append(editor)
+
+    monkeypatch.setattr(CustomFFlagEditor, 'prefetch_flag_catalog_if_needed', record_prefetch)
+    tab = _make_tab(_FakeModificationManager())
+    try:
+        assert not calls
+        tab.show()
+        app.processEvents()
+        assert len(calls) == 1
+        tab.hide()
+        tab.show()
+        app.processEvents()
+        assert len(calls) == 2
+    finally:
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()
+
+
 @pytest.mark.parametrize('language', tuple(localization.LANGUAGES))
 @pytest.mark.parametrize('applied, roblox_count', [(0, 0), (1, 1), (3, 3), (11, 2)])
 def test_modifications_footer_renders_each_count_once(

@@ -235,7 +235,13 @@ def _runtime_fleasion_modules() -> list[str]:
         source_root / 'macos_proxy_helper_daemon.py',
     }
     for path in source_root.rglob('*.py'):
-        if path in excluded_files or source_root / 'scripts' in path.parents:
+        # Offline analysis modules are not reachable from the application.
+        # They have optional disassembler dependencies not shipped in releases.
+        if (
+            path in excluded_files
+            or source_root / 'scripts' in path.parents
+            or source_root / 'modifications' / 'hyperion' in path.parents
+        ):
             continue
         parts = list(path.relative_to('src').with_suffix('').parts)
         if parts[-1] == '__init__':

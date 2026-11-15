@@ -961,6 +961,8 @@ def test_delete_cache_clears_texpack_slots_but_preserves_predownloaded(
     for path in (predownloaded, texpack_slots, converted_cache):
         path.mkdir(parents=True)
     (predownloaded / 'asset.bin').write_bytes(b'keep')
+    catalog_file = app_cache / 'fflag_browser.json'
+    catalog_file.write_text('cached flags', encoding='utf-8')
     (texpack_slots / '88088208586015_slot0.ktx2').write_bytes(b'delete')
     (converted_cache / 'mesh.obj').write_text('delete', encoding='utf-8')
 
@@ -976,6 +978,7 @@ def test_delete_cache_clears_texpack_slots_but_preserves_predownloaded(
 
     assert predownloaded.exists()
     assert (predownloaded / 'asset.bin').exists()
+    assert catalog_file.read_text(encoding='utf-8') == 'cached flags'
     assert not texpack_slots.exists()
     assert not converted_cache.exists()
 

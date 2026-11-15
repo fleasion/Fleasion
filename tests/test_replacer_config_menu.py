@@ -336,9 +336,12 @@ def test_scrollable_config_menu_ignores_opening_release() -> None:
     row = _menu_row(popup, 'Default')
 
     _guard_opening_release(popup)
+    local = QPointF(8, 8)
     event = QMouseEvent(
         QEvent.Type.MouseButtonRelease,
-        QPointF(8, 8),
+        local,
+        local,
+        QPointF(row.mapToGlobal(local.toPoint())),
         Qt.MouseButton.LeftButton,
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
@@ -372,9 +375,12 @@ def test_scrollable_config_menu_toggles_from_full_row_width() -> None:
     row.resize(260, row.height())
 
     for event_type in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+        local = QPointF(250, row.height() / 2)
         event = QMouseEvent(
             event_type,
-            QPointF(250, row.height() / 2),
+            local,
+            local,
+            QPointF(row.mapToGlobal(local.toPoint())),
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.LeftButton,
             Qt.KeyboardModifier.NoModifier,

@@ -54,6 +54,7 @@ def test_packaging_collects_all_fleasion_runtime_modules() -> None:
     assert 'def _runtime_fleasion_modules() -> list[str]:' in spec_source
     assert "hiddenimports: list[str] = _runtime_fleasion_modules()" in spec_source
     assert "source_root / 'scripts' in path.parents" in spec_source
+    assert "source_root / 'modifications' / 'hyperion' in path.parents" in spec_source
     assert "source_root / 'linux_proxy_helper_daemon.py'" in spec_source
     assert "source_root / 'macos_proxy_helper_daemon.py'" in spec_source
 
@@ -336,7 +337,11 @@ def test_literal_third_party_lazy_imports_are_declared_for_packaging() -> None:
         source_root / 'macos_proxy_helper_daemon.py',
     }
     for path in source_root.rglob('*.py'):
-        if path in excluded_files or source_root / 'scripts' in path.parents:
+        if (
+            path in excluded_files
+            or source_root / 'scripts' in path.parents
+            or source_root / 'modifications' / 'hyperion' in path.parents
+        ):
             continue
         tree = ast.parse(path.read_text(encoding='utf-8'))
         direct_import_names: set[str] = set()

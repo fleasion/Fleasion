@@ -156,6 +156,27 @@ def _make_player_app(path: Path) -> Path:
     return resources
 
 
+def test_macos_cache_cleanup_preserves_flag_catalog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache_dir = tmp_path / 'cache'
+    downloads = cache_dir / 'predownloaded'
+    converted = cache_dir / 'converted'
+    downloads.mkdir(parents=True)
+    converted.mkdir()
+    (downloads / 'keep.dat').write_text('keep', encoding='utf-8')
+    (converted / 'remove.obj').write_text('delete', encoding='utf-8')
+    catalog = cache_dir / 'fflag_browser.json'
+    catalog.write_text('keep flags', encoding='utf-8')
+    monkeypatch.setattr(platform_macos, 'APP_CACHE_DIR', cache_dir)
+
+    platform_macos._delete_app_cache_contents()  # pyright: ignore[reportPrivateUsage]
+
+    assert catalog.read_text(encoding='utf-8') == 'keep flags'
+    assert (downloads / 'keep.dat').exists()
+    assert not converted.exists()
+
+
 def test_terminate_roblox_requests_app_bundle_quit_before_signal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

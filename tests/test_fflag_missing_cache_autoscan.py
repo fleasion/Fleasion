@@ -11,6 +11,7 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
 from fleasion.gui import modifications_tab
@@ -24,10 +25,26 @@ if TYPE_CHECKING:
     from fleasion.proxy.master import ProxyMaster
 
 
+_app: QApplication | None = None
+
+
 @pytest.fixture
 def app() -> QApplication:
+    # Keep Qt alive for the full module. QWidgets may still be queued for
+    # deferred destruction after a test releases its local QApplication ref.
+    global _app
     running = QApplication.instance()
-    return cast('QApplication', running) if running is not None else QApplication([])
+    _app = cast('QApplication', running) if running is not None else QApplication([])
+    return _app
+
+
+def _dispose_editor(editor: CustomFFlagEditor) -> None:
+    editor.close()
+    editor.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    running = QApplication.instance()
+    if isinstance(running, QApplication):
+        running.processEvents()
 
 
 def _editor(flags: dict[str, str]) -> CustomFFlagEditor:
@@ -110,7 +127,7 @@ def test_missing_flag_triggers_one_scan_and_updates_warning(
         editor.prefetch_flag_catalog_if_needed()
         assert len(calls) == 1
     finally:
-        editor.close()
+        _dispose_editor(editor)
 
 
 def test_existing_cache_never_triggers_scan(
@@ -124,7 +141,7 @@ def test_existing_cache_never_triggers_scan(
         editor.prefetch_flag_catalog_if_needed()
         assert calls == []
     finally:
-        editor.close()
+        _dispose_editor(editor)
 
 
 @pytest.mark.parametrize(
@@ -149,7 +166,7 @@ def test_non_orange_entries_do_not_trigger_scan(
         editor.prefetch_flag_catalog_if_needed()
         assert calls == []
     finally:
-        editor.close()
+        _dispose_editor(editor)
 
 
 def test_newly_imported_missing_flag_triggers_scan(
@@ -163,7 +180,7 @@ def test_newly_imported_missing_flag_triggers_scan(
         editor._set_flags({'MissingFlag': '1'})  # pyright: ignore[reportPrivateUsage]
         assert len(calls) == 1
     finally:
-        editor.close()
+        _dispose_editor(editor)
 
 
 def test_failed_scan_is_not_retried_on_every_visit(
@@ -190,7 +207,7 @@ def test_failed_scan_is_not_retried_on_every_visit(
         editor.prefetch_flag_catalog_if_needed()
         assert attempts == [True, True]
     finally:
-        editor.close()
+        _dispose_editor(editor)
 
 
 def test_virtual_flag_table_uses_the_same_missing_cache_trigger(
@@ -205,7 +222,7 @@ def test_virtual_flag_table_uses_the_same_missing_cache_trigger(
         editor.prefetch_flag_catalog_if_needed()
         assert len(calls) == 1
     finally:
-        editor.close()
+        _dispose_editor(editor)
 
 
 def test_unavailable_client_does_not_invoke_scanner(
@@ -219,4 +236,4 @@ def test_unavailable_client_does_not_invoke_scanner(
         editor.prefetch_flag_catalog_if_needed()
         assert calls == []
     finally:
-        editor.close()
+        _dispose_editor(editor)

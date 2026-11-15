@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, cast
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QHelpEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from fleasion import localization
 from fleasion.gui import modifications_tab
+from fleasion.utils.fflag_resolution import CLIENT_FFLAG_PREFIXES
 from fleasion.gui.modifications_tab import (
     CompactBooleanComboBox,
     CustomFFlagEditor,
@@ -38,6 +40,14 @@ if TYPE_CHECKING:
 
 
 type BrowserFlags = dict[str, str | None]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_browser_client_detection(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Public-browser tests must not scan the developer's installed Roblox binaries."""
+    monkeypatch.setattr(modifications_tab, 'detect_client_binary', lambda: None)
 
 
 def _qapp() -> QApplication:
@@ -416,6 +426,147 @@ def test_fflag_browser_cache_expires_after_24_hours(
     assert _read_cache(now=10_001) is None
 
 
+def test_custom_fflag_catalog_prefetch_requires_enabled_and_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    assert app is not None
+    # Avoid any network calls and drive the worker synchronously
+    catalog = frozenset({'DFFlagDebugDrawBroadPhaseAABBs'})
+    names: list[frozenset[str] | None] = [None]
+    monkeypatch.setattr(modifications_tab, 'known_typed_names', lambda: names[0])
+    is_current = [False]
+    fetched: list[bool] = []
+    def current(_cls: type[FFlagBrowserDialog]) -> bool:
+        return is_current[0]
+
+    monkeypatch.setattr(FFlagBrowserDialog, 'cache_is_current', classmethod(current))
+
+    def refresh(_cls: type[FFlagBrowserDialog]) -> bool:
+        fetched.append(True)
+        names[0] = catalog
+        is_current[0] = True
+        return True
+
+    monkeypatch.setattr(
+        FFlagBrowserDialog, 'refresh_cache_if_stale', classmethod(refresh)
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target: Callable[[], None], daemon: bool) -> None:
+            assert daemon
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+    monkeypatch.setattr(modifications_tab.threading, 'Thread', ImmediateThread)
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'DebugDrawBroadPhaseAABBs': 'True'},
+        custom_fflags_enabled=False,
+        custom_fflag_keybinds={},
+        custom_fflag_folder_keybinds={},
+        custom_fflag_actions={},
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    try:
+        editor.prefetch_flag_catalog_if_needed()
+        assert not fetched
+        config.custom_fflags_enabled = True
+        table = _editor_table(editor)
+        delegate = table.itemDelegateForColumn(0)
+        assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+        index = table.model().index(0, 0)
+        # With no available catalog, do not show any speculative warning
+        assert delegate._matches(index) == ()  # pyright: ignore[reportPrivateUsage]
+        editor.prefetch_flag_catalog_if_needed()
+        assert fetched == [True]
+        assert editor._known_flag_names == catalog  # pyright: ignore[reportPrivateUsage]
+        # This was orange in the screenshot despite existing in the browser
+        assert delegate._matches(index) == ('DFFlagDebugDrawBroadPhaseAABBs',)  # pyright: ignore[reportPrivateUsage]
+        editor.prefetch_flag_catalog_if_needed()
+        assert fetched == [True]
+    finally:
+        editor.close()
+
+
+def test_failed_catalog_prefetch_is_not_repeated_on_every_tab_visit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    attempts: list[bool] = []
+
+    def never_current(_cls: type[FFlagBrowserDialog]) -> bool:
+        return False
+
+    def fails(_cls: type[FFlagBrowserDialog]) -> bool:
+        attempts.append(True)
+        raise OSError('offline')
+
+    class ImmediateThread:
+        def __init__(self, *, target: Callable[[], None], daemon: bool) -> None:
+            assert daemon
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+    monkeypatch.setattr(FFlagBrowserDialog, 'cache_is_current', classmethod(never_current))
+    monkeypatch.setattr(FFlagBrowserDialog, 'refresh_cache_if_stale', classmethod(fails))
+    monkeypatch.setattr(modifications_tab.threading, 'Thread', ImmediateThread)
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={},
+        custom_fflags_enabled=True,
+        custom_fflag_keybinds={},
+        custom_fflag_folder_keybinds={},
+        custom_fflag_actions={},
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    try:
+        editor.prefetch_flag_catalog_if_needed()
+        assert attempts == [True]
+        editor.prefetch_flag_catalog_if_needed()
+        assert attempts == [True]
+        editor._catalog_retry_not_before = 0  # pyright: ignore[reportPrivateUsage]
+        editor.prefetch_flag_catalog_if_needed()
+        assert attempts == [True, True]
+    finally:
+        editor.close()
+        app.processEvents()
+
+
+def test_catalog_load_refreshes_custom_warning_without_reloading_flag_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    assert app is not None
+    known: list[frozenset[str] | None] = [None]
+    monkeypatch.setattr(modifications_tab, 'known_typed_names', lambda: known[0])
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'DebugDrawBroadPhaseAABBs': 'True'}, custom_fflags_enabled=False,
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    table = _editor_table(editor)
+    delegate = table.itemDelegateForColumn(0)
+    assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+    index = table.model().index(0, 0)
+    try:
+        assert delegate._matches(index) == ()  # pyright: ignore[reportPrivateUsage]
+        known[0] = frozenset({'DFFlagDebugDrawBroadPhaseAABBs'})
+        editor._on_browser_inventory_loaded({})  # pyright: ignore[reportPrivateUsage]
+        assert delegate._matches(index) == ('DFFlagDebugDrawBroadPhaseAABBs',)  # pyright: ignore[reportPrivateUsage]
+        assert config.custom_fflags == {'DebugDrawBroadPhaseAABBs': 'True'}
+        assert table.rowCount() == 1
+    finally:
+        editor.close()
+
+
 def test_fflag_browser_refresh_bypasses_a_fresh_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     app = _qapp()
     cached_flags: BrowserFlags = {'DFIntTaskSchedulerTargetFps': None}
@@ -429,21 +580,211 @@ def test_fflag_browser_refresh_bypasses_a_fresh_cache(monkeypatch: pytest.Monkey
     assert 'cached' not in _dialog_count(dialog).text()
 
     fetched: list[bool] = []
-    monkeypatch.setattr(dialog, '_fetch_flags', lambda: _record_fetch(fetched))
+    def record_refresh(_generation: int | None = None) -> None:
+        _record_fetch(fetched)
+
+    monkeypatch.setattr(dialog, '_fetch_flags', record_refresh)
 
     class ImmediateThread:
-        def __init__(self, *, target: Callable[[], None], daemon: bool) -> None:
+        def __init__(self, *, target: Callable[[], None], daemon: bool, args: tuple[int, ...] = ()) -> None:
             del daemon
             self._target = target
+            self._args = args
 
         def start(self) -> None:
-            self._target()
+            self._target(*self._args)
 
     monkeypatch.setattr(modifications_tab.threading, 'Thread', ImmediateThread)
     _refresh(dialog, force=True)
 
     assert fetched == [True]
     assert app is not None
+
+
+@pytest.mark.parametrize('virtual', [False, True])
+@pytest.mark.parametrize('catalog', [None, frozenset[str]()])
+def test_unavailable_catalog_does_not_show_speculative_type_warning(
+    monkeypatch: pytest.MonkeyPatch, virtual: bool, catalog: frozenset[str] | None
+) -> None:
+    app = _qapp()
+    if virtual:
+        monkeypatch.setattr(CustomFFlagEditor, '_VIRTUAL_THRESHOLD', 1)
+    monkeypatch.setattr(modifications_tab, 'known_typed_names', lambda: catalog)
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'DebugDrawBroadPhaseAABBs': 'True', 'TaskSchedulerTargetFps': '50'},
+        custom_fflags_enabled=False,
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    editor.resize(1000, 500)
+    editor.show()
+    app.processEvents()
+    table = editor._virtual_table if virtual else _editor_table(editor)  # pyright: ignore[reportPrivateUsage]
+    delegate = table.itemDelegateForColumn(0)
+    assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+    tooltips: list[str] = []
+
+    def record_tooltip(_position: object, message: str, _parent: object) -> None:
+        tooltips.append(message)
+
+    monkeypatch.setattr(modifications_tab.QToolTip, 'showText', record_tooltip)
+    try:
+        for row in range(table.model().rowCount()):
+            index = table.model().index(row, 0)
+            if catalog is None:
+                assert delegate._warning_kind(index) is None  # pyright: ignore[reportPrivateUsage]
+            else:
+                assert delegate._warning_kind(index) == 'missing'  # pyright: ignore[reportPrivateUsage]
+            rect = table.visualRect(index)
+            option = QStyleOptionViewItem()
+            option.rect = rect
+            position = delegate._warning_rect(rect).center()  # pyright: ignore[reportPrivateUsage]
+            event = QHelpEvent(
+                QEvent.Type.ToolTip, position, table.viewport().mapToGlobal(position)
+            )
+            delegate.helpEvent(event, table, option, index)
+        if catalog is None:
+            assert tooltips == []
+        else:
+            assert len(tooltips) == table.model().rowCount()
+            assert all('No matching FastFlag' in text for text in tooltips)
+    finally:
+        editor.close()
+
+
+def test_fflag_browser_cache_logs_saved_reused_and_write_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events: list[str] = []
+
+    def log(_category: str, message: str) -> None:
+        events.append(message)
+
+    monkeypatch.setattr(modifications_tab.log_buffer, 'log', log)
+    path = tmp_path / 'fflag_browser.json'
+    monkeypatch.setattr(FFlagBrowserDialog, '_CACHE_PATH', path)
+    assert FFlagBrowserDialog._write_cache({'DFIntExample': '42'})  # pyright: ignore[reportPrivateUsage]
+    assert path.is_file()
+    assert any('Saved 1 FastFlags' in message for message in events)
+    assert FFlagBrowserDialog.cache_is_current()
+
+    dialog = FFlagBrowserDialog()
+    try:
+        assert any('Loaded 1 FastFlags from catalog cache' in message for message in events)
+    finally:
+        dialog.close()
+
+    blocker = tmp_path / 'not_a_directory'
+    blocker.write_text('blocker', encoding='utf-8')
+    monkeypatch.setattr(FFlagBrowserDialog, '_CACHE_PATH', blocker / 'fflag_browser.json')
+    assert not FFlagBrowserDialog._write_cache({'DFIntExample': '42'})  # pyright: ignore[reportPrivateUsage]
+    assert any('Could not save catalog cache' in message for message in events)
+
+
+def test_unprefixed_custom_flag_warning_is_in_editor_not_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    monkeypatch.setattr(
+        modifications_tab, 'known_typed_names',
+        lambda: frozenset({'DFIntNetwork', 'FLogNetwork', 'FIntSingle'}),
+    )
+    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
+    browser = FFlagBrowserDialog()
+    _apply_flags(browser, {'DFIntNetwork': '3', 'FLogNetwork': '3'})
+    try:
+        actual_names: list[str] = []
+        for row in range(2):
+            item = _dialog_table(browser).item(row, 0)
+            assert item is not None
+            actual_names.append(item.text())
+        assert actual_names == ['DFIntNetwork', 'FLogNetwork']
+        assert not isinstance(
+            _dialog_table(browser).itemDelegateForColumn(0),
+            modifications_tab.CustomFFlagNameDelegate,
+        )
+    finally:
+        browser.close()
+
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'Network': '3', 'TaskSchedulerTargetFps': '50', 'FIntSingle': '25'},
+        custom_fflags_enabled=False,
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    editor.show()
+    app.processEvents()
+    table = _editor_table(editor)
+    delegate = table.itemDelegateForColumn(0)
+    assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+    seen: list[str] = []
+
+    def show_tooltip(_position: object, message: str, _parent: object) -> None:
+        seen.append(message)
+
+    monkeypatch.setattr(modifications_tab.QToolTip, 'showText', show_tooltip)
+    try:
+        for name, expected_prefixes, expected_message in (
+            ('Network', ('DFIntNetwork', 'FLogNetwork'), 'multiple types: DFInt, FLog.'),
+            ('TaskSchedulerTargetFps', tuple(
+                f'{prefix}TaskSchedulerTargetFps' for prefix in CLIENT_FFLAG_PREFIXES
+            ), 'No matching FastFlag'),
+        ):
+            row = next(i for i in range(table.rowCount()) if editor._row_name(i) == name)  # pyright: ignore[reportPrivateUsage]
+            index = table.model().index(row, 0)
+            matches = delegate._matches(index)  # pyright: ignore[reportPrivateUsage]
+            assert matches == expected_prefixes
+            rect = table.visualRect(index)
+            option = QStyleOptionViewItem()
+            option.rect = rect
+            location = delegate._warning_rect(rect).center()  # pyright: ignore[reportPrivateUsage]
+            event = QHelpEvent(QEvent.Type.ToolTip, location, table.viewport().mapToGlobal(location))
+            assert delegate.helpEvent(event, table, option, index)
+            assert expected_message in seen[-1]
+        row = next(i for i in range(table.rowCount()) if editor._row_name(i) == 'FIntSingle')  # pyright: ignore[reportPrivateUsage]
+        assert delegate._matches(table.model().index(row, 0)) == ()  # pyright: ignore[reportPrivateUsage]
+        assert config.custom_fflags == {
+            'Network': '3', 'TaskSchedulerTargetFps': '50', 'FIntSingle': '25'
+        }
+        exported = json.loads(editor._json_text())  # pyright: ignore[reportPrivateUsage]
+        # JSON export retains the user's original spelling; only the proxy's
+        # runtime delivery expands unprefixed names using cached inventories
+        assert exported['Network'] == '3'
+        assert exported['TaskSchedulerTargetFps'] == '50'
+        assert exported['FIntSingle'] == '25'
+        assert 'DFIntNetwork' not in exported
+    finally:
+        editor.close()
+
+
+def test_virtual_custom_flag_warning_uses_same_name_delegate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qapp()
+    monkeypatch.setattr(CustomFFlagEditor, '_VIRTUAL_THRESHOLD', 1)
+    monkeypatch.setattr(
+        modifications_tab, 'known_typed_names',
+        lambda: frozenset({'FIntNetwork', 'FLogNetwork'}),
+    )
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'Network': '3', 'FIntUnique': '25'}, custom_fflags_enabled=False
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    try:
+        assert editor._virtual_active  # pyright: ignore[reportPrivateUsage]
+        table = editor._virtual_table  # pyright: ignore[reportPrivateUsage]
+        delegate = table.itemDelegateForColumn(0)
+        assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+        row = next(i for i in range(table.model().rowCount()) if editor._row_name(i) == 'Network')  # pyright: ignore[reportPrivateUsage]
+        assert delegate._matches(table.model().index(row, 0)) == (  # pyright: ignore[reportPrivateUsage]
+            'FIntNetwork', 'FLogNetwork'
+        )
+    finally:
+        editor.close()
 
 
 def test_custom_fflag_editor_has_no_obsolete_sober_delay_warning() -> None:
@@ -865,12 +1206,16 @@ def test_fastflag_text_edits_update_stored_value_before_editor_closes() -> None:
         QTest.keyClicks(text_editor, '50')
         app.processEvents()
         assert text_editor.text() == '50'
-        assert table.item(0, 1).text() == '50'
-        assert table.item(0, 1).data(Qt.ItemDataRole.UserRole) == '50'
+        value_item = table.item(0, 1)
+        assert value_item is not None
+        assert value_item.text() == '50'
+        assert value_item.data(Qt.ItemDataRole.UserRole) == '50'
         assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
         editor._load_flags()  # pyright: ignore[reportPrivateUsage]
         app.processEvents()
-        assert table.item(0, 1).text() == '50'
+        value_item = table.item(0, 1)
+        assert value_item is not None
+        assert value_item.text() == '50'
         assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
     finally:
         editor.close()
@@ -909,6 +1254,56 @@ def test_fastflag_text_edit_survives_configuration_restart(
         ] == '50'
         reloaded = config_manager_module.ConfigManager()
         assert reloaded.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
+    finally:
+        editor.close()
+
+
+@pytest.mark.parametrize('virtual', [False, True])
+def test_inline_fastflag_name_editor_is_opaque_aligned_and_preserves_value(
+    monkeypatch: pytest.MonkeyPatch, virtual: bool
+) -> None:
+    app = _qapp()
+    if virtual:
+        monkeypatch.setattr(CustomFFlagEditor, '_VIRTUAL_THRESHOLD', 1)
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'DFIntSpeed': '360', 'FStringOther': 'hello'},
+            custom_fflags_enabled=False,
+        ),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    try:
+        editor.resize(1100, 540)
+        editor.show()
+        app.processEvents()
+        assert editor._virtual_active == virtual  # pyright: ignore[reportPrivateUsage]
+        table = editor._virtual_table if virtual else _editor_table(editor)  # pyright: ignore[reportPrivateUsage]
+        row = next(i for i in range(table.model().rowCount()) if editor._row_name(i) == 'DFIntSpeed')  # pyright: ignore[reportPrivateUsage]
+        index = table.model().index(row, 0)
+        assert table.edit(index) is None
+        app.processEvents()
+        editors = table.viewport().findChildren(QLineEdit)
+        assert len(editors) == 1
+        text_editor = editors[0]
+        assert text_editor.text() == 'DFIntSpeed'
+        assert 'background-color: palette(base)' in text_editor.styleSheet()
+        assert not text_editor.hasFrame()
+        assert text_editor.alignment() & Qt.AlignmentFlag.AlignVCenter
+        assert text_editor.textMargins().top() == 0
+        assert text_editor.textMargins().bottom() == 0
+        assert text_editor.geometry() == table.visualRect(index)
+
+        text_editor.setFocus()
+        text_editor.selectAll()
+        QTest.keyClicks(text_editor, 'DFIntRenamedSpeed')
+        QTest.keyClick(text_editor, Qt.Key.Key_Return)
+        app.processEvents()
+        assert config.custom_fflags['DFIntRenamedSpeed'] == '360'
+        assert 'DFIntSpeed' not in config.custom_fflags
     finally:
         editor.close()
 

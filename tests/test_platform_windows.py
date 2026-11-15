@@ -586,6 +586,28 @@ def test_cache_cleanup_messages_combine_routine_storage_statuses(
     ]
 
 
+def test_windows_cache_cleanup_preserves_flag_catalog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    cache_dir = tmp_path / 'cache'
+    downloads = cache_dir / 'predownloaded'
+    converted = cache_dir / 'converted'
+    downloads.mkdir(parents=True)
+    converted.mkdir()
+    (downloads / 'keep.dat').write_text('keep', encoding='utf-8')
+    (converted / 'remove.obj').write_text('delete', encoding='utf-8')
+    catalog = cache_dir / 'fflag_browser.json'
+    catalog.write_text('keep flags', encoding='utf-8')
+
+    cleanup = cast('Callable[[Path], None]', module.raw.__dict__['_delete_app_cache_contents'])
+    cleanup(cache_dir)
+
+    assert catalog.read_text(encoding='utf-8') == 'keep flags'
+    assert (downloads / 'keep.dat').exists()
+    assert not converted.exists()
+
+
 def test_delete_cache_resets_live_replacement_routes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

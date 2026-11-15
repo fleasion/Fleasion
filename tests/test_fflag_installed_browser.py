@@ -87,7 +87,7 @@ def test_installed_source_exists_and_uses_selected_client(
         assert 'not scanned runtime defaults' not in dialog._count.text()  # pyright: ignore[reportPrivateUsage]
         header = dialog._table.horizontalHeaderItem(1)  # pyright: ignore[reportPrivateUsage]
         assert header is not None
-        assert header.text() == 'Value'
+        assert header.text() == 'Initial value'
         assert dialog._source_mode.currentData() == 'installed'  # pyright: ignore[reportPrivateUsage]
         assert not dialog._choose_exe_button.isVisible()  # pyright: ignore[reportPrivateUsage]
         app.processEvents()

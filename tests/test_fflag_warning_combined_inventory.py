@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -75,6 +76,8 @@ def catalog_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ClientBi
                 StaticRecord('Shared', 2, 'numeric', True),
                 StaticRecord('UntypedInBinary', None, 'unknown', False),
             ),
+            source_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+            binary_values=True,
         )
     )
     public_cache = tmp_path / 'public.json'
@@ -255,6 +258,8 @@ def test_selected_client_switch_does_not_use_another_clients_type_cache(
             stat.st_mtime_ns,
             None,
             registrations=(StaticRecord('NightcapOnly', 1, 'bool', True),),
+            source_sha256=hashlib.sha256(other_file.read_bytes()).hexdigest(),
+            binary_values=True,
         )
     )
     monkeypatch.setattr(fflag_resolution, '_selected_player_binary', lambda: nightcap)
