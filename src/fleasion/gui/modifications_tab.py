@@ -3586,7 +3586,10 @@ class CustomFFlagNameDelegate(QStyledItemDelegate):
             or names is None
         ):
             return None
-        return _custom_fflag_warning_kind(name, names, self._raw_names())
+        warning = _custom_fflag_warning_kind(name, names, self._raw_names())
+        if warning == 'missing' and sys.platform == 'win32':
+            return None
+        return warning
 
     @override
     def initStyleOption(

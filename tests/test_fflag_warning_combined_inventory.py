@@ -207,6 +207,50 @@ def test_warning_white_for_ambiguous_or_untyped_orange_only_for_missing(
         editor.close()
 
 
+def test_missing_warning_is_hidden_only_on_windows(
+    catalog_sources: ClientBinary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = QApplication.instance()
+    if not isinstance(app, QApplication):
+        app = QApplication([])
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={
+                'DoesNotExistAnywhere': '7',
+                'Shared': '9',
+                'UntypedInBinary': '8',
+            },
+            custom_fflags_enabled=False,
+        ),
+    )
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=lambda: None),
+    )
+    editor = CustomFFlagEditor(config, proxy)
+    try:
+        table = editor._table  # pyright: ignore[reportPrivateUsage]
+        delegate = table.itemDelegateForColumn(0)
+        assert isinstance(delegate, CustomFFlagNameDelegate)
+        indices = {
+            editor._row_name(row): table.model().index(row, 0)  # pyright: ignore[reportPrivateUsage]
+            for row in range(table.model().rowCount())
+        }
+        for platform, expected in (
+            ('win32', None),
+            ('linux', 'missing'),
+            ('darwin', 'missing'),
+        ):
+            monkeypatch.setattr(modifications_tab.sys, 'platform', platform)
+            assert delegate._warning_kind(indices['DoesNotExistAnywhere']) == expected  # pyright: ignore[reportPrivateUsage]
+            assert delegate._warning_kind(indices['Shared']) == 'multiple'  # pyright: ignore[reportPrivateUsage]
+            assert delegate._warning_kind(indices['UntypedInBinary']) == 'untyped'  # pyright: ignore[reportPrivateUsage]
+    finally:
+        editor.close()
+
+
 def test_changed_native_source_is_not_mistaken_for_same_installed_build(
     catalog_sources: ClientBinary,
 ) -> None:
