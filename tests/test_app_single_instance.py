@@ -1402,6 +1402,9 @@ def test_elevated_hosts_cleanup_reports_unexpected_exception(
 def test_stale_env_hosts_dialog_runs_privileged_repair(monkeypatch: pytest.MonkeyPatch) -> None:
     from fleasion.proxy import master as proxy_master
 
+    # A live Fleasion instance in the developer's session must not redirect
+    # this isolated dialog test into the unrelated proxy-owner guard.
+    monkeypatch.setattr(proxy_master, 'other_proxy_owner_alive', lambda: False)
     stale = iter([True, False])
     calls: list[tuple[_VisibleOwner, bool]] = []
     monkeypatch.setattr(
