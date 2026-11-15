@@ -1656,3 +1656,161 @@ def test_windows_cache_cleanup_preserves_flag_catalog(
     assert catalog.read_text(encoding='utf-8') == 'keep flags'
     assert (downloads / 'keep.dat').exists()
     assert not converted.exists()
+
+
+def test_env_proxy_relaunch_hands_off_only_after_replacement_starts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(tmp_path / 'Roblox' / 'RobloxPlayerBeta.exe', 3000)
+    events: list[str] = []
+    plan = object()
+
+    def capture(pid: int) -> object:
+        assert pid == 100
+        events.append('capture')
+        return plan
+
+    def stop(pid: int, *_args: object, **_kwargs: object) -> bool:
+        assert pid == 100
+        events.append('stop')
+        return True
+
+    def prepare(path: Path) -> bool:
+        assert path == exe
+        events.append('prepare')
+        return True
+
+    def spawn(args: list[str], **_kwargs: object) -> SimpleNamespace:
+        assert args == [str(exe)]
+        events.append('spawn')
+        return SimpleNamespace(pid=200)
+
+    def schedule(received: object, replacement_pid: int, _cancel: object) -> None:
+        assert received is plan and replacement_pid == 200
+        events.append('schedule')
+
+    monkeypatch.setattr(module.raw, '_capture_bloxstrap_watcher_handoff', capture)
+    monkeypatch.setattr(module.raw, '_force_close_process_immediately', stop)
+    monkeypatch.setattr(module.raw, '_schedule_bloxstrap_watcher_handoff', schedule)
+    monkeypatch.setattr(subprocess, 'Popen', spawn)
+
+    assert module.relaunch_roblox_exe_with_proxy_env(
+        'http://127.0.0.1:58443',
+        label='Roblox',
+        query_processes=_returns([_process_info(100, exe)]),
+        extract_launch_arg=_returns(''),
+        wait_pid_exe_name='RobloxPlayerBeta.exe',
+        fallback_exe_path=_returns(exe),
+        prepare_launch=prepare,
+    )
+    assert events == ['capture', 'stop', 'prepare', 'spawn', 'schedule']
+
+
+def test_env_proxy_relaunch_never_hands_off_without_bloxstrap_or_successful_spawn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(tmp_path / 'Roblox' / 'RobloxPlayerBeta.exe', 3000)
+    captures: list[int] = []
+
+    def capture(pid: int) -> None:
+        captures.append(pid)
+
+    monkeypatch.setattr(module.raw, '_capture_bloxstrap_watcher_handoff', capture)
+    monkeypatch.setattr(module.raw, '_force_close_process_immediately', _returns(True))
+    monkeypatch.setattr(
+        module.raw, '_schedule_bloxstrap_watcher_handoff',
+        _raises(AssertionError('Unqualified Player must not create a watcher')),
+    )
+    monkeypatch.setattr(subprocess, 'Popen', _returns(SimpleNamespace(pid=200)))
+
+    assert module.relaunch_roblox_exe_with_proxy_env(
+        'http://127.0.0.1:58443',
+        label='Roblox',
+        query_processes=_returns([_process_info(100, exe)]),
+        extract_launch_arg=_returns(''),
+        wait_pid_exe_name='RobloxPlayerBeta.exe',
+        fallback_exe_path=_returns(exe),
+    )
+    assert captures == [100]
+
+
+def test_bloxstrap_watcher_runs_under_desktop_token_when_fleasion_is_elevated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    bloxstrap = _touch(tmp_path / 'Bloxstrap' / 'Bloxstrap.exe', 3000)
+    module_stub = types.ModuleType('fleasion.utils.bloxstrap_watcher')
+    events: list[tuple[str, object, object]] = []
+
+    def schedule_handoff(_plan: object, _pid: int, **kwargs: object) -> None:
+        spawn = cast('Callable[[Path, list[str]], None]', kwargs['spawn'])
+        spawn(bloxstrap, ['-watcher', 'encoded-data'])
+
+    def shell_launch(target: str, *, arguments: list[str]) -> bool:
+        events.append(('desktop', target, arguments))
+        return True
+
+    module_stub.__dict__['schedule_handoff'] = schedule_handoff
+    monkeypatch.setitem(sys.modules, 'fleasion.utils.bloxstrap_watcher', module_stub)
+    monkeypatch.setattr(module.raw, '_is_process_elevated', _returns(True))
+    monkeypatch.setattr(module.raw, '_launch_with_shell_token', shell_launch)
+    monkeypatch.setattr(
+        module.raw, '_spawn_windows_process',
+        _raises(AssertionError('elevated watcher process is unsafe')),
+    )
+
+    schedule = cast('Callable[[object, int, None], None]', module.raw.__dict__['_schedule_bloxstrap_watcher_handoff'])
+    schedule(object(), 200, None)
+    assert events == [('desktop', str(bloxstrap), ['-watcher', 'encoded-data'])]
+
+
+def test_bloxstrap_watcher_uses_normal_process_launch_without_elevation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    bloxstrap = _touch(tmp_path / 'Bloxstrap' / 'Bloxstrap.exe', 3000)
+    module_stub = types.ModuleType('fleasion.utils.bloxstrap_watcher')
+    launched: list[list[str]] = []
+
+    def schedule_handoff(_plan: object, _pid: int, **kwargs: object) -> None:
+        spawn = cast('Callable[[Path, list[str]], None]', kwargs['spawn'])
+        spawn(bloxstrap, ['-watcher', 'encoded-data'])
+
+    def spawn(args: list[str], **_kwargs: object) -> SimpleNamespace:
+        launched.append(args)
+        return SimpleNamespace(pid=999)
+
+    module_stub.__dict__['schedule_handoff'] = schedule_handoff
+    monkeypatch.setitem(sys.modules, 'fleasion.utils.bloxstrap_watcher', module_stub)
+    monkeypatch.setattr(module.raw, '_is_process_elevated', _returns(False))
+    monkeypatch.setattr(module.raw, '_spawn_windows_process', spawn)
+    schedule = cast('Callable[[object, int, None], None]', module.raw.__dict__['_schedule_bloxstrap_watcher_handoff'])
+    schedule(object(), 200, None)
+    assert launched == [[str(bloxstrap), '-watcher', 'encoded-data']]
+
+
+def test_bloxstrap_handoff_errors_cannot_fail_a_successful_roblox_relaunch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(tmp_path / 'Roblox' / 'RobloxPlayerBeta.exe', 3000)
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(module.raw, '_force_close_process_immediately', _returns(True))
+    monkeypatch.setattr(subprocess, 'Popen', _returns(SimpleNamespace(pid=200)))
+    monkeypatch.setattr(module.log_buffer, 'log', _LogRecorder(logs))
+    monkeypatch.setattr(module.raw, '_capture_bloxstrap_watcher_handoff', _returns(object()))
+    monkeypatch.setattr(
+        module.raw, '_schedule_bloxstrap_watcher_handoff',
+        _raises(RuntimeError('could not start watcher worker')),
+    )
+    assert module.relaunch_roblox_exe_with_proxy_env(
+        'http://127.0.0.1:58443',
+        label='Roblox',
+        query_processes=_returns([_process_info(100, exe)]),
+        extract_launch_arg=_returns(''),
+        wait_pid_exe_name='RobloxPlayerBeta.exe',
+        fallback_exe_path=_returns(exe),
+    )
+    assert any('Bloxstrap watcher handoff scheduling skipped' in message for _, message in logs)

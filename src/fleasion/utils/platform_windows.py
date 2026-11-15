@@ -1,5 +1,7 @@
 """Windows-specific utilities."""
 
+from __future__ import annotations
+
 import ctypes
 import ctypes.wintypes
 import hashlib
@@ -38,6 +40,8 @@ from .roblox_dirs import load_saved_roblox_dirs
 
 if TYPE_CHECKING:
     import threading
+
+    from .bloxstrap_watcher import BloxstrapProcess, WatcherHandoff
 
 _ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
 _env_proxy_relaunches: dict[str, float] = {}
@@ -408,6 +412,26 @@ def _iter_processes() -> Iterator[tuple[int, str]]:
                     break
     finally:
         k32.CloseHandle(snap)
+
+
+def _parent_pid_of_process(pid: int) -> int | None:
+    """Read the creator PID from Windows's native process snapshot."""
+    kernel32 = _windll().kernel32
+    snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if snapshot == _INVALID_HANDLE_VALUE:
+        return None
+    try:
+        entry = _PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32)
+        if kernel32.Process32First(snapshot, ctypes.byref(entry)):
+            while True:
+                if int(entry.th32ProcessID) == pid:
+                    return int(entry.th32ParentProcessID) or None
+                if not kernel32.Process32Next(snapshot, ctypes.byref(entry)):
+                    break
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return None
 
 
 def _find_pid(exe_name: str) -> int | None:
@@ -1437,6 +1461,63 @@ def _wait_for_successor_processes(
     return []
 
 
+def _bloxstrap_process_snapshot() -> list[BloxstrapProcess]:
+    """Inspect only running Bloxstrap.exe processes, without WMI or PowerShell."""
+    from .bloxstrap_watcher import BloxstrapProcess  # ruff: ignore[import-outside-top-level]
+
+    processes: list[BloxstrapProcess] = []
+    for pid in _find_pids('Bloxstrap.exe'):
+        executable = _query_exe_path(pid)
+        if executable is not None and executable.name.casefold() == 'bloxstrap.exe':
+            processes.append(
+                BloxstrapProcess(pid, executable, _query_process_command_line(pid))
+            )
+    return processes
+
+
+def _capture_bloxstrap_watcher_handoff(pid: int) -> WatcherHandoff | None:
+    """Capture Bloxstrap's intent before the original Player is terminated."""
+    if sys.platform != 'win32':
+        return None
+    from .bloxstrap_watcher import capture_handoff  # ruff: ignore[import-outside-top-level]
+
+    local_appdata = Path(LOCAL_APPDATA)
+    plan = capture_handoff(
+        pid,
+        parent_pid=_parent_pid_of_process(pid),
+        processes=_bloxstrap_process_snapshot(),
+        log_dir=local_appdata / 'Roblox' / 'logs',
+    )
+    if plan is not None:
+        log_buffer.log('Launcher', f'Bloxstrap Rich Presence handoff armed for Player PID {pid}')
+    return plan
+
+
+def _schedule_bloxstrap_watcher_handoff(
+    plan: WatcherHandoff, replacement_pid: int, cancel_event: threading.Event | None
+) -> None:
+    """Wait for Bloxstrap's own watcher to exit before creating its replacement."""
+    from .bloxstrap_watcher import schedule_handoff  # ruff: ignore[import-outside-top-level]
+
+    def _spawn_watcher(executable: Path, args: list[str]) -> None:
+        if _is_process_elevated():
+            if not _launch_with_shell_token(str(executable), arguments=args):
+                msg = 'Could not launch Bloxstrap watcher under the desktop user token'
+                raise OSError(msg)
+        else:
+            _spawn_windows_process([str(executable), *args], cwd=executable.parent)
+
+    schedule_handoff(
+        plan,
+        replacement_pid,
+        query_processes=_bloxstrap_process_snapshot,
+        player_running=lambda pid: _pid_is_running(pid, ROBLOX_PROCESS),
+        spawn=_spawn_watcher,
+        cancel_event=cancel_event,
+        report=lambda message: log_buffer.log('Launcher', message),
+    )
+
+
 def _relaunch_roblox_exe_with_proxy_env(
     proxy_url: str,
     *,
@@ -1543,6 +1624,15 @@ def _relaunch_roblox_exe_with_proxy_env(
             relaunch_result = False
             break
 
+        bloxstrap_handoff = None
+        if label == 'Roblox':
+            try:
+                bloxstrap_handoff = _capture_bloxstrap_watcher_handoff(pid)
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                log_buffer.log(
+                    'Launcher',
+                    f'Bloxstrap watcher detection skipped: {type(exc).__name__}',
+                )
         if not _force_close_process_immediately(
             pid,
             wait_pid_exe_name,
@@ -1628,6 +1718,16 @@ def _relaunch_roblox_exe_with_proxy_env(
             break
         globals()['_env_proxy_owned_process'] = (int(child.pid), str(exe_path))
         _env_proxy_relaunches[relaunch_key] = time.monotonic()
+        if bloxstrap_handoff is not None:
+            try:
+                _schedule_bloxstrap_watcher_handoff(
+                    bloxstrap_handoff, int(child.pid), cancel_event
+                )
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                log_buffer.log(
+                    'Launcher',
+                    f'Bloxstrap watcher handoff scheduling skipped: {type(exc).__name__}',
+                )
         relaunch_result = True
         break
 
@@ -2467,7 +2567,12 @@ def _open_shell_process_for_launch(
     return shell_process
 
 
-def _launch_with_shell_token(target_str: str, prefer_direct_roblox_uri: bool = False) -> bool:
+def _launch_with_shell_token(
+    target_str: str,
+    prefer_direct_roblox_uri: bool = False,
+    *,
+    arguments: list[str] | None = None,
+) -> bool:
     """Launch target with the desktop shell's primary token (non-elevated)."""
     user32 = _windll().user32
     kernel32 = _windll().kernel32
@@ -2540,6 +2645,8 @@ def _launch_with_shell_token(target_str: str, prefer_direct_roblox_uri: bool = F
             target_str,
             prefer_direct_roblox_uri=prefer_direct_roblox_uri,
         )
+        if arguments:
+            cmdline = f'{cmdline} {subprocess.list2cmdline(arguments)}'
         startup = _STARTUPINFOW()
         startup.cb = ctypes.sizeof(_STARTUPINFOW)
         startup.dwFlags = _STARTF_USESHOWWINDOW
