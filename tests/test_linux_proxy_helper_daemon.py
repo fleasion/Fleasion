@@ -725,3 +725,118 @@ def test_repair_sober_cert_ownership_repairs_only_user_home_paths(
     assert (cert.parent.parent, 1000, 1000, False) in chowned
     assert (cert.parent, 1000, 1000, False) in chowned
     assert (cert, 1000, 1000, False) in chowned
+
+
+def test_privileged_relay_shutdown_closes_persistent_client_without_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live keep-alive connection must not pin helper teardown for eight seconds."""
+    import os
+
+    # No root privileges or actual /etc/hosts edits in this test.
+    def fake_validate(_args: object) -> tuple[int, int]:
+        return os.getuid(), os.getgid()
+
+    def no_system_ca(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def fake_hosts(_hosts: set[str]) -> bool:
+        return False
+
+    def parent_alive(_pid: int, _start_time: str | None) -> bool:
+        return True
+
+    monkeypatch.setattr(daemon, '_validate_runtime_args', fake_validate)
+    monkeypatch.setattr(daemon, '_repair_config_ownership', _noop)
+    monkeypatch.setattr(daemon, '_repair_sober_cert_ownership', _noop)
+    monkeypatch.setattr(daemon, '_ensure_system_ca_for_hosts', no_system_ca)
+    monkeypatch.setattr(daemon, '_apply_hosts_or_use_existing_read_only', fake_hosts)
+    monkeypatch.setattr(daemon, '_clear_hosts', _noop)
+    monkeypatch.setattr(daemon, '_flush_dns', _noop)
+    monkeypatch.setattr(daemon, '_remove_boot_guard', _noop)
+    monkeypatch.setattr(daemon, '_parent_alive', parent_alive)
+    monkeypatch.setattr(daemon, '_log', _noop)
+
+    async def run() -> None:
+        config_dir = tmp_path / 'Fleasion'
+        config_dir.mkdir()
+        stop_file = config_dir / daemon.HELPER_STOP_NAME
+        ready_file = config_dir / daemon.HELPER_READY_NAME
+        backend_connected = asyncio.Event()
+        relay_started = asyncio.Event()
+        relay_ports: list[int] = []
+        backend_tasks: set[asyncio.Task[None]] = set()
+
+        async def backend(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            task = asyncio.current_task()
+            if task is not None:
+                backend_tasks.add(task)
+            try:
+                backend_connected.set()
+                await reader.read()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                if task is not None:
+                    backend_tasks.discard(task)
+
+        backend_server = await asyncio.start_server(backend, '127.0.0.1', 0)
+        backend_port = backend_server.sockets[0].getsockname()[1]
+        start_server_original = asyncio.start_server
+
+        async def track_server(
+            callback: Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]],
+            host: str,
+            port: int,
+        ) -> asyncio.AbstractServer:
+            server = await start_server_original(callback, host, port)
+            relay_ports.append(server.sockets[0].getsockname()[1])
+            relay_started.set()
+            return server
+
+        monkeypatch.setattr(daemon.asyncio, 'start_server', track_server)
+        args = SimpleNamespace(
+            hosts='gamejoin.roblox.com',
+            stop_file=str(stop_file),
+            ready_file=str(ready_file),
+            hosts_file=None,
+            config_dir=str(config_dir),
+            owner_uid=os.getuid(),
+            owner_gid=os.getgid(),
+            ca_cert=None,
+            require_system_ca=False,
+            backend_host='127.0.0.1',
+            backend_port=backend_port,
+            listen_host='127.0.0.1',
+            listen_port=0,
+            parent_pid=os.getpid(),
+            parent_start_time=None,
+            shutdown_requested=lambda: False,
+        )
+        daemon_task = asyncio.create_task(_serve(args))
+        client_writer: asyncio.StreamWriter | None = None
+        try:
+            await asyncio.wait_for(relay_started.wait(), timeout=2)
+            _client_reader, client_writer = await asyncio.open_connection(
+                '127.0.0.1', relay_ports[0]
+            )
+            await asyncio.wait_for(backend_connected.wait(), timeout=2)
+            # Keep the client TCP session open while requesting helper shutdown.
+            stop_file.touch()
+            assert await asyncio.wait_for(asyncio.shield(daemon_task), timeout=2) == 0
+            assert not ready_file.exists()
+            assert not stop_file.exists()
+        finally:
+            if client_writer is not None:
+                client_writer.close()
+                await client_writer.wait_closed()
+            if not daemon_task.done():
+                daemon_task.cancel()
+            await asyncio.gather(daemon_task, return_exceptions=True)
+            backend_server.close()
+            for task in tuple(backend_tasks):
+                task.cancel()
+            await asyncio.gather(*backend_tasks, return_exceptions=True)
+            await backend_server.wait_closed()
+
+    asyncio.run(run())

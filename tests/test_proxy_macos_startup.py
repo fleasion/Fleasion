@@ -1552,6 +1552,9 @@ def test_linux_helper_refresh_requests_helper_update_without_direct_hosts_write(
             self.endpoints = endpoints
             endpoint_hosts.append(set(endpoints))
 
+        def set_intercept_hosts(self, hosts: Iterable[str]) -> None:
+            self.intercept_hosts = set(hosts)
+
     monkeypatch.setattr(proxy_master, '_use_linux_privileged_helper', _callback0(lambda: True))
     monkeypatch.setattr(
         proxy_master,
@@ -1644,6 +1647,9 @@ def test_linux_helper_custom_fflags_adds_only_clientsettings_endpoints(
         def set_upstream_endpoints(self, endpoints: _EndpointMap) -> None:
             self.endpoints = endpoints
 
+        def set_intercept_hosts(self, hosts: Iterable[str]) -> None:
+            self.intercept_hosts = set(hosts)
+
     monkeypatch.setattr(proxy_master, '_use_linux_privileged_helper', _callback0(lambda: True))
     monkeypatch.setattr(
         proxy_master,
@@ -1695,6 +1701,7 @@ def test_linux_helper_custom_fflags_adds_only_clientsettings_endpoints(
     assert helper_updates == [expected]
     assert resolved_host_sets == [set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS)]
     assert set(getattr(proxy, '_proxy').endpoints) == expected
+    assert getattr(proxy, '_proxy').intercept_hosts == expected
 
 
 def test_intercept_configuration_log_distinguishes_tls_coverage_from_active_routes(

@@ -229,3 +229,112 @@ def test_native_keylog_splice_provider_reads_bootstrap_and_android_sources(
     assert provider._read(android)[android][label] == bytes.fromhex('d4' * 32)  # pyright: ignore[reportPrivateUsage]
     assert calls == [('find', None), ('scan', 23)]
     provider.clear()
+
+
+def test_hosts_keylog_only_changes_sslkeylogfile_and_restores_previous_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hosts mode may enable native Sober logging, but not Env Proxy."""
+    keylog, marker = _private_files(tmp_path)
+    ownership = tmp_path / 'env-owner.json'
+    calls: list[list[str]] = []
+    monkeypatch.setattr(platform_linux, 'SOBER_NATIVE_KEYLOG_OVERRIDE_STATE', marker)
+    monkeypatch.setattr(platform_linux, 'LINUX_PROXY_OVERRIDE_STATE', ownership)
+    monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', None)
+    monkeypatch.setattr(sober_bootstrap_keys, 'native_keylog_path', lambda: keylog)
+    monkeypatch.setattr(platform_linux.shutil, 'which', _flatpak_path)
+
+    def run(cmd: list[str], **_kwargs: object) -> object:
+        calls.append(cmd)
+        value = (
+            '[Environment]\nSSLKEYLOGFILE=/existing/custom/keys\nHTTP_PROXY=http://existing.proxy\n'
+            if '--show' in cmd else ''
+        )
+        return platform_linux.subprocess.CompletedProcess(cmd, 0, value, '')
+
+    monkeypatch.setattr(platform_linux, '_standard_user_run', run)
+    assert platform_linux.arm_sober_native_keylog_override()
+    assert keylog.is_file() and keylog.stat().st_mode & 0o777 == 0o600
+    assert marker.exists() and not ownership.exists()
+    assert calls[1] == [
+        '/usr/bin/flatpak', 'override', '--user',
+        f'--env=SSLKEYLOGFILE={keylog}', 'org.vinegarhq.Sober',
+    ]
+    assert platform_linux.clear_sober_native_keylog_override()
+    assert calls[-1] == [
+        '/usr/bin/flatpak', 'override', '--user',
+        '--env=SSLKEYLOGFILE=/existing/custom/keys', 'org.vinegarhq.Sober',
+    ]
+    assert not marker.exists() and not keylog.exists()
+    assert not ownership.exists()
+
+
+def test_hosts_keylog_reuses_private_existing_file_without_taking_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keylog, marker = _private_files(tmp_path)
+    keylog.write_text('existing user keylog', encoding='ascii')
+    calls: list[list[str]] = []
+    monkeypatch.setattr(platform_linux, 'SOBER_NATIVE_KEYLOG_OVERRIDE_STATE', marker)
+    monkeypatch.setattr(sober_bootstrap_keys, 'native_keylog_path', lambda: keylog)
+    monkeypatch.setattr(platform_linux.shutil, 'which', _flatpak_path)
+
+    def run(cmd: list[str], **_kwargs: object) -> object:
+        calls.append(cmd)
+        return platform_linux.subprocess.CompletedProcess(
+            cmd, 0, f'[Environment]\nSSLKEYLOGFILE={keylog}\n', ''
+        )
+
+    monkeypatch.setattr(platform_linux, '_standard_user_run', run)
+    assert platform_linux.arm_sober_native_keylog_override()
+    assert platform_linux.clear_sober_native_keylog_override()
+    assert len(calls) == 1
+    assert not marker.exists()
+    assert keylog.read_text(encoding='ascii') == 'existing user keylog'
+
+
+def test_hosts_keylog_failed_override_discards_only_new_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keylog, marker = _private_files(tmp_path)
+    monkeypatch.setattr(platform_linux, 'SOBER_NATIVE_KEYLOG_OVERRIDE_STATE', marker)
+    monkeypatch.setattr(sober_bootstrap_keys, 'native_keylog_path', lambda: keylog)
+    monkeypatch.setattr(platform_linux.shutil, 'which', _flatpak_path)
+
+    def run(cmd: list[str], **_kwargs: object) -> object:
+        return platform_linux.subprocess.CompletedProcess(
+            cmd, 0 if '--show' in cmd else 1, '', 'access denied'
+        )
+
+    monkeypatch.setattr(platform_linux, '_standard_user_run', run)
+    assert not platform_linux.arm_sober_native_keylog_override()
+    assert not keylog.exists() and not marker.exists()
+
+
+def test_hosts_keylog_crash_recovery_does_not_reset_http_proxy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keylog, marker = _private_files(tmp_path)
+    assert sober_bootstrap_keys.arm(
+        keylog, marker,
+        {'previous_present': False, 'previous_value': ''},
+    )
+    ownership = tmp_path / 'env-owner.json'
+    commands: list[list[str]] = []
+    monkeypatch.setattr(platform_linux, 'SOBER_NATIVE_KEYLOG_OVERRIDE_STATE', marker)
+    monkeypatch.setattr(platform_linux, 'LINUX_PROXY_OVERRIDE_STATE', ownership)
+    monkeypatch.setattr(platform_linux, '_active_linux_proxy_client_key', None)
+    monkeypatch.setattr(sober_bootstrap_keys, 'native_keylog_path', lambda: keylog)
+    monkeypatch.setattr(platform_linux.shutil, 'which', _flatpak_path)
+
+    def run(cmd: list[str], **_kwargs: object) -> object:
+        commands.append(cmd)
+        return platform_linux.subprocess.CompletedProcess(cmd, 0, '', '')
+
+    monkeypatch.setattr(platform_linux, '_standard_user_run', run)
+    assert platform_linux.recover_stale_linux_client_env_proxy_override()
+    assert commands == [
+        ['/usr/bin/flatpak', 'override', '--user', '--unset-env=SSLKEYLOGFILE',
+         'org.vinegarhq.Sober'],
+    ]
+    assert not marker.exists() and not keylog.exists()

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+# These behavioral tests intentionally exercise the private join pipeline.
+# pyright: reportPrivateUsage=false
+
 import json
+
+import requests
 import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -20,6 +25,7 @@ class _FakeResponse:
     def __init__(self, status_code: int = 200, data: object | None = None) -> None:
         self.status_code = status_code
         self._data = data
+        self.headers: dict[str, str] = {}
 
     def json(self) -> object | None:
         return self._data
@@ -48,16 +54,8 @@ class _ProxyMasterStub:
     def hosts_intercepts_host(self, host: str) -> bool:
         return host in self.intercepted_hosts
 
-
-class _SessionStub:
-    def __init__(self) -> None:
-        self.verify: bool | str | None = None
-        self.url = ''
-
-    def post(self, url: str, **kwargs: object) -> _FakeResponse:
-        self.url = url
-        self.verify = cast('bool | str | None', kwargs.get('verify'))
-        return _FakeResponse(200, {'status': 2})
+    def hosts_upstream_ip(self, host: str) -> str | None:
+        return '128.116.13.3' if host in self.intercepted_hosts else None
 
 
 class _SettingsOwner(subplace_joiner_tab.SubplaceJoinerTab):
@@ -123,89 +121,72 @@ class _SettingsOwner(subplace_joiner_tab.SubplaceJoinerTab):
     def join_root(self, root_place_id: int | str, cookie: str | None = None) -> bool:
         return self._join_root(root_place_id, cookie)
 
-    def install_session(self, session: object) -> None:
-        def new_session(_cookie: str | None) -> object:
-            return session
-
-        vars(self)['_new_session'] = new_session
 
 
 def _settings_owner() -> _SettingsOwner:
     return _SettingsOwner.uninitialized()
 
 
-def test_subplace_request_verify_uses_local_ca_only_for_active_intercept(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    ca_dir = tmp_path / 'proxy_ca'
-    ca_dir.mkdir()
-    ca_cert = ca_dir / 'ca.crt'
-    ca_cert.write_text('test-ca', encoding='utf-8')
-    monkeypatch.setattr(subplace_joiner_tab, 'PROXY_CA_DIR', ca_dir)
-
+def test_subplace_requests_retain_public_tls_verification_in_hosts_mode() -> None:
     proxy_master = _ProxyMasterStub({'gamejoin.roblox.com', 'apis.roblox.com'})
     owner = _settings_owner()
     owner.configure_proxy(_ConfigManagerStub('hosts', True), proxy_master)
 
-    assert owner.request_verify('https://gamejoin.roblox.com/v1/join-game') == str(ca_cert)
-    assert owner.request_verify('https://apis.roblox.com/universes/v1/places/1/universe') == str(
-        ca_cert
-    )
+    assert owner.request_verify('https://gamejoin.roblox.com/v1/join-game') is True
+    assert owner.request_verify('https://apis.roblox.com/universes/v1/places/1/universe') is True
     assert owner.request_verify('https://games.roblox.com/v1/games/1/servers/Public') is True
 
-    proxy_master.intercepted_hosts.clear()
-    assert owner.request_verify('https://gamejoin.roblox.com/v1/join-game') is True
 
-
-def test_subplace_get_verifies_intercepted_api_host_with_local_ca(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_subplace_hosts_get_bypasses_local_tls_splice(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ca_dir = tmp_path / 'proxy_ca'
-    ca_dir.mkdir()
-    ca_cert = ca_dir / 'ca.crt'
-    ca_cert.write_text('test-ca', encoding='utf-8')
-    monkeypatch.setattr(subplace_joiner_tab, 'PROXY_CA_DIR', ca_dir)
-
     owner = _settings_owner()
-    owner.configure_proxy(
-        _ConfigManagerStub('hosts', True),
-        _ProxyMasterStub({'apis.roblox.com'}),
-    )
+    owner.configure_proxy(_ConfigManagerStub('hosts', True), _ProxyMasterStub({'apis.roblox.com'}))
     captured: dict[str, object] = {}
 
-    def fake_get(url: str, **kwargs: object) -> _FakeResponse:
+    def fake_get(self: object, url: str, **kwargs: object) -> _FakeResponse:
+        captured['session'] = self
         captured['url'] = url
         captured.update(kwargs)
         return _FakeResponse()
 
-    monkeypatch.setattr(subplace_joiner_tab.requests, 'get', fake_get)
+    monkeypatch.setattr(subplace_joiner_tab.requests.Session, 'get', fake_get)
     url = 'https://apis.roblox.com/universes/v1/places/1/universe'
     owner.request_get(url)
 
     assert captured['url'] == url
-    assert captured['verify'] == str(ca_cert)
+    assert captured['verify'] is True
+    session = cast('requests.Session', captured['session'])
+    assert isinstance(session.adapters['https://apis.roblox.com/'], subplace_joiner_tab.VerifiedDirectHTTPSAdapter)
 
 
-def test_subplace_join_root_verifies_intercepted_gamejoin_with_local_ca(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_subplace_hosts_join_root_bypasses_local_tls_splice(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ca_dir = tmp_path / 'proxy_ca'
-    ca_dir.mkdir()
-    ca_cert = ca_dir / 'ca.crt'
-    ca_cert.write_text('test-ca', encoding='utf-8')
-    monkeypatch.setattr(subplace_joiner_tab, 'PROXY_CA_DIR', ca_dir)
-
     owner = _settings_owner()
-    owner.configure_proxy(
-        _ConfigManagerStub('hosts', True),
-        _ProxyMasterStub({'gamejoin.roblox.com'}),
-    )
-    session = _SessionStub()
-    owner.install_session(session)
+    owner.configure_proxy(_ConfigManagerStub('hosts', True), _ProxyMasterStub({'gamejoin.roblox.com'}))
+    captured: dict[str, object] = {}
 
+    def fake_post(self: object, url: str, **kwargs: object) -> _FakeResponse:
+        if 'join-game' in url:
+            captured['session'] = self
+            captured.update(kwargs)
+            return _FakeResponse(200, {'status': 2})
+        return _FakeResponse(403)
+
+    monkeypatch.setattr(subplace_joiner_tab.requests.Session, 'post', fake_post)
     assert owner.join_root(12345, 'cookie')
-    assert session.url == 'https://gamejoin.roblox.com/v1/join-game'
-    assert session.verify == str(ca_cert)
+    assert captured['verify'] is True
+    session = cast('requests.Session', captured['session'])
+    assert isinstance(session.adapters['https://gamejoin.roblox.com/'], subplace_joiner_tab.VerifiedDirectHTTPSAdapter)
+
+
+def test_subplace_hosts_refuses_loopback_when_origin_address_missing() -> None:
+    owner = _settings_owner()
+    proxy = _ProxyMasterStub({'gamejoin.roblox.com'})
+    owner.configure_proxy(_ConfigManagerStub('hosts', True), proxy)
+    proxy.hosts_upstream_ip = lambda _host: None  # type: ignore[method-assign]
+    assert not owner.join_root(12345, 'cookie')
 
 
 def test_subplace_settings_save_uses_user_owned_config_root(
@@ -426,7 +407,10 @@ def test_subplace_joiner_selected_account_without_job_uses_ticket(
     done = threading.Event()
     uris: list[str] = []
     monkeypatch.setattr(subplace_joiner_tab, '_get_roblosecurity', lambda: 'default-cookie')
-    monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', lambda token: 'ticket' if token == 'selected-cookie' else None)
+    def ticket(token: str) -> str | None:
+        return 'ticket' if token == 'selected-cookie' else None
+
+    monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', ticket)
 
     def launch(target: str) -> bool:
         uris.append(target)
@@ -458,7 +442,10 @@ def test_subplace_joiner_specific_job_fails_closed_without_ticket(
         return None
 
     monkeypatch.setattr(rando_stuff_tab, 'get_auth_ticket', missing_ticket)
-    owner.__dict__['_launch_roblox_uri'] = lambda uri: launches.append(uri)
+    def record_launch(uri: str) -> None:
+        launches.append(uri)
+
+    owner.__dict__['_launch_roblox_uri'] = record_launch
     owner._join_place('11111', job_id='server-id-123')
     assert attempted.wait(2)
     assert launches == []
@@ -471,6 +458,9 @@ def test_subplace_joiner_default_join_remains_simple_deeplink(
     owner.__dict__['_rando_tab'] = None
     urls: list[str] = []
     monkeypatch.setattr(subplace_joiner_tab, '_get_roblosecurity', lambda: None)
-    owner.__dict__['_launch_roblox_uri'] = lambda uri: urls.append(uri)
+    def record_launch(uri: str) -> None:
+        urls.append(uri)
+
+    owner.__dict__['_launch_roblox_uri'] = record_launch
     owner._join_place('54321')
     assert urls == ['roblox://experiences/start?placeId=54321']

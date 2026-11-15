@@ -1083,6 +1083,17 @@ def _probe_splice_route(host: str, port: int, *, explicit_proxy: bool) -> None:
     with socket.create_connection(('127.0.0.1', port), timeout=5.0) as connection:
         connection.settimeout(15.0)
         if not explicit_proxy:
+            # A bare TCP connect succeeds even when the direct splice cannot
+            # reach Roblox upstream, making broken Hosts mode appear healthy
+            # Exercise SNI routing and upstream TLS without exchanging HTTP
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            ctx.set_alpn_protocols(['http/1.1'])
+            with ctx.wrap_socket(connection, server_hostname=host) as tls_connection:
+                if tls_connection.version() is None:
+                    msg = f'Direct splice route did not complete TLS for {host}'
+                    raise OSError(msg)
             return
         connection.sendall(
             (f'CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n').encode('ascii')
@@ -4569,6 +4580,36 @@ class ProxyMaster:
             return None
         return proxy.verified_sober_session_identity()
 
+    def hosts_upstream_ip(self, host: str) -> str | None:
+        """Public origin address saved before managed hosts entries took effect.
+
+        Fleasion's own authenticated HTTPS requests must not hit its direct TLS
+        splice listener, which only has Roblox Player session keys. Never use
+        post-redirect OS DNS here: it would resolve to Fleasion's loopback IP.
+        """
+        normalized = host.strip().lower().rstrip('.')
+        with self._lock:
+            if not (
+                self._running
+                and self._hosts_installed
+                and normalized in self._active_intercept_hosts
+            ):
+                return None
+            proxy = self._proxy
+        if proxy is None:
+            return None
+        endpoints = proxy.upstream_endpoints_for_hosts([normalized]).get(normalized, [])
+        for endpoint in endpoints:
+            if endpoint.ip is None:
+                continue
+            try:
+                address = ipaddress.ip_address(endpoint.ip)
+            except ValueError:
+                continue
+            if address.is_global:
+                return str(address)
+        return None
+
     def hosts_intercepts_host(self, host: str) -> bool:
         """Return whether managed hosts routing currently sends *host* through Fleasion."""
         normalized = host.strip().lower().rstrip('.')
@@ -4767,10 +4808,74 @@ class ProxyMaster:
             self._sober_native_keylog_armed = False
         return bool(cleared)
 
+    def _arm_linux_hosts_sober_native_keylog(self) -> bool:
+        """Prepare Sober's native TLS secrets before its initial settings fetch.
+
+        Env mode already does this in its Flatpak proxy override. Hosts File
+        mode must arm SSLKEYLOGFILE independently; otherwise it misses the
+        initial ClientSettings response and relies on unreliable memory scans
+        during the later dynamic reload.
+        """
+        if (
+            not IS_LINUX
+            or self._linux_client_key() != 'sober'
+            or not self._use_splice_transport()
+            or os.environ.get('FLEASION_SPLICE_KEYLOG')
+        ):
+            return False
+        installation = self._linux_client_installation()
+        if installation is None:
+            return False
+        linux_client_main_process = cast(
+            'Callable[[LinuxClientInstallation], tuple[int, float] | None]',
+            _lazy_attr('fleasion.utils.platform_linux', 'linux_client_main_process'),
+        )
+        if linux_client_main_process(installation) is not None:
+            # Changes to Flatpak overrides affect only future launches. Do not
+            # claim immediate decryption of an already-running Sober instance.
+            log_buffer.log(
+                'CustomFFlags',
+                'Sober is already running; native TLS key logging needs a fresh launch',
+            )
+            return False
+        arm_keylog = cast(
+            'Callable[[], bool]',
+            _lazy_attr('fleasion.utils.platform_linux', 'arm_sober_native_keylog_override'),
+        )
+        if not arm_keylog():
+            log_buffer.log(
+                'CustomFFlags',
+                'Sober native TLS key logging unavailable in Hosts mode; '
+                'retaining delayed ClientSettings routing',
+            )
+            return False
+        self._hosts_sober_native_keylog_active = True
+        self._sober_native_keylog_armed = True
+        log_buffer.log(
+            'CustomFFlags',
+            'Sober native TLS key logging armed in Hosts mode; '
+            'initial ClientSettings response can be intercepted',
+        )
+        return True
+
+    def _clear_linux_hosts_sober_native_keylog(self) -> bool:
+        if not getattr(self, '_hosts_sober_native_keylog_active', False):
+            return True
+        clear_keylog = cast(
+            'Callable[[], bool]',
+            _lazy_attr('fleasion.utils.platform_linux', 'clear_sober_native_keylog_override'),
+        )
+        if not clear_keylog():
+            return False
+        self._hosts_sober_native_keylog_active = False
+        self._sober_native_keylog_armed = False
+        return True
+
     def _cleanup_linux_client_proxy_state(self) -> None:
         """Restore selected-client state after any proxy shutdown path."""
         if IS_LINUX:
             self._clear_linux_env_proxy_override()
+            self._clear_linux_hosts_sober_native_keylog()
 
     def wait_for_env_proxy_ready(
         self, timeout: float = 15.0, *, cancelled: _CancelCheck | None = None
@@ -5343,8 +5448,12 @@ class ProxyMaster:
                     'Failed to request Linux helper username spoofer hosts update',
                 )
                 return
-            self._active_intercept_hosts = set(desired_hosts)
+            # The helper changes /etc/hosts, but the direct splice listener
+            # separately rejects SNI names outside its interception allowlist.
+            # Install upstream routes before accepting the newly redirected hosts.
             _set_proxy_upstream_endpoints(proxy, real_endpoints)
+            proxy.set_intercept_hosts(desired_hosts)
+            self._active_intercept_hosts = set(desired_hosts)
             scraper_ips = _endpoint_ip_candidates(real_endpoints)
             if scraper_ips:
                 _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
@@ -5368,8 +5477,9 @@ class ProxyMaster:
             log_buffer.log('Hosts', 'Failed to verify username spoofer hosts entries')
             return
 
-        self._active_intercept_hosts = set(desired_hosts)
         _set_proxy_upstream_endpoints(proxy, real_endpoints)
+        proxy.set_intercept_hosts(desired_hosts)
+        self._active_intercept_hosts = set(desired_hosts)
         scraper_ips = _endpoint_ip_candidates(real_endpoints)
         if scraper_ips:
             _set_cache_scraper_real_ips(self.cache_scraper, scraper_ips)
@@ -5846,7 +5956,9 @@ class ProxyMaster:
                     'TLS',
                     'Startup TLS splice transport probe passed for '
                     f'{format_count(hosts, "intercept host")} '
-                    '(CONNECT/upstream only; live client traffic is required to test decryption)',
+                    '('
+                    + ('CONNECT' if explicit_proxy else 'direct TLS')
+                    + '/upstream only; live client traffic is required to test decryption)',
                 )
             else:
                 _log_tls_self_test_failures(failures)
@@ -6583,6 +6695,29 @@ class ProxyMaster:
         ):
             return True
 
+        if getattr(self._proxy, '_tls_splice', False):
+            # The splice listener never terminates TLS locally, so synthetic
+            # certificate and loopback TLS fallbacks cannot repair this failure
+            attempts = list(getattr(self, '_tls_startup_attempts', []))
+            log_buffer.log(
+                'Error',
+                'Proxy startup aborted: TLS splice upstream transport probe failed',
+            )
+            self._emit_proxy_start_error(
+                'tls_self_test_failed',
+                {
+                    'hosts': sorted(active_hosts),
+                    'proxy_mode': 'env' if env_proxy_mode else 'hosts',
+                    'tls_attempts': attempts,
+                    'error': 'TLS splice could not establish the upstream transport connection',
+                },
+            )
+            proxy = cast('FleasionProxy', self._proxy)
+            await proxy.stop()
+            _set_active_hosts_loopbacks(None)
+            self._running = False
+            return False
+
         probe_host = min(active_hosts)
         tls_attempts = list(getattr(self, '_tls_startup_attempts', []))
         raw_tls_attempts: list[_ErrorDetails] = []
@@ -6997,6 +7132,13 @@ class ProxyMaster:
         startup = self._prepare_proxy_startup(env_proxy_mode)
         if startup is None:
             return
+
+        if not env_proxy_mode:
+            # Enable Sober's native key log before selecting routes and before
+            # the privileged helper installs /etc/hosts. ClientSettings is then
+            # part of the initially verified host set, avoiding a race between
+            # proxy readiness and the helper's asynchronous route updates.
+            self._arm_linux_hosts_sober_native_keylog()
 
         server = await self._create_and_start_proxy_server(env_proxy_mode, startup)
         if server is None:

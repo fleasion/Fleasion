@@ -39,11 +39,12 @@ from PySide6.QtWidgets import (
 from fleasion.localization import tr, tr_count
 from fleasion.utils.json_types import require_object_dict
 from fleasion.utils.logging import log_buffer
-from fleasion.utils.paths import CONFIG_DIR, PROXY_CA_DIR
+from fleasion.utils.paths import CONFIG_DIR
 from fleasion.utils.roblox_auth import (
     get_roblosecurity as _get_roblosecurity,
     wait_for_roblosecurity as _wait_for_roblosecurity,
 )
+from fleasion.utils.verified_direct_https import VerifiedDirectHTTPSAdapter
 from fleasion.utils.windows import launch_as_standard_user
 from fleasion.widgets.spacing import CONTROL_HEIGHT, GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
@@ -140,6 +141,8 @@ class _ProxyMaster(Protocol):
     def roblox_env_proxy_url(self) -> str: ...
 
     def hosts_intercepts_host(self, host: str) -> bool: ...
+
+    def hosts_upstream_ip(self, host: str) -> str | None: ...
 
 
 _DEFAULT_THUMB_URL = (
@@ -2041,6 +2044,8 @@ class SubplaceJoinerTab(QWidget):
         sess = requests.Session()
         sess.trust_env = False
         sess.proxies = {}
+        self._mount_hosts_origin(sess, 'https://gamejoin.roblox.com/v1/join-game')
+        self._mount_hosts_origin(sess, 'https://auth.roblox.com/v2/logout')
         sess.headers.update(
             {
                 'User-Agent': 'Roblox/WinInet',
@@ -2063,13 +2068,24 @@ class SubplaceJoinerTab(QWidget):
 
     # HTTP helpers
 
-    def _request_verify(self, url: str) -> bool | str:
+    def _mount_hosts_origin(self, session: requests.Session, url: str) -> None:
+        """Keep app-initiated HTTPS off the Roblox-only TLS splice listener."""
         host = (urlparse(url).hostname or '').strip().lower().rstrip('.')
         proxy_master = self._proxy_master
         if proxy_master is None or not proxy_master.hosts_intercepts_host(host):
-            return True
-        ca_cert = PROXY_CA_DIR / 'ca.crt'
-        return str(ca_cert) if ca_cert.is_file() else True
+            return
+        address = proxy_master.hosts_upstream_ip(host)
+        if address is None:
+            message = f'Cannot contact {host}: no verified upstream address before hosts redirect'
+            raise requests.exceptions.ConnectionError(message)
+        session.mount(f'https://{host}/', VerifiedDirectHTTPSAdapter(host, address))
+
+    def _request_verify(self, url: str) -> bool:
+        # Hosts File interception uses TLS splicing, not Fleasion's leaf CA.
+        # The pre-redirect upstream adapter retains the real server's normal
+        # public-CA validation. No verify=False and no local proxy CA trust.
+        del url
+        return True
 
     def _get(
         self,
@@ -2078,14 +2094,21 @@ class SubplaceJoinerTab(QWidget):
         headers: dict[str, str] | None = None,
         cookies: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            url,
-            timeout=timeout,
-            proxies={},
-            cookies=cookies,
-            headers=headers,
-            verify=self._request_verify(url),
-        )
+        host = (urlparse(url).hostname or '').strip().lower().rstrip('.')
+        proxy_master = self._proxy_master
+        if proxy_master is None or not proxy_master.hosts_intercepts_host(host):
+            return requests.get(
+                url,
+                timeout=timeout,
+                proxies={},
+                cookies=cookies,
+                headers=headers,
+                verify=True,
+            )
+        with requests.Session() as session:
+            session.trust_env = False
+            self._mount_hosts_origin(session, url)
+            return session.get(url, timeout=timeout, cookies=cookies, headers=headers, verify=True)
 
     def _on_main(self, fn: _MainCallback) -> bool:
         if self._qt_destroyed:

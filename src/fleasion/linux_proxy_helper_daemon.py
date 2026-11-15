@@ -1289,11 +1289,22 @@ async def _serve(args: _RuntimeArgs) -> int:
         msg = 'Linux system trust-store install failed: missing CA certificate'
         raise RuntimeError(msg)
 
-    server = await asyncio.start_server(
-        lambda reader, writer: _relay_client(reader, writer, args.backend_host, args.backend_port),
-        args.listen_host,
-        args.listen_port,
-    )
+    # Server.wait_closed() includes existing connections. Roblox can hold TLS
+    # keep-alive sockets open indefinitely, so track sessions for deterministic
+    # teardown instead of letting them delay hosts cleanup and GUI exit.
+    active_relays: set[asyncio.Task[None]] = set()
+
+    async def serve_relay(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            active_relays.add(task)
+        try:
+            await _relay_client(reader, writer, args.backend_host, args.backend_port)
+        finally:
+            if task is not None:
+                active_relays.discard(task)
+
+    server = await asyncio.start_server(serve_relay, args.listen_host, args.listen_port)
     sockets = ', '.join(str(sock.getsockname()) for sock in (server.sockets or ()))
     _log(f'Listening on {sockets}; relaying to {args.backend_host}:{args.backend_port}')
 
@@ -1331,6 +1342,12 @@ async def _serve(args: _RuntimeArgs) -> int:
             await asyncio.sleep(0.5)
     finally:
         server.close()
+        # Closing the listening socket does not terminate active relays.
+        # Cancel them first so persistent client sessions cannot pin shutdown.
+        for task in tuple(active_relays):
+            task.cancel()
+        if active_relays:
+            await asyncio.gather(*active_relays, return_exceptions=True)
         await server.wait_closed()
         if not read_only_hosts_mode:
             _clear_hosts()

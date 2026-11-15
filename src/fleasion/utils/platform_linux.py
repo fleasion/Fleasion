@@ -445,6 +445,27 @@ def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
     return selected
 
 
+def detect_running_linux_client_mismatch(selected_key: str) -> tuple[str, str] | None:
+    """Return an explicit selection and one different verified running Player.
+
+    Auto is intentional, and another client running alongside the selected
+    Player is not a mismatch. Use the same process identification as Linux
+    client management, not a process-name guess (which could include Studio).
+    """
+    if selected_key == 'auto' or selected_key not in LINUX_CLIENTS_BY_KEY:
+        return None
+    installed = linux_client_installations()
+    selected = next((client for client in installed if client.key == selected_key), None)
+    if selected is not None and is_roblox_running(selected):
+        return None
+    other_running = [
+        client.key
+        for client in installed
+        if client.key != selected_key and is_roblox_running(client)
+    ]
+    return (selected_key, other_running[0]) if len(other_running) == 1 else None
+
+
 def selected_linux_client_key() -> str:
     selected = get_selected_linux_client_installation()
     return selected.key if selected is not None else _configured_linux_client_preference()
@@ -1738,6 +1759,110 @@ def clear_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-state
     return True
 
 
+def arm_sober_native_keylog_override() -> bool:  # ruff: ignore[too-many-return-statements]
+    """Enable only Sober TLS key logging for Hosts File interception.
+
+    This must not enable HTTP_PROXY or otherwise modify the client's existing
+    proxy environment. Ownership of SSLKEYLOGFILE is tracked separately and
+    restored on shutdown or crash recovery.
+    """
+    flatpak = shutil.which('flatpak')
+    if not flatpak:
+        log_buffer.log('Launcher', 'Cannot arm Sober TLS key logging: flatpak not found')
+        return False
+    try:
+        previous_override = _standard_user_run(
+            [flatpak, 'override', '--user', '--show', SOBER_APP_ID],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_buffer.log('Launcher', f'Cannot inspect Sober TLS key-log override: {exc}')
+        return False
+    if previous_override.returncode != 0:
+        log_buffer.log('Launcher', 'Cannot inspect Sober TLS key-log override')
+        return False
+
+    keylog_path = sober_bootstrap_keys.native_keylog_path()
+    previous = sober_bootstrap_keys.previous_keylog_override(previous_override.stdout)
+    if (
+        previous['previous_present']
+        and previous['previous_value'] == str(keylog_path)
+        and sober_bootstrap_keys.reusable_preconfigured_keylog(
+            keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE
+        )
+    ):
+        log_buffer.log('Launcher', 'Reusing existing Sober native TLS key log in Hosts mode')
+        return True
+    if not sober_bootstrap_keys.arm(keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE, previous):
+        log_buffer.log('Launcher', 'Cannot prepare a private Sober TLS key log in Hosts mode')
+        return False
+
+    try:
+        result = _standard_user_run(
+            [
+                flatpak,
+                'override',
+                '--user',
+                f'--env=SSLKEYLOGFILE={keylog_path}',
+                SOBER_APP_ID,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        sober_bootstrap_keys.clear(keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE)
+        log_buffer.log('Launcher', f'Cannot arm Sober TLS key logging: {exc}')
+        return False
+    if result.returncode != 0:
+        sober_bootstrap_keys.clear(keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE)
+        detail = (result.stderr or result.stdout).strip()
+        log_buffer.log(
+            'Launcher',
+            'Cannot arm Sober TLS key logging' + (f': {detail}' if detail else ''),
+        )
+        return False
+    log_buffer.log('Launcher', 'Armed Sober native TLS key logging for Hosts mode')
+    return True
+
+
+def clear_sober_native_keylog_override() -> bool:  # ruff: ignore[too-many-return-statements]
+    """Restore only a Fleasion-owned Sober SSLKEYLOGFILE override."""
+    try:
+        restoration = sober_bootstrap_keys.restore_option(SOBER_NATIVE_KEYLOG_OVERRIDE_STATE)
+    except (ValueError, TypeError) as exc:
+        log_buffer.log('Launcher', f'Cannot restore Sober TLS key log: {exc}')
+        return False
+    if restoration is None:
+        return True
+    flatpak = shutil.which('flatpak')
+    if not flatpak:
+        log_buffer.log('Launcher', 'Cannot restore Sober TLS key log: flatpak not found')
+        return False
+    try:
+        result = _standard_user_run(
+            [flatpak, 'override', '--user', restoration, SOBER_APP_ID],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_buffer.log('Launcher', f'Cannot restore Sober TLS key log: {exc}')
+        return False
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        log_buffer.log('Launcher', 'Cannot restore Sober TLS key log: ' + detail)
+        return False
+    keylog_path = sober_bootstrap_keys.native_keylog_path()
+    if not sober_bootstrap_keys.clear(keylog_path, SOBER_NATIVE_KEYLOG_OVERRIDE_STATE):
+        log_buffer.log('Launcher', f'Cannot clean private Sober TLS key log: {keylog_path}')
+        return False
+    log_buffer.log('Launcher', 'Restored Sober native TLS key log after Hosts mode')
+    return True
+
+
 def recover_stale_linux_client_env_proxy_override() -> bool:
     """Clear a persisted Env Proxy override left by an earlier Fleasion process."""
     if _active_linux_proxy_client_key is not None:
@@ -1745,9 +1870,13 @@ def recover_stale_linux_client_env_proxy_override() -> bool:
     if not nutmeg_proxy_override.clear(NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE):
         return False
     key = _read_linux_proxy_override_state()
-    if key is None and SOBER_NATIVE_KEYLOG_OVERRIDE_STATE.exists():
-        key = 'sober'
     if key is None:
+        if (
+            SOBER_NATIVE_KEYLOG_OVERRIDE_STATE.exists()
+            or SOBER_NATIVE_KEYLOG_OVERRIDE_STATE.is_symlink()
+        ):
+            log_buffer.log('Launcher', 'Recovering stale Sober native TLS key-log override')
+            return clear_sober_native_keylog_override()
         return True
     log_buffer.log(
         'Launcher',
