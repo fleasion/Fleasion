@@ -901,13 +901,11 @@ def run_application() -> None:
             if QApplication.activeModalWidget() is not None:
                 QTimer.singleShot(250, _show_macos_rosemary_notice)
                 return
-            QMessageBox.information(
-                visible_parent_widget(),
-                tr('macos_rosemary.title'),
-                tr('macos_rosemary.notice'),
+            from fleasion.app.dialogs.macos_rosemary_notice import (  # ruff: ignore[import-outside-top-level]
+                show_macos_rosemary_notice,
             )
-            config_manager.settings['macos_rosemary_notice_shown'] = True
-            config_manager.save()
+
+            show_macos_rosemary_notice(config_manager, visible_parent_widget())
 
         QTimer.singleShot(3500, _show_macos_rosemary_notice)
 
