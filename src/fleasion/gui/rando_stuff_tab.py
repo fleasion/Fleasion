@@ -219,6 +219,20 @@ def get_auth_ticket(cookie: str) -> str | None:
     return None
 
 
+def refresh_authenticated_launch_uri(uri: str, cookie: str) -> str:
+    """Replace only an expiring auth ticket, retaining the selected join parameters."""
+    before, marker, remaining = uri.partition('+gameinfo:')
+    if not marker or not before.startswith('roblox-player:1+'):
+        msg = 'Cannot refresh an invalid authenticated Roblox launch request'
+        raise ValueError(msg)
+    _previous, separator, suffix = remaining.partition('+')
+    new_ticket = get_auth_ticket(cookie)
+    if not new_ticket:
+        msg = 'Could not obtain a new Roblox auth ticket after the native update'
+        raise RuntimeError(msg)
+    return f'{before}{marker}{new_ticket}{separator}{suffix}'
+
+
 def _get_access_code(place_id: str, link_code: str, cookie: str) -> str | None:
     """Resolve a privateServerLinkCode to the UUID accessCode.
 
@@ -1578,13 +1592,11 @@ class RandoStuffTab(QWidget):
             self._doing_rejoin = True
         log_buffer.log('randostuff', f'Rejoin triggered - placeId={place_id}')
         if IS_MACOS:
-            with self._lock:
-                self._doing_rejoin = False
-                self._active_rejoin_attempt_id = None
-                self._awaiting_rejoin_response = False
             from .macos_rosemary_launch import launch_from_feature
 
-            launch_from_feature(self, 'Reserved-server joining')
+            if not launch_from_feature(self, f'roblox://experiences/start?placeId={place_id}'):
+                with self._lock:
+                    self._doing_rejoin = False
             return
         if not launch_as_standard_user(f'roblox://placeId={place_id}'):
             log_buffer.log('randostuff', 'Failed to launch Roblox without elevation')
@@ -2208,12 +2220,6 @@ class RandoStuffTab(QWidget):
             f'Launch request prepared for {username}: hasLink={"yes" if bool(link) else "no"}, '
             f'hasSubplace={"yes" if bool(subplace_id) else "no"}, hasJobId={"yes" if bool(job_id) else "no"}',
         )
-        if IS_MACOS:
-            from .macos_rosemary_launch import launch_from_feature
-
-            launch_from_feature(self, 'Selected-account, game or private-server launching')
-            return
-
         if _is_share_link(link):
             self._launch_acct_btn.setEnabled(False)
             self._launch_acct_btn.setText(tr('ui.gui.rando_stuff_tab.resolving'))
@@ -2285,11 +2291,6 @@ class RandoStuffTab(QWidget):
                 tr('ui.gui.rando_stuff_tab.could_not_decrypt_the_stored_cookie'),
             )
             return
-        if IS_MACOS:
-            from .macos_rosemary_launch import launch_from_feature
-
-            launch_from_feature(self, 'Account follow-user joining')
-            return
         self._follow_user_btn.setEnabled(False)
         threading.Thread(
             target=self._follow_user_thread, args=(cookie, target), daemon=True
@@ -2345,6 +2346,7 @@ class RandoStuffTab(QWidget):
         if not self._dispatch_authenticated_ticket_uri(
             _build_auth_ticket_follow_uri(ticket, user_id),
             _launch_follow_user_uri,
+            retry_cookie=cookie if IS_MACOS else None,
         ):
             log_buffer.log('accounts', 'Failed to launch Roblox follow URI without elevation')
 
@@ -2446,11 +2448,19 @@ class RandoStuffTab(QWidget):
         self,
         uri: str,
         launcher: Callable[[str], bool] | None = None,
+        *,
+        retry_cookie: str | None = None,
     ) -> bool:
         """Dispatch the selected account ticket without changing the me mapping."""
         if IS_MACOS:
-            log_buffer.log('accounts', 'Authenticated Roblox URI dispatch is disabled on macOS')
-            return False
+            from .macos_rosemary_launch import launch_from_feature
+
+            refresh = (
+                (lambda: refresh_authenticated_launch_uri(uri, retry_cookie))
+                if retry_cookie is not None
+                else None
+            )
+            return self._on_main(lambda: launch_from_feature(self, uri, refresh_launch_uri=refresh))
         dispatch = launcher or launch_as_standard_user
         return dispatch(uri)
 
@@ -2462,16 +2472,7 @@ class RandoStuffTab(QWidget):
         job_id: str = '',
         subplace_id: str = '',
     ) -> None:
-        if IS_MACOS:
-            from .macos_rosemary_launch import launch_from_feature
-
-            self._on_main(
-                lambda: launch_from_feature(
-                    self, 'Selected-account, game or private-server launching'
-                )
-            )
-            return
-        ticket_only_launch = _is_rosemary_client()
+        ticket_only_launch = IS_MACOS or _is_rosemary_client()
         if IS_WINDOWS:
 
             def _switch_launch_cookie() -> None:
@@ -2547,7 +2548,9 @@ class RandoStuffTab(QWidget):
                     'accounts',
                     f'Launching Roblox URI to placeId={launch_place_id} (private server)',
                 )
-                launch_ok = self._dispatch_authenticated_ticket_uri(roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(
+                    roblox_player_uri, retry_cookie=cookie if IS_MACOS else None
+                )
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
@@ -2595,7 +2598,9 @@ class RandoStuffTab(QWidget):
                     )
                 else:
                     log_buffer.log('accounts', f'Launching Roblox URI to placeId={launch_place_id}')
-                launch_ok = self._dispatch_authenticated_ticket_uri(roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(
+                    roblox_player_uri, retry_cookie=cookie if IS_MACOS else None
+                )
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox URI without elevation')
             else:
@@ -2636,7 +2641,9 @@ class RandoStuffTab(QWidget):
             if ticket:
                 roblox_player_uri = _build_auth_ticket_app_uri(ticket)
                 log_buffer.log('accounts', 'Launching Roblox app URI for selected account')
-                launch_ok = self._dispatch_authenticated_ticket_uri(roblox_player_uri)
+                launch_ok = self._dispatch_authenticated_ticket_uri(
+                    roblox_player_uri, retry_cookie=cookie if IS_MACOS else None
+                )
                 if not launch_ok:
                     log_buffer.log('accounts', 'Failed to launch Roblox app URI without elevation')
                     if ticket_only_launch:

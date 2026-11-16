@@ -297,3 +297,128 @@ def test_prefix_provisioning_is_verified_before_any_guest(
     monkeypatch.setattr(launcher.subprocess, 'run', record)
     launcher.ensure_managed_prefix(tmp_path / 'Rosemary/bin/rosemary')
     assert commands == [[str(tmp_path / 'Rosemary/bin/rosemary'), 'prefix', 'create', str(tmp_path / 'prefix')]]
+
+
+def test_targeted_uri_stays_inside_rosemary_across_native_update(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app, events, proxy, config = _managed_fixture(monkeypatch, tmp_path)
+    target = 'roblox://experiences/start?placeId=1818'
+    commands: list[list[str]] = []
+    decisions = iter((True, False))
+    monkeypatch.setattr(launcher, '_check_managed_session', lambda *_args: next(decisions))
+    monkeypatch.setattr(launcher, '_stop_owned_updating_guest', lambda *_args: events.append('stop-guest'))
+    monkeypatch.setattr(
+        launcher, '_native_update_handoff',
+        lambda path, **_kw: events.append('native-update') if path == app else None,
+    )
+
+    class Session:
+        running = True
+        process = SimpleNamespace(pid=2150)
+        channel = SimpleNamespace(ping=lambda: None)
+
+    def spawn(command: list[str], *, env: dict[str, str]) -> Session:
+        assert env['ROSEMARY_OBJC'] == 'builtin'
+        commands.append(command)
+        return Session()
+
+    monkeypatch.setattr(launcher.macos_rosemary_memory, 'launch_with_private_memory', spawn)
+    result = launcher.launch_managed(
+        cast('object', config), cast('object', proxy), launch_uri=target
+    )
+    assert result.running
+    expected = [str(tmp_path / 'Rosemary/bin/rosemary'), 'run', '--native', str(app), '-protocolString', target]
+    assert commands == [expected, expected]
+    assert events.count('native-update') == 1
+
+
+@pytest.mark.parametrize('target', [
+    'https://www.roblox.com/games/1818',
+    'roblox://placeId=1818\n-evil',
+    'roblox-player:1+launchmode:app\x00'
+])
+def test_invalid_target_is_rejected_before_runtime_download(
+    monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    monkeypatch.setattr(launcher.sys, 'platform', 'darwin')
+    monkeypatch.setattr(
+        launcher.macos_rosemary_installer,
+        'install_pinned_runtime',
+        lambda: pytest.fail('invalid target must fail before downloading Rosemary'),
+    )
+    with pytest.raises(launcher.ManagedLaunchError, match='only Roblox launch protocol'):
+        launcher.launch_managed(
+            cast('object', object()), cast('object', object()), launch_uri=target
+        )
+
+
+def test_expired_ticket_is_refreshed_only_after_native_update(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app, events, proxy, config = _managed_fixture(monkeypatch, tmp_path)
+    initial = 'roblox-player:1+launchmode:play+gameinfo:initial-ticket+placelauncherurl:PLACE'
+    refreshed = 'roblox-player:1+launchmode:play+gameinfo:fresh-ticket+placelauncherurl:PLACE'
+    calls: list[list[str]] = []
+    decisions = iter((True, False))
+    monkeypatch.setattr(launcher, '_check_managed_session', lambda *_args: next(decisions))
+    monkeypatch.setattr(launcher, '_stop_owned_updating_guest', lambda *_args: events.append('stop'))
+    monkeypatch.setattr(
+        launcher, '_native_update_handoff',
+        lambda path, **_kwargs: events.append('updated') if path == app else None,
+    )
+
+    class Session:
+        running = True
+        process = SimpleNamespace(pid=100)
+        channel = SimpleNamespace(ping=lambda: None)
+
+    monkeypatch.setattr(
+        launcher.macos_rosemary_memory, 'launch_with_private_memory',
+        lambda command, *, env: calls.append(command) or Session(),
+    )
+    refreshes: list[str] = []
+
+    def supply_fresh_uri() -> str:
+        refreshes.append('refreshed')
+        return refreshed
+
+    session = launcher.launch_managed(
+        cast('object', config),
+        cast('object', proxy),
+        launch_uri=initial,
+        refresh_launch_uri=supply_fresh_uri,
+    )
+    assert session.running
+    assert calls[0][-2:] == ['-protocolString', initial]
+    assert calls[1][-2:] == ['-protocolString', refreshed]
+    assert refreshes == ['refreshed']
+    assert events.count('updated') == 1
+
+
+def test_refreshed_uri_must_still_pass_protocol_validation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app, events, proxy, config = _managed_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(launcher, '_check_managed_session', lambda *_args: True)
+    monkeypatch.setattr(launcher, '_stop_owned_updating_guest', lambda *_args: events.append('stop'))
+    monkeypatch.setattr(
+        launcher, '_native_update_handoff',
+        lambda path, **_kwargs: events.append('updated') if path == app else None,
+    )
+    monkeypatch.setattr(
+        launcher.macos_rosemary_memory, 'launch_with_private_memory',
+        lambda _command, *, env: SimpleNamespace(
+            running=True,
+            process=SimpleNamespace(pid=245),
+            channel=SimpleNamespace(ping=lambda: None),
+        ),
+    )
+    with pytest.raises(launcher.ManagedLaunchError, match='only Roblox launch protocol'):
+        launcher.launch_managed(
+            cast('object', config),
+            cast('object', proxy),
+            launch_uri='roblox://experiences/start?placeId=1818',
+            refresh_launch_uri=lambda: 'https://attacker.example.invalid',
+        )
+    assert events.count('updated') == 1

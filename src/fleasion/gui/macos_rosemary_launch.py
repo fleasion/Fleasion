@@ -22,6 +22,8 @@ from fleasion.utils.macos_rosemary_installer import (
 from fleasion.utils.macos_rosemary_memory import active_session
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fleasion.config.manager import ConfigManager
     from fleasion.proxy.master import ProxyMaster
 
@@ -43,6 +45,8 @@ class ManagedRobloxLaunch(QObject):
         self._config_manager = config_manager
         self._proxy_master = proxy_master
         self._busy = False
+        self._pending_target: str | None = None
+        self._pending_refresh: Callable[[], str] | None = None
         self.progress.connect(self._show_progress)
         self.finished.connect(self._on_finished)
 
@@ -51,7 +55,14 @@ class ManagedRobloxLaunch(QObject):
         return self._busy
 
     @Slot()
-    def launch(self) -> None:  # ruff: ignore[too-many-return-statements]
+    def launch(self) -> None:
+        """Launch Roblox from Fleasion's dashboard without a join target."""
+        self.launch_target(None)
+
+    def launch_target(  # ruff: ignore[too-many-return-statements]
+        self, target: str | None, *, refresh_launch_uri: Callable[[], str] | None = None
+    ) -> None:
+        """Handle a Fleasion-initiated URI without registering an OS URL handler."""
         if not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
             return
         if self._busy:
@@ -103,6 +114,8 @@ class ManagedRobloxLaunch(QObject):
             if choice != QMessageBox.StandardButton.Yes:
                 return
         self._busy = True
+        self._pending_target = target
+        self._pending_refresh = refresh_launch_uri
         self.progress.emit(tr('macos_rosemary.starting'))
         threading.Thread(
             target=self._launch_in_worker, name='FleasionMacOSRosemary', daemon=True
@@ -116,7 +129,13 @@ class ManagedRobloxLaunch(QObject):
             if proxy_master is None:
                 msg = 'The Fleasion proxy is unavailable'
                 raise PinnedRuntimeError(msg)
-            launch_managed(self._config_manager, proxy_master, announce=self.progress.emit)
+            launch_managed(
+                self._config_manager,
+                proxy_master,
+                announce=self.progress.emit,
+                launch_uri=self._pending_target,
+                refresh_launch_uri=self._pending_refresh,
+            )
         except (OSError, RuntimeError, ValueError, PinnedRuntimeError) as error:
             log_buffer.log('Launcher', f'Managed macOS Rosemary launch failed: {error}')
             self.finished.emit(False, str(error))  # ruff: ignore[boolean-positional-value-in-call]
@@ -130,19 +149,18 @@ class ManagedRobloxLaunch(QObject):
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
         self._busy = False
+        self._pending_target = None
+        self._pending_refresh = None
         if success:
             QMessageBox.information(self._window, tr('macos_rosemary.title'), message)
         else:
             QMessageBox.warning(self._window, tr('macos_rosemary.launch_failed'), message)
 
 
-def launch_from_feature(widget: QWidget, feature: str) -> bool:
-    """Offer an explicitly non-targeted Rosemary launch for a macOS feature button.
-
-    macOS Roblox does not currently accept ticketed join flags without treating
-    their values as URL-opening events. Never silently dispatch an OS URI or
-    claim that an unsupported selected account or server will be joined.
-    """
+def launch_from_feature(
+    widget: QWidget, target: str, *, refresh_launch_uri: Callable[[], str] | None = None
+) -> bool:
+    """Launch a user-selected Roblox URI inside the managed guest, not the host."""
     if not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
         QMessageBox.warning(
             widget,
@@ -158,16 +176,8 @@ def launch_from_feature(widget: QWidget, feature: str) -> bool:
             'The managed Roblox launcher is not ready. Use the Fleasion launch button.',
         )
         return False
-    choice = QMessageBox.question(
-        widget,
-        tr('macos_rosemary.title'),
-        f'{feature} cannot be selected automatically on macOS without a Roblox URI. '
-        'Launch Roblox with Rosemary using its currently signed-in account instead? '
-        'You must join the experience or server manually.',
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
-    )
-    if choice != QMessageBox.StandardButton.Yes:
+    if controller.busy:
+        log_buffer.log('Launcher', 'Managed Roblox launch already in progress')
         return False
-    controller.launch()
-    return True
+    controller.launch_target(target, refresh_launch_uri=refresh_launch_uri)
+    return controller.busy

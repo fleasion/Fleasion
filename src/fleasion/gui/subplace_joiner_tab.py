@@ -1900,14 +1900,6 @@ class SubplaceJoinerTab(QWidget):
             'subplace',
             f'Joining place ID: {place_id}' + (f' with jobId: {job_id}' if job_id else ''),
         )
-        if sys.platform == 'darwin':
-            # No targeted join was dispatched; leave the proxy join rewriter idle
-            self.joining_place = False
-            self._current_job_id = ''
-            from .macos_rosemary_launch import launch_from_feature
-
-            launch_from_feature(self, 'Subplace or specific-server joining')
-            return
         selected_cookie: str | None = None
         if self._rando_tab is not None:
             selected_account = getattr(self._rando_tab, 'selected_launch_account_cookie', None)
@@ -1991,7 +1983,11 @@ class SubplaceJoinerTab(QWidget):
                     )
                     return
                 target = build_auth_ticket_place_uri(ticket, str(place_id), job_id=job_id)
-                if not self._launch_roblox_uri(target):
+                if sys.platform == 'darwin':
+                    launched = self._launch_roblox_uri(target, retry_cookie=cookie)
+                else:
+                    launched = self._launch_roblox_uri(target)
+                if not launched:
                     log_buffer.log('subplace', 'Failed to launch authenticated Roblox join URI')
 
             threading.Thread(target=_launch_ticketed_join, daemon=True).start()
@@ -2002,23 +1998,28 @@ class SubplaceJoinerTab(QWidget):
         if not self._launch_roblox_uri(f'roblox://experiences/start?placeId={place_id}'):
             log_buffer.log('subplace', 'Failed to launch Roblox deeplink without elevation')
 
-    def _launch_roblox_uri(self, target: str) -> bool:
-        """Launch a join URI where the platform explicitly supports the handler."""
+    def _launch_roblox_uri(self, target: str, *, retry_cookie: str | None = None) -> bool:
+        """Launch user-requested joins with the active managed platform client."""
         if sys.platform == 'darwin':
-            log_buffer.log('subplace', 'Roblox URI dispatch is disabled on managed macOS')
-            return False
+            from .macos_rosemary_launch import launch_from_feature
+            from .rando_stuff_tab import refresh_authenticated_launch_uri
+
+            refresh = (
+                (lambda: refresh_authenticated_launch_uri(target, retry_cookie))
+                if retry_cookie is not None
+                else None
+            )
+            try:
+                self._invoker.call.emit(
+                    lambda: launch_from_feature(self, target, refresh_launch_uri=refresh)
+                )
+            except RuntimeError as exc:
+                log_buffer.log('subplace', f'Could not queue managed Roblox launch: {exc}')
+                return False
+            return True
         if sys.platform.startswith('linux'):
             return launch_as_standard_user(target)
 
-        if (
-            sys.platform == 'darwin'
-            and getattr(self._config_manager, 'proxy_mode', 'hosts') == 'env'
-            and getattr(self._config_manager, 'proxy_features_enabled', False)
-            and self._proxy_master is not None
-        ):
-            from fleasion.utils.platform_macos import relaunch_roblox_with_proxy_env
-
-            return relaunch_roblox_with_proxy_env(self._proxy_master.roblox_env_proxy_url(), target)
         return launch_as_standard_user(target)
 
     def _post_root_join(self, root_place_id: int | str, cookie: str) -> requests.Response:

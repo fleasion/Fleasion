@@ -322,13 +322,29 @@ def _check_managed_session(
     return _managed_updater_requested(session, executable, app, probe)
 
 
+def _validate_launch_uri(uri: str | None) -> None:
+    """Reject external URLs and control characters before guest or host activity."""
+    if uri is not None and (
+        not uri.startswith(('roblox://', 'roblox-player:1+'))
+        or any(char in uri for char in '\r\n\x00')
+    ):
+        msg = 'Managed Roblox accepts only Roblox launch protocol payloads'
+        raise ManagedLaunchError(msg)
+
+
 def launch_managed(
     config_manager: ConfigManager,
     proxy_master: ProxyMaster,
     *,
     announce: Callable[[str], None] | None = None,
+    launch_uri: str | None = None,
+    refresh_launch_uri: Callable[[], str] | None = None,
 ) -> macos_rosemary_memory.RosemarySession:
     """Launch in Rosemary, handing a detected updater to native Roblox once."""
+    _validate_launch_uri(launch_uri)
+    if refresh_launch_uri is not None and launch_uri is None:
+        msg = 'Cannot refresh a missing Roblox launch URI'
+        raise ManagedLaunchError(msg)
     if sys.platform != 'darwin':
         msg = 'Managed macOS Rosemary launches are only available on macOS'
         raise ManagedLaunchError(msg)
@@ -364,11 +380,18 @@ def launch_managed(
         raise ManagedLaunchError(msg)
     proxy_url = proxy_master.roblox_env_proxy_url()
     for attempt in range(2):
+        if attempt and refresh_launch_uri is not None:
+            launch_uri = refresh_launch_uri()
+            _validate_launch_uri(launch_uri)
         if announce:
             announce('Launching Roblox through pinned Rosemary...')
         probe = macos_rosemary_update_monitor.PlayerLogProbe()
+        command = [str(executable), 'run', '--native', str(app)]
+        if launch_uri is not None:
+            # Pass directly to Rosemary's guest; never invoke the host URL handler
+            command.extend(('-protocolString', launch_uri))
         session = macos_rosemary_memory.launch_with_private_memory(
-            [str(executable), 'run', '--native', str(app)],
+            command,
             env=_rosemary_environment(proxy_url, runtime_executable=executable),
         )
         macos_rosemary_memory.set_active_session(session)
