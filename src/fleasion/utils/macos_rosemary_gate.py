@@ -1,7 +1,6 @@
-"""Deployment gate for the incomplete managed macOS Rosemary integration."""
+"""Deployment availability for Fleasion-managed macOS Rosemary launches."""
 
 from __future__ import annotations
 
-# Keep the implementation available for future development without allowing
-# the gray-window Rosemary runtime to become a user-facing launch option
-MACOS_ROSEMARY_AVAILABLE = False
+# Managed launches require an explicit in-app action and runtime consent
+MACOS_ROSEMARY_AVAILABLE = True

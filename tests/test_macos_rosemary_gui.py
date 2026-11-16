@@ -21,6 +21,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+def test_production_macos_rosemary_gate_enabled() -> None:
+    """Production builds expose the user-consented managed launcher."""
+    assert macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE is True
+
+
 @pytest.fixture(autouse=True)
 def enable_managed_gui_for_internal_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(macos_rosemary_gate, 'MACOS_ROSEMARY_AVAILABLE', True)

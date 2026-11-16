@@ -27,6 +27,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+@pytest.fixture(autouse=True)
+def simulate_dormant_macos_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the disabled fallback independently of the production default."""
+    monkeypatch.setattr(macos_rosemary_gate, 'MACOS_ROSEMARY_AVAILABLE', False)
+
+
 @pytest.fixture
 def config_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     config_dir = tmp_path / 'settings'
