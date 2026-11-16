@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 from typing import TYPE_CHECKING, override
 
@@ -9,14 +10,16 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PySide6.QtCore import QCoreApplication, QEvent, QObject
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QLabel,
     QPushButton,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -26,6 +29,8 @@ from fleasion.config.manager import ConfigManager
 from fleasion.gui import glass
 from fleasion.gui.settings_tab import SettingsTab
 from fleasion.gui.theme import ThemeManager
+from fleasion.widgets.menu_items import MenuItemDelegate, plain_style
+from fleasion.widgets.spacing import CONTROL_HEIGHT
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -221,3 +226,47 @@ def test_system_restores_native_style_hidden_by_startup_stylesheet(
     assert glass.theme.active
     ThemeManager.apply_appearance('Fusion', 'System', 'Ice')
     assert ThemeManager._widget_style_name(app).casefold() == 'windows'  # pyright: ignore[reportPrivateUsage]
+
+
+def test_leaving_glass_restores_combo_popups_qt_created_itself(app: QApplication) -> None:
+    window = QWidget()
+    combo = QComboBox(window)
+    combo.addItems(['First', 'Second'])
+    window.show()
+    try:
+        ThemeManager.apply_appearance('Glass', 'Dark', 'Ice')
+        combo.showPopup()
+        app.processEvents()
+        combo.hidePopup()
+        # Qt owns the popup, so nothing on the Python side keeps its wrapper alive
+        gc.collect()
+        ThemeManager.apply_appearance('Fusion', 'Dark', 'Ice')
+        popup = combo.view().window()
+        assert popup.styleSheet() == ''
+        assert not popup.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        assert combo.view().graphicsEffect() is None
+    finally:
+        window.deleteLater()
+
+
+def test_fusion_combo_rows_paint_as_menu_items(app: QApplication) -> None:
+    ThemeManager.apply_appearance('Fusion', 'Dark', 'Ice')
+    combo = QComboBox()
+    combo.addItem('First')
+    try:
+        combo.ensurePolished()
+        assert isinstance(combo.itemDelegate(), MenuItemDelegate)
+        index = combo.model().index(0, 0)
+        option = QStyleOptionViewItem()
+        option.initFrom(combo.view())
+        assert combo.itemDelegate().sizeHint(option, index).height() >= CONTROL_HEIGHT
+    finally:
+        combo.deleteLater()
+        app.processEvents()
+
+
+def test_glass_menu_rows_skip_list_item_rules(app: QApplication) -> None:
+    app.setStyleSheet('QDialogButtonBox { button-layout: 0; }')
+    ThemeManager.apply_appearance('Glass', 'Dark', 'Ice')
+    # List item rules would paint a square selection under the rounded one
+    assert plain_style().metaObject().className() != 'QStyleSheetStyle'

@@ -53,7 +53,7 @@ class RoundedItemViewEffect(QGraphicsEffect):
         rim_rect = rect.adjusted(inset, inset, -inset, -inset)
         rim = QLinearGradient(rim_rect.topLeft(), rim_rect.bottomLeft())
         color = QColor(glass_colors().ink)
-        color.setAlphaF(0.14 if self._popup else 0.18)
+        color.setAlphaF(0.28 if self._popup else 0.18)
         rim.setColorAt(0, color)
         color.setAlphaF(0.14 if self._popup else 0.08)
         rim.setColorAt(1, color)

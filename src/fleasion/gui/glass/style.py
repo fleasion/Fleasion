@@ -291,13 +291,10 @@ QComboBox::down-arrow { image: url($chevron_down); width: 14px; height: 14px; }
 QComboBox[fflagBrowserCompact="true"] { padding-right: 12px; }
 QComboBox[fflagBrowserCompact="true"]::drop-down { width: 16px; margin-right: 1px; }
 QComboBox[fflagBrowserCompact="true"]::down-arrow { width: 12px; height: 12px; }
+/* Matches QMenu; the item-view effect paints the rim and the menu-item rows pad themselves */
 QComboBox QAbstractItemView {
-    background: rgba($popup_rgb,0.98); border: 1px solid transparent;
-    border-radius: 10px; padding: 6px; selection-background-color: rgba($accent_rgb,0.35);
-    selection-color: $text;
-}
-QComboBox QAbstractItemView::item:selected {
-    border-radius: 5px;
+    background: rgba($popup_rgb,0.97); border: 1px solid transparent;
+    border-radius: 12px; padding: 0;
 }
 QSpinBox, QDoubleSpinBox { padding-right: 24px; }
 QSpinBox::up-button, QDoubleSpinBox::up-button,

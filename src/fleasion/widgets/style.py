@@ -2,23 +2,45 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, overload, override
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox, QProxyStyle, QStyle
+from PySide6.QtWidgets import (
+    QAbstractButton,
+    QAbstractSpinBox,
+    QComboBox,
+    QProxyStyle,
+    QStyle,
+)
 
+from .menu_items import use_menu_items
 from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING
 
 if TYPE_CHECKING:
     from PySide6.QtCore import QRect, QSize
-    from PySide6.QtGui import QPainter
-    from PySide6.QtWidgets import QStyleHintReturn, QStyleOption, QWidget
+    from PySide6.QtGui import QColor, QPainter, QPalette
+    from PySide6.QtWidgets import QApplication, QStyleHintReturn, QStyleOption, QWidget
 
 
 class LayoutStyle(QProxyStyle):
     def __init__(self) -> None:
         super().__init__('Fusion')
         self.setObjectName('fusion')
+
+    @overload
+    def polish(self, app: QApplication, /) -> None: ...
+    @overload
+    def polish(self, widget: QWidget, /) -> None: ...
+    @overload
+    def polish(self, arg__1: QPalette | Qt.GlobalColor | QColor, /) -> None: ...
+    @override
+    def polish(
+        self, target: QApplication | QWidget | QPalette | Qt.GlobalColor | QColor, /
+    ) -> None:
+        if isinstance(target, QComboBox):
+            # Popup rows match the menus behind every other dropdown button
+            use_menu_items(target)
+        super().polish(target)
 
     @override
     def pixelMetric(

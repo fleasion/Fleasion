@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from typing import TYPE_CHECKING, Final, override
-from weakref import WeakKeyDictionary, WeakSet
+from weakref import WeakKeyDictionary
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -44,6 +44,11 @@ if TYPE_CHECKING:
 _COMPACT_BUTTON_MAX: Final = 40
 _ARROW_BUTTON_MAX: Final = 24
 _FALLBACK_BACKDROP: Final = (20, 22, 34)
+# Qt creates combo popups and tooltips itself, so their Python wrappers can be
+# collected while the widget lives on. Original attributes stay on the widget
+_ORIGINAL_TRANSPARENCY: Final = 'glassOriginalTransparency'
+_TRANSLUCENT: Final = 1
+_NO_SYSTEM_BACKGROUND: Final = 2
 
 
 def _fallback_color() -> QColor:
@@ -170,8 +175,6 @@ class GlassWindows(QObject):
         self._original_popup_attributes: WeakKeyDictionary[QWidget, tuple[bool, bool]] = (
             WeakKeyDictionary(original_popup_attributes or {})
         )
-        self._rounded_itemviews: WeakSet[QAbstractItemView] = WeakSet()
-        self._attributes: WeakKeyDictionary[QWidget, tuple[bool, bool]] = WeakKeyDictionary()
         self._button_properties: WeakKeyDictionary[QPushButton, set[str]] = WeakKeyDictionary()
         self._original_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary()
         self._wallpaper_timer = QTimer(self)
@@ -206,21 +209,24 @@ class GlassWindows(QObject):
                 parent = parent.parentWidget()
             return depth
 
-        valid_windows = (
-            (window, attributes)
-            for window, attributes in self._attributes.items()
-            if isValid(window)
-        )
-        for window, (translucent, no_background) in sorted(
-            valid_windows, key=lambda item: parent_depth(item[0])
-        ):
+        remembered = [
+            widget
+            for widget in self._app.allWidgets()
+            if isValid(widget) and isinstance(widget.property(_ORIGINAL_TRANSPARENCY), int)
+        ]
+        for window in sorted(remembered, key=parent_depth):
             if not isValid(window):
                 continue
+            original = window.property(_ORIGINAL_TRANSPARENCY)
+            flags = original if isinstance(original, int) else 0
+            # None removes the dynamic property again
+            window.setProperty(_ORIGINAL_TRANSPARENCY, None)
             restore_transparency(
-                window, translucent=translucent, no_system_background=no_background
+                window,
+                translucent=bool(flags & _TRANSLUCENT),
+                no_system_background=bool(flags & _NO_SYSTEM_BACKGROUND),
             )
             window.update()
-        self._attributes.clear()
         for widget, original_mask in list(self._original_masks.items()):
             if isValid(widget):
                 if original_mask.isEmpty():
@@ -228,10 +234,9 @@ class GlassWindows(QObject):
                 else:
                     widget.setMask(original_mask)
         self._original_masks.clear()
-        for view in list(self._rounded_itemviews):
+        for view in self._app.allWidgets():
             if isValid(view) and isinstance(view.graphicsEffect(), RoundedItemViewEffect):
                 view.setGraphicsEffect(None)  # pyright: ignore[reportArgumentType]
-        self._rounded_itemviews.clear()
         # QSS removal does not always undo the masks Qt adds to native popups
         for widget in self._app.allWidgets():
             if not isValid(widget) or not self.is_rounded_popup(widget):
@@ -254,19 +259,21 @@ class GlassWindows(QObject):
     def remember_window(self, window: QWidget) -> None:
         # Root windows created during Glass predate their custom title bar, but
         # popup widgets may already have Glass QSS attributes when polished
-        if window in self._attributes:
+        if isinstance(window.property(_ORIGINAL_TRANSPARENCY), int):
             return
         original = self._original_popup_attributes.get(window)
         if original is not None:
-            self._attributes[window] = original
+            translucent, no_background = original
         elif QApplication.platformName() == 'xcb' and self.is_rounded_popup(window):
             # Popups created during Glass should return to opaque X11 visuals
-            self._attributes[window] = (False, False)
+            translucent, no_background = False, False
         else:
-            self._attributes[window] = (
-                window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground),
-                window.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground),
-            )
+            translucent = window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            no_background = window.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        flags = (_TRANSLUCENT if translucent else 0) | (
+            _NO_SYSTEM_BACKGROUND if no_background else 0
+        )
+        window.setProperty(_ORIGINAL_TRANSPARENCY, flags)
 
     @staticmethod
     def is_combo_popup(widget: QWidget) -> bool:
@@ -286,11 +293,12 @@ class GlassWindows(QObject):
             return 0
         if _is_window(widget) and widget.property('glassChrome'):
             return RADIUS
-        if widget.isWindow() and widget.windowFlags() & Qt.WindowType.Popup:
-            if isinstance(widget, QMenu):
-                return 12
-            if GlassWindows.is_combo_popup(widget):
-                return 10
+        if (
+            widget.isWindow()
+            and widget.windowFlags() & Qt.WindowType.Popup
+            and (isinstance(widget, QMenu) or GlassWindows.is_combo_popup(widget))
+        ):
+            return 12
         if widget.isWindow() and widget.windowType() == Qt.WindowType.ToolTip:
             return 8
         return 0
@@ -334,9 +342,8 @@ class GlassWindows(QObject):
             return
         if widget.graphicsEffect() is None:
             popup = self.is_combo_popup(widget.window())
-            radius = 10 if popup else RADIUS
+            radius = 12 if popup else RADIUS
             widget.setGraphicsEffect(RoundedItemViewEffect(widget, radius=radius, popup=popup))
-            self._rounded_itemviews.add(widget)
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:

@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from weakref import WeakKeyDictionary
 
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
 from shiboken6 import isValid
 
 if TYPE_CHECKING:
-    from PySide6.QtWidgets import QApplication, QWidget
+    from PySide6.QtWidgets import QWidget
+
+# Qt creates combo popups and tooltips itself, so their Python wrappers can be
+# collected while the widget lives on. The original stylesheet stays on the widget
+_ORIGINAL = 'glassOriginalStyleSheet'
 
 
 class WindowStyles:
     def __init__(self) -> None:
         self._stylesheet = ''
-        self._originals: WeakKeyDictionary[QWidget, str] = WeakKeyDictionary()
 
     def apply(self, app: QApplication, stylesheet: str) -> None:
         self._stylesheet = stylesheet
@@ -34,20 +37,27 @@ class WindowStyles:
         # Native combo and tooltip panels need their own QSS to suppress square fills
         if not self._stylesheet:
             return
-        if widget not in self._originals:
-            self._originals[widget] = widget.styleSheet()
-        original = self._originals[widget]
+        original = widget.property(_ORIGINAL)
+        if not isinstance(original, str):
+            original = widget.styleSheet()
+            widget.setProperty(_ORIGINAL, original)
         combined = f'{self._stylesheet}\n{original}' if original else self._stylesheet
         if widget.styleSheet() != combined:
             widget.setStyleSheet(combined)
 
-    def _restore(self, widget: QWidget) -> None:
-        if widget in self._originals:
-            widget.setStyleSheet(self._originals.pop(widget))
+    @staticmethod
+    def _restore(widget: QWidget) -> None:
+        original = widget.property(_ORIGINAL)
+        if isinstance(original, str):
+            # None removes the dynamic property again
+            widget.setProperty(_ORIGINAL, None)
+            widget.setStyleSheet(original)
 
     def restore(self) -> None:
         self._stylesheet = ''
-        for widget in list(self._originals):
+        app = QApplication.instance()
+        if not isinstance(app, QApplication):
+            return
+        for widget in app.allWidgets():
             if isValid(widget):
                 self._restore(widget)
-        self._originals.clear()

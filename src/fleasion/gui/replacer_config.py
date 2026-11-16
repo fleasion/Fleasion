@@ -92,6 +92,7 @@ from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.http import http_head_status
 from fleasion.utils.json_types import as_object_list, require_json_value
 from fleasion.utils.replacement_filters import ReplacementFilter, describe as describe_filters
+from fleasion.widgets.menu_items import draw_menu_item
 from fleasion.widgets.spacing import GAP, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
 
@@ -635,9 +636,7 @@ class _ConfigMenuRow(QWidget):
     @override
     def paintEvent(self, _event: QPaintEvent) -> None:
         painter = QPainter(self)
-        self.style().drawControl(
-            QStyle.ControlElement.CE_MenuItem, self._style_option(), painter, self
-        )
+        draw_menu_item(painter, self._style_option(), self, rounded=glass.theme.active)
 
     @override
     def enterEvent(self, event: QEnterEvent) -> None:
