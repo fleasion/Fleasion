@@ -5,9 +5,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, override
 
-from PySide6.QtCore import QEasingCurve, QElapsedTimer, QPropertyAnimation, Qt, QTimer
-from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QDialog, QGraphicsDropShadowEffect, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import QElapsedTimer, Qt, QTimer
+from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout, QWidget
 
 from fleasion.app.dialogs.common import FirstTimeSetupDialog
 from fleasion.localization import tr
@@ -45,37 +44,10 @@ class MacOSRosemaryNoticeDialog(FirstTimeSetupDialog):
 
         button = self.ok_button
         button.setObjectName('MacOSRosemaryNoticeAcknowledge')
+        button.setDefault(False)
+        button.setAutoDefault(False)
         button.setEnabled(False)
-        button.setMinimumSize(240, 54)
         button.setText(tr('macos_rosemary.read_countdown', seconds=READ_SECONDS))
-        palette = button.palette()
-        highlight = palette.color(QPalette.ColorRole.Highlight)
-        text = palette.color(QPalette.ColorRole.HighlightedText)
-        disabled = palette.color(QPalette.ColorRole.Mid)
-        base = palette.color(QPalette.ColorRole.Window)
-        button.setStyleSheet(
-            'QPushButton#MacOSRosemaryNoticeAcknowledge {'
-            f'background-color: {highlight.name()}; color: {text.name()};'
-            f'border: 2px solid {highlight.name()};'
-            'border-radius: 9px; padding: 10px 20px; font-size: 14px; font-weight: 800;'
-            '}'
-            'QPushButton#MacOSRosemaryNoticeAcknowledge:disabled {'
-            f'background-color: {base.name()}; color: {disabled.name()};'
-            f'border: 2px solid {disabled.name()};'
-            '}'
-        )
-        glow = QGraphicsDropShadowEffect(button)
-        glow.setBlurRadius(17)
-        glow.setOffset(0, 0)
-        glow.setColor(highlight)
-        button.setGraphicsEffect(glow)
-        self._attention = QPropertyAnimation(glow, b'blurRadius', self)
-        self._attention.setDuration(1000)
-        self._attention.setStartValue(17.0)
-        self._attention.setKeyValueAt(0.5, 34.0)
-        self._attention.setEndValue(17.0)
-        self._attention.setEasingCurve(QEasingCurve.Type.InOutSine)
-        self._attention.setLoopCount(4)
 
         self._elapsed = QElapsedTimer()
         self._countdown = QTimer(self)
@@ -101,8 +73,6 @@ class MacOSRosemaryNoticeDialog(FirstTimeSetupDialog):
         self.allow_accept()
         self.ok_button.setText(tr('macos_rosemary.read_button'))
         self.ok_button.setEnabled(True)
-        self.ok_button.setFocus(Qt.FocusReason.OtherFocusReason)
-        self._attention.start()
 
 
 def show_macos_rosemary_notice(

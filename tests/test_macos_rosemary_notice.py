@@ -12,7 +12,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QGraphicsDropShadowEffect, QLabel
+from PySide6.QtWidgets import QApplication, QDialog, QLabel
 
 from fleasion.app.dialogs import macos_rosemary_notice as notice
 from fleasion.localization import tr
@@ -74,9 +74,11 @@ def test_timed_modal_cannot_be_skipped_or_dismissed_before_ack(
     assert not dialog._countdown.isActive()
     assert dialog.ok_button.text() == 'I READ THE ABOVE'
     assert dialog.ok_button.isEnabled()
-    assert dialog.ok_button.minimumHeight() >= 54
-    assert isinstance(dialog.ok_button.graphicsEffect(), QGraphicsDropShadowEffect)
-    assert dialog._attention.state() == dialog._attention.State.Running
+    assert not dialog.ok_button.isDefault()
+    assert not dialog.ok_button.autoDefault()
+    assert dialog.ok_button.styleSheet() == ''
+    assert dialog.ok_button.graphicsEffect() is None
+    assert not dialog.ok_button.hasFocus()
 
     # It does not disappear when the countdown reaches zero
     assert dialog.isVisible()
