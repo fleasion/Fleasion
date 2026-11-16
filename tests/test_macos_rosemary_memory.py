@@ -163,7 +163,7 @@ def test_malformed_reply_closes_channel() -> None:
 
 
 def test_inherited_descriptor_is_not_inherited_without_explicit_opt_in() -> None:
-    script = '''import os,socket,struct\nfd=int(os.environ["FLEASION_ROSEMARY_IPC_FD"])\ns=socket.socket(fileno=fd)\nrequest=s.recv(45)\nassert request[:1]==b"K"\ns.sendall(struct.pack("<BI",0,0))\n'''
+    script = '''import os,socket,struct\nfd=int(os.environ["FLEASION_ROSEMARY_IPC_FD"])\nassert int(os.environ["FLEASION_ROSEMARY_LAUNCHER_PID"]) == os.getppid()\ns=socket.socket(fileno=fd)\nrequest=s.recv(45)\nassert request[:1]==b"K"\ns.sendall(struct.pack("<BI",0,0))\n'''
     session = memory.launch_with_private_memory([sys.executable, '-c', script], env=os.environ.copy())
     try:
         assert session.channel.secrets_for('00' * 32) == {}

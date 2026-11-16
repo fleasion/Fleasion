@@ -175,6 +175,7 @@ def launch_with_private_memory(
     try:
         environment = env.copy()
         environment['FLEASION_ROSEMARY_IPC_FD'] = str(child.fileno())
+        environment['FLEASION_ROSEMARY_LAUNCHER_PID'] = str(os.getpid())
         process = subprocess.Popen(
             list(command),
             env=environment,
