@@ -1900,6 +1900,14 @@ class SubplaceJoinerTab(QWidget):
             'subplace',
             f'Joining place ID: {place_id}' + (f' with jobId: {job_id}' if job_id else ''),
         )
+        if sys.platform == 'darwin':
+            # No targeted join was dispatched; leave the proxy join rewriter idle
+            self.joining_place = False
+            self._current_job_id = ''
+            from .macos_rosemary_launch import launch_from_feature
+
+            launch_from_feature(self, 'Subplace or specific-server joining')
+            return
         selected_cookie: str | None = None
         if self._rando_tab is not None:
             selected_account = getattr(self._rando_tab, 'selected_launch_account_cookie', None)
@@ -1995,7 +2003,10 @@ class SubplaceJoinerTab(QWidget):
             log_buffer.log('subplace', 'Failed to launch Roblox deeplink without elevation')
 
     def _launch_roblox_uri(self, target: str) -> bool:
-        """Launch a join URI using the active platform proxy strategy."""
+        """Launch a join URI where the platform explicitly supports the handler."""
+        if sys.platform == 'darwin':
+            log_buffer.log('subplace', 'Roblox URI dispatch is disabled on managed macOS')
+            return False
         if sys.platform.startswith('linux'):
             return launch_as_standard_user(target)
 

@@ -134,3 +134,40 @@ class ManagedRobloxLaunch(QObject):
             QMessageBox.information(self._window, tr('macos_rosemary.title'), message)
         else:
             QMessageBox.warning(self._window, tr('macos_rosemary.launch_failed'), message)
+
+
+def launch_from_feature(widget: QWidget, feature: str) -> bool:
+    """Offer an explicitly non-targeted Rosemary launch for a macOS feature button.
+
+    macOS Roblox does not currently accept ticketed join flags without treating
+    their values as URL-opening events. Never silently dispatch an OS URI or
+    claim that an unsupported selected account or server will be joined.
+    """
+    if not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+        QMessageBox.warning(
+            widget,
+            tr('macos_rosemary.title'),
+            'Roblox launching through Fleasion-managed Rosemary is not available in this build.',
+        )
+        return False
+    controller = getattr(widget.window(), '_macos_rosemary_launch', None)
+    if not isinstance(controller, ManagedRobloxLaunch):
+        QMessageBox.warning(
+            widget,
+            tr('macos_rosemary.title'),
+            'The managed Roblox launcher is not ready. Use the Fleasion launch button.',
+        )
+        return False
+    choice = QMessageBox.question(
+        widget,
+        tr('macos_rosemary.title'),
+        f'{feature} cannot be selected automatically on macOS without a Roblox URI. '
+        'Launch Roblox with Rosemary using its currently signed-in account instead? '
+        'You must join the experience or server manually.',
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    if choice != QMessageBox.StandardButton.Yes:
+        return False
+    controller.launch()
+    return True

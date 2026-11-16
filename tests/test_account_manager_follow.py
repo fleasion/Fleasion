@@ -247,8 +247,12 @@ def test_follow_uses_selected_non_linux_launcher(
     else:
         monkeypatch.setattr(tab, 'launch_as_standard_user', launch)
     launcher = cast('Callable[[str], bool]', tab.__dict__['_launch_follow_user_uri'])
-    assert launcher('roblox-player:1+launchmode:play')
-    assert calls == ['roblox-player:1+launchmode:play']
+    if platform == 'macos':
+        assert not launcher('roblox-player:1+launchmode:play')
+        assert calls == []
+    else:
+        assert launcher('roblox-player:1+launchmode:play')
+        assert calls == ['roblox-player:1+launchmode:play']
 
 
 def test_macos_launch_failures_never_log_auth_tickets(monkeypatch: pytest.MonkeyPatch) -> None:

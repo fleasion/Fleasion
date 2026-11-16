@@ -611,9 +611,8 @@ def _launch_follow_user_uri(uri: str) -> bool:
 
         return linux_launch(uri)
     if IS_MACOS:
-        from fleasion.utils.platform_macos import launch_as_standard_user as macos_launch
-
-        return macos_launch(uri)
+        log_buffer.log('accounts', 'Roblox URI dispatch is disabled on managed macOS')
+        return False
     return launch_as_standard_user(uri)
 
 
@@ -1578,6 +1577,15 @@ class RandoStuffTab(QWidget):
             self._last_access_code = access_code
             self._doing_rejoin = True
         log_buffer.log('randostuff', f'Rejoin triggered - placeId={place_id}')
+        if IS_MACOS:
+            with self._lock:
+                self._doing_rejoin = False
+                self._active_rejoin_attempt_id = None
+                self._awaiting_rejoin_response = False
+            from .macos_rosemary_launch import launch_from_feature
+
+            launch_from_feature(self, 'Reserved-server joining')
+            return
         if not launch_as_standard_user(f'roblox://placeId={place_id}'):
             log_buffer.log('randostuff', 'Failed to launch Roblox without elevation')
 
@@ -2200,6 +2208,11 @@ class RandoStuffTab(QWidget):
             f'Launch request prepared for {username}: hasLink={"yes" if bool(link) else "no"}, '
             f'hasSubplace={"yes" if bool(subplace_id) else "no"}, hasJobId={"yes" if bool(job_id) else "no"}',
         )
+        if IS_MACOS:
+            from .macos_rosemary_launch import launch_from_feature
+
+            launch_from_feature(self, 'Selected-account, game or private-server launching')
+            return
 
         if _is_share_link(link):
             self._launch_acct_btn.setEnabled(False)
@@ -2271,6 +2284,11 @@ class RandoStuffTab(QWidget):
                 tr('ui.gui.rando_stuff_tab.error'),
                 tr('ui.gui.rando_stuff_tab.could_not_decrypt_the_stored_cookie'),
             )
+            return
+        if IS_MACOS:
+            from .macos_rosemary_launch import launch_from_feature
+
+            launch_from_feature(self, 'Account follow-user joining')
             return
         self._follow_user_btn.setEnabled(False)
         threading.Thread(
@@ -2430,6 +2448,9 @@ class RandoStuffTab(QWidget):
         launcher: Callable[[str], bool] | None = None,
     ) -> bool:
         """Dispatch the selected account ticket without changing the me mapping."""
+        if IS_MACOS:
+            log_buffer.log('accounts', 'Authenticated Roblox URI dispatch is disabled on macOS')
+            return False
         dispatch = launcher or launch_as_standard_user
         return dispatch(uri)
 
@@ -2441,7 +2462,16 @@ class RandoStuffTab(QWidget):
         job_id: str = '',
         subplace_id: str = '',
     ) -> None:
-        ticket_only_launch = IS_MACOS or _is_rosemary_client()
+        if IS_MACOS:
+            from .macos_rosemary_launch import launch_from_feature
+
+            self._on_main(
+                lambda: launch_from_feature(
+                    self, 'Selected-account, game or private-server launching'
+                )
+            )
+            return
+        ticket_only_launch = _is_rosemary_client()
         if IS_WINDOWS:
 
             def _switch_launch_cookie() -> None:

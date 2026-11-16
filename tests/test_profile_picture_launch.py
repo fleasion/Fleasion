@@ -13,12 +13,14 @@ from fleasion.gui import rando_stuff_tab as account_ui
 from fleasion.proxy.addons import profile_picture_spoofer as pfp_module
 
 
-@pytest.mark.parametrize('launched', [True, False])
-def test_ticket_launch_does_not_change_selected_account_identity(
+@pytest.mark.parametrize('approved', [True, False])
+def test_mac_account_launch_uses_fleasion_without_changing_selected_identity(
     monkeypatch: pytest.MonkeyPatch,
-    launched: bool,
+    approved: bool,
 ) -> None:
-    """Ticket launch result does not switch the Account Manager-selected mapping."""
+    """The macOS ticket worker cannot bypass Fleasion or change the account mapping."""
+    from fleasion.gui import macos_rosemary_launch
+
     owner = account_ui.RandoStuffTab.__new__(account_ui.RandoStuffTab)
     owner.__dict__.update({
         '_lock': threading.Lock(),
@@ -29,27 +31,21 @@ def test_ticket_launch_does_not_change_selected_account_identity(
     spoofer.set_entries([{'enabled': True, 'target': 'me', 'image_url': 'https://example.com/b.png'}])
     spoofer.set_current_user('2')
     owner.__dict__['_proxy_master'] = SimpleNamespace(profile_picture_spoofer=spoofer)
-    failures: list[tuple[str, str]] = []
-    def warn(username: str, reason: str) -> None:
-        failures.append((username, reason))
-
-    owner.__dict__['_show_selected_account_launch_failed'] = warn
+    owner.__dict__['_on_main'] = lambda callback: callback()
+    launches: list[str] = []
     monkeypatch.setattr(account_ui, 'IS_MACOS', True)
     monkeypatch.setattr(account_ui, 'IS_WINDOWS', False)
-    monkeypatch.setattr(account_ui, '_is_rosemary_client', lambda: False)
-    monkeypatch.setattr(account_ui, '_find_roblox_exe', lambda: Path('/test/RobloxPlayer'))
-
-    def get_ticket(_cookie: str) -> str:
-        return 'ticket'
-
-    monkeypatch.setattr(account_ui, 'get_auth_ticket', get_ticket)
-    def dispatch(_uri: str) -> bool:
-        return launched
-
-    monkeypatch.setattr(account_ui, 'launch_as_standard_user', dispatch)
+    monkeypatch.setattr(
+        account_ui, 'launch_as_standard_user',
+        lambda _target: pytest.fail('Mac account worker must never dispatch a Roblox URI'),
+    )
+    monkeypatch.setattr(
+        macos_rosemary_launch, 'launch_from_feature',
+        lambda _owner, feature: launches.append(feature) or approved,
+    )
     owner._launch_account_thread('ticket-cookie', 'AccountB')  # pyright: ignore[reportPrivateUsage]
     assert spoofer.current_user_id() == '2'
-    assert bool(failures) == (not launched)
+    assert launches == ['Selected-account, game or private-server launching']
 
 
 def test_account_manager_selection_updates_spoofer_even_for_macos(
