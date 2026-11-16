@@ -36,6 +36,7 @@ import socket
 import ssl
 import stat
 import struct
+import sys
 import threading
 import time
 import uuid
@@ -46,6 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
+from fleasion.utils import macos_rosemary_gate
 from fleasion.utils.json_types import JsonValue
 from fleasion.utils.sober_bootstrap_keys import native_keylog_path
 
@@ -3031,6 +3033,9 @@ class FleasionProxy:
             result.writer,
             keys=keys,
             client_records=client_records,
+            require_interception=(
+                sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
+            ),
         )
         self._asset_trace.splice(host, 'open')
         try:
@@ -3043,6 +3048,12 @@ class FleasionProxy:
                 )
         except (OSError, ValueError, TimeoutError) as exc:
             if not await _was_splice_disconnected_by_player_exit(exc):
+                if connection.require_interception and isinstance(exc, TimeoutError):
+                    log_buffer.log(
+                        'Error',
+                        f'Required TLS interception failed for {host}: key recovery timed out; '
+                        'the connection was closed, not bypassed',
+                    )
                 self._asset_trace.splice(host, 'error', detail=type(exc).__name__)
                 log_buffer.log(
                     'Proxy',

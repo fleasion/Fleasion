@@ -263,11 +263,10 @@ def launch_managed(
         env=_rosemary_environment(proxy_url, runtime_executable=executable),
     )
     try:
-        # A successful spawn is insufficient: prove the pinned process actually
-        # opened its private IPC channel inside the built-in prefix runtime.
-        regions = session.channel.regions()
-        if not regions or not session.running:
-            msg = 'Rosemary exited before its private memory channel became ready'
+        # Prove the managed guest initialized the key-only IPC channel
+        session.channel.ping()
+        if not session.running:
+            msg = 'Rosemary exited before its private TLS key channel became ready'
             raise ManagedLaunchError(msg)
     except OSError, RuntimeError, ValueError:
         session.close()

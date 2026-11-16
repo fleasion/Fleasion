@@ -1,4 +1,4 @@
-"""Private read-only memory transport for a Fleasion-launched macOS Rosemary process."""
+"""Private TLS-secret-only transport for a Fleasion-launched macOS Rosemary process."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from fleasion.proxy.rosemary_keys import scan_mapped_regions
 from fleasion.utils.logging import log_buffer
 
 if TYPE_CHECKING:
@@ -20,11 +19,15 @@ if TYPE_CHECKING:
 
 _HEADER = struct.Struct('<cQI')
 _REPLY = struct.Struct('<BI')
-_REGION = struct.Struct('<QQ')
-_MAX_READ = 4 * 1024 * 1024 + 64
-_MAX_CHUNK = 4 * 1024 * 1024
-_MAX_REGIONS = 16_384
-_MAX_REPLY = max(_MAX_READ, _MAX_REGIONS * _REGION.size)
+_KEY_REQUEST_SIZE = 32
+_MAX_REPLY = 3 + 5 * 48
+_KEY_LABELS = (
+    'CLIENT_HANDSHAKE_TRAFFIC_SECRET',
+    'SERVER_HANDSHAKE_TRAFFIC_SECRET',
+    'CLIENT_TRAFFIC_SECRET_0',
+    'SERVER_TRAFFIC_SECRET_0',
+    'EXPORTER_SECRET',
+)
 
 
 class MemoryChannel:
@@ -44,78 +47,71 @@ class MemoryChannel:
     def _read_exact(self, length: int) -> bytes:
         received = bytearray()
         while len(received) < length:
-            chunk = self._socket.recv(length - len(received))
+            try:
+                chunk = self._socket.recv(length - len(received))
+            except OSError:
+                # An incomplete or timed-out reply invalidates framing. Never
+                # attribute a late response to another TLS connection
+                self._closed = True
+                self._socket.close()
+                raise
             if not chunk:
-                msg = 'Rosemary closed its private memory channel'
+                self._closed = True
+                self._socket.close()
+                msg = 'Rosemary closed its private TLS key channel'
                 raise ConnectionError(msg)
             received.extend(chunk)
         return bytes(received)
 
-    def _request(self, operation: bytes, address: int, length: int) -> bytes | None:
-        if not (0 <= address < (1 << 64) and 0 <= length <= 0xFFFFFFFF):
-            msg = 'Invalid Rosemary memory request bounds'
-            raise ValueError(msg)
+    def ping(self) -> None:
+        """Verify the owned Rosemary IPC service without accessing memory."""
         with self._lock:
             if self._closed:
-                msg = 'Rosemary memory session is closed'
+                msg = 'Rosemary key channel is closed'
                 raise ConnectionError(msg)
-            self._socket.sendall(_HEADER.pack(operation, address, length))
+            self._socket.sendall(_HEADER.pack(b'P', 0, 0))
             status, reply_len = _REPLY.unpack(self._read_exact(_REPLY.size))
-            if reply_len > _MAX_REPLY or status not in {0, 1} or (status == 1 and reply_len):
-                self._closed = True
-                self._socket.close()
-                msg = 'Malformed Rosemary memory reply'
+            if status != 0 or reply_len != 0:
+                self.close()
+                msg = 'Rosemary key-only IPC is unavailable'
+                raise ConnectionError(msg)
+
+    def secrets_for(self, client_random: str) -> dict[str, dict[str, bytes]]:
+        """Request only a validated TLS key set from the owned Rosemary guest."""
+        if len(client_random) != _KEY_REQUEST_SIZE * 2:
+            msg = 'TLS client random must be 32 bytes'
+            raise ValueError(msg)
+        random = bytes.fromhex(client_random)
+        with self._lock:
+            if self._closed:
+                msg = 'Rosemary key channel is closed'
+                raise ConnectionError(msg)
+            self._socket.sendall(_HEADER.pack(b'K', 0, len(random)) + random)
+            status, reply_len = _REPLY.unpack(self._read_exact(_REPLY.size))
+            if status not in {0, 1} or reply_len > _MAX_REPLY or (status == 1 and reply_len):
+                self.close()
+                msg = 'Malformed Rosemary TLS key reply'
                 raise ConnectionError(msg)
             payload = self._read_exact(reply_len)
-            return payload if status == 0 else None
-
-    def regions(self) -> list[tuple[int, int]]:
-        data = self._request(b'M', 0, 0)
-        if data is None or len(data) % _REGION.size or len(data) > _MAX_REGIONS * _REGION.size:
-            msg = 'Rosemary could not enumerate its readable memory'
+        if status == 1:
+            msg = 'Rosemary TLS key scanner unavailable'
             raise OSError(msg)
-        regions = list(_REGION.iter_unpack(data))
-        if any(size == 0 or start + size > 1 << 64 for start, size in regions):
-            msg = 'Rosemary returned invalid memory region bounds'
-            raise OSError(msg)
-        return regions
-
-    def read(self, address: int, size: int) -> bytes:
-        if not 0 < size <= _MAX_READ:
-            return b''
-        # Rosemary limits individual IPC reads to 4 MiB, but the shared
-        # OpenSSL scanner requests up to 64 extra bytes for needle overlap.
-        data = bytearray()
-        while len(data) < size:
-            count = min(_MAX_CHUNK, size - len(data))
-            result = self._request(b'R', address + len(data), count)
-            if result is None:
-                return bytes(data)
-            if len(result) != count:
-                msg = 'Rosemary returned a partial memory read'
-                raise OSError(msg)
-            data.extend(result)
-        return bytes(data)
-
-
-class MemoryReader:
-    """Seekable adapter consumed by the existing OpenSSL layout validators."""
-
-    def __init__(self, channel: MemoryChannel) -> None:
-        self._channel = channel
-        self._position = 0
-
-    def seek(self, offset: int, whence: int = 0) -> int:
-        if whence != 0 or not 0 <= offset < 1 << 64:
-            msg = 'Rosemary memory reads require an absolute address'
+        if not payload:
+            return {}
+        if len(payload) < 3 or payload[0] != 1:
+            msg = 'Unsupported Rosemary TLS key protocol'
             raise ValueError(msg)
-        self._position = offset
-        return offset
-
-    def read(self, size: int = -1) -> bytes:
-        data = self._channel.read(self._position, size)
-        self._position += len(data)
-        return data
+        kind, secret_len = payload[1], payload[2]
+        if kind == 1 and secret_len in {32, 48} and len(payload) == 3 + 5 * secret_len:
+            secrets = {
+                label: payload[3 + i * secret_len : 3 + (i + 1) * secret_len]
+                for i, label in enumerate(_KEY_LABELS)
+            }
+            return {client_random.lower(): secrets}
+        if kind == 2 and secret_len == 48 and len(payload) == 51:
+            return {client_random.lower(): {'CLIENT_RANDOM': payload[3:]}}
+        msg = 'Malformed Rosemary TLS key payload'
+        raise ValueError(msg)
 
 
 @dataclass(slots=True)
@@ -205,14 +201,11 @@ def scan_active(
     if session is None:
         return {}
     try:
-        regions = session.channel.regions()
-        return scan_mapped_regions(
-            MemoryReader(session.channel),
-            session.process.pid,
-            regions,
-            client_random=client_random,
-            stop=stop,
-        )
+        if stop is not None and stop.is_set():
+            return {}
+        return session.channel.secrets_for(client_random)
     except (OSError, ValueError) as exc:
-        log_buffer.log('TLS', f'Pinned macOS Rosemary memory scan unavailable: {exc}')
-        return {}
+        # A native scanner failure is not equivalent to a key that has not
+        # appeared yet. It must reach the connection as an explicit failure
+        log_buffer.log('Error', f'Managed Rosemary TLS key extraction failed: {exc}')
+        raise

@@ -208,11 +208,13 @@ class SpliceConnection:
         *,
         keys: KeyProvider,
         client_records: Sequence[bytes] = (),
+        require_interception: bool = False,
     ) -> None:
         self.client = _Direction('CLIENT', client_reader, upstream_writer)
         self.server = _Direction('SERVER', upstream_reader, client_writer)
         self.keys = keys
         self.client_records = client_records
+        self.require_interception = require_interception
         self.client_random = ''
         self.server_random = b''
         self.cipher: int | None = None
@@ -242,6 +244,9 @@ class SpliceConnection:
                 self.cipher = int.from_bytes(body[offset : offset + 2], 'big')
                 self.server_random = body[2:34]
                 if self.cipher not in CIPHERS and self.cipher not in TLS12_SUITES:
+                    if self.require_interception:
+                        msg = f'Required TLS interception cannot decode cipher 0x{self.cipher:04x}'
+                        raise ValueError(msg)
                     # Relay the already-started handshake unchanged. Reconnecting
                     # would break the client's TLS transcript and certificates
                     self._transparent_passthrough = True
@@ -332,6 +337,8 @@ class SpliceConnection:
             try:
                 await self._prepare_tls12_keys()
             except TimeoutError:
+                if self.require_interception:
+                    raise
                 # No application bytes have been altered yet. Preserve the
                 # established TLS handshake instead of disconnecting the app
                 self._transparent_passthrough = True
@@ -345,6 +352,8 @@ class SpliceConnection:
             try:
                 await self._prepare_keys(direction)
             except TimeoutError:
+                if self.require_interception:
+                    raise
                 # Keep the authenticated peer-to-peer handshake intact if
                 # key discovery fails before Fleasion has modified any TLS
                 # application bytes. After decryption begins, failing closed
@@ -374,6 +383,9 @@ class SpliceConnection:
         except InvalidTag:
             if is_tls12:
                 if not self._tls12_authenticated_application:
+                    if self.require_interception:
+                        msg = 'Required TLS interception rejected unverified TLS 1.2 master secret'
+                        raise ValueError(msg) from None
                     # A plausible OpenSSL session pointer is not proof of
                     # matching TLS keys; restore the untouched encrypted wire
                     # only while no application plaintext has been processed

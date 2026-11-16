@@ -240,3 +240,91 @@ def test_tls13_missing_secret_must_fail_closed_after_interception_begins(
         assert not server_wire.data
 
     asyncio.run(run())
+
+@pytest.mark.parametrize('tls12', [True, False])
+def test_required_interception_never_silently_passes_through_missing_keys(
+    monkeypatch: pytest.MonkeyPatch, tls12: bool,
+) -> None:
+    """A managed TLS session must report a missing secret rather than disable features."""
+    from fleasion.proxy.splice import SpliceConnection
+
+    class Wire:
+        def __init__(self) -> None:
+            self.data = bytearray()
+
+        def write(self, data: bytes) -> None:
+            self.data.extend(data)
+
+        async def drain(self) -> None:
+            return
+
+    async def unavailable_secret(
+        _provider: KeyProvider, _random: str, _label: str, *, wait_seconds: float = 10,
+    ) -> bytes:
+        raise TimeoutError('missing managed session key')
+
+    monkeypatch.setattr(KeyProvider, 'get', unavailable_secret)
+
+    async def run() -> None:
+        client_wire, server_wire = Wire(), Wire()
+        connection = SpliceConnection(
+            asyncio.StreamReader(), cast('asyncio.StreamWriter', client_wire),
+            asyncio.StreamReader(), cast('asyncio.StreamWriter', server_wire),
+            keys=KeyProvider(), require_interception=True,
+        )
+        connection.cipher = 0xC02F if tls12 else 0x1301
+        connection.client_random = 'ab' * 32
+        connection.server_random = bytes(range(32))
+        with pytest.raises(TimeoutError, match='missing managed session key'):
+            await connection._application_record(
+                connection.client,
+                b'\x17\x03\x03\x00\x10' + bytes(16),
+            )
+        assert not connection.transparent_passthrough
+        assert not client_wire.data
+        assert not server_wire.data
+
+    asyncio.run(run())
+
+
+def test_required_interception_rejects_unsupported_cipher() -> None:
+    from fleasion.proxy.splice import SpliceConnection
+
+    async def run() -> None:
+        connection = SpliceConnection(
+            asyncio.StreamReader(), cast('asyncio.StreamWriter', object()),
+            asyncio.StreamReader(), cast('asyncio.StreamWriter', object()),
+            keys=KeyProvider(), require_interception=True,
+        )
+        body = b'\x03\x03' + bytes(range(32)) + b'\x00' + b'\xff\xff' + b'\x00'
+        handshake = b'\x02' + len(body).to_bytes(3, 'big') + body
+        record = b'\x16\x03\x03' + len(handshake).to_bytes(2, 'big') + handshake
+        with pytest.raises(ValueError, match='cannot decode cipher'):
+            connection._hello(connection.server, record)
+        assert not connection.transparent_passthrough
+
+    asyncio.run(run())
+
+
+def test_required_interception_rejects_unverified_tls12_master() -> None:
+    from fleasion.proxy.splice import SpliceConnection
+    from fleasion.proxy.tls12_records import TLS12RecordCipher
+
+    async def run() -> None:
+        connection = SpliceConnection(
+            asyncio.StreamReader(), cast('asyncio.StreamWriter', object()),
+            asyncio.StreamReader(), cast('asyncio.StreamWriter', object()),
+            keys=KeyProvider(), require_interception=True,
+        )
+        connection.cipher = 0xC02F
+        connection.client.input_keys = TLS12RecordCipher(bytes(16), bytes(4), 0xC02F)
+        connection.client.writer.keys = TLS12RecordCipher(bytes(16), bytes(4), 0xC02F)
+        async def prepared() -> None:
+            return
+        connection._prepare_tls12_keys = prepared
+        record = b'\x17\x03\x03\x00\x20' + bytes(32)
+        with pytest.raises(ValueError, match='rejected unverified TLS 1.2 master'):
+            await connection._application_record(connection.client, record)
+        assert not connection.transparent_passthrough
+
+    asyncio.run(run())

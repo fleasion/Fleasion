@@ -17,71 +17,103 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def _serve(child: socket.socket, response: Callable[[bytes, int, int], tuple[int, bytes]]) -> None:
+def _serve(
+    child: socket.socket,
+    response: Callable[[bytes, int, int, bytes], tuple[int, bytes]],
+) -> None:
+    def read_exact(size: int) -> bytes:
+        data = bytearray()
+        while len(data) < size:
+            try:
+                part = child.recv(size - len(data))
+            except ConnectionResetError:
+                return b''
+            if not part:
+                return b''
+            data.extend(part)
+        return bytes(data)
+
     try:
-        while request := child.recv(13):
-            if len(request) != 13:
-                return
+        while request := read_exact(13):
             op, address, length = struct.unpack('<cQI', request)
-            status, payload = response(op, address, length)
+            random = read_exact(length) if op == b'K' and length == 32 else b''
+            status, payload = response(op, address, length, random)
             child.sendall(struct.pack('<BI', status, len(payload)) + payload)
     finally:
         child.close()
 
 
-def test_channel_region_listing_reads_and_denials() -> None:
+def test_channel_returns_only_verified_tls13_secrets() -> None:
     parent, child = socket.socketpair()
+    random = bytes(range(32))
+    keys = [bytes([i + 1]) * 32 for i in range(5)]
+    calls: list[tuple[bytes, int, int, bytes]] = []
 
-    def reply(op: bytes, address: int, length: int) -> tuple[int, bytes]:
-        if op == b'M':
-            return 0, struct.pack('<QQ', 4096, 8192)
-        if op == b'R' and address == 4096 and length == 4:
-            return 0, b'DATA'
-        return 1, b''
-
-    worker = threading.Thread(target=_serve, args=(child, reply), daemon=True)
-    worker.start()
-    channel = memory.MemoryChannel(parent)
-    assert channel.regions() == [(4096, 8192)]
-    reader = memory.MemoryReader(channel)
-    assert reader.seek(4096) == 4096
-    assert reader.read(4) == b'DATA'
-    assert reader.read(4) == b''
-    assert channel.read(0, 4) == b''
-    assert channel.read(4096, memory._MAX_READ + 1) == b''
-    channel.close()
-    worker.join(timeout=2)
-    assert not worker.is_alive()
-
-
-
-def test_reads_above_single_ipc_chunk_are_split_without_losing_overlap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(memory, '_MAX_CHUNK', 4)
-    monkeypatch.setattr(memory, '_MAX_READ', 8)
-    parent, child = socket.socketpair()
-    requests: list[tuple[int, int]] = []
-
-    def reply(op: bytes, address: int, length: int) -> tuple[int, bytes]:
-        assert op == b'R'
-        requests.append((address, length))
-        if (address, length) == (4096, 4):
-            return 0, b'ABCD'
-        if (address, length) == (4100, 2):
-            return 0, b'EF'
-        return 1, b''
+    def reply(op: bytes, address: int, length: int, received: bytes) -> tuple[int, bytes]:
+        calls.append((op, address, length, received))
+        return 0, bytes([1, 1, 32]) + b''.join(keys)
 
     worker = threading.Thread(target=_serve, args=(child, reply), daemon=True)
     worker.start()
     channel = memory.MemoryChannel(parent)
     try:
-        assert channel.read(4096, 6) == b'ABCDEF'
-        assert requests == [(4096, 4), (4100, 2)]
+        assert channel.secrets_for(random.hex()) == {
+            random.hex(): dict(zip(memory._KEY_LABELS, keys, strict=True)),
+        }
+        assert calls == [(b'K', 0, 32, random)]
+        assert not hasattr(channel, 'read')
+        assert not hasattr(channel, 'regions')
+    finally:
+        channel.close()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
+
+
+def test_key_only_channel_ping_never_requests_memory() -> None:
+    parent, child = socket.socketpair()
+    calls: list[tuple[bytes, int, int, bytes]] = []
+
+    def reply(op: bytes, address: int, length: int, random: bytes) -> tuple[int, bytes]:
+        calls.append((op, address, length, random))
+        return 0, b''
+
+    worker = threading.Thread(target=_serve, args=(child, reply), daemon=True)
+    worker.start()
+    channel = memory.MemoryChannel(parent)
+    try:
+        channel.ping()
+        assert calls == [(b'P', 0, 0, b'')]
     finally:
         channel.close()
         worker.join(timeout=2)
 
+
+def test_channel_handles_absent_keys_and_tls12_master() -> None:
+    parent, child = socket.socketpair()
+    master = bytes(range(48))
+    calls = 0
+
+    def reply(op: bytes, address: int, length: int, random: bytes) -> tuple[int, bytes]:
+        nonlocal calls
+        assert (op, address, length, random) == (b'K', 0, 32, bytes(range(32)))
+        calls += 1
+        if calls == 1:
+            return 0, b''
+        return 0, bytes([1, 2, 48]) + master
+
+    worker = threading.Thread(target=_serve, args=(child, reply), daemon=True)
+    worker.start()
+    channel = memory.MemoryChannel(parent)
+    try:
+        assert channel.secrets_for(bytes(range(32)).hex()) == {}
+        assert channel.secrets_for(bytes(range(32)).hex()) == {
+            bytes(range(32)).hex(): {'CLIENT_RANDOM': master},
+        }
+        with pytest.raises(ValueError, match='32 bytes'):
+            channel.secrets_for('not-a-client-random')
+    finally:
+        channel.close()
+        worker.join(timeout=2)
 
 
 def test_shutdown_only_terminates_the_owned_managed_process(
@@ -116,20 +148,25 @@ def test_shutdown_only_terminates_the_owned_managed_process(
 
 def test_malformed_reply_closes_channel() -> None:
     parent, child = socket.socketpair()
-    worker = threading.Thread(target=_serve, args=(child, lambda *_: (0, b'X' * 33)), daemon=True)
+    worker = threading.Thread(
+        target=_serve,
+        args=(child, lambda *_: (0, b'X' * (memory._MAX_REPLY + 1))),
+        daemon=True,
+    )
     worker.start()
     channel = memory.MemoryChannel(parent)
-    with pytest.raises(OSError, match='could not enumerate'):
-        channel.regions()
+    with pytest.raises(ConnectionError, match='Malformed Rosemary TLS key reply'):
+        channel.secrets_for('a1' * 32)
+    assert channel._closed
     channel.close()
     worker.join(timeout=2)
 
 
 def test_inherited_descriptor_is_not_inherited_without_explicit_opt_in() -> None:
-    script = '''import os,socket,struct\nfd=int(os.environ["FLEASION_ROSEMARY_IPC_FD"])\ns=socket.socket(fileno=fd)\nrequest=s.recv(13)\nassert request[0:1]==b"M"\ns.sendall(struct.pack("<BIQQ",0,16,4096,8192))\n'''
+    script = '''import os,socket,struct\nfd=int(os.environ["FLEASION_ROSEMARY_IPC_FD"])\ns=socket.socket(fileno=fd)\nrequest=s.recv(45)\nassert request[:1]==b"K"\ns.sendall(struct.pack("<BI",0,0))\n'''
     session = memory.launch_with_private_memory([sys.executable, '-c', script], env=os.environ.copy())
     try:
-        assert session.channel.regions() == [(4096, 8192)]
+        assert session.channel.secrets_for('00' * 32) == {}
     finally:
         session.close()
         session.process.wait(timeout=3)
@@ -160,3 +197,32 @@ def test_owned_session_cleanup_registration_is_lazy_and_idempotent(
     memory.set_active_session(session)  # type: ignore[arg-type]
     assert registrations == [memory.shutdown_active_session]
     memory.shutdown_active_session(terminate=False)
+
+
+def test_native_scanner_failure_is_not_silently_reported_as_missing_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    class FailedChannel:
+        def secrets_for(self, _random: str) -> dict[str, dict[str, bytes]]:
+            raise OSError('native region scanner unavailable')
+
+    session = SimpleNamespace(
+        running=True, channel=FailedChannel(), process=SimpleNamespace(poll=lambda: None),
+    )
+    monkeypatch.setattr(memory, 'active_session', lambda: session)
+    with pytest.raises(OSError, match='native region scanner unavailable'):
+        memory.scan_active(client_random='b5' * 32)
+
+
+def test_timeout_invalidates_ipc_framing_instead_of_reusing_late_key_reply() -> None:
+    parent, child = socket.socketpair()
+    channel = memory.MemoryChannel(parent)
+    channel._socket.settimeout(0.02)
+    with pytest.raises(TimeoutError):
+        channel.secrets_for('ab' * 32)
+    assert channel._closed
+    with pytest.raises(ConnectionError, match='closed'):
+        channel.secrets_for('cd' * 32)
+    child.close()

@@ -113,7 +113,7 @@ def test_managed_launch_starts_proxy_before_rosemary_and_attaches_ipc(
     class Session:
         running = True
         process = SimpleNamespace(pid=12345)
-        channel = SimpleNamespace(regions=lambda: [(4096, 4096)])
+        channel = SimpleNamespace(ping=lambda: None)
 
     session = Session()
 
