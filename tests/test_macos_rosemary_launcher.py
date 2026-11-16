@@ -46,12 +46,41 @@ def test_up_to_date_player_never_launches_native_updater(
     assert launcher.native_update_if_needed(app=app) == app
 
 
+def test_managed_launch_normalizes_automatic_zbisect_channel(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current = {'channel': 'zbisect011'}
+    monkeypatch.setattr(launcher, '_read_player_channel', lambda: current['channel'])
+    monkeypatch.setattr(
+        launcher, '_restore_player_channel',
+        lambda requested: current.update(channel=requested),
+    )
+    launcher._ensure_managed_production_channel()
+    assert current['channel'] == 'production'
+    launcher._ensure_managed_production_channel()
+    assert current['channel'] == 'production'
+
+
+def test_managed_launch_does_not_override_custom_channels(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(launcher, '_read_player_channel', lambda: 'custom-release')
+    monkeypatch.setattr(
+        launcher, '_restore_player_channel',
+        lambda _channel: pytest.fail('custom channel must not be changed'),
+    )
+    with pytest.raises(launcher.ManagedLaunchError, match='custom-release'):
+        launcher._ensure_managed_production_channel()
+
+
 def test_mismatched_version_updates_native_bundle_before_returning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     app = _installed_app(tmp_path, '0.744.0.7441080')
     next_version = '0.746.0.7461264'
     monkeypatch.setattr(launcher, 'latest_roblox_version', lambda: next_version)
+    monkeypatch.setattr(launcher, '_read_player_channel', lambda: 'production')
+    monkeypatch.setattr(launcher, '_restore_player_channel', lambda _original: None)
     opened: list[tuple[str, ...]] = []
     def start_updater(cmd: list[str], **_kw: object) -> SimpleNamespace:
         opened.append(tuple(cmd))
@@ -68,6 +97,73 @@ def test_mismatched_version_updates_native_bundle_before_returning(
     assert launcher.native_update_if_needed(app=app) == app
     assert opened == [('/usr/bin/open', '-a', str(app))]
     assert launcher.installed_roblox_version(app) == next_version
+
+
+def test_native_update_preserves_original_channel_after_bootstrapper_changes_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app = _installed_app(tmp_path, '0.744.0.7441080')
+    next_version = '0.747.0.7471481'
+    monkeypatch.setattr(launcher, 'latest_roblox_version', lambda: next_version)
+    channel = {'value': 'production'}
+    commands: list[list[str]] = []
+
+    def native_commands(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        commands.append(cmd)
+        if cmd[:2] == ['/usr/bin/defaults', 'read']:
+            return SimpleNamespace(returncode=0, stdout=channel['value'].encode(), stderr=b'')
+        if cmd[:2] == ['/usr/bin/defaults', 'write']:
+            channel['value'] = cmd[-1]
+            return SimpleNamespace(returncode=0, stdout=b'', stderr=b'')
+        if cmd[:2] == ['/usr/bin/open', '-a']:
+            (app / 'Contents' / 'Info.plist').write_bytes(
+                plistlib.dumps({'CFBundleShortVersionString': next_version})
+            )
+            channel['value'] = 'zbisect011'
+            return SimpleNamespace(returncode=0, stderr=b'')
+        pytest.fail(f'unexpected native command: {cmd}')
+
+    monkeypatch.setattr(launcher.subprocess, 'run', native_commands)
+    monkeypatch.setattr(launcher, '_native_installer_running', lambda: False)
+    tick = iter(range(100))
+    monkeypatch.setattr(launcher.time, 'monotonic', lambda: float(next(tick)))
+    monkeypatch.setattr(launcher.time, 'sleep', lambda _seconds: None)
+    monkeypatch.setattr(launcher.platform_macos, 'is_roblox_running', lambda: False)
+    assert launcher.native_update_if_needed(app=app) == app
+    assert channel['value'] == 'production'
+    assert any(cmd[:2] == ['/usr/bin/defaults', 'write'] for cmd in commands)
+
+
+def test_empty_native_channel_means_default_production(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        launcher.subprocess, 'run',
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=b'\n', stderr=b'',
+        ),
+    )
+    assert launcher._read_player_channel() is None
+
+
+def test_channel_restore_deletes_override_when_originally_unset(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    channel: dict[str, str | None] = {'value': 'zbisect011'}
+
+    def native_defaults(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        if cmd[:2] == ['/usr/bin/defaults', 'read']:
+            if channel['value'] is None:
+                return SimpleNamespace(returncode=1, stdout=b'', stderr=b'does not exist')
+            return SimpleNamespace(returncode=0, stdout=channel['value'].encode(), stderr=b'')
+        if cmd[:2] == ['/usr/bin/defaults', 'delete']:
+            channel['value'] = None
+            return SimpleNamespace(returncode=0, stdout=b'', stderr=b'')
+        pytest.fail(f'unexpected command: {cmd}')
+
+    monkeypatch.setattr(launcher.subprocess, 'run', native_defaults)
+    launcher._restore_player_channel(None)
+    assert channel['value'] is None
 
 
 def test_managed_launch_refuses_missing_release_without_updating(
@@ -92,6 +188,7 @@ def test_managed_launch_starts_proxy_before_rosemary_and_attaches_ipc(
     runtime = tmp_path / 'pinned' / 'rosemary'
     events: list[str] = []
     monkeypatch.setattr(launcher.macos_rosemary_installer, 'install_pinned_runtime', lambda: runtime)
+    monkeypatch.setattr(launcher, '_ensure_managed_production_channel', lambda: events.append('channel-check'))
     monkeypatch.setattr(launcher, 'native_update_if_needed', lambda **_kwargs: events.append('native-check') or app)
     monkeypatch.setattr(launcher, 'ensure_managed_prefix', lambda *_args, **_kw: events.append('prefix-ready'))
     monkeypatch.setattr(launcher.platform_macos, 'is_roblox_running', lambda: False)
@@ -137,7 +234,7 @@ def test_managed_launch_starts_proxy_before_rosemary_and_attaches_ipc(
     monkeypatch.setattr(launcher.macos_rosemary_memory, 'set_active_session', lambda _session: events.append('registered'))
     result = launcher.launch_managed(cast('object', config), cast('object', Proxy()))
     assert result is session
-    assert events == ['native-check', 'prefix-ready', 'proxy-start', 'proxy-ready', 'rosemary-launch', 'registered']
+    assert events == ['channel-check', 'native-check', 'prefix-ready', 'proxy-start', 'proxy-ready', 'rosemary-launch', 'registered']
     assert config.macos_rosemary_enabled
     assert config.proxy_mode == 'env'
     assert config.proxy_features_enabled
@@ -149,6 +246,7 @@ def test_managed_launch_fails_closed_when_proxy_never_ready(
     monkeypatch.setattr(launcher.sys, 'platform', 'darwin')
     app = _installed_app(tmp_path, '0.746.0.7461264')
     monkeypatch.setattr(launcher.macos_rosemary_installer, 'install_pinned_runtime', lambda: tmp_path / 'rosemary')
+    monkeypatch.setattr(launcher, '_ensure_managed_production_channel', lambda: None)
     monkeypatch.setattr(launcher, 'native_update_if_needed', lambda **_kwargs: app)
     monkeypatch.setattr(launcher, 'ensure_managed_prefix', lambda *_args, **_kw: None)
     monkeypatch.setattr(launcher.platform_macos, 'is_roblox_running', lambda: False)

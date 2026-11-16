@@ -33,6 +33,8 @@ _UPDATE_TIMEOUT = 180.0
 _PROXY_TIMEOUT = 25.0
 _STARTUP_TIMEOUT = 25.0
 _LOCAL_EXCLUSIONS = 'localhost,127.0.0.1,::1'
+_PLAYER_CHANNEL_DOMAIN = 'com.roblox.RobloxPlayerChannel'
+_PLAYER_CHANNEL_KEY = 'www.roblox.com'
 
 
 class ManagedLaunchError(RuntimeError):
@@ -82,6 +84,71 @@ def _native_installer_running() -> bool:
     return result.returncode == 0
 
 
+def _read_player_channel() -> str | None:
+    """Read the active native Roblox channel from macOS preferences."""
+    try:
+        result = subprocess.run(
+            ['/usr/bin/defaults', 'read', _PLAYER_CHANNEL_DOMAIN, _PLAYER_CHANNEL_KEY],
+            capture_output=True,
+            check=False,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        msg = 'Could not read the native Roblox update channel'
+        raise ManagedLaunchError(msg) from exc
+    if result.returncode:
+        if b'does not exist' in result.stderr:
+            return None
+        msg = 'Could not read the native Roblox update channel'
+        raise ManagedLaunchError(msg)
+    channel = result.stdout.decode(errors='replace').strip()
+    if not channel:
+        return None
+    if len(channel) > 128:
+        msg = 'Roblox returned an invalid update channel preference'
+        raise ManagedLaunchError(msg)
+    return channel
+
+
+def _restore_player_channel(original: str | None) -> None:
+    """Undo a channel override introduced by the official native updater."""
+    current = _read_player_channel()
+    if current == original:
+        return
+    command = ['/usr/bin/defaults', 'delete', _PLAYER_CHANNEL_DOMAIN, _PLAYER_CHANNEL_KEY]
+    if original is not None:
+        command = [
+            '/usr/bin/defaults',
+            'write',
+            _PLAYER_CHANNEL_DOMAIN,
+            _PLAYER_CHANNEL_KEY,
+            '-string',
+            original,
+        ]
+    try:
+        result = subprocess.run(command, capture_output=True, check=False, timeout=3)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        msg = 'Could not restore the original Roblox channel after its native update'
+        raise ManagedLaunchError(msg) from exc
+    if result.returncode or _read_player_channel() != original:
+        msg = 'The Roblox native updater changed the channel and it could not be restored'
+        raise ManagedLaunchError(msg)
+    log_buffer.log('Launcher', 'Restored Roblox native channel preference after update')
+
+
+def _ensure_managed_production_channel() -> None:
+    """Keep an automatic Roblox rollout assignment from replacing the installed production client."""
+    channel = _read_player_channel()
+    if channel is None or channel == 'production':
+        return
+    if channel.startswith('zbisect') and channel.removeprefix('zbisect').isdigit():
+        _restore_player_channel('production')
+        log_buffer.log('Launcher', 'Reset automatic Roblox rollout channel before managed launch')
+        return
+    msg = f'Managed macOS Roblox does not yet support the selected update channel: {channel}'
+    raise ManagedLaunchError(msg)
+
+
 def native_update_if_needed(
     *, app: Path = _ROBLOX_APP, announce: Callable[[str], None] | None = None
 ) -> Path:
@@ -95,6 +162,29 @@ def native_update_if_needed(
     if current == newest:
         log_buffer.log('Launcher', f'Native Roblox installation is current ({current})')
         return app
+    original_channel = _read_player_channel()
+    try:
+        result = _run_native_updater(app=app, newest=newest, current=current, announce=announce)
+    except Exception:
+        # Keep the original update failure visible even if the preference
+        # store is temporarily inaccessible during the native install
+        try:
+            _restore_player_channel(original_channel)
+        except ManagedLaunchError as restore_error:
+            log_buffer.log('Launcher', f'Failed to restore Roblox channel: {restore_error}')
+        raise
+    _restore_player_channel(original_channel)
+    return result
+
+
+def _run_native_updater(
+    *,
+    app: Path,
+    newest: str,
+    current: str | None,
+    announce: Callable[[str], None] | None,
+) -> Path:
+    """Upgrade the official bundle, stopping its native player before Rosemary starts."""
     if announce:
         announce('Updating Roblox normally before starting Rosemary...')
     log_buffer.log('Launcher', f'Updating native Roblox from {current or "unknown"} to {newest}')
@@ -237,6 +327,7 @@ def launch_managed(
     executable = macos_rosemary_installer.install_pinned_runtime()
     if announce:
         announce('Checking native Roblox updates...')
+    _ensure_managed_production_channel()
     app = native_update_if_needed(announce=announce)
     ensure_managed_prefix(executable, announce=announce)
     if platform_macos.is_roblox_running() and (
