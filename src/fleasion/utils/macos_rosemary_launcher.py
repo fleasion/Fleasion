@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import os
-import plistlib
+import signal
 import subprocess
 import sys
 import time
-import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from fleasion.utils import (
     macos_rosemary_gate,
     macos_rosemary_installer,
     macos_rosemary_memory,
+    macos_rosemary_update_monitor,
     platform_macos,
 )
 from fleasion.utils.logging import log_buffer
@@ -28,46 +27,19 @@ if TYPE_CHECKING:
     from fleasion.proxy.master import ProxyMaster
 
 _ROBLOX_APP = Path('/Applications/Roblox.app')
-_VERSION_URL = 'https://clientsettingscdn.roblox.com/v2/client-version/MacPlayer'
 _UPDATE_TIMEOUT = 180.0
+_MANAGED_PROBE_TIMEOUT = 90.0
+_MANAGED_SETTLE_SECONDS = 8.0
+_STABLE_STARTUP_SECONDS = 4.0
+_NATIVE_RELAUNCH_DELAY = 8.0
+_NATIVE_MAX_LAUNCHES = 3
 _PROXY_TIMEOUT = 25.0
 _STARTUP_TIMEOUT = 25.0
 _LOCAL_EXCLUSIONS = 'localhost,127.0.0.1,::1'
-_PLAYER_CHANNEL_DOMAIN = 'com.roblox.RobloxPlayerChannel'
-_PLAYER_CHANNEL_KEY = 'www.roblox.com'
 
 
 class ManagedLaunchError(RuntimeError):
     """Roblox could not be launched through the verified managed environment."""
-
-
-def installed_roblox_version(app: Path = _ROBLOX_APP) -> str | None:
-    try:
-        with (app / 'Contents' / 'Info.plist').open('rb') as source:
-            info_value: object = plistlib.load(source)
-    except OSError, ValueError, plistlib.InvalidFileException:
-        return None
-    info = cast('dict[str, object]', info_value) if isinstance(info_value, dict) else {}
-    version = info.get('CFBundleShortVersionString')
-    return version if isinstance(version, str) and version.startswith('0.') else None
-
-
-def latest_roblox_version() -> str:
-    request = urllib.request.Request(
-        _VERSION_URL, headers={'User-Agent': 'Fleasion-macOS-Roblox-Update'}
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=12) as response:  # ruff: ignore[suspicious-url-open-usage]
-            data_value: object = json.load(response)
-    except (OSError, ValueError, TimeoutError) as exc:
-        msg = f'Could not check Roblox for updates: {exc}'
-        raise ManagedLaunchError(msg) from exc
-    data = cast('dict[str, object]', data_value) if isinstance(data_value, dict) else {}
-    version = data.get('version')
-    if not isinstance(version, str) or not version.startswith('0.') or len(version) > 50:
-        msg = 'Roblox returned an invalid MacPlayer version'
-        raise ManagedLaunchError(msg)
-    return version
 
 
 def _native_installer_running() -> bool:
@@ -84,110 +56,8 @@ def _native_installer_running() -> bool:
     return result.returncode == 0
 
 
-def _read_player_channel() -> str | None:
-    """Read the active native Roblox channel from macOS preferences."""
-    try:
-        result = subprocess.run(
-            ['/usr/bin/defaults', 'read', _PLAYER_CHANNEL_DOMAIN, _PLAYER_CHANNEL_KEY],
-            capture_output=True,
-            check=False,
-            timeout=3,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        msg = 'Could not read the native Roblox update channel'
-        raise ManagedLaunchError(msg) from exc
-    if result.returncode:
-        if b'does not exist' in result.stderr:
-            return None
-        msg = 'Could not read the native Roblox update channel'
-        raise ManagedLaunchError(msg)
-    channel = result.stdout.decode(errors='replace').strip()
-    if not channel:
-        return None
-    if len(channel) > 128:
-        msg = 'Roblox returned an invalid update channel preference'
-        raise ManagedLaunchError(msg)
-    return channel
-
-
-def _restore_player_channel(original: str | None) -> None:
-    """Undo a channel override introduced by the official native updater."""
-    current = _read_player_channel()
-    if current == original:
-        return
-    command = ['/usr/bin/defaults', 'delete', _PLAYER_CHANNEL_DOMAIN, _PLAYER_CHANNEL_KEY]
-    if original is not None:
-        command = [
-            '/usr/bin/defaults',
-            'write',
-            _PLAYER_CHANNEL_DOMAIN,
-            _PLAYER_CHANNEL_KEY,
-            '-string',
-            original,
-        ]
-    try:
-        result = subprocess.run(command, capture_output=True, check=False, timeout=3)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        msg = 'Could not restore the original Roblox channel after its native update'
-        raise ManagedLaunchError(msg) from exc
-    if result.returncode or _read_player_channel() != original:
-        msg = 'The Roblox native updater changed the channel and it could not be restored'
-        raise ManagedLaunchError(msg)
-    log_buffer.log('Launcher', 'Restored Roblox native channel preference after update')
-
-
-def _ensure_managed_production_channel() -> None:
-    """Keep an automatic Roblox rollout assignment from replacing the installed production client."""
-    channel = _read_player_channel()
-    if channel is None or channel == 'production':
-        return
-    if channel.startswith('zbisect') and channel.removeprefix('zbisect').isdigit():
-        _restore_player_channel('production')
-        log_buffer.log('Launcher', 'Reset automatic Roblox rollout channel before managed launch')
-        return
-    msg = f'Managed macOS Roblox does not yet support the selected update channel: {channel}'
-    raise ManagedLaunchError(msg)
-
-
-def native_update_if_needed(
-    *, app: Path = _ROBLOX_APP, announce: Callable[[str], None] | None = None
-) -> Path:
-    """Let the official macOS Roblox updater modify only the real installed app."""
-    player = app / 'Contents' / 'MacOS' / 'RobloxPlayer'
-    if not player.is_file():
-        msg = f'Roblox is not installed at {app}'
-        raise ManagedLaunchError(msg)
-    newest = latest_roblox_version()
-    current = installed_roblox_version(app)
-    if current == newest:
-        log_buffer.log('Launcher', f'Native Roblox installation is current ({current})')
-        return app
-    original_channel = _read_player_channel()
-    try:
-        result = _run_native_updater(app=app, newest=newest, current=current, announce=announce)
-    except Exception:
-        # Keep the original update failure visible even if the preference
-        # store is temporarily inaccessible during the native install
-        try:
-            _restore_player_channel(original_channel)
-        except ManagedLaunchError as restore_error:
-            log_buffer.log('Launcher', f'Failed to restore Roblox channel: {restore_error}')
-        raise
-    _restore_player_channel(original_channel)
-    return result
-
-
-def _run_native_updater(
-    *,
-    app: Path,
-    newest: str,
-    current: str | None,
-    announce: Callable[[str], None] | None,
-) -> Path:
-    """Upgrade the official bundle, stopping its native player before Rosemary starts."""
-    if announce:
-        announce('Updating Roblox normally before starting Rosemary...')
-    log_buffer.log('Launcher', f'Updating native Roblox from {current or "unknown"} to {newest}')
+def _launch_native_player(app: Path) -> None:
+    """Launch the untouched installed Roblox bundle through LaunchServices."""
     try:
         result = subprocess.run(
             ['/usr/bin/open', '-a', str(app)],
@@ -196,39 +66,167 @@ def _run_native_updater(
             timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        msg = 'Could not start Roblox’s native updater'
+        msg = 'Could not open native Roblox to complete its update'
         raise ManagedLaunchError(msg) from exc
     if result.returncode:
-        msg = (
-            f'Roblox native updater could not start: {result.stderr.decode(errors="replace")[:250]}'
-        )
+        msg = 'The official Roblox updater could not start natively'
         raise ManagedLaunchError(msg)
 
-    deadline = time.monotonic() + _UPDATE_TIMEOUT
-    stable_since: float | None = None
-    while time.monotonic() < deadline:
-        if installed_roblox_version(app) == newest:
-            if stable_since is None:
-                stable_since = time.monotonic()
-            # Allow the official updater to finish writing the bundle before quitting Player.
-            if time.monotonic() - stable_since >= 3 and not _native_installer_running():
-                break
-        else:
-            stable_since = None
-        time.sleep(0.5)
-    else:
-        msg = f'Roblox did not finish its native update to {newest}'
-        raise ManagedLaunchError(msg)
+
+def _native_update_handoff(app: Path, *, announce: Callable[[str], None] | None = None) -> None:
+    """Let native Roblox update until its own new player reports no pending update."""
+    if announce:
+        announce('Roblox requested an update; running its native updater...')
+    log_buffer.log('Launcher', 'Managed Rosemary requested an update; handing off to native Roblox')
+    # A Rosemary-launched guest can spawn a native player before the handoff
     if platform_macos.is_roblox_running() and (
         not platform_macos.terminate_roblox() or not platform_macos.wait_for_roblox_exit(10)
     ):
-        msg = 'The official updater finished, but native Roblox could not be closed'
+        msg = 'Could not close the native Roblox spawned during the update transition'
         raise ManagedLaunchError(msg)
-    if installed_roblox_version(app) != newest:
-        msg = 'Roblox installation changed while finishing the update'
-        raise ManagedLaunchError(msg)
-    log_buffer.log('Launcher', f'Native Roblox update verified at {newest}')
-    return app
+    deadline = time.monotonic() + _UPDATE_TIMEOUT
+    attempted = 0
+    probe = macos_rosemary_update_monitor.PlayerLogProbe()
+    installer_probe = macos_rosemary_update_monitor.NativeInstallerLogProbe()
+    last_launch = 0.0
+    stable_at: float | None = None
+    stable_log: Path | None = None
+    installer_seen = False
+    update_requested = False
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if attempted == 0:
+            _launch_native_player(app)
+            attempted += 1
+            last_launch = now
+        logs = probe.poll()
+        latest = logs[-1] if logs else None
+        installer_active = _native_installer_running()
+        native_running = platform_macos.is_roblox_running()
+        installer_seen |= installer_active
+        update_requested |= any(state.updating or state.updater_started for state in logs)
+        if installer_probe.completed() and not installer_active:
+            if native_running and (
+                not platform_macos.terminate_roblox() or not platform_macos.wait_for_roblox_exit(10)
+            ):
+                msg = 'Could not close Roblox after its official installer completed'
+                raise ManagedLaunchError(msg)
+            if _native_installer_running():
+                msg = 'The native installer restarted during the completed update handoff'
+                raise ManagedLaunchError(msg)
+            log_buffer.log('Launcher', 'Native Roblox installer finished; relaunching in Rosemary')
+            return
+        if (
+            latest is not None
+            and latest.current
+            and not latest.updater_started
+            and not installer_active
+            and native_running
+        ):
+            if stable_log != latest.path:
+                stable_at, stable_log = now, latest.path
+            if stable_at is not None and now - stable_at >= _STABLE_STARTUP_SECONDS:
+                if not platform_macos.terminate_roblox() or not platform_macos.wait_for_roblox_exit(
+                    10
+                ):
+                    msg = 'Could not close the updated native Roblox before relaunching Rosemary'
+                    raise ManagedLaunchError(msg)
+                if _native_installer_running():
+                    msg = 'The native Roblox installer restarted during handoff'
+                    raise ManagedLaunchError(msg)
+                log_buffer.log(
+                    'Launcher', 'Native Roblox reported no pending update; relaunching Rosemary'
+                )
+                return
+        else:
+            stable_at = None
+        if (
+            not native_running
+            and not installer_active
+            and now - last_launch >= _NATIVE_RELAUNCH_DELAY
+        ):
+            if not (installer_seen or update_requested):
+                msg = 'Native Roblox exited without showing an updater or a successful update check'
+                raise ManagedLaunchError(msg)
+            if attempted >= _NATIVE_MAX_LAUNCHES:
+                msg = 'Native Roblox repeatedly exited during its update; refusing to retry'
+                raise ManagedLaunchError(msg)
+            _launch_native_player(app)
+            attempted += 1
+            last_launch = now
+            stable_at = None
+        time.sleep(0.25)
+    msg = 'Native Roblox did not finish its own updater and stable startup checks'
+    raise ManagedLaunchError(msg)
+
+
+def _managed_updater_requested(
+    session: macos_rosemary_memory.RosemarySession,
+    runtime: Path,
+    app: Path,
+    probe: macos_rosemary_update_monitor.PlayerLogProbe,
+) -> bool:
+    """Wait for Roblox's real update decision, or its trusted installer process."""
+    deadline = time.monotonic() + _MANAGED_PROBE_TIMEOUT
+    current_since: float | None = None
+    exited_since: float | None = None
+    while time.monotonic() < deadline:
+        logs = probe.poll()
+        updates = [log for log in logs if log.updater_started]
+        if updates:
+            log_buffer.log('Launcher', f'Roblox requested an updater in {updates[-1].path.name}')
+            return True
+        installer_running = macos_rosemary_update_monitor.managed_installer_running(runtime, app)
+        if installer_running and not session.running:
+            log_buffer.log('Launcher', 'Rosemary exited after launching a verified installer')
+            return True
+        now = time.monotonic()
+        latest = logs[-1] if logs else None
+        if latest is not None and latest.current and not latest.updating:
+            if current_since is None:
+                current_since = now
+            if now - current_since >= _MANAGED_SETTLE_SECONDS:
+                return False
+        if not session.running:
+            if exited_since is None:
+                exited_since = now
+            if now - exited_since >= 3:
+                msg = 'Rosemary exited before Roblox completed its update check'
+                raise ManagedLaunchError(msg)
+        time.sleep(0.25)
+    msg = 'Roblox did not report an update decision through Rosemary'
+    raise ManagedLaunchError(msg)
+
+
+def _stop_owned_updating_guest(
+    session: macos_rosemary_memory.RosemarySession,
+    runtime: Path,
+    app: Path,
+) -> None:
+    """Close only the Fleasion-managed group and the verified guest installer."""
+    macos_rosemary_update_monitor.terminate_managed_installers(runtime, app)
+    macos_rosemary_memory.shutdown_active_session(terminate=True)
+    try:
+        session.process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        if session.running:
+            try:
+                os.killpg(session.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                session.process.wait(timeout=3)
+            except subprocess.TimeoutExpired as exc:
+                msg = 'Rosemary could not be stopped safely before the native update'
+                raise ManagedLaunchError(msg) from exc
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        macos_rosemary_update_monitor.terminate_managed_installers(runtime, app)
+        if not macos_rosemary_update_monitor.managed_installer_running(runtime, app):
+            return
+        time.sleep(0.1)
+    msg = 'The Rosemary-launched updater is still running; refusing native handoff'
+    raise ManagedLaunchError(msg)
 
 
 def _proxy_environment(proxy_url: str) -> dict[str, str]:
@@ -306,13 +304,31 @@ def _rosemary_environment(proxy_url: str, *, runtime_executable: Path) -> dict[s
     return env
 
 
+def _check_managed_session(
+    session: macos_rosemary_memory.RosemarySession,
+    executable: Path,
+    app: Path,
+    probe: macos_rosemary_update_monitor.PlayerLogProbe,
+) -> bool:
+    """Accept an early closed IPC only when Roblox demonstrably started updating."""
+    try:
+        session.channel.ping()
+    except OSError:
+        if not any(log.updater_started for log in probe.poll()) and not (
+            not session.running
+            and macos_rosemary_update_monitor.managed_installer_running(executable, app)
+        ):
+            raise
+    return _managed_updater_requested(session, executable, app, probe)
+
+
 def launch_managed(
     config_manager: ConfigManager,
     proxy_master: ProxyMaster,
     *,
     announce: Callable[[str], None] | None = None,
 ) -> macos_rosemary_memory.RosemarySession:
-    """Download with consent beforehand, update the native app, then launch via Rosemary."""
+    """Launch in Rosemary, handing a detected updater to native Roblox once."""
     if sys.platform != 'darwin':
         msg = 'Managed macOS Rosemary launches are only available on macOS'
         raise ManagedLaunchError(msg)
@@ -325,10 +341,10 @@ def launch_managed(
     if announce:
         announce('Verifying the pinned Rosemary runtime...')
     executable = macos_rosemary_installer.install_pinned_runtime()
-    if announce:
-        announce('Checking native Roblox updates...')
-    _ensure_managed_production_channel()
-    app = native_update_if_needed(announce=announce)
+    app = _ROBLOX_APP
+    if not (app / 'Contents/MacOS/RobloxPlayer').is_file():
+        msg = f'Roblox is not installed at {app}'
+        raise ManagedLaunchError(msg)
     ensure_managed_prefix(executable, announce=announce)
     if platform_macos.is_roblox_running() and (
         not platform_macos.terminate_roblox() or not platform_macos.wait_for_roblox_exit(timeout=10)
@@ -346,26 +362,35 @@ def launch_managed(
     if not proxy_master.wait_for_env_proxy_ready(timeout=_PROXY_TIMEOUT):
         msg = 'Fleasion Env Proxy did not become ready; Roblox was not launched'
         raise ManagedLaunchError(msg)
-    if announce:
-        announce('Launching Roblox through pinned Rosemary...')
     proxy_url = proxy_master.roblox_env_proxy_url()
-    session = macos_rosemary_memory.launch_with_private_memory(
-        [str(executable), 'run', '--native', str(app)],
-        env=_rosemary_environment(proxy_url, runtime_executable=executable),
-    )
-    try:
-        # Prove the managed guest initialized the key-only IPC channel
-        session.channel.ping()
-        if not session.running:
-            msg = 'Rosemary exited before its private TLS key channel became ready'
+    for attempt in range(2):
+        if announce:
+            announce('Launching Roblox through pinned Rosemary...')
+        probe = macos_rosemary_update_monitor.PlayerLogProbe()
+        session = macos_rosemary_memory.launch_with_private_memory(
+            [str(executable), 'run', '--native', str(app)],
+            env=_rosemary_environment(proxy_url, runtime_executable=executable),
+        )
+        macos_rosemary_memory.set_active_session(session)
+        try:
+            update_requested = _check_managed_session(session, executable, app, probe)
+        except BaseException:
+            _stop_owned_updating_guest(session, executable, app)
+            raise
+        if not update_requested and session.running:
+            log_buffer.log(
+                'Launcher', f'Managed macOS Rosemary Roblox launched (PID {session.process.pid})'
+            )
+            return session
+        _stop_owned_updating_guest(session, executable, app)
+        if not update_requested:
+            msg = 'Rosemary exited after its update check'
             raise ManagedLaunchError(msg)
-    except OSError, RuntimeError, ValueError:
-        session.close()
-        if session.running:
-            session.process.terminate()
-        raise
-    macos_rosemary_memory.set_active_session(session)
-    log_buffer.log(
-        'Launcher', f'Managed macOS Rosemary Roblox launched (PID {session.process.pid})'
-    )
-    return session
+        if attempt:
+            msg = (
+                'Roblox still requests an update after native installation; refusing an update loop'
+            )
+            raise ManagedLaunchError(msg)
+        _native_update_handoff(app, announce=announce)
+    msg = 'The managed Roblox update handoff exhausted its retry budget'
+    raise ManagedLaunchError(msg)
