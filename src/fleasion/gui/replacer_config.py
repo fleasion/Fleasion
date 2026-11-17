@@ -1332,7 +1332,16 @@ class ReplacerConfigWindow(QDialog):
             self.refresh_settings_tab()
 
     def _proxy_required(self, widget: QWidget) -> ProxyGate:
-        gate = ProxyGate(widget, parent=self.tab_widget)
+        managed_launch_needed = (
+            sys.platform == 'darwin'
+            and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
+            and not self.config_manager.macos_rosemary_enabled
+        )
+        gate = ProxyGate(
+            widget,
+            message=tr('settings.proxy.macos_managed') if managed_launch_needed else None,
+            parent=self.tab_widget,
+        )
         self._proxy_gates.append(gate)
         return gate
 

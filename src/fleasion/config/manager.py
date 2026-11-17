@@ -767,21 +767,14 @@ class ConfigManager:
         self.settings = self._load_settings()
         self._ensure_default_config()
         self.reconcile_configs(save=False)
-        if (
-            sys.platform == 'darwin'
-            and not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
-            and self.settings.get('macos_rosemary_enabled') is True
-        ):
-            # Do not reactivate a prior beta opt-in when support is restored
-            self.settings['macos_rosemary_enabled'] = False
-            self._save_settings()
-        if (
-            sys.platform == 'darwin'
-            and not self.macos_rosemary_enabled
-            and self.settings.get('proxy_features_enabled') is not False
-        ):
-            self.settings['proxy_features_enabled'] = False
-            self._save_settings()
+        if sys.platform == 'darwin' and not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+            if self.settings.get('macos_rosemary_enabled') is True:
+                # Do not reactivate a prior beta opt-in in dormant builds
+                self.settings['macos_rosemary_enabled'] = False
+                self._save_settings()
+            if self.settings.get('proxy_features_enabled') is not False:
+                self.settings['proxy_features_enabled'] = False
+                self._save_settings()
 
     @staticmethod
     def _file_signature(path: Path) -> FileSignature:

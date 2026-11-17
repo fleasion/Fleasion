@@ -609,6 +609,12 @@ def run_application() -> None:
     if start_proxy:
         proxy_master.start()
         _refresh_managed_read_only_guard()
+    elif (
+        sys.platform == 'darwin'
+        and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
+        and not config_manager.macos_rosemary_enabled
+    ):
+        log_buffer.log('Proxy', 'Proxy awaits a Fleasion-managed Rosemary launch')
     elif not config_manager.proxy_features_enabled:
         log_buffer.log('Proxy', 'Proxy features disabled in settings: proxy not started')
     elif sys.platform == 'darwin':

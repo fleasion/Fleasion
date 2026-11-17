@@ -19,6 +19,8 @@ from fleasion.utils import macos_rosemary_gate
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from fleasion.config.manager import ConfigManager
+
 
 @pytest.fixture(scope='module')
 def app() -> QApplication:
@@ -47,6 +49,22 @@ def test_feature_forwards_user_selected_uri_directly_to_managed_launcher(
     assert not macos_rosemary_launch.launch_from_feature(window, target)
     assert forwarded == [target]
     window.close()
+
+
+def test_managed_launch_completion_refreshes_proxy_gates(
+    monkeypatch: pytest.MonkeyPatch, app: QApplication
+) -> None:
+    del app
+    parent = QWidget()
+    refreshed: list[str] = []
+    parent.set_proxy_features_enabled = lambda enabled: refreshed.append(f'proxy:{enabled}')  # type: ignore[attr-defined]
+    parent.refresh_settings_tab = lambda: refreshed.append('settings')  # type: ignore[attr-defined]
+    config = SimpleNamespace(proxy_features_enabled=True)
+    controller = macos_rosemary_launch.ManagedRobloxLaunch(parent, cast('ConfigManager', config), None)
+    monkeypatch.setattr(QMessageBox, 'information', lambda *_args: None)
+    controller._on_finished(True, 'Ready')
+    assert refreshed == ['proxy:True', 'settings']
+    parent.close()
 
 
 def test_feature_fails_closed_when_disabled(

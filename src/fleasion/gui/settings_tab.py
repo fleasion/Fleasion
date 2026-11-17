@@ -544,13 +544,11 @@ class SettingsTab(QWidget):
         limits_widget.setLayout(limits_row)
         section.add_widget(limits_widget)
 
-        if (
-            sys.platform == 'darwin'
-            and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
-            and self._config.macos_rosemary_enabled
-        ):
+        if sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
             self._proxy_warning_label.setText(tr('settings.proxy.macos_managed'))
             self._proxy_mode_combo.setEnabled(False)
+            if not self._config.macos_rosemary_enabled:
+                self._proxy_features_chk.setEnabled(False)
         elif sys.platform == 'darwin':
             self._proxy_warning_label.setText(tr('settings.proxy.macos_unavailable'))
             for control in (
@@ -735,6 +733,8 @@ class SettingsTab(QWidget):
             self._opacity_slider.setValue(round(self._config.glass_opacity * 100))
             self._update_opacity_value(self._opacity_slider.value())
         self._refresh_blur_button()
+        if sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+            self._proxy_features_chk.setEnabled(self._config.macos_rosemary_enabled)
 
         for chk, value in [
             (self._open_dashboard_chk, self._config.open_dashboard_on_launch),

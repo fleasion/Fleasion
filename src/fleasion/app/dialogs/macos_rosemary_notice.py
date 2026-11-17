@@ -57,6 +57,8 @@ class MacOSRosemaryNoticeDialog(QDialog):
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(body)
+        self._heading = heading
+        self._body = body
 
         actions = QHBoxLayout()
         actions.addStretch()
@@ -82,11 +84,21 @@ class MacOSRosemaryNoticeDialog(QDialog):
         if screen is not None:
             available = screen.availableGeometry()
             self.setFixedWidth(min(650, max(1, available.width() - 48)))
-            self.adjustSize()
-            frame = self.frameGeometry()
-            frame.moveCenter(available.center())
-            self.move(frame.topLeft())
         super().showEvent(event)
+        # Qt's size hint uses the unwrapped label width, which otherwise gives
+        # the heading surplus height and vertically centers its text on macOS
+        layout = self.layout()
+        if isinstance(layout, QVBoxLayout):
+            margins = layout.contentsMargins()
+            text_width = max(1, self.width() - margins.left() - margins.right())
+            for label in (self._heading, self._body):
+                label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                label.setFixedHeight(label.heightForWidth(text_width))
+            self.adjustSize()
+        if screen is not None:
+            frame = self.frameGeometry()
+            frame.moveCenter(screen.availableGeometry().center())
+            self.move(frame.topLeft())
         if not self._elapsed.isValid():
             self._elapsed.start()
             self._countdown.start()

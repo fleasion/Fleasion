@@ -151,6 +151,12 @@ class ManagedRobloxLaunch(QObject):
         self._busy = False
         self._pending_target = None
         self._pending_refresh = None
+        refresh_gate = getattr(self._window, 'set_proxy_features_enabled', None)
+        if callable(refresh_gate):
+            refresh_gate(self._config_manager.proxy_features_enabled)
+        refresh_settings = getattr(self._window, 'refresh_settings_tab', None)
+        if callable(refresh_settings):
+            refresh_settings()
         if success:
             QMessageBox.information(self._window, tr('macos_rosemary.title'), message)
         else:

@@ -12,7 +12,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QLabel
 
 from fleasion.app.dialogs import macos_rosemary_notice as notice
 from fleasion.localization import tr
@@ -55,6 +55,13 @@ def test_timed_modal_cannot_be_skipped_or_dismissed_before_ack(
     assert body is not None
     assert 'Launch Roblox with Fleasion' in body.text()
     assert body.isVisible()
+    heading = dialog.findChild(QLabel, 'MacOSRosemaryNoticeHeadline')
+    assert heading is not None
+    assert heading.height() <= heading.heightForWidth(heading.width()) + 2
+    assert body.height() <= body.heightForWidth(body.width()) + 2
+    heading_bottom = heading.mapTo(dialog, heading.rect().bottomLeft()).y()
+    body_top = body.mapTo(dialog, body.rect().topLeft()).y()
+    assert 0 <= body_top - heading_bottom <= 25
     body_bottom = body.mapTo(dialog, body.rect().bottomLeft()).y()
     button_top = dialog.ok_button.mapTo(dialog, dialog.ok_button.rect().topLeft()).y()
     assert 0 <= button_top - body_bottom <= 35
