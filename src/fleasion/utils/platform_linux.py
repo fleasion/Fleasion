@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 
 import contextlib
 
-from . import nutmeg_proxy_override, sober_bootstrap_keys
+from . import nutmeg_proxy_override, quadra_proxy_override, sober_bootstrap_keys
 from .json_types import as_json_object
 from .logging import log_buffer
 from .metadata import APP_NAME
@@ -167,6 +167,8 @@ SOBER_CGROUP_MARKER = SOBER_CLIENT.cgroup_marker
 LINUX_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'linux_proxy_override.json'
 LAST_AUTO_LINUX_CLIENT_STATE = CONFIG_DIR / 'last_auto_linux_client'
 NUTMEG_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'nutmeg_proxy_override.json'
+QUADRA_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'quadra_proxy_override.json'
+QUADRA_CONFIG_PATH = CONFIG_DIR.parent / 'quadra/config.toml'
 SOBER_NATIVE_KEYLOG_OVERRIDE_STATE = CONFIG_DIR / 'sober_native_keylog_override.json'
 NUTMEG_CONFIG_PATH = CONFIG_DIR.parent / 'nutmeg/config.json'
 # Sober fetches its update/feature manifest before the Roblox engine starts.
@@ -374,11 +376,18 @@ def linux_client_installations() -> tuple[LinuxClientInstallation, ...]:
     )
     if not _rosemary_prefix_path:
         return installations
-    # Nutmeg replaces ROSEMARY_PREFIX with its own config value. An explicit
-    # Fleasion prefix requires a direct Rosemary invocation instead.
+    # A custom prefix must not silently launch a desktop client with another
+    # prefix. Quadra is safe when its configured prefix is selected.
+    selected_prefix = Path(_rosemary_prefix_path).expanduser().resolve(strict=False)
     return tuple(
         replace(installation, desktop_launcher=False)
         if installation.key == 'rosemary'
+        and not (
+            installation.quadra_launcher
+            and installation.app_bundle is not None
+            and selected_prefix
+            == (installation.app_bundle.parent.parent / 'prefix').resolve(strict=False)
+        )
         else installation
         for installation in installations
     )
@@ -1320,7 +1329,9 @@ def _launch_roblox_uri(target: str) -> bool:
         _standard_user_popen(
             command,
             extra_env=_rosemary_proxy_environment(
-                nutmeg_launcher=Path(command[0]).name == 'gtk-launch'
+                nutmeg_launcher=(
+                    Path(command[0]).name == 'gtk-launch' and not installation.quadra_launcher
+                )
             ),
         )
     elif installation.client.runtime == 'native':
@@ -1363,7 +1374,9 @@ def _launch_selected_linux_client_target(
         _standard_user_popen(
             command,
             extra_env=_rosemary_proxy_environment(
-                nutmeg_launcher=Path(command[0]).name == 'gtk-launch'
+                nutmeg_launcher=(
+                    Path(command[0]).name == 'gtk-launch' and not installation.quadra_launcher
+                )
             ),
         )
     elif installation.client.runtime == 'native':
@@ -1585,12 +1598,27 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
 
     if installation.client.runtime in {'rosemary', 'native'}:
         if installation.client.runtime == 'rosemary':
-            if not nutmeg_proxy_override.arm(
+            if not nutmeg_proxy_override.clear(NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE):
+                return False
+            if not quadra_proxy_override.clear(QUADRA_CONFIG_PATH, QUADRA_PROXY_OVERRIDE_STATE):
+                return False
+            if installation.quadra_launcher:
+                if not quadra_proxy_override.arm(
+                    proxy_url, QUADRA_CONFIG_PATH, QUADRA_PROXY_OVERRIDE_STATE
+                ):
+                    return False
+                log_buffer.log(
+                    'Launcher',
+                    'Rosemary Env Proxy armed for Quadra launches; restart Quadra '
+                    'if it was already open so it reloads its environment settings',
+                )
+            elif not nutmeg_proxy_override.arm(
                 proxy_url, NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE
             ):
                 return False
+            else:
+                log_buffer.log('Launcher', 'Rosemary Env Proxy armed for Nutmeg launches')
             globals()['_active_rosemary_proxy_url'] = proxy_url
-            log_buffer.log('Launcher', 'Rosemary Env Proxy armed for Nutmeg launches')
         else:
             globals()['_active_native_proxy_url'] = proxy_url
             log_buffer.log(
@@ -1697,6 +1725,8 @@ def clear_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-state
     ):
         if key == 'rosemary':
             if not nutmeg_proxy_override.clear(NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE):
+                return False
+            if not quadra_proxy_override.clear(QUADRA_CONFIG_PATH, QUADRA_PROXY_OVERRIDE_STATE):
                 return False
             globals()['_active_rosemary_proxy_url'] = None
         elif installation is not None and installation.client.runtime == 'native':
@@ -1868,6 +1898,8 @@ def recover_stale_linux_client_env_proxy_override() -> bool:
     if _active_linux_proxy_client_key is not None:
         return True
     if not nutmeg_proxy_override.clear(NUTMEG_CONFIG_PATH, NUTMEG_PROXY_OVERRIDE_STATE):
+        return False
+    if not quadra_proxy_override.clear(QUADRA_CONFIG_PATH, QUADRA_PROXY_OVERRIDE_STATE):
         return False
     key = _read_linux_proxy_override_state()
     if key is None:

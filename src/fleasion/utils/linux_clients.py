@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -186,6 +187,7 @@ class LinuxClientInstallation:
     executable: Path | None
     app_bundle: Path | None = None
     desktop_launcher: bool = False
+    quadra_launcher: bool = False
 
     @property
     def key(self) -> str:
@@ -209,10 +211,17 @@ class LinuxClientInstallation:
         if self.client.runtime == 'rosemary':
             # gtk-launch may activate the desktop handler through D-Bus, where
             # Fleasion's per-launch proxy variables are not inherited.
-            if self.desktop_launcher and not require_inherited_environment:
+            if self.quadra_launcher or (
+                self.desktop_launcher and not require_inherited_environment
+            ):
                 launcher = shutil.which('gtk-launch')
-                if launcher is not None:
-                    command = [launcher, self.desktop_id.removesuffix('.desktop')]
+                if launcher is not None and self.desktop_launcher:
+                    desktop_id = (
+                        'org.quadrahq.Quadra.RobloxLinks'
+                        if self.quadra_launcher
+                        else self.desktop_id.removesuffix('.desktop')
+                    )
+                    command = [launcher, desktop_id]
                     if uri:
                         command.append(uri)
                     return command
@@ -794,7 +803,7 @@ def running_rosemary_studios(*, proc_root: Path = Path('/proc')) -> tuple[int, .
     return tuple(sorted(studio_pids))
 
 
-def rosemary_guest_home(
+def rosemary_guest_home(  # ruff: ignore[too-many-return-statements]
     installation: LinuxClientInstallation,
     *,
     prefix_path: str | Path | None = None,
@@ -828,6 +837,11 @@ def rosemary_guest_home(
         Path(xdg_data) if xdg_data and Path(xdg_data).is_absolute() else home / '.local/share'
     )
     prefix = data_home / 'nutmeg' / 'prefix'
+    if _quadra_is_bundle(installation.app_bundle, home):
+        settings = _quadra_settings(home, environment)
+        if settings.get('prefix') == 'Rosemary default' and not prefix_path:
+            return None
+        prefix = data_home / 'quadra' / 'prefix'
     configured_prefix = (
         prefix_path or environment.get('ROSEMARY_PREFIX') or settings.get('prefix_path')
     )
@@ -884,6 +898,90 @@ def _nutmeg_app_bundle(home: Path) -> Path | None:
     return None
 
 
+def _quadra_app_bundle(home: Path) -> Path | None:
+    return _rosemary_bundle(str(home / '.local/share/quadra/roblox/Roblox.app'))
+
+
+def _quadra_is_bundle(bundle: Path | None, home: Path) -> bool:
+    return bundle is not None and _resolved(bundle) == _resolved(
+        home / '.local/share/quadra/roblox/Roblox.app'
+    )
+
+
+def _quadra_config_path(home: Path, environ: Mapping[str, str]) -> Path:
+    config_home = environ.get('XDG_CONFIG_HOME', '')
+    base = (
+        Path(config_home) if config_home and Path(config_home).is_absolute() else home / '.config'
+    )
+    return base / 'quadra/config.toml'
+
+
+def _quadra_settings(home: Path, environ: Mapping[str, str]) -> dict[str, object]:
+    try:
+        data: object = tomllib.loads(_quadra_config_path(home, environ).read_text(encoding='utf-8'))
+    except OSError, UnicodeError, ValueError:
+        return {}
+    return cast('dict[str, object]', data)
+
+
+def _quadra_runner_binary(  # ruff: ignore[too-many-return-statements]
+    home: Path, environ: Mapping[str, str]
+) -> Path | None:
+    settings = _quadra_settings(home, environ)
+    runner = settings.get('runner')
+    if isinstance(runner, str) and runner.startswith('Custom ('):
+        custom = settings.get('custom_runner_path')
+        if isinstance(custom, str) and custom:
+            candidate = Path(custom).expanduser()
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+    if isinstance(runner, str) and runner.startswith('Butter: '):
+        for root in (
+            home / '.local/share/butter/runners',
+            home / '.var/app/io.github.microlift.butter/data/butter/runners',
+        ):
+            for manifest in sorted(root.glob('*/runner.toml')):
+                try:  # ruff: ignore[too-many-statements-in-try-clause]
+                    fields = tomllib.loads(manifest.read_text(encoding='utf-8'))
+                    if runner != f'Butter: {fields.get("name")}':
+                        continue
+                    relative = fields.get('executable')
+                    if not isinstance(relative, str):
+                        continue
+                    candidate = manifest.parent / relative
+                    if candidate.is_file() and os.access(candidate, os.X_OK):
+                        return candidate
+                except OSError, UnicodeError, ValueError:
+                    continue
+        return None
+    if runner not in {'Quadra', None}:
+        return None
+    installed = home / '.local/share/quadra/rosemary'
+    for candidate in sorted(installed.glob('*/Rosemary/bin/rosemary'), reverse=True):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _quadra_desktop_exists(home: Path, environ: Mapping[str, str]) -> bool:
+    filename = 'org.quadrahq.Quadra.RobloxLinks.desktop'
+    roots = [home / '.local/share/applications']
+    roots.extend(
+        Path(root) / 'applications'
+        for root in environ.get('XDG_DATA_DIRS', '/usr/local/share:/usr/share').split(':')
+        if root
+    )
+    for root in roots:
+        try:
+            lines = (root / filename).read_text(encoding='utf-8').splitlines()
+        except OSError:
+            continue
+        if any(line.startswith('Exec=') and '--roblox' in line for line in lines):
+            return True
+    return False
+
+
 def _rosemary_installation(
     *,
     home: Path,
@@ -895,6 +993,7 @@ def _rosemary_installation(
 ) -> LinuxClientInstallation | None:
     sessions = running_rosemary_players(proc_root=proc_root)
     desktop = _nutmeg_desktop_exists(home, environ)
+    quadra_desktop = _quadra_desktop_exists(home, environ)
     configured_binary = Path(binary_path).expanduser() if binary_path else None
     binary = (
         str(configured_binary)
@@ -911,7 +1010,9 @@ def _rosemary_installation(
         ),
         None,
     )
-    executable_path = binary or running_binary or which('rosemary')
+    executable_path = (
+        binary or running_binary or _quadra_runner_binary(home, environ) or which('rosemary')
+    )
     executable = Path(executable_path) if executable_path is not None else None
     configured_bundle = _rosemary_bundle(str(app_path)) if app_path else None
     bundle = (
@@ -923,14 +1024,26 @@ def _rosemary_installation(
             ),
             None,
         )
+        or _quadra_app_bundle(home)
         or _nutmeg_app_bundle(home)
     )
-    if not (desktop or sessions or (executable is not None and bundle is not None)):
+    quadra = _quadra_is_bundle(bundle, home)
+    if not (
+        desktop
+        or (quadra and quadra_desktop)
+        or sessions
+        or (executable is not None and bundle is not None)
+    ):
         return None
     paths = ROSEMARY_CLIENT.paths(home=home, environ=environ)
     paths = replace(paths, resource_roots=(bundle / 'Contents' / 'Resources',) if bundle else ())
     return LinuxClientInstallation(
-        ROSEMARY_CLIENT, paths, executable, bundle, desktop and configured_bundle is None
+        ROSEMARY_CLIENT,
+        paths,
+        executable,
+        bundle,
+        (quadra_desktop if quadra else desktop and configured_bundle is None),
+        quadra,
     )
 
 
