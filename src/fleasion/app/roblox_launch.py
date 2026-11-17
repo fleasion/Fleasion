@@ -97,8 +97,26 @@ def request_running_instance_launch(target: str, timeout_ms: int = 5000) -> bool
 def launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
     """Launch a URI through the active proxy mode."""
     if sys.platform.startswith('linux'):
-        # Flatpak supplies Fleasion's Env Proxy variables to the selected client while the
-        # proxy is active; do not replace a one-time URI with a synthetic launch
+        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+            get_selected_linux_client_installation,
+            running_rosemary_proxy_status,
+        )
+
+        selected = get_selected_linux_client_installation()
+        config = tray.config_manager
+        monitor = getattr(tray, 'roblox_monitor', None)
+        lifecycle = monitor.env_lifecycle if monitor is not None else None
+        stud_proxy_enabled = (
+            selected is not None
+            and selected.stud_managed
+            and config.proxy_mode == 'env'
+            and config.proxy_features_enabled
+        )
+        if stud_proxy_enabled and lifecycle is not None and is_roblox_running():
+            proxy = tray.proxy_master
+            if running_rosemary_proxy_status(proxy.roblox_env_proxy_url()) != 'configured':
+                return lifecycle.handle_player_launch(get_roblox_player_exe_path(), target)
+        # Other Linux clients use their own scoped proxy launch/replay mechanisms
         return launch_as_standard_user(target)
 
     config = tray.config_manager
@@ -189,13 +207,23 @@ def create_env_proxy_lifecycle(
     else:
 
         def _relaunch_env_player(
-            _proxy_url: str,
-            _target: str | None,
+            proxy_url: str,
+            target: str | None,
             _force: bool,
-            _cancel_event: threading.Event,
-            _source_exe_path: Path | None,
-            _player_already_stopped: bool,
+            cancel_event: threading.Event,
+            source_exe_path: Path | None,
+            player_already_stopped: bool,
         ) -> bool:
+            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+                get_selected_linux_client_installation,
+                relaunch_stud_with_proxy_env,
+            )
+
+            selected = get_selected_linux_client_installation()
+            if selected is not None and selected.stud_managed:
+                return relaunch_stud_with_proxy_env(
+                    proxy_url, target, cancel_event, source_exe_path, player_already_stopped
+                )
             log_buffer.log(
                 'Launcher',
                 'Linux client Env Proxy is supplied by the client launcher; '

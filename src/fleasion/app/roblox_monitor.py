@@ -115,6 +115,7 @@ class RobloxExitMonitor(QObject):
         self._sober_replay_suppress_until = 0.0
         self._sober_handoff_until = 0.0
         self._community_handoff: tuple[str, float] | None = None
+        self._stud_relaunch_suppress_until = 0.0
         self._community_preexisting_scopes = (
             {
                 descriptor.key: flatpak_community_scopes(
@@ -381,7 +382,7 @@ class RobloxExitMonitor(QObject):
             self._status_lock.release()
 
     def _handle_player_launch_detected(self) -> None:
-        if sys.platform.startswith('linux'):
+        if sys.platform.startswith('linux'):  # ruff: ignore[too-many-nested-blocks]
             exe_path = Path(selected_linux_client_app_id())
             if self._mod_manager is not None:
                 self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
@@ -392,7 +393,32 @@ class RobloxExitMonitor(QObject):
                 and proxy_features_enabled
             ):
                 if self.env_lifecycle is not None:
-                    run_in_thread(self.env_lifecycle.handle_adopted_player_launch)(exe_path)
+                    selected = get_selected_linux_client_installation()
+                    if selected is not None and getattr(selected, 'stud_managed', False):
+                        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+                            running_rosemary_proxy_status,
+                        )
+
+                        url = self._proxy_master.roblox_env_proxy_url()
+                        if running_rosemary_proxy_status(url) != 'configured':
+                            if time.monotonic() >= self._stud_relaunch_suppress_until:
+                                self._stud_relaunch_suppress_until = time.monotonic() + 20.0
+                                self._suppress_next_player_exit_cache_delete = True
+                                run_in_thread(self.env_lifecycle.handle_player_launch)(
+                                    get_roblox_player_exe_path()
+                                )
+                            else:
+                                log_buffer.log(
+                                    'Launcher',
+                                    'Stud still lacks verified proxy routing after a recent '
+                                    'relaunch; refusing an automatic restart loop',
+                                )
+                        else:
+                            run_in_thread(self.env_lifecycle.handle_adopted_player_launch)(
+                                get_roblox_player_exe_path()
+                            )
+                    else:
+                        run_in_thread(self.env_lifecycle.handle_adopted_player_launch)(exe_path)
             elif self._proxy_master is not None and proxy_features_enabled:
                 run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
             elif self._proxy_master is None and proxy_features_enabled:
@@ -627,6 +653,22 @@ class RobloxExitMonitor(QObject):
                 self._player_was_running = False
                 self.was_running = False
                 self._linux_auto_observed_running = None
+                return False
+
+        # Stud must be restarted through its own launcher, even when Auto
+        # switches to Stud after an unrelated client was previously selected
+        if getattr(selected, 'stud_managed', False) and lifecycle is not None:
+            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+                running_rosemary_proxy_status,
+            )
+
+            if running_rosemary_proxy_status(proxy.roblox_env_proxy_url()) != 'configured':
+                if time.monotonic() >= self._stud_relaunch_suppress_until:
+                    self._stud_relaunch_suppress_until = time.monotonic() + 20.0
+                    self._suppress_next_player_exit_cache_delete = True
+                    self._player_was_running = True
+                    self.was_running = True
+                    run_in_thread(lifecycle.handle_player_launch)(get_roblox_player_exe_path())
                 return False
 
         # A preexisting process cannot inherit a newly armed Flatpak override

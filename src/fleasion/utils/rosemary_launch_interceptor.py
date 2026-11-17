@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from .linux_clients import RosemarySession, read_rosemary_session, running_rosemary_players
 from .logging import log_buffer
+from .stud_linux import stud_data_root_for_bundle
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -161,6 +162,7 @@ def replay_rosemary_launch(  # ruff: ignore[too-many-return-statements]
         not proxy_url.startswith('http://127.0.0.1:')
         or snapshot.stdout_log is not None
         or _launched_by_nutmeg(proc_root / str(snapshot.session.pid))
+        or stud_data_root_for_bundle(snapshot.session.bundle) is not None
     ):
         return False
     if stop is not None and stop.is_set():
@@ -244,6 +246,8 @@ class RosemaryLaunchInterceptor:
                 return
             snapshot = capture_rosemary_launch(session, proc_root=self._proc_root)
             if snapshot is None:
+                continue
+            if stud_data_root_for_bundle(session.bundle) is not None:
                 continue
             if snapshot.stdout_log is not None or _launched_by_nutmeg(
                 self._proc_root / str(session.pid)

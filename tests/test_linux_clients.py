@@ -23,6 +23,7 @@ from fleasion.utils.linux_clients import (
     query_default_roblox_handlers,
     select_linux_client,
 )
+from fleasion.utils.stud_linux import STUD_APP_ID
 
 
 def _installation(client: LinuxClientDescriptor, tmp_path: Path) -> LinuxClientInstallation:
@@ -113,7 +114,7 @@ def test_detect_installed_clients_uses_flatpak_info(tmp_path: Path) -> None:
     assert commands == [
         ['/usr/bin/flatpak', 'info', client.app_id]
         for client in LINUX_CLIENTS if client.runtime == 'flatpak'
-    ]
+    ] + [['/usr/bin/flatpak', 'info', STUD_APP_ID]]
     assert installed[0].launch_command('roblox://experiences/start?placeId=1818') == [
         '/usr/bin/flatpak',
         'run',

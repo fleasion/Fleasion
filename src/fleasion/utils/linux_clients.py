@@ -20,6 +20,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, Unpack, cast
 
+from .stud_linux import (
+    STUD_APP_ID,
+    StudSource,
+    discover_running_stud_source,
+    discover_stud_sources,
+    stud_data_root_for_bundle,
+)
+
 if TYPE_CHECKING:
     from collections.abc import (
         Callable,
@@ -188,6 +196,8 @@ class LinuxClientInstallation:
     app_bundle: Path | None = None
     desktop_launcher: bool = False
     quadra_launcher: bool = False
+    stud_managed: bool = False
+    stud_command: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -205,10 +215,15 @@ class LinuxClientInstallation:
     def desktop_id(self) -> str:
         return self.client.desktop_id
 
-    def launch_command(
+    def launch_command(  # ruff: ignore[too-many-return-statements]
         self, uri: str | None = None, *, require_inherited_environment: bool = False
     ) -> list[str] | None:
         if self.client.runtime == 'rosemary':
+            if self.stud_managed:
+                if not self.stud_command:
+                    return None
+                # Stud owns updates, its prefix and its running Rosemary child
+                return [*self.stud_command, uri] if uri else [*self.stud_command, '--roblox']
             # gtk-launch may activate the desktop handler through D-Bus, where
             # Fleasion's per-launch proxy variables are not inherited.
             if self.quadra_launcher or (
@@ -448,7 +463,7 @@ def _rosemary_bundle(value: str) -> Path | None:
     if not path.is_absolute():
         return None
     for part in (path, *path.parents):
-        if part.name != 'Roblox.app':
+        if part.name not in {'Roblox.app', 'RobloxPlayer.app'}:
             continue
         resources = part / 'Contents' / 'Resources'
         executable = part / 'Contents' / 'MacOS' / 'RobloxPlayer'
@@ -816,6 +831,19 @@ def rosemary_guest_home(  # ruff: ignore[too-many-return-statements]
     """
     home = installation.paths.home
     environment = os.environ if environ is None else environ
+    if installation.stud_managed:
+        root = (
+            stud_data_root_for_bundle(installation.app_bundle) if installation.app_bundle else None
+        )
+        if root is None:
+            return None
+        if prefix_path is not None and _resolved(prefix_path) != _resolved(root / 'prefix'):
+            return None
+        # Stud sets ROSEMARY_PREFIX explicitly, overriding the launcher environment
+        mode = environment.get('ROSEMARY_PREFIX_HOME')
+        if mode not in {None, '', 'host', 'prefix'}:
+            return None
+        return home if mode == 'host' else root / 'prefix/root/Users' / home.name
     xdg_config = environment.get('XDG_CONFIG_HOME', '')
     config_dir = (
         Path(xdg_config) if xdg_config and Path(xdg_config).is_absolute() else home / '.config'
@@ -982,6 +1010,16 @@ def _quadra_desktop_exists(home: Path, environ: Mapping[str, str]) -> bool:
     return False
 
 
+def _matching_stud_source(
+    bundle: Path | None,
+    sources: tuple[StudSource, ...],
+) -> StudSource | None:
+    if bundle is None:
+        return None
+    root = stud_data_root_for_bundle(bundle)
+    return next((source for source in sources if source.data_root == root), None)
+
+
 def _rosemary_installation(
     *,
     home: Path,
@@ -990,8 +1028,25 @@ def _rosemary_installation(
     proc_root: Path,
     app_path: str | Path | None = None,
     binary_path: str | Path | None = None,
+    stud_sources: tuple[StudSource, ...] = (),
 ) -> LinuxClientInstallation | None:
     sessions = running_rosemary_players(proc_root=proc_root)
+    sources = list(stud_sources)
+    for session in sessions:
+        if any(source.data_root == stud_data_root_for_bundle(session.bundle) for source in sources):
+            continue
+        source = discover_running_stud_source(
+            session.bundle,
+            session.pid,
+            home=home,
+            environ=environ,
+            proc_root=proc_root,
+            flatpak_executable=which('flatpak'),
+            flatpak_installed=any(item.flatpak for item in stud_sources),
+        )
+        if source is not None:
+            sources.append(source)
+    stud_sources = tuple(sources)
     desktop = _nutmeg_desktop_exists(home, environ)
     quadra_desktop = _quadra_desktop_exists(home, environ)
     configured_binary = Path(binary_path).expanduser() if binary_path else None
@@ -1026,10 +1081,13 @@ def _rosemary_installation(
         )
         or _quadra_app_bundle(home)
         or _nutmeg_app_bundle(home)
+        or next((source.bundle for source in stud_sources if source.bundle is not None), None)
     )
+    stud = _matching_stud_source(bundle, stud_sources)
     quadra = _quadra_is_bundle(bundle, home)
     if not (
         desktop
+        or stud is not None
         or (quadra and quadra_desktop)
         or sessions
         or (executable is not None and bundle is not None)
@@ -1044,6 +1102,8 @@ def _rosemary_installation(
         bundle,
         (quadra_desktop if quadra else desktop and configured_bundle is None),
         quadra,
+        stud is not None,
+        stud.command if stud is not None else (),
     )
 
 
@@ -1143,6 +1203,17 @@ def detect_installed_clients(
         )
         else Path('/nonexistent-fleasion-test-proc')
     )
+    stud_sources = discover_stud_sources(
+        resolved_home,
+        environment,
+        find_executable,
+        flatpak_installed=_flatpak_info_succeeds(
+            flatpak,
+            STUD_APP_ID,
+            run,
+            env=_flatpak_probe_env(environment, home=resolved_home),
+        ),
+    )
     rosemary = _rosemary_installation(
         home=resolved_home,
         environ=environment,
@@ -1150,6 +1221,7 @@ def detect_installed_clients(
         proc_root=rosemary_proc_root,
         app_path=rosemary_app_path,
         binary_path=rosemary_binary_path,
+        stud_sources=stud_sources,
     )
     if rosemary is not None:
         detected.append(rosemary)

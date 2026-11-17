@@ -48,6 +48,7 @@ from .linux_clients import (
 )
 
 if TYPE_CHECKING:
+    import threading
     from collections.abc import Iterator
 
 
@@ -344,7 +345,15 @@ def running_rosemary_proxy_status(proxy_url: str) -> str:
     if not sessions:
         return 'not_running'
     readable = False
+    installation = get_selected_linux_client_installation()
     for session in sessions:
+        if (
+            installation is not None
+            and installation.client.runtime == 'rosemary'
+            and installation.app_bundle is not None
+            and session.bundle != installation.app_bundle
+        ):
+            continue
         try:
             entries = (PROC_ROOT / str(session.pid) / 'environ').read_bytes().split(b'\0')
         except OSError:
@@ -358,6 +367,24 @@ def running_rosemary_proxy_status(proxy_url: str) -> str:
             if name.lower() in {b'https_proxy', b'http_proxy', b'all_proxy'}
         }
         if variables.get('https_proxy') == proxy_url.encode('ascii'):
+            return 'configured'
+        # Stud forwards guest assignments without proxying its updater
+        guest_env = next(
+            (
+                entry.split(b'=', 1)[1]
+                for entry in entries
+                if entry.startswith(b'ROSEMARY_ENVIRON=')
+            ),
+            b'',
+        )
+        if any(
+            line
+            in {
+                b'HTTPS_PROXY=' + proxy_url.encode('ascii'),
+                b'https_proxy=' + proxy_url.encode('ascii'),
+            }
+            for line in guest_env.split(b'\n')
+        ):
             return 'configured'
     return 'missing' if readable else 'unreadable'
 
@@ -775,12 +802,36 @@ def _terminate_rosemary_players(installation: LinuxClientInstallation) -> bool:
     return not _client_pids(installation)
 
 
-def terminate_roblox(installation: LinuxClientInstallation | None = None) -> bool:
+def terminate_roblox(  # ruff: ignore[too-many-return-statements]
+    installation: LinuxClientInstallation | None = None,
+) -> bool:
     """Terminate only the selected or supplied Linux Roblox client."""
     installation = installation or get_selected_linux_client_installation()
     if installation is None:
         return False
     if installation.client.runtime == 'rosemary':
+        if installation.stud_managed and installation.app_bundle is not None:
+            import threading  # ruff: ignore[import-outside-top-level]
+
+            from .stud_relaunch import stop_stud_session  # ruff: ignore[import-outside-top-level]
+
+            sessions = tuple(
+                session
+                for session in running_rosemary_players(proc_root=PROC_ROOT)
+                if session.bundle == installation.app_bundle
+            )
+            if not sessions:
+                return True
+            if len(sessions) != 1:
+                return False
+            prefix = installation.app_bundle.parent.parent.parent / 'prefix'
+            return stop_stud_session(
+                sessions[0],
+                prefix=prefix,
+                cancel=threading.Event(),
+                launcher_command=installation.stud_command,
+                proc_root=PROC_ROOT,
+            )
         # The guest can ignore SIGTERM; signal only verified Player generations
         return _terminate_rosemary_players(installation)
 
@@ -1305,6 +1356,99 @@ def _launch_target_for_log(target: str) -> str:
     return target
 
 
+def _launch_rosemary_command(installation: LinuxClientInstallation, command: list[str]) -> None:
+    """Preserve launcher-owned startup while forwarding only guest proxy settings."""
+    if installation.stud_managed:
+        environment = _rosemary_proxy_environment(stud_launcher=True, installation=installation)
+        if (
+            len(installation.stud_command) > 1
+            and installation.stud_command[1] == 'run'
+            and Path(installation.stud_command[0]).name == 'flatpak'
+            and 'ROSEMARY_ENVIRON' in environment
+        ):
+            # A Flatpak needs an explicit --env to receive host variables
+            command = [
+                *command[:2],
+                '--env=ROSEMARY_ENVIRON=' + environment['ROSEMARY_ENVIRON'],
+                *command[2:],
+            ]
+        _standard_user_popen(command, extra_env=environment)
+        return
+    _standard_user_popen(
+        command,
+        extra_env=_rosemary_proxy_environment(
+            nutmeg_launcher=(
+                Path(command[0]).name == 'gtk-launch' and not installation.quadra_launcher
+            )
+        ),
+    )
+
+
+def relaunch_stud_with_proxy_env(  # ruff: ignore[too-many-return-statements]
+    proxy_url: str,
+    target: str | None,
+    cancel_event: threading.Event,
+    source_exe_path: Path | None,
+    player_already_stopped: bool,
+) -> bool:
+    """Use Stud's launcher after stopping the old supervised Player generation."""
+    from .stud_relaunch import (  # ruff: ignore[import-outside-top-level]
+        stop_stud_session,
+        stud_player_launch_uri,
+    )
+
+    installation = get_selected_linux_client_installation()
+    if installation is None or installation.app_bundle is None or not installation.stud_managed:
+        return False
+    if (
+        not installation.stud_command
+        or _active_rosemary_proxy_url != proxy_url
+        or cancel_event.is_set()
+    ):
+        return False
+    expected = installation.app_bundle / 'Contents/MacOS/RobloxPlayer'
+    if source_exe_path is not None and source_exe_path.resolve() != expected.resolve():
+        return False
+    try:
+        # Fail before stopping anything if Stud's fixed prefix is mismatched
+        _rosemary_proxy_environment(stud_launcher=True, installation=installation)
+    except ValueError as exc:
+        log_buffer.log('Launcher', f'Stud relaunch refused: {exc}')
+        return False
+    sessions = [
+        item
+        for item in running_rosemary_players(proc_root=PROC_ROOT)
+        if item.bundle == installation.app_bundle
+    ]
+    if not player_already_stopped:
+        if len(sessions) != 1:
+            log_buffer.log('Launcher', 'Stud relaunch refused: exactly one Player is required')
+            return False
+        session = sessions[0]
+        if target is None:
+            # A Stud/browser launch can contain a one-use join ticket. Preserve
+            # the exact URI only in memory, and never log its contents
+            target = stud_player_launch_uri(session, proc_root=PROC_ROOT)
+        prefix = installation.app_bundle.parent.parent.parent / 'prefix'
+        if not stop_stud_session(
+            session,
+            prefix=prefix,
+            cancel=cancel_event,
+            launcher_command=installation.stud_command,
+            proc_root=PROC_ROOT,
+        ):
+            return False
+    elif sessions:
+        return False
+    if cancel_event.is_set():
+        return False
+    command = installation.launch_command(target)
+    if command is None:
+        return False
+    _launch_rosemary_command(installation, command)
+    return True
+
+
 def _launch_roblox_uri(target: str) -> bool:
     installation = get_selected_linux_client_installation()
     if installation is None:
@@ -1326,14 +1470,7 @@ def _launch_roblox_uri(target: str) -> bool:
         )
         return False
     if installation.client.runtime == 'rosemary':
-        _standard_user_popen(
-            command,
-            extra_env=_rosemary_proxy_environment(
-                nutmeg_launcher=(
-                    Path(command[0]).name == 'gtk-launch' and not installation.quadra_launcher
-                )
-            ),
-        )
+        _launch_rosemary_command(installation, command)
     elif installation.client.runtime == 'native':
         _standard_user_popen(command, extra_env=native_proxy_environment(installation))
     else:
@@ -1371,14 +1508,7 @@ def _launch_selected_linux_client_target(
             )
         return False
     if installation.client.runtime == 'rosemary':
-        _standard_user_popen(
-            command,
-            extra_env=_rosemary_proxy_environment(
-                nutmeg_launcher=(
-                    Path(command[0]).name == 'gtk-launch' and not installation.quadra_launcher
-                )
-            ),
-        )
+        _launch_rosemary_command(installation, command)
     elif installation.client.runtime == 'native':
         _standard_user_popen(command, extra_env=native_proxy_environment(installation))
     else:
@@ -1419,7 +1549,45 @@ def launch_as_standard_user(target: str | Path) -> bool:
     return False
 
 
-def _rosemary_proxy_environment(*, nutmeg_launcher: bool = False) -> dict[str, str]:
+def _rosemary_proxy_environment(
+    *,
+    nutmeg_launcher: bool = False,
+    stud_launcher: bool = False,
+    installation: LinuxClientInstallation | None = None,
+) -> dict[str, str]:
+    if stud_launcher:
+        selected = installation or get_selected_linux_client_installation()
+        if selected is None or not selected.stud_managed or selected.app_bundle is None:
+            msg = 'Stud installation has no verified Player build'
+            raise ValueError(msg)
+        url = _active_rosemary_proxy_url
+        if not url:
+            return {}
+        stud_prefix = selected.app_bundle.parent.parent.parent / 'prefix'
+        if (
+            _rosemary_prefix_path
+            and Path(_rosemary_prefix_path).expanduser().resolve() != stud_prefix.resolve()
+        ):
+            msg = 'Stud manages its own Rosemary prefix; select Stud’s prefix in Fleasion'
+            raise ValueError(msg)
+        bypass = 'localhost,127.0.0.1,::1'
+        existing = os.environ.get('ROSEMARY_ENVIRON', '')
+        guest_lines = (
+            *(
+                f'{name}={url}'
+                for name in (
+                    'HTTPS_PROXY',
+                    'HTTP_PROXY',
+                    'ALL_PROXY',
+                    'https_proxy',
+                    'http_proxy',
+                    'all_proxy',
+                )
+            ),
+            f'NO_PROXY={bypass}',
+            f'no_proxy={bypass}',
+        )
+        return {'ROSEMARY_ENVIRON': '\n'.join((existing, *guest_lines)).lstrip('\n')}
     launch_environment: dict[str, str] = {}
     if _rosemary_prefix_path and not nutmeg_launcher:
         prefix = Path(_rosemary_prefix_path).expanduser()
@@ -1602,7 +1770,17 @@ def set_linux_client_env_proxy_override(  # ruff: ignore[too-many-return-stateme
                 return False
             if not quadra_proxy_override.clear(QUADRA_CONFIG_PATH, QUADRA_PROXY_OVERRIDE_STATE):
                 return False
-            if installation.quadra_launcher:
+            if installation.stud_managed:
+                if not installation.stud_command:
+                    log_buffer.log('Launcher', 'Stud launcher not available; cannot arm proxy')
+                    return False
+                log_buffer.log(
+                    'Launcher',
+                    'Stud Env Proxy armed. Fleasion can intercept a separately launched '
+                    'Stud Player through verified shutdown and launcher relaunch; '
+                    'no browser URI handler is modified',
+                )
+            elif installation.quadra_launcher:
                 if not quadra_proxy_override.arm(
                     proxy_url, QUADRA_CONFIG_PATH, QUADRA_PROXY_OVERRIDE_STATE
                 ):

@@ -299,6 +299,7 @@ def test_running_rosemary_proxy_status_does_not_guess_from_launcher_state(
     location = root / str(pid)
     location.mkdir(parents=True)
     monkeypatch.setattr(platform_linux, 'PROC_ROOT', root)
+    monkeypatch.setattr(platform_linux, 'get_selected_linux_client_installation', lambda: None)
     monkeypatch.setattr(
         platform_linux, 'running_rosemary_players', lambda **_kwargs: (session,)
     )
