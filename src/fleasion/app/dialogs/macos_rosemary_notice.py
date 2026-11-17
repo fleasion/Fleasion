@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 from PySide6.QtCore import QElapsedTimer, Qt, QTimer
-from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from fleasion.app.dialogs.common import FirstTimeSetupDialog
 from fleasion.localization import tr
 
 if TYPE_CHECKING:
-    from PySide6.QtGui import QShowEvent
+    from PySide6.QtGui import QCloseEvent, QScreen, QShowEvent
 
     from fleasion.config.manager import ConfigManager
 
@@ -20,34 +27,49 @@ if TYPE_CHECKING:
 READ_SECONDS = 20
 
 
-class MacOSRosemaryNoticeDialog(FirstTimeSetupDialog):
-    """Show a persistent launch warning with a timed explicit acknowledgment."""
+class MacOSRosemaryNoticeDialog(QDialog):
+    """Compact instructions that require a timed, explicit acknowledgment."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._can_accept = False
         self.setWindowTitle(tr('macos_rosemary.title'))
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setModal(True)
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, on=False)
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, on=False)
-        self.set_text(tr('macos_rosemary.notice'))
 
-        headline = QLabel(tr('macos_rosemary.notice_heading'), self)
-        headline.setObjectName('MacOSRosemaryNoticeHeadline')
-        headline.setWordWrap(True)
-        headline_font = headline.font()
-        headline_font.setBold(True)
-        headline_font.setPointSize(max(headline_font.pointSize() + 3, 14))
-        headline.setFont(headline_font)
-        layout = self.layout()
-        if isinstance(layout, QVBoxLayout):
-            layout.insertWidget(0, headline)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(14)
 
-        button = self.ok_button
-        button.setObjectName('MacOSRosemaryNoticeAcknowledge')
-        button.setDefault(False)
-        button.setAutoDefault(False)
-        button.setEnabled(False)
-        button.setText(tr('macos_rosemary.read_countdown', seconds=READ_SECONDS))
+        heading = QLabel(tr('macos_rosemary.notice_heading'), self)
+        heading.setObjectName('MacOSRosemaryNoticeHeadline')
+        heading.setWordWrap(True)
+        heading_font = heading.font()
+        heading_font.setBold(True)
+        heading_font.setPointSize(max(heading_font.pointSize() + 2, 13))
+        heading.setFont(heading_font)
+        layout.addWidget(heading)
+
+        body = QLabel(tr('macos_rosemary.notice'), self)
+        body.setObjectName('MacOSRosemaryNoticeBody')
+        body.setTextFormat(Qt.TextFormat.PlainText)
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(body)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        self.ok_button = QPushButton(
+            tr('macos_rosemary.read_countdown', seconds=READ_SECONDS), self
+        )
+        self.ok_button.setObjectName('MacOSRosemaryNoticeAcknowledge')
+        self.ok_button.setEnabled(False)
+        self.ok_button.setDefault(False)
+        self.ok_button.setAutoDefault(False)
+        self.ok_button.clicked.connect(self.accept)
+        actions.addWidget(self.ok_button)
+        layout.addLayout(actions)
 
         self._elapsed = QElapsedTimer()
         self._countdown = QTimer(self)
@@ -56,6 +78,14 @@ class MacOSRosemaryNoticeDialog(FirstTimeSetupDialog):
 
     @override
     def showEvent(self, event: QShowEvent) -> None:
+        screen = cast('QScreen | None', self.screen() or QApplication.primaryScreen())
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.setFixedWidth(min(650, max(1, available.width() - 48)))
+            self.adjustSize()
+            frame = self.frameGeometry()
+            frame.moveCenter(available.center())
+            self.move(frame.topLeft())
         super().showEvent(event)
         if not self._elapsed.isValid():
             self._elapsed.start()
@@ -70,9 +100,22 @@ class MacOSRosemaryNoticeDialog(FirstTimeSetupDialog):
             self.ok_button.setText(tr('macos_rosemary.read_countdown', seconds=remaining))
             return
         self._countdown.stop()
-        self.allow_accept()
+        self._can_accept = True
         self.ok_button.setText(tr('macos_rosemary.read_button'))
         self.ok_button.setEnabled(True)
+
+    @override
+    def accept(self) -> None:
+        if self._can_accept:
+            super().accept()
+
+    @override
+    def reject(self) -> None:
+        return
+
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
+        event.ignore()
 
 
 def show_macos_rosemary_notice(

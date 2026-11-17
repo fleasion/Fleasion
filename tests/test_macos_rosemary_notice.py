@@ -12,7 +12,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QLabel
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QWidget
 
 from fleasion.app.dialogs import macos_rosemary_notice as notice
 from fleasion.localization import tr
@@ -51,6 +51,22 @@ def test_timed_modal_cannot_be_skipped_or_dismissed_before_ack(
     assert not dialog.ok_button.isEnabled()
     assert dialog.ok_button.text() == tr('macos_rosemary.read_countdown', seconds=20)
     assert dialog.findChild(QLabel, 'MacOSRosemaryNoticeHeadline') is not None
+    body = dialog.findChild(QLabel, 'MacOSRosemaryNoticeBody')
+    assert body is not None
+    assert 'Launch Roblox with Fleasion' in body.text()
+    assert body.isVisible()
+    body_bottom = body.mapTo(dialog, body.rect().bottomLeft()).y()
+    button_top = dialog.ok_button.mapTo(dialog, dialog.ok_button.rect().topLeft()).y()
+    assert 0 <= button_top - body_bottom <= 35
+    assert dialog.width() <= 650
+    assert dialog.height() < 400
+    assert dialog.height() >= 200
+    button_bottom = dialog.ok_button.mapTo(
+        dialog, dialog.ok_button.rect().bottomRight()
+    ).y()
+    assert button_bottom < dialog.height()
+    assert dialog.ok_button.styleSheet() == ''
+    assert dialog.ok_button.graphicsEffect() is None
 
     QTest.keyClick(dialog, Qt.Key.Key_Return)
     QTest.keyClick(dialog, Qt.Key.Key_Escape)
