@@ -47,6 +47,7 @@ from fleasion.app.dialogs.startup import (
     show_desktop_integration_failure,
     show_run_on_boot_failure,
 )
+from fleasion.app.dialogs.yama import YamaWarningInvoker
 from fleasion.app.elevation import is_admin, relaunch_as_admin
 from fleasion.app.macos_reopen import REOPEN_ARM_DELAY_MS, install_macos_reopen_handler
 from fleasion.app.process_control import (
@@ -106,6 +107,7 @@ from fleasion.utils import (
 )
 from fleasion.utils.microprofiler import start_microprofiler
 from fleasion.utils.qt_diagnostics import install_qt_message_logging
+from fleasion.utils.yama_ptrace import read_ptrace_scope, set_warning_callback
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QSessionManager
@@ -423,6 +425,10 @@ def run_application() -> None:
 
     proxy_error_invoker = ProxyErrorInvoker()
     proxy_error_invoker.show_proxy_error.connect(proxy_error_invoker.handle_proxy_error)
+    yama_warning_invoker = YamaWarningInvoker()
+    if sys.platform.startswith('linux'):
+        set_warning_callback(yama_warning_invoker.show_warning.emit)
+        app.aboutToQuit.connect(lambda: set_warning_callback(None))
     tray_ref: dict[str, SystemTray | None] = {'tray': None}
 
     def _refresh_config_surfaces() -> None:
@@ -650,6 +656,28 @@ def run_application() -> None:
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
     tray_ref['tray'] = tray
+    if (
+        sys.platform.startswith('linux')
+        and proxy_master.is_running
+        and config_manager.proxy_mode == 'env'
+    ):
+        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+            get_selected_linux_client_installation,
+        )
+
+        selection = get_selected_linux_client_installation()
+        scope = read_ptrace_scope()
+        if (
+            selection is not None
+            and selection.client.runtime == 'rosemary'
+            and scope is not None
+            and scope > 0
+        ):
+
+            def _show_initial_yama_notice() -> None:
+                yama_warning_invoker.show_warning.emit(scope, 'startup')
+
+            QTimer.singleShot(0, _show_initial_yama_notice)
     single_instance_state.tray = tray
     app.aboutToQuit.connect(tray.cleanup_tray_icon)
     single_instance_control_server = start_single_instance_control_server(app, tray)

@@ -6,6 +6,7 @@ Layout validated against OpenSSL 3.5.0 as shipped in x86_64 macOS Roblox.
 
 from __future__ import annotations
 
+import errno
 import hmac
 import logging
 import struct
@@ -13,6 +14,8 @@ import sys
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from fleasion.utils.yama_ptrace import report_memory_access_denied
 
 from .tls12_session import LP64_OPENSSL_350, TLS12_VERSION, validate_tls12_session
 from .tls_records import expand_label
@@ -519,5 +522,9 @@ def scan(
                 stop=stop,
                 found=found,
             )
-    except OSError, PermissionError, ProcessLookupError:
+    except OSError as exc:
+        # A denied /proc/<pid>/mem read is the actionable Yama signal;
+        # ordinary key misses and network timeouts must not trigger this notice
+        if exc.errno in {errno.EACCES, errno.EPERM} and (stop is None or not stop.is_set()):
+            report_memory_access_denied(pid)
         return found
