@@ -59,7 +59,7 @@ _validated_addresses: dict[tuple[int, int], list[_ValidatedLocation]] = {}
 _validated_addresses_lock = threading.Lock()
 SOBER_CGROUP_SUBSTRING = 'org.vinegarhq.sober'
 LARGE_MEMFD_MIN_SIZE = 10 * 1024 * 1024
-_SCANNABLE_PATHNAMES = frozenset({'', '[heap]', '/memfd: (deleted)'})
+_SCANNABLE_PATHNAMES = frozenset({'', '[heap]', '/memfd: (deleted)', '[anon:mimalloc]'})
 
 
 class _Iovec(Structure):
