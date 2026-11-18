@@ -519,6 +519,55 @@ class RobloxExitMonitor(QObject):
                     'Roblox launch detected but could not resolve exe path for CA check',
                 )
 
+    def _sync_linux_auto_hosts_client(self, selected: LinuxClientInstallation) -> bool:
+        """Retarget Hosts TLS recovery for Auto without recycling the port-443 helper."""
+        proxy = self._proxy_master
+        if proxy is None or not proxy.wait_for_hosts_proxy_ready(timeout=0.0):
+            return False
+        if self.env_lifecycle is not None and self.env_lifecycle.operation_in_progress:
+            return False
+
+        pending_sober: SoberLaunchSnapshot | None = None
+        if selected.key == 'sober':
+            pending_sober = capture_sober_launch()
+            if pending_sober is not None and (
+                pending_sober.scope == self._sober_preexisting_scope
+                or self._sober_preexisting_ambiguous
+            ):
+                # Never restart an instance that predates this monitor.
+                pending_sober = None
+
+        replay_needed = bool(
+            selected.key == 'sober'
+            and pending_sober is not None
+            and not getattr(proxy, '_hosts_sober_native_keylog_active', False)
+        )
+        if not proxy.switch_linux_hosts_splice_client(selected, replay_sober=replay_needed):
+            return False
+        if selected.key == 'sober':
+            if (
+                replay_needed
+                and pending_sober is not None
+                and getattr(proxy, '_hosts_sober_native_keylog_active', False)
+            ):
+                # A live Flatpak cannot inherit the new SSLKEYLOGFILE override.
+                # Replay only its verified generation after the backend is ready.
+                self._sober_replay_suppress_until = time.monotonic() + 5.0
+                if replay_sober_launch(pending_sober):
+                    self._sober_handoff_until = time.monotonic() + 10.0
+                    proxy.rearm_custom_fflag_delivery_for_player_launch()
+                    self._player_was_running = False
+                    self.was_running = False
+                    self._linux_auto_observed_running = None
+                    return False
+            if not getattr(proxy, '_hosts_sober_native_keylog_active', False):
+                log_buffer.log(
+                    'Launcher',
+                    'Auto Hosts now targets Sober; the already-running instance cannot '
+                    'inherit a newly armed native TLS key log without a safe launch replay',
+                )
+        return True
+
     def _sync_linux_auto_proxy_client(self) -> bool:  # ruff: ignore[too-many-return-statements]
         """Re-arm Env Proxy when Auto detects a newly running Linux client.
 
@@ -534,7 +583,7 @@ class RobloxExitMonitor(QObject):
             return True
         if (
             getattr(self.config_manager, 'linux_client', 'auto') != 'auto'
-            or self.config_manager.proxy_mode != 'env'
+            or self.config_manager.proxy_mode not in {'env', 'hosts'}
             or not self.config_manager.proxy_features_enabled
         ):
             return True
@@ -564,9 +613,31 @@ class RobloxExitMonitor(QObject):
         if handoff is not None and selected.key == handoff[0] and self._linux_auto_observed_running:
             self._community_handoff = None
         if not self._linux_auto_observed_running:
+            if (
+                self.config_manager.proxy_mode == 'hosts'
+                and selected.key == getattr(proxy, '_active_linux_client_key', None) == 'sober'
+                and not getattr(proxy, '_hosts_sober_native_keylog_active', False)
+            ):
+                # A preexisting Sober couldn't inherit the override while
+                # running. Arm it now for the NEXT Sober launch.
+                proxy.arm_linux_hosts_sober_keylog_if_idle()
             return True
         if selected.key == getattr(proxy, '_active_linux_client_key', None):
+            if (
+                self.config_manager.proxy_mode == 'hosts'
+                and selected.key == 'sober'
+                and not getattr(proxy, '_hosts_sober_native_keylog_active', False)
+                and not self._sober_preexisting_ambiguous
+            ):
+                candidate = capture_sober_launch()
+                if candidate is not None and candidate.scope != self._sober_preexisting_scope:
+                    # The first detection may precede Flatpak's complete
+                    # launcher metadata; replay the verified generation once
+                    # it becomes available, without changing backend again.
+                    return self._sync_linux_auto_hosts_client(selected)
             return True
+        if self.config_manager.proxy_mode == 'hosts':
+            return self._sync_linux_auto_hosts_client(selected)
         # Capture one-time launch arguments before reconfiguring the proxy
         # Flatpak overrides only affect a process started after they are armed
         pending_sober: SoberLaunchSnapshot | None = None

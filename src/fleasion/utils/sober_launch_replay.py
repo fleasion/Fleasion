@@ -165,5 +165,7 @@ def replay_sober_launch(  # ruff: ignore[too-many-return-statements]
     except OSError, subprocess.SubprocessError:
         log_buffer.log('Launcher', 'Sober Auto replay failed to launch captured invocation')
         return False
-    log_buffer.log('Launcher', 'Replayed the original Sober invocation with newly armed Env Proxy')
+    log_buffer.log(
+        'Launcher', 'Replayed the original Sober invocation with newly armed client transport'
+    )
     return True

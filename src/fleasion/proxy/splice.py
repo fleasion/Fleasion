@@ -534,7 +534,11 @@ class SpliceConnection:
                 await asyncio.Future()
                 return
             self._http_started = True
-            if proxy.mark_splice_decrypted(host):
+            # Auto may switch the shared proxy's TLS backend while this
+            # handshake is in flight. An old Rosemary connection must never
+            # establish verified Sober session ownership after the switch.
+            current_keys = getattr(proxy, '_splice_keys', self.keys)
+            if self.keys is current_keys and proxy.mark_splice_decrypted(host):
                 log_buffer.log(
                     'TLS',
                     f'Live TLS splice decrypted application traffic for {host}; '

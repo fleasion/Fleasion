@@ -2028,16 +2028,7 @@ class FleasionProxy:
         self._splice_client_key = splice_client_key
         self._verified_sober_session_identity: tuple[str, str] | None = None
         if self._tls_splice:
-            keylog = os.environ.get('FLEASION_SPLICE_KEYLOG')
-            self._splice_keys = KeyProvider(
-                Path(keylog) if keylog else None,
-                linux_client_key=splice_client_key,
-                sober_native_keylog=(
-                    native_keylog_path()
-                    if not keylog and splice_client_key == 'sober' and os.name == 'posix'
-                    else None
-                ),
-            )
+            self._splice_keys = self._new_splice_key_provider(splice_client_key)
         self._intercept_hosts: frozenset[str] = (
             frozenset(intercept_hosts) if intercept_hosts is not None else INTERCEPT_HOSTS
         )
@@ -2258,6 +2249,44 @@ class FleasionProxy:
         if not self._servers:
             return
         await asyncio.gather(*(server.serve_forever() for server in self._servers))
+
+    @staticmethod
+    def _new_splice_key_provider(client_key: str | None) -> KeyProvider:
+        """Create a fresh, client-scoped key provider without reusing TLS secrets."""
+        keylog = os.environ.get('FLEASION_SPLICE_KEYLOG')
+        return KeyProvider(
+            Path(keylog) if keylog else None,
+            linux_client_key=client_key,
+            sober_native_keylog=(
+                native_keylog_path()
+                if not keylog and client_key == 'sober' and sys.platform == 'linux'
+                else None
+            ),
+        )
+
+    def switch_splice_linux_client(self, client_key: str) -> bool:
+        """Rebind future TLS connections to one Linux client without restarting.
+
+        Called on the proxy's asyncio event-loop thread. Existing connections
+        retain the provider captured by _serve_splice, while old pending key
+        scans are stopped so they cannot continue searching another client.
+        """
+        if (
+            not self._tls_splice
+            or self._splice_keys is None
+            or client_key not in {'rosemary', 'sober', 'mocktail', 'nightcap', 'cordial'}
+        ):
+            return False
+        if self._splice_client_key == client_key:
+            return True
+        replacement = self._new_splice_key_provider(client_key)
+        old_provider = self._splice_keys
+        self._splice_keys = replacement
+        self._splice_client_key = client_key
+        self._verified_sober_session_identity = None
+        self._splice_decrypted_hosts.clear()
+        old_provider.clear()
+        return True
 
     def mark_splice_decrypted(self, host: str) -> bool:
         """Record verified Sober traffic against its current Flatpak session."""

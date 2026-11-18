@@ -4808,7 +4808,12 @@ class ProxyMaster:
             self._sober_native_keylog_armed = False
         return bool(cleared)
 
-    def _arm_linux_hosts_sober_native_keylog(self) -> bool:
+    def _arm_linux_hosts_sober_native_keylog(
+        self,
+        *,
+        installation: LinuxClientInstallation | None = None,
+        allow_running_for_replay: bool = False,
+    ) -> bool:
         """Prepare Sober's native TLS secrets before its initial settings fetch.
 
         Env mode already does this in its Flatpak proxy override. Hosts File
@@ -4816,21 +4821,25 @@ class ProxyMaster:
         initial ClientSettings response and relies on unreliable memory scans
         during the later dynamic reload.
         """
+        if installation is None:
+            if self._linux_client_key() != 'sober':
+                return False
+            installation = self._linux_client_installation()
         if (
             not IS_LINUX
-            or self._linux_client_key() != 'sober'
+            or installation is None
+            or installation.key != 'sober'
             or not self._use_splice_transport()
             or os.environ.get('FLEASION_SPLICE_KEYLOG')
         ):
             return False
-        installation = self._linux_client_installation()
-        if installation is None:
-            return False
+        if getattr(self, '_hosts_sober_native_keylog_active', False):
+            return True
         linux_client_main_process = cast(
             'Callable[[LinuxClientInstallation], tuple[int, float] | None]',
             _lazy_attr('fleasion.utils.platform_linux', 'linux_client_main_process'),
         )
-        if linux_client_main_process(installation) is not None:
+        if linux_client_main_process(installation) is not None and not allow_running_for_replay:
             # Changes to Flatpak overrides affect only future launches. Do not
             # claim immediate decryption of an already-running Sober instance.
             log_buffer.log(
@@ -4856,6 +4865,108 @@ class ProxyMaster:
             'Sober native TLS key logging armed in Hosts mode; '
             'initial ClientSettings response can be intercepted',
         )
+        return True
+
+    def switch_linux_hosts_splice_client(
+        self,
+        installation: LinuxClientInstallation,
+        *,
+        replay_sober: bool = False,
+    ) -> bool:
+        """Switch Auto's Hosts-mode TLS backend without stopping the relay.
+
+        The native Sober keylog may be armed while its original Flatpak runs
+        only if the monitor captured a verified, replayable launch generation.
+        The monitor is responsible for replaying that generation after success.
+        """
+        if (
+            not IS_LINUX
+            or self._use_env_proxy_mode()
+            or not getattr(self, '_running', False)
+            or not self.wait_for_hosts_proxy_ready(timeout=0.0)
+        ):
+            return False
+        key = installation.key
+        previous = self._linux_client_key()
+        if key == previous:
+            # Auto may have identified Sober before its launch arguments were
+            # observable. Retry arming only for a later verified generation.
+            if (
+                key == 'sober'
+                and replay_sober
+                and not getattr(self, '_hosts_sober_native_keylog_active', False)
+            ):
+                if not self._arm_linux_hosts_sober_native_keylog(
+                    installation=installation, allow_running_for_replay=True
+                ):
+                    return False
+                self.refresh_username_spoofer_interception()
+            return True
+        proxy = getattr(self, '_proxy', None)
+        loop = getattr(self, '_loop', None)
+        if proxy is None or loop is None or not loop.is_running():
+            return False
+
+        armed_new = False
+        if key == 'sober' and replay_sober:
+            was_armed = bool(getattr(self, '_hosts_sober_native_keylog_active', False))
+            armed = self._arm_linux_hosts_sober_native_keylog(
+                installation=installation, allow_running_for_replay=True
+            )
+            armed_new = armed and not was_armed
+            if not armed:
+                log_buffer.log(
+                    'Launcher',
+                    'Auto Hosts Sober key logging could not be armed; retaining memory-scanner fallback',
+                )
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._switch_hosts_splice_client_on_loop(proxy, key), loop
+            )
+            switched = future.result(timeout=5.0)
+        except (RuntimeError, TimeoutError, OSError) as exc:
+            log_buffer.log('Launcher', f'Auto Hosts TLS client switch failed: {type(exc).__name__}')
+            switched = False
+        if not switched:
+            if armed_new:
+                self._clear_linux_hosts_sober_native_keylog()
+            return False
+        self._active_linux_client_installation = installation
+        self._active_linux_client_key = key
+        # The fallback ClientSettings arm timer is tied to a specific client
+        # generation. Rebuild it after an Auto switch (or stop it for Rosemary).
+        self._stop_linux_sober_custom_fflag_timer()
+        self._start_linux_sober_custom_fflag_timer()
+        # Sober's override stays owned until shutdown when switching away:
+        # other still-running Sober sessions may depend on its keylog file.
+        self.refresh_username_spoofer_interception()
+        log_buffer.log(
+            'Launcher',
+            f'Auto Hosts TLS key provider switched from {previous or "none"} to {key} '
+            'without restarting the privileged relay',
+        )
+        return True
+
+    @staticmethod
+    async def _switch_hosts_splice_client_on_loop(proxy: FleasionProxy, key: str) -> bool:
+        """Serialize provider replacement with incoming TLS handshakes."""
+        return proxy.switch_splice_linux_client(key)
+
+    def arm_linux_hosts_sober_keylog_if_idle(self) -> bool:
+        """Prepare Sober's next launch after an unreplayable active session exits."""
+        if (
+            not IS_LINUX
+            or self._use_env_proxy_mode()
+            or self._linux_client_key() != 'sober'
+            or not self.wait_for_hosts_proxy_ready(timeout=0.0)
+        ):
+            return False
+        if getattr(self, '_hosts_sober_native_keylog_active', False):
+            return True
+        if not self._arm_linux_hosts_sober_native_keylog():
+            return False
+        self.refresh_username_spoofer_interception()
         return True
 
     def _clear_linux_hosts_sober_native_keylog(self) -> bool:
