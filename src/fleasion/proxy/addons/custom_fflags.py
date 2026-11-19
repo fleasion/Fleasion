@@ -383,6 +383,13 @@ class CustomFFlagModifier:
             ):
                 continue
             paths.append(resource_dir / MACOS_CLIENT_SETTINGS_REL)
+
+        # Roblox on macOS reads startup FFlags from ~/Library/Roblox/ClientSettings/
+        # rather than the app bundle; seed that path too so the cert flag takes effect
+        # before the first TLS connection.
+        library_path = Path.home() / 'Library' / 'Roblox' / MACOS_CLIENT_SETTINGS_REL
+        if library_path not in paths:
+            paths.append(library_path)
         return paths
 
     @staticmethod
@@ -532,7 +539,7 @@ class CustomFFlagModifier:
 
         try:
             payload = json.loads(body)
-        except json.JSONDecodeError, UnicodeDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self.log_response_failure(
                 'decode',
                 f'Could not decode ClientSettings response for {path[:160]}; response left unchanged',
