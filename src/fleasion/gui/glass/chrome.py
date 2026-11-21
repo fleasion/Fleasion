@@ -200,6 +200,20 @@ _FALLING_DIAGONALS: Final = (
 )
 
 
+# Events the edge resizer reacts to; it filters every event in the application
+_RESIZER_EVENTS: Final = frozenset(
+    {
+        QEvent.Type.Polish,
+        QEvent.Type.Leave,
+        QEvent.Type.Hide,
+        QEvent.Type.WindowDeactivate,
+        QEvent.Type.MouseMove,
+        QEvent.Type.HoverMove,
+        QEvent.Type.MouseButtonPress,
+    }
+)
+
+
 class EdgeResizer(QObject):
     """Frameless windows still need resizable edges."""
 
@@ -288,20 +302,12 @@ class EdgeResizer(QObject):
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        # Rejects most events by type before the costlier validity checks
         kind = event.type()
         if (
-            not isValid(self._window)
+            kind not in _RESIZER_EVENTS
             or not isinstance(watched, QWidget)
-            or kind
-            not in {
-                QEvent.Type.Polish,
-                QEvent.Type.Leave,
-                QEvent.Type.Hide,
-                QEvent.Type.WindowDeactivate,
-                QEvent.Type.MouseMove,
-                QEvent.Type.HoverMove,
-                QEvent.Type.MouseButtonPress,
-            }
+            or not isValid(self._window)
         ):
             return False
 

@@ -43,6 +43,7 @@ class AppearanceEvents(QObject):
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        del watched
         if event.type() == QEvent.Type.ThemeChange:
             self._schedule_refresh()
-        return super().eventFilter(watched, event)
+        return False

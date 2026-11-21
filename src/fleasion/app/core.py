@@ -221,7 +221,10 @@ def run_application() -> None:
     _sigint_timer = install_gui_sigint_handler(app)
     single_instance_state.app = app
     roblox_url_event_filter = RobloxUrlEventFilter(app)
-    app.installEventFilter(roblox_url_event_filter)
+    if sys.platform == 'darwin':
+        # Qt only sends QFileOpenEvent on macOS, and an application-wide
+        # filter runs Python for every event in the process
+        app.installEventFilter(roblox_url_event_filter)
     # Qt normally follows each desktop's dialog conventions (GNOME/KDE/Windows),
     # which changes the visual order of standard buttons. Fleasion uses the
     # Windows order everywhere so confirmations have a stable layout

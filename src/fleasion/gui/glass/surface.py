@@ -237,6 +237,21 @@ def _opaque_fallback(window: QWidget) -> bool:
 #
 
 
+# Events the Glass window filter reacts to; it filters every event in the application
+_SURFACE_EVENTS: Final = frozenset(
+    {
+        QEvent.Type.Polish,
+        QEvent.Type.ParentChange,
+        QEvent.Type.Show,
+        QEvent.Type.Resize,
+        QEvent.Type.WindowStateChange,
+        QEvent.Type.Move,
+        QEvent.Type.StyleChange,
+        QEvent.Type.Paint,
+    }
+)
+
+
 class GlassWindows(QObject):
     """Gives top-level windows an alpha surface and paints the glass on them."""
 
@@ -470,10 +485,10 @@ class GlassWindows(QObject):
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if not isinstance(watched, QWidget) or not isValid(watched):
-            return False
-
+        # Rejects most events by type before the costlier validity checks
         kind = event.type()
+        if kind not in _SURFACE_EVENTS or not isinstance(watched, QWidget) or not isValid(watched):
+            return False
         if kind == QEvent.Type.Polish:
             self.polish(watched)
             self.polish_itemview(watched)
