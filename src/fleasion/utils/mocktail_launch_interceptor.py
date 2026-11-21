@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from .linux_clients import MocktailSession, read_mocktail_session, running_mocktail_players
 from .logging import log_buffer
+from .proc_table import proc_entries
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -85,25 +86,22 @@ def capture_mocktail_launch(  # ruff: ignore[too-many-return-statements]
 
 def _mocktail_child_pids(snapshot: MocktailLaunchSnapshot, *, proc_root: Path) -> tuple[int, ...]:
     """Find only exact-binary children owned by the original engine."""
-    try:
-        entries = list(proc_root.iterdir())
-    except OSError:
-        return ()
     pids: list[int] = []
-    for entry in entries:
-        if not entry.name.isdecimal() or int(entry.name) == snapshot.session.pid:
+    for entry in proc_entries(proc_root):
+        if (
+            entry.pid == snapshot.session.pid
+            or not entry.owned_by_current_user()
+            or entry.comm() != 'mocktail'
+        ):
             continue
+        process = entry.path
         try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if entry.stat().st_uid != os.getuid():
-                continue
-            fields = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
+            fields = (process / 'stat').read_text().rsplit(')', 1)[1].split()
             if int(fields[1]) != snapshot.session.pid:
                 continue
-            if (entry / 'comm').read_text(encoding='utf-8').strip() != 'mocktail':
+            if not (process / 'exe').samefile(snapshot.executable):
                 continue
-            if not (entry / 'exe').samefile(snapshot.executable):
-                continue
-            pids.append(int(entry.name))
+            pids.append(entry.pid)
         except OSError, IndexError, ValueError:
             continue
     return tuple(sorted(pids))

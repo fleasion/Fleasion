@@ -67,6 +67,7 @@ from .paths import (
     USER_HOME,
     get_icon_path,
 )
+from .proc_table import process_pids_by_name
 
 
 class DetachedPopenKwargs(TypedDict):
@@ -543,23 +544,8 @@ def selected_linux_client_app_id() -> str:
 
 
 def _process_pids(name: str) -> list[int]:
-    pgrep = shutil.which('pgrep')
-    if pgrep is None:
-        return []
-    try:
-        result = _run_subprocess(
-            [pgrep, '-x', name],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except OSError, subprocess.SubprocessError:
-        return []
-    pids: list[int] = []
-    for raw in result.stdout.splitlines():
-        with contextlib.suppress(ValueError):
-            pids.append(int(raw.strip()))
-    return pids
+    # Detection runs several times per pass, so match names without forking pgrep
+    return process_pids_by_name(name, proc_root=PROC_ROOT)
 
 
 def _sober_process_start_ticks(pid: int) -> int | None:

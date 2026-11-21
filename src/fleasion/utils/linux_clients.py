@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, Unpack, cast
 
 from .flatpak_cli import flatpak_app_installed
+from .proc_table import ProcEntry, proc_entries
 from .stud_linux import (
     STUD_APP_ID,
     StudSource,
@@ -526,20 +527,24 @@ def read_rosemary_session(process: Path) -> RosemarySession | None:
     return _read_rosemary_session(process)
 
 
+def _may_be_rosemary_host(entry: ProcEntry) -> bool:
+    """Apply _read_rosemary_candidate_cmdline's argv[0] filter to the shared table."""
+    preview = entry.cmdline_head()
+    if not preview:
+        return False
+    return b'\0' not in preview or preview.split(b'\0', 1)[0].rsplit(b'/', 1)[-1] == b'rosemary'
+
+
 def running_rosemary_players(
     *,
     proc_root: Path = Path('/proc'),
 ) -> tuple[RosemarySession, ...]:
     """Read argv from real Rosemary hosts, without confusing Studio or crash helpers."""
-    try:
-        processes = list(proc_root.iterdir())
-    except OSError:
-        return ()
     results = (
         session
-        for process in processes
-        if process.name.isdecimal()
-        if (session := _read_rosemary_session(process)) is not None
+        for entry in proc_entries(proc_root)
+        if _may_be_rosemary_host(entry)
+        if (session := _read_rosemary_session(entry.path)) is not None
     )
     return tuple(sorted(results, key=lambda session: session.pid))
 
@@ -592,15 +597,15 @@ def running_mocktail_players(
     flatpak_id: str | None = None,
 ) -> tuple[MocktailSession, ...]:
     """Return only a real Mocktail Player binary, never associated helpers."""
-    try:
-        entries = list(proc_root.iterdir())
-    except OSError:
-        return ()
     matches = (
         session
-        for entry in entries
-        if entry.name.isdecimal()
-        if (session := read_mocktail_session(entry, executable=executable, flatpak_id=flatpak_id))
+        for entry in proc_entries(proc_root)
+        if entry.comm() == 'Main'
+        if (
+            session := read_mocktail_session(
+                entry.path, executable=executable, flatpak_id=flatpak_id
+            )
+        )
         is not None
     )
     return tuple(sorted(matches, key=lambda session: session.pid))
@@ -620,19 +625,12 @@ def running_community_launchers(
     """
     if executable is None and flatpak_id is None:
         return ()
-    try:
-        processes = proc_root.iterdir()
-    except OSError:
-        return ()
     sessions: list[MocktailSession] = []
-    for proc in processes:
-        if not proc.name.isdecimal():
+    for entry in proc_entries(proc_root):
+        if not entry.owned_by_current_user() or entry.comm() != binary_name:
             continue
+        proc = entry.path
         try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if proc.stat().st_uid != os.getuid():
-                continue
-            if (proc / 'comm').read_text(encoding='utf-8').strip() != binary_name:
-                continue
             exe = proc / 'exe'
             if exe.readlink().name != binary_name:
                 continue
@@ -662,22 +660,12 @@ def running_cordial_players(
     native_only: bool = False,
 ) -> tuple[MocktailSession, ...]:
     """Find only Cordial engine processes, not its GTK launcher or plugins."""
-    try:
-        processes = list(proc_root.iterdir())
-    except OSError:
-        return ()
     sessions: list[MocktailSession] = []
-    for process in processes:
-        if not process.name.isdecimal():
+    for entry in proc_entries(proc_root):
+        if not entry.owned_by_current_user() or entry.comm() not in {'cordial-run', 'Main'}:
             continue
+        process = entry.path
         try:  # ruff: ignore[too-many-statements-in-try-clause]
-            if process.stat().st_uid != os.getuid():
-                continue
-            if (process / 'comm').read_text(encoding='utf-8').strip() not in {
-                'cordial-run',
-                'Main',
-            }:
-                continue
             exe = (process / 'exe').readlink()
             if exe.name != 'cordial-run':
                 continue
@@ -731,21 +719,14 @@ class SoberSession:
 
 def _running_sober_sessions(*, proc_root: Path, launcher: bool | None) -> tuple[SoberSession, ...]:
     """Identify either the Roblox engine or its executable-backed Sober launcher."""
-    try:
-        processes = list(proc_root.iterdir())
-    except OSError:
-        return ()
     sessions: list[SoberSession] = []
     expected_comms = {'sober', 'Main'} if launcher is None else {'sober' if launcher else 'Main'}
-    for process in processes:
-        if not process.name.isdecimal():
+    for entry in proc_entries(proc_root):
+        comm = entry.comm()
+        if comm not in expected_comms or not entry.owned_by_current_user():
             continue
+        process = entry.path
         try:  # ruff: ignore[too-many-statements-in-try-clause]
-            comm = (process / 'comm').read_text(encoding='utf-8').strip()
-            if comm not in expected_comms:
-                continue
-            if process.stat().st_uid != os.getuid():
-                continue
             cgroup = (process / 'cgroup').read_text(encoding='utf-8', errors='replace')
             if f'{SOBER_CLIENT.cgroup_marker}-' not in cgroup:
                 continue
@@ -797,14 +778,11 @@ def sober_flatpak_session_identity(*, proc_root: Path = Path('/proc')) -> str | 
 
 def running_rosemary_studios(*, proc_root: Path = Path('/proc')) -> tuple[int, ...]:
     """Find Rosemary Studio guests, which may share a Player cache prefix."""
-    try:
-        processes = list(proc_root.iterdir())
-    except OSError:
-        return ()
     studio_pids: list[int] = []
-    for process in processes:
-        if not process.name.isdecimal():
+    for entry in proc_entries(proc_root):
+        if not _may_be_rosemary_host(entry):
             continue
+        process = entry.path
         try:
             argv = [
                 arg.decode('utf-8', errors='replace')

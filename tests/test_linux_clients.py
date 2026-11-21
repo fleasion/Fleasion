@@ -1,5 +1,5 @@
 import subprocess
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Literal, cast
@@ -430,16 +430,18 @@ def test_sober_identity_scans_launcher_and_engine_together(
     cgroup = f'0::/user.slice/{scope}\n'
     _sober_launcher_proc(proc, 100, ticks=100, cgroup=cgroup)
     _sober_proc(proc, 200, ticks=200, cgroup=cgroup)
-    original = Path.iterdir
+    from fleasion.utils import proc_table
+
+    original = proc_table._read_table  # pyright: ignore[reportPrivateUsage]
     scans = 0
 
-    def counted_iterdir(path: Path) -> Iterator[Path]:
+    def counted_read_table(path: Path) -> tuple[proc_table.ProcEntry, ...]:
         nonlocal scans
         if path == proc:
             scans += 1
         return original(path)
 
-    monkeypatch.setattr(Path, 'iterdir', counted_iterdir)
+    monkeypatch.setattr(proc_table, '_read_table', counted_read_table)
     assert sober_flatpak_session_identity(proc_root=proc) == scope
     assert scans == 1
 
