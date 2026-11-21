@@ -11,6 +11,7 @@ from fleasion.app.qt_runtime import linux_gui_dependency_packages
 from fleasion.proxy.master import find_roblox_dirs
 from fleasion.utils.autostart import sync_autostart
 from fleasion.utils.desktop_integration import sync_desktop_integration
+from fleasion.utils.fflag_resolution import warm_known_names
 from fleasion.utils.logging import log_buffer
 from fleasion.utils.paths import CONFIG_DIR
 
@@ -42,6 +43,9 @@ class StartupTasks(QObject):
         self._thread = Thread(target=self._run, name='fleasion-startup', daemon=False)
         self._thread.start()
 
+        # Read-only cache warming, so it never holds up shutdown
+        Thread(target=self._warm_fastflag_names, name='fleasion-fflag-names', daemon=True).start()
+
     def _run(self) -> None:
         try:
             self.missing_packages = linux_gui_dependency_packages()
@@ -51,6 +55,13 @@ class StartupTasks(QObject):
             log_buffer.log('Startup', f'Environment check failed: {exc}')
         finally:
             self.completed.emit()
+
+    @staticmethod
+    def _warm_fastflag_names() -> None:
+        try:
+            warm_known_names()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            log_buffer.log('FastFlags', f'Could not preload cached names: {exc}')
 
     def _sync_integrations(self) -> None:
         if self._desktop:

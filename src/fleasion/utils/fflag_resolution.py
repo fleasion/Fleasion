@@ -205,6 +205,17 @@ def known_untyped_names() -> frozenset[str]:
     return installed.raw_names if installed is not None else frozenset()
 
 
+def warm_known_names() -> None:
+    """Parse the cached name indexes so later GUI-thread lookups hit the memo.
+
+    The first parse of the public and installed indexes takes several hundred
+    milliseconds, which the FastFlag editor would otherwise spend on the GUI
+    thread while the dashboard preloads.
+    """
+    known_typed_names()
+    known_untyped_names()
+
+
 def qualified_matches(name: str, known_names: frozenset[str] | None = None) -> tuple[str, ...]:
     """Resolve a literal full name, known suffix matches, or all candidates."""
     if full_prefix(name) or not name.isascii() or not name.isidentifier():
