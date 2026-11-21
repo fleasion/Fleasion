@@ -115,6 +115,7 @@ if TYPE_CHECKING:
 
     from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.app.tray import SystemTray
+    from fleasion.cache.asset_type_filter import CategoryFilterPopup
     from fleasion.config.manager import ConfigManager
     from fleasion.config.types import (
         GroupRule as _GroupRule,
@@ -919,6 +920,7 @@ class ReplacerConfigWindow(QDialog):
         self.undo_manager = UndoManager()
         self.undo_manager.save_state(self._replacement_rules, copy_state=False)
         self.config_enabled_vars: dict[str, QWidget] = {}
+        self._asset_types_popup: CategoryFilterPopup | None = None
         self._asset_types_popup_last_closed = 0.0
         self._dialog_asset_types_popup_last_closed = 0.0
         self._dialog_asset_types_popup: QMenu | None = None
@@ -1137,15 +1139,11 @@ class ReplacerConfigWindow(QDialog):
         self._rebuild_editing_menu()
         self._rebuild_enabled_menu()
 
-        from fleasion.cache.asset_type_filter import CategoryFilterPopup
-
-        old_asset_types = self.asset_types_popup
-        asset_types = CategoryFilterPopup(parent=self)
-        asset_types.filters_changed.connect(self._on_asset_types_changed)
-        asset_types.aboutToHide.connect(self._mark_asset_types_popup_closed)
-        self.asset_types_popup = asset_types
-        old_asset_types.close()
-        old_asset_types.deleteLater()
+        # An Asset Types popup that was never opened is built later in the new style
+        if (old_asset_types := self._asset_types_popup) is not None:
+            self._asset_types_popup = self._new_asset_types_popup()
+            old_asset_types.close()
+            old_asset_types.deleteLater()
         self._asset_types_popup_last_closed = 0.0
 
         if (dialog_popup := self._dialog_asset_types_popup) is not None:
@@ -1646,11 +1644,6 @@ class ReplacerConfigWindow(QDialog):
         self.asset_types_btn = QPushButton(tr('ui.gui.replacer_config.asset_types'))
         _ensure_text_width(self.asset_types_btn, 80)
         self.asset_types_btn.clicked.connect(self._show_asset_types_popup)
-        from fleasion.cache import asset_type_filter
-
-        self.asset_types_popup = asset_type_filter.CategoryFilterPopup(parent=self)
-        self.asset_types_popup.filters_changed.connect(self._on_asset_types_changed)
-        self.asset_types_popup.aboutToHide.connect(self._mark_asset_types_popup_closed)
         ids_layout.addWidget(self.asset_types_btn)
 
         edit_layout.addLayout(ids_layout)
@@ -3078,6 +3071,23 @@ class ReplacerConfigWindow(QDialog):
             except ValueError:
                 ids.append(part)
         return ids
+
+    @property
+    def asset_types_popup(self) -> CategoryFilterPopup:
+        """Asset Types popup, built on first use since it holds about 80 checkboxes."""
+        popup = self._asset_types_popup
+        if popup is None:
+            popup = self._new_asset_types_popup()
+            self._asset_types_popup = popup
+        return popup
+
+    def _new_asset_types_popup(self) -> CategoryFilterPopup:
+        from fleasion.cache.asset_type_filter import CategoryFilterPopup
+
+        popup = CategoryFilterPopup(parent=self)
+        popup.filters_changed.connect(self._on_asset_types_changed)
+        popup.aboutToHide.connect(self._mark_asset_types_popup_closed)
+        return popup
 
     def _show_asset_types_popup(self) -> None:
         """Show the asset types popup menu."""
