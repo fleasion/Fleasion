@@ -2418,13 +2418,9 @@ class CacheViewerTab(QWidget):
         self._text_viewer_default_font = self.text_viewer.font()
         self._text_viewer_default_wrap = QTextEdit.LineWrapMode.WidgetWidth
 
-        # JSON viewer for JSON files
-        self.json_viewer = CacheJsonViewer()
-        self.preview_container_layout.addWidget(self.json_viewer)
-
-        # RBXM/RBXMX structure viewer for Roblox model files
-        self.rbxm_viewer = RbxmPreviewWidget()
-        self.preview_container_layout.addWidget(self.rbxm_viewer)
+        # JSON and RBXM/RBXMX viewers are created on first use, like the 3D viewers
+        self._json_viewer: CacheJsonViewer | None = None
+        self._rbxm_viewer: RbxmPreviewWidget | None = None
 
         # Font viewer for font files
         self.font_wrapper = QWidget()
@@ -2452,14 +2448,32 @@ class CacheViewerTab(QWidget):
         # exist yet and are created only when a 3D asset is actually previewed.
         self.audio_wrapper.hide()
         self.text_viewer.hide()
-        self.json_viewer.hide()
-        self.rbxm_viewer.hide()
 
         self.preview_group.setLayout(preview_group_layout)
         preview_layout.addWidget(self.preview_group)
 
         preview_widget.setLayout(preview_layout)
         return preview_widget
+
+    def _ensure_json_viewer(self) -> CacheJsonViewer:
+        """Create the JSON viewer when a JSON asset is first previewed."""
+        if self._json_viewer is None:
+            viewer = CacheJsonViewer()
+            viewer.hide()
+            index = self.preview_container_layout.indexOf(self.font_wrapper)
+            self.preview_container_layout.insertWidget(index, viewer)
+            self._json_viewer = viewer
+        return self._json_viewer
+
+    def _ensure_rbxm_viewer(self) -> RbxmPreviewWidget:
+        """Create the RBXM/RBXMX structure viewer when a model is first previewed."""
+        if self._rbxm_viewer is None:
+            viewer = RbxmPreviewWidget()
+            viewer.hide()
+            index = self.preview_container_layout.indexOf(self.font_wrapper)
+            self.preview_container_layout.insertWidget(index, viewer)
+            self._rbxm_viewer = viewer
+        return self._rbxm_viewer
 
     def _ensure_obj_viewer(self) -> ObjViewerPanel:
         """Create the mesh OpenGL widget only when a mesh is actually previewed."""
@@ -4201,8 +4215,10 @@ class CacheViewerTab(QWidget):
         if self.animation_viewer is not None:
             self.animation_viewer.hide()
         self.text_viewer.hide()
-        self.json_viewer.hide()
-        self.rbxm_viewer.hide()
+        if self._json_viewer is not None:
+            self._json_viewer.hide()
+        if self._rbxm_viewer is not None:
+            self._rbxm_viewer.hide()
         self.font_wrapper.hide()
         self.rbxm_view_btn.hide()
 
@@ -5058,10 +5074,11 @@ class CacheViewerTab(QWidget):
 
     def _remember_current_rbxm_draft(self) -> None:
         key = getattr(self, '_rbxm_preview_asset_key', None)
-        if key is None or not hasattr(self, 'rbxm_viewer'):
+        viewer = getattr(self, '_rbxm_viewer', None)
+        if key is None or viewer is None:
             return
-        document = getattr(self.rbxm_viewer, 'document', None)
-        if document is None or not self.rbxm_viewer.is_modified():
+        document = getattr(viewer, 'document', None)
+        if document is None or not viewer.is_modified():
             return
         self._modified_rbxm_drafts[key] = {
             'cached_at': getattr(self, '_rbxm_preview_cached_at', ''),
@@ -5080,8 +5097,9 @@ class CacheViewerTab(QWidget):
             if key == getattr(self, '_rbxm_preview_asset_key', None):
                 self._rbxm_preview_asset_key = None
                 self._rbxm_preview_cached_at = ''
-                with contextlib.suppress(Exception):
-                    self.rbxm_viewer.set_dirty(dirty=False)
+                if self._rbxm_viewer is not None:
+                    with contextlib.suppress(Exception):
+                        self._rbxm_viewer.set_dirty(dirty=False)
             return None
         return draft.get('document')
 
@@ -5116,10 +5134,10 @@ class CacheViewerTab(QWidget):
         base_name = self._sanitize_filename(resolved_name) if resolved_name else asset_id
         suffix = '_MODIFIED'
         if export_format == 'converted_modified_rbxm':
-            data = self.rbxm_viewer.export_rbxm_bytes(draft_document)
+            data = self._ensure_rbxm_viewer().export_rbxm_bytes(draft_document)
             output_path = export_dir / f'{base_name}{suffix}.rbxm'
         else:
-            data = self.rbxm_viewer.export_rbxmx_bytes(draft_document)
+            data = self._ensure_rbxm_viewer().export_rbxmx_bytes(draft_document)
             output_path = export_dir / f'{base_name}{suffix}.rbxmx'
         output_path.write_bytes(data)
         log_buffer.log('Scraper', f'Exported modified RBXM/RBXMX to {output_path}')
@@ -5272,8 +5290,9 @@ class CacheViewerTab(QWidget):
             self.animation_viewer.clear()
         self.text_viewer.hide()
         self.text_viewer.clear()
-        self.rbxm_viewer.hide()
-        self.rbxm_viewer.clear()
+        if self._rbxm_viewer is not None:
+            self._rbxm_viewer.hide()
+            self._rbxm_viewer.clear()
         self._rbxm_preview_asset_key = None
         self._rbxm_preview_cached_at = ''
         self.rbxm_view_btn.hide()
@@ -5373,7 +5392,8 @@ class CacheViewerTab(QWidget):
             self.animation_viewer.hide()
             self.animation_viewer.stop()
         self.text_viewer.hide()
-        self.json_viewer.hide()
+        if self._json_viewer is not None:
+            self._json_viewer.hide()
         self.font_wrapper.hide()
         self.rbxm_view_btn.hide()
 
@@ -6075,10 +6095,11 @@ class CacheViewerTab(QWidget):
                 asset['cached_at'] = cached_at
 
         draft_document = self._get_modified_rbxm_draft(asset)
+        rbxm_viewer = self._ensure_rbxm_viewer()
         if draft_document is not None:
-            self.rbxm_viewer.load_document(draft_document, asset_label=asset_label, dirty=True)
+            rbxm_viewer.load_document(draft_document, asset_label=asset_label, dirty=True)
         else:
-            self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
+            rbxm_viewer.load_bytes(data, asset_label=asset_label)
         self._rbxm_preview_asset_key = asset_key
         self._rbxm_preview_cached_at = cached_at
 
@@ -6095,7 +6116,7 @@ class CacheViewerTab(QWidget):
                         type_item.setText(tr('ui.cache.cache_viewer.rbxm_rbxmx'))
 
         self._hide_loading()
-        self.rbxm_viewer.show()
+        rbxm_viewer.show()
         self.stop_preview_btn.show()
         with contextlib.suppress(Exception):
             self.preview_title_label.setText(title_prefix)
@@ -6141,9 +6162,10 @@ class CacheViewerTab(QWidget):
                     type_item.setText(tr('ui.cache.cache_viewer.json'))
 
         # Load and display in JSON viewer
-        self.json_viewer.load_json(parsed_data)
+        json_viewer = self._ensure_json_viewer()
+        json_viewer.load_json(parsed_data)
         self._hide_loading()
-        self.json_viewer.show()
+        json_viewer.show()
         self.stop_preview_btn.show()
 
     def _preview_hex(
