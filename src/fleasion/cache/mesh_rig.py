@@ -468,7 +468,7 @@ def _decode_draco_vertices(
         msg = 'DracoPy is required to export a v7 rig'
         raise MeshRigError(msg)
 
-    decoder = cast('_DracoDecoder', mesh_processing.DracoPy)
+    decoder = cast('_DracoDecoder', mesh_processing.draco_module())
     try:
         mesh = decoder.decode(data[4:])
     except Exception as exc:

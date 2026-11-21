@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import zstandard
-from PIL import Image
+lazy from PIL import Image
 
 from fleasion.utils import log_buffer
 from fleasion.utils.paths import APP_CACHE_DIR

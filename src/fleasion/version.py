@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import argparse
 import os
 import re
 import sys
 import tomllib
-from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+lazy import argparse
+lazy from importlib.metadata import PackageNotFoundError, version as distribution_version
 
 from packaging.version import InvalidVersion, Version
 

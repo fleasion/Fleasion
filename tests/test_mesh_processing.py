@@ -109,7 +109,7 @@ def test_v7_draco_length_is_part_of_coremesh_payload(monkeypatch: pytest.MonkeyP
         )
 
     monkeypatch.setattr(mesh_processing, 'DRACO_AVAILABLE', True)
-    monkeypatch.setattr(mesh_processing, 'DracoPy', SimpleNamespace(decode=decode))
+    monkeypatch.setattr(mesh_processing, 'draco_module', lambda: SimpleNamespace(decode=decode))
     bitstream = b'DRACO test payload'
     coremesh = struct.pack('<I', len(bitstream)) + bitstream
     data = b'version 7.00\n' + _chunk('COREMESH', 2, coremesh)
@@ -130,8 +130,8 @@ def test_v7_rejects_a_mismatched_draco_length(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(
         mesh_processing,
-        'DracoPy',
-        SimpleNamespace(decode=fail_decode),
+        'draco_module',
+        lambda: SimpleNamespace(decode=fail_decode),
     )
     coremesh = struct.pack('<I', 100) + b'too short'
     data = b'version 7.00\n' + _chunk('COREMESH', 2, coremesh)

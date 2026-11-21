@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast, override
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
-import requests as _requests
 from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
@@ -40,6 +39,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+lazy import requests as _requests
 
 from fleasion.localization import tr, tr_count
 from fleasion.utils import get_icon_path, windows as _platform_windows

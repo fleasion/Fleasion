@@ -18,8 +18,8 @@ from time import monotonic
 from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import unquote, urlparse
 
-from PIL import Image, ImageFilter, UnidentifiedImageError
 from PySide6.QtGui import QImage
+lazy from PIL import Image, ImageFilter, UnidentifiedImageError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

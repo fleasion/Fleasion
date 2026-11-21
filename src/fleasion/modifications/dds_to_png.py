@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import io
 
-from PIL import Image
+lazy from PIL import Image
 
 
 def tex_to_png_bytes(data: bytes) -> bytes | None:

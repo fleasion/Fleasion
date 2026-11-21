@@ -10,9 +10,6 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, override
 
-import numpy as np
-import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
-from numpy.typing import NDArray
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -22,6 +19,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+lazy import numpy as np
+lazy import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
+lazy from numpy.typing import NDArray
 
 from fleasion.localization import tr
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
@@ -166,15 +166,33 @@ def _load_sounddevice() -> tuple[_SoundDeviceModule | None, str | None]:
         return None, f'{type(exc).__name__}: {exc}'
 
 
-sd, _SOUNDDEVICE_IMPORT_ERROR = _load_sounddevice()
-_PORTAUDIO_ERROR: type[Exception] = sd.PortAudioError if sd is not None else RuntimeError
+# Importing sounddevice initializes PortAudio, which enumerates every audio
+# device (about 90 ms), so it is loaded on first playback instead of at startup
+sd: _SoundDeviceModule | None = None
+_sounddevice_import_error: str | None = None
+_sounddevice_loaded = False
+_sounddevice_lock = threading.Lock()
 _audio_backend_logged = threading.Event()
+
+
+def _ensure_sounddevice() -> _SoundDeviceModule | None:
+    """Load sounddevice once and return it, or None when PortAudio is unusable."""
+    global sd, _sounddevice_import_error, _sounddevice_loaded  # ruff: ignore[global-statement]
+    with _sounddevice_lock:
+        if not _sounddevice_loaded:
+            sd, _sounddevice_import_error = _load_sounddevice()
+            _sounddevice_loaded = True
+    return sd
+
+
+def _portaudio_error() -> type[Exception]:
+    return sd.PortAudioError if sd is not None else RuntimeError
 
 
 def _audio_diagnostic_value(callback: Callable[[], object]) -> object:
     try:
         return callback()
-    except (OSError, RuntimeError, _PORTAUDIO_ERROR) as exc:
+    except (OSError, RuntimeError, _portaudio_error()) as exc:
         return f'unavailable ({type(exc).__name__}: {exc})'
 
 
@@ -184,10 +202,10 @@ def _log_audio_backend_once() -> None:
         return
     _audio_backend_logged.set()
 
-    sounddevice = sd
+    sounddevice = _ensure_sounddevice()
     if sounddevice is None:
         log_buffer.log(
-            'Audio', f'PortAudio unavailable, playback disabled: {_SOUNDDEVICE_IMPORT_ERROR}'
+            'Audio', f'PortAudio unavailable, playback disabled: {_sounddevice_import_error}'
         )
         return
 
@@ -385,8 +403,8 @@ class AudioPlayerWidget(QWidget):
         """Start playback."""
         if self.audio_data is None or self.sample_rate is None:
             return
-        if sd is None:
-            log_buffer.log('Audio', f'Playback unavailable: {_SOUNDDEVICE_IMPORT_ERROR}')
+        if _ensure_sounddevice() is None:
+            log_buffer.log('Audio', f'Playback unavailable: {_sounddevice_import_error}')
             return
 
         # Reset if at end
@@ -457,9 +475,9 @@ class AudioPlayerWidget(QWidget):
             self.playback_position = end_pos
 
     def _create_output_stream(self, stop_event: threading.Event) -> _OutputStreamLike:
-        sounddevice = sd
+        sounddevice = _ensure_sounddevice()
         if sounddevice is None:
-            msg = f'Playback unavailable: {_SOUNDDEVICE_IMPORT_ERROR}'
+            msg = f'Playback unavailable: {_sounddevice_import_error}'
             raise RuntimeError(msg)
 
         def callback(
@@ -492,11 +510,11 @@ class AudioPlayerWidget(QWidget):
     def _close_output_stream(stream: _OutputStreamLike) -> None:
         try:
             stream.stop()
-        except (RuntimeError, _PORTAUDIO_ERROR) as exc:
+        except (RuntimeError, _portaudio_error()) as exc:
             log_buffer.log('Audio', f'Error stopping audio stream: {exc}')
         try:
             stream.close()
-        except (RuntimeError, _PORTAUDIO_ERROR) as exc:
+        except (RuntimeError, _portaudio_error()) as exc:
             log_buffer.log('Audio', f'Error closing audio stream: {exc}')
 
     def _finish_playback(
@@ -528,7 +546,7 @@ class AudioPlayerWidget(QWidget):
                 self.stream = stream
             stream.start()
             self._wait_for_playback_stop(stop_event)
-        except (RuntimeError, TypeError, ValueError, _PORTAUDIO_ERROR) as exc:
+        except (RuntimeError, TypeError, ValueError, _portaudio_error()) as exc:
             log_buffer.log('Audio', f'Playback error: {exc}')
         finally:
             if stream is not None:

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
+import requests
 
 from fleasion.proxy.addons import profile_picture_spoofer as pfp_module
 from fleasion.proxy.addons.profile_picture_spoofer import (
@@ -553,5 +554,5 @@ def test_selected_account_lookup_uses_only_the_provided_credential(
             assert self.cookies.values == [('.ROBLOSECURITY', 'chosen-token', '.roblox.com')]
             return SimpleNamespace(status_code=200, json=lambda: {'id': 987654})
 
-    monkeypatch.setattr(pfp_module.requests, 'Session', Session)
+    monkeypatch.setattr(requests, 'Session', Session)
     assert pfp_module._selected_account_user_id('chosen-token') == '987654'  # pyright: ignore[reportPrivateUsage]

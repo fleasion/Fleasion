@@ -1,15 +1,17 @@
 # mesh_processing.py
 # Complete Roblox mesh converter supporting versions 1.x through 7.00
 # Handles all mesh formats including Draco-compressed v6/v7 meshes
+import functools
 import gzip
 import importlib
+import importlib.util
 import json
 import struct
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, SupportsInt, TypeIs, cast
 
-import numpy as np
+lazy import numpy as np
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -69,13 +71,22 @@ def _invalid_draco_face(indices: tuple[int, int, int], vertex_count: int) -> boo
     return any(index < 0 or index >= vertex_count for index in indices)
 
 
-try:
-    DracoPy: _DracoModule | None = cast('_DracoModule', importlib.import_module('DracoPy'))
-except ImportError:
-    DracoPy = None
+# DracoPy imports NumPy, so look it up now but load it on the first v6/v7 mesh
+DRACO_AVAILABLE = importlib.util.find_spec('DracoPy') is not None
+if not DRACO_AVAILABLE:
     log_buffer.log('Mesh', 'DracoPy not installed. v6/v7 mesh conversion will not work.')
 
-DRACO_AVAILABLE = DracoPy is not None
+
+@functools.cache
+def draco_module() -> _DracoModule | None:
+    """Import DracoPy on first use, or return None when it cannot load."""
+    if not DRACO_AVAILABLE:
+        return None
+    try:
+        return cast('_DracoModule', importlib.import_module('DracoPy'))
+    except ImportError as exc:
+        log_buffer.log('Mesh', f'DracoPy could not be loaded: {exc}')
+        return None
 
 
 # Shared Data Structures
@@ -559,16 +570,14 @@ def _process_v6_v7_unchecked(data: bytes) -> str | None:
         if draco_size != len(coremesh_data) - 4:
             msg = 'COREMESH v2 Draco size does not match chunk size'
             raise ValueError(msg)
-        if not DRACO_AVAILABLE:
+        draco = draco_module() if DRACO_AVAILABLE else None
+        if draco is None:
             log_buffer.log('Mesh', 'DracoPy not available - cannot process v7 meshes')
             return None
-        if DracoPy is None:
-            msg = 'DracoPy availability state is inconsistent'
-            raise RuntimeError(msg)
 
         try:
-            mesh = DracoPy.decode(coremesh_data[4:])
-        except (DracoPy.FileTypeException, RuntimeError, TypeError, ValueError) as e:
+            mesh = draco.decode(coremesh_data[4:])
+        except (draco.FileTypeException, RuntimeError, TypeError, ValueError) as e:
             log_buffer.log('Mesh', f'DracoPy decoding error: {e}')
             return None
         if mesh is None or not _has_points(mesh):

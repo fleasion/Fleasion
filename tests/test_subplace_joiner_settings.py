@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from fleasion.gui import subplace_joiner_tab
+from fleasion.utils.verified_direct_https import VerifiedDirectHTTPSAdapter
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -150,14 +151,14 @@ def test_subplace_hosts_get_bypasses_local_tls_splice(
         captured.update(kwargs)
         return _FakeResponse()
 
-    monkeypatch.setattr(subplace_joiner_tab.requests.Session, 'get', fake_get)
+    monkeypatch.setattr(requests.Session, 'get', fake_get)
     url = 'https://apis.roblox.com/universes/v1/places/1/universe'
     owner.request_get(url)
 
     assert captured['url'] == url
     assert captured['verify'] is True
     session = cast('requests.Session', captured['session'])
-    assert isinstance(session.adapters['https://apis.roblox.com/'], subplace_joiner_tab.VerifiedDirectHTTPSAdapter)
+    assert isinstance(session.adapters['https://apis.roblox.com/'], VerifiedDirectHTTPSAdapter)
 
 
 def test_subplace_hosts_join_root_bypasses_local_tls_splice(
@@ -174,11 +175,11 @@ def test_subplace_hosts_join_root_bypasses_local_tls_splice(
             return _FakeResponse(200, {'status': 2})
         return _FakeResponse(403)
 
-    monkeypatch.setattr(subplace_joiner_tab.requests.Session, 'post', fake_post)
+    monkeypatch.setattr(requests.Session, 'post', fake_post)
     assert owner.join_root(12345, 'cookie')
     assert captured['verify'] is True
     session = cast('requests.Session', captured['session'])
-    assert isinstance(session.adapters['https://gamejoin.roblox.com/'], subplace_joiner_tab.VerifiedDirectHTTPSAdapter)
+    assert isinstance(session.adapters['https://gamejoin.roblox.com/'], VerifiedDirectHTTPSAdapter)
 
 
 def test_subplace_hosts_refuses_loopback_when_origin_address_missing() -> None:

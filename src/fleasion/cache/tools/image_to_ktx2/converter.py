@@ -2,7 +2,7 @@ import hashlib
 import io
 from typing import TYPE_CHECKING
 
-from PIL import Image
+lazy from PIL import Image
 
 from fleasion.cache.tools.rgba_ktx2 import (
     RGBA8_KTX2_CACHE_VERSION,

@@ -28,10 +28,8 @@ from typing import (
 )
 from xml.parsers.expat import ExpatError
 
-import requests
 from defusedxml import ElementTree as DefusedElementTree, minidom as safe_minidom
 from defusedxml.common import DefusedXmlException
-from PIL import Image
 from PySide6.QtCore import (
     QEvent,
     QMimeData,
@@ -84,6 +82,8 @@ from PySide6.QtWidgets import (
     QWidget,
     QWidgetAction,
 )
+lazy import requests
+lazy from PIL import Image
 
 from fleasion.localization import tr, tr_count
 from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder

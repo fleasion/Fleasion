@@ -9,9 +9,9 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-import tomlkit
-from tomlkit.exceptions import TOMLKitError
-from tomlkit.items import AoT, Array, Table
+lazy import tomlkit
+lazy from tomlkit.exceptions import TOMLKitError
+lazy from tomlkit.items import AoT, Array, Table
 
 from .logging import log_buffer
 

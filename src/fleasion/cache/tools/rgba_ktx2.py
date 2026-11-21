@@ -16,8 +16,8 @@ import struct
 from itertools import starmap
 from typing import TYPE_CHECKING, Literal
 
-import numpy as np
-from PIL import Image
+lazy import numpy as np
+lazy from PIL import Image
 
 if TYPE_CHECKING:
     from pathlib import Path

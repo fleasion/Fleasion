@@ -3,6 +3,7 @@ from typing import cast
 from urllib.parse import SplitResult
 
 import pytest
+import requests
 from packaging.version import Version
 
 from fleasion.utils import update_resolver
@@ -186,7 +187,7 @@ def test_resolver_fetches_from_its_channel_endpoint(monkeypatch: pytest.MonkeyPa
         requested_params.append(_kwargs.get('params'))
         return Response()
 
-    monkeypatch.setattr(update_resolver.requests, 'get', get)
+    monkeypatch.setattr(requests, 'get', get)
     resolver = _resolver('2.4.0b1')
 
     assert resolver.check() == ReleaseCandidate(

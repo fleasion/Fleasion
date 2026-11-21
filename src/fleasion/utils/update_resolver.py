@@ -7,8 +7,8 @@ from functools import cached_property
 from typing import TYPE_CHECKING, NamedTuple, TypeIs
 from urllib.parse import urlsplit
 
-import requests
 from packaging.version import InvalidVersion, Version
+lazy import requests
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

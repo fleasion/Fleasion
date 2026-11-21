@@ -14,10 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, override
 from urllib.parse import urlparse
 
-import requests as _requests
 from defusedxml import ElementTree as DefusedElementTree, minidom as defused_minidom
 from defusedxml.common import DefusedXmlException
-from PIL import Image, UnidentifiedImageError
 from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QIcon, QImage, QKeyEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
@@ -38,6 +36,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+lazy import requests as _requests
+lazy from PIL import Image, UnidentifiedImageError
 
 from fleasion.cache.rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from fleasion.localization import tr, tr_count

@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast, override
 from urllib.parse import urlparse
 
-import requests
 from dateutil import parser as _dateutil_parser
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QImage, QPalette, QPixmap
@@ -35,6 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+lazy import requests
 
 from fleasion.localization import tr, tr_count
 from fleasion.utils.json_types import require_object_dict
@@ -44,12 +44,12 @@ from fleasion.utils.roblox_auth import (
     get_roblosecurity as _get_roblosecurity,
     wait_for_roblosecurity as _wait_for_roblosecurity,
 )
-from fleasion.utils.verified_direct_https import VerifiedDirectHTTPSAdapter
 from fleasion.utils.windows import launch_as_standard_user
 from fleasion.widgets.spacing import CONTROL_HEIGHT, GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
+lazy from fleasion.utils.verified_direct_https import VerifiedDirectHTTPSAdapter
 
-from .prejsons_dialog import (
+lazy from .prejsons_dialog import (
     THUMB_HEIGHT,
     THUMB_WIDTH,
     make_rounded_pixmap,

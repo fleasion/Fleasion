@@ -7,7 +7,7 @@ import json
 import threading
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
-import requests
+lazy import requests
 
 from fleasion.utils import log_buffer
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object

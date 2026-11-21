@@ -19,8 +19,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, cast
 
-import requests
 from cryptography.fernet import Fernet, InvalidToken
+lazy import requests
 
 from .json_types import JsonObject, as_json_object
 from .linux_clients import (
@@ -85,14 +85,24 @@ class _BrowserCookieModule(Protocol):
     vivaldi: _BrowserLoader
 
 
+# browser_cookie3 pulls in Cryptodome, lz4 and jeepney (about 45 ms), and is
+# only needed once a browser cookie is actually read
 _browser_cookie3: _BrowserCookieModule | None = None
-if sys.platform == 'darwin' or sys.platform.startswith('linux'):
-    try:
-        import browser_cookie3 as _browser_cookie3_module  # pyright: ignore[reportMissingTypeStubs]
-    except ImportError:
-        pass
-    else:
-        _browser_cookie3 = cast('_BrowserCookieModule', _browser_cookie3_module)
+_browser_cookie3_loaded = False
+
+
+def _load_browser_cookie3() -> _BrowserCookieModule | None:
+    global _browser_cookie3, _browser_cookie3_loaded  # ruff: ignore[global-statement]
+    if _browser_cookie3 is not None or _browser_cookie3_loaded:
+        return _browser_cookie3
+    _browser_cookie3_loaded = True
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
+        try:
+            import browser_cookie3 as module  # pyright: ignore[reportMissingTypeStubs]  # ruff: ignore[import-outside-top-level]
+        except ImportError:
+            return None
+        _browser_cookie3 = cast('_BrowserCookieModule', module)
+    return _browser_cookie3
 
 
 class _FernetCipher(Protocol):
@@ -1925,7 +1935,7 @@ def _make_browser_cookie_loader(source: str, loader: _BrowserLoader) -> _Browser
 
 
 def _browser_cookie_loaders(include_keychain: bool) -> list[tuple[str, _BrowserLoader]]:
-    browser_cookie3 = _browser_cookie3
+    browser_cookie3 = _load_browser_cookie3()
     if browser_cookie3 is None:
         return []
     loaders: list[tuple[str, _BrowserLoader]] = [('Firefox', browser_cookie3.firefox)]

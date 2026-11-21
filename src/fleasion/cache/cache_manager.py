@@ -11,8 +11,8 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast
 
-import requests
 from defusedxml import ElementTree as DefusedElementTree
+lazy import requests
 
 from fleasion.utils import CONFIG_DIR, log_buffer
 from fleasion.utils.roblox_auth import get_roblosecurity

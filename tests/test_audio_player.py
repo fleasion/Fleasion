@@ -16,6 +16,7 @@ import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtWidgets import QApplication
 
+from fleasion.cache import audio_player
 from fleasion.cache.audio_player import AudioPlayerWidget
 
 _app: QApplication | None = None
@@ -98,6 +99,7 @@ def test_playback_worker_closes_stream_after_stop(monkeypatch: pytest.MonkeyPatc
     _qapp()
     monkeypatch.setattr(AudioPlayerWidget, '_load_audio', _stub_loaded_audio)
     stream = RecordingStream()
+    audio_player._ensure_sounddevice()  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr(
         'fleasion.cache.audio_player.sd.OutputStream',
         _recording_stream_factory(stream),
@@ -140,6 +142,7 @@ def test_playback_callback_outputs_nonzero_float32_audio(monkeypatch: pytest.Mon
     def callback_stream_factory(**kwargs: object) -> CallbackStream:
         return CallbackStream(**kwargs)
 
+    audio_player._ensure_sounddevice()  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr(
         'fleasion.cache.audio_player.sd.OutputStream',
         callback_stream_factory,
@@ -162,9 +165,10 @@ def test_playback_callback_outputs_nonzero_float32_audio(monkeypatch: pytest.Mon
 def test_play_is_noop_when_portaudio_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     _qapp()
     monkeypatch.setattr(AudioPlayerWidget, '_load_audio', _stub_loaded_audio)
+    monkeypatch.setattr('fleasion.cache.audio_player._sounddevice_loaded', True)
     monkeypatch.setattr('fleasion.cache.audio_player.sd', None)
     monkeypatch.setattr(
-        'fleasion.cache.audio_player._SOUNDDEVICE_IMPORT_ERROR',
+        'fleasion.cache.audio_player._sounddevice_import_error',
         "OSError: cannot load library 'libportaudioarm64.dll': error 0x7e",
     )
     player = AudioPlayerWidget('unused')
@@ -191,18 +195,25 @@ def test_player_starts_when_portaudio_import_fails() -> None:
                 raise OSError('PortAudio unavailable for test')
             return original_import(name, *args, **kwargs)
 
-        with patch('builtins.__import__', side_effect=import_without_portaudio):
-            from fleasion.cache import audio_player
+        import sys
 
-        assert audio_player.sd is None
-        assert 'PortAudio unavailable for test' in audio_player._SOUNDDEVICE_IMPORT_ERROR
+        from fleasion.cache import audio_player
+
+        # PortAudio is only initialized on first playback
+        assert 'sounddevice' not in sys.modules
 
         app = QApplication([])
-        with patch.object(audio_player.AudioPlayerWidget, '_load_audio'):
+        with (
+            patch('builtins.__import__', side_effect=import_without_portaudio),
+            patch.object(audio_player.AudioPlayerWidget, '_load_audio'),
+        ):
             player = audio_player.AudioPlayerWidget('unused')
-        player.audio_data = np.zeros((4096, 2), dtype=np.float32)
-        player.sample_rate = 44100
-        player._play()
+            player.audio_data = np.zeros((4096, 2), dtype=np.float32)
+            player.sample_rate = 44100
+            player._play()
+
+        assert audio_player.sd is None
+        assert 'PortAudio unavailable for test' in audio_player._sounddevice_import_error
         assert not player.is_playing
         assert player.playback_thread is None
         player.close()

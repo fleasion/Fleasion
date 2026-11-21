@@ -27,9 +27,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import zstandard
-from PIL import Image
+lazy import numpy as np
+lazy from PIL import Image
 
 from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2
 
