@@ -71,6 +71,21 @@ def _write_private_key(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
+def _load_own_private_key(path: Path) -> PrivateKeyTypes:
+    """Load a private key that Fleasion generated and stores owner-only.
+
+    OpenSSL's RSA consistency check costs about 40 ms per key and holds the
+    GIL, which stalls the GUI while the proxy starts. These keys never come
+    from an untrusted source, and every caller still verifies that the key
+    matches its certificate's public key before reusing it.
+    """
+    return load_pem_private_key(
+        path.read_bytes(),
+        password=None,
+        unsafe_skip_rsa_key_validation=True,
+    )
+
+
 def _as_utc(value: dt.datetime) -> dt.datetime:
     """Normalize X.509 datetime values to timezone-aware UTC."""
     if value.tzinfo is None:
@@ -230,7 +245,7 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
     if ca_cert_path.exists() and ca_key_path.exists():
         try:
             existing_ca = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
-            existing_key = load_pem_private_key(ca_key_path.read_bytes(), password=None)
+            existing_key = _load_own_private_key(ca_key_path)
         except (OSError, TypeError, ValueError, UnsupportedAlgorithm) as exc:
             logger.warning('Failed to load existing Fleasion CA; regenerating (%s)', exc)
         else:
@@ -314,7 +329,7 @@ def generate_host_cert(
     if cert_path.exists() and key_path.exists():
         try:
             cached_leaf = x509.load_pem_x509_certificate(cert_path.read_bytes())
-            cached_key = load_pem_private_key(key_path.read_bytes(), password=None)
+            cached_key = _load_own_private_key(key_path)
         except (OSError, TypeError, ValueError, UnsupportedAlgorithm) as exc:
             logger.warning(
                 'Failed to validate cached leaf cert for %s; regenerating (%s)',
@@ -347,7 +362,7 @@ def generate_host_cert(
             logger.warning('Cached leaf cert for %s is stale or mismatched; regenerating', host)
 
     # Load CA
-    ca_key = load_pem_private_key(ca_key_path.read_bytes(), password=None)
+    ca_key = _load_own_private_key(ca_key_path)
 
     if not _cert_matches_private_key(ca_cert, ca_key, serialization):
         msg = 'CA cert/key pair is mismatched'
@@ -434,7 +449,7 @@ def generate_multi_host_cert(
     if cert_path.exists() and key_path.exists():
         try:
             cached_leaf = x509.load_pem_x509_certificate(cert_path.read_bytes())
-            cached_key = load_pem_private_key(key_path.read_bytes(), password=None)
+            cached_key = _load_own_private_key(key_path)
         except (OSError, TypeError, ValueError, UnsupportedAlgorithm) as exc:
             logger.warning(
                 'Failed to validate cached multi-host cert %s; regenerating (%s)',
@@ -469,7 +484,7 @@ def generate_multi_host_cert(
                 cert_name,
             )
 
-    ca_key = load_pem_private_key(ca_key_path.read_bytes(), password=None)
+    ca_key = _load_own_private_key(ca_key_path)
     if not _cert_matches_private_key(ca_cert, ca_key, serialization):
         msg = 'CA cert/key pair is mismatched'
         raise ValueError(msg)
