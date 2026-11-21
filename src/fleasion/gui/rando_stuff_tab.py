@@ -495,6 +495,15 @@ def _is_rosemary_client() -> bool:
     return selected_linux_client_key() == 'rosemary'
 
 
+def _recently_selected_rosemary_client() -> bool:
+    """Like _is_rosemary_client, but may reuse a selection resolved moments ago."""
+    if not IS_LINUX:
+        return False
+    from fleasion.utils.platform_linux import recent_selected_linux_client_key
+
+    return recent_selected_linux_client_key() == 'rosemary'
+
+
 def _build_roblox_player_uri(
     ticket: str,
     *,
@@ -1314,7 +1323,7 @@ class RandoStuffTab(QWidget):
         self._launch_acct_btn.clicked.connect(self._on_launch_account)
         switch_label = (
             tr('ui.gui.rando_stuff_tab.select_for_launches')
-            if IS_MACOS or _is_rosemary_client()
+            if IS_MACOS or _recently_selected_rosemary_client()
             else tr('ui.gui.rando_stuff_tab.switch_to_selected')
         )
         self._switch_acct_btn = QPushButton(switch_label)

@@ -466,8 +466,33 @@ def _write_recent_auto_linux_client(key: str) -> None:
                 temporary.unlink(missing_ok=True)
 
 
+# Last resolved selection and when it was resolved, for display-only callers
+_recent_selection: tuple[float, LinuxClientInstallation | None] | None = None
+
+
+def recent_selected_linux_client_installation(
+    max_age: float = 5.0,
+) -> LinuxClientInstallation | None:
+    """Reuse a selection resolved within max_age seconds, for labels and other display.
+
+    Resolving walks /proc, which is slow on the GUI thread while worker
+    threads compete for the GIL. Launch and proxy decisions should call
+    get_selected_linux_client_installation() for a fresh answer.
+    """
+    recent = _recent_selection
+    if recent is not None and time.monotonic() - recent[0] < max_age:
+        return recent[1]
+    return get_selected_linux_client_installation()
+
+
 def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve Auto from the newest detected client without inheriting proxy ownership."""
+    selected = _resolve_selected_linux_client_installation()
+    globals()['_recent_selection'] = (time.monotonic(), selected)
+    return selected
+
+
+def _resolve_selected_linux_client_installation() -> LinuxClientInstallation | None:
     preference = _configured_linux_client_preference()
     installed = linux_client_installations()
     if preference != 'auto':
@@ -516,6 +541,12 @@ def detect_running_linux_client_mismatch(selected_key: str) -> tuple[str, str] |
 
 def selected_linux_client_key() -> str:
     selected = get_selected_linux_client_installation()
+    return selected.key if selected is not None else _configured_linux_client_preference()
+
+
+def recent_selected_linux_client_key() -> str:
+    """selected_linux_client_key() for display, reusing a recent selection."""
+    selected = recent_selected_linux_client_installation()
     return selected.key if selected is not None else _configured_linux_client_preference()
 
 

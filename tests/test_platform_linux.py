@@ -1217,3 +1217,25 @@ def test_auto_selected_client_tracks_sober_player_without_overriding_proxy_owner
 
     monkeypatch.setattr(platform_linux, '_linux_client_preference', 'sober')
     assert platform_linux.get_selected_linux_client_installation() is sober
+
+
+def test_recent_selection_reuses_a_fresh_result_for_display(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+    sober = platform_linux.select_linux_client('sober')
+
+    def resolve() -> platform_linux.LinuxClientInstallation | None:
+        calls.append(1)
+        return sober
+
+    monkeypatch.setattr(platform_linux, '_resolve_selected_linux_client_installation', resolve)
+    monkeypatch.setattr(platform_linux, '_recent_selection', None)
+
+    assert platform_linux.get_selected_linux_client_installation() is sober
+    assert platform_linux.recent_selected_linux_client_installation() is sober
+    assert len(calls) == 1
+
+    # An expired selection is resolved again
+    assert platform_linux.recent_selected_linux_client_installation(max_age=0.0) is sober
+    assert len(calls) == 2
