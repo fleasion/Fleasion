@@ -964,6 +964,7 @@ class ReplacerConfigWindow(QDialog):
         if self.config_manager.always_on_top:
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
+        glass.theme.prepare(self)
 
         self._setup_ui()
         self._set_icon()

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QWidget
 
 from fleasion.localization import tr
 
-from .chrome import apply_chrome, register, registered_windows
+from .chrome import apply_chrome, prepare_frameless, register, registered_windows
 from .desktop_blur import APP_ID, blur
 from .state import Backdrop, state
 from .style import palette, stylesheet
@@ -158,6 +158,17 @@ class GlassTheme:
         window_filter.restore()
         window_filter.deleteLater()
         _refresh_windows(app)
+
+    def prepare(self, window: QWidget) -> None:
+        """Go frameless before a window builds its children, if Glass is active.
+
+        Call it before attach(). The window's original transparency is
+        remembered first, so leaving Glass still restores an opaque window.
+        """
+        if self._filter is None:
+            return
+        self._filter.remember_window(window)
+        prepare_frameless(window)
 
     def attach(self, window: QWidget) -> None:
         """Let Glass replace this window's title bar while the theme is active."""

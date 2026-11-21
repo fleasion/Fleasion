@@ -394,6 +394,17 @@ def sync_dashboard_tabs(window: QWidget) -> None:
         chrome.title_bar.sync_tabs()
 
 
+def prepare_frameless(window: QWidget) -> None:
+    """Make a window frameless and translucent before it has any children.
+
+    Changing window flags re-parents the window and resends events to every
+    descendant, about 100 ms on the finished dashboard. apply_chrome skips
+    the change when the flags already match.
+    """
+    window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=True)
+    window.setWindowFlag(Qt.WindowType.FramelessWindowHint, on=True)
+
+
 def apply_chrome(window: QWidget, *, enabled: bool) -> None:
     """Swap the platform title bar for the glass one, or restore it."""
     if not isValid(window):
