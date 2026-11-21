@@ -37,9 +37,31 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     os.environ[key] = _PytestConfigIsolation.config_home.name
 
 
+def _delete_leftover_top_level_widgets() -> None:
+    """Delete widgets that tests left alive while Qt can still do it in order.
+
+    PySide6 6.12 (and 6.11 on Python 3.15) crashes in its exit cleanup when it
+    destroys parentless widgets after the interpreter starts finalizing.
+    """
+    if 'PySide6.QtWidgets' not in sys.modules:
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent  # ruff: ignore[import-outside-top-level]
+    from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
+
+    app = QApplication.instance()
+    if not isinstance(app, QApplication):
+        return
+    for widget in QApplication.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Restore the external environment after pytest finishes."""
     del session, exitstatus
+    _delete_leftover_top_level_widgets()
     key = _PytestConfigIsolation.environment_key
     if key is not None:
         if _PytestConfigIsolation.original_value is None:
