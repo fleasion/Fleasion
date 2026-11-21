@@ -76,7 +76,7 @@ def test_config_manager_glass_properties_validate(
     settings: JsonObject = {'glass_opacity': 'junk', 'glass_backdrop': 'nonsense'}
     config.settings = settings
     monkeypatch.setattr(config, '_save_settings', lambda: None)
-    assert config.glass_backdrop == 'desktop'
+    assert config.glass_backdrop == 'flat'
     assert MIN_OPACITY <= config.glass_opacity <= MAX_OPACITY
     config.glass_opacity = 9
     assert config.settings['glass_opacity'] == MAX_OPACITY

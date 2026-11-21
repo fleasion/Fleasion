@@ -20,8 +20,11 @@ from typing import TYPE_CHECKING, Literal, TypeGuard, TypeIs
 from fleasion.appearance import (
     DEFAULT_ACCENT,
     DEFAULT_COLOR_MODE,
+    DEFAULT_OPACITY,
     accent_name,
     appearance_style,
+    backdrop,
+    clamp_opacity,
     color_mode,
 )
 from fleasion.utils import macos_rosemary_gate
@@ -34,7 +37,7 @@ from .values import bool_value, int_value, parse_int, str_value, string_list
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from fleasion.appearance import AppearanceStyle, ColorMode
+    from fleasion.appearance import AppearanceStyle, Backdrop, ColorMode
 
     from .types import (
         FileSignature,
@@ -453,7 +456,7 @@ DEFAULT_SETTINGS: JsonObject = {
     'appearance_style': 'Glass',
     'color_mode': DEFAULT_COLOR_MODE,
     'accent_color': DEFAULT_ACCENT,
-    'glass_opacity': 1.0,
+    'glass_opacity': DEFAULT_OPACITY,
     'custom_accent_color': '#a17dff',
     'language': 'en',
     'audio_volume': 70,  # 0-100
@@ -1138,24 +1141,24 @@ class ConfigManager:
 
     @property
     def glass_opacity(self) -> float:
-        """Glass background opacity, from 0.2 to fully opaque at 1.0."""
-        value = self.settings.get('glass_opacity', 1.0)
+        """Glass tint over its backdrop, clamped to the supported range."""
+        value = self.settings.get('glass_opacity', DEFAULT_OPACITY)
         if isinstance(value, bool) or not isinstance(value, int | float):
-            value = 1.0
-        return min(1.0, max(0.2, float(value)))
+            value = DEFAULT_OPACITY
+        return clamp_opacity(float(value))
 
     @glass_opacity.setter
     def glass_opacity(self, value: float) -> None:
-        self.settings['glass_opacity'] = round(min(1.0, max(0.2, value)), 2)
+        self.settings['glass_opacity'] = round(clamp_opacity(value), 2)
         self._save_settings()
 
     @property
-    def glass_backdrop(self) -> Literal['desktop', 'wallpaper']:
-        """What the Glass theme blurs: the window under Fleasion, or the wallpaper."""
-        return 'wallpaper' if self.settings.get('glass_backdrop') == 'wallpaper' else 'desktop'
+    def glass_backdrop(self) -> Backdrop:
+        """What the Glass theme paints behind its tint."""
+        return backdrop(self.settings.get('glass_backdrop'))
 
     @glass_backdrop.setter
-    def glass_backdrop(self, value: Literal['desktop', 'wallpaper']) -> None:
+    def glass_backdrop(self, value: Backdrop) -> None:
         self.settings['glass_backdrop'] = value
         self._save_settings()
 

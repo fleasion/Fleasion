@@ -57,12 +57,26 @@ def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
     )
     return GlassColors(
         text,
-        QColor('#ffffff' if dark else '#1b2030'),
+        _ink(surface, dark=dark),
         surface,
         well,
         popup,
         accent,
         on_accent(accent),
+    )
+
+
+# Enough of the surface hue to keep overlays from greying a tinted theme
+_INK_SATURATION: Final = 28
+
+
+def _ink(surface: QColor, *, dark: bool) -> QColor:
+    """Highlight colour for panes and rims; pure white greys out tinted dark surfaces."""
+    if not dark:
+        return QColor('#1b2030')
+    # Achromatic surfaces report hue -1 and stay white
+    return QColor.fromHsv(
+        max(surface.hsvHue(), 0), min(surface.hsvSaturation(), _INK_SATURATION), 255
     )
 
 
@@ -131,21 +145,13 @@ def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) ->
     return pal
 
 
-# Pane: brighter at the top, like light hitting glass. Rim: bright top edge.
-# Well: recessed input field with its highlight along the bottom edge.
-_PANE: Final = (
-    'qlineargradient(x1:0, y1:0, x2:0, y2:1, '
-    'stop:0 rgba($ink_rgb,0.11), stop:1 rgba($ink_rgb,0.045))'
-)
-_PANE_HOVER: Final = (
-    'qlineargradient(x1:0, y1:0, x2:0, y2:1, '
-    'stop:0 rgba($ink_rgb,0.19), stop:1 rgba($ink_rgb,0.08))'
-)
-_RIM: Final = 'border: 1px solid rgba($ink_rgb,0.10); border-top-color: rgba($ink_rgb,0.30);'
-_WELL: Final = (
-    'background: rgba($well_rgb,0.34); border: 1px solid rgba($ink_rgb,0.07);'
-    ' border-bottom-color: rgba($ink_rgb,0.16);'
-)
+# Panes are flat: per-control gradients stack inside nested panes and read as harsh.
+# Rim: a slightly brighter top edge. Well: a recessed input field.
+_PANE: Final = 'rgba($ink_rgb,0.06)'
+_PANE_HOVER: Final = 'rgba($ink_rgb,0.11)'
+_RIM: Final = 'border: 1px solid rgba($ink_rgb,0.08); border-top-color: rgba($ink_rgb,0.13);'
+_WELL: Final = 'background: rgba($well_rgb,0.28); border: 1px solid rgba($ink_rgb,0.06);'
+
 
 _STYLESHEET: Final = Template("""
 QMainWindow, QDialog { background: transparent; }
@@ -182,8 +188,8 @@ QTabBar::tab:disabled, QTabBar::tab:disabled:hover {
 }
 
 QFrame#SubplaceSearchPanel {
-    background: rgba($ink_rgb,0.065); border: 1px solid rgba($ink_rgb,0.12);
-    border-top-color: rgba($ink_rgb,0.23); border-radius: 12px;
+    background: rgba($ink_rgb,0.06); border: 1px solid rgba($ink_rgb,0.09);
+    border-top-color: rgba($ink_rgb,0.14); border-radius: 12px;
 }
 QScrollArea#SubplaceRecentScroll, QScrollArea#SubplaceFavoritesScroll,
 QScrollArea#SubplaceResultsScroll {
@@ -191,11 +197,11 @@ QScrollArea#SubplaceResultsScroll {
     border-radius: 10px;
 }
 QFrame#SubplaceGameCard {
-    background: rgba($ink_rgb,0.075); border: 1px solid rgba($ink_rgb,0.17);
-    border-top-color: rgba($ink_rgb,0.30); border-radius: 12px;
+    background: rgba($ink_rgb,0.07); border: 1px solid rgba($ink_rgb,0.11);
+    border-top-color: rgba($ink_rgb,0.16); border-radius: 12px;
 }
 QFrame#SubplaceGameCard:hover {
-    background: rgba($ink_rgb,0.11); border-color: rgba($ink_rgb,0.30);
+    background: rgba($ink_rgb,0.11); border-color: rgba($ink_rgb,0.18);
 }
 QPushButton#SubplaceSidebarButton {
     padding: 4px 10px; border-radius: 8px;
@@ -229,7 +235,7 @@ QPushButton[glassArrow="true"] {
 QPushButton[glassArrow="true"]:hover { color: $text; background: rgba($ink_rgb,0.08); }
 QPushButton[compact="true"] { padding: 0; min-width: 0; border-radius: 9px; }
 QPushButton:hover, QToolButton:hover {
-    background: $pane_hover; border-top-color: rgba($ink_rgb,0.45);
+    background: $pane_hover; border-top-color: rgba($ink_rgb,0.20);
 }
 QPushButton:focus, QToolButton:focus {
     border-color: rgba($accent_rgb,0.95);
@@ -240,12 +246,11 @@ QCheckBox:focus, QRadioButton:focus {
 }
 QPushButton:pressed, QPushButton:checked, QToolButton:pressed, QToolButton:checked {
     background: rgba($accent_rgb,0.30); border-color: rgba($accent_rgb,0.55);
-    border-top-color: rgba($ink_rgb,0.45);
 }
 QPushButton:default {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 $accent, stop:1 $accent);
-    color: $accent_text; border: 1px solid rgba($ink_rgb,0.55);
+    color: $accent_text; border: 1px solid rgba($ink_rgb,0.30);
 }
 QPushButton:disabled, QToolButton:disabled {
     color: rgba($ink_rgb,0.32); background: rgba($ink_rgb,0.03);
@@ -354,7 +359,7 @@ QCheckBox::indicator:hover, QRadioButton::indicator:hover {
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 $accent, stop:1 $accent);
-    border: 1px solid rgba($ink_rgb,0.55);
+    border: 1px solid rgba($ink_rgb,0.30);
 }
 QCheckBox::indicator:checked { image: url($check); }
 QRadioButton::indicator:checked { image: url($dot); }
@@ -362,7 +367,7 @@ QRadioButton::indicator:checked { image: url($dot); }
 #PaletteCard {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 rgba($popup_rgb,0.97), stop:1 rgba($popup_rgb,0.97));
-    border: 1px solid rgba($ink_rgb,0.12); border-top-color: rgba($ink_rgb,0.32);
+    border: 1px solid rgba($ink_rgb,0.12); border-top-color: rgba($ink_rgb,0.18);
     border-radius: 18px;
 }
 #PaletteCard QListWidget { background: transparent; border: 0; }
@@ -393,7 +398,7 @@ QProgressBar::chunk { background: rgba($accent_rgb,0.9); border-radius: 4px; }
 
 QMenu {
     background: rgba($popup_rgb,0.97); border: 1px solid rgba($ink_rgb,0.14);
-    border-top-color: rgba($ink_rgb,0.28); border-radius: 12px; padding: 5px;
+    border-top-color: rgba($ink_rgb,0.18); border-radius: 12px; padding: 5px;
 }
 QMenu::item { padding: 6px 22px; border-radius: 7px; }
 QMenu::item:selected { background: rgba($accent_rgb,0.30); }

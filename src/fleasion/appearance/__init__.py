@@ -24,7 +24,15 @@ from .catalog import (
     theme_label as theme_label,
 )
 from .choices import (
+    BACKDROPS as BACKDROPS,
+    DEFAULT_BACKDROP as DEFAULT_BACKDROP,
+    DEFAULT_OPACITY as DEFAULT_OPACITY,
+    MAX_OPACITY as MAX_OPACITY,
+    MIN_OPACITY as MIN_OPACITY,
     STYLES as STYLES,
     AppearanceStyle as AppearanceStyle,
+    Backdrop as Backdrop,
     appearance_style as appearance_style,
+    backdrop as backdrop,
+    clamp_opacity as clamp_opacity,
 )

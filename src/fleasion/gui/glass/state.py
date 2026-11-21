@@ -3,32 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING
 
 from fleasion.appearance import (
     ACCENTS as ACCENTS,
+    BACKDROPS as BACKDROPS,
     DEFAULT_ACCENT as DEFAULT_ACCENT,
+    DEFAULT_BACKDROP as DEFAULT_BACKDROP,
+    DEFAULT_OPACITY as DEFAULT_OPACITY,
     FALLBACK_ACCENT,
+    MAX_OPACITY as MAX_OPACITY,
+    MIN_OPACITY as MIN_OPACITY,
+    Backdrop as Backdrop,
+    clamp_opacity,
 )
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QColor, QPalette
 
     from fleasion.config.manager import ConfigManager
-
-type Backdrop = Literal['desktop', 'wallpaper']
-
-BACKDROPS: Final[tuple[Backdrop, ...]] = ('desktop', 'wallpaper')
-
-DEFAULT_BACKDROP: Final[Backdrop] = 'desktop'
-# Background opacity over the selected backdrop
-DEFAULT_OPACITY: Final = 1.0
-MIN_OPACITY: Final = 0.2
-MAX_OPACITY: Final = 1.0
-
-
-def clamp_opacity(value: float) -> float:
-    return min(MAX_OPACITY, max(MIN_OPACITY, value))
 
 
 @dataclass

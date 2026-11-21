@@ -14,7 +14,7 @@ from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QMenu
 
-from fleasion.appearance import COLOR_MODES, DEFAULT_COLOR_MODE, STYLES
+from fleasion.appearance import COLOR_MODES, DEFAULT_COLOR_MODE, DEFAULT_OPACITY, STYLES
 from fleasion.appearance.colors import contrast
 from fleasion.appearance.palettes import theme_colors
 from fleasion.app.tray import SystemTray
@@ -102,7 +102,7 @@ def test_defaults_validation_and_persistence(config: manager.ConfigManager) -> N
         DEFAULT_COLOR_MODE,
         'Theme',
     )
-    assert config.glass_opacity == 1.0
+    assert config.glass_opacity == DEFAULT_OPACITY
     config.appearance_style = 'Glass'
     config.color_mode = 'Light'
     config.accent_color = 'Coral'
@@ -310,6 +310,10 @@ def test_backdrop_updates_opacity_label_from_settings_and_external_commands(
     ThemeManager.apply_from_config(config)
     tab = SettingsTab(config)
     try:
+        assert config.glass_backdrop == 'flat'
+        assert tab._opacity_controls.isHidden()  # pyright: ignore[reportPrivateUsage]
+        glass.theme.set_backdrop('desktop')
+        assert not tab._opacity_controls.isHidden()  # pyright: ignore[reportPrivateUsage]
         assert tab._opacity_label.text() == tr('settings.appearance.opacity')  # pyright: ignore[reportPrivateUsage]
         glass.theme.set_backdrop('wallpaper')
         assert tab._opacity_label.text() == tr('settings.appearance.tint_strength')  # pyright: ignore[reportPrivateUsage]

@@ -860,9 +860,9 @@ class SettingsTab(QWidget):
         self._opacity_slider.valueChanged.connect(self._on_glass_opacity_changed)
         self._opacity_label = QLabel()
         rows.addWidget(self._opacity_label, 4, 0)
-        opacity_controls = QWidget()
-        opacity_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        opacity_row = QHBoxLayout(opacity_controls)
+        self._opacity_controls = QWidget()
+        self._opacity_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        opacity_row = QHBoxLayout(self._opacity_controls)
         opacity_row.setContentsMargins(0, 0, 0, 0)
         opacity_row.addWidget(self._opacity_slider)
         self._opacity_value = QLabel(
@@ -870,14 +870,15 @@ class SettingsTab(QWidget):
         )
         self._opacity_slider.valueChanged.connect(self._update_opacity_value)
         opacity_row.addWidget(self._opacity_value)
-        rows.addWidget(opacity_controls, 4, 1, alignment=Qt.AlignmentFlag.AlignLeft)
+        rows.addWidget(self._opacity_controls, 4, 1, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self._blur_button = QPushButton()
         self._blur_button.setObjectName(glass.BLUR_BUTTON)
         self._blur_button.clicked.connect(self._toggle_desktop_blur)
         self._blur_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         rows.addWidget(self._blur_button, 5, 1, alignment=Qt.AlignmentFlag.AlignLeft)
-        widgets = (backdrop_label, self._backdrop_combo, self._opacity_label, opacity_controls)
+        # The opacity row also depends on the backdrop, so _refresh_blur_button owns it
+        widgets = (backdrop_label, self._backdrop_combo)
         for widget in widgets:
             widget.setVisible(visible)
         self._refresh_blur_button()
@@ -897,7 +898,12 @@ class SettingsTab(QWidget):
         self._refresh_blur_button()
 
     def _refresh_blur_button(self) -> None:
-        desktop = self._config.glass_backdrop == 'desktop'
+        glass_active = self._config.appearance_style == 'Glass'
+        backdrop = self._config.glass_backdrop
+        desktop = backdrop == 'desktop'
+        # Flat paints an opaque surface, so there is nothing for opacity to reveal
+        for widget in (self._opacity_label, self._opacity_controls):
+            widget.setVisible(glass_active and backdrop != 'flat')
         self._opacity_label.setText(
             tr('settings.appearance.opacity')
             if desktop
@@ -913,11 +919,7 @@ class SettingsTab(QWidget):
             status != 'unavailable' and glass.blur.can_toggle() and not glass.blur.toggle_pending
         )
         self._blur_button.setToolTip(tr('settings.appearance.glass_blur_scope'))
-        self._blur_button.setVisible(
-            self._config.appearance_style == 'Glass'
-            and status != 'unavailable'
-            and self._config.glass_backdrop == 'desktop'
-        )
+        self._blur_button.setVisible(glass_active and desktop and status != 'unavailable')
         if status == 'on':
             self._blur_button.setText(tr('settings.appearance.glass_blur_on'))
         else:

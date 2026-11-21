@@ -29,6 +29,8 @@ BLUR_BUTTON = 'GlassBlurButton'
 
 def backdrop_label(mode: Backdrop) -> str:
     labels: dict[Backdrop, str] = {
+        'flat': tr('settings.appearance.glass_backdrop_flat'),
+        'ambient': tr('settings.appearance.glass_backdrop_ambient'),
         'desktop': tr('settings.appearance.glass_backdrop_desktop'),
         'wallpaper': tr('settings.appearance.glass_backdrop_wallpaper'),
     }

@@ -13,6 +13,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout
 
+from fleasion.gui.glass import style as glass_style
 from fleasion.gui.modifications_tab import CollapsibleSection
 from fleasion.gui.rando_stuff_tab import CollapsibleSection as MiscSection
 from fleasion.gui.settings_tab import CollapsibleSection as SettingsSection
@@ -65,7 +66,8 @@ def test_glass_sections_match_scraper_surface_and_restore_dark(app: QApplication
         glass_colors = ThemeManager.panel_colors()
         assert glass_colors.section_background == QColor(8, 9, 14, 77)
         assert glass_colors.section_background.alpha() < 255
-        assert glass_colors.section_border == QColor(255, 255, 255, 20)
+        ink = glass_style.glass_colors().ink
+        assert glass_colors.section_border == QColor(ink.red(), ink.green(), ink.blue(), 20)
         assert glass_colors.container_background_css == 'background-color: transparent;'
         glass_image = section.grab().toImage()
         glass_pixel = glass_image.pixelColor(30, glass_image.height() - 8)

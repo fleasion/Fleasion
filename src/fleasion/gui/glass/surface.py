@@ -1,4 +1,4 @@
-"""Painting the glass window surface, including the optional wallpaper backdrop."""
+"""Painting the glass window surface and its selected backdrop."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import sys
 from typing import TYPE_CHECKING, Final, override
 from weakref import WeakKeyDictionary
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QRadialGradient,
     QRegion,
     QTransform,
 )
@@ -44,6 +45,10 @@ if TYPE_CHECKING:
 _COMPACT_BUTTON_MAX: Final = 40
 _ARROW_BUTTON_MAX: Final = 24
 _FALLBACK_BACKDROP: Final = (20, 22, 34)
+# Ambient glows: accent from the top left, a complementary hue from the bottom right
+_AMBIENT_ACCENT_ALPHA: Final = 230
+_AMBIENT_COMPLEMENT_ALPHA: Final = 170
+_AMBIENT_HUE_SHIFT: Final = 140
 # Qt creates combo popups and tooltips itself, so their Python wrappers can be
 # collected while the widget lives on. Original attributes stay on the widget
 _ORIGINAL_TRANSPARENCY: Final = 'glassOriginalTransparency'
@@ -60,8 +65,32 @@ def _fallback_color() -> QColor:
 
 
 def effective_opacity() -> float:
-    """Use the chosen background opacity regardless of compositor blur support."""
-    return state.settings.opacity
+    """Use the chosen opacity regardless of compositor blur support; Flat stays opaque."""
+    return 1.0 if state.settings.backdrop == 'flat' else state.settings.opacity
+
+
+def _glow(centre: QPointF, reach: float, color: QColor, alpha: int) -> QBrush:
+    inner = QColor(color)
+    inner.setAlpha(alpha)
+    outer = QColor(color)
+    outer.setAlpha(0)
+    gradient = QRadialGradient(centre, reach)
+    gradient.setColorAt(0.0, inner)
+    gradient.setColorAt(1.0, outer)
+    return QBrush(gradient)
+
+
+def _paint_ambient(painter: QPainter, rect: QRectF, path: QPainterPath) -> None:
+    colors = glass_colors()
+    painter.fillPath(path, colors.surface)
+    reach = max(rect.width(), rect.height())
+    hue = (max(colors.accent.hsvHue(), 0) + _AMBIENT_HUE_SHIFT) % 360
+    complement = QColor.fromHsv(hue, 120, 200)
+    top_left = QPointF(rect.left() + rect.width() * 0.15, rect.top())
+    painter.fillPath(path, _glow(top_left, reach * 0.9, colors.accent, _AMBIENT_ACCENT_ALPHA))
+    painter.fillPath(
+        path, _glow(rect.bottomRight(), reach * 0.8, complement, _AMBIENT_COMPLEMENT_ALPHA)
+    )
 
 
 def _screen(window: QWidget) -> QScreen | None:
@@ -116,25 +145,27 @@ def paint_glass(
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     path = QPainterPath()
     path.addRoundedRect(rect, radius, radius)
+    backdrop = state.settings.backdrop
     if window is not None and _opaque_fallback(window):
         painter.fillPath(path, _fallback_color())
-    if window is not None and state.settings.backdrop == 'wallpaper':
+    if window is not None and backdrop == 'wallpaper':
         _paint_wallpaper(painter, window, path)
-    colors = glass_colors()
-    surface = QColor(colors.surface)
+    elif backdrop == 'ambient':
+        _paint_ambient(painter, rect, path)
+    surface = QColor(glass_colors().surface)
     surface.setAlpha(round(255 * effective_opacity()))
     painter.fillPath(path, surface)
+    # A faint, even falloff; a front-loaded sheen reads as a bright band
     sheen = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    sheen.setColorAt(0.0, QColor(255, 255, 255, 34))
-    sheen.setColorAt(0.25, QColor(255, 255, 255, 10))
-    sheen.setColorAt(1.0, QColor(255, 255, 255, 4))
+    sheen.setColorAt(0.0, QColor(255, 255, 255, 12))
+    sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
     painter.fillPath(path, sheen)
     if not rim:
         return
     edge = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    edge.setColorAt(0.0, QColor(255, 255, 255, 120))
-    edge.setColorAt(0.12, QColor(255, 255, 255, 40))
-    edge.setColorAt(1.0, QColor(255, 255, 255, 22))
+    edge.setColorAt(0.0, QColor(255, 255, 255, 60))
+    edge.setColorAt(0.3, QColor(255, 255, 255, 22))
+    edge.setColorAt(1.0, QColor(255, 255, 255, 14))
     painter.setPen(QPen(edge, 1.0))
     painter.drawPath(path)
 
