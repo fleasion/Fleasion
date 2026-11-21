@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 import contextlib
 
 from . import nutmeg_proxy_override, quadra_proxy_override, sober_bootstrap_keys
+from .flatpak_cli import is_flatpak_command
 from .json_types import as_json_object
 from .logging import log_buffer
 from .metadata import APP_NAME
@@ -151,6 +152,16 @@ def _run_subprocess(
 def _run_subprocess(
     args: list[str], **kwargs: Unpack[RunSubprocessKwargs]
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    if is_flatpak_command(args):
+        # A terminal lets flatpak register a polkit agent, flooding polkitd
+        return subprocess.run(
+            args,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            **kwargs,
+        )
+
     return subprocess.run(
         args,
         check=False,

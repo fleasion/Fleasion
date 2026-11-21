@@ -20,6 +20,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, Unpack, cast
 
+from .flatpak_cli import flatpak_app_installed
 from .stud_linux import (
     STUD_APP_ID,
     StudSource,
@@ -433,9 +434,13 @@ def _flatpak_info_succeeds(
 ) -> bool:
     if executable is None:
         return False
-    runner = _command_runner(run)
+
+    # The Roblox monitor polls this twice a second, so reuse recent answers
+    if run is None:
+        return flatpak_app_installed(executable, app_id, env=env)
+
     try:
-        result = runner(
+        result = run(
             [str(executable), 'info', app_id],
             env=dict(env),
             capture_output=True,
