@@ -100,9 +100,14 @@ def _paint_wallpaper(painter: QPainter, window: QWidget, path: QPainterPath) -> 
 
 
 def paint_glass(
-    painter: QPainter, rect: QRectF, radius: float, window: QWidget | None = None
+    painter: QPainter,
+    rect: QRectF,
+    radius: float,
+    window: QWidget | None = None,
+    *,
+    rim: bool = False,
 ) -> None:
-    """Replace the previous surface, then paint the backdrop, sheen and rim."""
+    """Replace the previous surface, then paint the backdrop, sheen and optional rim."""
     # Translucent paints must replace the backing store, including old child pixels
     painter.save()
     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
@@ -124,11 +129,13 @@ def paint_glass(
     sheen.setColorAt(0.25, QColor(255, 255, 255, 10))
     sheen.setColorAt(1.0, QColor(255, 255, 255, 4))
     painter.fillPath(path, sheen)
-    rim = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    rim.setColorAt(0.0, QColor(255, 255, 255, 120))
-    rim.setColorAt(0.12, QColor(255, 255, 255, 40))
-    rim.setColorAt(1.0, QColor(255, 255, 255, 22))
-    painter.setPen(QPen(rim, 1.0))
+    if not rim:
+        return
+    edge = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+    edge.setColorAt(0.0, QColor(255, 255, 255, 120))
+    edge.setColorAt(0.12, QColor(255, 255, 255, 40))
+    edge.setColorAt(1.0, QColor(255, 255, 255, 22))
+    painter.setPen(QPen(edge, 1.0))
     painter.drawPath(path)
 
 
@@ -370,7 +377,9 @@ class GlassWindows(QObject):
             painter = QPainter(watched)
             framed = bool(watched.property('glassChrome')) and not watched.isMaximized()
             rect = QRectF(watched.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-            paint_glass(painter, rect, RADIUS if framed else 0, watched)
+            # Native decorations already outline the window, so only the
+            # custom chrome draws its own rim
+            paint_glass(painter, rect, RADIUS if framed else 0, watched, rim=framed)
             painter.end()
         elif (
             kind == QEvent.Type.Move
