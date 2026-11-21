@@ -61,7 +61,9 @@ screens.count > 0
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------- discovery
+#
+# Discovery
+#
 
 
 def _gsettings(schema: str, key: str) -> str:
@@ -365,7 +367,9 @@ def _discover_source() -> WallpaperSource:
     return WallpaperSource(path, stamp, tuple(sorted(screens)))
 
 
-# ---------------------------------------------------------------- rendering
+#
+# Rendering
+#
 
 
 def _load_image(source: Path) -> Image.Image:
@@ -425,7 +429,9 @@ class _RenderFailure:
     retry_at: float
 
 
-# ---------------------------------------------------------------- cache
+#
+# Cache
+#
 
 
 class WallpaperCache:

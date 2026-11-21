@@ -36,7 +36,9 @@ _REFRESH_SECONDS: Final = 15
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------- dconf
+#
+# Dconf
+#
 
 
 def _run(*args: str) -> str | None:
@@ -123,7 +125,9 @@ def _load_backup() -> dict[str, str]:
     return {str(key): str(value) for key, value in entries.items()}
 
 
-# ---------------------------------------------------------------- compositor blur
+#
+# Compositor blur
+#
 
 
 class DesktopBlur:

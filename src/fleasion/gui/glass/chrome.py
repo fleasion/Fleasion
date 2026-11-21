@@ -47,7 +47,9 @@ def _window_handle(window: QWidget) -> QWindow | None:
     return window.windowHandle()
 
 
-# ---------------------------------------------------------------- title bar
+#
+# Title bar
+#
 
 
 class GlassTitleBar(QWidget):
@@ -143,7 +145,9 @@ class GlassTitleBar(QWidget):
                 if role in {'min', 'max', 'close'}:
                     button.setIcon(QIcon(icon_path(f'win-{role}')))
 
-    # ------------------------------------------------------------ window controls
+    #
+    # Window controls
+    #
 
     def _presser(self, role: WindowButton) -> Callable[[], None]:
         return lambda: self._press(role)
@@ -177,7 +181,9 @@ class GlassTitleBar(QWidget):
             super().mouseDoubleClickEvent(event)
 
 
-# ---------------------------------------------------------------- edge resizing
+#
+# Edge resizing
+#
 
 
 _SIDE_CURSORS: Final = {
@@ -340,7 +346,9 @@ class EdgeResizer(QObject):
         return False
 
 
-# ---------------------------------------------------------------- installation
+#
+# Installation
+#
 
 
 @dataclass(frozen=True)

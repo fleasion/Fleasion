@@ -21,8 +21,9 @@ MIN_OPACITY: Final = 0.2
 MAX_OPACITY: Final = 1.0
 
 
-# ---------------------------------------------------------------- normalisers
-# Values read back from the settings file; anything unknown falls back to the default
+#
+# Normalisers for values read back from the settings file; unknown values fall back
+#
 
 
 def appearance_style(value: object) -> AppearanceStyle:

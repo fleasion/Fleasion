@@ -80,7 +80,9 @@ class GlassTheme:
         """Read and persist Glass settings through this ConfigManager."""
         state.configure(config)
 
-    # ------------------------------------------------------------ on and off
+    #
+    # On and off
+    #
 
     def enable(
         self, app: QApplication, *, accent: str | None = None, base_palette: QPalette | None = None
@@ -165,7 +167,9 @@ class GlassTheme:
             apply_chrome(window, enabled=True)
             self._filter.update_window_shape(window)
 
-    # ------------------------------------------------------------ settings
+    #
+    # Settings
+    #
 
     def set_accent(self, name: str) -> None:
         from fleasion.appearance import accent_name

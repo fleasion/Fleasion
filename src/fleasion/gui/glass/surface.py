@@ -63,7 +63,9 @@ _TRANSLUCENT: Final = 1
 _NO_SYSTEM_BACKGROUND: Final = 2
 
 
-# ---------------------------------------------------------------- backdrops
+#
+# Backdrops
+#
 
 
 def _fallback_color() -> QColor:
@@ -146,7 +148,9 @@ def _paint_wallpaper(painter: QPainter, window: QWidget, path: QPainterPath) -> 
     painter.fillPath(path, wallpaper)
 
 
-# ---------------------------------------------------------------- surface
+#
+# Surface
+#
 
 
 def paint_glass(
@@ -200,7 +204,9 @@ def paint_glass(
     painter.drawPath(path)
 
 
-# ---------------------------------------------------------------- helpers
+#
+# Helpers
+#
 
 
 def _repolish_later(widget: QWidget) -> None:
@@ -226,7 +232,9 @@ def _opaque_fallback(window: QWidget) -> bool:
     )
 
 
-# ---------------------------------------------------------------- windows
+#
+# Windows
+#
 
 
 class GlassWindows(QObject):
@@ -368,7 +376,9 @@ class GlassWindows(QObject):
         )
         window.setProperty(_ORIGINAL_TRANSPARENCY, flags)
 
-    # ------------------------------------------------------------ shape
+    #
+    # Shape
+    #
 
     @staticmethod
     def is_combo_popup(widget: QWidget) -> bool:
@@ -454,7 +464,9 @@ class GlassWindows(QObject):
             radius = 12 if popup else RADIUS
             widget.setGraphicsEffect(RoundedItemViewEffect(widget, radius=radius, popup=popup))
 
-    # ------------------------------------------------------------ events
+    #
+    # Events
+    #
 
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -512,7 +524,9 @@ class GlassWindows(QObject):
             and not widget.property('glassOwnSurface')
         )
 
-    # ------------------------------------------------------------ polish
+    #
+    # Polish
+    #
 
     def _mark_button(self, button: QPushButton, name: str) -> None:
         # Properties supplied by the application belong to the application.

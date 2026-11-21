@@ -31,7 +31,9 @@ RADIUS: Final = 14
 ICON_DIR: Final[Path] = CONFIG_DIR / 'glass'
 
 
-# ---------------------------------------------------------------- colours
+#
+# Colours
+#
 
 
 @dataclass(frozen=True)
@@ -98,7 +100,9 @@ def _ink(surface: QColor, *, dark: bool) -> QColor:
     )
 
 
-# ---------------------------------------------------------------- glyphs
+#
+# Glyphs
+#
 
 
 _STROKE: Final = 'fill="none" stroke-linecap="round" stroke-linejoin="round"'
@@ -137,7 +141,9 @@ def icon_path(name: str) -> str:
     return path.as_posix()
 
 
-# ---------------------------------------------------------------- palette and stylesheet
+#
+# Palette and stylesheet
+#
 
 
 def _rgb(hex_color: str) -> str:
