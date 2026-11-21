@@ -1443,7 +1443,7 @@ VIETNAMESE: dict[str, str] = {
     'ui.gui.modifications_tab.export_original': 'Xuất bản gốc…',
     'ui.gui.modifications_tab.export_original_file': 'Xuất tệp gốc',
     'ui.gui.modifications_tab.false': 'Sai',
-    'ui.gui.modifications_tab.fast_flags_are_written_to_clientsettings_clientappsettings': '⚠ FastFlag được ghi vào ClientSettings/ClientAppSettings.json trong mọi thư mục Roblox đã phát hiện.',
+    'ui.gui.modifications_tab.fast_flags_are_written_to_clientsettings_clientappsettings': '⚠ FastFlag được ghi vào ClientSettings/ClientAppSettings.json trong mọi thư mục Roblox đã được tìm thấy.',
     'ui.gui.modifications_tab.fastflag_name_cannot_be_empty': 'Tên FastFlag không được để trống.',
     'ui.gui.modifications_tab.fix_display_scaling': 'Khắc phục lỗi tỷ lệ hiển thị',
     'ui.gui.modifications_tab.fleasion_could_not_start_the_polkit_permission': 'Fleasion không thể khởi động thiết lập quyền Polkit.\n\n{value0}',
