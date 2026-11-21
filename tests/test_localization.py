@@ -26,8 +26,13 @@ from fleasion.translations.vi import VIETNAMESE
 from fleasion.translations.zh import CHINESE
 
 
-def _translations() -> dict[str, dict[str, str]]:
-    return cast('dict[str, dict[str, str]]', localization.__dict__['_TRANSLATIONS'])
+def _register_language(
+    monkeypatch: pytest.MonkeyPatch, code: str, table: dict[str, str]
+) -> None:
+    sources = cast('dict[str, tuple[str, str]]', localization.__dict__['_TRANSLATION_SOURCES'])
+    loaded = cast('dict[str, dict[str, str]]', localization.__dict__['_loaded_translations'])
+    monkeypatch.setitem(sources, code, ('en', 'ENGLISH'))
+    monkeypatch.setitem(loaded, code, table)
 
 
 def _settings_language_change(settings_module: object, tab: object) -> None:
@@ -462,7 +467,7 @@ def test_translation_values_include_future_registered_languages(
 ) -> None:
     pseudo = dict(localization.ENGLISH)
     pseudo['replacer.action.remove'] = 'Supprimer'
-    monkeypatch.setitem(_translations(), 'fr-test', pseudo)
+    _register_language(monkeypatch, 'fr-test', pseudo)
 
     values = localization.translation_values('replacer.action.remove')
 
@@ -478,7 +483,7 @@ def test_count_translation_uses_selected_language_without_english_noun_leak(
     pseudo = dict(localization.ENGLISH)
     pseudo['count.asset.one'] = '⟦asset-one⟧ {count}'
     pseudo['count.asset.other'] = '⟦asset-many⟧ {count}'
-    monkeypatch.setitem(_translations(), 'zz', pseudo)
+    _register_language(monkeypatch, 'zz', pseudo)
     try:
         localization.set_language('zz')
         assert localization.tr_count(2, 'count.asset.one', 'count.asset.other') == '⟦asset-many⟧ 2'

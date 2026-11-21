@@ -43,8 +43,13 @@ def _qapp() -> QApplication:
     return _app
 
 
-def _translations() -> dict[str, dict[str, str]]:
-    return cast('dict[str, dict[str, str]]', localization.__dict__['_TRANSLATIONS'])
+def _register_language(
+    monkeypatch: pytest.MonkeyPatch, code: str, table: dict[str, str]
+) -> None:
+    sources = cast('dict[str, tuple[str, str]]', localization.__dict__['_TRANSLATION_SOURCES'])
+    loaded = cast('dict[str, dict[str, str]]', localization.__dict__['_loaded_translations'])
+    monkeypatch.setitem(sources, code, ('en', 'ENGLISH'))
+    monkeypatch.setitem(loaded, code, table)
 
 
 def _make_row(
@@ -163,7 +168,7 @@ def test_remove_source_accepts_every_registered_language_token(
     app = _qapp()
     pseudo = dict(localization.ENGLISH)
     pseudo['replacer.action.remove'] = 'Supprimer'
-    monkeypatch.setitem(_translations(), 'fr-test', pseudo)
+    _register_language(monkeypatch, 'fr-test', pseudo)
 
     previous_language = get_language()
     set_language('es')

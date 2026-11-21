@@ -2,24 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import importlib
+from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import Qt
 
-from .translations.ar import ARABIC
-from .translations.de import GERMAN
 from .translations.en import ENGLISH
-from .translations.es import SPANISH
-from .translations.fil import FILIPINO
-from .translations.fr import FRENCH
-from .translations.kk import KAZAKH
-from .translations.nl import DUTCH
-from .translations.pl import POLISH
-from .translations.pt import PORTUGUESE
-from .translations.ru import RUSSIAN
-from .translations.tr import TURKISH
-from .translations.vi import VIETNAMESE
-from .translations.zh import CHINESE
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -45,22 +33,25 @@ LANGUAGES: dict[str, str] = {
     'vi': 'Tiếng Việt',
 }
 
-_TRANSLATIONS: dict[str, Mapping[str, str]] = {
-    DEFAULT_LANGUAGE: ENGLISH,
-    'ar': ARABIC,
-    'es': SPANISH,
-    'pt': PORTUGUESE,
-    'ru': RUSSIAN,
-    'kk': KAZAKH,
-    'tr': TURKISH,
-    'de': GERMAN,
-    'nl': DUTCH,
-    'fr': FRENCH,
-    'fil': FILIPINO,
-    'zh': CHINESE,
-    'pl': POLISH,
-    'vi': VIETNAMESE,
+# Each table is a large literal, so only English and the active language load.
+# Maps a language code to its fleasion.translations module and table name
+_TRANSLATION_SOURCES: dict[str, tuple[str, str]] = {
+    DEFAULT_LANGUAGE: ('en', 'ENGLISH'),
+    'ar': ('ar', 'ARABIC'),
+    'es': ('es', 'SPANISH'),
+    'pt': ('pt', 'PORTUGUESE'),
+    'ru': ('ru', 'RUSSIAN'),
+    'kk': ('kk', 'KAZAKH'),
+    'tr': ('tr', 'TURKISH'),
+    'de': ('de', 'GERMAN'),
+    'nl': ('nl', 'DUTCH'),
+    'fr': ('fr', 'FRENCH'),
+    'fil': ('fil', 'FILIPINO'),
+    'zh': ('zh', 'CHINESE'),
+    'pl': ('pl', 'POLISH'),
+    'vi': ('vi', 'VIETNAMESE'),
 }
+_loaded_translations: dict[str, Mapping[str, str]] = {DEFAULT_LANGUAGE: ENGLISH}
 _LANGUAGE_ALIASES = {
     'tl': 'fil',
     'tl-ph': 'fil',
@@ -74,22 +65,33 @@ _LANGUAGE_ALIASES = {
 _state = {'language': DEFAULT_LANGUAGE}
 
 
+def _translations(language: str) -> Mapping[str, str]:
+    """Return a language's table, importing its module on first use."""
+    table = _loaded_translations.get(language)
+    if table is None:
+        module_name, table_name = _TRANSLATION_SOURCES[language]
+        module = importlib.import_module(f'{__package__}.translations.{module_name}')
+        table = cast('Mapping[str, str]', vars(module)[table_name])
+        _loaded_translations[language] = table
+    return table
+
+
 def normalize_language(language: Any) -> str:
     """Return a supported language code, falling back to English."""
     value = str(language or '').strip().replace('_', '-').casefold()
-    if value in _TRANSLATIONS:
+    if value in _TRANSLATION_SOURCES:
         return value
     if value in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[value]
     base = value.split('-', 1)[0]
     if base in {'pt', 'zh'}:
         return DEFAULT_LANGUAGE
-    return base if base in _TRANSLATIONS else DEFAULT_LANGUAGE
+    return base if base in _TRANSLATION_SOURCES else DEFAULT_LANGUAGE
 
 
 def available_languages() -> tuple[tuple[str, str], ...]:
     """Return supported language codes and their display names."""
-    return tuple((code, LANGUAGES.get(code, code)) for code in _TRANSLATIONS)
+    return tuple((code, LANGUAGES.get(code, code)) for code in _TRANSLATION_SOURCES)
 
 
 def set_language(language: Any) -> str:
@@ -117,7 +119,7 @@ def apply_language_direction(app: QApplication) -> None:
 def tr(identifier: str, /, **values: Any) -> str:
     """Look up a string identifier with English fallback and safe formatting."""
     english = ENGLISH.get(identifier, identifier)
-    table = _TRANSLATIONS.get(_state['language'], ENGLISH)
+    table = _translations(_state['language'])
     text = table.get(identifier, english)
     if not values:
         return text
@@ -134,8 +136,8 @@ def translation_values(identifier: str) -> tuple[str, ...]:
     """Return every registered language's value for an identifier, without duplicates."""
     english = ENGLISH.get(identifier, identifier)
     values: list[str] = []
-    for table in _TRANSLATIONS.values():
-        value = table.get(identifier, english)
+    for language in _TRANSLATION_SOURCES:
+        value = _translations(language).get(identifier, english)
         if value not in values:
             values.append(value)
     return tuple(values)
