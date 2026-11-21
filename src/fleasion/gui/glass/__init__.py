@@ -1,10 +1,12 @@
 """Liquid-glass theme.
 
-Windows get a real alpha channel and paint a light, translucent sheen, so the
-desktop genuinely shows through. What the glass blurs is configurable:
+Windows get a real alpha channel and paint a tinted surface with a faint sheen.
+What sits behind the tint is configurable:
 
-- ``desktop``: the window under Fleasion, blurred by the compositor (on GNOME
-  via the Blur my Shell extension, see :mod:`.desktop_blur`)
+- ``flat``: nothing; the surface is opaque and ignores the tint setting
+- ``ambient``: soft accent and complementary glows painted by Fleasion
+- ``desktop``: the window under Fleasion, blurred by the compositor where it
+  can (on GNOME via the Blur my Shell extension, see :mod:`.desktop_blur`)
 - ``wallpaper``: the desktop wallpaper, blurred and painted by Fleasion itself
 
 The dashboard also swaps the platform title bar for a glass one.

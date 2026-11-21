@@ -11,12 +11,15 @@ from shiboken6 import isValid
 if TYPE_CHECKING:
     from PySide6.QtWidgets import QWidget
 
+
 # Qt creates combo popups and tooltips itself, so their Python wrappers can be
 # collected while the widget lives on. The original stylesheet stays on the widget
 _ORIGINAL = 'glassOriginalStyleSheet'
 
 
 class WindowStyles:
+    """Prepends the Glass stylesheet to each top-level window's own."""
+
     def __init__(self) -> None:
         self._stylesheet = ''
 
@@ -28,19 +31,24 @@ class WindowStyles:
     def polish(self, widget: QWidget) -> None:
         if not isValid(widget):
             return
+
+        # Parented dialogs and menus inherit their root's rules, too. Native combo
+        # and tooltip panels need their own QSS to suppress square fills
         combo_popup = widget.metaObject().className() == 'QComboBoxPrivateContainer'
         tooltip = widget.windowType() == Qt.WindowType.ToolTip
         if widget.parentWidget() is not None and not (combo_popup or tooltip):
-            # Parented dialogs and menus inherit their root's rules, too
             self._restore(widget)
             return
-        # Native combo and tooltip panels need their own QSS to suppress square fills
+
         if not self._stylesheet:
             return
+
+        # Remember the widget's own stylesheet once, then keep it after ours
         original = widget.property(_ORIGINAL)
         if not isinstance(original, str):
             original = widget.styleSheet()
             widget.setProperty(_ORIGINAL, original)
+
         combined = f'{self._stylesheet}\n{original}' if original else self._stylesheet
         if widget.styleSheet() != combined:
             widget.setStyleSheet(combined)
@@ -58,6 +66,7 @@ class WindowStyles:
         app = QApplication.instance()
         if not isinstance(app, QApplication):
             return
+
         for widget in app.allWidgets():
             if isValid(widget):
                 self._restore(widget)

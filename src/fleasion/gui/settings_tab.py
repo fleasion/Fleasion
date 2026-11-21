@@ -836,6 +836,7 @@ class SettingsTab(QWidget):
 
     def _build_glass_controls(self, rows: QGridLayout, *, visible: bool) -> tuple[QWidget, ...]:
         """Backdrop, opacity and desktop-blur toggle for Glass."""
+        # Backdrop
         self._backdrop_combo = QComboBox()
         self._backdrop_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._backdrop_combo.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -847,10 +848,12 @@ class SettingsTab(QWidget):
             max(0, self._backdrop_combo.findData(self._config.glass_backdrop))
         )
         self._backdrop_combo.currentIndexChanged.connect(self._on_glass_backdrop_changed)
+
         backdrop_label = QLabel(tr('settings.appearance.backdrop'))
         rows.addWidget(backdrop_label, 3, 0)
         rows.addWidget(self._backdrop_combo, 3, 1, alignment=Qt.AlignmentFlag.AlignLeft)
 
+        # Opacity; its label and tooltip depend on the backdrop, see _refresh_blur_button
         self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self._opacity_slider.setRange(
             round(glass.MIN_OPACITY * 100), round(glass.MAX_OPACITY * 100)
@@ -858,8 +861,11 @@ class SettingsTab(QWidget):
         self._opacity_slider.setFixedWidth(140)
         self._opacity_slider.setValue(round(self._config.glass_opacity * 100))
         self._opacity_slider.valueChanged.connect(self._on_glass_opacity_changed)
+
         self._opacity_label = QLabel()
         rows.addWidget(self._opacity_label, 4, 0)
+
+        # Slider and percentage share one grid cell
         self._opacity_controls = QWidget()
         self._opacity_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         opacity_row = QHBoxLayout(self._opacity_controls)
@@ -872,15 +878,18 @@ class SettingsTab(QWidget):
         opacity_row.addWidget(self._opacity_value)
         rows.addWidget(self._opacity_controls, 4, 1, alignment=Qt.AlignmentFlag.AlignLeft)
 
+        # Desktop blur, only offered for the Window under backdrop
         self._blur_button = QPushButton()
         self._blur_button.setObjectName(glass.BLUR_BUTTON)
         self._blur_button.clicked.connect(self._toggle_desktop_blur)
         self._blur_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         rows.addWidget(self._blur_button, 5, 1, alignment=Qt.AlignmentFlag.AlignLeft)
+
         # The opacity row also depends on the backdrop, so _refresh_blur_button owns it
         widgets = (backdrop_label, self._backdrop_combo)
         for widget in widgets:
             widget.setVisible(visible)
+
         self._refresh_blur_button()
         return widgets
 
@@ -898,12 +907,16 @@ class SettingsTab(QWidget):
         self._refresh_blur_button()
 
     def _refresh_blur_button(self) -> None:
+        """Sync the backdrop-dependent controls: the opacity row and the blur toggle."""
         glass_active = self._config.appearance_style == 'Glass'
         backdrop = self._config.glass_backdrop
         desktop = backdrop == 'desktop'
+
         # Flat paints an opaque surface, so there is nothing for opacity to reveal
         for widget in (self._opacity_label, self._opacity_controls):
             widget.setVisible(glass_active and backdrop != 'flat')
+
+        # Over the desktop it is window opacity; over a painted backdrop, tint strength
         self._opacity_label.setText(
             tr('settings.appearance.opacity')
             if desktop
@@ -914,12 +927,15 @@ class SettingsTab(QWidget):
             if desktop
             else tr('settings.appearance.glass_opacity_tooltip')
         )
+
+        # Blur toggle, disabled while a toggle is still being applied
         status = glass.blur.cached_status()
         self._blur_button.setEnabled(
             status != 'unavailable' and glass.blur.can_toggle() and not glass.blur.toggle_pending
         )
         self._blur_button.setToolTip(tr('settings.appearance.glass_blur_scope'))
         self._blur_button.setVisible(glass_active and desktop and status != 'unavailable')
+
         if status == 'on':
             self._blur_button.setText(tr('settings.appearance.glass_blur_on'))
         else:

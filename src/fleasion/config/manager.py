@@ -1143,8 +1143,11 @@ class ConfigManager:
     def glass_opacity(self) -> float:
         """Glass tint over its backdrop, clamped to the supported range."""
         value = self.settings.get('glass_opacity', DEFAULT_OPACITY)
+
+        # bool is an int subclass, but True is not an opacity
         if isinstance(value, bool) or not isinstance(value, int | float):
             value = DEFAULT_OPACITY
+
         return clamp_opacity(float(value))
 
     @glass_opacity.setter

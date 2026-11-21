@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
     from fleasion.config.manager import ConfigManager
 
+
+# Object names of the settings controls kept in step from outside the settings tab
 ACCENT_COMBO = 'GlassAccentCombo'
 BACKDROP_COMBO = 'GlassBackdropCombo'
 BLUR_BUTTON = 'GlassBlurButton'
@@ -54,6 +56,7 @@ def _sync_combo(
     for widget in app.allWidgets():
         if not isinstance(widget, QComboBox) or widget.objectName() != name:
             continue
+
         index = widget.findText(text) if text is not None else widget.findData(data)
         if index >= 0 and index != widget.currentIndex():
             blocked = widget.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call] - Qt API
@@ -77,6 +80,8 @@ class GlassTheme:
         """Read and persist Glass settings through this ConfigManager."""
         state.configure(config)
 
+    # ------------------------------------------------------------ on and off
+
     def enable(
         self, app: QApplication, *, accent: str | None = None, base_palette: QPalette | None = None
     ) -> None:
@@ -86,11 +91,15 @@ class GlassTheme:
         state.reload()
         if accent is not None:
             state.settings.accent = accent
+
+        # A stable Wayland app ID lets compositor blur rules (and docks) match us
         if not app.desktopFileName():
-            # A stable Wayland app ID lets compositor blur rules (and docks) match us
             app.setDesktopFileName(APP_ID)
+
         ThemeManager.ensure_widget_style(app, 'Fusion')
         app.setPalette(palette(state.settings, base_palette=base_palette))
+
+        # Popups that already exist, with the masks and attributes to restore later
         original_popups = (
             [widget for widget in app.allWidgets() if GlassWindows.is_rounded_popup(widget)]
             if self._filter is None
@@ -104,20 +113,24 @@ class GlassTheme:
             )
             for widget in original_popups
         }
+
         # Application QSS repolishes cached descendants repeatedly. Root QSS
         # keeps the same inherited rules while visiting each window tree once
         self._stylesheets.apply(app, stylesheet(state.settings))
+
         if self._filter is None:
             self._filter = GlassWindows(
                 app, original_popup_masks, self._stylesheets, original_popup_attributes
             )
             self._filter.blur_status_changed.connect(self._sync_blur_controls)
             app.installEventFilter(self._filter)
+
+        # Existing widgets predate the filter; Qt styles them through QSS
         if entering:
-            # Existing widgets predate the filter; Qt styles them through QSS
             for widget in app.allWidgets():
                 self._filter.polish(widget)
                 self._filter.polish_itemview(widget)
+
             for window in registered_windows():
                 apply_chrome(window, enabled=True)
                 self._filter.update_window_shape(window)
@@ -126,16 +139,20 @@ class GlassTheme:
         if self._filter is None:
             return
         window_filter = self._filter
+
         # Qt may create native combo popups without delivering a Polish event
         # to the application filter, so include any still-live popup windows
         for widget in app.allWidgets():
             if GlassWindows.is_rounded_popup(widget):
                 window_filter.remember_window(widget)
+
         app.removeEventFilter(window_filter)
         self._filter = None
         self._stylesheets.restore()
+
         for window in registered_windows():
             apply_chrome(window, enabled=False)
+
         window_filter.restore()
         window_filter.deleteLater()
         _refresh_windows(app)
@@ -148,6 +165,8 @@ class GlassTheme:
             apply_chrome(window, enabled=True)
             self._filter.update_window_shape(window)
 
+    # ------------------------------------------------------------ settings
+
     def set_accent(self, name: str) -> None:
         from fleasion.appearance import accent_name
 
@@ -155,9 +174,11 @@ class GlassTheme:
             return
         if name == 'Custom':
             return
+
         state.set_accent(name)
         if (app := _app()) is not None:
             _sync_combo(app, ACCENT_COMBO, text=name)
+
             from fleasion.gui.theme import ThemeManager
 
             ThemeManager.set_accent(name)
@@ -174,6 +195,7 @@ class GlassTheme:
         app = _app()
         if app is None:
             return
+
         status = blur.cached_status()
         for widget in app.allWidgets():
             if isinstance(widget, QPushButton) and widget.objectName() == BLUR_BUTTON:
@@ -195,11 +217,14 @@ class GlassTheme:
         state.set_backdrop(mode)
         if self._filter is not None:
             self._filter.refresh_wallpaper()
+
         if (app := _app()) is None:
             return
+
         _sync_combo(app, BACKDROP_COMBO, data=mode)
         self._sync_blur_controls()
         _refresh_windows(app)
+
         from fleasion.gui.theme import ThemeManager
 
         ThemeManager.events().changed.emit()

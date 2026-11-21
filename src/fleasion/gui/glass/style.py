@@ -19,14 +19,25 @@ if TYPE_CHECKING:
 
     from .state import GlassSettings
 
+
+# Dark-mode text colours; the SVG glyphs are written with TEXT and recoloured on use
 TEXT: Final = '#f5f7fb'
 MUTED: Final = 'rgba(245,247,251,0.62)'
+
+# Corner radius of windows, group boxes and item views
 RADIUS: Final = 14
+
+# QSS can only load images from files, so the glyphs are written here
 ICON_DIR: Final[Path] = CONFIG_DIR / 'glass'
+
+
+# ---------------------------------------------------------------- colours
 
 
 @dataclass(frozen=True)
 class GlassColors:
+    """The resolved colours one Glass appearance paints with."""
+
     text: QColor
     ink: QColor
     surface: QColor
@@ -40,21 +51,27 @@ def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
     settings = settings or state.settings
     native = state.base_palette
     dark = state.dark
+
+    # Glass's own Dark and Light surfaces
     surface = QColor('#101118' if dark else '#f4f5f8')
     text = QColor(TEXT if dark else '#20232b')
     well = QColor('#08090e' if dark else '#ffffff')
     popup = QColor('#1c1d26' if dark else '#f7f8fb')
+
+    # Other colour themes tint the glass with their own palette
     if native is not None:
         surface = native.window().color()
         text = native.windowText().color()
         well = native.base().color()
         popup = QColor(well)
+
     accent = accent_color(
         settings.accent,
         surface,
         system_accent=state.system_accent,
         theme_accent=state.theme_accent,
     )
+
     return GlassColors(
         text,
         _ink(surface, dark=dark),
@@ -74,13 +91,19 @@ def _ink(surface: QColor, *, dark: bool) -> QColor:
     """Highlight colour for panes and rims; pure white greys out tinted dark surfaces."""
     if not dark:
         return QColor('#1b2030')
+
     # Achromatic surfaces report hue -1 and stay white
     return QColor.fromHsv(
         max(surface.hsvHue(), 0), min(surface.hsvSaturation(), _INK_SATURATION), 255
     )
 
 
+# ---------------------------------------------------------------- glyphs
+
+
 _STROKE: Final = 'fill="none" stroke-linecap="round" stroke-linejoin="round"'
+
+# Drawn in TEXT, or #0c0d12 for marks on the accent; icon_path() swaps in the real colour
 _ICONS: Final[dict[str, str]] = {
     'chevron-down': f'<path d="M4 6l4 4 4-4" {_STROKE} stroke="{TEXT}" stroke-width="1.8"/>',
     'chevron-up': f'<path d="M4 10l4-4 4 4" {_STROKE} stroke="{TEXT}" stroke-width="1.8"/>',
@@ -96,20 +119,29 @@ _ICONS: Final[dict[str, str]] = {
 def icon_path(name: str) -> str:
     """Return the file for a glyph; QSS can only load images from files."""
     ICON_DIR.mkdir(parents=True, exist_ok=True)
+
+    # One file per glyph and colour, so a palette change gets a new path
     colors = glass_colors()
     foreground = colors.accent_text if name in {'check', 'dot'} else colors.text
     path = ICON_DIR / f'{name}-{foreground.name()[1:]}.svg'
+
     glyph = _ICONS[name].replace(TEXT, foreground.name()).replace('#0c0d12', foreground.name())
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
         f'{glyph}</svg>'
     )
+
+    # Skip the write when the file is already current
     if not path.is_file() or path.read_text(encoding='utf-8') != svg:
         path.write_text(svg, encoding='utf-8')
     return path.as_posix()
 
 
+# ---------------------------------------------------------------- palette and stylesheet
+
+
 def _rgb(hex_color: str) -> str:
+    """An `r,g,b` triple for use inside QSS `rgba()`."""
     color = QColor(hex_color)
     return f'{color.red()},{color.green()},{color.blue()}'
 
@@ -119,6 +151,8 @@ def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) ->
     base = base_palette if base_palette is not None else state.base_palette
     pal = QPalette(base) if base is not None else QPalette()
     role = QPalette.ColorRole
+
+    # Foregrounds, with a faded disabled variant of each
     for color_role in (role.WindowText, role.Text, role.ButtonText, role.ToolTipText):
         foreground = (
             state.base_palette.color(color_role) if state.base_palette is not None else colors.text
@@ -127,17 +161,22 @@ def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) ->
         disabled = QColor(foreground)
         disabled.setAlpha(100)
         pal.setColor(QPalette.ColorGroup.Disabled, color_role, disabled)
+
+    # Backgrounds
     pal.setColor(role.Window, colors.surface)
     pal.setColor(role.Base, colors.well)
     pal.setColor(role.AlternateBase, colors.surface)
     pal.setColor(role.ToolTipBase, colors.popup)
     pal.setColor(role.Button, colors.surface)
+
     placeholder = QColor(colors.text)
     placeholder.setAlpha(128)
     pal.setColor(role.PlaceholderText, placeholder)
+
     pal = apply_accent(
         pal, settings.accent, system_accent=state.system_accent, theme_accent=state.theme_accent
     )
+
     # GlassWindows paints the surface; inherited widget backgrounds stay transparent
     window = QColor(colors.surface)
     window.setAlpha(0)
@@ -146,7 +185,7 @@ def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) ->
 
 
 # Panes are flat: per-control gradients stack inside nested panes and read as harsh.
-# Rim: a slightly brighter top edge. Well: a recessed input field.
+# Rim: a slightly brighter top edge. Well: a recessed input field
 _PANE: Final = 'rgba($ink_rgb,0.06)'
 _PANE_HOVER: Final = 'rgba($ink_rgb,0.11)'
 _RIM: Final = 'border: 1px solid rgba($ink_rgb,0.08); border-top-color: rgba($ink_rgb,0.13);'
@@ -411,6 +450,8 @@ QSplitter::handle { background: rgba($ink_rgb,0.08); }
 def stylesheet(settings: GlassSettings) -> str:
     colors = glass_colors(settings)
     native = state.base_palette
+
+    # Colours, substituted into the fragments and the stylesheet alike
     values = {
         'text': colors.text.name(),
         'input_text': native.text().color().name() if native is not None else colors.text.name(),
@@ -430,6 +471,7 @@ def stylesheet(settings: GlassSettings) -> str:
         'warning': '#ffd98a' if state.dark else '#805500',
         'success': '#9ff5cf' if state.dark else '#16613f',
     }
+
     return _STYLESHEET.substitute(
         **values,
         radius=RADIUS,

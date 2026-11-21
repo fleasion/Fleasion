@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 
 def has_alpha(window: QWidget) -> bool:
+    """Whether the window's native surface already has an alpha channel."""
     return (
         window.testAttribute(Qt.WidgetAttribute.WA_WState_Created)
         and window.windowHandle().format().alphaBufferSize() > 0
@@ -14,12 +15,14 @@ def has_alpha(window: QWidget) -> bool:
 
 
 def enable_transparency(window: QWidget) -> None:
+    # A shown X11 window keeps its opaque visual until it is recreated
     recreate = (
         QApplication.platformName() == 'xcb'
         and window.testAttribute(Qt.WidgetAttribute.WA_WState_Created)
         and not has_alpha(window)
     )
     window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
     if recreate:
         _recreate_native_window(window)
 
@@ -34,6 +37,7 @@ def restore_transparency(window: QWidget, *, translucent: bool, no_system_backgr
     )
     window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=translucent)
     window.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, on=no_system_background)
+
     if recreate:
         _recreate_native_window(window)
 
@@ -47,10 +51,12 @@ def _recreate_native_window(window: QWidget) -> None:
     screen = window.screen()
     focus = QApplication.focusWidget()
     restore_focus = focus is not None and window.isAncestorOf(focus)
+
     window.hide()
     window.destroy()
     window.setScreen(screen)
     window.create()
+
     window.setGeometry(geometry)
     window.setWindowState(window_state)
     if visible:

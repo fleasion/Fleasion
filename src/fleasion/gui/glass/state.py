@@ -26,12 +26,15 @@ if TYPE_CHECKING:
 
 @dataclass
 class GlassSettings:
+    """The user's Glass choices, as currently applied."""
+
     accent: str = DEFAULT_ACCENT
     opacity: float = DEFAULT_OPACITY
     backdrop: Backdrop = DEFAULT_BACKDROP
 
     @property
     def accent_color(self) -> str:
+        """The accent as a colour string; named accents resolve through ACCENTS."""
         return (
             self.accent
             if self.accent.startswith('#')
@@ -44,10 +47,13 @@ class GlassState:
 
     def __init__(self) -> None:
         self.settings = GlassSettings()
+
+        # Set by ThemeManager on every apply; base_palette is None for plain Dark and Light
         self.base_palette: QPalette | None = None
         self.system_accent: QColor | None = None
         self.theme_accent: QColor | None = None
         self.dark = True
+
         self._config: ConfigManager | None = None
 
     def configure(self, config: ConfigManager) -> None:
@@ -57,6 +63,7 @@ class GlassState:
     def reload(self) -> None:
         if self._config is None:
             return
+
         self.settings = GlassSettings(
             accent=self._config.accent_color,
             opacity=self._config.glass_opacity,

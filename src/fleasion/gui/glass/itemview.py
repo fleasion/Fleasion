@@ -16,10 +16,14 @@ if TYPE_CHECKING:
 
 
 class RoundedItemViewEffect(QGraphicsEffect):
+    """Clips an item view to a rounded rectangle and draws its rim on top."""
+
     def __init__(self, parent: QWidget, *, radius: int = RADIUS, popup: bool = False) -> None:
         super().__init__(parent)
         self._radius = radius
         self._popup = popup
+
+        # Supersampled rim corners, rebuilt when size, scale or colour changes
         self._rim_key: tuple[QSize, float, int, int] | None = None
         self._rim_corners: list[tuple[QPointF, QImage]] = []
 
@@ -31,24 +35,29 @@ class RoundedItemViewEffect(QGraphicsEffect):
         )
         if pixmap.isNull():
             return
+
         rect = QRectF(pixmap.rect())
         rect.setSize(rect.size() / pixmap.devicePixelRatio())
+
+        # Remove the outside with fractional coverage instead of a binary widget mask
         frame = QPainterPath()
         frame.addRoundedRect(rect, self._radius, self._radius)
         outside = QPainterPath()
         outside.addRect(rect)
-        # Remove the outside with fractional coverage instead of a binary widget mask
+
         clip = QPainter(pixmap)
         clip.setRenderHint(QPainter.RenderHint.Antialiasing)
         clip.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
         clip.fillPath(outside.subtracted(frame), Qt.GlobalColor.black)
         clip.end()
         painter.drawPixmap(offset, pixmap)
+
         view = self.parent()
         if not isinstance(view, QAbstractItemView) or (width := view.frameWidth()) <= 0:
             return
 
-        # Paint the rim once, after clipping the rectangular child backgrounds
+        # Paint the rim once, after clipping the rectangular child backgrounds.
+        # Popups get a brighter rim to stand out from what they cover
         inset = width / 2
         rim_rect = rect.adjusted(inset, inset, -inset, -inset)
         rim = QLinearGradient(rim_rect.topLeft(), rim_rect.bottomLeft())
@@ -57,9 +66,11 @@ class RoundedItemViewEffect(QGraphicsEffect):
         rim.setColorAt(0, color)
         color.setAlphaF(0.14 if self._popup else 0.08)
         rim.setColorAt(1, color)
+
         outline = QPainterPath()
         radius = max(0.0, self._radius - inset)
         outline.addRoundedRect(rim_rect, radius, radius)
+
         painter.save()
         painter.translate(offset)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -67,6 +78,8 @@ class RoundedItemViewEffect(QGraphicsEffect):
         pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Size of each corner tile in device pixels, capped to half the view
         ratio = pixmap.devicePixelRatio()
         extent = min(
             ceil((self._radius + width) * ratio),
@@ -77,7 +90,8 @@ class RoundedItemViewEffect(QGraphicsEffect):
             painter.restore()
             return
         corner_size = extent / ratio
-        # Keep straight edges and text at native resolution
+
+        # Straight edges are drawn directly, at native resolution
         painter.drawLine(QPointF(corner_size, inset), QPointF(rect.width() - corner_size, inset))
         painter.drawLine(
             QPointF(corner_size, rect.height() - inset),
@@ -88,6 +102,8 @@ class RoundedItemViewEffect(QGraphicsEffect):
             QPointF(rect.width() - inset, corner_size),
             QPointF(rect.width() - inset, rect.height() - corner_size),
         )
+
+        # Corners are rendered at 4x and scaled down, so the curve stays smooth
         key = (pixmap.size(), ratio, width, glass_colors().ink.rgba())
         if key != self._rim_key:
             self._rim_corners = []
@@ -97,6 +113,7 @@ class RoundedItemViewEffect(QGraphicsEffect):
                         extent * 4, extent * 4, QImage.Format.Format_ARGB32_Premultiplied
                     )
                     corner.fill(Qt.GlobalColor.transparent)
+
                     sampling = QPainter(corner)
                     sampling.setRenderHint(QPainter.RenderHint.Antialiasing)
                     sampling.scale(ratio * 4, ratio * 4)
@@ -105,6 +122,7 @@ class RoundedItemViewEffect(QGraphicsEffect):
                     sampling.setBrush(Qt.BrushStyle.NoBrush)
                     sampling.drawPath(outline)
                     sampling.end()
+
                     corner = corner.scaled(
                         extent,
                         extent,
@@ -114,6 +132,7 @@ class RoundedItemViewEffect(QGraphicsEffect):
                     corner.setDevicePixelRatio(ratio)
                     self._rim_corners.append((QPointF(x / ratio, y / ratio), corner))
             self._rim_key = key
+
         for position, corner in self._rim_corners:
             painter.drawImage(position, corner)
         painter.restore()

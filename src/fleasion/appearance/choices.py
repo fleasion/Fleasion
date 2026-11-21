@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Final, Literal
 
+# Widget style
 type AppearanceStyle = Literal['Fusion', 'Glass']
 
 STYLES: Final[tuple[AppearanceStyle, ...]] = ('Fusion', 'Glass')
 
-
+# What Glass paints behind its tint
 type Backdrop = Literal['flat', 'ambient', 'desktop', 'wallpaper']
 
 BACKDROPS: Final[tuple[Backdrop, ...]] = ('flat', 'ambient', 'desktop', 'wallpaper')
@@ -18,6 +19,10 @@ DEFAULT_BACKDROP: Final[Backdrop] = 'flat'
 DEFAULT_OPACITY: Final = 0.85
 MIN_OPACITY: Final = 0.2
 MAX_OPACITY: Final = 1.0
+
+
+# ---------------------------------------------------------------- normalisers
+# Values read back from the settings file; anything unknown falls back to the default
 
 
 def appearance_style(value: object) -> AppearanceStyle:

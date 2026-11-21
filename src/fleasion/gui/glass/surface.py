@@ -42,18 +42,28 @@ if TYPE_CHECKING:
 
     from .stylesheets import WindowStyles
 
+
+# Push buttons at most this wide are restyled as compact or arrow buttons
 _COMPACT_BUTTON_MAX: Final = 40
 _ARROW_BUTTON_MAX: Final = 24
+
+# Painted under the tint when there is no alpha channel or wallpaper to show
 _FALLBACK_BACKDROP: Final = (20, 22, 34)
+
 # Ambient glows: accent from the top left, a complementary hue from the bottom right
 _AMBIENT_ACCENT_ALPHA: Final = 230
 _AMBIENT_COMPLEMENT_ALPHA: Final = 170
 _AMBIENT_HUE_SHIFT: Final = 140
+
 # Qt creates combo popups and tooltips itself, so their Python wrappers can be
-# collected while the widget lives on. Original attributes stay on the widget
+# collected while the widget lives on. The original attributes are therefore
+# stored on the widget, as bit flags in a dynamic property
 _ORIGINAL_TRANSPARENCY: Final = 'glassOriginalTransparency'
 _TRANSLUCENT: Final = 1
 _NO_SYSTEM_BACKGROUND: Final = 2
+
+
+# ---------------------------------------------------------------- backdrops
 
 
 def _fallback_color() -> QColor:
@@ -70,10 +80,13 @@ def effective_opacity() -> float:
 
 
 def _glow(centre: QPointF, reach: float, color: QColor, alpha: int) -> QBrush:
+    """A radial gradient fading from `color` at `alpha` to fully transparent."""
     inner = QColor(color)
     inner.setAlpha(alpha)
+
     outer = QColor(color)
     outer.setAlpha(0)
+
     gradient = QRadialGradient(centre, reach)
     gradient.setColorAt(0.0, inner)
     gradient.setColorAt(1.0, outer)
@@ -83,9 +96,11 @@ def _glow(centre: QPointF, reach: float, color: QColor, alpha: int) -> QBrush:
 def _paint_ambient(painter: QPainter, rect: QRectF, path: QPainterPath) -> None:
     colors = glass_colors()
     painter.fillPath(path, colors.surface)
+
     reach = max(rect.width(), rect.height())
     hue = (max(colors.accent.hsvHue(), 0) + _AMBIENT_HUE_SHIFT) % 360
     complement = QColor.fromHsv(hue, 120, 200)
+
     top_left = QPointF(rect.left() + rect.width() * 0.15, rect.top())
     painter.fillPath(path, _glow(top_left, reach * 0.9, colors.accent, _AMBIENT_ACCENT_ALPHA))
     painter.fillPath(
@@ -101,9 +116,11 @@ def _screen(window: QWidget) -> QScreen | None:
 def _origin_in_screen(window: QWidget, width: int, height: int) -> QPoint:
     """Where the window sits on its screen; centred when the platform hides it."""
     screen = _screen(window)
+
+    # Wayland clients cannot learn their global position
     if QApplication.platformName().startswith('wayland') or screen is None:
-        # Wayland clients cannot learn their global position
         return QPoint((width - window.width()) // 2, (height - window.height()) // 2)
+
     return window.mapToGlobal(QPoint(0, 0)) - screen.geometry().topLeft()
 
 
@@ -111,14 +128,18 @@ def _paint_wallpaper(painter: QPainter, window: QWidget, path: QPainterPath) -> 
     screen = _screen(window)
     if screen is None:
         return
-    geometry = screen.geometry()
+
     # Cover the screen, or the window if it is larger than the screen
+    geometry = screen.geometry()
     width = max(geometry.width(), window.width())
     height = max(geometry.height(), window.height())
+
     image = wallpapers.image(width, height, screen.name())
     if image.isNull():
         painter.fillPath(path, _fallback_color())
         return
+
+    # Shift the screen-sized image so the window shows its own slice of it
     origin = _origin_in_screen(window, width, height)
     wallpaper = QBrush(image)
     wallpaper.setTransform(QTransform.fromTranslate(-origin.x(), -origin.y()))
@@ -136,15 +157,18 @@ def paint_glass(
     *,
     rim: bool = False,
 ) -> None:
-    """Replace the previous surface, then paint the backdrop, sheen and optional rim."""
-    # Translucent paints must replace the backing store, including old child pixels
+    """Replace the previous surface, then paint the backdrop, tint, sheen and optional rim."""
+    # Clear the backing store first; translucent paints otherwise keep old child pixels
     painter.save()
     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
     painter.fillRect(rect.toAlignedRect(), Qt.GlobalColor.transparent)
     painter.restore()
+
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     path = QPainterPath()
     path.addRoundedRect(rect, radius, radius)
+
+    # Backdrop
     backdrop = state.settings.backdrop
     if window is not None and _opaque_fallback(window):
         painter.fillPath(path, _fallback_color())
@@ -152,16 +176,22 @@ def paint_glass(
         _paint_wallpaper(painter, window, path)
     elif backdrop == 'ambient':
         _paint_ambient(painter, rect, path)
+
+    # Tint
     surface = QColor(glass_colors().surface)
     surface.setAlpha(round(255 * effective_opacity()))
     painter.fillPath(path, surface)
-    # A faint, even falloff; a front-loaded sheen reads as a bright band
+
+    # Sheen: a faint, even falloff; a front-loaded sheen reads as a bright band
     sheen = QLinearGradient(rect.topLeft(), rect.bottomLeft())
     sheen.setColorAt(0.0, QColor(255, 255, 255, 12))
     sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
     painter.fillPath(path, sheen)
+
     if not rim:
         return
+
+    # Rim: a bright top edge fading down the sides
     edge = QLinearGradient(rect.topLeft(), rect.bottomLeft())
     edge.setColorAt(0.0, QColor(255, 255, 255, 60))
     edge.setColorAt(0.3, QColor(255, 255, 255, 22))
@@ -170,10 +200,14 @@ def paint_glass(
     painter.drawPath(path)
 
 
+# ---------------------------------------------------------------- helpers
+
+
 def _repolish_later(widget: QWidget) -> None:
     def repolish() -> None:
         if not isValid(widget):
             return
+
         style = widget.style()
         style.unpolish(widget)
         style.polish(widget)
@@ -192,6 +226,9 @@ def _opaque_fallback(window: QWidget) -> bool:
     )
 
 
+# ---------------------------------------------------------------- windows
+
+
 class GlassWindows(QObject):
     """Gives top-level windows an alpha surface and paints the glass on them."""
 
@@ -207,6 +244,8 @@ class GlassWindows(QObject):
         super().__init__(app)
         self._app = app
         self._stylesheets = stylesheets
+
+        # State to undo when Glass is turned off
         self._original_popup_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary(
             original_popup_masks or {}
         )
@@ -215,6 +254,8 @@ class GlassWindows(QObject):
         )
         self._button_properties: WeakKeyDictionary[QPushButton, set[str]] = WeakKeyDictionary()
         self._original_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary()
+
+        # Poll for wallpaper and compositor blur changes made outside Fleasion
         self._wallpaper_timer = QTimer(self)
         self._wallpaper_timer.setInterval(100)
         self._wallpaper_timer.timeout.connect(self.refresh_wallpaper)
@@ -225,9 +266,11 @@ class GlassWindows(QObject):
         blur_changed = blur.poll_refresh()
         if blur_changed:
             self.blur_status_changed.emit()
+
         changed = blur_changed
         if state.settings.backdrop == 'wallpaper' and wallpapers.refresh_source():
             changed = True
+
         if changed:
             for window in self._app.topLevelWidgets():
                 window.update()
@@ -236,8 +279,9 @@ class GlassWindows(QObject):
         self._wallpaper_timer.stop()
         blur.stop_polling()
         wallpapers.close()
-        # Restore parent windows before their popup children, since recreating
-        # a native X11 parent may also invalidate its children's native handles
+
+        # Window transparency. Parents go before their popup children, since
+        # recreating a native X11 parent may also invalidate its children's handles
 
         def parent_depth(window: QWidget) -> int:
             depth = 0
@@ -255,8 +299,10 @@ class GlassWindows(QObject):
         for window in sorted(remembered, key=parent_depth):
             if not isValid(window):
                 continue
+
             original = window.property(_ORIGINAL_TRANSPARENCY)
             flags = original if isinstance(original, int) else 0
+
             # None removes the dynamic property again
             window.setProperty(_ORIGINAL_TRANSPARENCY, None)
             restore_transparency(
@@ -265,6 +311,8 @@ class GlassWindows(QObject):
                 no_system_background=bool(flags & _NO_SYSTEM_BACKGROUND),
             )
             window.update()
+
+        # Window masks
         for widget, original_mask in list(self._original_masks.items()):
             if isValid(widget):
                 if original_mask.isEmpty():
@@ -272,13 +320,17 @@ class GlassWindows(QObject):
                 else:
                     widget.setMask(original_mask)
         self._original_masks.clear()
+
+        # Rounded item views
         for view in self._app.allWidgets():
             if isValid(view) and isinstance(view.graphicsEffect(), RoundedItemViewEffect):
                 view.setGraphicsEffect(None)  # pyright: ignore[reportArgumentType]
-        # QSS removal does not always undo the masks Qt adds to native popups
+
+        # Popup masks. QSS removal does not always undo the masks Qt adds to native popups
         for widget in self._app.allWidgets():
             if not isValid(widget) or not self.is_rounded_popup(widget):
                 continue
+
             original = self._original_popup_masks.get(widget)
             if original is None or original.isEmpty():
                 widget.clearMask()
@@ -286,11 +338,12 @@ class GlassWindows(QObject):
                 widget.setMask(original)
         self._original_popup_masks.clear()
         self._original_popup_attributes.clear()
+
+        # Button properties. None removes the dynamic property, restoring its initial absence
         for button, names in list(self._button_properties.items()):
             if not isValid(button):
                 continue
             for name in names:
-                # None removes the dynamic property, restoring its initial absence
                 button.setProperty(name, None)
         self._button_properties.clear()
 
@@ -299,6 +352,7 @@ class GlassWindows(QObject):
         # popup widgets may already have Glass QSS attributes when polished
         if isinstance(window.property(_ORIGINAL_TRANSPARENCY), int):
             return
+
         original = self._original_popup_attributes.get(window)
         if original is not None:
             translucent, no_background = original
@@ -308,10 +362,13 @@ class GlassWindows(QObject):
         else:
             translucent = window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
             no_background = window.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+
         flags = (_TRANSLUCENT if translucent else 0) | (
             _NO_SYSTEM_BACKGROUND if no_background else 0
         )
         window.setProperty(_ORIGINAL_TRANSPARENCY, flags)
+
+    # ------------------------------------------------------------ shape
 
     @staticmethod
     def is_combo_popup(widget: QWidget) -> bool:
@@ -329,23 +386,30 @@ class GlassWindows(QObject):
     def _mask_radius(widget: QWidget) -> int:
         if widget.property('glassOwnSurface') or widget.isMaximized():
             return 0
+
         if _is_window(widget) and widget.property('glassChrome'):
             return RADIUS
+
+        # Menus and combo popups
         if (
             widget.isWindow()
             and widget.windowFlags() & Qt.WindowType.Popup
             and (isinstance(widget, QMenu) or GlassWindows.is_combo_popup(widget))
         ):
             return 12
+
         if widget.isWindow() and widget.windowType() == Qt.WindowType.ToolTip:
             return 8
+
         return 0
 
     def update_window_shape(self, widget: QWidget) -> None:
         # On X11, switching a shown window to translucent commonly retains its
-        # original 24-bit visual. QSS border-radius alone does not clip it.
+        # original 24-bit visual. QSS border-radius alone does not clip it
         if not widget.isWindow():
             return
+
+        # Windows with an alpha channel round themselves; drop any mask we added
         if has_alpha(widget):
             if widget in self._original_masks:
                 original = self._original_masks.pop(widget)
@@ -356,8 +420,11 @@ class GlassWindows(QObject):
             if self.is_rounded_popup(widget):
                 widget.clearMask()
             return
+
         if QApplication.platformName() != 'xcb':
             return
+
+        # Nothing to round; restore the original mask
         if not widget.isWindow() or (radius := self._mask_radius(widget)) <= 0:
             if widget in self._original_masks:
                 original = self._original_masks.pop(widget)
@@ -366,8 +433,11 @@ class GlassWindows(QObject):
                 else:
                     widget.setMask(original)
             return
+
         if widget.width() < 2 or widget.height() < 2:
             return
+
+        # Clip the opaque window to its rounded outline
         if widget not in self._original_masks:
             self._original_masks[widget] = QRegion(widget.mask())
         rect = QRectF(0, 0, widget.width(), widget.height())
@@ -378,21 +448,27 @@ class GlassWindows(QObject):
     def polish_itemview(self, widget: QWidget) -> None:
         if not isinstance(widget, QAbstractItemView) or isinstance(widget, QHeaderView):
             return
+
         if widget.graphicsEffect() is None:
             popup = self.is_combo_popup(widget.window())
             radius = 12 if popup else RADIUS
             widget.setGraphicsEffect(RoundedItemViewEffect(widget, radius=radius, popup=popup))
 
+    # ------------------------------------------------------------ events
+
     @override
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if not isinstance(watched, QWidget) or not isValid(watched):
             return False
+
         kind = event.type()
         if kind == QEvent.Type.Polish:
             self.polish(watched)
             self.polish_itemview(watched)
+
         elif kind == QEvent.Type.ParentChange and self._stylesheets is not None:
             self._stylesheets.polish(watched)
+
         elif kind in {QEvent.Type.Show, QEvent.Type.Resize, QEvent.Type.WindowStateChange}:
             if (
                 kind == QEvent.Type.Show
@@ -402,22 +478,27 @@ class GlassWindows(QObject):
                 self._stylesheets.polish(watched)
             self.update_window_shape(watched)
             self.polish_itemview(watched)
+
         elif kind in {QEvent.Type.Move, QEvent.Type.StyleChange}:
             self.polish_itemview(watched)
+
         elif kind == QEvent.Type.Paint and self._paints(watched):
+            # Native decorations already outline the window, so only the
+            # custom chrome draws its own rim
             painter = QPainter(watched)
             framed = bool(watched.property('glassChrome')) and not watched.isMaximized()
             rect = QRectF(watched.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-            # Native decorations already outline the window, so only the
-            # custom chrome draws its own rim
             paint_glass(painter, rect, RADIUS if framed else 0, watched, rim=framed)
             painter.end()
+
         elif (
             kind == QEvent.Type.Move
             and state.settings.backdrop == 'wallpaper'
             and _is_window(watched)
         ):
-            watched.update()  # The wallpaper slice follows the window
+            # The wallpaper slice follows the window
+            watched.update()
+
         return False
 
     @staticmethod
@@ -431,11 +512,14 @@ class GlassWindows(QObject):
             and not widget.property('glassOwnSurface')
         )
 
+    # ------------------------------------------------------------ polish
+
     def _mark_button(self, button: QPushButton, name: str) -> None:
         # Properties supplied by the application belong to the application.
-        # Only record and undo the dynamic properties Glass itself introduces.
+        # Only record and undo the dynamic properties Glass itself introduces
         if button.property(name) is not None:
             return
+
         button.setProperty(name, True)  # ruff: ignore[boolean-positional-value-in-call] - Qt API
         self._button_properties.setdefault(button, set()).add(name)
         _repolish_later(button)
@@ -443,6 +527,8 @@ class GlassWindows(QObject):
     def polish(self, widget: QWidget) -> None:
         if self._stylesheets is not None:
             self._stylesheets.polish(widget)
+
+        # Top-level windows get an alpha channel where the platform allows one
         if _is_window(widget):
             self.remember_window(widget)
             translucent = not _opaque_fallback(widget)
@@ -451,9 +537,12 @@ class GlassWindows(QObject):
             else:
                 widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=False)
                 widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, on=False)
+
         elif self.is_rounded_popup(widget):
             self.remember_window(widget)
             enable_transparency(widget)
+
+        # Small push buttons are tagged so the stylesheet can restyle them
         elif not isinstance(widget, QPushButton):
             return
         elif (

@@ -21,13 +21,22 @@ from fleasion.utils.paths import CONFIG_DIR
 
 type BlurStatus = Literal['on', 'off', 'unavailable']
 
+# Wayland app ID; the whitelist entry Fleasion adds and removes
 APP_ID: Final = 'fleasion'
+
 _EXTENSION: Final = 'blur-my-shell@aunetx'
 _SCHEMA_PATH: Final = '/org/gnome/shell/extensions/blur-my-shell/applications/'
+
+# The whitelist as it was before Fleasion changed it, and what Fleasion wrote
 _BACKUP_FILE: Final = CONFIG_DIR / 'blur-my-shell-backup.json'
+
 _TIMEOUT: Final = 3
 _REFRESH_SECONDS: Final = 15
+
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------- dconf
 
 
 def _run(*args: str) -> str | None:
@@ -35,6 +44,7 @@ def _run(*args: str) -> str | None:
     executable = shutil.which(args[0])
     if executable is None:
         return None
+
     try:
         result = subprocess.run(
             [executable, *args[1:]],
@@ -45,6 +55,7 @@ def _run(*args: str) -> str | None:
         )
     except OSError, subprocess.SubprocessError:
         return None
+
     if result.returncode != 0:
         log.warning('Desktop command %s failed: %s', args[0], result.stderr.strip())
         return None
@@ -64,12 +75,16 @@ def _read_list(key: str) -> list[str]:
 
 
 def _parse_list(raw: str) -> list[str] | None:
+    """A GVariant string array as a list, or None when it cannot be parsed."""
     if not raw:
         return []
+
+    # dconf prints typed empty arrays as `@as []`
     try:
         parsed: object = literal_eval(raw.removeprefix('@as').strip())
     except ValueError, SyntaxError:
         return None
+
     if not isinstance(parsed, list):
         return None
     entries = cast('list[object]', parsed)
@@ -86,6 +101,8 @@ def _list_value(items: list[str]) -> str:
 def _extension_active() -> bool:
     if not sys.platform.startswith('linux'):
         return False
+
+    # `gnome-extensions info` prints `State: ACTIVE` among other key-value lines
     info = _run('gnome-extensions', 'info', _EXTENSION) or ''
     return any(
         line.partition(':')[2].strip().upper() == 'ACTIVE'
@@ -99,10 +116,14 @@ def _load_backup() -> dict[str, str]:
         saved: object = json.loads(_BACKUP_FILE.read_text(encoding='utf-8'))
     except OSError, ValueError:
         return {}
+
     if not isinstance(saved, dict):
         return {}
     entries = cast('dict[object, object]', saved)
     return {str(key): str(value) for key, value in entries.items()}
+
+
+# ---------------------------------------------------------------- compositor blur
 
 
 class DesktopBlur:
@@ -111,9 +132,13 @@ class DesktopBlur:
     def __init__(self) -> None:
         self._status: BlurStatus | None = None
         self._can_toggle = False
+
+        # Desktop commands run on one worker thread; results are collected by polling
         self._executor: ThreadPoolExecutor | None = None
         self._pending: Future[tuple[BlurStatus, bool]] | None = None
         self._toggle_pending: Future[tuple[BlurStatus, bool]] | None = None
+
+        # Bumped whenever the status may have changed, so stale probe results are dropped
         self._pending_generation = 0
         self._generation = 0
         self._next_refresh = 0.0
@@ -150,10 +175,13 @@ class DesktopBlur:
             or self._status == 'unavailable'
         ):
             return False
+
+        # Supersede any queued probe; the toggle reports the new status itself
         self._generation += 1
         if self._pending is not None:
             self._pending.cancel()
             self._pending = None
+
         self._toggle_pending = self._ensure_executor().submit(self._toggle_work)
         return True
 
@@ -161,11 +189,14 @@ class DesktopBlur:
     def _toggle_work() -> tuple[BlurStatus, bool]:
         """Recheck permission and make the change entirely on the worker thread."""
         _status, can_toggle = DesktopBlur._probe()
+
+        # Fleasion owning the entry means the toggle turns blur off
         if can_toggle:
             if DesktopBlur._reconcile_ownership():
                 DesktopBlur._restore_whitelist()
             else:
                 DesktopBlur._enable_whitelist()
+
         return DesktopBlur._probe()
 
     @staticmethod
@@ -182,6 +213,7 @@ class DesktopBlur:
         """
         if not DesktopBlur.owns_entry():
             return False
+
         current = _run('dconf', 'read', _SCHEMA_PATH + 'whitelist')
         if (
             current is not None
@@ -190,16 +222,22 @@ class DesktopBlur:
         ):
             _BACKUP_FILE.unlink(missing_ok=True)
             return False
+
         return True
 
     @staticmethod
     def _probe() -> tuple[BlurStatus, bool]:
+        """Blocking: read the extension's state and whether Fleasion may change it."""
         if not _extension_active():
             return 'unavailable', False
+
         blurring = _read('blur') == 'true'
         all_apps = _read('enable-all') == 'true'
         listed = APP_ID in _read_list('whitelist')
         covered = all_apps or listed
+
+        # Fleasion only toggles an entry it added itself, or adds one to a
+        # whitelist that blurs but does not already cover it
         owned = DesktopBlur.owns_entry()
         can_toggle = owned or (
             blurring and not all_apps and not listed and not _BACKUP_FILE.exists()
@@ -212,19 +250,26 @@ class DesktopBlur:
         Returns True when the cached status or toggle availability changes.
         """
         changed = False
+
+        # A finished toggle
         toggle = self._toggle_pending
         if toggle is not None:
             if not toggle.done():
                 return False
+
             self._toggle_pending = None
             self._next_refresh = monotonic() + _REFRESH_SECONDS
             try:
                 self._status, self._can_toggle = toggle.result()
             except CancelledError, OSError, ValueError, subprocess.SubprocessError:
+                # Recheck partial writes asynchronously
                 log.exception('Could not toggle compositor blur')
-                self._next_refresh = 0.0  # Recheck partial writes asynchronously
-            return True  # The GUI must re-enable its button even if status did not change
+                self._next_refresh = 0.0
 
+            # The GUI must re-enable its button even if status did not change
+            return True
+
+        # A finished probe, ignored if something changed the status since it started
         pending = self._pending
         if pending is not None:
             if not pending.done():
@@ -239,10 +284,13 @@ class DesktopBlur:
                     previous = self._status, self._can_toggle
                     self._status, self._can_toggle = result
                     changed = previous != result
+
+        # The next periodic probe
         if self._pending is None and monotonic() >= self._next_refresh:
             self._pending_generation = self._generation
             self._pending = self._ensure_executor().submit(self._probe)
             self._next_refresh = monotonic() + _REFRESH_SECONDS
+
         return changed
 
     def stop_polling(self) -> None:
@@ -251,35 +299,42 @@ class DesktopBlur:
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
+
         # A running toggle is allowed to finish. Keep its future so a later
         # theme activation can collect the result before accepting another toggle
         self._pending = None
         self._next_refresh = 0.0
 
     def enable(self) -> bool:
+        """Blocking: add Fleasion to the whitelist and report whether blur is now on."""
         if self.status(refresh=True) == 'on':
             return True
         if not self.can_toggle():
             return False
         if not self._enable_whitelist():
             return False
+
         return self.status(refresh=True) == 'on'
 
     @staticmethod
     def _enable_whitelist() -> bool:
         if _read('blur') != 'true' or _read('enable-all') == 'true':
             return False
+
         original = _run('dconf', 'read', _SCHEMA_PATH + 'whitelist')
         if original is None or (whitelist := _parse_list(original)) is None:
             return False
         if APP_ID in whitelist:
             return False
+
+        # Back up the original list before the write, so a crash can still be undone
         applied = _list_value([*whitelist, APP_ID])
         created_backup = not _BACKUP_FILE.exists()
         if created_backup:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             backup = {'whitelist': original, 'whitelist_applied': applied}
             _BACKUP_FILE.write_text(json.dumps(backup), encoding='utf-8')
+
         if _write('whitelist', applied):
             return True
 
@@ -288,10 +343,12 @@ class DesktopBlur:
         current = _run('dconf', 'read', _SCHEMA_PATH + 'whitelist')
         if current is not None and _parse_list(current) == _parse_list(applied):
             return True
+
         if created_backup and current is not None:
             current_list = _parse_list(current)
             if current_list is not None and APP_ID not in current_list:
                 _BACKUP_FILE.unlink(missing_ok=True)
+
         return False
 
     def disable(self) -> None:
@@ -303,12 +360,15 @@ class DesktopBlur:
         values = _load_backup()
         if 'whitelist' not in values or 'whitelist_applied' not in values:
             return False
+
         current = _run('dconf', 'read', _SCHEMA_PATH + 'whitelist')
         if current is None:
             return False
         whitelist = _parse_list(current)
         if whitelist is None:
             return False
+
+        # Untouched since Fleasion wrote it: put the original back exactly
         if whitelist == _parse_list(values['whitelist_applied']):
             original = values['whitelist']
             restored = (
@@ -321,6 +381,7 @@ class DesktopBlur:
             restored = APP_ID not in whitelist or _write(
                 'whitelist', _list_value([item for item in whitelist if item != APP_ID])
             )
+
         if restored:
             _BACKUP_FILE.unlink(missing_ok=True)
         return restored
