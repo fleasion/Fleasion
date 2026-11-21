@@ -5,7 +5,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import (
+    QAbstractButton,
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+    QLabel,
+    QLineEdit,
+    QProgressBar,
+)
 from shiboken6 import isValid
 
 if TYPE_CHECKING:
@@ -15,6 +24,16 @@ if TYPE_CHECKING:
 # Qt creates combo popups and tooltips itself, so their Python wrappers can be
 # collected while the widget lives on. The original stylesheet stays on the widget
 _ORIGINAL = 'glassOriginalStyleSheet'
+
+_CONTROL_TYPES = (
+    QAbstractButton,
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QComboBox,
+    QLabel,
+    QLineEdit,
+    QProgressBar,
+)
 
 
 class WindowStyles:
@@ -41,6 +60,17 @@ class WindowStyles:
             return
 
         if not self._stylesheet:
+            return
+
+        # Controls are often polished before they are added to a layout, while
+        # still parentless. Parsing the Glass rules for each of them and
+        # stripping them again on reparenting costs about 2 ms per control.
+        # A control is practically never a window, so style it only if it is
+        # shown as one. Container widgets keep early styling so windows have
+        # their rules while laying out
+        if not (combo_popup or tooltip or widget.isVisible()) and isinstance(
+            widget, _CONTROL_TYPES
+        ):
             return
 
         # Remember the widget's own stylesheet once, then keep it after ours

@@ -485,7 +485,7 @@ class GlassWindows(QObject):
             if (
                 kind == QEvent.Type.Show
                 and self._stylesheets is not None
-                and self.is_rounded_popup(watched)
+                and (self.is_rounded_popup(watched) or watched.parentWidget() is None)
             ):
                 self._stylesheets.polish(watched)
             self.update_window_shape(watched)
