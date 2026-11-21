@@ -665,19 +665,21 @@ def run_application() -> None:
             get_selected_linux_client_installation,
         )
 
-        selection = get_selected_linux_client_installation()
-        scope = read_ptrace_scope()
-        if (
-            selection is not None
-            and selection.client.runtime == 'rosemary'
-            and scope is not None
-            and scope > 0
-        ):
-
-            def _show_initial_yama_notice() -> None:
+        # Client detection spawns flatpak, so keep it off the GUI thread
+        @run_in_thread
+        def _check_initial_yama_scope() -> None:
+            selection = get_selected_linux_client_installation()
+            scope = read_ptrace_scope()
+            if (
+                selection is not None
+                and selection.client.runtime == 'rosemary'
+                and scope is not None
+                and scope > 0
+            ):
+                # Queued onto the GUI thread, which owns the invoker
                 yama_warning_invoker.show_warning.emit(scope, 'startup')
 
-            QTimer.singleShot(0, _show_initial_yama_notice)
+        _check_initial_yama_scope()
     single_instance_state.tray = tray
     app.aboutToQuit.connect(tray.cleanup_tray_icon)
     single_instance_control_server = start_single_instance_control_server(app, tray)
