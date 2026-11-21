@@ -312,7 +312,7 @@ def _is_relative_to(child: Path, parent: Path) -> bool:
     try:
         return os.path.commonpath([str(child), str(parent)]) == str(parent)
     # The source helper is also used by `uv run`, where launchd invokes the
-    # system Python rather than Fleasion's Python 3.14 runtime.
+    # system Python rather than Fleasion's Python 3.15 runtime.
     except _PATH_ERRORS:
         return False
 

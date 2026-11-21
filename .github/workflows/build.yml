@@ -95,6 +95,21 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --group dev
 
+      # NumPy 2.4+ wheels require x86-64-v2, which drops CPUs that the old
+      # NumPy 2.3 Windows pin still supported. Rebuild the locked version with
+      # no compiled baseline; runtime dispatch keeps SIMD kernels on newer CPUs
+      - name: Rebuild NumPy without a CPU baseline
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $numpyVersion = uv run --no-sync python -c "import importlib.metadata as m; print(m.version('numpy'))"
+          uv pip install --reinstall --no-deps --no-binary numpy `
+            --config-settings "setup-args=-Dcpu-baseline=none" `
+            "numpy==$numpyVersion"
+          uv run --no-sync python -c "import numpy; numpy.show_runtime()"
+          # Keep later uv run steps from reinstalling the locked wheel
+          "UV_NO_SYNC=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |

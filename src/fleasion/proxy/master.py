@@ -72,6 +72,7 @@ else:
 import contextlib
 
 from fleasion.cache.cache_manager import CacheManager
+from fleasion.lazy_imports import module_attribute
 from fleasion.utils import (
     LOCAL_APPDATA,
     MACOS_PROXY_BACKEND_PORT,
@@ -362,7 +363,7 @@ type _CacertInspection = _CacertState | _ErrorDetails
 def _lazy_attr(module_name: str, attribute: str) -> object:
     module = importlib.import_module(module_name)
     try:
-        return vars(module)[attribute]
+        return module_attribute(module, attribute)
     except KeyError as exc:
         msg = f'{module_name!r} does not export {attribute!r}'
         raise ImportError(msg) from exc
@@ -1288,7 +1289,7 @@ def _run_raw_tls_loopback_probe_sync(
     ) -> None:
         server_result['sni'] = server_name or '<none>'
 
-    # Python 3.14 typeshed currently models the third callback argument as an
+    # Typeshed currently models the third callback argument as an
     # SSLSocket even though CPython passes the initial SSLContext here.
     server_ctx.set_servername_callback(_capture_sni)  # pyright: ignore[reportArgumentType]
 
