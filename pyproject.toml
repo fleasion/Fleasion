@@ -54,6 +54,12 @@ dev = [
     "ruff>=0.17.5",
 ]
 
+[tool.uv.extra-build-variables]
+# lz4 has no Python 3.15 wheels, and its source build links any system liblz4
+# that pkg-config finds. That is an arm64-only Homebrew copy on macOS runners,
+# which breaks the universal build, so always compile the bundled sources
+lz4 = { PYLZ4_USE_SYSTEM_LZ4 = 'False' }
+
 [tool.pyright]
 typeCheckingMode = "strict"
 pythonVersion = "3.15"
