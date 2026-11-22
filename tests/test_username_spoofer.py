@@ -29,9 +29,11 @@ def _load_username_spoofer():
     previous_modules = {name: sys.modules.get(name) for name in stubbed_names}
 
     try:
+        # Fresh stubs only, since emptying __path__ on the real packages outlives the restore
         for package_name in ('fleasion', 'fleasion.proxy', 'fleasion.proxy.addons'):
-            package = sys.modules.setdefault(package_name, types.ModuleType(package_name))
+            package = types.ModuleType(package_name)
             package.__path__ = []
+            sys.modules[package_name] = package
 
         utils = types.ModuleType('fleasion.utils')
         utils.__path__ = [str(root / 'src' / 'fleasion' / 'utils')]
