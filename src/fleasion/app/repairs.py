@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from typing import TYPE_CHECKING
 
@@ -19,6 +18,8 @@ from fleasion.utils import (
     CONFIG_DIR,
     log_buffer,
 )
+lazy from fleasion.proxy import master as proxy_master
+lazy from fleasion.utils import autostart, linux_proxy_helper, windows_permissions
 
 if TYPE_CHECKING:
     from PySide6.QtWidgets import (
@@ -50,8 +51,6 @@ def cleanup_hosts_once() -> int:
         )
         return HOSTS_CLEANUP_NOT_ADMIN_EXIT
 
-    proxy_master = importlib.import_module('fleasion.proxy.master')
-
     error_details: ErrorDetails = {}
 
     def _perform_cleanup() -> int:
@@ -82,7 +81,6 @@ def run_privileged_hosts_cleanup(parent: QWidget | None = None) -> bool:
         return cleanup_hosts_once() == 0
 
     if sys.platform.startswith('linux'):
-        linux_proxy_helper = importlib.import_module('fleasion.utils.linux_proxy_helper')
         return linux_proxy_helper.cleanup_hosts_with_pkexec()
 
     completion: RelaunchCompletion = {}
@@ -127,10 +125,8 @@ def repair_autostart_once(requesting_user_sid: str | None = None, *, enabled: bo
         )
         return 1
 
-    autostart = importlib.import_module('fleasion.utils.autostart')
     windows_user_id = None
     if enabled:
-        windows_permissions = importlib.import_module('fleasion.utils.windows_permissions')
         if not requesting_user_sid:
             log_buffer.log('Autostart', 'Elevated autostart repair has no requesting user identity')
             return 1

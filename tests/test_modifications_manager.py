@@ -784,7 +784,7 @@ def test_windows_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scannin
     fake_winreg.EnumKey = enum_key
     fake_winreg.QueryValueEx = query_value_ex
 
-    monkeypatch.setitem(sys.modules, 'winreg', fake_winreg)
+    monkeypatch.setattr(modifications_manager, 'winreg', fake_winreg)
     monkeypatch.setattr(modifications_manager.sys, 'platform', 'win32')
 
     def isfile(value: str) -> bool:

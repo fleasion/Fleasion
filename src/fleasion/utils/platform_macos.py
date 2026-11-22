@@ -517,7 +517,7 @@ def _app_resources(app_path: Path) -> Path:
     return app_path / 'Contents' / 'Resources'
 
 
-def _resource_root_from_executable(exe_path: Path) -> Path | None:
+def resource_root_from_executable(exe_path: Path) -> Path | None:
     macos_dir = exe_path.parent
     resources = macos_dir.parent / 'Resources'
     if macos_dir.name == 'MacOS' and resources.is_dir():
@@ -1342,7 +1342,7 @@ def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
         get_roblox_studio_exe_path() if include_studio else None,
     ):
         if exe_path is not None:
-            _add(_resource_root_from_executable(exe_path))
+            _add(resource_root_from_executable(exe_path))
 
     return found
 

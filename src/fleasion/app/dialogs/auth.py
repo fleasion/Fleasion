@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import importlib
 import sys
 import webbrowser
 from pathlib import PureWindowsPath
@@ -40,6 +39,8 @@ from fleasion.utils import (
     log_buffer,
     run_in_thread,
 )
+lazy from fleasion.gui.rando_stuff_tab import AddAccountDialog
+lazy from fleasion.utils import roblox_auth
 
 if TYPE_CHECKING:
     from fleasion.app.tray import SystemTray
@@ -58,7 +59,6 @@ def choose_macos_auth_source_on_launch(
     if config_manager.macos_auth_source and not force:
 
         def _configured_auth_source_is_valid() -> bool:
-            roblox_auth = importlib.import_module('fleasion.utils.roblox_auth')
             if roblox_auth.get_roblosecurity(include_keychain_browsers=True):
                 return True
             log_buffer.log(
@@ -171,7 +171,6 @@ def choose_macos_auth_source_on_launch(
         _set_busy(browser)
 
         def _discover_browser_auth() -> tuple[str | None, str | None]:
-            roblox_auth = importlib.import_module('fleasion.utils.roblox_auth')
             cookie, source = roblox_auth.discover_browser_roblosecurity(
                 include_keychain=True,
                 explicit_import=True,
@@ -225,11 +224,7 @@ def choose_macos_auth_source_on_launch(
     buttons.extend((manual_btn, skip_btn))
 
     def _manual_import() -> None:
-        lazy_module = importlib.import_module('fleasion.gui.rando_stuff_tab')
-        add_account_dialog_cls = lazy_module.AddAccountDialog
-        roblox_auth = importlib.import_module('fleasion.utils.roblox_auth')
-
-        dlg = add_account_dialog_cls(dialog, title=tr('app.auth_source.import_title'))
+        dlg = AddAccountDialog(dialog, title=tr('app.auth_source.import_title'))
         dlg.set_ok_label(tr('app.auth_source.import_button'))
         if icon_path := get_icon_path():
             dlg.setWindowIcon(QIcon(str(icon_path)))
@@ -267,7 +262,6 @@ def choose_macos_auth_source_on_launch(
     dialog.exec()
     if selected_browser := selected.get('browser'):
         config_manager.macos_auth_source = selected_browser
-        roblox_auth = importlib.import_module('fleasion.utils.roblox_auth')
         roblox_auth.notify_auth_source_changed()
         if tray is not None:
             tray.refresh_settings_tab()
@@ -487,7 +481,6 @@ def schedule_startup_auth_check(
     auth_check_invoker = AuthCheckInvoker(parent)
 
     def _retry_macos_auth(details: dict[str, object]) -> tuple[dict[str, object], bool]:
-        roblox_auth = importlib.import_module('fleasion.utils.roblox_auth')
         if not config_manager.macos_auth_source:
             return details, False
 
@@ -532,7 +525,6 @@ def schedule_startup_auth_check(
         auth_prompt_shown = True
 
         def _load_skip_details() -> ErrorDetails:
-            roblox_auth = importlib.import_module('fleasion.utils.roblox_auth')
             roblox_auth.get_roblosecurity(include_keychain_browsers=False)
             return roblox_auth.get_auth_failure_details()
 
@@ -550,7 +542,6 @@ def schedule_startup_auth_check(
 
     def _check_auth_cookie_once() -> None:
         def _load_auth_cookie() -> tuple[object, ErrorDetails]:
-            roblox_auth = importlib.import_module('fleasion.utils.roblox_auth')
             if sys.platform == 'darwin':
                 log_buffer.log('Auth', 'Running startup Roblox login discovery')
             cookie = roblox_auth.get_roblosecurity(

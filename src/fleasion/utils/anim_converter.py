@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import importlib
 import io
 import math
 import struct
@@ -17,6 +16,9 @@ import uuid
 from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from defusedxml import ElementTree
+
+lazy from fleasion.cache import animation_viewer
+lazy from fleasion.cache.tools.solidmodel_converter.rbxm import deserializer, xml_writer
 
 if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
@@ -148,7 +150,6 @@ class _AnimationProbeError(RuntimeError):
 
 def _animation_pose_names(data: bytes) -> set[str] | None:
     try:
-        animation_viewer = importlib.import_module('fleasion.cache.animation_viewer')
         keyframes = animation_viewer.load_animation_data(data)
     except Exception as exc:
         raise _AnimationProbeError from exc
@@ -205,12 +206,6 @@ def detect_player_rig(data: bytes) -> str:
 
 def rbxm_to_rbxmx(data: bytes) -> bytes:
     """Convert binary .rbxm bytes to .rbxmx XML bytes."""
-    deserializer = importlib.import_module(
-        'fleasion.cache.tools.solidmodel_converter.rbxm.deserializer'
-    )
-    xml_writer = importlib.import_module(
-        'fleasion.cache.tools.solidmodel_converter.rbxm.xml_writer'
-    )
     return xml_writer.write_rbxmx(deserializer.RbxmDeserializer().deserialize(data))
 
 

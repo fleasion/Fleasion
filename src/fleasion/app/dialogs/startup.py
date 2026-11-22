@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from typing import TYPE_CHECKING
 
@@ -35,6 +34,7 @@ from fleasion.utils import (
     get_icon_path,
     log_buffer,
 )
+lazy from fleasion.utils import autostart, desktop_integration
 
 if TYPE_CHECKING:
     from fleasion.app.tray import SystemTray
@@ -115,7 +115,6 @@ def show_run_on_boot_failure(
     )
     msg.setIcon(QMessageBox.Icon.Warning)
     if sys.platform == 'win32':
-        autostart = importlib.import_module('fleasion.utils.autostart')
         if enabled:
             msg.setText(
                 tr(
@@ -298,7 +297,6 @@ def prompt_first_time_startup_options(
     enable_run_on_boot = run_on_boot_chk.isChecked()
     enable_desktop_integration = desktop_integration_chk.isChecked()
     try:
-        desktop_integration = importlib.import_module('fleasion.utils.desktop_integration')
         desktop_ok = desktop_integration.sync_desktop_integration(
             enabled=enable_desktop_integration
         )
@@ -307,7 +305,6 @@ def prompt_first_time_startup_options(
         log_buffer.log('DesktopIntegration', f'First-time desktop integration prompt failed: {exc}')
 
     try:
-        autostart = importlib.import_module('fleasion.utils.autostart')
         boot_ok = autostart.sync_autostart(
             enabled=enable_run_on_boot,
             config_dir=CONFIG_DIR,

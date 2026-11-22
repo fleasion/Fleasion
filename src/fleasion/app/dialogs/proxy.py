@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import importlib
 import ipaddress
 import sys
 from pathlib import Path
@@ -41,6 +40,7 @@ from fleasion.utils import (
     log_buffer,
     open_folder,
 )
+lazy from fleasion.utils import macos_proxy_helper
 
 if TYPE_CHECKING:
     from fleasion.app.tray import SystemTray
@@ -285,8 +285,7 @@ def windows_ca_permission_denied_dirs(details: ErrorDetails) -> list[Path]:
 
 def show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
     """Explain a failed privileged relay and return the requested recovery action."""
-    lazy_module = importlib.import_module('fleasion.utils.macos_proxy_helper')
-    helper_log_dir = lazy_module.HELPER_LOG_DIR
+    helper_log_dir = macos_proxy_helper.HELPER_LOG_DIR
 
     top = QApplication.topLevelWidgets()
     parent = next((w for w in top if w.isVisible()), None)
@@ -388,8 +387,6 @@ class ProxyErrorInvoker(QObject):
             show_linux_hosts_read_only_dialog(details)
         elif code == 'macos_ca_patch_failed':
             if show_macos_ca_patch_failed_dialog(details) == 'install_helper':
-                macos_proxy_helper = importlib.import_module('fleasion.utils.macos_proxy_helper')
-
                 ok, detail = macos_proxy_helper.install_helper()
                 if ok:
                     log_buffer.log(
@@ -422,8 +419,6 @@ class ProxyErrorInvoker(QObject):
             if action == 'retry':
                 self.retry_proxy.emit()
             elif action == 'reinstall':
-                macos_proxy_helper = importlib.import_module('fleasion.utils.macos_proxy_helper')
-
                 ok, detail = macos_proxy_helper.install_helper()
                 if ok:
                     log_buffer.log(

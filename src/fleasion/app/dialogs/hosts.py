@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import importlib
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,6 +29,7 @@ from fleasion.utils import (
     log_buffer,
     open_folder,
 )
+lazy from fleasion.proxy import master as proxy_master
 
 if TYPE_CHECKING:
     from fleasion.app.compatibility import VoidCallback
@@ -95,7 +95,6 @@ def show_oversized_hosts_file_dialog(
             msg.hide()
 
         if repaired:
-            proxy_master = importlib.import_module('fleasion.proxy.master')
             repaired_size = proxy_master.hosts_file_size()
             if (
                 repaired_size is not None
@@ -156,8 +155,6 @@ def show_hosts_capacity_dialog(details: ErrorDetails) -> None:
 
 def show_env_proxy_stale_hosts_dialog() -> bool:
     """Offer a one-shot privileged repair for oversized or stale Env Proxy hosts entries."""
-    proxy_master = importlib.import_module('fleasion.proxy.master')
-
     if proxy_master.other_proxy_owner_alive():
         log_buffer.log(
             'Hosts',

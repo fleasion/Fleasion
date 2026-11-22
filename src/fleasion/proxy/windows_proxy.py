@@ -2,30 +2,16 @@
 
 from __future__ import annotations
 
-import importlib
 import platform
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import cast
 from urllib.parse import urlparse
+lazy import winreg  # pyright: ignore[reportMissingModuleSource]
 
 from .upstream import HttpProxyConfig
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from contextlib import AbstractContextManager
-
-
-class _WinregModule(Protocol):
-    HKEY_CURRENT_USER: object
-    OpenKey: Callable[[object, str], object]
-    QueryValueEx: Callable[[object, str], tuple[object, int]]
-
-
-def _winreg_module() -> _WinregModule:
-    return cast('_WinregModule', importlib.import_module('winreg'))
 
 
 def _run_text_command(
@@ -57,9 +43,7 @@ class WindowsProxyInfo:
 
 
 def _read_wininet_registry() -> tuple[bool, str | None, str | None]:
-    winreg = _winreg_module()
-
-    def query(key: object, name: str) -> object | None:
+    def query(key: winreg.HKEYType, name: str) -> object | None:
         try:
             value, _ = winreg.QueryValueEx(key, name)
         except OSError:
@@ -67,12 +51,9 @@ def _read_wininet_registry() -> tuple[bool, str | None, str | None]:
         return value
 
     try:
-        with cast(
-            'AbstractContextManager[object]',
-            winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r'Software\Microsoft\Windows\CurrentVersion\Internet Settings',
-            ),
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r'Software\Microsoft\Windows\CurrentVersion\Internet Settings',
         ) as key:
             proxy_enable = cast('int | str', query(key, 'ProxyEnable') or 0)
             enabled = bool(int(proxy_enable))

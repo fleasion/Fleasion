@@ -348,10 +348,11 @@ if sys.platform == 'win32':
     binaries.append(('src/fleasion/cache/tools/ktx_to_png/ktx.dll', '.'))
 hiddenimports: list[str] = _runtime_fleasion_modules()
 
-# Ruff's import-outside-top-level cleanup converted many feature imports to
-# importlib.import_module(). PyInstaller cannot reliably infer all of those
-# lazy edges, so include every Fleasion runtime module explicitly. Build
-# orchestration and privileged-helper entry points are excluded above.
+# PyInstaller follows PEP 810 `lazy import` statements like eager ones, but a
+# few modules are still imported by a name built at runtime (translation
+# tables, the platform backend in fleasion.utils.windows). Include every
+# Fleasion runtime module so those stay bundled. Build orchestration and
+# privileged-helper entry points are excluded above.
 
 # NumPy is imported from feature modules that are not all reached during the
 # launcher import walk. Its hidden import invokes PyInstaller's NumPy hook,

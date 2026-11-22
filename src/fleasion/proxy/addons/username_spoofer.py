@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import threading
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict
 
 lazy import requests
 
 from fleasion.utils import log_buffer
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object
+lazy from fleasion.utils import roblox_auth
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from fleasion.proxy.server import ProxyFlow
 
 PROFILE_ENDPOINT_FRAGMENT = '/v1/user/profiles/get-profiles'
@@ -33,16 +31,10 @@ NAME_KEYS = (
     'platformName',
     'alias',
 )
-_ROBLOSECURITY_GETTER_ATTR = 'get_roblosecurity'
 
 
 def _get_roblosecurity() -> str | None:
-    module = importlib.import_module('fleasion.utils.roblox_auth')
-    getter = cast(
-        'Callable[[], str | None]',
-        getattr(module, _ROBLOSECURITY_GETTER_ATTR),
-    )
-    return getter()
+    return roblox_auth.get_roblosecurity()
 
 
 def _authenticated_user_id(cookie: str) -> int | None:

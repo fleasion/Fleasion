@@ -6,10 +6,9 @@ import base64
 import binascii
 import gzip
 import html
-import importlib
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast, override
+from typing import TYPE_CHECKING, Any, override
 
 from defusedxml import ElementTree as DefusedElementTree
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
@@ -53,30 +52,16 @@ from .tools.solidmodel_converter.rbxm.types import (
     RbxRawChunk,
     RbxRawPropertyChunk,
 )
+lazy from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
+lazy from .tools.solidmodel_converter.rbxm.serializer import write_rbxm
+lazy from .tools.solidmodel_converter.rbxm.xml_writer import write_rbxmx
 
 if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
     from collections.abc import Callable
 
-    from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
-
 
 type NumberCaster = type[int | float]
-
-
-def _rbxm_deserializer_type() -> type[RbxmDeserializer]:
-    module = importlib.import_module('fleasion.cache.tools.solidmodel_converter.rbxm.deserializer')
-    return cast('type[RbxmDeserializer]', vars(module)['RbxmDeserializer'])
-
-
-def _rbxm_writer() -> Callable[[RbxDocument], bytes]:
-    module = importlib.import_module('fleasion.cache.tools.solidmodel_converter.rbxm.serializer')
-    return cast('Callable[[RbxDocument], bytes]', vars(module)['write_rbxm'])
-
-
-def _rbxmx_writer() -> Callable[[RbxDocument], bytes]:
-    module = importlib.import_module('fleasion.cache.tools.solidmodel_converter.rbxm.xml_writer')
-    return cast('Callable[[RbxDocument], bytes]', vars(module)['write_rbxmx'])
 
 
 def _tree_item(value: QTreeWidgetItem | None) -> QTreeWidgetItem:
@@ -417,7 +402,7 @@ class RbxmPreviewWidget(QWidget):
         return super().eventFilter(source, event)
 
     def _load_binary(self, data: bytes) -> PreviewDocument:
-        raw_doc = _rbxm_deserializer_type()().deserialize(data)
+        raw_doc = RbxmDeserializer().deserialize(data)
         instances: dict[str, PreviewInstance] = {}
 
         def convert(inst: RbxInstance) -> PreviewInstance:
@@ -972,11 +957,11 @@ class RbxmPreviewWidget(QWidget):
 
     def export_rbxm_bytes(self, document: PreviewDocument | None = None) -> bytes:
         """Serialize the current edited preview as binary RBXM bytes."""
-        return _rbxm_writer()(self._to_rbx_document(document))
+        return write_rbxm(self._to_rbx_document(document))
 
     def export_rbxmx_bytes(self, document: PreviewDocument | None = None) -> bytes:
         """Serialize the current edited preview as RBXMX XML bytes."""
-        return _rbxmx_writer()(self._to_rbx_document(document))
+        return write_rbxmx(self._to_rbx_document(document))
 
     def _to_rbx_document(self, document: PreviewDocument | None = None) -> RbxDocument:
         source_doc = document or self.document

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import atexit
-import importlib
 import sys
 from typing import TYPE_CHECKING, cast, override
 
@@ -22,6 +21,7 @@ from fleasion.utils import (
     terminate_roblox,
     wait_for_roblox_exit,
 )
+lazy from fleasion.utils import platform_windows
 
 if TYPE_CHECKING:
     import threading
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
     from fleasion.app.tray import SystemTray
     from fleasion.config import ConfigManager
-    from fleasion.proxy import ProxyMaster
+    from fleasion.proxy.master import ProxyMaster
 
 
 class RobloxUrlEventFilter(QObject):
@@ -139,7 +139,6 @@ def arm_windows_gdk_env_proxy_when_ready(proxy_master: ProxyMaster, timeout: flo
         )
         return False
 
-    platform_windows = importlib.import_module('fleasion.utils.platform_windows')
     if not platform_windows.arm_roblox_gdk_env_proxy(proxy_master.roblox_env_proxy_url()):
         return False
     atexit.register(platform_windows.disarm_roblox_gdk_env_proxy)

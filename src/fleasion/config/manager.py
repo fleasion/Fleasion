@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import locale
 import os
@@ -31,6 +30,8 @@ from fleasion.utils import macos_rosemary_gate
 from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object, is_json_value
 from fleasion.utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
 from fleasion.utils.replacement_filters import FilteredRoute, ReplacementFilter
+lazy from fleasion.localization import normalize_language
+lazy from fleasion.utils import linux_clients
 
 from .values import bool_value, int_value, parse_int, str_value, string_list
 
@@ -95,7 +96,6 @@ def _normalise_linux_client(value: object) -> str:
     """Return ``auto`` or a key from the live Linux client registry."""
     normalized = str(value or 'auto').casefold()
     try:
-        linux_clients = importlib.import_module('fleasion.utils.linux_clients')
         supported = linux_clients.LINUX_CLIENTS_BY_KEY
     except ImportError, AttributeError:
         # Keep isolated config loading and recovery usable even when platform
@@ -1168,13 +1168,11 @@ class ConfigManager:
     @property
     def language(self) -> str:
         """Return a supported language code, falling back to English."""
-        normalize_language = importlib.import_module('fleasion.localization').normalize_language
         return normalize_language(str_value(self.settings.get('language', 'en'), 'en'))
 
     @language.setter
     def language(self, value: str) -> None:
         """Persist a supported language code, using English for invalid values."""
-        normalize_language = importlib.import_module('fleasion.localization').normalize_language
         self.settings['language'] = normalize_language(value)
         self._save_settings()
 

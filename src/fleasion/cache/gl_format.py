@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import importlib
 import math
 import sys
 from typing import cast
 
 from PySide6.QtGui import QSurfaceFormat
+
+# Keep PyOpenGL out of the normal dashboard startup path. Importing OpenGL.GL
+# can load the platform OpenGL runtime even when no 3D preview is ever opened
+lazy from OpenGL.GL import glFrustum
 
 
 def legacy_gl_format() -> QSurfaceFormat:
@@ -27,10 +30,6 @@ def legacy_gl_format() -> QSurfaceFormat:
 
 def set_perspective(fov_y_degrees: float, aspect: float, near: float, far: float) -> None:
     """Set a perspective projection without relying on GLU."""
-    # Keep PyOpenGL out of the normal dashboard startup path. Importing OpenGL.GL
-    # can load the platform OpenGL runtime even when no 3D preview is ever opened.
-    gl_frustum = importlib.import_module('OpenGL.GL').glFrustum
-
     if aspect <= 0.0:
         aspect = 1.0
     if near <= 0.0:
@@ -45,7 +44,7 @@ def set_perspective(fov_y_degrees: float, aspect: float, near: float, far: float
     bottom = -top
     right = top * aspect
     left = -right
-    gl_frustum(left, right, bottom, top, near, far)
+    glFrustum(left, right, bottom, top, near, far)
 
 
 def multisampled_readback_skip_reason() -> str | None:

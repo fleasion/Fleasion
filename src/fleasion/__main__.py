@@ -22,7 +22,7 @@ def main() -> None:
     try:
         # Load NumPy before PySide6 on Windows so its native DLLs initialize first
         if sys.platform == 'win32':
-            importlib.import_module('numpy')
+            importlib.import_module('numpy')  # ruff: ignore[banned-api] - Eager, before Qt
 
         from fleasion.app.core import run_application
     except (ImportError, OSError) as exc:

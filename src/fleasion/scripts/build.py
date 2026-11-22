@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+lazy from fleasion.scripts import macos_build
 
 from ._logger import setup_script_logging
 from ._pyinstaller import run_pyinstaller
@@ -61,7 +62,6 @@ def main(arguments: list[str] | None = None) -> int:
     # Build macOS
     # Slice subprocesses bypass orchestration and run PyInstaller exactly once
     if sys.platform == 'darwin' and os.environ.get(MACOS_SLICE_BUILD_ENV) != '1':
-        macos_build = importlib.import_module('.macos_build', __package__)
         macos_build.build_macos_release()
         return 0
     # Build Windows and Linux

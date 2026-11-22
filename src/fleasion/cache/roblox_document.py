@@ -57,7 +57,7 @@ def _rbxm_parse_errors() -> tuple[type[Exception], ...]:
         ('zstandard', 'ZstdError'),
     ):
         try:
-            module = importlib.import_module(module_name)
+            module = importlib.import_module(module_name)  # ruff: ignore[banned-api] - Optional dependency probe
         except ImportError:
             continue
         error_type = cast('type[Exception]', vars(module)[exception_name])

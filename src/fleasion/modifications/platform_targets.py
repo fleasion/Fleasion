@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 import ntpath
 import sys
 import zipfile
 from pathlib import Path
+
+lazy from fleasion.utils import linux_clients, paths, platform_linux
 
 SOBER_TARGET_PATHS: dict[str, str] = {
     r'PlatformContent\pc\textures\sky\sky512_bk.tex': 'android/textures/sky/sky512_bk.tex',
@@ -80,9 +81,6 @@ def _linux_resource_client_key(resource_dir: Path) -> str | None:
         return None
     root = Path(resource_dir)
     try:
-        linux_clients = importlib.import_module('fleasion.utils.linux_clients')
-        paths = importlib.import_module('fleasion.utils.paths')
-        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
         for descriptor in linux_clients.LINUX_CLIENTS:
             if descriptor.paths(home=paths.USER_HOME).owns_resource_path(root):
                 return descriptor.key
@@ -168,10 +166,9 @@ def _read_zip_member(archive_path: Path, member: str) -> bytes | None:
 
 def _sober_platform_paths() -> tuple[Path, Path] | None:
     try:
-        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
+        return platform_linux.SOBER_DATA_DIR, platform_linux.SOBER_LEGACY_EXE_DIR
     except ImportError, AttributeError:
         return None
-    return platform_linux.SOBER_DATA_DIR, platform_linux.SOBER_LEGACY_EXE_DIR
 
 
 def _read_sober_original_asset(target_path: str | Path) -> bytes | None:
@@ -250,7 +247,6 @@ def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, by
 
 def _selected_linux_client_key() -> str:
     try:
-        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
         return platform_linux.selected_linux_client_key()
     except ImportError, AttributeError, OSError, ValueError:
         return 'sober'

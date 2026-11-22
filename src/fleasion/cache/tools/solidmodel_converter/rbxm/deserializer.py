@@ -6,12 +6,12 @@ Reference: ROBLOX 2016 source App/v8xml/SerializerBinary.cpp
 
 from __future__ import annotations
 
-import importlib
 import logging
 import struct
 from typing import Any
 
 import lz4.block  # type: ignore[import-untyped]
+lazy import zstandard
 
 from .binary_reader import (
     decode_ids,
@@ -50,13 +50,11 @@ ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 def _decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
     if raw.startswith(ZSTD_MAGIC):
         try:
-            zstandard = importlib.import_module('zstandard')
+            decompressor = zstandard.ZstdDecompressor()
         except ImportError as exc:
             msg = 'RBXM contains a ZSTD-compressed chunk; install zstandard to read it'
             raise RuntimeError(msg) from exc
-        return zstandard.ZstdDecompressor().decompress(  # type: ignore[no-any-return]
-            raw, max_output_size=uncompressed_size
-        )
+        return decompressor.decompress(raw, max_output_size=uncompressed_size)
 
     return lz4.block.decompress(  # type: ignore[no-any-return]
         raw, uncompressed_size=uncompressed_size

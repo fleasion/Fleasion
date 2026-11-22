@@ -1880,7 +1880,7 @@ def test_macos_running_player_ca_repair_uses_direct_write_first(
         _callback1(lambda _path: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n'),
     )
     monkeypatch.setattr(
-        'fleasion.utils.platform_macos._resource_root_from_executable',
+        'fleasion.utils.platform_macos.resource_root_from_executable',
         _callback1(lambda _path: resources),
     )
     monkeypatch.setattr(platform_macos, 'find_bootstrapper_restore_resource_dirs', _callback0(list))
@@ -1942,7 +1942,7 @@ def test_macos_running_player_ca_repair_requests_full_strip_when_pre_read_fails(
         _callback1(lambda _path: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n'),
     )
     monkeypatch.setattr(
-        'fleasion.utils.platform_macos._resource_root_from_executable',
+        'fleasion.utils.platform_macos.resource_root_from_executable',
         _callback1(lambda _path: resources),
     )
     monkeypatch.setattr(proxy_master.Path, 'read_text', fake_read_text)
@@ -2007,7 +2007,7 @@ def test_proxy_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scanning(
     fake_winreg.EnumKey = enum_key
     fake_winreg.QueryValueEx = query_value_ex
 
-    monkeypatch.setitem(sys.modules, 'winreg', fake_winreg)
+    monkeypatch.setattr(proxy_master, 'winreg', fake_winreg)
     monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
     monkeypatch.setattr(proxy_master, 'IS_LINUX', False)
     monkeypatch.setattr(proxy_master, 'LOCAL_APPDATA', tmp_path)

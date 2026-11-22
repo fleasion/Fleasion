@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
-import importlib
 import io
 import json
 import logging
@@ -24,6 +23,10 @@ from pathlib import Path
 from threading import Lock, Thread
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast
 from urllib.parse import parse_qsl, urlparse, urlsplit
+lazy import xml.etree.ElementTree as ET  # ruff: ignore[suspicious-xml-etree-import] - Writer only
+
+lazy import zstandard
+lazy from defusedxml.ElementTree import fromstring as defused_fromstring
 
 from fleasion.config.manager import ANIMATION_TYPE_KEYS
 from fleasion.proxy.addons.profile_picture_spoofer import is_pfp_route, lookup_local_image
@@ -42,12 +45,22 @@ from fleasion.utils.json_types import (
     as_json_object,
 )
 from fleasion.utils.replacement_filters import ALWAYS, FilteredRoute, choose_route
+lazy from fleasion.cache.tools import orm_compositor, rgba_ktx2
+lazy from fleasion.cache.tools.image_to_ktx2 import converter as image_to_ktx2
+lazy from fleasion.cache.tools.solidmodel_converter import (
+    converter as solidmodel_converter,
+    csg_mesh,
+    mesh_intermediary,
+    obj_to_csg,
+)
+lazy from fleasion.cache.tools.solidmodel_converter.rbxm import serializer
+lazy from fleasion.cache.tools.solidmodel_converter.rbxm.types import PropertyFormat, RbxProperty
+lazy from fleasion.utils import anim_converter, r15_to_r6, rig_data
 
 if TYPE_CHECKING:
-    import xml.etree.ElementTree as ET
-    from collections.abc import Callable
+    from types import TracebackType
 
-    from fleasion.cache.tools.solidmodel_converter.rbxm.types import RbxDocument, RbxProperty
+    from fleasion.cache.tools.solidmodel_converter.rbxm.types import RbxDocument
     from fleasion.config.manager import ConfigManager
     from fleasion.config.types import ReplacementMaps
     from fleasion.utils.r15_to_r6 import JointMap, PartMap
@@ -148,20 +161,6 @@ class _HttpsStatusGetter(Protocol):
     ) -> tuple[bytes | None, int | None]: ...
 
 
-class _ZstdDecompressor(Protocol):
-    def decompress(self, data: bytes, *, max_output_size: int) -> bytes: ...
-
-
-class _ElementTreeWriter(Protocol):
-    def write(
-        self,
-        file: str | Path | io.BytesIO,
-        *,
-        encoding: str,
-        xml_declaration: bool,
-    ) -> object: ...
-
-
 _SCRAPER_HTTPS_GET_ATTR = '_https_get'
 _SCRAPER_PRIVATE_ROBLOSECURITY_ATTR = '_get_roblosecurity'
 _SCRAPER_PRIVATE_ASSET_RETRY_ATTR = '_fetch_asset_with_place_id_retry'
@@ -171,11 +170,28 @@ class _DynamicBoundaryError(RuntimeError):
     """Wrap failures from optional/dynamically loaded integration boundaries."""
 
 
-def _call_dynamic[T](callback: Callable[..., T], /, *args: object, **kwargs: object) -> T:
-    try:
-        return callback(*args, **kwargs)
-    except Exception as exc:
-        raise _DynamicBoundaryError(str(exc)) from exc
+class _DynamicBoundary:
+    """Re-raise any failure inside the block as `_DynamicBoundaryError`.
+
+    Converters, lazily imported tools and the scraper are best effort, so
+    callers catch one error type for whatever they raise. That includes a
+    lazy import that fails to resolve on first use.
+    """
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if isinstance(exc, Exception):
+            raise _DynamicBoundaryError(str(exc)) from exc
+
+
+_dynamic_boundary = _DynamicBoundary()
 
 
 _BEST_EFFORT_ERRORS = (
@@ -193,14 +209,14 @@ _BEST_EFFORT_ERRORS = (
 def _scraper_get_roblosecurity(scraper: _CacheScraperLike, *, wait: bool = False) -> str | None:
     getter = getattr(scraper, 'get_roblosecurity', None)
     if getter is not None:
-        return _call_dynamic(cast('_RoblosecurityGetter', getter), wait=wait)
+        with _dynamic_boundary:
+            return cast('_RoblosecurityGetter', getter)(wait=wait)
 
     legacy_getter = cast(
         '_RoblosecurityGetter', getattr(scraper, _SCRAPER_PRIVATE_ROBLOSECURITY_ATTR)
     )
-    if wait:
-        return _call_dynamic(legacy_getter, wait=True)
-    return _call_dynamic(legacy_getter)
+    with _dynamic_boundary:
+        return legacy_getter(wait=True) if wait else legacy_getter()
 
 
 def _scraper_https_get(
@@ -210,7 +226,8 @@ def _scraper_https_get(
     extra_headers: dict[str, str] | None = None,
 ) -> bytes | None:
     getter = cast('_HttpsBodyGetter', getattr(scraper, _SCRAPER_HTTPS_GET_ATTR))
-    return _call_dynamic(getter, hostname, path, extra_headers=extra_headers)
+    with _dynamic_boundary:
+        return getter(hostname, path, extra_headers=extra_headers)
 
 
 def _scraper_https_get_status(
@@ -220,13 +237,8 @@ def _scraper_https_get_status(
     extra_headers: dict[str, str] | None = None,
 ) -> tuple[bytes | None, int | None]:
     getter = cast('_HttpsStatusGetter', getattr(scraper, _SCRAPER_HTTPS_GET_ATTR))
-    return _call_dynamic(
-        getter,
-        hostname,
-        path,
-        extra_headers=extra_headers,
-        return_status=True,
-    )
+    with _dynamic_boundary:
+        return getter(hostname, path, extra_headers=extra_headers, return_status=True)
 
 
 def _scraper_fetch_asset_with_place_id_retry(
@@ -238,172 +250,93 @@ def _scraper_fetch_asset_with_place_id_retry(
     getter = getattr(scraper, 'fetch_asset_with_place_id_retry', None)
     if getter is None:
         getter = getattr(scraper, _SCRAPER_PRIVATE_ASSET_RETRY_ATTR)
-    return _call_dynamic(
-        cast('_AssetRetryGetter', getter),
-        asset_id,
-        extra_headers=extra_headers,
-    )
-
-
-def _lazy_attr(module_name: str, attr_name: str) -> object:
-    try:
-        return vars(importlib.import_module(module_name))[attr_name]
-    except (ImportError, KeyError) as exc:
-        raise _DynamicBoundaryError(str(exc)) from exc
+    with _dynamic_boundary:
+        return cast('_AssetRetryGetter', getter)(asset_id, extra_headers=extra_headers)
 
 
 def _zstd_decompress(data: bytes) -> bytes:
-    factory = cast(
-        'Callable[[], _ZstdDecompressor]',
-        _lazy_attr('zstandard', 'ZstdDecompressor'),
-    )
-    decompressor = _call_dynamic(factory)
-    return _call_dynamic(decompressor.decompress, data, max_output_size=64 * 1024 * 1024)
+    with _dynamic_boundary:
+        return zstandard.ZstdDecompressor().decompress(data, max_output_size=64 * 1024 * 1024)
 
 
 def _deserialize_rbxm(data: bytes) -> RbxDocument:
-    callback = cast(
-        'Callable[[bytes], RbxDocument]',
-        _lazy_attr('fleasion.cache.tools.solidmodel_converter.converter', 'deserialize_rbxm'),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return solidmodel_converter.deserialize_rbxm(data)
 
 
 def _detect_csgmdl_version(data: bytes) -> int | None:
-    callback = cast(
-        'Callable[[bytes], int | None]',
-        _lazy_attr(
-            'fleasion.cache.tools.solidmodel_converter.csg_mesh',
-            '_detect_csgmdl_version',
-        ),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return csg_mesh.detect_csgmdl_version(data)
 
 
 def _export_csg_mesh(obj_path: Path, *, version: int) -> bytes:
-    callback = cast(
-        'Callable[..., bytes]',
-        _lazy_attr('fleasion.cache.tools.solidmodel_converter.obj_to_csg', 'export_csg_mesh'),
-    )
-    return _call_dynamic(callback, obj_path, version=version)
+    with _dynamic_boundary:
+        return obj_to_csg.export_csg_mesh(obj_path, version=version)
 
 
 def _write_rbxm(doc: RbxDocument) -> bytes:
-    callback = cast(
-        'Callable[[RbxDocument], bytes]',
-        _lazy_attr('fleasion.cache.tools.solidmodel_converter.rbxm.serializer', 'write_rbxm'),
-    )
-    return _call_dynamic(callback, doc)
+    with _dynamic_boundary:
+        return serializer.write_rbxm(doc)
 
 
 def _make_rbx_property(name: str, fmt_name: str, value: object) -> RbxProperty:
-    module_name = 'fleasion.cache.tools.solidmodel_converter.rbxm.types'
-    factory = cast('Callable[..., RbxProperty]', _lazy_attr(module_name, 'RbxProperty'))
-    property_format = _lazy_attr(module_name, 'PropertyFormat')
-    fmt = getattr(property_format, fmt_name)
-    return _call_dynamic(factory, name=name, fmt=fmt, value=value)
+    with _dynamic_boundary:
+        return RbxProperty(name=name, fmt=PropertyFormat[fmt_name], value=value)
 
 
 def _mesh_file_to_cached_obj(path: Path) -> Path:
-    callback = cast(
-        'Callable[[Path], Path]',
-        _lazy_attr(
-            'fleasion.cache.tools.solidmodel_converter.mesh_intermediary',
-            'mesh_file_to_cached_obj',
-        ),
-    )
-    return _call_dynamic(callback, path)
+    with _dynamic_boundary:
+        return mesh_intermediary.mesh_file_to_cached_obj(path)
 
 
 def _bin_file_to_cached_obj(path: Path) -> Path:
-    callback = cast(
-        'Callable[[Path], Path]',
-        _lazy_attr(
-            'fleasion.cache.tools.solidmodel_converter.mesh_intermediary',
-            'bin_file_to_cached_obj',
-        ),
-    )
-    return _call_dynamic(callback, path)
+    with _dynamic_boundary:
+        return mesh_intermediary.bin_file_to_cached_obj(path)
 
 
 def _rbxmx_file_to_cached_obj(path: Path) -> Path:
-    callback = cast(
-        'Callable[[Path], Path]',
-        _lazy_attr(
-            'fleasion.cache.tools.solidmodel_converter.mesh_intermediary',
-            'rbxmx_file_to_cached_obj',
-        ),
-    )
-    return _call_dynamic(callback, path)
+    with _dynamic_boundary:
+        return mesh_intermediary.rbxmx_file_to_cached_obj(path)
 
 
 def _is_binary_rbxm(data: bytes) -> bool:
-    callback = cast(
-        'Callable[[bytes], bool]',
-        _lazy_attr(
-            'fleasion.cache.tools.solidmodel_converter.mesh_intermediary',
-            'is_binary_rbxm',
-        ),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return mesh_intermediary.is_binary_rbxm(data)
 
 
 def _detect_rig(data: bytes) -> str:
-    callback = cast(
-        'Callable[[bytes], str]',
-        _lazy_attr('fleasion.utils.anim_converter', 'detect_rig'),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return anim_converter.detect_rig(data)
 
 
 def _rbxm_to_rbxmx(data: bytes) -> bytes:
-    callback = cast(
-        'Callable[[bytes], bytes]',
-        _lazy_attr('fleasion.utils.anim_converter', 'rbxm_to_rbxmx'),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return anim_converter.rbxm_to_rbxmx(data)
 
 
 def _curve_anim_to_keyframe_xml(data: bytes) -> bytes:
-    callback = cast(
-        'Callable[[bytes], bytes]',
-        _lazy_attr('fleasion.utils.r15_to_r6', 'curve_anim_to_keyframe_xml'),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return r15_to_r6.curve_anim_to_keyframe_xml(data)
 
 
 def _sanitize_xml(data: bytes) -> str:
-    callback = cast(
-        'Callable[[bytes], str]',
-        _lazy_attr('fleasion.utils.r15_to_r6', 'sanitize_xml'),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return r15_to_r6.sanitize_xml(data)
 
 
 def _defused_xml_fromstring(data: bytes | str) -> ET.Element:
-    callback = cast(
-        'Callable[[bytes | str], ET.Element]',
-        _lazy_attr('defusedxml.ElementTree', 'fromstring'),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return defused_fromstring(data)
 
 
-def _element_tree(root: ET.Element) -> _ElementTreeWriter:
-    factory = cast(
-        'Callable[[ET.Element], _ElementTreeWriter]',
-        _lazy_attr('xml.etree.ElementTree', 'ElementTree'),
-    )
-    return _call_dynamic(factory, root)
+def _element_tree(root: ET.Element) -> ET.ElementTree[ET.Element]:
+    with _dynamic_boundary:
+        return ET.ElementTree(root)
 
 
 def _rig_maps() -> tuple[PartMap, JointMap, PartMap, JointMap]:
-    module_name = 'fleasion.utils.rig_data'
-    return (
-        cast('PartMap', _lazy_attr(module_name, 'R6_PARTS')),
-        cast('JointMap', _lazy_attr(module_name, 'R6_JOINTS')),
-        cast('PartMap', _lazy_attr(module_name, 'R15_PARTS')),
-        cast('JointMap', _lazy_attr(module_name, 'R15_JOINTS')),
-    )
+    with _dynamic_boundary:
+        return rig_data.R6_PARTS, rig_data.R6_JOINTS, rig_data.R15_PARTS, rig_data.R15_JOINTS
 
 
 def _convert_keyframe(
@@ -415,20 +348,18 @@ def _convert_keyframe(
     r15_parts: PartMap,
     r15_joints: JointMap,
 ) -> None:
-    attr_name = 'convert_keyframe_r15_to_r6' if target_rig == 'R6' else 'convert_keyframe_r6_to_r15'
-    callback = cast(
-        'Callable[[ET.Element, PartMap, JointMap, PartMap, JointMap], None]',
-        _lazy_attr('fleasion.utils.r15_to_r6', attr_name),
-    )
-    _call_dynamic(callback, keyframe, r6_parts, r6_joints, r15_parts, r15_joints)
+    with _dynamic_boundary:
+        convert = (
+            r15_to_r6.convert_keyframe_r15_to_r6
+            if target_rig == 'R6'
+            else r15_to_r6.convert_keyframe_r6_to_r15
+        )
+        convert(keyframe, r6_parts, r6_joints, r15_parts, r15_joints)
 
 
 def _keyframe_to_curve_anim(data: bytes) -> bytes:
-    callback = cast(
-        'Callable[[bytes], bytes]',
-        _lazy_attr('fleasion.utils.r15_to_r6', 'keyframe_to_curve_anim'),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return r15_to_r6.keyframe_to_curve_anim(data)
 
 
 def _write_rig_converted_animation(data: bytes, out_path: Path, target_rig: str) -> None:
@@ -498,29 +429,18 @@ def _get_or_create_ktx2_from_image(
     *,
     mipmap_mode: _MipmapMode = 'color',
 ) -> Path:
-    callback = cast(
-        'Callable[..., Path]',
-        _lazy_attr(
-            'fleasion.cache.tools.image_to_ktx2.converter',
-            'get_or_create_ktx2_from_image',
-        ),
-    )
-    return _call_dynamic(callback, path, mipmap_mode=mipmap_mode)
+    with _dynamic_boundary:
+        return image_to_ktx2.get_or_create_ktx2_from_image(path, mipmap_mode=mipmap_mode)
 
 
 def _rgba8_ktx2_cache_version() -> bytes:
-    return cast(
-        'bytes',
-        _lazy_attr('fleasion.cache.tools.rgba_ktx2', 'RGBA8_KTX2_CACHE_VERSION'),
-    )
+    with _dynamic_boundary:
+        return rgba_ktx2.RGBA8_KTX2_CACHE_VERSION
 
 
 def _read_rgba8_ktx2_levels(data: bytes) -> tuple[list[bytes], int, int] | None:
-    callback = cast(
-        'Callable[[bytes], tuple[list[bytes], int, int] | None]',
-        _lazy_attr('fleasion.cache.tools.rgba_ktx2', 'read_rgba8_ktx2_levels'),
-    )
-    return _call_dynamic(callback, data)
+    with _dynamic_boundary:
+        return rgba_ktx2.read_rgba8_ktx2_levels(data)
 
 
 def _write_rgba8_ktx2(
@@ -531,11 +451,8 @@ def _write_rgba8_ktx2(
     *,
     mipmap_mode: _MipmapMode,
 ) -> None:
-    callback = cast(
-        'Callable[..., None]',
-        _lazy_attr('fleasion.cache.tools.rgba_ktx2', 'write_rgba8_ktx2'),
-    )
-    _call_dynamic(callback, rgba, width, height, out_path, mipmap_mode=mipmap_mode)
+    with _dynamic_boundary:
+        rgba_ktx2.write_rgba8_ktx2(rgba, width, height, out_path, mipmap_mode=mipmap_mode)
 
 
 def _normalized_rgba8_ktx2_path(path: Path, *, mipmap_mode: _MipmapMode) -> Path:
@@ -571,18 +488,14 @@ def _composite_orm(
     normal_source: Path | None,
     normal_baseline: Path | None,
 ) -> str | None:
-    callback = cast(
-        'Callable[..., str | None]',
-        _lazy_attr('fleasion.cache.tools.orm_compositor', 'composite_orm'),
-    )
-    return _call_dynamic(
-        callback,
-        baseline,
-        channels,
-        cache_dir,
-        normal_source=normal_source,
-        normal_baseline=normal_baseline,
-    )
+    with _dynamic_boundary:
+        return orm_compositor.composite_orm(
+            baseline,
+            channels,
+            cache_dir,
+            normal_source=normal_source,
+            normal_baseline=normal_baseline,
+        )
 
 
 def _mipmap_mode(map_index: int | None) -> _MipmapMode:

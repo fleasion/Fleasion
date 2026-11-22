@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
-import importlib
 import json
 import os
 import shlex
@@ -23,6 +22,7 @@ from fleasion.utils import (
     CONFIG_DIR,
     log_buffer,
 )
+lazy from fleasion.utils import windows_permissions
 
 if TYPE_CHECKING:
     from fleasion.app.compatibility import RelaunchCompletion
@@ -53,7 +53,6 @@ def append_windows_requesting_user_args(existing_args: list[str]) -> bool:
     if any(arg.startswith('--fleasion-requesting-user-sid=') for arg in existing_args):
         return True
     try:
-        windows_permissions = importlib.import_module('fleasion.utils.windows_permissions')
         sid, _account_name = windows_permissions.current_windows_user_identity()
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         log_buffer.log('UAC', f'Could not capture requesting Windows identity: {exc}')

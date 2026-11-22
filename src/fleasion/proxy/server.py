@@ -27,7 +27,6 @@ import asyncio
 import contextlib
 import gzip
 import hashlib
-import importlib
 import json
 import logging
 import os
@@ -47,9 +46,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
+lazy import zstandard
+
 from fleasion.utils import macos_rosemary_gate
 from fleasion.utils.json_types import JsonValue
 from fleasion.utils.sober_bootstrap_keys import native_keylog_path
+lazy from fleasion import utils
+lazy from fleasion.cache.tools.solidmodel_converter import obj_to_mesh
+lazy from fleasion.utils import anim_converter, certs
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -162,21 +166,16 @@ _DETECT_REPL_RIG_ATTR = '_detect_repl_rig'
 _GET_CONVERTED_CURVE_ATTR = '_get_or_create_converted_curve'
 _GET_CONVERTED_ATTR = '_get_or_create_converted'
 _GET_MODIFIED_FIRST_LINE_ATTR = '_get_modified_first_line'
-_LOG_BUFFER_ATTR = 'log_buffer'
-_OBJ_CONVERTER_ATTR = 'get_or_create_mesh_from_obj'
-_GENERATE_HOST_CERT_ATTR = 'generate_host_cert'
 _PENDING_INTERCEPT_SLOTS = ('entry_id', 'stage', 'data', 'event', 'action')
 
 
 def _get_log_buffer() -> LogBuffer:
-    utils = importlib.import_module('fleasion.utils')
-    return cast('LogBuffer', getattr(utils, _LOG_BUFFER_ATTR))
+    return utils.log_buffer
 
 
 def _roblox_player_running_for_disconnect() -> bool:
     """Check the real Player process only after a connection-level failure."""
-    utils = importlib.import_module('fleasion.utils')
-    return bool(utils.is_roblox_running())
+    return utils.is_roblox_running()
 
 
 async def _was_splice_disconnected_by_player_exit(exc: BaseException) -> bool:
@@ -214,72 +213,18 @@ def _run_isolated(
         on_error(exc)
 
 
-class _ZstdDictionary(Protocol):
-    pass
-
-
-class _ZstdDecompressor(Protocol):
-    def decompress(self, data: bytes, *, max_output_size: int = 0) -> bytes: ...
-
-
-class _ZstdCompressor(Protocol):
-    def compress(self, data: bytes) -> bytes: ...
-
-
-class _ZstdDictionaryFactory(Protocol):
-    def __call__(self, data: bytes, *, dict_type: int) -> _ZstdDictionary: ...
-
-
-class _ZstdDecompressorFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        dict_data: _ZstdDictionary | None = None,
-    ) -> _ZstdDecompressor: ...
-
-
-class _ZstdCompressorFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        dict_data: _ZstdDictionary | None = None,
-    ) -> _ZstdCompressor: ...
-
-
-class _ZstdModule(Protocol):
-    DICT_TYPE_RAWCONTENT: int
-    ZstdCompressionDict: _ZstdDictionaryFactory
-    ZstdDecompressor: _ZstdDecompressorFactory
-    ZstdCompressor: _ZstdCompressorFactory
-    ZstdError: type[Exception]
-
-
-class _AnimConverterModule(Protocol):
-    def detect_player_rig(self, data: bytes) -> str: ...
-    def detect_rig(self, data: bytes) -> str: ...
-    def is_curve_animation(self, data: bytes) -> bool: ...
-
-
-def _get_zstandard() -> _ZstdModule:
-    return cast('_ZstdModule', importlib.import_module('zstandard'))
-
-
-def _zstd_or[T](operation: Callable[[_ZstdModule], T], fallback: T) -> T:
+def _zstd_or[T](operation: Callable[[], T], fallback: T) -> T:
     try:
-        zstandard = _get_zstandard()
+        zstd_error = zstandard.ZstdError
     except ImportError:
         return fallback
     try:
-        return operation(zstandard)
-    except AttributeError, TypeError, ValueError, zstandard.ZstdError:
+        return operation()
+    except AttributeError, TypeError, ValueError, zstd_error:
         return fallback
 
 
-def _decompress_zstd(
-    zstandard: _ZstdModule,
-    body: bytes,
-    dictionary: bytes | None = None,
-) -> bytes:
+def _decompress_zstd(body: bytes, dictionary: bytes | None = None) -> bytes:
     if dictionary is None:
         return zstandard.ZstdDecompressor().decompress(body, max_output_size=64 * 1024 * 1024)
     zstd_dictionary = zstandard.ZstdCompressionDict(
@@ -292,35 +237,12 @@ def _decompress_zstd(
     )
 
 
-def _compress_zstd(zstandard: _ZstdModule, body: bytes, dictionary: bytes) -> bytes:
+def _compress_zstd(body: bytes, dictionary: bytes) -> bytes:
     zstd_dictionary = zstandard.ZstdCompressionDict(
         dictionary,
         dict_type=zstandard.DICT_TYPE_RAWCONTENT,
     )
     return zstandard.ZstdCompressor(dict_data=zstd_dictionary).compress(body)
-
-
-def _convert_obj_to_mesh(path: Path) -> Path:
-    module = importlib.import_module('fleasion.cache.tools.solidmodel_converter.obj_to_mesh')
-    converter = cast(
-        'Callable[[str | Path], Path]',
-        getattr(module, _OBJ_CONVERTER_ATTR),
-    )
-    return converter(path)
-
-
-def _generate_host_certificate(
-    host: str,
-    ca_cert_path: Path,
-    ca_key_path: Path,
-    cert_cache_dir: Path,
-) -> tuple[Path, Path]:
-    module = importlib.import_module('fleasion.utils.certs')
-    generator = cast(
-        'Callable[[str, Path, Path, Path], tuple[Path, Path]]',
-        getattr(module, _GENERATE_HOST_CERT_ATTR),
-    )
-    return generator(host, ca_cert_path, ca_key_path, cert_cache_dir)
 
 
 def _build_host_ssl_context(
@@ -335,13 +257,6 @@ def _build_host_ssl_context(
     context.maximum_version = maximum_version
     context.set_alpn_protocols(['http/1.1'])
     return context
-
-
-def _get_anim_converter() -> _AnimConverterModule:
-    return cast(
-        '_AnimConverterModule',
-        importlib.import_module('fleasion.utils.anim_converter'),
-    )
 
 
 class _TextureBatchProcessor(Protocol):
@@ -417,7 +332,7 @@ def _decompress_body(body: bytes, headers: dict[bytes, bytes]) -> bytes:
         except EOFError, OSError, zlib.error:
             return body
     if ce == b'zstd' or body[:4] == _ZSTD_MAGIC:
-        return _zstd_or(lambda zstandard: _decompress_zstd(zstandard, body), body)
+        return _zstd_or(lambda: _decompress_zstd(body), body)
     return body
 
 
@@ -560,12 +475,12 @@ def _dcz_dictionary_sha256(path: str) -> str | None:
 
 def _decompress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
     """Decode Roblox ``dcz`` shared-compression payloads."""
-    return _zstd_or(lambda zstandard: _decompress_zstd(zstandard, body, dictionary), None)
+    return _zstd_or(lambda: _decompress_zstd(body, dictionary), None)
 
 
 def _compress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
     """Encode a modified ClientSettings document using the client's ``dcz`` dictionary."""
-    return _zstd_or(lambda zstandard: _compress_zstd(zstandard, body, dictionary), None)
+    return _zstd_or(lambda: _compress_zstd(body, dictionary), None)
 
 
 def _build_modified_response(
@@ -1529,7 +1444,7 @@ def _read_local_bytes(local_path: str) -> bytes:
     path = Path(local_path)
     if path.suffix.lower() == '.obj':
         with contextlib.suppress(Exception):
-            path = _convert_obj_to_mesh(path)
+            path = obj_to_mesh.get_or_create_mesh_from_obj(path)
     return strip_roblox_metadata(path, path.read_bytes()) if path.exists() else b''
 
 
@@ -1612,7 +1527,7 @@ def _serve_local_file(  # ruff: ignore[too-many-return-statements]
     path = Path(local_path)
     if path.suffix.lower() == '.obj':
         try:
-            path = _convert_obj_to_mesh(path)
+            path = obj_to_mesh.get_or_create_mesh_from_obj(path)
         except (
             AttributeError,
             ImportError,
@@ -2196,7 +2111,7 @@ class FleasionProxy:
         if self._ca_cert_path is None or self._ca_key_path is None or self._cert_cache_dir is None:
             return None
         try:
-            cert_path, key_path = _generate_host_certificate(
+            cert_path, key_path = certs.generate_host_cert(
                 host, self._ca_cert_path, self._ca_key_path, self._cert_cache_dir
             )
             ctx = _build_host_ssl_context(cert_path, key_path, self._local_tls_max_version)
@@ -3732,7 +3647,6 @@ class FleasionProxy:
             required_rig: _AnimRequiredRig = 'any',
         ) -> bytes:
             log_buffer = _get_log_buffer()
-            anim_converter = _get_anim_converter()
             orig_rig = anim_converter.detect_rig(orig_bytes)
             if required_rig != 'any' and orig_rig not in required_rig:
                 log_buffer.log(

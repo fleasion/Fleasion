@@ -83,7 +83,7 @@ def draco_module() -> _DracoModule | None:
     if not DRACO_AVAILABLE:
         return None
     try:
-        return cast('_DracoModule', importlib.import_module('DracoPy'))
+        return cast('_DracoModule', importlib.import_module('DracoPy'))  # ruff: ignore[banned-api] - Optional dependency probe
     except ImportError as exc:
         log_buffer.log('Mesh', f'DracoPy could not be loaded: {exc}')
         return None

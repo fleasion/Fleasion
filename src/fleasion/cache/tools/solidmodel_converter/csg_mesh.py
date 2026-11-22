@@ -1089,7 +1089,7 @@ def serialize_csg_mesh_v5(
     return header_enc + bytes(body)
 
 
-def _detect_csgmdl_version(data: bytes) -> int | None:
+def detect_csgmdl_version(data: bytes) -> int | None:
     """Detect the CSGMDL version from raw (XOR-encrypted) bytes.
 
     Applies the XOR key to the first 10 bytes (the encrypted header) and
@@ -1103,10 +1103,6 @@ def _detect_csgmdl_version(data: bytes) -> int | None:
         return None
     version = struct.unpack_from('<i', decrypted, 6)[0]
     return version if MIN_VERSION <= version <= MAX_VERSION else None
-
-
-if TYPE_CHECKING:
-    _ = _detect_csgmdl_version
 
 
 # OBJ exporter

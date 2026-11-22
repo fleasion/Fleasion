@@ -11,6 +11,15 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, override
 
+lazy from fleasion.gui import linux_hotkeys, windows_hotkeys
+lazy from fleasion.utils import (
+    autostart,
+    desktop_integration,
+    macos_proxy_helper,
+    platform_linux,
+    platform_macos,
+)
+
 if sys.platform == 'win32':
     import winreg
 
@@ -288,13 +297,11 @@ class SystemTray:
         self.custom_fflag_hotkeys: CustomFFlagHotkeyController | None = None
         hotkey_controller: CustomFFlagHotkeyController | None = None
         if sys.platform == 'win32':
-            hotkey_module = importlib.import_module('fleasion.gui.windows_hotkeys')
-            hotkey_controller = hotkey_module.WindowsCustomFFlagHotkeyController(
+            hotkey_controller = windows_hotkeys.WindowsCustomFFlagHotkeyController(
                 config_manager, proxy_master, app
             )
         elif sys.platform.startswith('linux'):
-            hotkey_module = importlib.import_module('fleasion.gui.linux_hotkeys')
-            hotkey_controller = hotkey_module.LinuxCustomFFlagHotkeyController(
+            hotkey_controller = linux_hotkeys.LinuxCustomFFlagHotkeyController(
                 config_manager, proxy_master, app
             )
 
@@ -691,17 +698,11 @@ class SystemTray:
                     and self.roblox_monitor.is_player_running()
                 ):
                     if sys.platform.startswith('linux'):
-                        platform_linux = importlib.import_module(
-                            '.utils.platform_linux', __package__
-                        )
                         exe_path = Path(platform_linux.selected_linux_client_app_id())
                     else:
                         exe_path = get_roblox_player_exe_path()
                     run_in_thread(lifecycle.handle_player_launch)(exe_path)
             elif sys.platform == 'darwin':
-                macos_proxy_helper = importlib.import_module(
-                    '.utils.macos_proxy_helper', __package__
-                )
                 if macos_proxy_helper.helper_is_ready():
                     self.proxy_master.start()
                 else:
@@ -811,7 +812,6 @@ class SystemTray:
 
     def _toggle_run_on_boot(self) -> None:
         """Toggle run-on-boot for the current platform."""
-        autostart = importlib.import_module('fleasion.utils.autostart')
         checked = self.run_on_boot_action.isChecked()
         ok = autostart.sync_autostart(
             checked,
@@ -855,13 +855,11 @@ class SystemTray:
 
     def _toggle_desktop_integration(self) -> None:
         """Toggle desktop/start-menu integration for the current platform."""
-        desktop_integration = importlib.import_module('fleasion.utils.desktop_integration')
         checked = self.desktop_integration_action.isChecked()
         ok = desktop_integration.sync_desktop_integration(checked)
         if ok:
             self.config_manager.desktop_integration = checked
             if sys.platform.startswith('linux') and self.config_manager.run_on_boot:
-                autostart = importlib.import_module('fleasion.utils.autostart')
                 if not autostart.sync_autostart(
                     enabled=True,
                     config_dir=CONFIG_DIR,
@@ -1102,7 +1100,6 @@ class SystemTray:
         """Keep the macOS dashboard visible when Fleasion loses focus."""
         if sys.platform != 'darwin':
             return
-        platform_macos = importlib.import_module('fleasion.utils.platform_macos')
         if not platform_macos.set_application_foreground_mode(enabled):
             log_buffer.log('App', 'macOS dashboard activation-policy update was rejected')
         elif enabled and (icon_path := get_icon_path()):
@@ -1186,7 +1183,7 @@ class SystemTray:
         icon_path: Path | None,
         app_id: str,
     ) -> None:
-        notify = importlib.import_module('win11toast').notify
+        notify = importlib.import_module('win11toast').notify  # ruff: ignore[banned-api] - Windows-only dependency
         notify(
             title=title,
             body=message,

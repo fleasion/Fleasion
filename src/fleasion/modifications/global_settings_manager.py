@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import importlib
 import shutil
 import stat
 import sys
@@ -15,6 +14,7 @@ from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import ParseError
 
 from fleasion.utils import USER_HOME, format_count, log_buffer
+lazy from fleasion.utils import platform_linux
 
 if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
@@ -101,7 +101,6 @@ class GlobalSettingsManager:
 
         if sys.platform.startswith('linux'):
             try:
-                platform_linux = importlib.import_module('fleasion.utils.platform_linux')
                 roblox_dirs.extend(platform_linux.find_linux_global_settings_dirs())
             except (ImportError, AttributeError, OSError) as exc:
                 log_buffer.log(

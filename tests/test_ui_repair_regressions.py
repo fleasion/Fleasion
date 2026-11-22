@@ -396,7 +396,7 @@ def test_replacer_border_margins_match_historical_layout_and_glass_inset(
 
 
 def test_scraper_border_margins_match_replacer_and_follow_style(app: QApplication) -> None:
-    from fleasion.cache import CacheManager
+    from fleasion.cache.cache_manager import CacheManager
     from fleasion.cache.cache_viewer import CacheViewerTab
     from fleasion.widgets.spacing import page_content_margins
 

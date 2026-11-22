@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from fleasion.utils.logging import log_buffer
+lazy from fleasion.utils import platform_windows
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -19,8 +19,6 @@ if TYPE_CHECKING:
 
 
 type _PlayerIdentity = tuple[int, str] | tuple[str, int] | tuple[str, int, float] | tuple[str, str]
-
-_GDK_PATH_CHECKER_ATTR = 'is_roblox_gdk_exe_path'
 
 
 class _LifecycleOperationError(RuntimeError):
@@ -62,12 +60,7 @@ def _call_lifecycle_operation(operation: Callable[[], bool]) -> bool:
 def _is_gdk_repair_path(path: Path) -> bool:
     """Avoid importing Windows-only process helpers on non-Windows builds."""
     try:
-        module = importlib.import_module('fleasion.utils.platform_windows')
-        checker = cast(
-            'Callable[[Path], bool]',
-            getattr(module, _GDK_PATH_CHECKER_ATTR),
-        )
-        return checker(path)
+        return platform_windows.is_roblox_gdk_exe_path(path)
     except ImportError, OSError:
         return False
 

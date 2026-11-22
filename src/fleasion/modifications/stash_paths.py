@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
 import re
 import shutil
 import sys
 from pathlib import Path
+
+lazy from fleasion.utils import platform_linux
 
 
 def resource_stash_key(resource_dir: Path) -> str:
@@ -42,7 +43,6 @@ def _is_sober_resource_path(resource_dir: Path) -> bool:
     if 'org.vinegarhq.Sober' in resource_dir.parts:
         return True
     try:
-        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
         return platform_linux.is_sober_resource_dir(resource_dir)
     except AttributeError, ImportError:
         return False

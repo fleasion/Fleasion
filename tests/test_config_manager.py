@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fleasion.utils import linux_clients
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MANAGER_PATH = _REPO_ROOT / 'src' / 'fleasion' / 'config' / 'manager.py'
 
@@ -269,19 +271,14 @@ class ConfigManagerEncodingTests(unittest.TestCase):
     def test_linux_client_selection_uses_live_registry_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))
-            registry_module = types.ModuleType('fleasion.utils.linux_clients')
-            setattr(
-                registry_module,
+            # The manager binds the registry module lazily, so patch its contents
+            with patch.object(
+                linux_clients,
                 'LINUX_CLIENTS_BY_KEY',
                 {
                     'sober': object(),
                     'future-client': object(),
                 },
-            )
-
-            with patch.dict(
-                sys.modules,
-                {'fleasion.utils.linux_clients': registry_module},
             ):
                 manager = config_manager_module.ConfigManager()
                 manager.linux_client = 'Future-Client'

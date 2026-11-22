@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 import time
 import webbrowser
@@ -34,6 +33,7 @@ from fleasion.utils import (
     log_buffer,
     run_in_thread,
 )
+lazy from fleasion.utils import windows_firewall, windows_permissions
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -90,7 +90,6 @@ def show_roblox_permission_failure(
     if msg.clickedButton() != grant_button:
         return
 
-    windows_permissions = importlib.import_module('fleasion.utils.windows_permissions')
     clear_pending_repair = windows_permissions.clear_pending_repair
     clear_repair_result = windows_permissions.clear_repair_result
     write_pending_repair = windows_permissions.write_pending_repair
@@ -257,8 +256,6 @@ def show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
     """Explain a blocked upstream connection and offer a targeted UAC repair."""
     if sys.platform != 'win32':
         return
-
-    windows_firewall = importlib.import_module('fleasion.utils.windows_firewall')
 
     host = str(details.get('host') or tr('app.firewall.default_content_server'))
     parent = visible_parent_widget()

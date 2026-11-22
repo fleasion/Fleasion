@@ -65,7 +65,7 @@ else:
     msg = 'Fleasion supports Windows, macOS, and Linux only.'
     raise RuntimeError(msg)
 
-_backend = importlib.import_module(_backend_name, __package__)
+_backend = importlib.import_module(_backend_name, __package__)  # ruff: ignore[banned-api] - Runtime name
 
 
 __all__ = [

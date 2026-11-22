@@ -26,7 +26,6 @@ import base64
 import csv
 import ctypes
 import hashlib
-import importlib
 import ipaddress
 import json
 import logging
@@ -50,29 +49,29 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Self, TypedDict, TypeIs, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, TypeIs, cast
+lazy import winreg  # pyright: ignore[reportMissingModuleSource]
 
 if TYPE_CHECKING:
+    from cryptography.x509 import Certificate
+
+    from fleasion.config.manager import ConfigManager
+    from fleasion.utils.linux_clients import LinuxClientDescriptor, LinuxClientInstallation
+
     from .types import (
         AutoReplaceRule as AutoReplaceRule,
         ModuleInterceptor as _ModuleInterceptor,
         ProxyRequestLogEntry as ProxyRequestLogEntry,
     )
 
-    winreg: _WinregLike
-
-    from fleasion.config.manager import ConfigManager
-    from fleasion.utils.linux_clients import LinuxClientDescriptor, LinuxClientInstallation
-else:
-    try:
-        import winreg
-    except ImportError:  # pragma: no cover - Windows-only module
-        winreg = None
-
 import contextlib
 
+lazy import certifi
+lazy from cryptography.utils import CryptographyDeprecationWarning
+lazy from cryptography.x509 import load_pem_x509_certificate
+lazy from cryptography.x509.oid import NameOID
+
 from fleasion.cache.cache_manager import CacheManager
-from fleasion.lazy_imports import module_attribute
 from fleasion.utils import (
     LOCAL_APPDATA,
     MACOS_PROXY_BACKEND_PORT,
@@ -106,6 +105,8 @@ from fleasion.utils.roblox_dirs import (
     load_saved_roblox_dirs,
     save_saved_roblox_dirs,
 )
+lazy from fleasion.gui import json_viewer
+lazy from fleasion.utils import linux_clients, linux_proxy_helper, platform_linux, platform_macos
 
 from .addons import (
     CacheScraper,
@@ -127,9 +128,11 @@ from .server import (
     THUMBNAILS_API_HOST,
     USERNAME_SPOOFER_INTERCEPT_HOSTS,
     FleasionProxy,
+    rebuild_edited_message,
 )
 from .upstream import HttpProxyConfig, Socks5ProxyConfig, UpstreamEndpoint, UpstreamMode
 from .windows_proxy import WindowsProxyInfo, detect_windows_proxy, detected_http_proxy
+lazy from . import android_community_keys, rosemary_keys, sober_keys
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +140,6 @@ IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
 IS_LINUX = sys.platform.startswith('linux')
 _WINDOWS_PROACTOR_ACCEPT_WINERROR = 10014
-_RESOURCE_ROOT_FROM_EXECUTABLE_ATTR = '_resource_root_from_executable'
 _OS_CHFLAGS_ATTR = 'chflags'
 _SOCKET_GETSOCKNAME_ATTR = 'getsockname'
 _SYSTEM_ROOT_ENV_KEY = 'System' + 'Root'
@@ -271,57 +273,6 @@ class _BinaryLineFile(Protocol):
     def read(self, size: int = -1, /) -> bytes: ...
 
 
-class _X509NameAttribute(Protocol):
-    value: str
-
-
-class _X509Name(Protocol):
-    def get_attributes_for_oid(self, oid: object) -> Sequence[_X509NameAttribute]: ...
-
-
-class _X509Certificate(Protocol):
-    subject: _X509Name
-    issuer: _X509Name
-
-
-class _NameOidLike(Protocol):
-    COMMON_NAME: object
-    ORGANIZATION_NAME: object
-
-
-class _RegistryKey(Protocol):
-    def __enter__(self) -> Self: ...
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: object,
-    ) -> bool | None: ...
-
-
-class _OpenKeyCallable(Protocol):
-    def __call__(
-        self,
-        key: object,
-        sub_key: str,
-        reserved: int = 0,
-        access: int = 0,
-    ) -> _RegistryKey: ...
-
-
-class _WinregLike(Protocol):
-    HKEY_LOCAL_MACHINE: object
-    HKEY_CURRENT_USER: object
-    KEY_ALL_ACCESS: int
-    REG_MULTI_SZ: int
-    REG_SZ: int
-    OpenKey: _OpenKeyCallable
-    QueryValueEx: Callable[[_RegistryKey, str], tuple[object, int]]
-    SetValueEx: Callable[[_RegistryKey, str, int, int, object], None]
-    DeleteValue: Callable[[_RegistryKey, str], None]
-    EnumKey: Callable[[_RegistryKey, int], str]
-
-
 class _WindowsSubprocess(Protocol):
     CREATE_NO_WINDOW: int
 
@@ -358,15 +309,6 @@ type _ErrorDetails = dict[str, object]
 type _PeerCertificate = Mapping[str, object]
 type _CancelCheck = Callable[[], bool]
 type _CacertInspection = _CacertState | _ErrorDetails
-
-
-def _lazy_attr(module_name: str, attribute: str) -> object:
-    module = importlib.import_module(module_name)
-    try:
-        return module_attribute(module, attribute)
-    except KeyError as exc:
-        msg = f'{module_name!r} does not export {attribute!r}'
-        raise ImportError(msg) from exc
 
 
 def _is_str_list(value: object) -> TypeIs[list[str]]:
@@ -1709,7 +1651,7 @@ def _nt_path(p: Path) -> str:
     return f'\\??\\{p}'
 
 
-def _pending_rename_entries(key: _RegistryKey) -> list[str] | None:
+def _pending_rename_entries(key: winreg.HKEYType) -> list[str] | None:
     try:
         existing, value_type = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
     except FileNotFoundError:
@@ -1838,21 +1780,13 @@ def _ensure_linux_system_trust_for_hosts(hosts: set[str], ca_cert_path: Path) ->
         )
         return False
 
-    install_ca_into_linux_trust = cast(
-        'Callable[..., object]',
-        _lazy_attr('fleasion.utils.linux_proxy_helper', 'install_ca_into_linux_trust'),
-    )
-
-    details_value = install_ca_into_linux_trust(
+    details = linux_proxy_helper.install_ca_into_linux_trust(
         ca_cert_path,
         install_system=True,
         install_nss=False,
     )
-    details = (
-        cast('dict[object, object]', details_value) if isinstance(details_value, dict) else None
-    )
-    system_value = details.get('system') if details is not None else None
-    system = cast('dict[object, object]', system_value) if isinstance(system_value, dict) else None
+    system_value = details.get('system')
+    system = system_value if isinstance(system_value, dict) else None
     if system is not None and system.get('ok'):
         return True
     if system is not None and system.get('error') == 'no_supported_system_trust_store':
@@ -1865,7 +1799,7 @@ def _ensure_linux_system_trust_for_hosts(hosts: set[str], ca_cert_path: Path) ->
     error = system.get('error') or system if system is not None else None
     log_buffer.log(
         'Certificate',
-        f'Linux system trust-store install failed for WebView-visible intercepts: {error or details_value}',
+        f'Linux system trust-store install failed for WebView-visible intercepts: {error or details}',
     )
     return False
 
@@ -3019,18 +2953,11 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
       6. Active Studio   — HKCU\\...\\roblox-studio\\open\\command (Default)
       7. Running Process — currently running RobloxPlayerBeta/RobloxStudioBeta path
     """
+    find_roblox_resource_dirs: Callable[..., list[Path]] | None = None
     if IS_MACOS:
-        find_roblox_resource_dirs = cast(
-            'Callable[..., list[Path]]',
-            _lazy_attr('fleasion.utils.platform_macos', 'find_roblox_resource_dirs'),
-        )
+        find_roblox_resource_dirs = platform_macos.find_roblox_resource_dirs
     elif IS_LINUX:
-        find_roblox_resource_dirs = cast(
-            'Callable[..., list[Path]]',
-            _lazy_attr('fleasion.utils.platform_linux', 'find_roblox_resource_dirs'),
-        )
-    else:
-        find_roblox_resource_dirs = None
+        find_roblox_resource_dirs = platform_linux.find_roblox_resource_dirs
 
     if find_roblox_resource_dirs is not None:
         found: list[Path] = []
@@ -3059,11 +2986,6 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
             _add_posix(cached_dir)
         save_saved_roblox_dirs(found)
         return found
-
-    if TYPE_CHECKING:
-        registry = winreg
-    else:
-        registry = __import__('winreg')
 
     found: list[Path] = []
     seen: set[str] = set()
@@ -3124,28 +3046,28 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
             _recurse(root, 1)
         return results
 
-    def _registry_subkey_names(key: _RegistryKey) -> list[str]:
+    def _registry_subkey_names(key: winreg.HKEYType) -> list[str]:
         names: list[str] = []
         index = 0
         while True:
             try:
-                name = registry.EnumKey(key, index)
+                name = winreg.EnumKey(key, index)
             except OSError:
                 return names
             index += 1
             if '\x00' not in name:
                 names.append(name)
 
-    def _scan_registry_key_and_children(parent: object, name: str) -> None:
+    def _scan_registry_key_and_children(parent: winreg.HKEYType | int, name: str) -> None:
         try:
-            key_context = registry.OpenKey(parent, name)
+            key_context = winreg.OpenKey(parent, name)
         except OSError, ValueError:
             return
         with key_context as key:
             _check_player_path_key(key)
             for child_name in _registry_subkey_names(key):
                 try:
-                    child_context = registry.OpenKey(key, child_name)
+                    child_context = winreg.OpenKey(key, child_name)
                 except OSError, ValueError:
                     continue
                 with child_context as child_key:
@@ -3153,7 +3075,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
 
     def _scan_main_registry_player_paths() -> None:
         try:
-            with registry.OpenKey(registry.HKEY_CURRENT_USER, r'Software') as software_key:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software') as software_key:
                 names = _registry_subkey_names(software_key)
                 for name in names:
                     _scan_registry_key_and_children(software_key, name)
@@ -3162,11 +3084,11 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
 
     def _scan_protocol_install(protocol_key: str, source: str) -> int:
         try:
-            with registry.OpenKey(registry.HKEY_CURRENT_USER, protocol_key) as key:
-                command, value_type = registry.QueryValueEx(key, '')
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, protocol_key) as key:
+                command, value_type = winreg.QueryValueEx(key, '')
         except OSError, ValueError:
             return 0
-        if value_type != registry.REG_SZ or not isinstance(command, str) or not command:
+        if value_type != winreg.REG_SZ or not isinstance(command, str) or not command:
             return 0
         exe_path = _extract_exe_from_command(command)
         if exe_path is None:
@@ -3181,17 +3103,17 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
     t = time.perf_counter()
     reg_found = 0
 
-    def _check_player_path_key(key: _RegistryKey) -> None:
+    def _check_player_path_key(key: winreg.HKEYType) -> None:
         nonlocal reg_found
         for value_name, process_name in (
             ('PlayerPath', ROBLOX_PROCESS),
             ('StudioPath', ROBLOX_STUDIO_PROCESS),
         ):
             try:
-                val, rtype = registry.QueryValueEx(key, value_name)
+                val, rtype = winreg.QueryValueEx(key, value_name)
             except OSError:
                 continue
-            if rtype != registry.REG_SZ or not isinstance(val, str) or not val:
+            if rtype != winreg.REG_SZ or not isinstance(val, str) or not val:
                 continue
             val = val.replace('\x00', '').strip()
             if not val:
@@ -3328,28 +3250,16 @@ def _normalize_pem_block(pem_block: str) -> str:
     return f'{_normalize_newlines(pem_block).strip()}\n'
 
 
-def _fleasion_ca_identity(pem_block: str) -> tuple[_X509Certificate, str, str]:
-    load_certificate = cast(
-        'Callable[[bytes], _X509Certificate]',
-        _lazy_attr('cryptography.x509', 'load_pem_x509_certificate'),
-    )
-    deprecation_warning = cast(
-        'type[Warning]',
-        _lazy_attr('cryptography.utils', 'CryptographyDeprecationWarning'),
-    )
-    name_oid = cast(
-        '_NameOidLike',
-        _lazy_attr('cryptography.x509.oid', 'NameOID'),
-    )
+def _fleasion_ca_identity(pem_block: str) -> tuple[Certificate, str | bytes, str | bytes]:
     with warnings.catch_warnings():
         warnings.filterwarnings(
             'ignore',
-            category=deprecation_warning,
+            category=CryptographyDeprecationWarning,
             message=r"Parsed a serial number which wasn't positive.*",
         )
-        cert = load_certificate(pem_block.encode('utf-8'))
-    cn_attrs = cert.subject.get_attributes_for_oid(name_oid.COMMON_NAME)
-    org_attrs = cert.subject.get_attributes_for_oid(name_oid.ORGANIZATION_NAME)
+        cert = load_pem_x509_certificate(pem_block.encode('utf-8'))
+    cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    org_attrs = cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
     cn = cn_attrs[0].value if cn_attrs else ''
     org = org_attrs[0].value if org_attrs else ''
     return cert, cn, org
@@ -3641,13 +3551,9 @@ def _seed_cacert_if_needed(
 
     restore_read_only = False
     try:
-        certifi_where = cast(
-            'Callable[[], str]',
-            _lazy_attr('certifi', 'where'),
-        )
         restore_read_only = _cacert_is_read_only(ca_file)
         _prepare_cacert_target_for_write(ca_file)
-        shutil.copy2(certifi_where(), ca_file)
+        shutil.copy2(certifi.where(), ca_file)
     except (ImportError, OSError) as exc:
         log_buffer.log('Certificate', f'Could not seed Roblox cacert.pem for {install_name}: {exc}')
         return False
@@ -3720,14 +3626,9 @@ def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[_ErrorDetail
     if not IS_MACOS:
         return True, []
 
-    find_bootstrapper_restore_resource_dirs = cast(
-        'Callable[[], list[Path]]',
-        _lazy_attr('fleasion.utils.platform_macos', 'find_bootstrapper_restore_resource_dirs'),
-    )
-
     details: list[_ErrorDetails] = []
     ok = True
-    for resource_dir in find_bootstrapper_restore_resource_dirs():
+    for resource_dir in platform_macos.find_bootstrapper_restore_resource_dirs():
         ca_file = resource_dir / 'ssl' / 'cacert.pem'
         bootstrapper = 'AppleBlox' if 'AppleBlox' in resource_dir.parts else 'Froststrap'
         try:
@@ -4260,12 +4161,7 @@ def _install_ca_into_macos_login_keychain(
 
 
 def _macos_resource_root_from_executable(exe_path: Path) -> Path | None:
-    platform_macos = importlib.import_module('fleasion.utils.platform_macos')
-    resolver = cast(
-        'Callable[[Path], Path | None]',
-        getattr(platform_macos, _RESOURCE_ROOT_FROM_EXECUTABLE_ATTR),
-    )
-    return resolver(exe_path)
+    return platform_macos.resource_root_from_executable(exe_path)
 
 
 def _selected_linux_client_installation() -> LinuxClientInstallation | None:
@@ -4273,11 +4169,7 @@ def _selected_linux_client_installation() -> LinuxClientInstallation | None:
     if not IS_LINUX:
         return None
     try:
-        get_selected = cast(
-            'Callable[[], LinuxClientInstallation | None]',
-            _lazy_attr('fleasion.utils.platform_linux', 'get_selected_linux_client_installation'),
-        )
-        return get_selected()
+        return platform_linux.get_selected_linux_client_installation()
     except OSError, RuntimeError, ValueError:
         return None
 
@@ -4405,12 +4297,7 @@ def check_and_patch_running_roblox_ca(  # ruff: ignore[too-many-return-statement
     if IS_MACOS:
         roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
     elif IS_LINUX:
-        find_roblox_resource_dirs = cast(
-            'Callable[..., list[Path]]',
-            _lazy_attr('fleasion.utils.platform_linux', 'find_roblox_resource_dirs'),
-        )
-
-        dirs = find_roblox_resource_dirs(include_studio=False)
+        dirs = platform_linux.find_roblox_resource_dirs(include_studio=False)
         roblox_dir = dirs[0] if dirs else exe_path.parent
     else:
         roblox_dir = exe_path.parent
@@ -4492,20 +4379,12 @@ class ProxyMaster:
     ) -> None:
         self.config_manager = config_manager
         self._on_proxy_start_error = on_proxy_start_error
-        if IS_LINUX:
-            recover_stale_override = cast(
-                'Callable[[], bool]',
-                _lazy_attr(
-                    'fleasion.utils.platform_linux',
-                    'recover_stale_linux_client_env_proxy_override',
-                ),
+        if IS_LINUX and not platform_linux.recover_stale_linux_client_env_proxy_override():
+            log_buffer.log(
+                'Launcher',
+                'Could not recover a stale Linux Env Proxy override during startup; '
+                'the persisted ownership marker was kept for a later retry',
             )
-            if not recover_stale_override():
-                log_buffer.log(
-                    'Launcher',
-                    'Could not recover a stale Linux Env Proxy override during startup; '
-                    'the persisted ownership marker was kept for a later retry',
-                )
         cache_manager_factory = cast('Callable[[ConfigManager], CacheManager]', CacheManager)
         self.cache_manager = cache_manager_factory(config_manager)
 
@@ -4645,23 +4524,11 @@ class ProxyMaster:
         backend_env = os.environ.get('FLEASION_SPLICE_BACKEND', '').strip().lower()
         if splice_env in {'rosemary', 'cordial', 'nightcap', 'mocktail', 'sober'} or backend_env:
             return True
-        find_rosemary_pid = cast(
-            'Callable[[], int | None]',
-            _lazy_attr('fleasion.proxy.rosemary_keys', 'find_rosemary_pid'),
-        )
-        if find_rosemary_pid() is not None:
+        if rosemary_keys.find_rosemary_pid() is not None:
             return True
-        find_android_community_pid = cast(
-            'Callable[[str | None], tuple[int, str] | None]',
-            _lazy_attr('fleasion.proxy.android_community_keys', 'find_android_community_pid'),
-        )
-        if find_android_community_pid(None) is not None:
+        if android_community_keys.find_android_community_pid(None) is not None:
             return True
-        find_sober_pid = cast(
-            'Callable[[], int | None]',
-            _lazy_attr('fleasion.proxy.sober_keys', 'find_sober_pid'),
-        )
-        return find_sober_pid() is not None
+        return sober_keys.find_sober_pid() is not None
 
     def _use_splice_transport(self) -> bool:  # ruff: ignore[too-many-return-statements]
         splice_env = os.environ.get('FLEASION_SPLICE', '1').strip().lower()
@@ -4732,11 +4599,7 @@ class ProxyMaster:
         if client_key is None:
             return None
         try:
-            get_linux_client = cast(
-                'Callable[[str], LinuxClientDescriptor]',
-                _lazy_attr('fleasion.utils.linux_clients', 'get_linux_client'),
-            )
-            return get_linux_client(client_key)
+            return linux_clients.get_linux_client(client_key)
         except ValueError:
             return None
 
@@ -4763,19 +4626,19 @@ class ProxyMaster:
         if client_key is None:
             log_buffer.log('Launcher', 'Cannot arm Linux Env Proxy: no client is selected')
             return False
-        set_env_proxy_override = cast(
-            'Callable[..., bool]',
-            _lazy_attr('fleasion.utils.platform_linux', 'set_linux_client_env_proxy_override'),
-        )
         native_sober_keylog = (
             client_key == 'sober'
             and self._use_splice_transport()
             and not os.environ.get('FLEASION_SPLICE_KEYLOG')
         )
-        kwargs: dict[str, object] = {'client_key': client_key}
         if native_sober_keylog:
-            kwargs['sober_native_keylog'] = True
-        armed = set_env_proxy_override(self.roblox_env_proxy_url(), **kwargs)
+            armed = platform_linux.set_linux_client_env_proxy_override(
+                self.roblox_env_proxy_url(), client_key=client_key, sober_native_keylog=True
+            )
+        else:
+            armed = platform_linux.set_linux_client_env_proxy_override(
+                self.roblox_env_proxy_url(), client_key=client_key
+            )
         if not armed and native_sober_keylog:
             # Native key logging can be unavailable on older Flatpak runtimes
             # Keep the original safe ClientSettings startup bypass in that case
@@ -4783,7 +4646,9 @@ class ProxyMaster:
                 'Launcher',
                 'Sober native TLS key logging unavailable; using delayed ClientSettings routing',
             )
-            armed = set_env_proxy_override(self.roblox_env_proxy_url(), client_key=client_key)
+            armed = platform_linux.set_linux_client_env_proxy_override(
+                self.roblox_env_proxy_url(), client_key=client_key
+            )
             native_sober_keylog = False
         if armed:
             self._linux_env_proxy_override_client_key = client_key
@@ -4798,11 +4663,7 @@ class ProxyMaster:
             client_key = 'sober'
         if client_key is None:
             return True
-        clear_env_proxy_override = cast(
-            'Callable[..., bool]',
-            _lazy_attr('fleasion.utils.platform_linux', 'clear_linux_client_env_proxy_override'),
-        )
-        cleared = clear_env_proxy_override(client_key=client_key)
+        cleared = platform_linux.clear_linux_client_env_proxy_override(client_key=client_key)
         if cleared:
             self._linux_env_proxy_override_client_key = None
             self._sober_env_proxy_override_active = False
@@ -4836,11 +4697,10 @@ class ProxyMaster:
             return False
         if getattr(self, '_hosts_sober_native_keylog_active', False):
             return True
-        linux_client_main_process = cast(
-            'Callable[[LinuxClientInstallation], tuple[int, float] | None]',
-            _lazy_attr('fleasion.utils.platform_linux', 'linux_client_main_process'),
-        )
-        if linux_client_main_process(installation) is not None and not allow_running_for_replay:
+        if (
+            platform_linux.linux_client_main_process(installation) is not None
+            and not allow_running_for_replay
+        ):
             # Changes to Flatpak overrides affect only future launches. Do not
             # claim immediate decryption of an already-running Sober instance.
             log_buffer.log(
@@ -4848,11 +4708,7 @@ class ProxyMaster:
                 'Sober is already running; native TLS key logging needs a fresh launch',
             )
             return False
-        arm_keylog = cast(
-            'Callable[[], bool]',
-            _lazy_attr('fleasion.utils.platform_linux', 'arm_sober_native_keylog_override'),
-        )
-        if not arm_keylog():
+        if not platform_linux.arm_sober_native_keylog_override():
             log_buffer.log(
                 'CustomFFlags',
                 'Sober native TLS key logging unavailable in Hosts mode; '
@@ -4973,11 +4829,7 @@ class ProxyMaster:
     def _clear_linux_hosts_sober_native_keylog(self) -> bool:
         if not getattr(self, '_hosts_sober_native_keylog_active', False):
             return True
-        clear_keylog = cast(
-            'Callable[[], bool]',
-            _lazy_attr('fleasion.utils.platform_linux', 'clear_sober_native_keylog_override'),
-        )
-        if not clear_keylog():
+        if not platform_linux.clear_sober_native_keylog_override():
             return False
         self._hosts_sober_native_keylog_active = False
         self._sober_native_keylog_armed = False
@@ -5030,11 +4882,7 @@ class ProxyMaster:
         if IS_MACOS:
             roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
         elif IS_LINUX:
-            find_roblox_resource_dirs = cast(
-                'Callable[..., list[Path]]',
-                _lazy_attr('fleasion.utils.platform_linux', 'find_roblox_resource_dirs'),
-            )
-            dirs = find_roblox_resource_dirs(include_studio=False)
+            dirs = platform_linux.find_roblox_resource_dirs(include_studio=False)
             roblox_dir = dirs[0] if dirs else exe_path.parent
         else:
             roblox_dir = exe_path.parent
@@ -5224,10 +5072,6 @@ class ProxyMaster:
         if not host:
             return False
         if edited_text is not None:
-            rebuild_edited_message = cast(
-                'Callable[[str], bytes]',
-                _lazy_attr('fleasion.proxy.server', 'rebuild_edited_message'),
-            )
             raw = rebuild_edited_message(edited_text)
         else:
             raw = entry.get('request_raw')
@@ -5366,11 +5210,7 @@ class ProxyMaster:
             return True
         if installation is None:
             return False
-        linux_client_main_process = cast(
-            'Callable[[LinuxClientInstallation], tuple[int, float] | None]',
-            _lazy_attr('fleasion.utils.platform_linux', 'linux_client_main_process'),
-        )
-        process = linux_client_main_process(installation)
+        process = platform_linux.linux_client_main_process(installation)
         if process is None:
             return False
         _pid, started_at = process
@@ -5416,14 +5256,10 @@ class ProxyMaster:
         self._sober_fflag_timer_stop = stop_event
 
         def _poll() -> None:
-            linux_client_main_process = cast(
-                'Callable[[LinuxClientInstallation], tuple[int, float] | None]',
-                _lazy_attr('fleasion.utils.platform_linux', 'linux_client_main_process'),
-            )
             previous_process: tuple[int, float] | None = None
             previous_ready: bool | None = None
             while not stop_event.is_set():
-                process = linux_client_main_process(installation)
+                process = platform_linux.linux_client_main_process(installation)
                 ready = False
                 if process is not None:
                     _pid, started_at = process
@@ -5550,11 +5386,7 @@ class ProxyMaster:
         _log_upstream_ip_coverage(desired_hosts, real_endpoints)
 
         if _use_linux_privileged_helper():
-            update_helper_hosts = cast(
-                'Callable[[set[str]], bool]',
-                _lazy_attr('fleasion.utils.linux_proxy_helper', 'update_helper_hosts'),
-            )
-            if not update_helper_hosts(desired_hosts):
+            if not linux_proxy_helper.update_helper_hosts(desired_hosts):
                 log_buffer.log(
                     'Hosts',
                     'Failed to request Linux helper username spoofer hosts update',
@@ -5839,11 +5671,7 @@ class ProxyMaster:
         if IS_MACOS:
             roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
         elif IS_LINUX:
-            find_roblox_resource_dirs = cast(
-                'Callable[..., list[Path]]',
-                _lazy_attr('fleasion.utils.platform_linux', 'find_roblox_resource_dirs'),
-            )
-            dirs = find_roblox_resource_dirs(include_studio=False)
+            dirs = platform_linux.find_roblox_resource_dirs(include_studio=False)
             roblox_dir = dirs[0] if dirs else exe_path.parent
         else:
             roblox_dir = exe_path.parent
@@ -6278,11 +6106,7 @@ class ProxyMaster:
             if self._hosts_installed:
                 self._stop_watchdog()  # Cancel the force-kill guard task first
                 if _use_linux_privileged_helper():
-                    stop_helper = cast(
-                        'Callable[[], bool]',
-                        _lazy_attr('fleasion.utils.linux_proxy_helper', 'stop_helper'),
-                    )
-                    hosts_cleaned = stop_helper()
+                    hosts_cleaned = linux_proxy_helper.stop_helper()
                 else:
                     cleanup_details: _ErrorDetails = {}
                     hosts_cleaned = _remove_hosts_entries(
@@ -6479,11 +6303,7 @@ class ProxyMaster:
         if IS_WINDOWS and not env_proxy_mode:
             _install_ca_into_windows_root(ca_cert_path, ca_pem)
         elif IS_LINUX:
-            install_ca_into_linux_trust = cast(
-                'Callable[..., object]',
-                _lazy_attr('fleasion.utils.linux_proxy_helper', 'install_ca_into_linux_trust'),
-            )
-            install_ca_into_linux_trust(
+            linux_proxy_helper.install_ca_into_linux_trust(
                 ca_cert_path,
                 install_system=False,
             )
@@ -6703,13 +6523,7 @@ class ProxyMaster:
         _set_cache_scraper_http_proxy_fallback(self.cache_scraper, scraper_http_proxy)
 
         with contextlib.suppress(Exception):
-            asset_fetcher_thread = _lazy_attr('fleasion.gui.json_viewer', 'AssetFetcherThread')
-            setter_name = 'set_scraper'
-            set_scraper = cast(
-                'Callable[[CacheScraper], None]',
-                getattr(asset_fetcher_thread, setter_name),
-            )
-            set_scraper(self.cache_scraper)
+            json_viewer.AssetFetcherThread.set_scraper(self.cache_scraper)
 
         use_linux_helper = (not env_proxy_mode) and _use_linux_privileged_helper()
         env_proxy_intercept_excluded_hosts: set[str] = set()
@@ -7032,18 +6846,10 @@ class ProxyMaster:
         ca_patch_ok = startup['ca_patch_ok']
 
         if use_linux_helper:
-            last_start_error_details = cast(
-                'Callable[[], Mapping[str, object]]',
-                _lazy_attr('fleasion.utils.linux_proxy_helper', 'last_start_error_details'),
-            )
-            start_helper = cast(
-                'Callable[..., bool]',
-                _lazy_attr('fleasion.utils.linux_proxy_helper', 'start_helper'),
-            )
             require_linux_system_ca = not self._use_splice_transport() and bool(
                 active_hosts & MODULE_INTERCEPT_HOSTS
             )
-            if not start_helper(
+            if not linux_proxy_helper.start_helper(
                 active_hosts,
                 backend_port=listen_port,
                 ca_cert_path=startup['ca_cert_path'],
@@ -7051,7 +6857,7 @@ class ProxyMaster:
             ):
                 await proxy.stop()
                 _set_active_hosts_loopbacks(None)
-                details = dict(last_start_error_details())
+                details: _ErrorDetails = dict(linux_proxy_helper.last_start_error_details())
                 if details.get('code') == 'linux_hosts_read_only':
                     self._emit_proxy_start_error('linux_hosts_read_only', details)
                 else:
@@ -7067,11 +6873,7 @@ class ProxyMaster:
                     )
                     await proxy.stop()
                     _set_active_hosts_loopbacks(None)
-                    stop_helper = cast(
-                        'Callable[[], bool]',
-                        _lazy_attr('fleasion.utils.linux_proxy_helper', 'stop_helper'),
-                    )
-                    stop_helper()
+                    linux_proxy_helper.stop_helper()
                     self._running = False
                     return
 
@@ -7115,11 +6917,7 @@ class ProxyMaster:
             await proxy.stop()
             _set_active_hosts_loopbacks(None)
             if use_linux_helper:
-                stop_helper = cast(
-                    'Callable[[], bool]',
-                    _lazy_attr('fleasion.utils.linux_proxy_helper', 'stop_helper'),
-                )
-                stop_helper()
+                linux_proxy_helper.stop_helper()
             self._running = False
             if IS_MACOS:
                 self._emit_proxy_start_error('macos_relay_failed', relay_details)
@@ -7144,11 +6942,7 @@ class ProxyMaster:
             _flush_dns()
         if not _verify_hosts_entries(active_hosts, error_details=hosts_error_details):
             if use_linux_helper:
-                stop_helper = cast(
-                    'Callable[[], bool]',
-                    _lazy_attr('fleasion.utils.linux_proxy_helper', 'stop_helper'),
-                )
-                stop_helper()
+                linux_proxy_helper.stop_helper()
             else:
                 rollback_details: _ErrorDetails = {}
                 if not _remove_hosts_entries(set(INTERCEPT_HOSTS), error_details=rollback_details):

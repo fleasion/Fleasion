@@ -11,7 +11,6 @@ import contextlib
 import gzip
 import hashlib
 import http.client
-import importlib
 import logging
 import re
 import socket
@@ -28,7 +27,6 @@ from typing import (
     ClassVar,
     Literal,
     NotRequired,
-    Protocol,
     TypedDict,
     cast,
     overload,
@@ -48,6 +46,8 @@ from fleasion.utils.json_types import (
     require_object_dict,
     require_object_list,
 )
+lazy from fleasion.cache.tools import ktx_to_png
+lazy from fleasion.utils import roblox_auth
 
 try:
     import orjson
@@ -138,26 +138,6 @@ class _CreatorPlaceScanState:
     attempted: set[str]
     place_ids: list[int]
     seen: set[int]
-
-
-class _KtxConverterModule(Protocol):
-    def convert(self, data: bytes) -> bytes | None: ...
-
-
-class _RobloxAuthModule(Protocol):
-    def get_roblosecurity(self) -> str | None: ...
-    def wait_for_roblosecurity(self) -> str | None: ...
-
-
-def _ktx_converter_module() -> _KtxConverterModule:
-    return cast(
-        '_KtxConverterModule',
-        importlib.import_module('fleasion.cache.tools.ktx_to_png'),
-    )
-
-
-def _roblox_auth_module() -> _RobloxAuthModule:
-    return cast('_RobloxAuthModule', importlib.import_module('fleasion.utils.roblox_auth'))
 
 
 _TEXPACK_SLOT_NAMES = {
@@ -1445,7 +1425,7 @@ class CacheScraper:
         if request.asset_type not in {1, 13} or not request.inner_content:
             return False
         try:
-            png_bytes = _ktx_converter_module().convert(request.inner_content)
+            png_bytes = ktx_to_png.convert(request.inner_content)
         except ImportError, OSError, ValueError:
             return False
         if not png_bytes or png_bytes[:4] != b'\x89PNG':
@@ -1977,7 +1957,6 @@ class CacheScraper:
         return self._get_roblosecurity(wait=wait)
 
     def _get_roblosecurity(self, *, wait: bool = False) -> str | None:
-        roblox_auth = _roblox_auth_module()
         if wait:
             return roblox_auth.wait_for_roblosecurity()
         return roblox_auth.get_roblosecurity()

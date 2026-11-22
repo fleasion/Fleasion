@@ -5,7 +5,6 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import hashlib
-import importlib
 import locale
 import operator
 import os
@@ -25,6 +24,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
+
+lazy from fleasion.proxy.addons.texture_stripper import TextureStripper
 
 from .logging import log_buffer
 from .paths import (
@@ -2113,12 +2114,7 @@ def _delete_app_cache_contents(app_cache_dir: Path) -> None:
 
 
 def _reset_live_replacement_routes() -> dict[str, int]:
-    texture_stripper_module = importlib.import_module('fleasion.proxy.addons.texture_stripper')
-    reset_routes = cast(
-        'Callable[[str], dict[str, int]]',
-        texture_stripper_module.TextureStripper.reset_routes,
-    )
-    return reset_routes('cache clear')
+    return TextureStripper.reset_routes('cache clear')
 
 
 def delete_cache() -> list[str]:

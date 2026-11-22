@@ -6,11 +6,12 @@ and injecting MeshData into child PartOperation instances.
 
 from __future__ import annotations
 
-import importlib
 import logging
 import shutil
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
+
+lazy from fleasion.utils.logging import log_buffer
 
 from .csg_mesh import (
     CFrame,
@@ -37,8 +38,7 @@ log = logging.getLogger(__name__)
 def _log_solidmodel_message(message: str) -> None:
     """Best-effort UI log mirroring the converter's existing logging behavior."""
     with suppress(ImportError, AttributeError):
-        logging_module = importlib.import_module('fleasion.utils.logging')
-        logging_module.log_buffer.log('SolidModel', message)
+        log_buffer.log('SolidModel', message)
 
 
 def convert_file(

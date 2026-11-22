@@ -70,7 +70,7 @@ def _translations(language: str) -> Mapping[str, str]:
     table = _loaded_translations.get(language)
     if table is None:
         module_name, table_name = _TRANSLATION_SOURCES[language]
-        module = importlib.import_module(f'{__package__}.translations.{module_name}')
+        module = importlib.import_module(f'{__package__}.translations.{module_name}')  # ruff: ignore[banned-api] - Runtime name
         table = cast('Mapping[str, str]', vars(module)[table_name])
         _loaded_translations[language] = table
     return table

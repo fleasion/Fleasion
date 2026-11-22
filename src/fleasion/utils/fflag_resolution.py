@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import threading
 import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from fleasion.utils.json_types import as_object_dict
 from fleasion.utils.paths import APP_CACHE_DIR, CONFIG_DIR, FFLAG_CATALOG_CACHE_FILENAME
+lazy from fleasion.modifications import fflag_static
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from fleasion.modifications.fflag_static import ClientBinary, StaticFlagCatalog
+    from fleasion.modifications.fflag_static import ClientBinary
 
 CLIENT_FFLAG_PREFIXES: tuple[str, ...] = (
     'DFFlag',
@@ -64,11 +62,7 @@ def _selected_player_binary() -> ClientBinary | None:
     with _SELECTION_LOCK:
         now = time.monotonic()
         if now >= _SELECTION.deadline:
-            scanner = importlib.import_module('fleasion.modifications.fflag_static')
-            detect = cast(
-                'Callable[[], ClientBinary | None]', scanner.__dict__['detect_client_binary']
-            )
-            _SELECTION.binary = detect()
+            _SELECTION.binary = fflag_static.detect_client_binary()
             _SELECTION.deadline = now + _SELECTION_RECHECK_SECONDS
         return _SELECTION.binary
 
@@ -93,9 +87,7 @@ def _read_installed_index(
 ) -> InstalledNameEvidence | None:
     """Reparse an immutable saved scan only if its source or cache changes."""
     del scan_path, scan_size, scan_mtime_ns
-    scanner = importlib.import_module('fleasion.modifications.fflag_static')
-    load = cast('Callable[[str], StaticFlagCatalog | None]', scanner.__dict__['load_scan'])
-    catalog = load(client)
+    catalog = fflag_static.load_scan(client)
     if catalog is None or (
         catalog.source != source
         or catalog.member != member

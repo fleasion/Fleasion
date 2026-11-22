@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import importlib
 import os
 import platform
 import sys
@@ -94,7 +93,7 @@ from fleasion.config.manager import SettingsLoadError
 from fleasion.localization import apply_language_direction, set_language, tr
 from fleasion.modifications import ModificationManager
 from fleasion.prejsons import download_prejsons
-from fleasion.proxy import ProxyMaster
+from fleasion.proxy.master import ProxyMaster
 from fleasion.utils import (
     APP_NAME,
     LOG_FILE,
@@ -108,6 +107,8 @@ from fleasion.utils import (
 from fleasion.utils.microprofiler import start_microprofiler
 from fleasion.utils.qt_diagnostics import install_qt_message_logging
 from fleasion.utils.yama_ptrace import read_ptrace_scope, set_warning_callback
+lazy from fleasion.modifications.macos_bootstrapper_bridge import MacBootstrapperBridge
+lazy from fleasion.utils import macos_proxy_helper, platform_linux, platform_macos, platform_windows
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QSessionManager
@@ -137,7 +138,6 @@ def run_application() -> None:
     """Assemble and run the Fleasion desktop application."""
     args = parse_application_args()
     if args.fleasion_gdk_debugger:
-        platform_windows = importlib.import_module('fleasion.utils.platform_windows')
         sys.exit(platform_windows.run_gdk_debugger_command_line())
     if args.cleanup_hosts:
         sys.exit(cleanup_hosts_once())
@@ -235,7 +235,6 @@ def run_application() -> None:
     if icon_path := get_icon_path():
         app.setWindowIcon(QIcon(str(icon_path)))
         if sys.platform == 'darwin':
-            platform_macos = importlib.import_module('fleasion.utils.platform_macos')
             platform_macos.set_application_icon(icon_path)
 
     if sys.platform == 'darwin' and is_admin():
@@ -386,7 +385,6 @@ def run_application() -> None:
     if not suppress_dashboard and not config_manager.first_time_setup_complete:
         prompt_first_time_language(config_manager)
     if sys.platform.startswith('linux'):
-        platform_linux = importlib.import_module('fleasion.utils.platform_linux')
         platform_linux.set_linux_client_preference(config_manager.linux_client)
         platform_linux.set_rosemary_paths(
             config_manager.rosemary_app_path,
@@ -397,8 +395,10 @@ def run_application() -> None:
     if sys.platform == 'darwin':
 
         def _clear_legacy_macos_proxy_hosts() -> None:
-            helper = importlib.import_module('fleasion.utils.macos_proxy_helper')
-            if helper.helper_status() is not None and not helper.helper_clear_hosts():
+            if (
+                macos_proxy_helper.helper_status() is not None
+                and not macos_proxy_helper.helper_clear_hosts()
+            ):
                 log_buffer.log('Proxy', 'Could not clear old macOS proxy host redirects')
 
         run_in_thread(_clear_legacy_macos_proxy_hosts)()
@@ -416,7 +416,6 @@ def run_application() -> None:
         and not is_admin()
     )
     if sys.platform == 'darwin' and config_manager.proxy_mode != 'env':
-        macos_proxy_helper = importlib.import_module('fleasion.utils.macos_proxy_helper')
         start_proxy = config_manager.proxy_features_enabled and macos_proxy_helper.helper_is_ready()
     else:
         start_proxy = config_manager.proxy_features_enabled and not admin_prompt_needed
@@ -546,10 +545,7 @@ def run_application() -> None:
             mod_manager.clear_managed_file_read_only(clear_untracked=False)
     macos_bootstrapper_bridge = None
     if sys.platform == 'darwin':
-        lazy_module = importlib.import_module('fleasion.modifications.macos_bootstrapper_bridge')
-        mac_bootstrapper_bridge_cls = lazy_module.MacBootstrapperBridge
-
-        macos_bootstrapper_bridge = mac_bootstrapper_bridge_cls(
+        macos_bootstrapper_bridge = MacBootstrapperBridge(
             mod_manager,
             app,
             custom_fflag_seed=lambda: proxy_master.prime_custom_fflag_cache(allow_running=True),
@@ -759,7 +755,6 @@ def run_application() -> None:
         ):
             return
 
-        macos_proxy_helper = importlib.import_module('fleasion.utils.macos_proxy_helper')
         helper_is_ready = macos_proxy_helper.helper_is_ready
 
         if helper_is_ready():

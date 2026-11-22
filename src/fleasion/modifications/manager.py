@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import importlib
 import io
 import json
 import ntpath
@@ -27,8 +26,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, Self, TypedDict, cast
 from urllib.error import URLError
 from urllib.parse import urlparse
+lazy import winreg  # pyright: ignore[reportMissingModuleSource]
 
 from PySide6.QtCore import QObject, Signal
+lazy from PIL import Image
 
 from fleasion.cache.tools.ktx_to_png import (
     strip_prefixed_ktx,
@@ -47,6 +48,10 @@ from fleasion.utils.roblox_dirs import (
     save_saved_roblox_dirs,
 )
 from fleasion.utils.threading import run_in_thread
+lazy from fleasion.cache.tools import rgba_ktx2
+lazy from fleasion.cache.tools.solidmodel_converter import obj_to_mesh
+lazy from fleasion.utils import platform_linux, platform_macos
+lazy from fleasion.utils.http import http_get
 
 from .fflag_manager import (
     FastFlagManager,
@@ -81,24 +86,6 @@ if TYPE_CHECKING:
     )
 
 
-class _RegistryKey(Protocol):
-    def __enter__(self) -> Self: ...
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: object,
-    ) -> bool | None: ...
-
-
-class _WinregLike(Protocol):
-    HKEY_CURRENT_USER: object
-    REG_SZ: int
-    OpenKey: Callable[[object, str], _RegistryKey]
-    EnumKey: Callable[[_RegistryKey, int], str]
-    QueryValueEx: Callable[[_RegistryKey, str], tuple[object, int]]
-
-
 class _ExceptionBoundary:
     """Suppress ordinary exceptions while preserving BaseException behavior."""
 
@@ -122,69 +109,6 @@ class _ExceptionBoundary:
         return True
 
 
-def _winreg_module() -> _WinregLike:
-    return cast('_WinregLike', __import__('winreg'))
-
-
-_RESOURCE_DIR_FINDER_ATTR = 'find_roblox_resource_dirs'
-_BOOTSTRAPPER_RESTORE_FINDER_ATTR = 'find_bootstrapper_restore_resource_dirs'
-_HTTP_GET_ATTR = 'http_get'
-_PARSE_OBJ_ATTR = 'parse_obj_for_mesh'
-_EXPORT_V2_MESH_ATTR = 'export_v2_mesh'
-_IMAGE_OPEN_MODULE = 'PIL.Image'
-_RGBA_KTX2_MODULE = 'fleasion.cache.tools.rgba_ktx2'
-
-
-def _platform_resource_dir_finder(module_name: str) -> Callable[..., list[Path]]:
-    module = importlib.import_module(module_name)
-    return cast(
-        'Callable[..., list[Path]]',
-        getattr(module, _RESOURCE_DIR_FINDER_ATTR),
-    )
-
-
-def _bootstrapper_restore_resource_dirs() -> list[Path]:
-    module = importlib.import_module('fleasion.utils.platform_macos')
-    finder = cast(
-        'Callable[[], list[Path]]',
-        getattr(module, _BOOTSTRAPPER_RESTORE_FINDER_ATTR),
-    )
-    return finder()
-
-
-def _http_get(url: str, *, timeout: int, headers: dict[str, str]) -> bytes:
-    module = importlib.import_module('fleasion.utils.http')
-    getter = cast(
-        'Callable[..., bytes]',
-        getattr(module, _HTTP_GET_ATTR),
-    )
-    return getter(url, timeout=timeout, headers=headers)
-
-
-def _obj_converter_functions() -> tuple[
-    Callable[[str], tuple[object, object, object]],
-    Callable[[object, object, object], bytes],
-]:
-    module = importlib.import_module('fleasion.cache.tools.solidmodel_converter.obj_to_mesh')
-    parser = cast(
-        'Callable[[str], tuple[object, object, object]]',
-        getattr(module, _PARSE_OBJ_ATTR),
-    )
-    exporter = cast(
-        'Callable[[object, object, object], bytes]',
-        getattr(module, _EXPORT_V2_MESH_ATTR),
-    )
-    return parser, exporter
-
-
-def _image_module() -> _ImageModule:
-    return cast('_ImageModule', importlib.import_module(_IMAGE_OPEN_MODULE))
-
-
-def _rgba_ktx2_module() -> _RgbaKtx2Module:
-    return cast('_RgbaKtx2Module', importlib.import_module(_RGBA_KTX2_MODULE))
-
-
 # Paths
 
 MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
@@ -202,33 +126,6 @@ class _ModificationData(TypedDict):
     fast_flags_enabled: bool
     fast_flags: _FastFlagSettings
     global_settings: _GlobalSettings
-
-
-class _ImageLike(Protocol):
-    size: tuple[int, int]
-
-    def convert(self, mode: str) -> _ImageLike: ...
-    def tobytes(self) -> bytes: ...
-
-
-class _ImageModule(Protocol):
-    def open(self, fp: object) -> _ImageLike: ...
-
-
-class _RgbaKtx2Module(Protocol):
-    RGBA8_KTX2_CACHE_VERSION: bytes
-
-    def mipmap_mode_for_texture_name(self, name: str) -> str: ...
-
-    def write_rgba8_ktx2(
-        self,
-        rgba: bytes,
-        width: int,
-        height: int,
-        out_path: Path,
-        *,
-        mipmap_mode: str,
-    ) -> None: ...
 
 
 class _CacheScraperLike(Protocol):
@@ -338,12 +235,11 @@ def _instance_attr(obj: object, name: str, default: object = None) -> Any:
 
 def _find_roblox_dirs() -> list[Path]:
     """Locate Roblox resource directories that can receive file modifications."""
+    find_roblox_resource_dirs: Callable[..., list[Path]] | None = None
     if sys.platform == 'darwin':
-        find_roblox_resource_dirs = _platform_resource_dir_finder('fleasion.utils.platform_macos')
+        find_roblox_resource_dirs = platform_macos.find_roblox_resource_dirs
     elif sys.platform.startswith('linux'):
-        find_roblox_resource_dirs = _platform_resource_dir_finder('fleasion.utils.platform_linux')
-    else:
-        find_roblox_resource_dirs = None
+        find_roblox_resource_dirs = platform_linux.find_roblox_resource_dirs
 
     if find_roblox_resource_dirs is not None:
         found: list[Path] = []
@@ -369,11 +265,9 @@ def _find_roblox_dirs() -> list[Path]:
         if sys.platform == 'darwin':
             # Bootstrapper snapshots are transient mirrors, not installations:
             # manage them while present, but never persist them as Roblox dirs.
-            for backup_dir in _bootstrapper_restore_resource_dirs():
+            for backup_dir in platform_macos.find_bootstrapper_restore_resource_dirs():
                 _add_non_windows(backup_dir)
         return found
-
-    winreg = _winreg_module()
 
     found: list[Path] = []
     seen: set[str] = set()
@@ -442,7 +336,7 @@ def _find_roblox_dirs() -> list[Path]:
             _recurse(root, 1)
         return results
 
-    def _registry_subkey_names(key: _RegistryKey) -> Iterable[str]:
+    def _registry_subkey_names(key: winreg.HKEYType) -> Iterable[str]:
         index = 0
         while True:
             try:
@@ -453,7 +347,7 @@ def _find_roblox_dirs() -> list[Path]:
             if '\x00' not in name:
                 yield name
 
-    def _registry_player_path(key: _RegistryKey) -> Path | None:
+    def _registry_player_path(key: winreg.HKEYType) -> Path | None:
         try:
             value, value_type = winreg.QueryValueEx(key, 'PlayerPath')
         except OSError, ValueError:
@@ -465,7 +359,7 @@ def _find_roblox_dirs() -> list[Path]:
             player_path = player_path.parent
         return player_path
 
-    def _add_registry_player_path(key: _RegistryKey) -> None:
+    def _add_registry_player_path(key: winreg.HKEYType) -> None:
         player_path = _registry_player_path(key)
         if player_path is None:
             return
@@ -480,14 +374,14 @@ def _find_roblox_dirs() -> list[Path]:
         for directory in _scan_for_exe(player_path, 1):
             _add(directory)
 
-    def _visit_registry_child(parent: _RegistryKey, name: str) -> None:
+    def _visit_registry_child(parent: winreg.HKEYType, name: str) -> None:
         try:
             with winreg.OpenKey(parent, name) as key:
                 _add_registry_player_path(key)
         except OSError, ValueError:
             pass
 
-    def _visit_registry_parent(parent: _RegistryKey, name: str) -> None:
+    def _visit_registry_parent(parent: winreg.HKEYType, name: str) -> None:
         try:
             with winreg.OpenKey(parent, name) as key:
                 _add_registry_player_path(key)
@@ -1328,7 +1222,7 @@ class ModificationManager(QObject):
             return cache_file.read_bytes()
 
         try:
-            data = _http_get(url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
+            data = http_get(url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
         except URLError as exc:
             msg = f'CDN download failed: {exc}'
             raise RuntimeError(msg) from exc
@@ -1372,19 +1266,16 @@ class ModificationManager(QObject):
     @staticmethod
     def _convert_obj_to_mesh(data: bytes) -> bytes:
         """Convert OBJ bytes → Roblox V2.00 .mesh bytes."""
-        parse_obj_for_mesh, export_v2_mesh = _obj_converter_functions()
         obj_text = data.decode('utf-8', errors='replace')
-        vertices, colors, indices = parse_obj_for_mesh(obj_text)
-        return export_v2_mesh(vertices, colors, indices)
+        vertices, colors, indices = obj_to_mesh.parse_obj_for_mesh(obj_text)
+        return obj_to_mesh.export_v2_mesh(vertices, colors, indices)
 
     @staticmethod
     def _is_ktx(data: bytes) -> bool:
         return strip_prefixed_ktx(data) is not None
 
     def _convert_replacement_to_ktx2(self, target_path: str, data: bytes) -> bytes:
-        image_module = _image_module()
-        rgba_ktx2 = _rgba_ktx2_module()
-        image = image_module.open(io.BytesIO(data)).convert('RGBA')
+        image = Image.open(io.BytesIO(data)).convert('RGBA')
         width, height = image.size
         mipmap_mode = rgba_ktx2.mipmap_mode_for_texture_name(target_path)
         digest = hashlib.sha256(

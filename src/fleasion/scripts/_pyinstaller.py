@@ -14,7 +14,7 @@ def run_pyinstaller(
     if not skip_setup_logging:
         setup_script_logging()
 
-    pyinstaller_main = importlib.import_module('PyInstaller.__main__')
+    pyinstaller_main = importlib.import_module('PyInstaller.__main__')  # ruff: ignore[banned-api] - Untyped dev tool
     pyinstaller_main.run(arguments)
 
 

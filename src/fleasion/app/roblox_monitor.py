@@ -13,7 +13,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from fleasion.localization import tr
-from fleasion.proxy import check_and_patch_running_roblox_ca
+from fleasion.proxy.master import check_and_patch_running_roblox_ca
 from fleasion.utils import (
     delete_cache,
     get_icon_path,

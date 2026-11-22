@@ -8,7 +8,6 @@ Unknown prefixes are never manufactured from raw binary strings.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import math
 import os
@@ -37,11 +36,11 @@ from fleasion.modifications.fflag_pe import (
 from fleasion.modifications.fflag_x86_initializers import extract_x86_compiled_initializers
 from fleasion.utils.json_types import as_object_dict, as_object_list
 from fleasion.utils.paths import CONFIG_DIR, LOCAL_APPDATA
+lazy from fleasion.utils import platform_linux
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
 
-    from fleasion.utils.linux_clients import LinuxClientInstallation
 
 _KIND = Literal[
     'bool',
@@ -1135,13 +1134,7 @@ def _android_member(path: Path) -> str | None:
 
 
 def _detect_linux_binary() -> ClientBinary | None:
-    callback = cast(
-        'Callable[[], LinuxClientInstallation | None]',
-        importlib.import_module(
-            'fleasion.utils.platform_linux'
-        ).get_selected_linux_client_installation,
-    )
-    installation = callback()
+    installation = platform_linux.get_selected_linux_client_installation()
     if installation is None:
         return None
     if installation.client.runtime == 'rosemary':

@@ -20,7 +20,6 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
-import importlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,6 +27,8 @@ import zstandard
 from defusedxml.ElementTree import parse as _xml_parse
 
 from fleasion.utils import APP_CACHE_DIR, log_buffer
+lazy from fleasion.cache import mesh_processing
+lazy from fleasion.cache.tools.solidmodel_converter import converter, csg_mesh
 
 if TYPE_CHECKING:
     from .csg_mesh import CSGVertex
@@ -101,7 +102,6 @@ def mesh_file_to_cached_obj(mesh_path: Path) -> Path:
         If ``mesh_processing.convert`` fails to produce OBJ content.
     """
     # Keep DracoPy and mesh-processing startup cost out of the import path.
-    mesh_processing = importlib.import_module('fleasion.cache.mesh_processing')
     mesh_to_obj_str = mesh_processing.convert
 
     mesh_path = Path(mesh_path).resolve()
@@ -229,8 +229,6 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
         produces no geometry.
     """
     # Keep startup light and avoid the converter/csg import cycle.
-    converter = importlib.import_module('.converter', __package__)
-    csg_mesh = importlib.import_module('.csg_mesh', __package__)
     deserialize_rbxm = converter.deserialize_rbxm
     parse_csg_mesh = csg_mesh.parse_csg_mesh
 
@@ -293,7 +291,6 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
 
 def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:
     """Parse MeshData from an RBXMX SolidModel export and convert to a cached OBJ."""
-    csg_mesh = importlib.import_module('.csg_mesh', __package__)
     parse_csg_mesh = csg_mesh.parse_csg_mesh
 
     rbxmx_path = Path(rbxmx_path).resolve()
