@@ -89,20 +89,23 @@ class _BrowserCookieModule(Protocol):
 # only needed once a browser cookie is actually read
 _browser_cookie3: _BrowserCookieModule | None = None
 _browser_cookie3_loaded = False
+_browser_cookie3_lock = threading.Lock()
 
 
 def _load_browser_cookie3() -> _BrowserCookieModule | None:
     global _browser_cookie3, _browser_cookie3_loaded  # ruff: ignore[global-statement]
-    if _browser_cookie3 is not None or _browser_cookie3_loaded:
+    # Concurrent cookie reads must wait for the first import, not see it as missing
+    with _browser_cookie3_lock:
+        if _browser_cookie3 is not None or _browser_cookie3_loaded:
+            return _browser_cookie3
+        _browser_cookie3_loaded = True
+        if sys.platform == 'darwin' or sys.platform.startswith('linux'):
+            try:
+                import browser_cookie3 as module  # pyright: ignore[reportMissingTypeStubs]  # ruff: ignore[import-outside-top-level]
+            except ImportError:
+                return None
+            _browser_cookie3 = cast('_BrowserCookieModule', module)
         return _browser_cookie3
-    _browser_cookie3_loaded = True
-    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
-        try:
-            import browser_cookie3 as module  # pyright: ignore[reportMissingTypeStubs]  # ruff: ignore[import-outside-top-level]
-        except ImportError:
-            return None
-        _browser_cookie3 = cast('_BrowserCookieModule', module)
-    return _browser_cookie3
 
 
 class _FernetCipher(Protocol):

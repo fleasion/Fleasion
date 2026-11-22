@@ -464,11 +464,13 @@ def _decode_draco_vertices(
     if stream_size != len(data) - 4:
         msg = 'COREMESH v2 Draco size does not match chunk size'
         raise MeshRigError(msg)
-    if not mesh_processing.DRACO_AVAILABLE:
+    # DracoPy can be installed yet fail to load, so check the module itself
+    draco = mesh_processing.draco_module() if mesh_processing.DRACO_AVAILABLE else None
+    if draco is None:
         msg = 'DracoPy is required to export a v7 rig'
         raise MeshRigError(msg)
 
-    decoder = cast('_DracoDecoder', mesh_processing.draco_module())
+    decoder = cast('_DracoDecoder', draco)
     try:
         mesh = decoder.decode(data[4:])
     except Exception as exc:

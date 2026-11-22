@@ -487,8 +487,9 @@ def recent_selected_linux_client_installation(
 
 def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve Auto from the newest detected client without inheriting proxy ownership."""
+    global _recent_selection  # ruff: ignore[global-statement]
     selected = _resolve_selected_linux_client_installation()
-    globals()['_recent_selection'] = (time.monotonic(), selected)
+    _recent_selection = (time.monotonic(), selected)
     return selected
 
 
