@@ -121,7 +121,11 @@ from fleasion.modifications.fflag_windows_catalog import (
     scan_windows_player,
     selectable_qualified_name,
 )
-from fleasion.modifications.manager import normalise_target_path, target_path_for_roblox_dir
+from fleasion.modifications.manager import (
+    MOD_ORIGINALS_DIR,
+    normalise_target_path,
+    target_path_for_roblox_dir,
+)
 from fleasion.modifications.platform_targets import (
     read_current_platform_original_asset,
     target_path_for_current_platform,
@@ -163,7 +167,6 @@ lazy from fleasion.gui.windows_hotkeys import (
     modifier_mask_for_virtual_key,
 )
 lazy from fleasion.modifications.dds_to_png import tex_to_png_bytes
-lazy from fleasion.modifications.manager import MOD_ORIGINALS_DIR
 lazy from fleasion.proxy.addons.custom_fflags import normalize_custom_fflags
 lazy from fleasion.proxy.addons.profile_picture_spoofer import clean_local_path, is_remote_image_url
 lazy from fleasion.proxy.original_thumbnail import fetch_original_avatar_url

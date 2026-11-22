@@ -44,12 +44,11 @@ from fleasion.utils.roblox_auth import (
     get_roblosecurity as _get_roblosecurity,
     wait_for_roblosecurity as _wait_for_roblosecurity,
 )
-from fleasion.utils.windows import launch_as_standard_user
+from fleasion.utils.windows import is_roblox_running, launch_as_standard_user
 from fleasion.widgets.spacing import CONTROL_HEIGHT, GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
 lazy from fleasion.gui.delete_cache import DeleteCacheWindow
 lazy from fleasion.utils.verified_direct_https import VerifiedDirectHTTPSAdapter
-lazy from fleasion.utils.windows import is_roblox_running
 
 lazy from . import macos_rosemary_launch, rando_stuff_tab
 lazy from .prejsons_dialog import (
@@ -58,7 +57,6 @@ lazy from .prejsons_dialog import (
     make_rounded_pixmap,
     preprocess_thumb_bytes,
 )
-lazy from .rando_stuff_tab import build_auth_ticket_place_uri, refresh_authenticated_launch_uri
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -1947,7 +1945,7 @@ class SubplaceJoinerTab(QWidget):
                     )
                     return
 
-                roblox_player_uri = build_auth_ticket_place_uri(
+                roblox_player_uri = rando_stuff_tab.build_auth_ticket_place_uri(
                     ticket, str(place_id), job_id=job_id
                 )
                 log_buffer.log(
@@ -1976,7 +1974,9 @@ class SubplaceJoinerTab(QWidget):
                         'Cannot join a specific job or selected account: auth ticket unavailable',
                     )
                     return
-                target = build_auth_ticket_place_uri(ticket, str(place_id), job_id=job_id)
+                target = rando_stuff_tab.build_auth_ticket_place_uri(
+                    ticket, str(place_id), job_id=job_id
+                )
                 if sys.platform == 'darwin':
                     launched = self._launch_roblox_uri(target, retry_cookie=cookie)
                 else:
@@ -1996,7 +1996,7 @@ class SubplaceJoinerTab(QWidget):
         """Launch user-requested joins with the active managed platform client."""
         if sys.platform == 'darwin':
             refresh = (
-                (lambda: refresh_authenticated_launch_uri(target, retry_cookie))
+                (lambda: rando_stuff_tab.refresh_authenticated_launch_uri(target, retry_cookie))
                 if retry_cookie is not None
                 else None
             )

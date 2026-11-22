@@ -22,7 +22,6 @@ from fleasion.utils import (
     wait_for_roblox_exit,
 )
 lazy from fleasion.utils import platform_linux, platform_macos, platform_windows
-lazy from fleasion.utils.platform_linux import relaunch_stud_with_proxy_env
 
 if TYPE_CHECKING:
     import threading
@@ -212,7 +211,7 @@ def create_env_proxy_lifecycle(
         ) -> bool:
             selected = platform_linux.get_selected_linux_client_installation()
             if selected is not None and selected.stud_managed:
-                return relaunch_stud_with_proxy_env(
+                return platform_linux.relaunch_stud_with_proxy_env(
                     proxy_url, target, cancel_event, source_exe_path, player_already_stopped
                 )
             log_buffer.log(

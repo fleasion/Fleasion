@@ -59,12 +59,6 @@ from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
 lazy from fleasion.gui.delete_cache import DeleteCacheWindow
 lazy from fleasion.utils import anim_converter, platform_linux
-lazy from fleasion.utils.anim_converter import curve_anim_to_keyframe, rbxm_to_rbxmx
-lazy from fleasion.utils.platform_linux import (
-    recent_selected_linux_client_key,
-    selected_linux_client_display_name,
-    selected_linux_client_key,
-)
 lazy from fleasion.utils.r15_to_r6 import (
     convert_keyframe_r6_to_r15,
     convert_keyframe_r15_to_r6,
@@ -494,7 +488,7 @@ def _linux_client_display_name() -> str:
     if not IS_LINUX:
         return tr('rando.linux_roblox_client')
     try:
-        return selected_linux_client_display_name()
+        return platform_linux.selected_linux_client_display_name()
     except ImportError, KeyError, OSError, RuntimeError:
         return tr('rando.linux_roblox_client')
 
@@ -504,7 +498,7 @@ def _is_rosemary_client() -> bool:
     if not IS_LINUX:
         return False
 
-    return selected_linux_client_key() == 'rosemary'
+    return platform_linux.selected_linux_client_key() == 'rosemary'
 
 
 def _recently_selected_rosemary_client() -> bool:
@@ -512,7 +506,7 @@ def _recently_selected_rosemary_client() -> bool:
     if not IS_LINUX:
         return False
 
-    return recent_selected_linux_client_key() == 'rosemary'
+    return platform_linux.recent_selected_linux_client_key() == 'rosemary'
 
 
 def _build_roblox_player_uri(
@@ -2763,7 +2757,7 @@ class RandoStuffTab(QWidget):
         # Auto-convert binary .rbxm -> .rbxmx so _ac_convert has XML to work with
         if p.suffix.lower() == '.rbxm':
             try:
-                data = rbxm_to_rbxmx(data)
+                data = anim_converter.rbxm_to_rbxmx(data)
                 self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.auto_converted_rbxm_rbxmx'))
             except (ImportError, KeyError, RuntimeError, TypeError, ValueError) as exc:
                 self._ac_status_lbl.setText(
@@ -2784,7 +2778,7 @@ class RandoStuffTab(QWidget):
     def _convert_loaded_animation(self, target: str) -> None:
         xml_bytes = self._ac_xml_bytes
         if b'CurveAnimation' in xml_bytes:
-            xml_bytes = curve_anim_to_keyframe(xml_bytes)
+            xml_bytes = anim_converter.curve_anim_to_keyframe(xml_bytes)
 
         root = DefusedElementTree.fromstring(sanitize_xml(xml_bytes))
         ks = root.find("Item[@class='KeyframeSequence']")

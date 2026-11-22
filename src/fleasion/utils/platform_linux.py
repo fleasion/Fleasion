@@ -7,7 +7,6 @@ import os
 import threading
 
 lazy from . import stud_relaunch
-lazy from .stud_relaunch import stud_player_launch_uri
 
 try:
     import pwd
@@ -1451,7 +1450,7 @@ def relaunch_stud_with_proxy_env(  # ruff: ignore[too-many-return-statements]
         if target is None:
             # A Stud/browser launch can contain a one-use join ticket. Preserve
             # the exact URI only in memory, and never log its contents
-            target = stud_player_launch_uri(session, proc_root=PROC_ROOT)
+            target = stud_relaunch.stud_player_launch_uri(session, proc_root=PROC_ROOT)
         prefix = installation.app_bundle.parent.parent.parent / 'prefix'
         if not stud_relaunch.stop_stud_session(
             session,

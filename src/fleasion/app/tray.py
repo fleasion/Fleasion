@@ -1183,7 +1183,9 @@ class SystemTray:
         icon_path: Path | None,
         app_id: str,
     ) -> None:
-        notify = importlib.import_module('win11toast').notify  # ruff: ignore[banned-api] - Windows-only dependency
+        # The win11toast package is only installed on Windows and, unlike winreg, has no stub,
+        # so a static import would fail type checking on other platforms
+        notify = importlib.import_module('win11toast').notify  # ruff: ignore[banned-api]
         notify(
             title=title,
             body=message,

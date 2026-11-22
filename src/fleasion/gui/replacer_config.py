@@ -96,7 +96,6 @@ from fleasion.widgets.menu_items import draw_menu_item
 from fleasion.widgets.spacing import GAP, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
 lazy from fleasion.cache import asset_type_filter, cache_manager as cache_manager_module
-lazy from fleasion.cache.asset_type_filter import CategoryFilterPopup
 
 from . import command_palette, glass
 from .command_palette import Command
@@ -923,7 +922,7 @@ class ReplacerConfigWindow(QDialog):
         self.undo_manager = UndoManager()
         self.undo_manager.save_state(self._replacement_rules, copy_state=False)
         self.config_enabled_vars: dict[str, QWidget] = {}
-        self._asset_types_popup: CategoryFilterPopup | None = None
+        self._asset_types_popup: asset_type_filter.CategoryFilterPopup | None = None
         self._asset_types_popup_last_closed = 0.0
         self._dialog_asset_types_popup_last_closed = 0.0
         self._dialog_asset_types_popup: QMenu | None = None
@@ -3066,7 +3065,7 @@ class ReplacerConfigWindow(QDialog):
         return ids
 
     @property
-    def asset_types_popup(self) -> CategoryFilterPopup:
+    def asset_types_popup(self) -> asset_type_filter.CategoryFilterPopup:
         """Asset Types popup, built on first use since it holds about 80 checkboxes."""
         popup = self._asset_types_popup
         if popup is None:
@@ -3074,8 +3073,8 @@ class ReplacerConfigWindow(QDialog):
             self._asset_types_popup = popup
         return popup
 
-    def _new_asset_types_popup(self) -> CategoryFilterPopup:
-        popup = CategoryFilterPopup(parent=self)
+    def _new_asset_types_popup(self) -> asset_type_filter.CategoryFilterPopup:
+        popup = asset_type_filter.CategoryFilterPopup(parent=self)
         popup.filters_changed.connect(self._on_asset_types_changed)
         popup.aboutToHide.connect(self._mark_asset_types_popup_closed)
         return popup

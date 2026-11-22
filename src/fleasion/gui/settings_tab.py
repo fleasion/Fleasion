@@ -54,7 +54,7 @@ from fleasion.utils.roblox_auth import (
 )
 from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
-lazy from fleasion.utils import linux_clients
+lazy from fleasion.utils import linux_clients, platform_linux
 
 from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpinBox
 lazy from . import delete_cache, rando_stuff_tab
@@ -64,9 +64,6 @@ if TYPE_CHECKING:
 
     from fleasion.app.tray import SystemTray
     from fleasion.config.manager import ConfigManager
-
-
-lazy from fleasion.utils import platform_linux
 
 
 def _set_signals_blocked(obj: QObject, *, blocked: bool) -> None:

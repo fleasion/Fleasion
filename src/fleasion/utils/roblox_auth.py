@@ -29,12 +29,12 @@ from .linux_clients import (
     NIGHTCAP_CLIENT,
     SOBER_CLIENT,
     LinuxClientInstallation,
+    rosemary_guest_home,
     running_mocktail_players,
 )
 from .logging import log_buffer
 from .paths import CONFIG_DIR, CONFIG_FILE, LOCAL_APPDATA, USER_HOME
 from .secure_tokens import decrypt_token, encrypt_token
-lazy from .linux_clients import rosemary_guest_home
 
 if sys.platform.startswith('linux'):
     from . import platform_linux as _platform_linux

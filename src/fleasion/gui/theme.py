@@ -6,8 +6,6 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-lazy from fleasion.appearance import appearance_style
-
 lazy from . import glass
 lazy from .glass.state import state
 lazy from .glass.style import glass_colors
@@ -19,7 +17,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QColorDialog, QStyle, QWidget
 
-from fleasion.appearance import DEFAULT_ACCENT, accent_name, color_mode
+from fleasion.appearance import DEFAULT_ACCENT, accent_name, appearance_style, color_mode
 from fleasion.appearance.colors import apply_accent, luminance
 from fleasion.appearance.palettes import (
     ThemeColors,

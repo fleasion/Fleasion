@@ -352,7 +352,7 @@ hiddenimports: list[str] = _runtime_fleasion_modules()
 # few modules are still imported by a name built at runtime (translation
 # tables, the platform backend in fleasion.utils.windows). Include every
 # Fleasion runtime module so those stay bundled. Build orchestration and
-# privileged-helper entry points are excluded above.
+# privileged-helper entry points are excluded above
 
 # NumPy is imported from feature modules that are not all reached during the
 # launcher import walk. Its hidden import invokes PyInstaller's NumPy hook,

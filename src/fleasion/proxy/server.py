@@ -48,10 +48,9 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 lazy import zstandard
 
-from fleasion.utils import macos_rosemary_gate
+from fleasion.utils import is_roblox_running, log_buffer, macos_rosemary_gate
 from fleasion.utils.json_types import JsonValue
 from fleasion.utils.sober_bootstrap_keys import native_keylog_path
-lazy from fleasion import utils
 lazy from fleasion.cache.tools.solidmodel_converter import obj_to_mesh
 lazy from fleasion.utils import anim_converter, certs, linux_clients
 
@@ -169,13 +168,9 @@ _GET_MODIFIED_FIRST_LINE_ATTR = '_get_modified_first_line'
 _PENDING_INTERCEPT_SLOTS = ('entry_id', 'stage', 'data', 'event', 'action')
 
 
-def _get_log_buffer() -> LogBuffer:
-    return utils.log_buffer
-
-
 def _roblox_player_running_for_disconnect() -> bool:
     """Check the real Player process only after a connection-level failure."""
-    return utils.is_roblox_running()
+    return is_roblox_running()
 
 
 async def _was_splice_disconnected_by_player_exit(exc: BaseException) -> bool:
@@ -197,7 +192,7 @@ async def _was_splice_disconnected_by_player_exit(exc: BaseException) -> bool:
 
 def _best_effort_log(category: str, message: str) -> None:
     try:
-        _get_log_buffer().log(category, message)
+        log_buffer.log(category, message)
     except AttributeError, ImportError, OSError, RuntimeError:
         logger.debug('%s', message)
 
@@ -217,7 +212,7 @@ def _zstd_or[T](operation: Callable[[], T], fallback: T) -> T:
     try:
         return operation()
     except ImportError:
-        # zstandard failed to load, so the except clause below cannot name its error
+        # The zstandard module failed to load, so the next clause cannot name its error
         return fallback
     except AttributeError, TypeError, ValueError, zstandard.ZstdError:
         return fallback
@@ -658,7 +653,6 @@ def apply_auto_replace_rules(
     """
     if not rules or not body:
         return body, False
-    log_buffer = _get_log_buffer()
 
     changed = False
     result = body
@@ -2619,8 +2613,6 @@ class FleasionProxy:
         try:
             refreshed_raw = await asyncio.to_thread(refresher, host)
         except Exception as exc:  # ruff: ignore[blind-except]
-            log_buffer = _get_log_buffer()
-
             log_buffer.log('Proxy', f'Runtime endpoint refresh failed for {host}: {exc}')
             return []
 
@@ -2636,14 +2628,13 @@ class FleasionProxy:
         if callable(update_ips) and candidate_ips:
             _run_isolated(
                 lambda: update_ips({host: candidate_ips}),
-                lambda exc: _get_log_buffer().log(
+                lambda exc: log_buffer.log(
                     'Cache', f'Could not refresh API bypass endpoints for {host}: {exc}'
                 ),
             )
 
         old_ips = ', '.join(endpoint.ip or endpoint.host for endpoint in previous)
         new_ips = ', '.join(endpoint.ip or endpoint.host for endpoint in refreshed)
-        log_buffer = _get_log_buffer()
 
         log_buffer.log(
             'Proxy',
@@ -2695,7 +2686,6 @@ class FleasionProxy:
 
         if isinstance(self._connector, AutoConnector):
             self._connector.note_direct_success(host)
-        log_buffer = _get_log_buffer()
 
         log_buffer.log(
             'Proxy',
@@ -2726,8 +2716,6 @@ class FleasionProxy:
         return None, None, None, [result.error or 'upstream connect failed']
 
     async def log_upstream_self_test(self, hosts: set[str] | None = None) -> None:
-        log_buffer = _get_log_buffer()
-
         hosts_to_test = sorted(hosts or set(self._upstream_endpoints.keys()))
 
         matrix: list[BaseUpstreamConnector] = [self._direct_connector]
@@ -2803,7 +2791,7 @@ class FleasionProxy:
         except ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError:
             return
         except Exception as exc:  # ruff: ignore[blind-except]
-            _get_log_buffer().log('Proxy', f'{error_label} for {host}: {exc}')
+            log_buffer.log('Proxy', f'{error_label} for {host}: {exc}')
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -2859,8 +2847,6 @@ class FleasionProxy:
     async def _handle_explicit_proxy_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        log_buffer = _get_log_buffer()
-
         try:
             connect_headers = await asyncio.wait_for(_read_headers_raw(reader), timeout=15.0)
         except TimeoutError:
@@ -2924,7 +2910,6 @@ class FleasionProxy:
         client_records: Sequence[bytes] = (),
     ) -> None:
         del port
-        log_buffer = _get_log_buffer()
 
         keys = self._splice_keys
         if keys is None:
@@ -3006,8 +2991,6 @@ class FleasionProxy:
     async def _handle_direct_splice(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        log_buffer = _get_log_buffer()
-
         try:
             host, records = await asyncio.wait_for(read_client_hello(reader), timeout=15.0)
             if host not in self._intercept_hosts:
@@ -3119,8 +3102,6 @@ class FleasionProxy:
         port: int,
         log_entry: ProxyRequestLogEntry | None = None,
     ) -> None:
-        log_buffer = _get_log_buffer()
-
         start = time.time()
 
         result = await _open_explicit_proxy_tunnel(host, port)
@@ -3269,8 +3250,6 @@ class FleasionProxy:
         *,
         upstream: UpstreamConnectResult | None = None,
     ) -> None:
-        log_buffer = _get_log_buffer()
-
         response_writer = _ResponseTrackingWriter(writer, self)
         custom_fflag_modifier_present = self.custom_fflag_modifier is not None
         custom_fflag_modifier = cast('CustomFFlagModifier', self.custom_fflag_modifier)
@@ -3640,7 +3619,6 @@ class FleasionProxy:
             repl_path: str,
             required_rig: _AnimRequiredRig = 'any',
         ) -> bytes:
-            log_buffer = _get_log_buffer()
             orig_rig = anim_converter.detect_rig(orig_bytes)
             if required_rig != 'any' and orig_rig not in required_rig:
                 log_buffer.log(

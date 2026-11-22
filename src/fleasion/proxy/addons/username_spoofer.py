@@ -33,10 +33,6 @@ NAME_KEYS = (
 )
 
 
-def _get_roblosecurity() -> str | None:
-    return roblox_auth.get_roblosecurity()
-
-
 def _authenticated_user_id(cookie: str) -> int | None:
     session = requests.Session()
     session.trust_env = False
@@ -190,7 +186,7 @@ class UsernameSpoofer:
 
     @staticmethod
     def _fetch_authenticated_user_id() -> int | None:
-        cookie = _get_roblosecurity()
+        cookie = roblox_auth.get_roblosecurity()
         if not cookie:
             return None
         try:

@@ -153,9 +153,9 @@ unfixable = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Helper daemons run outside the app process, and the macOS one may run on an
-# older system Python, so they keep importlib instead of lazy imports
-'src/fleasion/*_proxy_helper_daemon.py' = ['banned-api']
+# The macOS helper daemon can run from source under an older system Python
+# through launchd, so it keeps importlib instead of lazy imports
+'src/fleasion/macos_proxy_helper_daemon.py' = ['banned-api']
 
 [tool.ruff.format]
 quote-style = "single"

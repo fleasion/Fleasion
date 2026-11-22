@@ -58,7 +58,7 @@ def _call_lifecycle_operation(operation: Callable[[], bool]) -> bool:
 
 
 def _is_gdk_repair_path(path: Path) -> bool:
-    """Avoid importing Windows-only process helpers on non-Windows builds."""
+    """Return whether *path* is a GDK Player, or False where the Windows helpers cannot load."""
     try:
         return platform_windows.is_roblox_gdk_exe_path(path)
     except ImportError, OSError:

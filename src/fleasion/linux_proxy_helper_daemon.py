@@ -7,9 +7,11 @@ import asyncio
 import contextlib
 import errno
 import hashlib
-import importlib
 import json
 import os
+
+lazy from cryptography import x509
+lazy from cryptography.x509.oid import NameOID
 
 try:
     import pwd
@@ -585,20 +587,16 @@ def _validate_install_system_ca_args(ca_cert: str | None) -> Path:
 def _validate_fleasion_ca_certificate(ca_path: Path) -> None:
     """Reject non-Fleasion CA material before installing system trust."""
     try:
-        x509 = importlib.import_module('cryptography.x509')
-        name_oid = importlib.import_module('cryptography.x509.oid').NameOID
-    except (ImportError, AttributeError) as exc:
+        cert = x509.load_pem_x509_certificate(ca_path.read_bytes())
+    except ImportError as exc:
         msg = f'could not load certificate validator: {exc}'
         raise RuntimeError(msg) from exc
-
-    try:
-        cert = x509.load_pem_x509_certificate(ca_path.read_bytes())
     except Exception as exc:
         msg = f'CA certificate is not a valid PEM certificate: {exc}'
         raise RuntimeError(msg) from exc
 
-    cn_attrs = cert.subject.get_attributes_for_oid(name_oid.COMMON_NAME)
-    org_attrs = cert.subject.get_attributes_for_oid(name_oid.ORGANIZATION_NAME)
+    cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    org_attrs = cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
     common_name = cn_attrs[0].value if cn_attrs else ''
     organization = org_attrs[0].value if org_attrs else ''
     if (

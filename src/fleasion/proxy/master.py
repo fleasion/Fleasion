@@ -4159,10 +4159,6 @@ def _install_ca_into_macos_login_keychain(
     }
 
 
-def _macos_resource_root_from_executable(exe_path: Path) -> Path | None:
-    return platform_macos.resource_root_from_executable(exe_path)
-
-
 def _selected_linux_client_installation() -> LinuxClientInstallation | None:
     """Resolve the selected Linux client without importing Linux helpers elsewhere."""
     if not IS_LINUX:
@@ -4294,7 +4290,7 @@ def check_and_patch_running_roblox_ca(  # ruff: ignore[too-many-return-statement
     if IS_MACOS:
         _patch_bootstrapper_ca_backups(ca_pem)
     if IS_MACOS:
-        roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
+        roblox_dir = platform_macos.resource_root_from_executable(exe_path) or exe_path.parent
     elif IS_LINUX:
         dirs = platform_linux.find_roblox_resource_dirs(include_studio=False)
         roblox_dir = dirs[0] if dirs else exe_path.parent
@@ -4879,7 +4875,7 @@ class ProxyMaster:
             return None
         ca_pem = get_ca_pem(ca_cert_path)
         if IS_MACOS:
-            roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
+            roblox_dir = platform_macos.resource_root_from_executable(exe_path) or exe_path.parent
         elif IS_LINUX:
             dirs = platform_linux.find_roblox_resource_dirs(include_studio=False)
             roblox_dir = dirs[0] if dirs else exe_path.parent
@@ -5668,7 +5664,7 @@ class ProxyMaster:
             return
         ca_pem = get_ca_pem(ca_cert_path)
         if IS_MACOS:
-            roblox_dir = _macos_resource_root_from_executable(exe_path) or exe_path.parent
+            roblox_dir = platform_macos.resource_root_from_executable(exe_path) or exe_path.parent
         elif IS_LINUX:
             dirs = platform_linux.find_roblox_resource_dirs(include_studio=False)
             roblox_dir = dirs[0] if dirs else exe_path.parent
