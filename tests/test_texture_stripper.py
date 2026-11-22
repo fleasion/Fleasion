@@ -125,7 +125,7 @@ def _build_texpack_request_slot_map(
 
 
 def _detect_repl_rig(stripper: TextureStripper, local_path: str) -> str:
-    detector = cast('_DetectReplRig', _attr(stripper, '_detect_repl_rig'))
+    detector = cast('_DetectReplRig', _attr(stripper, 'detect_repl_rig'))
     return detector(local_path)
 
 
@@ -293,7 +293,7 @@ def test_local_replacement_takes_priority_over_type_removal(
 def test_whole_texturepack_id_replacement_swaps_parent_without_downloading_xml() -> None:
     class _Scraper:
         @staticmethod
-        def _fetch_asset_with_place_id_retry(*_args: object, **_kwargs: object) -> Never:
+        def fetch_asset_with_place_id_retry(*_args: object, **_kwargs: object) -> Never:
             message = 'whole TexturePack must not be downloaded as a slot image'
             raise AssertionError(message)
 
@@ -430,8 +430,8 @@ def test_animation_precheck_deduplicates_paths_in_first_seen_order(
         return None
 
     monkeypatch.setattr(texture_stripper_module, '_detect_rig', detect)
-    monkeypatch.setattr(stripper, '_get_or_create_converted', convert)
-    monkeypatch.setattr(stripper, '_get_or_create_converted_curve', convert_curve)
+    monkeypatch.setattr(stripper, 'get_or_create_converted', convert)
+    monkeypatch.setattr(stripper, 'get_or_create_converted_curve', convert_curve)
     stripper.precheck_anim_rigs()
     assert seen == [
         (kind, str(path), rig)
@@ -714,10 +714,10 @@ def test_replacement_precheck_stops_and_backs_off_after_network_failure(
             self.calls: list[tuple[str, str]] = []
 
         @staticmethod
-        def _get_roblosecurity(*, wait: bool = False) -> None:
+        def get_roblosecurity(*, wait: bool = False) -> None:
             _ = wait
 
-        def _https_get(self, hostname: str, path: str, **_kwargs: object) -> tuple[None, None]:
+        def https_get(self, hostname: str, path: str, **_kwargs: object) -> tuple[None, None]:
             self.calls.append((hostname, path))
             return None, None
 
@@ -848,11 +848,12 @@ def test_orm_composite_resolves_normal_asset_id_for_variance_mips(
         cache_manager = _CacheManager()
 
         @staticmethod
-        def _get_roblosecurity() -> str:
+        def get_roblosecurity(*, wait: bool = False) -> str:
+            _ = wait
             return 'cookie'
 
         @staticmethod
-        def _fetch_asset_with_place_id_retry(
+        def fetch_asset_with_place_id_retry(
             asset_id: str, extra_headers: dict[str, str] | None = None
         ) -> tuple[bytes, int]:
             assert asset_id == '98765'

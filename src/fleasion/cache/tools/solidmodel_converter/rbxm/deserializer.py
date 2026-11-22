@@ -47,7 +47,7 @@ FILE_HEADER_SIZE = 32  # 14 (magic+sig) + 2 (version) + 4 + 4 + 8 (reserved)
 ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 
 
-def _decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
+def decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
     if raw.startswith(ZSTD_MAGIC):
         try:
             decompressor = zstandard.ZstdDecompressor()
@@ -161,7 +161,7 @@ class RbxmDeserializer:
                 offset += uncompressed_size
             else:
                 raw = data[offset : offset + compressed_size]
-                chunk_data = _decompress_chunk(raw, uncompressed_size)
+                chunk_data = decompress_chunk(raw, uncompressed_size)
                 offset += compressed_size
 
             self._process_chunk(chunk_name, chunk_data)

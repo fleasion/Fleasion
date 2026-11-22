@@ -19,9 +19,8 @@ if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
     from collections.abc import Callable
 
-from .tools.solidmodel_converter.rbxm import deserializer as rbxm_deserializer
 from .tools.solidmodel_converter.rbxm.binary_reader import read_string
-from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
+from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer, decompress_chunk
 from .tools.solidmodel_converter.rbxm.serializer import write_rbxm
 from .tools.solidmodel_converter.rbxm.types import (
     PROPERTY_FORMAT_TO_XML_TAG,
@@ -38,8 +37,6 @@ PLACE_ASSET_TYPE = 9
 
 type RobloxDocumentKind = Literal['rbxm', 'rbxmx', 'rbxl']
 type NumberCaster = type[int | float]
-
-_decompress_chunk: Callable[[bytes, int], bytes] = vars(rbxm_deserializer)['_decompress_chunk']
 
 
 def _rbxm_parse_errors() -> tuple[type[Exception], ...]:
@@ -190,7 +187,7 @@ def _scan_binary_chunks_for_class(data: bytes, class_name: str) -> bool:
             offset += compressed_size
             if chunk_name != 'INST':
                 continue
-            chunk_data = _decompress_chunk(raw, uncompressed_size)
+            chunk_data = decompress_chunk(raw, uncompressed_size)
 
         found_class, _ = read_string(chunk_data, 4)
         if found_class == class_name:

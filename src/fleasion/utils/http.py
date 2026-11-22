@@ -11,7 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from functools import lru_cache
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import certifi
 
@@ -161,9 +161,13 @@ class _IPv4FirstHTTPHandler(urllib.request.HTTPHandler):
 
 
 class _IPv4FirstHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, *, context: ssl.SSLContext | None) -> None:
+        super().__init__(context=context)
+        # The base class keeps it as _context, which typeshed does not declare
+        self._ipv4_context = context
+
     def https_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
-        context = cast('ssl.SSLContext', vars(self)['_context'])
-        return self.do_open(_IPv4FirstHTTPSConnection, req, context=context)
+        return self.do_open(_IPv4FirstHTTPSConnection, req, context=self._ipv4_context)
 
 
 def _urlopen(

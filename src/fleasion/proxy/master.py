@@ -140,8 +140,6 @@ IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
 IS_LINUX = sys.platform.startswith('linux')
 _WINDOWS_PROACTOR_ACCEPT_WINERROR = 10014
-_OS_CHFLAGS_ATTR = 'chflags'
-_SOCKET_GETSOCKNAME_ATTR = 'getsockname'
 _SYSTEM_ROOT_ENV_KEY = 'System' + 'Root'
 _UNSPECIFIED_IPV4 = str(ipaddress.IPv4Address(0))
 
@@ -202,7 +200,7 @@ def _run_text_command(
 def _socket_local_address(socket_obj: object | None) -> object | None:
     if socket_obj is None:
         return None
-    getsockname_value = getattr(socket_obj, _SOCKET_GETSOCKNAME_ATTR, None)
+    getsockname_value = getattr(socket_obj, 'getsockname', None)
     if not callable(getsockname_value):
         return None
     getsockname = cast('Callable[[], object]', getsockname_value)
@@ -3442,7 +3440,7 @@ def _clear_cacert_write_barriers(path: Path) -> None:
     except OSError:
         current_flags = 0
 
-    chflags_value = getattr(os, _OS_CHFLAGS_ATTR, None)
+    chflags_value = getattr(os, 'chflags', None)
     if current_flags and callable(chflags_value):
         immutable_mask = 0
         for name in ('UF_IMMUTABLE', 'UF_APPEND', 'SF_IMMUTABLE', 'SF_APPEND'):

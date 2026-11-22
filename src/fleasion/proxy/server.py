@@ -159,12 +159,6 @@ type _JsonPathTarget = tuple[list[JsonValue], int] | tuple[dict[str, JsonValue],
 type _AnimRequiredRig = str | frozenset[str]
 type _AnimPendingValue = tuple[str, _AnimRequiredRig]
 
-_CREATE_PENDING_ATTR = '_create_pending'
-_RESOLVE_PENDING_ATTR = '_resolve_pending'
-_DETECT_REPL_RIG_ATTR = '_detect_repl_rig'
-_GET_CONVERTED_CURVE_ATTR = '_get_or_create_converted_curve'
-_GET_CONVERTED_ATTR = '_get_or_create_converted'
-_GET_MODIFIED_FIRST_LINE_ATTR = '_get_modified_first_line'
 _PENDING_INTERCEPT_SLOTS = ('entry_id', 'stage', 'data', 'event', 'action')
 
 
@@ -269,35 +263,6 @@ class _TextureBatchProcessor(Protocol):
         req_headers: dict[bytes, bytes],
         batch_id: str = '',
     ) -> bytes | None: ...
-
-
-def _texture_detect_repl_rig(texture_stripper: TextureStripper, repl_path: str) -> str:
-    detector = cast('Callable[[str], str]', getattr(texture_stripper, _DETECT_REPL_RIG_ATTR))
-    return detector(repl_path)
-
-
-def _texture_get_converted_curve(
-    texture_stripper: TextureStripper, repl_path: str, target_rig: str
-) -> str | None:
-    converter = cast(
-        'Callable[[str, str], str | None]',
-        getattr(texture_stripper, _GET_CONVERTED_CURVE_ATTR),
-    )
-    return converter(repl_path, target_rig)
-
-
-def _texture_get_converted(
-    texture_stripper: TextureStripper, repl_path: str, target_rig: str
-) -> str | None:
-    converter = cast(
-        'Callable[[str, str], str | None]', getattr(texture_stripper, _GET_CONVERTED_ATTR)
-    )
-    return converter(repl_path, target_rig)
-
-
-def _flow_request_modified_first_line(request: _FlowRequest, original: bytes) -> bytes:
-    getter = cast('Callable[[bytes], bytes]', getattr(request, _GET_MODIFIED_FIRST_LINE_ATTR))
-    return getter(original)
 
 
 @dataclass
@@ -972,18 +937,10 @@ class _ResponseTrackingWriter:
             await self._writer.drain()
             _ack_if_unchanged(held)
             return
-        create_pending = cast(
-            'Callable[[ProxyRequestLogEntry, str, bytes], PendingIntercept]',
-            getattr(self._proxy, _CREATE_PENDING_ATTR),
-        )
-        resolve_pending = cast(
-            'Callable[[ProxyRequestLogEntry, str], None]',
-            getattr(self._proxy, _RESOLVE_PENDING_ATTR),
-        )
-        pending = create_pending(entry, 'response', held)
+        pending = self._proxy.create_pending(entry, 'response', held)
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, pending.event.wait)
-        resolve_pending(entry, 'response')
+        self._proxy.resolve_pending(entry, 'response')
         if pending.action == 'drop':
             entry['response_raw'] = bytearray(pending.data)
             entry['dropped_response'] = True
@@ -1713,7 +1670,7 @@ class _FlowRequest:
     def url(self, value: str) -> None:
         self._path = urlparse(value).path
 
-    def _get_modified_first_line(self, original: bytes) -> bytes:
+    def get_modified_first_line(self, original: bytes) -> bytes:
         if self._path == self._original_path:
             return original
         parts = original.split(b' ', 2)
@@ -2401,7 +2358,7 @@ class FleasionProxy:
         text = self._intercept_match_text
         return text in host.lower() or text in path.lower()
 
-    def _create_pending(
+    def create_pending(
         self, entry: ProxyRequestLogEntry, stage: str, data: bytes
     ) -> PendingIntercept:
         pending = PendingIntercept(entry['id'], stage, data)
@@ -2411,7 +2368,7 @@ class FleasionProxy:
         entry['was_intercepted'] = True
         return pending
 
-    def _resolve_pending(self, entry: ProxyRequestLogEntry, stage: str) -> None:
+    def resolve_pending(self, entry: ProxyRequestLogEntry, stage: str) -> None:
         with self._pending_lock:
             self._pending.pop((entry['id'], stage), None)
         if entry.get('pending_stage') == stage:
@@ -3592,7 +3549,7 @@ class FleasionProxy:
                 action = 'continue' if _keep_alive(req_first, req_headers) else 'break'
                 return gamejoin_flow, action
 
-            new_first = _flow_request_modified_first_line(gamejoin_flow.request, req_first)
+            new_first = gamejoin_flow.request.get_modified_first_line(req_first)
             new_body = gamejoin_flow.request.raw_content
             new_headers = gamejoin_flow.request.headers.to_bytes_dict()
             request_changed = (
@@ -3628,7 +3585,7 @@ class FleasionProxy:
                 return orig_bytes
             if anim_converter.is_curve_animation(orig_bytes):
                 if orig_rig == 'unknown':
-                    target_rig = _texture_detect_repl_rig(self.texture_stripper, repl_path)
+                    target_rig = self.texture_stripper.detect_repl_rig(repl_path)
                     if target_rig == 'unknown':
                         target_rig = 'R15'
                 else:
@@ -3637,8 +3594,8 @@ class FleasionProxy:
                 if not repl_p.exists():
                     log_buffer.log('AnimConv', f'Replacement file not found: {repl_p.name}')
                     return orig_bytes
-                conv_path = _texture_get_converted_curve(
-                    self.texture_stripper, repl_path, target_rig
+                conv_path = self.texture_stripper.get_or_create_converted_curve(
+                    repl_path, target_rig
                 )
                 if conv_path:
                     log_buffer.log(
@@ -3657,14 +3614,14 @@ class FleasionProxy:
                 orig_rig if orig_rig != 'unknown' else anim_converter.detect_player_rig(orig_bytes)
             )
             if conv_rig != 'unknown':
-                repl_rig = _texture_detect_repl_rig(self.texture_stripper, repl_path)
+                repl_rig = self.texture_stripper.detect_repl_rig(repl_path)
                 if repl_rig == 'unknown':
                     log_buffer.log(
                         'AnimConv',
                         f'Rig detection unknown for replacement: {Path(repl_path).name}',
                     )
                 elif repl_rig != conv_rig:
-                    conv = _texture_get_converted(self.texture_stripper, repl_path, conv_rig)
+                    conv = self.texture_stripper.get_or_create_converted(repl_path, conv_rig)
                     if conv:
                         final_path = conv
             final = Path(final_path)
@@ -3821,11 +3778,11 @@ class FleasionProxy:
                     )
 
                     if self._intercept_matches(host, path):
-                        req_pending = self._create_pending(
+                        req_pending = self.create_pending(
                             log_entry, 'request', bytes(log_entry['request_raw'])
                         )
                         await asyncio.get_event_loop().run_in_executor(None, req_pending.event.wait)
-                        self._resolve_pending(log_entry, 'request')
+                        self.resolve_pending(log_entry, 'request')
                         edited_request = bytes(req_pending.data)
                         log_entry['request_raw'] = edited_request
                         if req_pending.action == 'drop':

@@ -21,7 +21,7 @@ import zlib
 from collections import OrderedDict
 from pathlib import Path
 from threading import Lock, Thread
-from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, overload
 from urllib.parse import parse_qsl, urlparse, urlsplit
 lazy import xml.etree.ElementTree as ET  # ruff: ignore[suspicious-xml-etree-import] - Writer only
 
@@ -126,32 +126,18 @@ class _CacheScraperLike(Protocol):
         extra_headers: dict[str, str] | None = None,
     ) -> tuple[bytes | None, int | None]: ...
 
-
-class _RoblosecurityGetter(Protocol):
-    def __call__(self, *, wait: bool = False) -> str | None: ...
-
-
-class _AssetRetryGetter(Protocol):
-    def __call__(
-        self,
-        asset_id: str,
-        *,
-        extra_headers: dict[str, str] | None = None,
-    ) -> tuple[bytes | None, int | None]: ...
-
-
-class _HttpsBodyGetter(Protocol):
-    def __call__(
+    @overload
+    def https_get(
         self,
         hostname: str,
         path: str,
         *,
         extra_headers: dict[str, str] | None = None,
+        return_status: Literal[False] = False,
     ) -> bytes | None: ...
 
-
-class _HttpsStatusGetter(Protocol):
-    def __call__(
+    @overload
+    def https_get(
         self,
         hostname: str,
         path: str,
@@ -159,11 +145,6 @@ class _HttpsStatusGetter(Protocol):
         extra_headers: dict[str, str] | None = None,
         return_status: Literal[True],
     ) -> tuple[bytes | None, int | None]: ...
-
-
-_SCRAPER_HTTPS_GET_ATTR = '_https_get'
-_SCRAPER_PRIVATE_ROBLOSECURITY_ATTR = '_get_roblosecurity'
-_SCRAPER_PRIVATE_ASSET_RETRY_ATTR = '_fetch_asset_with_place_id_retry'
 
 
 class _DynamicBoundaryError(RuntimeError):
@@ -207,16 +188,8 @@ _BEST_EFFORT_ERRORS = (
 
 
 def _scraper_get_roblosecurity(scraper: _CacheScraperLike, *, wait: bool = False) -> str | None:
-    getter = getattr(scraper, 'get_roblosecurity', None)
-    if getter is not None:
-        with _dynamic_boundary:
-            return cast('_RoblosecurityGetter', getter)(wait=wait)
-
-    legacy_getter = cast(
-        '_RoblosecurityGetter', getattr(scraper, _SCRAPER_PRIVATE_ROBLOSECURITY_ATTR)
-    )
     with _dynamic_boundary:
-        return legacy_getter(wait=True) if wait else legacy_getter()
+        return scraper.get_roblosecurity(wait=wait)
 
 
 def _scraper_https_get(
@@ -225,9 +198,8 @@ def _scraper_https_get(
     path: str,
     extra_headers: dict[str, str] | None = None,
 ) -> bytes | None:
-    getter = cast('_HttpsBodyGetter', getattr(scraper, _SCRAPER_HTTPS_GET_ATTR))
     with _dynamic_boundary:
-        return getter(hostname, path, extra_headers=extra_headers)
+        return scraper.https_get(hostname, path, extra_headers=extra_headers)
 
 
 def _scraper_https_get_status(
@@ -236,9 +208,8 @@ def _scraper_https_get_status(
     path: str,
     extra_headers: dict[str, str] | None = None,
 ) -> tuple[bytes | None, int | None]:
-    getter = cast('_HttpsStatusGetter', getattr(scraper, _SCRAPER_HTTPS_GET_ATTR))
     with _dynamic_boundary:
-        return getter(hostname, path, extra_headers=extra_headers, return_status=True)
+        return scraper.https_get(hostname, path, extra_headers=extra_headers, return_status=True)
 
 
 def _scraper_fetch_asset_with_place_id_retry(
@@ -247,11 +218,8 @@ def _scraper_fetch_asset_with_place_id_retry(
     *,
     extra_headers: dict[str, str] | None = None,
 ) -> tuple[bytes | None, int | None]:
-    getter = getattr(scraper, 'fetch_asset_with_place_id_retry', None)
-    if getter is None:
-        getter = getattr(scraper, _SCRAPER_PRIVATE_ASSET_RETRY_ATTR)
     with _dynamic_boundary:
-        return cast('_AssetRetryGetter', getter)(asset_id, extra_headers=extra_headers)
+        return scraper.fetch_asset_with_place_id_retry(asset_id, extra_headers=extra_headers)
 
 
 def _zstd_decompress(data: bytes) -> bytes:
@@ -1529,12 +1497,12 @@ class TextureStripper:
             for target_rig in ('R6', 'R15'):
                 if target_rig == rig:
                     continue
-                self._get_or_create_converted(local_path, target_rig, data=data)
+                self.get_or_create_converted(local_path, target_rig, data=data)
 
             # Pre-create CurveAnimation versions for both rigs (needed when the CDN
             # asset is a CurveAnimation — we must serve back a CurveAnimation)
             for target_rig in ('R6', 'R15'):
-                self._get_or_create_converted_curve(local_path, target_rig, data=data)
+                self.get_or_create_converted_curve(local_path, target_rig, data=data)
             converted += 1
 
         log_buffer.log(
@@ -1542,7 +1510,7 @@ class TextureStripper:
             f'Pre-conversion complete: {format_count(converted, "animation")} processed',
         )
 
-    def _get_or_create_converted(
+    def get_or_create_converted(
         self, local_path: str, target_rig: str, data: bytes | None = None
     ) -> str | None:
         """Return path to a rig-converted copy of local_path, creating it if needed."""
@@ -1584,7 +1552,7 @@ class TextureStripper:
         log_buffer.log('AnimConv', f'Created {target_rig} version: {out_path.name}')
         return str(out_path)
 
-    def _get_or_create_converted_curve(
+    def get_or_create_converted_curve(
         self, local_path: str, target_rig: str, data: bytes | None = None
     ) -> str | None:
         """Return path to a rig-converted CurveAnimation copy of local_path, creating it if needed.
@@ -1635,7 +1603,7 @@ class TextureStripper:
         )
         return str(out_path)
 
-    def _detect_repl_rig(self, local_path: str) -> str:
+    def detect_repl_rig(self, local_path: str) -> str:
         """Detect and cache the rig type of a local replacement animation file."""
         with self._anim_lock:
             if local_path in self._anim_repl_rig:
