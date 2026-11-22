@@ -107,8 +107,16 @@ from fleasion.utils import (
 from fleasion.utils.microprofiler import start_microprofiler
 from fleasion.utils.qt_diagnostics import install_qt_message_logging
 from fleasion.utils.yama_ptrace import read_ptrace_scope, set_warning_callback
+lazy from fleasion.app.dialogs.macos_rosemary_notice import show_macos_rosemary_notice
 lazy from fleasion.modifications.macos_bootstrapper_bridge import MacBootstrapperBridge
-lazy from fleasion.utils import macos_proxy_helper, platform_linux, platform_macos, platform_windows
+lazy from fleasion.utils import (
+    linux_proxy_helper,
+    macos_proxy_helper,
+    platform_linux,
+    platform_macos,
+    platform_windows,
+)
+lazy from fleasion.utils.macos_rosemary_memory import shutdown_active_session
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QSessionManager
@@ -160,11 +168,10 @@ def run_application() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from fleasion.utils.linux_proxy_helper import (  # ruff: ignore[import-outside-top-level]
-            install_privileged_helper,
-        )
 
-        result = install_privileged_helper(enable_promptless=args.linux_helper_promptless)
+        result = linux_proxy_helper.install_privileged_helper(
+            enable_promptless=args.linux_helper_promptless
+        )
         if not result.get('ok'):
             print(
                 f'Failed to install Linux privileged helper: {result.get("error") or result}',
@@ -644,10 +651,6 @@ def run_application() -> None:
     roblox_monitor = RobloxExitMonitor(config_manager, proxy_master, mod_manager, env_lifecycle)
     app.aboutToQuit.connect(roblox_monitor.stop)
     if sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
-        from fleasion.utils.macos_rosemary_memory import (  # ruff: ignore[import-outside-top-level]
-            shutdown_active_session,
-        )
-
         app.aboutToQuit.connect(
             lambda: shutdown_active_session(terminate=config_manager.close_env_proxy_roblox_on_exit)
         )
@@ -660,14 +663,10 @@ def run_application() -> None:
         and proxy_master.is_running
         and config_manager.proxy_mode == 'env'
     ):
-        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-            get_selected_linux_client_installation,
-        )
-
         # Client detection spawns flatpak, so keep it off the GUI thread
         @run_in_thread
         def _check_initial_yama_scope() -> None:
-            selection = get_selected_linux_client_installation()
+            selection = platform_linux.get_selected_linux_client_installation()
             scope = read_ptrace_scope()
             if (
                 selection is not None
@@ -935,9 +934,6 @@ def run_application() -> None:
             if QApplication.activeModalWidget() is not None:
                 QTimer.singleShot(250, _show_macos_rosemary_notice)
                 return
-            from fleasion.app.dialogs.macos_rosemary_notice import (  # ruff: ignore[import-outside-top-level]
-                show_macos_rosemary_notice,
-            )
 
             show_macos_rosemary_notice(config_manager, visible_parent_widget())
 

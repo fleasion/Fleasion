@@ -53,7 +53,7 @@ from fleasion.utils.json_types import JsonValue
 from fleasion.utils.sober_bootstrap_keys import native_keylog_path
 lazy from fleasion import utils
 lazy from fleasion.cache.tools.solidmodel_converter import obj_to_mesh
-lazy from fleasion.utils import anim_converter, certs
+lazy from fleasion.utils import anim_converter, certs, linux_clients
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -2209,13 +2209,8 @@ class FleasionProxy:
             self._splice_client_key == 'sober'
             and self._verified_sober_session_identity is None
             and os.name == 'posix'
-        ):
-            from fleasion.utils.linux_clients import (  # ruff: ignore[import-outside-top-level]
-                sober_flatpak_session_identity,
-            )
-
-            if scope := sober_flatpak_session_identity():
-                self._verified_sober_session_identity = ('sober-session', scope)
+        ) and (scope := linux_clients.sober_flatpak_session_identity()):
+            self._verified_sober_session_identity = ('sober-session', scope)
         if host in self._splice_decrypted_hosts:
             return False
         self._splice_decrypted_hosts.add(host)

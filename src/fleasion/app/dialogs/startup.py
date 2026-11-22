@@ -34,7 +34,7 @@ from fleasion.utils import (
     get_icon_path,
     log_buffer,
 )
-lazy from fleasion.utils import autostart, desktop_integration
+lazy from fleasion.utils import autostart, desktop_integration, platform_linux
 
 if TYPE_CHECKING:
     from fleasion.app.tray import SystemTray
@@ -329,7 +329,6 @@ def prompt_first_linux_client_choice(config_manager: ConfigManager, tray: System
     """Offer installed Linux Roblox clients without requiring a running Player."""
     if not sys.platform.startswith('linux'):
         return
-    from fleasion.utils import platform_linux  # ruff: ignore[import-outside-top-level]
 
     installed = platform_linux.linux_client_installations()
     if not installed:

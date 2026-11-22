@@ -54,8 +54,10 @@ from fleasion.utils.roblox_auth import (
 )
 from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
+lazy from fleasion.utils import linux_clients
 
 from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpinBox
+lazy from . import delete_cache, rando_stuff_tab
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -64,10 +66,7 @@ if TYPE_CHECKING:
     from fleasion.config.manager import ConfigManager
 
 
-if sys.platform.startswith('linux'):
-    from fleasion.utils import platform_linux
-else:
-    platform_linux = None
+lazy from fleasion.utils import platform_linux
 
 
 def _set_signals_blocked(obj: QObject, *, blocked: bool) -> None:
@@ -322,8 +321,6 @@ class SettingsTab(QWidget):
         return section
 
     def _build_linux_client_section(self) -> CollapsibleSection:
-        from fleasion.utils import linux_clients
-
         linux_client_descriptors = linux_clients.LINUX_CLIENTS
 
         section = CollapsibleSection(tr('settings.linux_client.section'), expanded=True)
@@ -829,8 +826,6 @@ class SettingsTab(QWidget):
     # Handlers
 
     def _clear_roblox_cache(self) -> None:
-        from . import delete_cache
-
         window = delete_cache.DeleteCacheWindow()
         window.show()
 
@@ -1025,7 +1020,7 @@ class SettingsTab(QWidget):
             self._on_rosemary_path_edited(setting_name, edit)
 
     def _on_rosemary_path_edited(self, setting_name: str, edit: QLineEdit) -> None:
-        if platform_linux is None:
+        if not sys.platform.startswith('linux'):
             return
         path = edit.text().strip()
         if path == getattr(self._config, setting_name, ''):
@@ -1069,8 +1064,6 @@ class SettingsTab(QWidget):
 
         self._config.linux_client = new_client
         self._update_rosemary_path_visibility()
-        from fleasion.utils import platform_linux
-
         platform_linux.set_linux_client_preference(new_client)
 
         if mod_manager is not None:
@@ -1135,8 +1128,6 @@ class SettingsTab(QWidget):
                 and monitor.is_player_running()
             ):
                 if sys.platform.startswith('linux'):
-                    from fleasion.utils import platform_linux
-
                     exe_path = Path(platform_linux.selected_linux_client_app_id())
                 else:
                     exe_path = get_roblox_player_exe_path()
@@ -1367,7 +1358,6 @@ class SettingsTab(QWidget):
     def _on_import_manual_token(self) -> None:
         if sys.platform != 'darwin':
             return
-        from . import rando_stuff_tab
 
         dlg = rando_stuff_tab.AddAccountDialog(
             self, title=tr('settings.roblox_login.import_token_title')

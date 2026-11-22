@@ -144,13 +144,7 @@ def poll_roblox_permission_repair(
     on_repaired: VoidCallback | None = None,
 ) -> None:
     """Consume a one-shot elevated ACL result and retry the normal write path."""
-    from fleasion.utils.windows_permissions import (  # ruff: ignore[import-outside-top-level]
-        clear_pending_repair,
-        clear_repair_result,
-        read_repair_result,
-    )
-
-    result = read_repair_result(CONFIG_DIR)
+    result = windows_permissions.read_repair_result(CONFIG_DIR)
     if result is None:
         if time.monotonic() < deadline:
             QTimer.singleShot(
@@ -162,8 +156,8 @@ def poll_roblox_permission_repair(
                 ),
             )
             return
-        clear_pending_repair(CONFIG_DIR)
-        clear_repair_result(CONFIG_DIR)
+        windows_permissions.clear_pending_repair(CONFIG_DIR)
+        windows_permissions.clear_repair_result(CONFIG_DIR)
         log_buffer.log(
             'RobloxPermissions',
             'Timed out waiting for the elevated Roblox permission repair',
@@ -175,8 +169,8 @@ def poll_roblox_permission_repair(
         )
         return
 
-    clear_repair_result(CONFIG_DIR)
-    clear_pending_repair(CONFIG_DIR)
+    windows_permissions.clear_repair_result(CONFIG_DIR)
+    windows_permissions.clear_pending_repair(CONFIG_DIR)
     if result.get('ok'):
         granted = result.get('granted')
         granted_count = len(granted) if _is_object_list(granted) else 0
@@ -206,19 +200,13 @@ def poll_roblox_permission_repair(
 
 def poll_windows_firewall_repair(deadline: float) -> None:
     """Consume a one-shot elevated firewall result and explain the outcome."""
-    from fleasion.utils.windows_firewall import (  # ruff: ignore[import-outside-top-level]
-        clear_pending_repair,
-        clear_repair_result,
-        read_repair_result,
-    )
-
-    result = read_repair_result(CONFIG_DIR)
+    result = windows_firewall.read_repair_result(CONFIG_DIR)
     if result is None:
         if time.monotonic() < deadline:
             QTimer.singleShot(500, lambda: poll_windows_firewall_repair(deadline))
             return
-        clear_pending_repair(CONFIG_DIR)
-        clear_repair_result(CONFIG_DIR)
+        windows_firewall.clear_pending_repair(CONFIG_DIR)
+        windows_firewall.clear_repair_result(CONFIG_DIR)
         log_buffer.log('WindowsFirewall', 'Timed out waiting for the elevated firewall repair')
         QMessageBox.warning(
             visible_parent_widget(),
@@ -227,8 +215,8 @@ def poll_windows_firewall_repair(deadline: float) -> None:
         )
         return
 
-    clear_repair_result(CONFIG_DIR)
-    clear_pending_repair(CONFIG_DIR)
+    windows_firewall.clear_repair_result(CONFIG_DIR)
+    windows_firewall.clear_pending_repair(CONFIG_DIR)
     if result.get('ok'):
         rules = result.get('rules')
         rule_count = len(rules) if _is_object_list(rules) else 0

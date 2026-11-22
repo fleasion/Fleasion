@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fleasion.utils.logging import log_buffer
-lazy from fleasion.utils import platform_windows
+lazy from fleasion.utils import platform_linux, platform_windows
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -348,11 +348,9 @@ class EnvProxyLifecycleController:
             sys.platform.startswith('linux')
             and getattr(self._proxy_master, '_active_linux_client_key', None) == 'rosemary'
         ):
-            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                running_rosemary_proxy_status,
+            status = platform_linux.running_rosemary_proxy_status(
+                self._proxy_master.roblox_env_proxy_url()
             )
-
-            status = running_rosemary_proxy_status(self._proxy_master.roblox_env_proxy_url())
             if status != 'configured':
                 self._mark_owned(owned=False)
                 log_buffer.log(

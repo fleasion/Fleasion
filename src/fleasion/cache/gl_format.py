@@ -10,7 +10,7 @@ from PySide6.QtGui import QSurfaceFormat
 
 # Keep PyOpenGL out of the normal dashboard startup path. Importing OpenGL.GL
 # can load the platform OpenGL runtime even when no 3D preview is ever opened
-lazy from OpenGL.GL import glFrustum
+lazy from OpenGL import GL
 
 
 def legacy_gl_format() -> QSurfaceFormat:
@@ -44,7 +44,7 @@ def set_perspective(fov_y_degrees: float, aspect: float, near: float, far: float
     bottom = -top
     right = top * aspect
     left = -right
-    glFrustum(left, right, bottom, top, near, far)
+    GL.glFrustum(left, right, bottom, top, near, far)
 
 
 def multisampled_readback_skip_reason() -> str | None:
@@ -54,8 +54,6 @@ def multisampled_readback_skip_reason() -> str | None:
     forbids glReadPixels directly from that framebuffer; Qt's FBO.toImage()
     performs the required resolve for the actual on-screen presentation
     """
-    from OpenGL import GL
-
     samples = int(cast('int', GL.glGetIntegerv(0x80A9)))  # GL_SAMPLES
     if samples > 0:
         return f'readback_skipped=multisampled_fbo(samples={samples})'

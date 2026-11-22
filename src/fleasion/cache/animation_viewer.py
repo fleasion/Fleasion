@@ -69,6 +69,8 @@ from .fps_controls import (
 )
 from .gl_format import legacy_gl_format, multisampled_readback_skip_reason, set_perspective
 from .offscreen_gl_widget import OffscreenOpenGLWidget
+lazy from . import rbxm_parser as parser
+lazy from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
 
 if TYPE_CHECKING:
     import xml.etree.ElementTree as ET
@@ -145,10 +147,6 @@ def _load_rbxm_curve_data(
     """Collect bone curves from a binary CurveAnimation RBXM payload."""
 
     def load_tree() -> RbxDocument:
-        from .tools.solidmodel_converter.rbxm.deserializer import (
-            RbxmDeserializer,
-        )
-
         return RbxmDeserializer().deserialize(anim_data)
 
     tree = _animation_boundary(
@@ -700,8 +698,6 @@ def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:
 
 
 def _parse_rbxm_keyframes(anim_data: bytes) -> list[Keyframe]:
-    from . import rbxm_parser as parser
-
     instances = parser.parse_rbxm(anim_data)
     keyframe_instances = parser.find_by_class(instances, 'Keyframe')
     if not keyframe_instances:

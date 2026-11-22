@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+lazy from . import stud_relaunch
+lazy from .linux_clients import read_rosemary_session
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
@@ -147,16 +150,13 @@ def discover_running_stud_source(  # ruff: ignore[too-many-return-statements]
     flatpak_installed: bool,
 ) -> StudSource | None:
     """Recover an unregistered native/AppImage Stud launcher from a verified Player."""
-    from .linux_clients import read_rosemary_session  # ruff: ignore[import-outside-top-level]
-    from .stud_relaunch import stud_launcher_pid  # ruff: ignore[import-outside-top-level]
-
     root = stud_data_root_for_bundle(bundle)
     if root is None:
         return None
     session = read_rosemary_session(proc_root / str(player_pid))
     if session is None or session.bundle != bundle:
         return None
-    parent_pid = stud_launcher_pid(session, proc_root=proc_root)
+    parent_pid = stud_relaunch.stud_launcher_pid(session, proc_root=proc_root)
     if parent_pid is None:
         return None
     native_data = environ.get('XDG_DATA_HOME', '')

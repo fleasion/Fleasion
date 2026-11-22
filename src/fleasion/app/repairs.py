@@ -19,7 +19,7 @@ from fleasion.utils import (
     log_buffer,
 )
 lazy from fleasion.proxy import master as proxy_master
-lazy from fleasion.utils import autostart, linux_proxy_helper, windows_permissions
+lazy from fleasion.utils import autostart, linux_proxy_helper, windows_firewall, windows_permissions
 
 if TYPE_CHECKING:
     from PySide6.QtWidgets import (
@@ -166,13 +166,6 @@ def repair_autostart_once(requesting_user_sid: str | None = None, *, enabled: bo
 
 def repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> int:
     """Apply a pending targeted Roblox ACL repair from a one-shot UAC child."""
-    from fleasion.utils.windows_permissions import (  # ruff: ignore[import-outside-top-level]
-        clear_pending_repair,
-        grant_current_user_modify_access,
-        read_pending_repair,
-        write_repair_result,
-    )
-
     if sys.platform != 'win32' or not is_admin():
         log_buffer.log(
             'RobloxPermissions',
@@ -187,7 +180,7 @@ def repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> in
         )
         return 1
 
-    paths = read_pending_repair(CONFIG_DIR)
+    paths = windows_permissions.read_pending_repair(CONFIG_DIR)
     if not paths:
         result: ErrorDetails = {
             'ok': False,
@@ -198,7 +191,7 @@ def repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> in
     else:
         try:
             result = call_compatibility_boundary(
-                lambda: grant_current_user_modify_access(
+                lambda: windows_permissions.grant_current_user_modify_access(
                     paths,
                     user_sid=requesting_user_sid,
                 )
@@ -213,9 +206,9 @@ def repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> in
             }
 
     try:
-        write_repair_result(result, CONFIG_DIR)
+        windows_permissions.write_repair_result(result, CONFIG_DIR)
     finally:
-        clear_pending_repair(CONFIG_DIR)
+        windows_permissions.clear_pending_repair(CONFIG_DIR)
 
     if result.get('ok'):
         log_buffer.log('RobloxPermissions', 'Elevated Roblox ACL repair completed')
@@ -226,13 +219,6 @@ def repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> in
 
 def repair_windows_firewall_once() -> int:
     """Apply a pending Fleasion firewall repair from a one-shot UAC child."""
-    from fleasion.utils.windows_firewall import (  # ruff: ignore[import-outside-top-level]
-        clear_pending_repair,
-        install_fleasion_firewall_rules,
-        read_pending_repair,
-        write_repair_result,
-    )
-
     if sys.platform != 'win32' or not is_admin():
         result: ErrorDetails = {
             'ok': False,
@@ -240,7 +226,7 @@ def repair_windows_firewall_once() -> int:
             'failed': [],
             'error': 'Administrator permission is required to update Windows Firewall',
         }
-    elif not read_pending_repair(CONFIG_DIR):
+    elif not windows_firewall.read_pending_repair(CONFIG_DIR):
         result = {
             'ok': False,
             'rules': [],
@@ -249,7 +235,7 @@ def repair_windows_firewall_once() -> int:
         }
     else:
         try:
-            result = call_compatibility_boundary(install_fleasion_firewall_rules)
+            result = call_compatibility_boundary(windows_firewall.install_fleasion_firewall_rules)
         except CompatibilityBoundaryError as wrapped:
             exc = wrapped.cause
             result = {
@@ -260,9 +246,9 @@ def repair_windows_firewall_once() -> int:
             }
 
     try:
-        write_repair_result(result, CONFIG_DIR)
+        windows_firewall.write_repair_result(result, CONFIG_DIR)
     finally:
-        clear_pending_repair(CONFIG_DIR)
+        windows_firewall.clear_pending_repair(CONFIG_DIR)
     log_buffer.log(
         'WindowsFirewall',
         'Elevated Fleasion firewall repair completed'

@@ -57,10 +57,25 @@ from fleasion.utils.roblox_auth import (
 from fleasion.utils.secure_tokens import decrypt_token, encrypt_token
 from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
+lazy from fleasion.gui.delete_cache import DeleteCacheWindow
+lazy from fleasion.utils import anim_converter, platform_linux
+lazy from fleasion.utils.anim_converter import curve_anim_to_keyframe, rbxm_to_rbxmx
+lazy from fleasion.utils.platform_linux import (
+    recent_selected_linux_client_key,
+    selected_linux_client_display_name,
+    selected_linux_client_key,
+)
+lazy from fleasion.utils.r15_to_r6 import (
+    convert_keyframe_r6_to_r15,
+    convert_keyframe_r15_to_r6,
+    sanitize_xml,
+)
+lazy from fleasion.utils.rig_data import R6_JOINTS, R6_PARTS, R15_JOINTS, R15_PARTS
 
 from .modifications_tab import CollapsibleSection
 from .proxy_gate import ProxyGate
 from .theme import ThemeManager
+lazy from . import macos_rosemary_launch
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -479,9 +494,7 @@ def _linux_client_display_name() -> str:
     if not IS_LINUX:
         return tr('rando.linux_roblox_client')
     try:
-        from fleasion.utils.platform_linux import selected_linux_client_display_name as display_name
-
-        return display_name()
+        return selected_linux_client_display_name()
     except ImportError, KeyError, OSError, RuntimeError:
         return tr('rando.linux_roblox_client')
 
@@ -490,7 +503,6 @@ def _is_rosemary_client() -> bool:
     """Identify native macOS Player launches hosted by Rosemary on Linux."""
     if not IS_LINUX:
         return False
-    from fleasion.utils.platform_linux import selected_linux_client_key
 
     return selected_linux_client_key() == 'rosemary'
 
@@ -499,7 +511,6 @@ def _recently_selected_rosemary_client() -> bool:
     """Like _is_rosemary_client, but may reuse a selection resolved moments ago."""
     if not IS_LINUX:
         return False
-    from fleasion.utils.platform_linux import recent_selected_linux_client_key
 
     return recent_selected_linux_client_key() == 'rosemary'
 
@@ -630,9 +641,7 @@ def _get_user_presence_type(user_id: int, cookie: str) -> int | None:
 def _launch_follow_user_uri(uri: str) -> bool:
     """Use the selected platform's Roblox launcher for an authenticated follow."""
     if IS_LINUX:
-        from fleasion.utils.platform_linux import launch_as_standard_user as linux_launch
-
-        return linux_launch(uri)
+        return platform_linux.launch_as_standard_user(uri)
     if IS_MACOS:
         log_buffer.log('accounts', 'Roblox URI dispatch is disabled on managed macOS')
         return False
@@ -1572,8 +1581,6 @@ class RandoStuffTab(QWidget):
                 gate.set_proxy_enabled(enabled)
 
     def _clear_roblox_cache(self) -> None:
-        from fleasion.gui.delete_cache import DeleteCacheWindow
-
         window = DeleteCacheWindow()
         window.show()
 
@@ -1601,9 +1608,9 @@ class RandoStuffTab(QWidget):
             self._doing_rejoin = True
         log_buffer.log('randostuff', f'Rejoin triggered - placeId={place_id}')
         if IS_MACOS:
-            from .macos_rosemary_launch import launch_from_feature
-
-            if not launch_from_feature(self, f'roblox://experiences/start?placeId={place_id}'):
+            if not macos_rosemary_launch.launch_from_feature(
+                self, f'roblox://experiences/start?placeId={place_id}'
+            ):
                 with self._lock:
                     self._doing_rejoin = False
             return
@@ -2462,14 +2469,16 @@ class RandoStuffTab(QWidget):
     ) -> bool:
         """Dispatch the selected account ticket without changing the me mapping."""
         if IS_MACOS:
-            from .macos_rosemary_launch import launch_from_feature
-
             refresh = (
                 (lambda: refresh_authenticated_launch_uri(uri, retry_cookie))
                 if retry_cookie is not None
                 else None
             )
-            return self._on_main(lambda: launch_from_feature(self, uri, refresh_launch_uri=refresh))
+            return self._on_main(
+                lambda: macos_rosemary_launch.launch_from_feature(
+                    self, uri, refresh_launch_uri=refresh
+                )
+            )
         dispatch = launcher or launch_as_standard_user
         return dispatch(uri)
 
@@ -2747,17 +2756,13 @@ class RandoStuffTab(QWidget):
 
         # Detect rig from original bytes (binary parser handles .bin/.rbxm natively)
         try:
-            from fleasion.utils.anim_converter import detect_rig
-
-            rig = detect_rig(data)
+            rig = anim_converter.detect_rig(data)
         except ImportError, KeyError, RuntimeError, TypeError, ValueError:
             rig = tr('rando.rig.unknown')
 
         # Auto-convert binary .rbxm -> .rbxmx so _ac_convert has XML to work with
         if p.suffix.lower() == '.rbxm':
             try:
-                from fleasion.utils.anim_converter import rbxm_to_rbxmx
-
                 data = rbxm_to_rbxmx(data)
                 self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.auto_converted_rbxm_rbxmx'))
             except (ImportError, KeyError, RuntimeError, TypeError, ValueError) as exc:
@@ -2777,22 +2782,8 @@ class RandoStuffTab(QWidget):
         self._ac_to_r15_btn.setEnabled(rig == 'R6')
 
     def _convert_loaded_animation(self, target: str) -> None:
-        from fleasion.utils.r15_to_r6 import (
-            convert_keyframe_r6_to_r15,
-            convert_keyframe_r15_to_r6,
-            sanitize_xml,
-        )
-        from fleasion.utils.rig_data import (
-            R6_JOINTS,
-            R6_PARTS,
-            R15_JOINTS,
-            R15_PARTS,
-        )
-
         xml_bytes = self._ac_xml_bytes
         if b'CurveAnimation' in xml_bytes:
-            from fleasion.utils.anim_converter import curve_anim_to_keyframe
-
             xml_bytes = curve_anim_to_keyframe(xml_bytes)
 
         root = DefusedElementTree.fromstring(sanitize_xml(xml_bytes))

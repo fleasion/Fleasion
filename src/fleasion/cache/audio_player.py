@@ -75,7 +75,8 @@ class _SoundDeviceModule(Protocol):
 
 
 def _import_sounddevice_runtime() -> _SoundDeviceModule:
-    import sounddevice  # pyright: ignore[reportMissingTypeStubs]
+    # Imported here, after the PortAudio library path is configured
+    import sounddevice  # pyright: ignore[reportMissingTypeStubs]  # ruff: ignore[import-outside-top-level]
 
     return sounddevice  # pyright: ignore[reportReturnType]
 

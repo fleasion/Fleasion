@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, cast
+lazy import fcntl
 
 from cryptography.fernet import Fernet, InvalidToken
 lazy import requests
@@ -33,6 +34,7 @@ from .linux_clients import (
 from .logging import log_buffer
 from .paths import CONFIG_DIR, CONFIG_FILE, LOCAL_APPDATA, USER_HOME
 from .secure_tokens import decrypt_token, encrypt_token
+lazy from .linux_clients import rosemary_guest_home
 
 if sys.platform.startswith('linux'):
     from . import platform_linux as _platform_linux
@@ -816,8 +818,6 @@ class RosemaryLocalAuthProvider:
     source_name = 'Rosemary'
 
     def cookie_path(self, installation: LinuxClientInstallation) -> Path:
-        from .linux_clients import rosemary_guest_home  # ruff: ignore[import-outside-top-level]
-
         prefix = _platform_linux.get_rosemary_prefix_path() if _platform_linux else None
         guest_home = rosemary_guest_home(installation, prefix_path=prefix)
         if guest_home is None:
@@ -997,8 +997,6 @@ class MocktailLocalAuthProvider:
 
     def write_roblosecurity(self, path: Path, cookie: str) -> bool:
         """Synchronize with Mocktail's own writer and atomically change the cookie."""
-        import fcntl  # ruff: ignore[import-outside-top-level]
-
         with _LINUX_AUTH_WRITE_LOCK:
             if not _mocktail_plaintext_store_allowed(path):
                 code = 'mocktail_secure_or_overridden_auth'

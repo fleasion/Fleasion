@@ -57,6 +57,7 @@ from fleasion.utils.json_types import (
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
 
 from .file_drop import FileDropLineEdit
+lazy from . import json_viewer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1375,8 +1376,6 @@ class PreJsonsDialog(QDialog):
         )
 
     def _open_viewer(self, data: JsonValue, filename: str) -> None:
-        from . import json_viewer
-
         viewer_class = json_viewer.JsonTreeViewer
 
         parent = self.parent()

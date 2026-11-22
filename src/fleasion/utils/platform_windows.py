@@ -38,11 +38,12 @@ from .paths import (
     STORAGE_DB_GDK,
 )
 from .roblox_dirs import load_saved_roblox_dirs
+lazy from .bloxstrap_watcher import BloxstrapProcess, capture_handoff, schedule_handoff
 
 if TYPE_CHECKING:
     import threading
 
-    from .bloxstrap_watcher import BloxstrapProcess, WatcherHandoff
+    from .bloxstrap_watcher import WatcherHandoff
 
 _ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
 _env_proxy_relaunches: dict[str, float] = {}
@@ -1464,8 +1465,6 @@ def _wait_for_successor_processes(
 
 def _bloxstrap_process_snapshot() -> list[BloxstrapProcess]:
     """Inspect only running Bloxstrap.exe processes, without WMI or PowerShell."""
-    from .bloxstrap_watcher import BloxstrapProcess  # ruff: ignore[import-outside-top-level]
-
     processes: list[BloxstrapProcess] = []
     for pid in _find_pids('Bloxstrap.exe'):
         executable = _query_exe_path(pid)
@@ -1478,7 +1477,6 @@ def _capture_bloxstrap_watcher_handoff(pid: int) -> WatcherHandoff | None:
     """Capture Bloxstrap's intent before the original Player is terminated."""
     if sys.platform != 'win32':
         return None
-    from .bloxstrap_watcher import capture_handoff  # ruff: ignore[import-outside-top-level]
 
     local_appdata = Path(LOCAL_APPDATA)
     plan = capture_handoff(
@@ -1496,7 +1494,6 @@ def _schedule_bloxstrap_watcher_handoff(
     plan: WatcherHandoff, replacement_pid: int, cancel_event: threading.Event | None
 ) -> None:
     """Wait for Bloxstrap's own watcher to exit before creating its replacement."""
-    from .bloxstrap_watcher import schedule_handoff  # ruff: ignore[import-outside-top-level]
 
     def _spawn_watcher(executable: Path, args: list[str]) -> None:
         if _is_process_elevated():

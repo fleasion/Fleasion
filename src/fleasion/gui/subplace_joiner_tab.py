@@ -47,14 +47,18 @@ from fleasion.utils.roblox_auth import (
 from fleasion.utils.windows import launch_as_standard_user
 from fleasion.widgets.spacing import CONTROL_HEIGHT, GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
+lazy from fleasion.gui.delete_cache import DeleteCacheWindow
 lazy from fleasion.utils.verified_direct_https import VerifiedDirectHTTPSAdapter
+lazy from fleasion.utils.windows import is_roblox_running
 
+lazy from . import macos_rosemary_launch, rando_stuff_tab
 lazy from .prejsons_dialog import (
     THUMB_HEIGHT,
     THUMB_WIDTH,
     make_rounded_pixmap,
     preprocess_thumb_bytes,
 )
+lazy from .rando_stuff_tab import build_auth_ticket_place_uri, refresh_authenticated_launch_uri
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -1020,8 +1024,6 @@ class SubplaceJoinerTab(QWidget):
         root.addWidget(footer_widget)
 
     def _clear_roblox_cache(self) -> None:
-        from fleasion.gui.delete_cache import DeleteCacheWindow
-
         window = DeleteCacheWindow()
         window.show()
 
@@ -1926,56 +1928,48 @@ class SubplaceJoinerTab(QWidget):
             self._rando_tab is not None
             and self._rando_tab.is_multi_instance_enabled()
             and self._rando_tab.account_switched
-        ):
-            from fleasion.utils.windows import is_roblox_running
+        ) and is_roblox_running():
+            log_buffer.log(
+                'subplace',
+                'Account switched + multi-instance on — launching new Roblox instance then joining',
+            )
+            self._rando_tab.close_singleton_event()
+            self.joining_place = True
 
-            if is_roblox_running():
-                log_buffer.log(
-                    'subplace',
-                    'Account switched + multi-instance on — launching new Roblox instance then joining',
-                )
-                self._rando_tab.close_singleton_event()
-                self.joining_place = True
-
-                def _launch_with_uri(
-                    place_id: int | str = place_id, cookie: str | None = cookie
-                ) -> None:
-                    from .rando_stuff_tab import get_auth_ticket
-
-                    ticket = get_auth_ticket(cookie) if cookie else None
-                    if not ticket:
-                        log_buffer.log(
-                            'subplace',
-                            'Failed to get auth ticket for multi-instance join',
-                        )
-                        return
-                    from .rando_stuff_tab import build_auth_ticket_place_uri
-
-                    roblox_player_uri = build_auth_ticket_place_uri(
-                        ticket, str(place_id), job_id=job_id
-                    )
+            def _launch_with_uri(
+                place_id: int | str = place_id, cookie: str | None = cookie
+            ) -> None:
+                ticket = rando_stuff_tab.get_auth_ticket(cookie) if cookie else None
+                if not ticket:
                     log_buffer.log(
                         'subplace',
-                        f'Launching Roblox URI to placeId={place_id} (multi-instance)',
+                        'Failed to get auth ticket for multi-instance join',
                     )
-                    if not self._launch_roblox_uri(roblox_player_uri):
-                        log_buffer.log('subplace', 'Failed to launch Roblox URI without elevation')
+                    return
 
-                threading.Thread(target=_launch_with_uri, daemon=True).start()
-                return
+                roblox_player_uri = build_auth_ticket_place_uri(
+                    ticket, str(place_id), job_id=job_id
+                )
+                log_buffer.log(
+                    'subplace',
+                    f'Launching Roblox URI to placeId={place_id} (multi-instance)',
+                )
+                if not self._launch_roblox_uri(roblox_player_uri):
+                    log_buffer.log('subplace', 'Failed to launch Roblox URI without elevation')
+
+            threading.Thread(target=_launch_with_uri, daemon=True).start()
+            return
         if job_id or selected_cookie:
             self.joining_place = True
 
             def _launch_ticketed_join() -> None:
-                from .rando_stuff_tab import build_auth_ticket_place_uri, get_auth_ticket
-
                 if not cookie:
                     log_buffer.log(
                         'subplace',
                         'Cannot join a specific job or selected account without a login token',
                     )
                     return
-                ticket = get_auth_ticket(cookie)
+                ticket = rando_stuff_tab.get_auth_ticket(cookie)
                 if not ticket:
                     log_buffer.log(
                         'subplace',
@@ -2001,9 +1995,6 @@ class SubplaceJoinerTab(QWidget):
     def _launch_roblox_uri(self, target: str, *, retry_cookie: str | None = None) -> bool:
         """Launch user-requested joins with the active managed platform client."""
         if sys.platform == 'darwin':
-            from .macos_rosemary_launch import launch_from_feature
-            from .rando_stuff_tab import refresh_authenticated_launch_uri
-
             refresh = (
                 (lambda: refresh_authenticated_launch_uri(target, retry_cookie))
                 if retry_cookie is not None
@@ -2011,7 +2002,9 @@ class SubplaceJoinerTab(QWidget):
             )
             try:
                 self._invoker.call.emit(
-                    lambda: launch_from_feature(self, target, refresh_launch_uri=refresh)
+                    lambda: macos_rosemary_launch.launch_from_feature(
+                        self, target, refresh_launch_uri=refresh
+                    )
                 )
             except RuntimeError as exc:
                 log_buffer.log('subplace', f'Could not queue managed Roblox launch: {exc}')

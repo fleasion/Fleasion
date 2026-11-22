@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+
+lazy from . import stud_relaunch
+lazy from .stud_relaunch import stud_player_launch_uri
 
 try:
     import pwd
@@ -48,7 +52,6 @@ from .linux_clients import (
 )
 
 if TYPE_CHECKING:
-    import threading
     from collections.abc import Iterator
 
 
@@ -840,10 +843,6 @@ def terminate_roblox(  # ruff: ignore[too-many-return-statements]
         return False
     if installation.client.runtime == 'rosemary':
         if installation.stud_managed and installation.app_bundle is not None:
-            import threading  # ruff: ignore[import-outside-top-level]
-
-            from .stud_relaunch import stop_stud_session  # ruff: ignore[import-outside-top-level]
-
             sessions = tuple(
                 session
                 for session in running_rosemary_players(proc_root=PROC_ROOT)
@@ -854,7 +853,7 @@ def terminate_roblox(  # ruff: ignore[too-many-return-statements]
             if len(sessions) != 1:
                 return False
             prefix = installation.app_bundle.parent.parent.parent / 'prefix'
-            return stop_stud_session(
+            return stud_relaunch.stop_stud_session(
                 sessions[0],
                 prefix=prefix,
                 cancel=threading.Event(),
@@ -1421,11 +1420,6 @@ def relaunch_stud_with_proxy_env(  # ruff: ignore[too-many-return-statements]
     player_already_stopped: bool,
 ) -> bool:
     """Use Stud's launcher after stopping the old supervised Player generation."""
-    from .stud_relaunch import (  # ruff: ignore[import-outside-top-level]
-        stop_stud_session,
-        stud_player_launch_uri,
-    )
-
     installation = get_selected_linux_client_installation()
     if installation is None or installation.app_bundle is None or not installation.stud_managed:
         return False
@@ -1459,7 +1453,7 @@ def relaunch_stud_with_proxy_env(  # ruff: ignore[too-many-return-statements]
             # the exact URI only in memory, and never log its contents
             target = stud_player_launch_uri(session, proc_root=PROC_ROOT)
         prefix = installation.app_bundle.parent.parent.parent / 'prefix'
-        if not stop_stud_session(
+        if not stud_relaunch.stop_stud_session(
             session,
             prefix=prefix,
             cancel=cancel_event,

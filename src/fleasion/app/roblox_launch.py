@@ -21,7 +21,8 @@ from fleasion.utils import (
     terminate_roblox,
     wait_for_roblox_exit,
 )
-lazy from fleasion.utils import platform_windows
+lazy from fleasion.utils import platform_linux, platform_macos, platform_windows
+lazy from fleasion.utils.platform_linux import relaunch_stud_with_proxy_env
 
 if TYPE_CHECKING:
     import threading
@@ -97,12 +98,7 @@ def request_running_instance_launch(target: str, timeout_ms: int = 5000) -> bool
 def launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
     """Launch a URI through the active proxy mode."""
     if sys.platform.startswith('linux'):
-        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-            get_selected_linux_client_installation,
-            running_rosemary_proxy_status,
-        )
-
-        selected = get_selected_linux_client_installation()
+        selected = platform_linux.get_selected_linux_client_installation()
         config = tray.config_manager
         monitor = getattr(tray, 'roblox_monitor', None)
         lifecycle = monitor.env_lifecycle if monitor is not None else None
@@ -114,7 +110,10 @@ def launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
         )
         if stud_proxy_enabled and lifecycle is not None and is_roblox_running():
             proxy = tray.proxy_master
-            if running_rosemary_proxy_status(proxy.roblox_env_proxy_url()) != 'configured':
+            if (
+                platform_linux.running_rosemary_proxy_status(proxy.roblox_env_proxy_url())
+                != 'configured'
+            ):
                 return lifecycle.handle_player_launch(get_roblox_player_exe_path(), target)
         # Other Linux clients use their own scoped proxy launch/replay mechanisms
         return launch_as_standard_user(target)
@@ -150,7 +149,6 @@ def create_env_proxy_lifecycle(
 ) -> EnvProxyLifecycleController:
     """Build the Player lifecycle with callbacks for the current platform."""
     if sys.platform == 'win32':
-        from fleasion.utils import platform_windows  # ruff: ignore[import-outside-top-level]
 
         def _prepare_env_proxy_launch(path: Path) -> bool:
             result = proxy_master.ensure_env_proxy_roblox_ca(path, settle=False)
@@ -177,7 +175,6 @@ def create_env_proxy_lifecycle(
         terminate_env_player = platform_windows.close_roblox_for_env_lifecycle
 
     elif sys.platform == 'darwin':
-        from fleasion.utils import platform_macos  # ruff: ignore[import-outside-top-level]
 
         def _prepare_env_proxy_launch(_path: Path) -> bool:
             proxy_master.rearm_custom_fflag_delivery_for_player_launch()
@@ -213,12 +210,7 @@ def create_env_proxy_lifecycle(
             source_exe_path: Path | None,
             player_already_stopped: bool,
         ) -> bool:
-            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                get_selected_linux_client_installation,
-                relaunch_stud_with_proxy_env,
-            )
-
-            selected = get_selected_linux_client_installation()
+            selected = platform_linux.get_selected_linux_client_installation()
             if selected is not None and selected.stud_managed:
                 return relaunch_stud_with_proxy_env(
                     proxy_url, target, cancel_event, source_exe_path, player_already_stopped

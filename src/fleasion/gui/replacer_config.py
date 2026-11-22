@@ -95,6 +95,8 @@ from fleasion.utils.replacement_filters import ReplacementFilter, describe as de
 from fleasion.widgets.menu_items import draw_menu_item
 from fleasion.widgets.spacing import GAP, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
+lazy from fleasion.cache import asset_type_filter, cache_manager as cache_manager_module
+lazy from fleasion.cache.asset_type_filter import CategoryFilterPopup
 
 from . import command_palette, glass
 from .command_palette import Command
@@ -107,6 +109,8 @@ from .rando_stuff_tab import RandoStuffTab
 from .settings_tab import SettingsTab
 from .subplace_joiner_tab import SubplaceJoinerTab
 from .theme import ThemeManager
+lazy from . import delete_cache, prejsons_dialog
+lazy from .macos_rosemary_launch import ManagedRobloxLaunch
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
@@ -115,7 +119,6 @@ if TYPE_CHECKING:
 
     from fleasion.app.roblox_monitor import RobloxExitMonitor
     from fleasion.app.tray import SystemTray
-    from fleasion.cache.asset_type_filter import CategoryFilterPopup
     from fleasion.config.manager import ConfigManager
     from fleasion.config.types import (
         GroupRule as _GroupRule,
@@ -1703,8 +1706,6 @@ class ReplacerConfigWindow(QDialog):
         footer_layout.addStretch()
 
         if sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
-            from .macos_rosemary_launch import ManagedRobloxLaunch
-
             self._macos_rosemary_launch = ManagedRobloxLaunch(
                 self, self.config_manager, self.proxy_master
             )
@@ -1746,8 +1747,6 @@ class ReplacerConfigWindow(QDialog):
         open_folder(configs_folder)
 
     def _clear_roblox_cache(self) -> None:
-        from . import delete_cache
-
         window = delete_cache.DeleteCacheWindow()
         window.show()
 
@@ -1760,8 +1759,6 @@ class ReplacerConfigWindow(QDialog):
 
     def _open_prejsons_browser(self) -> None:
         """Open the PreJsons browser dialog."""
-        from . import prejsons_dialog
-
         try:
             if self._prejsons_dialog is not None:
                 self._prejsons_dialog.show()
@@ -2774,8 +2771,6 @@ class ReplacerConfigWindow(QDialog):
 
         def show_dialog_types_popup() -> None:
             def on_filters_changed(filters: set[int | str]) -> None:
-                from fleasion.cache import cache_manager as cache_manager_module
-
                 curr_content = text_edit.toPlainText().strip()
                 curr_ids = self._parse_ids(curr_content.replace('\n', ','))
                 new_ids: list[int | str] = []
@@ -2803,8 +2798,6 @@ class ReplacerConfigWindow(QDialog):
                     text_edit.setPlainText('\n'.join(str(i) for i in new_ids))
                 else:
                     text_edit.setPlainText('')
-
-            from fleasion.cache import asset_type_filter, cache_manager as cache_manager_module
 
             if time.monotonic() - self._dialog_asset_types_popup_last_closed < 0.25:
                 return
@@ -3082,8 +3075,6 @@ class ReplacerConfigWindow(QDialog):
         return popup
 
     def _new_asset_types_popup(self) -> CategoryFilterPopup:
-        from fleasion.cache.asset_type_filter import CategoryFilterPopup
-
         popup = CategoryFilterPopup(parent=self)
         popup.filters_changed.connect(self._on_asset_types_changed)
         popup.aboutToHide.connect(self._mark_asset_types_popup_closed)
@@ -3091,8 +3082,6 @@ class ReplacerConfigWindow(QDialog):
 
     def _show_asset_types_popup(self) -> None:
         """Show the asset types popup menu."""
-        from fleasion.cache import cache_manager as cache_manager_module
-
         if time.monotonic() - self._asset_types_popup_last_closed < 0.25:
             return
 
@@ -3153,8 +3142,6 @@ class ReplacerConfigWindow(QDialog):
 
     def _on_asset_types_changed(self, filters: set[int | str]) -> None:
         """Handle asset types selection change."""
-        from fleasion.cache import cache_manager as cache_manager_module
-
         virtual_anim_types = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
 
         current_text = self.replace_entry.text().strip()

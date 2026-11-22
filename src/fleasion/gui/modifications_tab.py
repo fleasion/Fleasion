@@ -98,6 +98,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+lazy import requests
 
 from fleasion.cache.tools.ktx_to_png import convert as ktx_to_png, strip_prefixed_ktx
 from fleasion.localization import tr, tr_count, translation_values
@@ -141,6 +142,31 @@ from fleasion.utils.paths import FFLAG_CATALOG_CACHE_FILENAME
 from fleasion.utils.threading import run_in_thread
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
+lazy from fleasion.cache.audio_player import AudioPlayerWidget
+lazy from fleasion.cache.font_viewer import FontViewerWidget
+lazy from fleasion.cache.mesh_processing import convert as convert_mesh
+lazy from fleasion.cache.obj_viewer import ObjViewerPanel
+lazy from fleasion.gui import linux_hotkeys, windows_hotkeys
+lazy from fleasion.gui.delete_cache import DeleteCacheWindow
+lazy from fleasion.gui.linux_hotkeys import (
+    LinuxCustomFFlagHotkeyController,
+    LinuxHotkeyService,
+    launch_permission_setup,
+    modifier_mask_for_evdev_code,
+)
+lazy from fleasion.gui.windows_hotkeys import (
+    MOD_ALT,
+    MOD_CTRL,
+    MOD_SHIFT,
+    MOD_WIN,
+    WindowsCustomFFlagHotkeyController,
+    modifier_mask_for_virtual_key,
+)
+lazy from fleasion.modifications.dds_to_png import tex_to_png_bytes
+lazy from fleasion.modifications.manager import MOD_ORIGINALS_DIR
+lazy from fleasion.proxy.addons.custom_fflags import normalize_custom_fflags
+lazy from fleasion.proxy.addons.profile_picture_spoofer import clean_local_path, is_remote_image_url
+lazy from fleasion.proxy.original_thumbnail import fetch_original_avatar_url
 
 from . import glass
 from .fflag_virtual_model import VirtualFastFlagModel
@@ -163,7 +189,6 @@ if TYPE_CHECKING:
         CustomFFlagHotkeyController,
         HotkeyService as _HotkeyService,
     )
-    from fleasion.gui.linux_hotkeys import LinuxHotkeyService
     from fleasion.modifications.fflag_windows_values import WindowsValueSlot
     from fleasion.modifications.manager import ModificationManager
     from fleasion.modifications.types import (
@@ -1214,8 +1239,6 @@ class ModRowWidget(QWidget):
 
     def _check_for_orphaned_stash(self) -> None:
         """Show a warning if a stash file exists but Fleasion has no active record."""
-        from fleasion.modifications.manager import MOD_ORIGINALS_DIR
-
         roblox_dirs = self._manager.roblox_dirs
         if not roblox_dirs:
             return
@@ -1519,15 +1542,12 @@ class ModPreviewDialog(QDialog):
         self.setLayout(layout)
 
     def _build_mesh_preview(self, data: bytes, mode: str) -> QWidget:
-        from fleasion.cache.mesh_processing import convert as convert_mesh
-
         obj_text = convert_mesh(data)
         if not obj_text:
             return QLabel(tr('ui.gui.modifications_tab.could_not_convert_mesh_for_preview'))
         if mode == 'mod':
             self._mod_converted_bytes = obj_text.encode()
             self._mod_converted_ext = '.obj'
-        from fleasion.cache.obj_viewer import ObjViewerPanel
 
         viewer = ObjViewerPanel()
         viewer.load_obj(obj_text)
@@ -1538,7 +1558,6 @@ class ModPreviewDialog(QDialog):
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
-        from fleasion.cache.audio_player import AudioPlayerWidget
 
         return AudioPlayerWidget(tmp_path)
 
@@ -1547,8 +1566,6 @@ class ModPreviewDialog(QDialog):
         try:
             parsed = json.loads(decoded)
         except ValueError:
-            from fleasion.cache.font_viewer import FontViewerWidget
-
             return FontViewerWidget(data)
         viewer = QTextEdit()
         viewer.setReadOnly(True)
@@ -1606,8 +1623,6 @@ class ModPreviewDialog(QDialog):
                     or data[:6] in {b'GIF87a', b'GIF89a'}
                 )
                 if not is_raw_image:
-                    from fleasion.modifications.dds_to_png import tex_to_png_bytes
-
                     converted = tex_to_png_bytes(data)
                     if converted:
                         display_bytes = converted
@@ -1672,8 +1687,6 @@ class ModPreviewDialog(QDialog):
 
     def _load_data(self, mode: str) -> bytes | None:
         """Load file bytes for preview. mode='mod' or 'original'."""
-        from fleasion.modifications.manager import MOD_ORIGINALS_DIR
-
         if not self._manager.roblox_dirs:
             return None
         roblox_dir = self._manager.roblox_dirs[0]
@@ -2352,9 +2365,7 @@ class FFlagBrowserDialog(QDialog):
         self._apply_flags(flags)
 
     @staticmethod
-    def scan_installed_client(
-        binary: ClientBinary, force: bool
-    ) -> tuple[StaticFlagCatalog, bool]:
+    def scan_installed_client(binary: ClientBinary, force: bool) -> tuple[StaticFlagCatalog, bool]:
         """Load an unchanged cached snapshot or rescan the selected Player."""
         cached = None if force else load_scan(binary.client)
         if cached is not None and scan_is_current(cached, binary):
@@ -2952,13 +2963,6 @@ class WindowsHotkeyCaptureDialog(QDialog):
 
     @classmethod
     def _modifier_mask(cls, modifiers: Qt.KeyboardModifier) -> int:
-        from fleasion.gui.windows_hotkeys import (
-            MOD_ALT,
-            MOD_CTRL,
-            MOD_SHIFT,
-            MOD_WIN,
-        )
-
         qt_modifiers = cls._enum_value(modifiers)
         result = 0
         if qt_modifiers & 0x02000000:
@@ -2973,8 +2977,6 @@ class WindowsHotkeyCaptureDialog(QDialog):
 
     @staticmethod
     def _event_binding(event: QKeyEvent, modifiers: int) -> _HotkeyBinding | None:
-        from fleasion.gui.windows_hotkeys import modifier_mask_for_virtual_key
-
         scan_code = int(event.nativeScanCode())
         virtual_key = int(event.nativeVirtualKey())
         if not 0 < scan_code <= 0xFF:
@@ -3011,13 +3013,6 @@ class WindowsHotkeyCaptureDialog(QDialog):
 
     @staticmethod
     def _modifier_preview(modifiers: int) -> str:
-        from fleasion.gui.windows_hotkeys import (
-            MOD_ALT,
-            MOD_CTRL,
-            MOD_SHIFT,
-            MOD_WIN,
-        )
-
         labels = [
             label
             for flag, label in (
@@ -3045,8 +3040,6 @@ class WindowsHotkeyCaptureDialog(QDialog):
             self._preview.setText(tr('ui.gui.modifications_tab.that_key_could_not_be_read_as'))
             return
         if key in self._MODIFIER_KEYS:
-            from fleasion.gui.windows_hotkeys import modifier_mask_for_virtual_key
-
             self._pending_modifier = binding
             self._pending_modifier_key = key
             self._preview.setText(
@@ -3160,8 +3153,6 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self.accept()
 
     def _key_pressed(self, code: int, modifiers: int) -> None:
-        from fleasion.gui.linux_hotkeys import modifier_mask_for_evdev_code
-
         # Raw evdev sees the dialog controls too. Only Clear and Cancel arm
         # this suppression; every other mouse button remains bindable. Delay
         # button capture a moment so Qt has time to deliver a Clear/Cancel
@@ -3229,10 +3220,8 @@ class LinuxHotkeyCaptureDialog(QDialog):
 
 def _format_hotkey_binding(binding: _HotkeyBinding | None) -> str:
     if sys.platform.startswith('linux'):
-        from fleasion.gui.linux_hotkeys import binding_text
-    else:
-        from fleasion.gui.windows_hotkeys import binding_text
-    return binding_text(binding)
+        return linux_hotkeys.binding_text(binding)
+    return windows_hotkeys.binding_text(binding)
 
 
 class FastFlagActionEditorDialog(QDialog):
@@ -3693,10 +3682,6 @@ class CustomFFlagEditor(QWidget):
         self._hotkey_controller: CustomFFlagHotkeyController | None = None
         self._owns_hotkey_controller = False
         if self._windows_keybinds:
-            from fleasion.gui.windows_hotkeys import (
-                WindowsCustomFFlagHotkeyController,
-            )
-
             self._hotkey_controller = hotkey_controller
             if self._hotkey_controller is None:
                 self._hotkey_controller = WindowsCustomFFlagHotkeyController(
@@ -3706,11 +3691,6 @@ class CustomFFlagEditor(QWidget):
             self._hotkey_service = self._hotkey_controller.service
             self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         elif self._linux_keybinds:
-            from fleasion.gui.linux_hotkeys import (
-                LinuxCustomFFlagHotkeyController,
-                LinuxHotkeyService,
-            )
-
             self._hotkey_controller = hotkey_controller
             if self._hotkey_controller is None:
                 self._hotkey_controller = LinuxCustomFFlagHotkeyController(
@@ -4441,8 +4421,6 @@ class CustomFFlagEditor(QWidget):
         if prompt.clickedButton() != setup_button:
             return None
         try:
-            from fleasion.gui.linux_hotkeys import launch_permission_setup
-
             launch_permission_setup()
         except OSError as exc:
             QMessageBox.warning(
@@ -4757,8 +4735,6 @@ class CustomFFlagEditor(QWidget):
         self._maybe_scan_missing_client_cache()
 
     def _import_mapping(self, payload: object) -> None:
-        from fleasion.proxy.addons.custom_fflags import normalize_custom_fflags
-
         if not _is_object_dict(payload):
             raise ValueError(tr('modifications.fastflag.import_root_must_be_object'))
         normalized = normalize_custom_fflags(payload)
@@ -5848,8 +5824,6 @@ class ModificationsTab(QWidget):
         ThemeManager.apply_panel_background(self._mod_container)
 
     def _clear_roblox_cache(self) -> None:
-        from fleasion.gui.delete_cache import DeleteCacheWindow
-
         window = DeleteCacheWindow()
         window.show()
 
@@ -6037,8 +6011,6 @@ class ModificationsTab(QWidget):
         self._pfp_executor.submit(self._resolve_pfp_username_worker, target)
 
     def _resolve_pfp_username_worker(self, target: str) -> None:
-        import requests
-
         username = ''
         try:
             resp = requests.get(f'https://users.roblox.com/v1/users/{target}', timeout=8)
@@ -6070,11 +6042,6 @@ class ModificationsTab(QWidget):
 
     def _pfp_image_source(self, raw: str) -> tuple[str, str, str] | None:
         """Return (cache key, kind, source) for a replacement image cell."""
-        from fleasion.proxy.addons.profile_picture_spoofer import (
-            clean_local_path,
-            is_remote_image_url,
-        )
-
         text = raw.strip()
         if not text:
             return None
@@ -6166,8 +6133,6 @@ class ModificationsTab(QWidget):
         self._schedule_pfp_preview_retry()
 
     def _fetch_pfp_image_worker(self, key: str, kind: str, source: str) -> None:
-        import requests
-
         try:
             data = self._load_pfp_image_bytes(kind, source)
         except requests.RequestException, OSError, ValueError, AttributeError, IndexError:
@@ -6179,8 +6144,6 @@ class ModificationsTab(QWidget):
             return
 
     def _load_pfp_image_bytes(self, kind: str, source: str) -> bytes:
-        import requests
-
         limit = self._PFP_MAX_IMAGE_BYTES
         if kind == 'local':
             # Bound the actual read even if the file grows after stat()
@@ -6213,8 +6176,6 @@ class ModificationsTab(QWidget):
 
     def _fetch_pfp_avatar_url(self, user_id: str) -> str:
         """Bypass Fleasion's own interception when displaying Roblox's original avatar."""
-        from fleasion.proxy.original_thumbnail import fetch_original_avatar_url
-
         proxy_master = self._proxy_master
         if proxy_master is None:
             return ''

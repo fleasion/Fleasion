@@ -46,10 +46,24 @@ from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 from fleasion.utils.json_types import JsonValue, require_object_dict, require_object_list
 from fleasion.widgets.image_preview import ImagePreviewLabel
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+lazy from fleasion.cache.animation_viewer import AnimationViewerPanel
+lazy from fleasion.cache.audio_player import AudioPlayerWidget
+lazy from fleasion.cache.cache_json_viewer import CacheJsonViewer
+lazy from fleasion.cache.font_viewer import FontViewerWidget
+lazy from fleasion.cache.mesh_processing import convert
+lazy from fleasion.cache.obj_viewer import ObjViewerPanel
+lazy from fleasion.cache.tools.solidmodel_converter.converter import (
+    deserialize_rbxm,
+    export_obj_from_doc,
+)
+lazy from fleasion.proxy.addons.cache_scraper import (
+    CREATOR_GAME_MAX_SCAN,
+    CREATOR_GAME_PAGE_LIMITS,
+    creator_game_base_paths,
+)
+lazy from fleasion.utils import roblox_auth
 
 if TYPE_CHECKING:
-    from fleasion.cache.audio_player import AudioPlayerWidget
-    from fleasion.cache.font_viewer import FontViewerWidget
     from fleasion.config.manager import ConfigManager
 
 
@@ -222,9 +236,7 @@ class AssetFetcherThread(QThread):
         self._stop_requested = True
 
     def _get_roblosecurity(self) -> str | None:
-        from fleasion.utils.roblox_auth import get_roblosecurity
-
-        return get_roblosecurity()
+        return roblox_auth.get_roblosecurity()
 
     @staticmethod
     def _request_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -270,12 +282,6 @@ class AssetFetcherThread(QThread):
 
     @classmethod
     def _creator_place_ids(cls, creator_id: int, creator_type: int) -> Iterator[int]:
-        from fleasion.proxy.addons.cache_scraper import (
-            CREATOR_GAME_MAX_SCAN,
-            CREATOR_GAME_PAGE_LIMITS,
-            creator_game_base_paths,
-        )
-
         seen_pids: set[int] = set()
         attempted_paths: set[str] = set()
         for limit in CREATOR_GAME_PAGE_LIMITS:
@@ -447,18 +453,11 @@ def _decode_image_rgba(data: bytes) -> tuple[bytes, int, int]:
 
 
 def _mesh_obj_content(data: bytes) -> str | None:
-    from fleasion.cache.mesh_processing import convert
-
     working = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
     return convert(working)
 
 
 def _solid_model_obj_content(data: bytes) -> str:
-    from fleasion.cache.tools.solidmodel_converter.converter import (
-        deserialize_rbxm,
-        export_obj_from_doc,
-    )
-
     working = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
     doc = deserialize_rbxm(working)
     with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as file:
@@ -858,10 +857,6 @@ class JsonTreeViewer(QDialog):
 
     def _create_preview_panel(self) -> QWidget:
         """Create the right-side preview panel (mirrors cache_viewer's panel)."""
-        from fleasion.cache.animation_viewer import AnimationViewerPanel
-        from fleasion.cache.cache_json_viewer import CacheJsonViewer
-        from fleasion.cache.obj_viewer import ObjViewerPanel
-
         preview_widget = QWidget()
         preview_layout = QVBoxLayout()
         preview_layout.setContentsMargins(0, 0, 0, 0)
@@ -1171,8 +1166,6 @@ class JsonTreeViewer(QDialog):
             pass
 
     def _preview_audio(self, data: bytes) -> None:
-        from fleasion.cache.audio_player import AudioPlayerWidget
-
         try:
             self._show_audio_preview(data, AudioPlayerWidget)
         except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -1192,8 +1185,6 @@ class JsonTreeViewer(QDialog):
 
     def _preview_font(self, data: bytes) -> None:
         """Preview a font asset (TTF, OTF, TTC)."""
-        from fleasion.cache.font_viewer import FontViewerWidget
-
         try:
             self._show_font_preview(data, FontViewerWidget)
         except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:

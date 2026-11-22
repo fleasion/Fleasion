@@ -6,6 +6,12 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
+lazy from fleasion.appearance import appearance_style
+
+lazy from . import glass
+lazy from .glass.state import state
+lazy from .glass.style import glass_colors
+
 if sys.platform == 'win32':
     import winreg
 
@@ -119,8 +125,6 @@ class ThemeManager:
 
     @staticmethod
     def apply_from_config(config: ConfigManager) -> None:
-        from . import glass
-
         glass.theme.configure(config)
         ThemeManager.apply_appearance(
             config.appearance_style, config.color_mode, config.accent_color
@@ -130,8 +134,6 @@ class ThemeManager:
     def set_preference(
         config: ConfigManager, preference: Literal['style', 'color_mode', 'accent'], value: str
     ) -> None:
-        from fleasion.appearance import appearance_style, color_mode
-
         if preference == 'style':
             style = appearance_style(value)
             if config.appearance_style == style:
@@ -163,8 +165,6 @@ class ThemeManager:
     @staticmethod
     def apply_theme(theme: str) -> None:
         """Apply a legacy combined theme choice."""
-        from fleasion.appearance import color_mode
-
         ThemeManager.apply_appearance(
             'Glass' if theme == 'Glass' else 'Fusion',
             'Dark' if theme == 'Glass' else color_mode(theme),
@@ -185,8 +185,6 @@ class ThemeManager:
         ThemeManager._accent = accent_name(accent)
         ThemeManager._current_theme = 'Glass' if style == 'Glass' else color_mode
         ThemeManager._effective_theme = color_mode
-        from . import glass
-        from .glass.state import state
 
         native_accent = ThemeManager.system_accent_color()
         state.system_accent = QColor(native_accent)
@@ -537,8 +535,6 @@ class ThemeManager:
             )
 
         if panel_theme == 'Glass':
-            from .glass.style import glass_colors
-
             colors = glass_colors()
             # Match the QAbstractItemView / Scraper Glass surface rather than
             # adding an unrelated opaque navy panel above the backdrop

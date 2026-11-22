@@ -46,6 +46,7 @@ from fleasion.widgets.tab_footer import TabFooter
 from . import glass
 from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
 from .rules_dialog_ui import UiDialog as UiRulesDialog
+lazy from . import delete_cache
 
 if TYPE_CHECKING:
     from fleasion.proxy.types import (
@@ -1362,8 +1363,6 @@ class ProxyTrafficTab(QWidget):
         self._render_table()
 
     def _clear_roblox_cache(self) -> None:
-        from . import delete_cache
-
         window = delete_cache.DeleteCacheWindow()
         window.show()
 

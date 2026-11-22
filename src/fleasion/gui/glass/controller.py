@@ -9,6 +9,8 @@ from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QWidget
 
 from fleasion.localization import tr
+lazy from fleasion.appearance import accent_name
+lazy from fleasion.gui.theme import ThemeManager
 
 from .chrome import apply_chrome, prepare_frameless, register, registered_windows
 from .desktop_blur import APP_ID, blur
@@ -87,8 +89,6 @@ class GlassTheme:
     def enable(
         self, app: QApplication, *, accent: str | None = None, base_palette: QPalette | None = None
     ) -> None:
-        from fleasion.gui.theme import ThemeManager
-
         entering = not self.active
         state.reload()
         if accent is not None:
@@ -183,8 +183,6 @@ class GlassTheme:
     #
 
     def set_accent(self, name: str) -> None:
-        from fleasion.appearance import accent_name
-
         if accent_name(name) != name and name != 'Custom':
             return
         if name == 'Custom':
@@ -193,8 +191,6 @@ class GlassTheme:
         state.set_accent(name)
         if (app := _app()) is not None:
             _sync_combo(app, ACCENT_COMBO, text=name)
-
-            from fleasion.gui.theme import ThemeManager
 
             ThemeManager.set_accent(name)
 
@@ -239,8 +235,6 @@ class GlassTheme:
         _sync_combo(app, BACKDROP_COMBO, data=mode)
         self._sync_blur_controls()
         _refresh_windows(app)
-
-        from fleasion.gui.theme import ThemeManager
 
         ThemeManager.events().changed.emit()
 

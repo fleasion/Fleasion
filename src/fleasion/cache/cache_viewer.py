@@ -94,6 +94,20 @@ from fleasion.utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from fleasion.widgets.image_preview import ImagePreviewLabel
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
+lazy from fleasion.gui import glass
+lazy from fleasion.gui.delete_cache import DeleteCacheWindow
+lazy from fleasion.gui.theme import ThemeManager
+lazy from fleasion.proxy.addons.cache_scraper import (
+    CREATOR_GAME_MAX_SCAN,
+    CREATOR_GAME_PAGE_LIMITS,
+    creator_game_base_paths,
+)
+lazy from fleasion.utils import anim_converter
+lazy from fleasion.utils.r15_to_r6 import (
+    convert_keyframe_r6_to_r15,
+    convert_keyframe_r15_to_r6,
+    sanitize_xml,
+)
 
 from . import asset_type_filter as _asset_type_filter, mesh_processing
 from .asset_type_filter import CategoryFilterPopup
@@ -103,14 +117,16 @@ from .cache_manager import CacheManager
 from .font_viewer import FontViewerWidget
 from .rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from .roblox_document import export_roblox_document, get_roblox_document_export_formats
+lazy from .animation_viewer import AnimationViewerPanel
+lazy from .obj_viewer import ObjViewerPanel
+lazy from .tools.ktx_to_png import convert as ktx_convert, strip_prefixed_ktx
+lazy from .tools.solidmodel_converter.converter import deserialize_rbxm, export_obj_from_doc
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 
     from fleasion.gui.replacer_config import ReplacerConfigWindow
 
-    from .animation_viewer import AnimationViewerPanel
-    from .obj_viewer import ObjViewerPanel
     from .rbxm_preview import PreviewDocument
 
 
@@ -644,7 +660,6 @@ class ImageLoaderThread(QThread):
     def _load_rgba(self) -> tuple[bytes, int, int] | None:
         log_buffer.log('Preview', f'Loading image ({len(self.data)} bytes)')
         data = self.data
-        from .tools.ktx_to_png import convert as ktx_convert, strip_prefixed_ktx
 
         ktx_payload = strip_prefixed_ktx(data)
         if ktx_payload is not None:
@@ -743,8 +758,6 @@ class SolidModelLoaderThread(QThread):
         )
         if self._stop_requested:
             return None
-
-        from .tools.solidmodel_converter.converter import deserialize_rbxm, export_obj_from_doc
 
         decompressed = self.data
         if self.data.startswith(b'\x1f\x8b'):
@@ -930,12 +943,6 @@ class AssetLoaderThread(QThread):
         creator_id: int,
         creator_type: int,
     ) -> Iterator[int]:
-        from fleasion.proxy.addons.cache_scraper import (
-            CREATOR_GAME_MAX_SCAN,
-            CREATOR_GAME_PAGE_LIMITS,
-            creator_game_base_paths,
-        )
-
         seen_pids: set[int] = set()
         attempted_paths: set[str] = set()
         for limit in CREATOR_GAME_PAGE_LIMITS:
@@ -1550,7 +1557,6 @@ class CacheViewerTab(QWidget):
         self._shutting_down = False
         self._ui_ready = False
         self._page_content_layout: QVBoxLayout | None = None
-        from fleasion.gui.theme import ThemeManager
 
         ThemeManager.events().changed.connect(self._update_page_margins)
         self._initial_population = True
@@ -2033,7 +2039,6 @@ class CacheViewerTab(QWidget):
     def _update_page_margins(self) -> None:
         if self._page_content_layout is None:
             return
-        from fleasion.gui import glass
 
         self._page_content_layout.setContentsMargins(
             *page_content_margins(glass=glass.theme.active)
@@ -2478,8 +2483,6 @@ class CacheViewerTab(QWidget):
     def _ensure_obj_viewer(self) -> ObjViewerPanel:
         """Create the mesh OpenGL widget only when a mesh is actually previewed."""
         if self.obj_viewer is None:
-            from .obj_viewer import ObjViewerPanel
-
             log_buffer.log('OpenGL', 'Creating OBJ preview widget on demand')
             viewer = ObjViewerPanel(config_manager=self.config_manager)
             viewer.clear_requested.connect(self._clear_preview)
@@ -2491,8 +2494,6 @@ class CacheViewerTab(QWidget):
     def _ensure_animation_viewer(self) -> AnimationViewerPanel:
         """Create the animation OpenGL widget only when an animation is previewed."""
         if self.animation_viewer is None:
-            from .animation_viewer import AnimationViewerPanel
-
             log_buffer.log('OpenGL', 'Creating animation preview widget on demand')
             viewer = AnimationViewerPanel(config_manager=self.config_manager)
             viewer.hide()
@@ -4098,8 +4099,6 @@ class CacheViewerTab(QWidget):
 
     def _delete_roblox_cache(self) -> None:
         """Delete Roblox cache using system tray method."""
-        from fleasion.gui.delete_cache import DeleteCacheWindow
-
         window = DeleteCacheWindow()
         window.show()
 
@@ -4393,13 +4392,11 @@ class CacheViewerTab(QWidget):
                 )
                 if convert_anim_asset:
                     with contextlib.suppress(Exception):
-                        from fleasion.utils.anim_converter import detect_rig
-
                         anim_data = self.cache_manager.get_asset(
                             convert_anim_asset['id'], convert_anim_asset['type']
                         )
                         if anim_data:
-                            rig = detect_rig(anim_data)
+                            rig = anim_converter.detect_rig(anim_data)
                             target_rig = 'R6' if rig == 'R15' else 'R15'
                             target_rig_label = (
                                 tr('cache.rig.r6') if target_rig == 'R6' else tr('cache.rig.r15')
@@ -4489,9 +4486,12 @@ class CacheViewerTab(QWidget):
             return
 
         def _do_convert() -> None:
+            # Report a converter that fails to load separately from conversion errors
             try:
-                from fleasion.utils.anim_converter import rbxm_to_rbxmx
-                from fleasion.utils.rig_data import (
+                from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
+                    rbxm_to_rbxmx,
+                )
+                from fleasion.utils.rig_data import (  # ruff: ignore[import-outside-top-level]
                     R6_JOINTS,
                     R6_PARTS,
                     R15_JOINTS,
@@ -4528,12 +4528,6 @@ class CacheViewerTab(QWidget):
                     return
 
             def _write_converted_xml() -> None:
-                from fleasion.utils.r15_to_r6 import (
-                    convert_keyframe_r6_to_r15,
-                    convert_keyframe_r15_to_r6,
-                    sanitize_xml,
-                )
-
                 root = DefusedElementTree.fromstring(sanitize_xml(anim_data))
                 ks = root.find("Item[@class='KeyframeSequence']")
                 if ks is None:
@@ -4786,7 +4780,6 @@ class CacheViewerTab(QWidget):
             b'\xabKTX 20\xbb\r\n\x1a\n',
         }:
             return data
-        from .tools.ktx_to_png import convert as ktx_convert
 
         return ktx_convert(data) or data
 
@@ -4847,8 +4840,6 @@ class CacheViewerTab(QWidget):
 
     @staticmethod
     def _solidmodel_obj_content(data: bytes) -> str:
-        from .tools.solidmodel_converter.converter import deserialize_rbxm, export_obj_from_doc
-
         decompressed = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
         doc = deserialize_rbxm(decompressed)
         with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as handle:

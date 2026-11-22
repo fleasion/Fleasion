@@ -7,14 +7,14 @@ from __future__ import annotations
 import importlib
 import sys
 
+lazy from fleasion.linux_proxy_helper_daemon import main as run_linux_proxy_helper
+lazy from fleasion.startup_errors import report_blocked_startup
+
 
 def main() -> None:
     """Start Fleasion or its bundled Linux proxy helper."""
     if '--linux-proxy-helper' in sys.argv[1:]:
         sys.argv.remove('--linux-proxy-helper')
-        from fleasion.linux_proxy_helper_daemon import (
-            main as run_linux_proxy_helper,
-        )
 
         run_linux_proxy_helper()
         return
@@ -26,8 +26,6 @@ def main() -> None:
 
         from fleasion.app.core import run_application
     except (ImportError, OSError) as exc:
-        from fleasion.startup_errors import report_blocked_startup
-
         if not report_blocked_startup(exc):
             raise
         sys.exit(1)

@@ -16,6 +16,8 @@ lazy import requests
 
 from fleasion.utils import CONFIG_DIR, log_buffer
 from fleasion.utils.roblox_auth import get_roblosecurity
+lazy from fleasion.utils.anim_converter import rbxm_to_rbxmx
+lazy from fleasion.utils.r15_to_r6 import curve_anim_to_keyframe_xml, keyframe_to_curve_anim
 
 from . import mesh_processing
 from .roblox_document import (
@@ -23,6 +25,16 @@ from .roblox_document import (
     get_default_roblox_document_export_format,
     get_roblox_document_export_formats,
 )
+lazy from . import mesh_rig
+lazy from .tools.ktx_to_png import convert as ktx_convert
+lazy from .tools.solidmodel_converter.converter import (
+    deserialize_rbxm,
+    export_obj_from_doc,
+    get_top_level_mesh_data,
+    inject_mesh_data,
+    try_extract_child_data,
+)
+lazy from .tools.solidmodel_converter.rbxm.xml_writer import write_rbxmx
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -44,14 +56,6 @@ class _ExportConfig(Protocol):
 
 
 def _solidmodel_rbxmx_bytes(data: bytes) -> bytes:
-    from .tools.solidmodel_converter.converter import (
-        deserialize_rbxm,
-        get_top_level_mesh_data,
-        inject_mesh_data,
-        try_extract_child_data,
-    )
-    from .tools.solidmodel_converter.rbxm.xml_writer import write_rbxmx
-
     decompressed = gzip.decompress(data) if data.startswith(b'\x1f\x8b') else data
     doc = deserialize_rbxm(decompressed)
     top_mesh_data = get_top_level_mesh_data(doc)
@@ -66,18 +70,12 @@ def _solidmodel_rbxmx_bytes(data: bytes) -> bytes:
 def _converted_animation_bytes(data: bytes, *, curve: bool) -> bytes:
     anim_data = gzip.decompress(data) if data.startswith(b'\x1f\x8b') else data
     if anim_data.startswith(b'<roblox!'):
-        from fleasion.utils.anim_converter import rbxm_to_rbxmx
-
         anim_data = rbxm_to_rbxmx(anim_data)
 
     if curve:
         if b'CurveAnimation' not in anim_data:
-            from fleasion.utils.r15_to_r6 import keyframe_to_curve_anim
-
             anim_data = keyframe_to_curve_anim(anim_data)
     elif b'CurveAnimation' in anim_data:
-        from fleasion.utils.r15_to_r6 import curve_anim_to_keyframe_xml
-
         anim_data = curve_anim_to_keyframe_xml(anim_data)
     return anim_data
 
@@ -772,11 +770,12 @@ class CacheManager:
         if not data:
             return formats
 
-        if effective_type == 4:
-            from .mesh_rig import has_embedded_rig
-
-            if has_embedded_rig(data) and 'converted_rigged_glb' not in formats:
-                formats.insert(0, 'converted_rigged_glb')
+        if (
+            effective_type == 4
+            and mesh_rig.has_embedded_rig(data)
+            and 'converted_rigged_glb' not in formats
+        ):
+            formats.insert(0, 'converted_rigged_glb')
 
         document_formats = get_roblox_document_export_formats(data, asset_type=asset_type)
         for fmt in reversed(document_formats):
@@ -864,17 +863,13 @@ class CacheManager:
                 result.write_bytes(data)
             handled = True
         elif export_format == 'converted_rigged_glb':
-            from .mesh_rig import export_glb
-
             result = export_type_dir / f'{filename}.glb'
-            result.write_bytes(export_glb(data))
+            result.write_bytes(mesh_rig.export_glb(data))
             handled = True
         return handled, result
 
     @staticmethod
     def _export_solidmodel_obj(data: bytes, output_path: Path) -> None:
-        from .tools.solidmodel_converter.converter import deserialize_rbxm, export_obj_from_doc
-
         doc = deserialize_rbxm(data)
         export_obj_from_doc(doc, output_path, decompose=False)
 
@@ -953,8 +948,6 @@ class CacheManager:
             )
             export_data = data
             if data[:12] in ktx_magic:
-                from .tools.ktx_to_png import convert as ktx_convert
-
                 converted = ktx_convert(data)
                 if converted:
                     export_data = converted

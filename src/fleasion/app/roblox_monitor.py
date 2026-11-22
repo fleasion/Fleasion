@@ -58,6 +58,7 @@ from fleasion.utils.sober_launch_replay import (
     capture_sober_launch,
     replay_sober_launch,
 )
+lazy from fleasion.utils import platform_linux
 
 if sys.platform == 'darwin':
     from fleasion.utils.platform_macos import (
@@ -395,12 +396,8 @@ class RobloxExitMonitor(QObject):
                 if self.env_lifecycle is not None:
                     selected = get_selected_linux_client_installation()
                     if selected is not None and getattr(selected, 'stud_managed', False):
-                        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                            running_rosemary_proxy_status,
-                        )
-
                         url = self._proxy_master.roblox_env_proxy_url()
-                        if running_rosemary_proxy_status(url) != 'configured':
+                        if platform_linux.running_rosemary_proxy_status(url) != 'configured':
                             if time.monotonic() >= self._stud_relaunch_suppress_until:
                                 self._stud_relaunch_suppress_until = time.monotonic() + 20.0
                                 self._suppress_next_player_exit_cache_delete = True
@@ -728,19 +725,19 @@ class RobloxExitMonitor(QObject):
 
         # Stud must be restarted through its own launcher, even when Auto
         # switches to Stud after an unrelated client was previously selected
-        if getattr(selected, 'stud_managed', False) and lifecycle is not None:
-            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
-                running_rosemary_proxy_status,
-            )
-
-            if running_rosemary_proxy_status(proxy.roblox_env_proxy_url()) != 'configured':
-                if time.monotonic() >= self._stud_relaunch_suppress_until:
-                    self._stud_relaunch_suppress_until = time.monotonic() + 20.0
-                    self._suppress_next_player_exit_cache_delete = True
-                    self._player_was_running = True
-                    self.was_running = True
-                    run_in_thread(lifecycle.handle_player_launch)(get_roblox_player_exe_path())
-                return False
+        if (
+            getattr(selected, 'stud_managed', False)
+            and lifecycle is not None
+            and platform_linux.running_rosemary_proxy_status(proxy.roblox_env_proxy_url())
+            != 'configured'
+        ):
+            if time.monotonic() >= self._stud_relaunch_suppress_until:
+                self._stud_relaunch_suppress_until = time.monotonic() + 20.0
+                self._suppress_next_player_exit_cache_delete = True
+                self._player_was_running = True
+                self.was_running = True
+                run_in_thread(lifecycle.handle_player_launch)(get_roblox_player_exe_path())
+            return False
 
         # A preexisting process cannot inherit a newly armed Flatpak override
         # Do not claim ownership unless the replacement was successfully launched

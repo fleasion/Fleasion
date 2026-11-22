@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, override
 
 from PySide6.QtCore import QEvent, QObject, QTimer, Signal
 
+lazy from .theme import ThemeManager
+
 if TYPE_CHECKING:
     from PySide6.QtGui import QPalette
     from PySide6.QtWidgets import QApplication
@@ -25,19 +27,13 @@ class AppearanceEvents(QObject):
 
     @staticmethod
     def _refresh_system() -> None:
-        from .theme import ThemeManager
-
         ThemeManager.refresh_system()
 
     def _palette_changed(self, palette: QPalette) -> None:
-        from .theme import ThemeManager
-
         if ThemeManager.remember_native_palette(palette):
             self._timer.start(0)
 
     def _schedule_refresh(self) -> None:
-        from .theme import ThemeManager
-
         if ThemeManager.follows_system():
             self._timer.start(0)
 

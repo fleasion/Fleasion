@@ -20,6 +20,7 @@ from fleasion.utils.macos_rosemary_installer import (
     release_url,
 )
 from fleasion.utils.macos_rosemary_memory import active_session
+lazy from fleasion.utils.macos_rosemary_launcher import launch_managed
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -122,8 +123,6 @@ class ManagedRobloxLaunch(QObject):
         ).start()
 
     def _launch_in_worker(self) -> None:
-        from fleasion.utils.macos_rosemary_launcher import launch_managed
-
         try:
             proxy_master = self._proxy_master
             if proxy_master is None:
