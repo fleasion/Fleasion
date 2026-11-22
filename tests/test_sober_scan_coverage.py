@@ -482,3 +482,19 @@ def test_large_sparse_sober_mapping_keeps_zero_page_probes_bounded() -> None:
         module_base=0, module_end=0, client_random=None, stop=None, found=found,
     )
     assert 32 < reader.calls <= 32 * 18
+
+
+def test_mimalloc_heap_is_scanned(tmp_path: Path) -> None:
+    """Roblox on Sober keeps its SSL objects in an [anon:mimalloc] arena."""
+    region = 0x100000
+    smaps = tmp_path / 'smaps'
+    smaps.write_text(
+        f'{region:x}-{region + 0x400000:x} rw-p 00000000 00:00 0                    [anon:mimalloc]\n'
+        'Size:               4096 kB\n'
+        'Rss:                1280 kB\n'
+        f'{region + 0x400000:x}-{region + 0x500000:x} rw-p 00000000 00:00 0          [anon:other]\n'
+        'Size:               1024 kB\n'
+        'Rss:                1024 kB\n'
+    )
+    regions = sober_keys._parse_smaps_regions(smaps)  # pyright: ignore[reportPrivateUsage]
+    assert regions == [(region, (1280 + 256) * 1024)]
