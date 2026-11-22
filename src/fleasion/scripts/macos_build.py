@@ -41,6 +41,15 @@ _ALLOWED_SINGLE_ARCH_MACHO = frozenset(
         'Contents/Frameworks/Cryptodome/Cipher/_raw_aesni.abi3.so',
     }
 )
+# PySide6 6.12 builds its binding modules with the build machine's macOS 26 SDK
+# as their minimum, although the wheels are tagged 14.0 and the bundled Qt
+# frameworks need 14.4. Only these directories get their minimum lowered; Qt
+# itself, under PySide6/Qt, keeps its own and is still checked
+_PATCHED_MINIMUM_DIRECTORIES = (
+    'Contents/Frameworks/PySide6/',
+    'Contents/Frameworks/shiboken6/',
+)
+_UNPATCHED_MINIMUM_DIRECTORIES = ('Contents/Frameworks/PySide6/Qt/',)
 
 
 def subprocess_run(
@@ -266,8 +275,8 @@ class MacOSBuilder:
             raise RuntimeError(msg)
 
     @staticmethod
-    def _minimum_macos_version(file_path: Path, architecture: str) -> str | None:
-        """Read a Mach-O slice's minimum supported macOS version."""
+    def _macos_versions(file_path: Path, architecture: str) -> tuple[str | None, str | None]:
+        """Read a Mach-O slice's minimum macOS version and the SDK it was built with."""
         result = subprocess_run(
             ['otool', '-arch', architecture, '-l', str(file_path)],
             capture_output=True,
@@ -276,6 +285,7 @@ class MacOSBuilder:
         )
         output = result.stdout if result.returncode == 0 else ''
         command: str | None = None
+        minimum: str | None = None
         for line in output.splitlines():
             value = line.strip()
             if value == 'cmd LC_BUILD_VERSION':
@@ -285,8 +295,57 @@ class MacOSBuilder:
             elif (command == 'build' and value.startswith('minos ')) or (
                 command == 'minimum' and value.startswith('version ')
             ):
-                return value.split(maxsplit=1)[1]
-        return None
+                minimum = value.split(maxsplit=1)[1]
+            elif command is not None and minimum is not None and value.startswith('sdk '):
+                return minimum, value.split(maxsplit=1)[1]
+        return minimum, None
+
+    @classmethod
+    def _minimum_macos_version(cls, file_path: Path, architecture: str) -> str | None:
+        """Read a Mach-O slice's minimum supported macOS version."""
+        return cls._macos_versions(file_path, architecture)[0]
+
+    def _lower_pyside_minimum_versions(self, app_path: Path) -> None:
+        """Lower the declared macOS minimum of PySide6's bindings to the deployment target.
+
+        Only the load command changes. The bindings call into Qt, which really
+        supports the target, and codesign runs afterwards to re-sign them.
+        """
+        target = self._version_tuple(self.deployment_target)
+        for file_path in self._regular_files(app_path):
+            relative_path = file_path.relative_to(app_path).as_posix()
+            if not relative_path.startswith(_PATCHED_MINIMUM_DIRECTORIES):
+                continue
+            if relative_path.startswith(_UNPATCHED_MINIMUM_DIRECTORIES):
+                continue
+
+            # vtool rewrites one slice per call, so universal files take two passes
+            for architecture in sorted(self._architectures(file_path) & {'arm64', 'x86_64'}):
+                minimum, sdk = self._macos_versions(file_path, architecture)
+                if minimum is None or self._version_tuple(minimum) <= target:
+                    continue
+                temporary_file = file_path.with_name(f'{file_path.name}.minos-tmp')
+                try:
+                    subprocess_run(
+                        [
+                            'vtool',
+                            '-arch',
+                            architecture,
+                            '-set-build-version',
+                            'macos',
+                            self.deployment_target,
+                            sdk or minimum,
+                            '-replace',
+                            '-output',
+                            str(temporary_file),
+                            str(file_path),
+                        ]
+                    )
+                    shutil.copymode(file_path, temporary_file)
+                    temporary_file.replace(file_path)
+                except BaseException:
+                    temporary_file.unlink(missing_ok=True)
+                    raise
 
     @staticmethod
     def _version_tuple(version: str) -> tuple[int, ...]:
@@ -497,6 +556,7 @@ class MacOSBuilder:
     def _finalize_app(self, app_path: Path, architecture: str) -> None:
         """Sign, validate, and package a completed app bundle."""
         self._verify_app_bundle(app_path, 'Final app')
+        self._lower_pyside_minimum_versions(app_path)
         subprocess_run(['codesign', '--force', '--deep', '--sign', '-', str(app_path)])
 
         if architecture == 'universal2':

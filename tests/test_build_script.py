@@ -588,3 +588,58 @@ def test_x86_build_uses_the_project_python_pin(
         ['arch', '-x86_64', str(builder.x86_uv_path), 'run', '--no-sync', 'build', '--clean']
     ]
     assert verified_slices == [('x86_64', 'Intel build')]
+
+
+def test_only_pyside_bindings_get_their_macos_minimum_lowered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    builder = object.__new__(macos_build.MacOSBuilder)
+    builder.deployment_target = '14.4'
+    frameworks = tmp_path / 'Contents/Frameworks'
+    binding = frameworks / 'PySide6/QtCore.abi3.so'
+    shiboken = frameworks / 'shiboken6/libshiboken6.abi3.6.12.dylib'
+    qt_framework = frameworks / 'PySide6/Qt/lib/QtCore.framework/Versions/A/QtCore'
+    already_supported = frameworks / 'PySide6/QtSvg.abi3.so'
+    other = frameworks / 'numpy/_core/_multiarray_umath.cpython-315-darwin.so'
+    files = [binding, shiboken, qt_framework, already_supported, other]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'original')
+
+    versions = {already_supported: ('14.0', '26.0')}
+    commands: list[list[str]] = []
+
+    def macos_versions(file_path: Path, _architecture: str) -> tuple[str, str]:
+        return versions.get(file_path, ('26.0', '26.0'))
+
+    def subprocess_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        Path(command[command.index('-output') + 1]).write_bytes(b'patched')
+        return subprocess.CompletedProcess(command, 0, '', '')
+
+    def regular_files(_root: Path) -> list[Path]:
+        return files
+
+    def architectures(_path: Path) -> set[str]:
+        return {'arm64', 'x86_64'}
+
+    monkeypatch.setattr(builder, '_regular_files', regular_files)
+    monkeypatch.setattr(builder, '_architectures', architectures)
+    monkeypatch.setattr(builder, '_macos_versions', macos_versions)
+    monkeypatch.setattr(macos_build, 'subprocess_run', subprocess_run)
+
+    callback = cast('Callable[[Path], None]', getattr(builder, '_lower_pyside_minimum_versions'))
+    callback(tmp_path)
+
+    patched = [(Path(command[-1]), command[2]) for command in commands]
+    assert patched == [
+        (binding, 'arm64'),
+        (binding, 'x86_64'),
+        (shiboken, 'arm64'),
+        (shiboken, 'x86_64'),
+    ]
+    assert commands[0][3:7] == ['-set-build-version', 'macos', '14.4', '26.0']
+    assert binding.read_bytes() == b'patched'
+    assert qt_framework.read_bytes() == b'original'
+    assert other.read_bytes() == b'original'
+    assert not list(frameworks.rglob('*.minos-tmp'))
