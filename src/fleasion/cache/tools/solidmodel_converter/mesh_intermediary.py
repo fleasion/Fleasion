@@ -27,6 +27,8 @@ import zstandard
 from defusedxml.ElementTree import parse as _xml_parse
 
 from fleasion.utils import APP_CACHE_DIR, log_buffer
+
+# Keep DracoPy, mesh processing and the RBXM converters out of the import path
 lazy from fleasion.cache import mesh_processing
 lazy from fleasion.cache.tools.solidmodel_converter import converter, csg_mesh
 
@@ -101,9 +103,6 @@ def mesh_file_to_cached_obj(mesh_path: Path) -> Path:
     ValueError
         If ``mesh_processing.convert`` fails to produce OBJ content.
     """
-    # Keep DracoPy and mesh-processing startup cost out of the import path.
-    mesh_to_obj_str = mesh_processing.convert
-
     mesh_path = Path(mesh_path).resolve()
     if not mesh_path.exists():
         msg = f'Mesh file not found: {mesh_path}'
@@ -118,7 +117,7 @@ def mesh_file_to_cached_obj(mesh_path: Path) -> Path:
 
     log_buffer.log('Intermediary', f'Converting .mesh → OBJ: {mesh_path.name}')
     data = mesh_path.read_bytes()
-    obj_content = mesh_to_obj_str(data)
+    obj_content = mesh_processing.convert(data)
 
     if not obj_content:
         msg = f'mesh_processing.convert produced no output for: {mesh_path}'
@@ -228,10 +227,6 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
         If no injectable instance with ``MeshData`` is found, or the CSGMDL
         produces no geometry.
     """
-    # Keep startup light and avoid the converter/csg import cycle.
-    deserialize_rbxm = converter.deserialize_rbxm
-    parse_csg_mesh = csg_mesh.parse_csg_mesh
-
     bin_path = Path(bin_path).resolve()
     if not bin_path.exists():
         msg = f'CSG .bin file not found: {bin_path}'
@@ -253,7 +248,7 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
         msg = f'.bin file does not look like a binary RBXM (got header {data[:8]!r}): {bin_path}'
         raise ValueError(msg)
 
-    doc = deserialize_rbxm(data)
+    doc = converter.deserialize_rbxm(data)
 
     mesh_data: bytes | None = None
     for inst in doc.roots:
@@ -270,7 +265,7 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
         )
         raise ValueError(msg)
 
-    vertices, indices = parse_csg_mesh(mesh_data)
+    vertices, indices = csg_mesh.parse_csg_mesh(mesh_data)
 
     if not vertices or not indices:
         msg = f'CSGMDL in {bin_path} produced no usable geometry'
@@ -291,8 +286,6 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
 
 def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:
     """Parse MeshData from an RBXMX SolidModel export and convert to a cached OBJ."""
-    parse_csg_mesh = csg_mesh.parse_csg_mesh
-
     rbxmx_path = Path(rbxmx_path).resolve()
     if not rbxmx_path.exists():
         msg = f'RBXMX file not found: {rbxmx_path}'
@@ -332,7 +325,7 @@ def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:
         )
         raise ValueError(msg)
 
-    vertices, indices = parse_csg_mesh(mesh_data)
+    vertices, indices = csg_mesh.parse_csg_mesh(mesh_data)
 
     if not vertices or not indices:
         msg = f'CSGMDL in {rbxmx_path} produced no usable geometry'

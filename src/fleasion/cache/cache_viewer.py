@@ -4541,11 +4541,15 @@ class CacheViewerTab(QWidget):
                         tr('ui.cache.cache_viewer.no_keyframes_found')
                     )
                     return
-                converter = (
-                    convert_keyframe_r15_to_r6 if target == 'R6' else convert_keyframe_r6_to_r15
-                )
                 for keyframe in keyframes:
-                    converter(keyframe, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+                    if target == 'R6':
+                        convert_keyframe_r15_to_r6(
+                            keyframe, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS
+                        )
+                    else:
+                        convert_keyframe_r6_to_r15(
+                            keyframe, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS
+                        )
                 Path(out_str).write_bytes(
                     DefusedElementTree.tostring(root, encoding='utf-8', xml_declaration=True)
                 )

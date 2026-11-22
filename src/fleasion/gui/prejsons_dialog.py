@@ -1376,8 +1376,6 @@ class PreJsonsDialog(QDialog):
         )
 
     def _open_viewer(self, data: JsonValue, filename: str) -> None:
-        viewer_class = json_viewer.JsonTreeViewer
-
         parent = self.parent()
 
         def on_ids(ids: list[ImportValue]) -> None:
@@ -1387,7 +1385,7 @@ class PreJsonsDialog(QDialog):
             _set_replacement_value(parent, val)
 
         config_manager = _parent_config_manager(parent)
-        viewer = viewer_class(
+        viewer = json_viewer.JsonTreeViewer(
             None,
             data,
             filename,

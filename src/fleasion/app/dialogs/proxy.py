@@ -285,8 +285,6 @@ def windows_ca_permission_denied_dirs(details: ErrorDetails) -> list[Path]:
 
 def show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
     """Explain a failed privileged relay and return the requested recovery action."""
-    helper_log_dir = macos_proxy_helper.HELPER_LOG_DIR
-
     top = QApplication.topLevelWidgets()
     parent = next((w for w in top if w.isVisible()), None)
     on_top = any(
@@ -347,7 +345,7 @@ def show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
         if clicked == reinstall_button:
             return 'reinstall'
         if clicked == logs_button:
-            open_folder(helper_log_dir)
+            open_folder(macos_proxy_helper.HELPER_LOG_DIR)
             continue
         if clicked == close_button:
             return 'close'

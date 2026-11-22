@@ -215,12 +215,11 @@ def _run_isolated(
 
 def _zstd_or[T](operation: Callable[[], T], fallback: T) -> T:
     try:
-        zstd_error = zstandard.ZstdError
-    except ImportError:
-        return fallback
-    try:
         return operation()
-    except AttributeError, TypeError, ValueError, zstd_error:
+    except ImportError:
+        # zstandard failed to load, so the except clause below cannot name its error
+        return fallback
+    except AttributeError, TypeError, ValueError, zstandard.ZstdError:
         return fallback
 
 

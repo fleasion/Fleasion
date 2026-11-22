@@ -349,12 +349,14 @@ def _convert_keyframe(
     r15_joints: JointMap,
 ) -> None:
     with _dynamic_boundary:
-        convert = (
-            r15_to_r6.convert_keyframe_r15_to_r6
-            if target_rig == 'R6'
-            else r15_to_r6.convert_keyframe_r6_to_r15
-        )
-        convert(keyframe, r6_parts, r6_joints, r15_parts, r15_joints)
+        if target_rig == 'R6':
+            r15_to_r6.convert_keyframe_r15_to_r6(
+                keyframe, r6_parts, r6_joints, r15_parts, r15_joints
+            )
+        else:
+            r15_to_r6.convert_keyframe_r6_to_r15(
+                keyframe, r6_parts, r6_joints, r15_parts, r15_joints
+            )
 
 
 def _keyframe_to_curve_anim(data: bytes) -> bytes:

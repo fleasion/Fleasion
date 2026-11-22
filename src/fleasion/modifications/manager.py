@@ -235,13 +235,7 @@ def _instance_attr(obj: object, name: str, default: object = None) -> Any:
 
 def _find_roblox_dirs() -> list[Path]:
     """Locate Roblox resource directories that can receive file modifications."""
-    find_roblox_resource_dirs: Callable[..., list[Path]] | None = None
-    if sys.platform == 'darwin':
-        find_roblox_resource_dirs = platform_macos.find_roblox_resource_dirs
-    elif sys.platform.startswith('linux'):
-        find_roblox_resource_dirs = platform_linux.find_roblox_resource_dirs
-
-    if find_roblox_resource_dirs is not None:
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         found: list[Path] = []
         seen: set[str] = set()
 
@@ -257,7 +251,12 @@ def _find_roblox_dirs() -> list[Path]:
             seen.add(key)
             found.append(path)
 
-        for roblox_dir in find_roblox_resource_dirs(include_studio=False):
+        resource_dirs = (
+            platform_macos.find_roblox_resource_dirs(include_studio=False)
+            if sys.platform == 'darwin'
+            else platform_linux.find_roblox_resource_dirs(include_studio=False)
+        )
+        for roblox_dir in resource_dirs:
             _add_non_windows(roblox_dir)
         for cached_dir in load_saved_roblox_dirs():
             _add_non_windows(cached_dir)

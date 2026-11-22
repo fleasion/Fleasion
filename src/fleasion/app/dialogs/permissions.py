@@ -90,13 +90,9 @@ def show_roblox_permission_failure(
     if msg.clickedButton() != grant_button:
         return
 
-    clear_pending_repair = windows_permissions.clear_pending_repair
-    clear_repair_result = windows_permissions.clear_repair_result
-    write_pending_repair = windows_permissions.write_pending_repair
-
     try:
-        clear_repair_result(CONFIG_DIR)
-        if not write_pending_repair(paths, CONFIG_DIR):
+        windows_permissions.clear_repair_result(CONFIG_DIR)
+        if not windows_permissions.write_pending_repair(paths, CONFIG_DIR):
             msg_0 = 'No valid Roblox installation folders were selected'
             raise OSError(msg_0)
         relaunched = relaunch_as_admin(
@@ -104,7 +100,7 @@ def show_roblox_permission_failure(
             parent_hwnd=window_handle(parent),
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        clear_pending_repair(CONFIG_DIR)
+        windows_permissions.clear_pending_repair(CONFIG_DIR)
         log_buffer.log('RobloxPermissions', f'Could not start elevated ACL repair: {exc}')
         return
 
@@ -134,7 +130,7 @@ def show_roblox_permission_failure(
                 ),
             )
     else:
-        clear_pending_repair(CONFIG_DIR)
+        windows_permissions.clear_pending_repair(CONFIG_DIR)
 
 
 def poll_roblox_permission_repair(
@@ -290,19 +286,15 @@ def show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
         return
 
     if msg.clickedButton() == repair_button:
-        clear_pending_repair = windows_firewall.clear_pending_repair
-        clear_repair_result = windows_firewall.clear_repair_result
-        write_pending_repair = windows_firewall.write_pending_repair
-
         try:
-            clear_repair_result(CONFIG_DIR)
-            write_pending_repair(CONFIG_DIR)
+            windows_firewall.clear_repair_result(CONFIG_DIR)
+            windows_firewall.write_pending_repair(CONFIG_DIR)
             relaunched = relaunch_as_admin(
                 extra_args='--repair-firewall',
                 parent_hwnd=window_handle(parent),
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            clear_pending_repair(CONFIG_DIR)
+            windows_firewall.clear_pending_repair(CONFIG_DIR)
             log_buffer.log('WindowsFirewall', f'Could not start elevated firewall repair: {exc}')
             relaunched = False
 
@@ -311,7 +303,7 @@ def show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
             deadline = time.monotonic() + WINDOWS_FIREWALL_REPAIR_RESULT_TIMEOUT_SECONDS
             QTimer.singleShot(500, lambda: poll_windows_firewall_repair(deadline))
         else:
-            clear_pending_repair(CONFIG_DIR)
+            windows_firewall.clear_pending_repair(CONFIG_DIR)
             QMessageBox.warning(
                 parent,
                 tr('app.fleasion_firewall_repair_not_started'),

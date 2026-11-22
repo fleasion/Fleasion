@@ -321,8 +321,6 @@ class SettingsTab(QWidget):
         return section
 
     def _build_linux_client_section(self) -> CollapsibleSection:
-        linux_client_descriptors = linux_clients.LINUX_CLIENTS
-
         section = CollapsibleSection(tr('settings.linux_client.section'), expanded=True)
 
         row = QHBoxLayout()
@@ -330,7 +328,7 @@ class SettingsTab(QWidget):
         row.addWidget(QLabel(tr('ui.gui.settings_tab.client')))
         self._linux_client_combo = DropdownComboBox()
         self._linux_client_combo.addItem(tr('ui.gui.settings_tab.auto'), 'auto')
-        for client in linux_client_descriptors:
+        for client in linux_clients.LINUX_CLIENTS:
             self._linux_client_combo.addItem(client.display_name, client.key)
         index = self._linux_client_combo.findData(getattr(self._config, 'linux_client', 'auto'))
         self._linux_client_combo.setCurrentIndex(max(0, index))

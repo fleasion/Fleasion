@@ -2953,13 +2953,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
       6. Active Studio   — HKCU\\...\\roblox-studio\\open\\command (Default)
       7. Running Process — currently running RobloxPlayerBeta/RobloxStudioBeta path
     """
-    find_roblox_resource_dirs: Callable[..., list[Path]] | None = None
-    if IS_MACOS:
-        find_roblox_resource_dirs = platform_macos.find_roblox_resource_dirs
-    elif IS_LINUX:
-        find_roblox_resource_dirs = platform_linux.find_roblox_resource_dirs
-
-    if find_roblox_resource_dirs is not None:
+    if IS_MACOS or IS_LINUX:
         found: list[Path] = []
         seen: set[str] = set()
 
@@ -2980,7 +2974,12 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
             found.append(path)
             return True
 
-        for roblox_dir in find_roblox_resource_dirs(include_studio=not IS_MACOS):
+        resource_dirs = (
+            platform_macos.find_roblox_resource_dirs(include_studio=False)
+            if IS_MACOS
+            else platform_linux.find_roblox_resource_dirs(include_studio=True)
+        )
+        for roblox_dir in resource_dirs:
             _add_posix(roblox_dir)
         for cached_dir in load_saved_roblox_dirs():
             _add_posix(cached_dir)

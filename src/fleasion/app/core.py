@@ -754,9 +754,7 @@ def run_application() -> None:
         ):
             return
 
-        helper_is_ready = macos_proxy_helper.helper_is_ready
-
-        if helper_is_ready():
+        if macos_proxy_helper.helper_is_ready():
             proxy_master.start()
             _refresh_managed_read_only_guard()
             return
