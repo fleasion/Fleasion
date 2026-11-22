@@ -171,8 +171,8 @@ def _tracker_url(name: str) -> str:
     return cast('str', FFlagBrowserDialog.__dict__[name])
 
 
-def _translations() -> dict[str, dict[str, str]]:
-    return cast('dict[str, dict[str, str]]', localization.__dict__['_TRANSLATIONS'])
+def _loaded_translations() -> dict[str, dict[str, str]]:
+    return cast('dict[str, dict[str, str]]', localization.__dict__['_loaded_translations'])
 
 
 def _empty_cache(_cls: type[FFlagBrowserDialog]) -> BrowserFlags:
@@ -295,9 +295,10 @@ def test_fflag_browser_translates_unpublished_display_without_changing_none_sent
     monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
     pseudo = dict(localization.ENGLISH)
     pseudo['modifications.fastflags.no_value'] = '⟦no-value⟧'
-    monkeypatch.setitem(_translations(), 'zz', pseudo)
+    # Stand in for a real language so set_language keeps it selected
+    monkeypatch.setitem(_loaded_translations(), 'de', pseudo)
     try:
-        localization.set_language('zz')
+        localization.set_language('de')
         dialog = FFlagBrowserDialog()
         _apply_flags(dialog, {'DFIntTaskSchedulerTargetFps': None})
 

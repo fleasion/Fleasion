@@ -11,6 +11,7 @@ from typing import Never, cast
 from urllib.parse import unquote
 
 import pytest
+import requests
 
 from fleasion.gui import rando_stuff_tab
 from fleasion.proxy.server import ProxyFlow
@@ -112,10 +113,6 @@ def _rewrite_sober_cookie_header_callable() -> Callable[[str, str], str]:
         'Callable[[str, str], str]',
         roblox_auth.__dict__['_rewrite_sober_cookie_header'],
     )
-
-
-def _requests_module() -> object:
-    return cast('object', rando_stuff_tab.__dict__['_requests'])
 
 
 def _owner_launch_account_thread(
@@ -966,7 +963,8 @@ def test_account_subplace_root_preseed_disables_proxy_cert_verification(
             return _FakeResponse(status_code=200, data={'status': 2})
 
     sessions: list[FakeSession] = []
-    monkeypatch.setattr(_requests_module(), 'Session', FakeSession)
+    # The tab binds requests lazily, so patch the module it resolves to
+    monkeypatch.setattr(requests, 'Session', FakeSession)
 
     assert _preseed_root_place_for_subplace('537413528', 'cookie-secret')
 

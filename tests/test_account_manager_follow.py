@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
+import requests
 
 from fleasion.gui import rando_stuff_tab as tab
 
@@ -29,7 +30,8 @@ def _build_follow_uri(ticket: str, user_id: int, **kwargs: object) -> str:
 
 
 def _patch_post(monkeypatch: pytest.MonkeyPatch, post: Callable[..., _Response]) -> None:
-    monkeypatch.setattr(tab.__dict__['_requests'], 'post', post)
+    # The tab binds requests lazily, so patch the module it resolves to
+    monkeypatch.setattr(requests, 'post', post)
 
 
 class _Response:
