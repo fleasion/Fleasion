@@ -24,8 +24,9 @@ log = logging.getLogger(__name__)
 
 # Env defaults
 DEFAULT_TARGET_ARCHITECTURE = 'universal2'
-# PySide6 6.12, the first release supporting Python 3.15, requires macOS 14
-DEFAULT_DEPLOYMENT_TARGET = '14.0'
+# PySide6 6.12, the first release supporting Python 3.15, is tagged macOS 14.0,
+# but its Qt frameworks are built with a 14.4 minimum
+DEFAULT_DEPLOYMENT_TARGET = '14.4'
 DEFAULT_X86_ENVIRONMENT_PATH = '.tools/venv-x86'
 ARM64_PYTHON_PLATFORM = 'aarch64-apple-darwin'
 X86_64_PYTHON_PLATFORM = 'x86_64-apple-darwin'

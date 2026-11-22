@@ -4,7 +4,7 @@ Thanks for contributing to Fleasion. This document covers the development enviro
 
 ## Development Requirements
 
-- **Windows 10+, macOS 14+, or Linux with the Sober Flatpak**
+- **Windows 10+, macOS 14.4+, or Linux with the Sober Flatpak**
 - [**uv**](https://docs.astral.sh/uv/) package manager
 - Linux desktop installs need `pkexec`/Polkit available (installed by default on Mint and most desktop distributions)
 
