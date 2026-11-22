@@ -12,7 +12,9 @@ dependencies = [
     'browser-cookie3>=0.20.1; sys_platform == "darwin" or sys_platform == "linux"',
     'win11toast>=0.36.3; sys_platform == "win32"',
     'pywin32>=312; sys_platform == "win32"',
-    'cryptography>=50.0.2',
+    # cryptography 49+ ships no x86_64 macOS wheels, and the universal build needs one
+    'cryptography>=48.0.1,<49; sys_platform == "darwin"',
+    'cryptography>=50.0.2; sys_platform != "darwin"',
     'pyside6>=6.12.0',
     'numpy>=2.5.5',
     'python-dateutil>=4.0.0',
