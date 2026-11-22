@@ -498,3 +498,119 @@ def test_mimalloc_heap_is_scanned(tmp_path: Path) -> None:
     )
     regions = sober_keys._parse_smaps_regions(smaps)  # pyright: ignore[reportPrivateUsage]
     assert regions == [(region, (1280 + 256) * 1024)]
+
+
+def test_mapping_pathnames_with_spaces_stay_whole(tmp_path: Path) -> None:
+    """Names such as '/memfd: (deleted)' must not be cut at the first space."""
+    entry = sober_keys.MapsEntry
+    memfd = entry.from_maps_line('1000-3000 rw-p 00000000 00:01 42        /memfd: (deleted)')
+    assert memfd == entry(0x1000, 0x3000, 0x2000, '/memfd: (deleted)', private_writable=True, scannable=False)
+    anon = entry.from_maps_line('1000-2000 rw-p 00000000 00:00 0')
+    assert anon == entry(0x1000, 0x2000, 0x1000, '', private_writable=True, scannable=True)
+    shared = entry.from_maps_line('1000-2000 rw-s 00000000 00:00 0')
+    assert shared == entry(0x1000, 0x2000, 0x1000, '', private_writable=False, scannable=False)
+
+    # The memfd-backed libroblox data segment and shared mappings are not heaps
+    maps = tmp_path / 'maps'
+    maps.write_text(
+        '100000-500000 rw-p 00000000 00:00 0          [anon:mimalloc]\n'
+        '500000-600000 rw-p 00000000 00:01 42         /memfd: (deleted)\n'
+        '600000-700000 rw-s 00000000 00:00 0\n'
+        '700000-800000 rw-p 00000000 00:00 0\n'
+    )
+    regions = sober_keys._parse_maps_regions(maps)  # pyright: ignore[reportPrivateUsage]
+    assert regions == [(0x100000, 0x400000), (0x700000, 0x100000)]
+
+
+def test_skipped_named_anon_memory_is_totalled_by_name(tmp_path: Path) -> None:
+    """Only private writable named mappings outside the allow-list are reported."""
+    smaps = tmp_path / 'smaps'
+    smaps.write_text(
+        '100000-500000 rw-p 00000000 00:00 0          [anon:mimalloc]\n'
+        'Rss:                4096 kB\n'
+        '500000-600000 rw-p 00000000 00:00 0          [anon:new heap]\n'
+        'Rss:                1024 kB\n'
+        '600000-700000 rw-p 00000000 00:00 0          [anon:new heap]\n'
+        'Rss:                 512 kB\n'
+        '700000-800000 rw-s 00000000 00:00 0          [anon:shared]\n'
+        'Rss:                1024 kB\n'
+        '800000-900000 rw-p 00000000 00:00 0\n'
+        'Rss:                1024 kB\n'
+    )
+    skipped = sober_keys._skipped_anon_rss_kb(smaps)  # pyright: ignore[reportPrivateUsage]
+    assert skipped == {'[anon:new heap]': 1536}
+
+
+class RecordingLog:
+    def __init__(self) -> None:
+        self.entries: list[tuple[str, str]] = []
+
+    def log(self, category: str, message: str) -> None:
+        self.entries.append((category, message))
+
+
+def test_skipped_anon_memory_is_reported_once_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missed lookup names large skipped arenas without repeating every miss."""
+    recorder = RecordingLog()
+    reads: list[Path] = []
+
+    def skipped(path: Path) -> dict[str, int]:
+        reads.append(path)
+        return {'[anon:big]': 2048 * 1024, '[anon:tiny]': 4}
+
+    monkeypatch.setattr(sober_keys, 'log_buffer', recorder)
+    monkeypatch.setattr(sober_keys, '_reported_skips', set[tuple[int, int]]())
+    monkeypatch.setattr(sober_keys, '_skipped_anon_rss_kb', skipped)
+
+    report = sober_keys._report_skipped_anon_memory  # pyright: ignore[reportPrivateUsage]
+    report(1234, 99, 3, 512 * 1024 * 1024)
+    report(1234, 99, 3, 512 * 1024 * 1024)
+    report(1234, None, 3, 512 * 1024 * 1024)
+
+    assert reads == [Path('/proc/1234/smaps')]
+    assert recorder.entries == [(
+        'TLS',
+        'Sober key lookup missed; skipped named anonymous memory: [anon:big] 2048 MiB '
+        '(scanned 3 regions, 512 MiB)',
+    )]
+
+
+def test_targeted_miss_reports_scan_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The miss report counts the fast prefixes and the fallback tails once."""
+    start = 0x100000
+    other = 0x800000
+    size = 4 * 1024 * 1024
+    prefix = 1024 * 1024
+    reader = FakeReader(start, bytes(size))
+    reports: list[tuple[int, int | None, int, int]] = []
+
+    def fast_regions(_pid: int) -> list[tuple[int, int]]:
+        return [(start, prefix)]
+
+    def fallback_regions(_pid: int) -> list[tuple[int, int]]:
+        return [(start, size), (other, size)]
+
+    def bounds(_pid: int) -> tuple[int, int]:
+        return 0, 0
+
+    def make_reader(_pid: int) -> FakeReader:
+        return reader
+
+    def ticks(_pid: int) -> int:
+        return 7
+
+    def report(pid: int, start_ticks: int | None, regions: int, scanned: int) -> None:
+        reports.append((pid, start_ticks, regions, scanned))
+
+    monkeypatch.setattr(sober_keys, '_regions', fast_regions)
+    monkeypatch.setattr(sober_keys, '_targeted_fallback_regions', fallback_regions)
+    monkeypatch.setattr(sober_keys, '_module_bounds', bounds)
+    monkeypatch.setattr(sober_keys, '_MemoryReader', make_reader)
+    monkeypatch.setattr(sober_keys, '_process_start_ticks', ticks)
+    monkeypatch.setattr(sober_keys, '_report_skipped_anon_memory', report)
+
+    assert sober_keys.scan(12345, client_random=bytes(range(1, 33)).hex()) == {}
+    overlap = sober_keys._SCAN_OVERLAP  # pyright: ignore[reportPrivateUsage]
+    assert reports == [(12345, 7, 2, prefix + (size - prefix + overlap) + size)]

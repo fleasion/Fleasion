@@ -16,13 +16,15 @@ import threading
 from ctypes import POINTER, Structure, byref, c_int, c_size_t, c_ssize_t, c_ulong, c_void_p, cast
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from fleasion.utils.logging import log_buffer
 
 from .rosemary_keys import STRUCT_SIZE, validate_openssl_struct
 from .tls12_session import LP64_OPENSSL_350, TLS12_VERSION, validate_tls12_session
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 log = logging.getLogger(__name__)
 
@@ -30,11 +32,14 @@ type ConnectionSecrets = dict[str, bytes]
 type SecretMap = dict[str, ConnectionSecrets]
 
 CHUNK_SIZE = 1024 * 1024
+
 # Include a whole TLS client random at each chunk boundary for process_vm_readv
 _SCAN_OVERLAP = 31
 _PAGE_SIZE = os.sysconf('SC_PAGESIZE') if sys.platform == 'linux' else 4096
+
 # Limit per-MiB sparse probing on large Android memory reservations
 _LARGE_VMA_ZERO_PAGE_PROBES = 16
+
 # A VMA's total resident bytes are not necessarily a populated prefix of the VMA
 # Only expand sufficiently populated mappings on targeted fallback scans
 _FALLBACK_MIN_RSS_KB = 1024
@@ -59,7 +64,14 @@ _validated_addresses: dict[tuple[int, int], list[_ValidatedLocation]] = {}
 _validated_addresses_lock = threading.Lock()
 SOBER_CGROUP_SUBSTRING = 'org.vinegarhq.sober'
 LARGE_MEMFD_MIN_SIZE = 10 * 1024 * 1024
-_SCANNABLE_PATHNAMES = frozenset({'', '[heap]', '/memfd: (deleted)', '[anon:mimalloc]'})
+_SCANNABLE_PATHNAMES = frozenset({'', '[heap]', '[anon:mimalloc]'})
+
+# Allocators name their arenas via PR_SET_VMA_ANON_NAME. Report skipped ones once
+# per process generation so a renamed heap shows up in the log
+_ANON_NAME_PREFIX = '[anon:'
+_MAX_REPORTED_SKIPS = 5
+_reported_skips: set[tuple[int, int]] = set()
+_reported_skips_lock = threading.Lock()
 
 
 class _Iovec(Structure):
@@ -102,12 +114,15 @@ class _MemoryReader:
 
     def __init__(self, pid: int) -> None:
         self.pid = pid
+
         self._buf = ctypes.create_string_buffer(CHUNK_SIZE + _SCAN_OVERLAP)
         buf_addr = cast(self._buf, c_void_p).value
+
         self._local_iov = _Iovec(buf_addr, CHUNK_SIZE + _SCAN_OVERLAP)
         self._remote_iov = _Iovec(0, 0)
         self._pvr = _get_process_vm_readv()
         self._mem_file = None
+
         try:
             self._mem_file = Path(f'/proc/{pid}/mem').open('rb')  # ruff: ignore[open-file-with-context-handler]
         except OSError, PermissionError:
@@ -257,38 +272,67 @@ def _module_bounds(pid: int) -> tuple[int, int]:
     return min_base, max_end
 
 
-def _parse_smaps_regions(
-    smaps_path: Path, *, full_vmas: bool = False, min_rss_kb: int = 0
-) -> list[tuple[int, int]]:
+class MapsEntry(NamedTuple):
+    """One /proc/<pid>/maps entry, which smaps also uses as each mapping's header."""
+
+    start: int
+    end: int
+    size: int
+    pathname: str
+    private_writable: bool
+    scannable: bool
+
+    @classmethod
+    def from_maps_line(cls, line: str) -> MapsEntry:
+        """Build an entry from a maps line, computing the derived fields once."""
+        # The fields are range, perms, offset, device and inode, then an optional
+        # pathname that may contain spaces, as in '/memfd: (deleted)'
+        parts = line.split(maxsplit=5)
+        start_hex, end_hex = parts[0].split('-')
+        start, end = int(start_hex, 16), int(end_hex, 16)
+        perms = parts[1]
+        pathname = parts[5] if len(parts) == 6 else ''
+        private_writable = perms.startswith('rw') and 'p' in perms
+        return cls(
+            start=start,
+            end=end,
+            size=end - start,
+            pathname=pathname,
+            private_writable=private_writable,
+            scannable=private_writable and pathname in _SCANNABLE_PATHNAMES,
+        )
+
+
+def _iter_smaps(smaps_path: Path) -> Iterator[tuple[MapsEntry, int]]:
+    """Yield each mapping in smaps with its resident size in kB."""
     try:
         lines = smaps_path.read_text(encoding='utf-8', errors='ignore').splitlines()
     except OSError, PermissionError:
-        return []
+        return
 
-    regions: list[tuple[int, int]] = []
-    current_start = 0
-    current_vsize = 0
-    is_candidate = False
+    # smaps repeats a maps entry as a header followed by 'Field:  value' lines, and
+    # a header's first token is an address range, never a 'Field:' name. Rss
+    # is the only field needed and appears once per mapping
+    entry: MapsEntry | None = None
     for line in lines:
-        if '-' in line and ':' not in line.split()[0]:
-            parts = line.split()
-            pathname = parts[5] if len(parts) > 5 else ''
-            is_candidate = (
-                len(parts) >= 2
-                and parts[1].startswith('rw')
-                and 'p' in parts[1]
-                and pathname in _SCANNABLE_PATHNAMES
-            )
-            if is_candidate:
-                addrs = parts[0].split('-')
-                current_start = int(addrs[0], 16)
-                current_vsize = int(addrs[1], 16) - current_start
-        elif line.startswith('Rss:') and is_candidate:
-            rss_kb = int(line.split()[1])
-            if rss_kb > 0 and rss_kb >= min_rss_kb:
-                scan_len = current_vsize if full_vmas else min(current_vsize, (rss_kb + 256) * 1024)
-                regions.append((current_start, scan_len))
-            is_candidate = False
+        field, _, value = line.partition(' ')
+        if not field.endswith(':'):
+            entry = MapsEntry.from_maps_line(line)
+        elif field == 'Rss:' and entry is not None:
+            yield entry, int(value.split()[0])
+
+
+def _parse_smaps_regions(
+    smaps_path: Path, *, full_vmas: bool = False, min_rss_kb: int = 0
+) -> list[tuple[int, int]]:
+    regions: list[tuple[int, int]] = []
+    for entry, rss_kb in _iter_smaps(smaps_path):
+        # A mapping with no resident pages holds nothing to find
+        if not entry.scannable or rss_kb < max(min_rss_kb, 1):
+            continue
+
+        scan_len = entry.size if full_vmas else min(entry.size, (rss_kb + 256) * 1024)
+        regions.append((entry.start, scan_len))
     return regions
 
 
@@ -298,17 +342,50 @@ def _parse_maps_regions(maps_path: Path) -> list[tuple[int, int]]:
     except OSError, PermissionError:
         return []
 
-    regions: list[tuple[int, int]] = []
-    for line in lines:
-        parts = line.split()
-        if len(parts) >= 2 and parts[1].startswith('rw') and 'p' in parts[1]:
-            pathname = parts[5] if len(parts) > 5 else ''
-            if pathname not in _SCANNABLE_PATHNAMES:
-                continue
-            addrs = parts[0].split('-')
-            start, end = int(addrs[0], 16), int(addrs[1], 16)
-            regions.append((start, end - start))
-    return regions
+    entries = (MapsEntry.from_maps_line(line) for line in lines)
+    return [(entry.start, entry.size) for entry in entries if entry.scannable]
+
+
+def _skipped_anon_rss_kb(smaps_path: Path) -> dict[str, int]:
+    """Total resident kB of named anonymous mappings the scan does not read."""
+    skipped: dict[str, int] = {}
+    for entry, rss_kb in _iter_smaps(smaps_path):
+        is_named_anon = entry.pathname.startswith(_ANON_NAME_PREFIX)
+        if is_named_anon and entry.private_writable and not entry.scannable:
+            skipped[entry.pathname] = skipped.get(entry.pathname, 0) + rss_kb
+    return skipped
+
+
+def _report_skipped_anon_memory(
+    pid: int, start_ticks: int | None, scanned_regions: int, scanned_bytes: int
+) -> None:
+    """Log large skipped allocator arenas after a miss, once per process generation."""
+    if start_ticks is None:
+        return
+    # Claim the report before reading smaps, so the two concurrent scan slots
+    # do not both read it and a process with nothing to report is read once
+    identity = (pid, start_ticks)
+    with _reported_skips_lock:
+        if identity in _reported_skips:
+            return
+        if len(_reported_skips) >= _MAX_HINTED_PROCESSES:
+            _reported_skips.clear()
+        _reported_skips.add(identity)
+
+    skipped = _skipped_anon_rss_kb(Path(f'/proc/{pid}/smaps'))
+    large = sorted(
+        ((rss_kb, name) for name, rss_kb in skipped.items() if rss_kb >= _FALLBACK_MIN_RSS_KB),
+        reverse=True,
+    )[:_MAX_REPORTED_SKIPS]
+    if not large:
+        return
+
+    names = ', '.join(f'{name} {rss_kb // 1024} MiB' for rss_kb, name in large)
+    log_buffer.log(
+        'TLS',
+        f'Sober key lookup missed; skipped named anonymous memory: {names} '
+        f'(scanned {scanned_regions} regions, {scanned_bytes // (1024 * 1024)} MiB)',
+    )
 
 
 def _regions(pid: int) -> list[tuple[int, int]]:
@@ -390,8 +467,10 @@ def _nearby_validated_regions(
     """Use verified neighborhoods without an expensive smaps read on a hit."""
     if start_ticks is None:
         return []
+
     with _validated_addresses_lock:
         hints = tuple(_validated_addresses.get((pid, start_ticks), ()))
+
     windows: list[tuple[int, int, _ValidatedLocation]] = []
     seen: set[tuple[int, int]] = set()
     for hint in hints:
@@ -403,10 +482,12 @@ def _nearby_validated_regions(
                 hint.region_start + hint.region_size - length,
             ),
         )
+
         window = (start, length)
         if window not in seen:
             windows.append((start, length, hint))
             seen.add(window)
+
     return windows
 
 
@@ -464,6 +545,7 @@ def _scan_region(
     while offset < size:
         if stop is not None and stop.is_set():
             return True
+
         chunk_len = min(CHUNK_SIZE + len(needle) - 1, size - offset)
         buf = reader.read(start + offset, chunk_len)
         if not buf:
@@ -480,6 +562,7 @@ def _scan_region(
                 offset = (offset // CHUNK_SIZE + 1) * CHUNK_SIZE
                 zero_page_probes = 0
             continue
+
         zero_page_probes = 0
         position = buf.find(needle)
         while position >= 0:
@@ -576,6 +659,8 @@ def scan(
         # this process generation has no nearby validated connection
         module_base, module_end = _module_bounds(pid)
         fast_regions = _regions(pid)
+        scanned_regions = len(fast_regions)
+        scanned_bytes = sum(size for _start, size in fast_regions)
         for start, size in fast_regions:
             matched = _scan_region(
                 reader,
@@ -613,6 +698,10 @@ def scan(
                 # Include candidates whose 32-byte client random straddles
                 # the boundary between the fast prefix and full-VMA fallback
                 resume = max(0, already_scanned - _SCAN_OVERLAP)
+                if start not in fast_lengths:
+                    scanned_regions += 1
+                scanned_bytes += full_size - resume
+
                 if _scan_region(
                     reader,
                     start + resume,
@@ -637,6 +726,11 @@ def scan(
                     ),
                 ):
                     return found
+
+            # A miss with large unscanned allocator arenas usually means a new
+            # heap name, as with [anon:mimalloc] before it was allowed
+            if stop is None or not stop.is_set():
+                _report_skipped_anon_memory(pid, start_ticks, scanned_regions, scanned_bytes)
     finally:
         reader.close()
 
