@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, overload, override
+from typing import TYPE_CHECKING, ClassVar, Protocol, overload, override
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractButton,
-    QAbstractItemView,
     QAbstractSpinBox,
     QComboBox,
-    QHeaderView,
     QProxyStyle,
     QStyle,
     QTableView,
@@ -21,18 +19,34 @@ from .menu_items import use_menu_items
 from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from PySide6.QtCore import QRect, QSize
     from PySide6.QtGui import QColor, QPainter, QPalette
     from PySide6.QtWidgets import QApplication, QStyleHintReturn, QStyleOption, QWidget
 
-    type ItemFocusPainter = Callable[[QPainter, QStyleOption, QAbstractItemView], None]
+
+class Presentation(Protocol):
+    """A look, such as Glass, drawn on top of the Fusion metrics."""
+
+    def draw_primitive(
+        self,
+        element: QStyle.PrimitiveElement,
+        option: QStyleOption,
+        painter: QPainter,
+        widget: QWidget | None,
+    ) -> bool:
+        """Draw a primitive and return True, or return False to leave it to Fusion."""
+        ...
+
+    def pixel_metric(
+        self, metric: QStyle.PixelMetric, option: QStyleOption | None, widget: QWidget | None
+    ) -> int | None:
+        """Return a metric of the look, or None to keep the Fusion one."""
+        ...
 
 
 class LayoutStyle(QProxyStyle):
-    # A presentation such as Glass may replace the current-item focus box of item views
-    item_focus_painter: ClassVar[ItemFocusPainter | None] = None
+    # The look drawn over Fusion while it is active; None draws plain Fusion
+    presentation: ClassVar[Presentation | None] = None
 
     def __init__(self) -> None:
         super().__init__('Fusion')
@@ -64,6 +78,11 @@ class LayoutStyle(QProxyStyle):
         option: QStyleOption | None = None,
         widget: QWidget | None = None,
     ) -> int:
+        if (presentation := LayoutStyle.presentation) is not None and (
+            value := presentation.pixel_metric(metric, option, widget)
+        ) is not None:
+            return value
+
         match metric:
             case (
                 QStyle.PixelMetric.PM_LayoutLeftMargin
@@ -127,13 +146,9 @@ class LayoutStyle(QProxyStyle):
             widget, QAbstractButton
         ):
             return
-        if (
-            element == QStyle.PrimitiveElement.PE_FrameFocusRect
-            and (paint_focus := LayoutStyle.item_focus_painter) is not None
-            and isinstance(widget, QAbstractItemView)
-            and not isinstance(widget, QHeaderView)
+        if (presentation := LayoutStyle.presentation) is not None and presentation.draw_primitive(
+            element, option, painter, widget
         ):
-            paint_focus(painter, option, widget)
             return
         if (
             element == QStyle.PrimitiveElement.PE_FrameTabWidget

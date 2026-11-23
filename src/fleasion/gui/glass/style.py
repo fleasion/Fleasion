@@ -113,13 +113,10 @@ def _ink(surface: QColor, *, dark: bool) -> QColor:
 
 _STROKE: Final = 'fill="none" stroke-linecap="round" stroke-linejoin="round"'
 
-# Drawn in TEXT, or #0c0d12 for marks on the accent; icon_path() swaps in the real colour
+# Drawn in TEXT; icon_path() swaps in the real colour
 _ICONS: Final[dict[str, str]] = {
     'chevron-down': f'<path d="M4 6l4 4 4-4" {_STROKE} stroke="{TEXT}" stroke-width="1.8"/>',
     'chevron-up': f'<path d="M4 10l4-4 4 4" {_STROKE} stroke="{TEXT}" stroke-width="1.8"/>',
-    'check': f'<path d="M3.5 8.5l3 3 6-7" {_STROKE} stroke="#0c0d12" stroke-width="2.2"/>',
-    'dot': '<circle cx="8" cy="8" r="3.2" fill="#0c0d12"/>',
-    'dash': f'<path d="M4.5 8h7" {_STROKE} stroke="#0c0d12" stroke-width="2.2"/>',
     'win-min': f'<path d="M4.5 8h7" {_STROKE} stroke="{TEXT}" stroke-width="1.6"/>',
     'win-max': f'<rect x="4.5" y="4.5" width="7" height="7" rx="1.6" {_STROKE} '
     f'stroke="{TEXT}" stroke-width="1.5"/>',
@@ -132,11 +129,10 @@ def icon_path(name: str) -> str:
     ICON_DIR.mkdir(parents=True, exist_ok=True)
 
     # One file per glyph and colour, so a palette change gets a new path
-    colors = glass_colors()
-    foreground = colors.accent_text if name in {'check', 'dot', 'dash'} else colors.text
+    foreground = glass_colors().text
     path = ICON_DIR / f'{name}-{foreground.name()[1:]}.svg'
 
-    glyph = _ICONS[name].replace(TEXT, foreground.name()).replace('#0c0d12', foreground.name())
+    glyph = _ICONS[name].replace(TEXT, foreground.name())
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
         f'{glyph}</svg>'
@@ -411,32 +407,6 @@ QTableCornerButton::section, #GlassScrollBarHeaderCap {
 /* Selected branch gutters share the row fill instead of Fusion's highlight */
 QTreeView { show-decoration-selected: 0; }
 
-/* Check marks inside item views match the standalone check boxes */
-QAbstractItemView::indicator { width: 16px; height: 16px; $well border-radius: 5px; }
-QAbstractItemView::indicator:hover { border-color: rgba($accent_rgb,0.8); }
-QAbstractItemView::indicator:checked, QAbstractItemView::indicator:indeterminate {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 $accent, stop:1 $accent);
-    border: 1px solid rgba($ink_rgb,0.30);
-}
-QAbstractItemView::indicator:checked { image: url($check); }
-QAbstractItemView::indicator:indeterminate { image: url($dash); }
-
-QCheckBox, QRadioButton { spacing: 6px; }
-QCheckBox::indicator, QRadioButton::indicator { width: 16px; height: 16px; $well }
-QCheckBox::indicator { border-radius: 5px; }
-QRadioButton::indicator { border-radius: 8px; }
-QCheckBox::indicator:hover, QRadioButton::indicator:hover {
-    border-color: rgba($accent_rgb,0.8);
-}
-QCheckBox::indicator:checked, QRadioButton::indicator:checked {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 $accent, stop:1 $accent);
-    border: 1px solid rgba($ink_rgb,0.30);
-}
-QCheckBox::indicator:checked { image: url($check); }
-QRadioButton::indicator:checked { image: url($dot); }
-
 #PaletteCard {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 rgba($popup_rgb,0.97), stop:1 rgba($popup_rgb,0.97));
@@ -527,7 +497,4 @@ def stylesheet(settings: GlassSettings) -> str:
         well=Template(_WELL).substitute(values),
         chevron_down=icon_path('chevron-down'),
         chevron_up=icon_path('chevron-up'),
-        check=icon_path('check'),
-        dot=icon_path('dot'),
-        dash=icon_path('dash'),
     )
