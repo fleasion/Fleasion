@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
+from .groups import group_box_rect, paint_group_box
 from .inputs import (
     combo_box_rect,
     input_size,
@@ -316,6 +317,8 @@ class GlassPresentation:
                 return paint_scroll_bar(painter, option, widget)
             case _CC.CC_Slider:
                 return paint_slider(painter, option, widget)
+            case _CC.CC_GroupBox:
+                return paint_group_box(painter, option, widget)
             case _:
                 return False
 
@@ -335,6 +338,8 @@ class GlassPresentation:
                 return scroll_bar_rect(option, sub_control, widget)
             case _CC.CC_Slider:
                 return slider_rect(option, sub_control, widget)
+            case _CC.CC_GroupBox:
+                return group_box_rect(option, sub_control, widget)
             case _:
                 return None
 

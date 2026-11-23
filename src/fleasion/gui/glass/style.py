@@ -234,18 +234,6 @@ QScrollArea#SubplaceResultsScroll {
     border-radius: 10px;
 }
 QWidget#SubplaceFooter { background: transparent; border: 0; }
-QGroupBox {
-    background: $pane; $rim border-radius: ${radius}px;
-    margin-top: 1.4em; padding: 0;
-}
-QGroupBox::title {
-    subcontrol-origin: margin; left: 8px; top: 3px; padding: 0 4px;
-    color: $muted;
-}
-QGroupBox#ReplacerConfigurationSection::title,
-QGroupBox#ReplacerEditSection::title {
-    left: 0; padding: 0;
-}
 
 QCheckBox:focus, QRadioButton:focus {
     color: $text;
