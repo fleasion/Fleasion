@@ -173,7 +173,6 @@ def test_glass_keeps_keyboard_focus_indicators(
     assert '* { outline: 0; }' not in stylesheet
     assert 'QCheckBox:focus' in stylesheet
     assert 'QRadioButton:focus' in stylesheet
-    assert 'QTabBar::tab:focus' in stylesheet
 
 
 def test_settings_blur_toggle_follows_cached_compositor_state(

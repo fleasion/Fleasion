@@ -223,17 +223,6 @@ QPushButton#GlassWinBtn[role="close"]:hover {
     background: rgba(255,90,104,0.85); border-color: rgba($ink_rgb,0.35);
 }
 
-QTabWidget::pane { border: 0; top: 0; }
-QTabBar { qproperty-drawBase: 0; background: transparent; }
-QTabBar::tab {
-    background: transparent; border: 1px solid transparent; border-radius: 8px;
-    padding: 4px 11px; margin: 0; color: $muted;
-}
-QTabBar::tab:hover { color: $text; background: rgba($ink_rgb,0.06); }
-QTabBar::tab:selected { color: $text; background: $pane_hover; $rim }
-QTabBar::tab:disabled, QTabBar::tab:disabled:hover {
-    color: rgba($ink_rgb,0.31); background: transparent; border-color: transparent;
-}
 
 QFrame#SubplaceSearchPanel {
     background: rgba($ink_rgb,0.06); border: 1px solid rgba($ink_rgb,0.09);
@@ -258,7 +247,6 @@ QGroupBox#ReplacerEditSection::title {
     left: 0; padding: 0;
 }
 
-QTabBar::tab:focus { border-color: rgba($accent_rgb,0.95); }
 QCheckBox:focus, QRadioButton:focus {
     color: $text;
 }

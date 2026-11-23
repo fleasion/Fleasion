@@ -43,6 +43,16 @@ class Presentation(Protocol):
         """Draw a primitive and return True, or return False to leave it to Fusion."""
         ...
 
+    def draw_control(
+        self,
+        element: QStyle.ControlElement,
+        option: QStyleOption,
+        painter: QPainter,
+        widget: QWidget | None,
+    ) -> bool:
+        """Draw a control and return True, or return False to leave it to Fusion."""
+        ...
+
     def control_option(
         self, element: QStyle.ControlElement, option: QStyleOption, widget: QWidget | None
     ) -> QStyleOption | None:
@@ -248,10 +258,11 @@ class LayoutStyle(QProxyStyle):
         painter: QPainter,
         widget: QWidget | None = None,
     ) -> None:
-        if (presentation := LayoutStyle.presentation) is not None and (
-            changed := presentation.control_option(element, option, widget)
-        ) is not None:
-            option = changed
+        if (presentation := LayoutStyle.presentation) is not None:
+            if presentation.draw_control(element, option, painter, widget):
+                return
+            if (changed := presentation.control_option(element, option, widget)) is not None:
+                option = changed
         super().drawControl(element, option, painter, widget)
 
     @override

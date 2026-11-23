@@ -8,6 +8,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QHeaderView,
     QPushButton,
     QStyle,
@@ -29,6 +30,7 @@ from .itemview import paint_item_focus
 from .scrollbars import EXTENT, SLIDER_MIN, paint_scroll_bar, scroll_bar_rect
 from .sliders import HANDLE, paint_slider, slider_rect
 from .style import glass_colors
+from .tabs import FLAT_TAB_METRICS, paint_tab, tab_label_option
 
 if TYPE_CHECKING:
     from PySide6.QtCore import QRect, QSize
@@ -259,9 +261,23 @@ class GlassPresentation:
                 _paint_button(painter, option, widget)
             case _PE.PE_PanelLineEdit:
                 return paint_line_edit(painter, option, widget)
+            case _PE.PE_FrameTabWidget | _PE.PE_FrameTabBarBase:
+                # Tab pages and tab bars sit directly on the glass
+                pass
             case _:
                 return False
         return True
+
+    @staticmethod
+    def draw_control(
+        element: QStyle.ControlElement,
+        option: QStyleOption,
+        painter: QPainter,
+        widget: QWidget | None,
+    ) -> bool:
+        if element == _CE.CE_TabBarTabShape:
+            return paint_tab(painter, option, widget)
+        return False
 
     @staticmethod
     def control_option(
@@ -270,6 +286,8 @@ class GlassPresentation:
         match element:
             case _CE.CE_PushButtonLabel:
                 return _button_label_option(option, widget)
+            case _CE.CE_TabBarTabLabel:
+                return tab_label_option(option)
             case _CE.CE_ComboBoxLabel if isinstance(option, QStyleOptionComboBox):
                 # A selector's value reads as input text, like the line edits beside it
                 changed = QStyleOptionComboBox(option)
@@ -324,9 +342,15 @@ class GlassPresentation:
     def sub_element_rect(
         element: QStyle.SubElement, option: QStyleOption, widget: QWidget | None, rect: QRect
     ) -> QRect | None:
-        if element == QStyle.SubElement.SE_LineEditContents:
-            return line_edit_contents(option, widget, rect)
-        return None
+        match element:
+            case QStyle.SubElement.SE_LineEditContents:
+                return line_edit_contents(option, widget, rect)
+            case QStyle.SubElement.SE_TabWidgetTabContents:
+                # No pane frame is drawn, so pages fill the whole pane
+                style = widget.style() if widget is not None else QApplication.style()
+                return style.subElementRect(QStyle.SubElement.SE_TabWidgetTabPane, option, widget)  # pyright: ignore[reportArgumentType] - Qt accepts a null widget
+            case _:
+                return None
 
     @staticmethod
     def size_from_contents(
@@ -355,5 +379,7 @@ class GlassPresentation:
                 | QStyle.PixelMetric.PM_SliderControlThickness
             ):
                 return HANDLE
+            case _ if metric in FLAT_TAB_METRICS:
+                return 0
             case _:
                 return None
