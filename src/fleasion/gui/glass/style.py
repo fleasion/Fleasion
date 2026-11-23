@@ -31,6 +31,7 @@ SCROLLBAR_CORNER_INSET: Final = ceil(RADIUS - sqrt(RADIUS**2 - (RADIUS - _SCROLL
 # Colours
 #
 
+
 @dataclass(frozen=True)
 class GlassColors:
     """The resolved colours one Glass appearance paints with."""
@@ -42,6 +43,7 @@ class GlassColors:
     popup: QColor
     accent: QColor
     accent_text: QColor
+
 
 def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
     settings = settings or state.settings
@@ -78,8 +80,10 @@ def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
         on_accent(accent),
     )
 
+
 # Enough of the surface hue to keep overlays from greying a tinted theme
 _INK_SATURATION: Final = 28
+
 
 def _ink(surface: QColor, *, dark: bool) -> QColor:
     """Highlight colour for panes and rims; pure white greys out tinted dark surfaces."""
@@ -91,14 +95,17 @@ def _ink(surface: QColor, *, dark: bool) -> QColor:
         max(surface.hsvHue(), 0), min(surface.hsvSaturation(), _INK_SATURATION), 255
     )
 
+
 #
 # Palette and stylesheet
 #
+
 
 def _rgb(hex_color: str) -> str:
     """An `r,g,b` triple for use inside QSS `rgba()`."""
     color = QColor(hex_color)
     return f'{color.red()},{color.green()},{color.blue()}'
+
 
 def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) -> QPalette:
     colors = glass_colors(settings)
@@ -137,11 +144,8 @@ def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) ->
     pal.setColor(role.Window, window)
     return pal
 
-# Panes are flat: per-control gradients stack inside nested panes and read as harsh.
-# Rim: a slightly brighter top edge. Well: a recessed input field
-_PANE: Final = 'rgba($ink_rgb,0.06)'
-_PANE_HOVER: Final = 'rgba($ink_rgb,0.11)'
-_RIM: Final = 'border: 1px solid rgba($ink_rgb,0.08); border-top-color: rgba($ink_rgb,0.13);'
+
+# The recessed field behind a text edit
 _WELL: Final = 'background: rgba($well_rgb,0.28); border: 1px solid rgba($ink_rgb,0.06);'
 
 _STYLESHEET: Final = Template("""
@@ -162,28 +166,16 @@ QTextEdit:focus, QPlainTextEdit:focus { border: 1px solid rgba($accent_rgb,0.85)
 
 """)
 
+
 def stylesheet(settings: GlassSettings) -> str:
     colors = glass_colors(settings)
     native = state.base_palette
-
-    # Colours, substituted into the fragments and the stylesheet alike
     values = {
-        'text': colors.text.name(),
         'input_text': native.text().color().name() if native is not None else colors.text.name(),
-        'muted': f'rgba({_rgb(colors.text.name())},0.62)',
         'ink_rgb': _rgb(colors.ink.name()),
         'well_rgb': _rgb(colors.well.name()),
-        'popup_rgb': _rgb(colors.popup.name()),
         'accent_rgb': _rgb(colors.accent.name()),
         'accent': colors.accent.name(),
         'accent_text': colors.accent_text.name(),
     }
-
-    return _STYLESHEET.substitute(
-        **values,
-        radius=RADIUS,
-        pane=Template(_PANE).substitute(values),
-        pane_hover=Template(_PANE_HOVER).substitute(values),
-        rim=Template(_RIM).substitute(values),
-        well=Template(_WELL).substitute(values),
-    )
+    return _STYLESHEET.substitute(**values, well=Template(_WELL).substitute(values))
