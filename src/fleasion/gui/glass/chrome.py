@@ -6,34 +6,48 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, override
 from weakref import WeakKeyDictionary, ref
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, QSize, Qt
-from PySide6.QtGui import QCursor, QHoverEvent, QIcon, QMouseEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSignalBlocker, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QFont,
+    QHoverEvent,
+    QLinearGradient,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QApplication,
     QBoxLayout,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QTabBar,
     QTabWidget,
     QWidget,
 )
 from shiboken6 import isValid
 
-from .style import icon_path
+from .style import glass_colors
 from .transparency import enable_transparency
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from PySide6.QtGui import QWindow
+    from PySide6.QtGui import QPaintEvent, QWindow
 
 
 type WindowButton = Literal['min', 'max', 'close']
 
 _TITLE_BAR_HEIGHT: Final = 36
 _ICON_SIZE: Final = QSize(20, 20)
-_BUTTON_ICON_SIZE: Final = QSize(14, 14)
+
+# Window controls: a pill holding a glyph drawn on a 16px grid at 14px
+_BUTTON_SIZE: Final = QSize(32, 24)
+_BUTTON_RADIUS: Final = 11.0
+_GLYPH_SIZE: Final = 14
 
 # How far in from the window edge a press starts a resize
 _RESIZE_MARGIN: Final = 6
@@ -52,13 +66,85 @@ def _window_handle(window: QWidget) -> QWindow | None:
 #
 
 
+class _WindowButton(QAbstractButton):
+    """A minimize, maximize or close pill that paints its own glyph."""
+
+    def __init__(self, role: WindowButton) -> None:
+        super().__init__()
+        self.role = role
+        self.setFixedSize(_BUTTON_SIZE)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+
+    def _glyph(self, rect: QRectF) -> QPainterPath:
+        scale = _GLYPH_SIZE / 16
+        origin = rect.center() - QPointF(_GLYPH_SIZE / 2, _GLYPH_SIZE / 2)
+
+        def point(x: float, y: float) -> QPointF:
+            return origin + QPointF(x * scale, y * scale)
+
+        path = QPainterPath()
+        if self.role == 'min':
+            path.moveTo(point(4.5, 8))
+            path.lineTo(point(11.5, 8))
+        elif self.role == 'max':
+            path.addRoundedRect(
+                QRectF(point(4.5, 4.5), point(11.5, 11.5)), 1.6 * scale, 1.6 * scale
+            )
+        else:
+            path.moveTo(point(5, 5))
+            path.lineTo(point(11, 11))
+            path.moveTo(point(11, 5))
+            path.lineTo(point(5, 11))
+        return path
+
+    @override
+    def paintEvent(self, _event: QPaintEvent, /) -> None:
+        colors = glass_colors()
+        hovered = self.underMouse() or self.isDown()
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+
+        def tint(color: QColor, alpha: float) -> QColor:
+            tinted = QColor(color)
+            tinted.setAlphaF(alpha)
+            return tinted
+
+        # Close turns red under the pointer; the others brighten like the panes
+        if hovered and self.role == 'close':
+            fill, side, top = (
+                QColor(255, 90, 104, 217),
+                tint(colors.ink, 0.35),
+                tint(colors.ink, 0.35),
+            )
+        else:
+            fill = tint(colors.ink, 0.11 if hovered else 0.06)
+            side, top = tint(colors.ink, 0.08), tint(colors.ink, 0.13)
+        rim = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        rim.setColorAt(0, top)
+        rim.setColorAt(0.45, side)
+        rim.setColorAt(1, side)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(rim, 1.0))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, _BUTTON_RADIUS, _BUTTON_RADIUS)
+
+        pen = QPen(colors.text, 1.5 if self.role == 'max' else 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(self._glyph(rect))
+        painter.end()
+
+
 class GlassTitleBar(QWidget):
     """Draggable glass header with pill window controls."""
 
     def __init__(self, window: QWidget) -> None:
         super().__init__(window)
         self._window = window
-        self.setObjectName('GlassTitleBar')
         self.setFixedHeight(_TITLE_BAR_HEIGHT)
 
         row = QHBoxLayout(self)
@@ -77,7 +163,11 @@ class GlassTitleBar(QWidget):
                 icon.setPixmap(app_icon.pixmap(_ICON_SIZE))
 
             title = QLabel(window.windowTitle())
-            title.setObjectName('GlassTitle')
+            font = QFont()
+            font.setBold(True)
+            font.setPointSizeF(10.5)
+            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.3)
+            title.setFont(font)
             window.windowTitleChanged.connect(title.setText)
 
             row.addWidget(icon)
@@ -101,12 +191,7 @@ class GlassTitleBar(QWidget):
         # Window controls
         buttons: tuple[WindowButton, ...] = ('min', 'max', 'close')
         for role in buttons:
-            button = QPushButton()
-            button.setIcon(QIcon(icon_path(f'win-{role}')))
-            button.setIconSize(_BUTTON_ICON_SIZE)
-            button.setObjectName('GlassWinBtn')
-            button.setProperty('role', role)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button = _WindowButton(role)
             button.clicked.connect(self._presser(role))
             row.addWidget(button)
 
@@ -133,17 +218,6 @@ class GlassTitleBar(QWidget):
     def restore_tabs(self) -> None:
         if self._dashboard_tabs is not None:
             self._dashboard_tabs.tabBar().show()
-
-    @override
-    def changeEvent(self, event: QEvent) -> None:
-        super().changeEvent(event)
-
-        # Icon colours follow the palette, so regenerate them
-        if event.type() == QEvent.Type.PaletteChange:
-            for button in self.findChildren(QPushButton):
-                role = button.property('role')
-                if role in {'min', 'max', 'close'}:
-                    button.setIcon(QIcon(icon_path(f'win-{role}')))
 
     #
     # Window controls

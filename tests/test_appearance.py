@@ -44,12 +44,11 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> manager.ConfigMan
 
 
 @pytest.fixture
-def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[QApplication]:
+def app() -> Iterator[QApplication]:
     instance = QApplication.instance()
     application = instance if isinstance(instance, QApplication) else QApplication([])
     ThemeManager.apply_theme('Light')
     original = QPalette(application.palette())
-    monkeypatch.setattr(glass_style, 'ICON_DIR', tmp_path / 'icons')
     yield application
     ThemeManager.apply_theme('Light')
     application.setPalette(original)

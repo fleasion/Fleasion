@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.gui import modifications_tab
-from fleasion.gui.glass import style as glass_style
 from fleasion.gui.modifications_tab import FFlagBrowserDialog, FFlagSection
 from fleasion.gui.theme import ThemeManager
 from fleasion.modifications.fflag_static import ClientBinary
@@ -210,9 +209,8 @@ def test_option_width_recalculates_after_family_change_and_client_switch(
 
 
 def test_glass_theme_compact_dropdowns_fit_the_full_longest_option(
-    app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(glass_style, 'ICON_DIR', tmp_path / 'icons')
     monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _no_refresh)
     dialog = FFlagBrowserDialog()
     try:

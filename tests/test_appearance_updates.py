@@ -155,7 +155,7 @@ def test_late_windows_inherit_recolor_and_restore_local_rules(app: QApplication)
         late = QDialog()
         late_label = QLabel('New window', late)
         late.ensurePolished()
-        assert '#GlassTitleBar' in late.styleSheet()
+        assert 'QComboBoxPrivateContainer' in late.styleSheet()
         assert child.styleSheet() == ''
         assert window.styleSheet().endswith(original)
         for mode in ('Light', 'Dark'):

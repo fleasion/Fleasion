@@ -165,10 +165,7 @@ def test_async_blur_probe_does_not_override_explicit_refresh(
         blur.stop_polling()
 
 
-def test_glass_keeps_keyboard_focus_indicators(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(style, 'ICON_DIR', tmp_path)
+def test_glass_keeps_keyboard_focus_indicators() -> None:
     stylesheet = style.stylesheet(GlassSettings())
     assert '* { outline: 0; }' not in stylesheet
     assert 'QCheckBox:focus' in stylesheet

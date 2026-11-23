@@ -1,4 +1,4 @@
-"""Glass palette, stylesheet and the SVG glyphs the stylesheet uses."""
+"""Glass colours, palette and the style sheet that remains for a few widgets."""
 
 from __future__ import annotations
 
@@ -10,20 +10,16 @@ from typing import TYPE_CHECKING, Final
 from PySide6.QtGui import QColor, QPalette
 
 from fleasion.appearance.colors import accent_color, apply_accent, on_accent
-from fleasion.utils.paths import CONFIG_DIR
 from fleasion.widgets.spacing import CONTROL_PADDING
 
 from .state import state
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from .state import GlassSettings
 
 
-# Dark-mode text colours; the SVG glyphs are written with TEXT and recoloured on use
+# Text on Glass's own dark surface
 TEXT: Final = '#f5f7fb'
-MUTED: Final = 'rgba(245,247,251,0.62)'
 
 # Corner radius of windows, group boxes and item views
 RADIUS: Final = 14
@@ -32,9 +28,6 @@ RADIUS: Final = 14
 # the rounded corner has curved that far inward, plus room for the rim and some air
 _SCROLLBAR_EDGE: Final = 3
 SCROLLBAR_CORNER_INSET: Final = ceil(RADIUS - sqrt(RADIUS**2 - (RADIUS - _SCROLLBAR_EDGE) ** 2)) + 3
-
-# QSS can only load images from files, so the glyphs are written here
-ICON_DIR: Final[Path] = CONFIG_DIR / 'glass'
 
 
 #
@@ -107,42 +100,6 @@ def _ink(surface: QColor, *, dark: bool) -> QColor:
 
 
 #
-# Glyphs
-#
-
-
-_STROKE: Final = 'fill="none" stroke-linecap="round" stroke-linejoin="round"'
-
-# Drawn in TEXT; icon_path() swaps in the real colour
-_ICONS: Final[dict[str, str]] = {
-    'win-min': f'<path d="M4.5 8h7" {_STROKE} stroke="{TEXT}" stroke-width="1.6"/>',
-    'win-max': f'<rect x="4.5" y="4.5" width="7" height="7" rx="1.6" {_STROKE} '
-    f'stroke="{TEXT}" stroke-width="1.5"/>',
-    'win-close': f'<path d="M5 5l6 6M11 5l-6 6" {_STROKE} stroke="{TEXT}" stroke-width="1.6"/>',
-}
-
-
-def icon_path(name: str) -> str:
-    """Return the file for a glyph; QSS can only load images from files."""
-    ICON_DIR.mkdir(parents=True, exist_ok=True)
-
-    # One file per glyph and colour, so a palette change gets a new path
-    foreground = glass_colors().text
-    path = ICON_DIR / f'{name}-{foreground.name()[1:]}.svg'
-
-    glyph = _ICONS[name].replace(TEXT, foreground.name())
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-        f'{glyph}</svg>'
-    )
-
-    # Skip the write when the file is already current
-    if not path.is_file() or path.read_text(encoding='utf-8') != svg:
-        path.write_text(svg, encoding='utf-8')
-    return path.as_posix()
-
-
-#
 # Palette and stylesheet
 #
 
@@ -205,17 +162,6 @@ _STYLESHEET: Final = Template("""
 QScrollArea, QScrollArea > QWidget#qt_scrollarea_viewport > QWidget { background: transparent; }
 QComboBoxPrivateContainer { background: transparent; border: 0; }
 
-
-#GlassTitleBar { background: transparent; }
-#GlassTitle { font-weight: 700; font-size: 10.5pt; letter-spacing: 0.3px; }
-QPushButton#GlassWinBtn {
-    min-width: 30px; max-width: 30px; min-height: 22px; max-height: 22px; padding: 0;
-    border-radius: 11px; background: $pane; $rim
-}
-QPushButton#GlassWinBtn:hover { background: $pane_hover; }
-QPushButton#GlassWinBtn[role="close"]:hover {
-    background: rgba(255,90,104,0.85); border-color: rgba($ink_rgb,0.35);
-}
 
 
 QFrame#SubplaceSearchPanel {
