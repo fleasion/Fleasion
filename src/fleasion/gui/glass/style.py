@@ -200,17 +200,11 @@ _WELL: Final = 'background: rgba($well_rgb,0.28); border: 1px solid rgba($ink_rg
 
 
 _STYLESHEET: Final = Template("""
-QMainWindow, QDialog { background: transparent; }
-/* The viewport selector keeps scroll bars, which sit in a sibling container, with the style */
-QStackedWidget, QScrollArea, QScrollArea > QWidget#qt_scrollarea_viewport > QWidget,
-QTabWidget > QWidget,
-QSplitter, QStatusBar, QLabel { background: transparent; }
+/* QScrollArea makes its content fill its own background; the glass shows through
+   instead. Naming the viewport keeps scroll bars, in a sibling container, with the style */
+QScrollArea, QScrollArea > QWidget#qt_scrollarea_viewport > QWidget { background: transparent; }
 QComboBoxPrivateContainer { background: transparent; border: 0; }
 
-QToolTip {
-    background: rgba($popup_rgb,0.96); color: $tooltip_text;
-    border: 1px solid rgba($ink_rgb,0.14); border-radius: 8px; padding: 6px 9px;
-}
 
 #GlassTitleBar { background: transparent; }
 #GlassTitle { font-weight: 700; font-size: 10.5pt; letter-spacing: 0.3px; }
@@ -286,9 +280,6 @@ def stylesheet(settings: GlassSettings) -> str:
     values = {
         'text': colors.text.name(),
         'input_text': native.text().color().name() if native is not None else colors.text.name(),
-        'tooltip_text': native.toolTipText().color().name()
-        if native is not None
-        else colors.text.name(),
         'muted': f'rgba({_rgb(colors.text.name())},0.62)',
         'ink_rgb': _rgb(colors.ink.name()),
         'well_rgb': _rgb(colors.well.name()),

@@ -30,7 +30,13 @@ from .inputs import (
     spin_box_rect,
 )
 from .itemview import paint_item_focus
-from .menus import MENU_METRICS, menu_item_size, paint_menu_item, paint_menu_panel
+from .menus import (
+    MENU_METRICS,
+    menu_item_size,
+    paint_menu_item,
+    paint_menu_panel,
+    paint_tooltip,
+)
 from .scrollbars import EXTENT, SLIDER_MIN, paint_scroll_bar, scroll_bar_rect
 from .sliders import HANDLE, paint_slider, slider_rect
 from .style import glass_colors
@@ -301,6 +307,7 @@ class GlassPresentation:
         painter: QPainter,
         widget: QWidget | None,
     ) -> bool:
+        drawn = True
         match element:
             case _PE.PE_FrameFocusRect if isinstance(widget, QAbstractItemView) and not isinstance(
                 widget, QHeaderView
@@ -315,12 +322,14 @@ class GlassPresentation:
             case _PE.PE_PanelButtonTool if isinstance(widget, QToolButton):
                 _paint_button(painter, option, widget)
             case _PE.PE_PanelLineEdit:
-                return paint_line_edit(painter, option, widget)
+                drawn = paint_line_edit(painter, option, widget)
             case _PE.PE_FrameTabWidget | _PE.PE_FrameTabBarBase:
                 # Tab pages and tab bars sit directly on the glass
                 pass
             case _PE.PE_PanelMenu:
-                return paint_menu_panel(painter, option, widget)
+                drawn = paint_menu_panel(painter, option, widget)
+            case _PE.PE_PanelTipLabel:
+                drawn = paint_tooltip(painter, option)
             case _PE.PE_FrameMenu if isinstance(widget, QMenu):
                 # The panel draws its own rim
                 pass
@@ -330,12 +339,12 @@ class GlassPresentation:
                 # The rounded item-view effect draws the rim after clipping
                 pass
             case _PE.PE_PanelItemViewItem:
-                return paint_item_panel(painter, option, widget)
+                drawn = paint_item_panel(painter, option, widget)
             case _PE.PE_PanelItemViewRow:
-                return paint_item_row(painter, option, widget)
+                drawn = paint_item_row(painter, option, widget)
             case _:
-                return False
-        return True
+                drawn = False
+        return drawn
 
     @staticmethod
     def draw_control(
