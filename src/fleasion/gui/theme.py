@@ -26,7 +26,7 @@ from fleasion.appearance.palettes import (
     to_qpalette,
 )
 from fleasion.localization import tr
-from fleasion.widgets.style import LayoutStyle
+from fleasion.widgets.style import ButtonOrderStyle, LayoutStyle
 
 from .appearance_events import AppearanceEvents
 
@@ -100,16 +100,13 @@ class ThemeManager:
 
     @staticmethod
     def ensure_widget_style(app: QApplication, name: str) -> None:
+        fusion = name.casefold() == 'fusion'
         if ThemeManager._widget_style_name(app).casefold() == name.casefold():
             current = app.style()
-            if name.casefold() != 'fusion' or isinstance(current, LayoutStyle):
+            wanted = LayoutStyle if fusion else ButtonOrderStyle
+            if isinstance(current, wanted) or current.findChild(wanted) is not None:
                 return
-            if current.findChild(LayoutStyle) is not None:
-                return
-        if name.casefold() == 'fusion':
-            app.setStyle(LayoutStyle())
-        else:
-            app.setStyle(name)
+        app.setStyle(LayoutStyle() if fusion else ButtonOrderStyle(name))
 
     @staticmethod
     def events() -> AppearanceEvents:

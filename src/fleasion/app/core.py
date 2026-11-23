@@ -107,6 +107,7 @@ from fleasion.utils import (
 from fleasion.utils.microprofiler import start_microprofiler
 from fleasion.utils.qt_diagnostics import install_qt_message_logging
 from fleasion.utils.yama_ptrace import read_ptrace_scope, set_warning_callback
+from fleasion.widgets.style import ButtonOrderStyle
 lazy from fleasion.app.dialogs.macos_rosemary_notice import show_macos_rosemary_notice
 lazy from fleasion.modifications.macos_bootstrapper_bridge import MacBootstrapperBridge
 lazy from fleasion.utils import (
@@ -232,10 +233,8 @@ def run_application() -> None:
         # Qt only sends QFileOpenEvent on macOS, and an application-wide
         # filter runs Python for every event in the process
         app.installEventFilter(roblox_url_event_filter)
-    # Qt normally follows each desktop's dialog conventions (GNOME/KDE/Windows),
-    # which changes the visual order of standard buttons. Fleasion uses the
-    # Windows order everywhere so confirmations have a stable layout
-    app.setStyleSheet('QDialogButtonBox, QMessageBox { button-layout: 0; }')
+    # Dialogs shown before the theme is applied keep the Windows button order too
+    app.setStyle(ButtonOrderStyle(app.style().objectName()))
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)

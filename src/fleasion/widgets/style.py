@@ -9,12 +9,15 @@ from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractSpinBox,
+    QApplication,
     QComboBox,
+    QDialogButtonBox,
     QProxyStyle,
     QStyle,
     QTableView,
     QTreeView,
 )
+from shiboken6 import isValid
 
 from .menu_items import use_menu_items
 from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING
@@ -25,7 +28,6 @@ if TYPE_CHECKING:
     from PySide6.QtCore import QRect, QSize
     from PySide6.QtGui import QColor, QPainter
     from PySide6.QtWidgets import (
-        QApplication,
         QStyleHintReturn,
         QStyleOption,
         QStyleOptionComplex,
@@ -114,7 +116,59 @@ class Presentation(Protocol):
         ...
 
 
-class LayoutStyle(QProxyStyle):
+class ButtonOrderStyle(QProxyStyle):
+    """A style with dialog buttons in the Windows order on every desktop.
+
+    Qt otherwise follows each desktop's conventions, which reorders standard
+    buttons between GNOME, KDE and Windows; confirmations keep one layout.
+
+    The instance the application uses is also recorded, so code that draws
+    with the style directly reaches it beneath any style-sheet wrapper.
+    """
+
+    _installed: ClassVar[ButtonOrderStyle | None] = None
+
+    def __init__(self, key: str) -> None:
+        super().__init__(key)
+        self.setObjectName(self.baseStyle().objectName())
+
+    @staticmethod
+    def application_style() -> QStyle:
+        """The application's own style, even while a style sheet wraps it."""
+        installed = ButtonOrderStyle._installed
+        if installed is not None and isValid(installed):
+            return installed
+        return QApplication.style()
+
+    @overload
+    def polish(self, app: QApplication, /) -> None: ...
+    @overload
+    def polish(self, widget: QWidget, /) -> None: ...
+    @overload
+    def polish(self, arg__1: QPalette | Qt.GlobalColor | QColor, /) -> None: ...
+    @override
+    def polish(
+        self, target: QApplication | QWidget | QPalette | Qt.GlobalColor | QColor, /
+    ) -> None:
+        # Qt polishes the application with the style it has just been given
+        if isinstance(target, QApplication):
+            ButtonOrderStyle._installed = self
+        super().polish(target)
+
+    @override
+    def styleHint(
+        self,
+        hint: QStyle.StyleHint,
+        option: QStyleOption | None = None,
+        widget: QWidget | None = None,
+        returnData: QStyleHintReturn | None = None,
+    ) -> int:
+        if hint == QStyle.StyleHint.SH_DialogButtonLayout:
+            return QDialogButtonBox.ButtonLayout.WinLayout.value
+        return super().styleHint(hint, option, widget, returnData)
+
+
+class LayoutStyle(ButtonOrderStyle):
     # The look drawn over Fusion while it is active; None draws plain Fusion
     presentation: ClassVar[Presentation | None] = None
 
