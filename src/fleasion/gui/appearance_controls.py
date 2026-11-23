@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
     QColorDialog,
-    QGridLayout,
     QSizePolicy,
     QWidget,
 )
@@ -40,12 +39,13 @@ from fleasion.appearance import (
 from fleasion.appearance.colors import on_accent
 from fleasion.appearance.palettes import mix
 from fleasion.localization import tr
+from fleasion.widgets.card_grid_layout import CardGridLayout
 from fleasion.widgets.flow_layout import FlowLayout
 
 from .theme import ThemeManager
 
 if TYPE_CHECKING:
-    from PySide6.QtGui import QPaintEvent, QResizeEvent
+    from PySide6.QtGui import QPaintEvent
 
     from fleasion.appearance import ColorMode
     from fleasion.appearance.palettes import ThemeColors
@@ -346,28 +346,37 @@ class ThemeCard(QAbstractButton):
 
 
 class ThemeSelector(QWidget):
-    """Theme cards in a grid that wraps between one and three columns."""
+    """Theme cards in a grid that wraps between one and five columns."""
 
     theme_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
         self.setMaximumWidth(
             _CARD_MAX_COLUMNS * _CARD_MAX_WIDTH + (_CARD_MAX_COLUMNS - 1) * _CARD_GAP
         )
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         self._cards: dict[str, ThemeCard] = {}
-        self._layout = QGridLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(_CARD_GAP)
-        self._columns = 0
+
+        # The layout picks its columns from the width it is given, in the same pass
+        self._layout = CardGridLayout(
+            self,
+            card_height=_CARD_HEIGHT,
+            min_width=_CARD_MIN_WIDTH,
+            target_width=_CARD_TARGET_WIDTH,
+            max_columns=_CARD_MAX_COLUMNS,
+            spacing=_CARD_GAP,
+        )
         for mode in COLOR_MODES:
             card = ThemeCard(mode, self)
             self._group.addButton(card)
             self._cards[mode] = card
-        self._place(_CARD_MAX_COLUMNS)
+            self._layout.add(card)
+
         self._group.buttonClicked.connect(self._selected)
         ThemeManager.events().changed.connect(self.refresh_colors)
 
@@ -389,20 +398,3 @@ class ThemeSelector(QWidget):
     def _selected(self, button: QAbstractButton) -> None:
         if isinstance(button, ThemeCard):
             self.theme_changed.emit(button.mode)
-
-    def _place(self, columns: int) -> None:
-        if columns == self._columns:
-            return
-        self._columns = columns
-        for card in self._cards.values():
-            self._layout.removeWidget(card)
-        for index, card in enumerate(self._cards.values()):
-            self._layout.addWidget(card, index // columns, index % columns)
-        for column in range(_CARD_MAX_COLUMNS):
-            self._layout.setColumnStretch(column, 1 if column < columns else 0)
-
-    @override
-    def resizeEvent(self, event: QResizeEvent, /) -> None:
-        super().resizeEvent(event)
-        fit = (event.size().width() + _CARD_GAP) // _CARD_TARGET_WIDTH
-        self._place(max(1, min(_CARD_MAX_COLUMNS, fit)))
