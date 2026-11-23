@@ -70,11 +70,14 @@ def stripe_color() -> QColor:
     return _tint(glass_colors().ink, 0.025)
 
 
-def selection_color(view: QWidget | None, palette: QPalette) -> QColor:
-    # A table's band runs across every column, so it is a little stronger to
-    # read as one row
-    accent = palette.color(QPalette.ColorRole.Accent)
-    return _tint(accent, 0.28 if isinstance(view, QTableView) else 0.24)
+def selection_color(view: QWidget | None) -> QColor:
+    """The band under selected items, in Glass's own accent.
+
+    An item view can carry a platform palette of its own, so the band does not
+    read the view's palette. A table's band runs across every column, so it is
+    a little stronger to read as one row.
+    """
+    return _tint(glass_colors().accent, 0.28 if isinstance(view, QTableView) else 0.24)
 
 
 class ViewSurface(QObject):
@@ -138,7 +141,7 @@ def paint_item_panel(painter: QPainter, option: QStyleOption, widget: QWidget | 
     if option.backgroundBrush.style() != Qt.BrushStyle.NoBrush:
         painter.fillRect(rect, option.backgroundBrush)
     if state & _State.State_Selected:
-        painter.fillRect(rect, selection_color(widget, option.palette))  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+        painter.fillRect(rect, selection_color(widget))  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
     elif state & _State.State_MouseOver and state & _State.State_Enabled:
         painter.fillRect(rect, _tint(glass_colors().ink, 0.05))
     return True
@@ -153,7 +156,7 @@ def paint_item_row(painter: QPainter, option: QStyleOption, widget: QWidget | No
         painter.fillRect(rect, stripe_color())
     # Items paint their own band; only a tree's branch gutter needs the row to
     if isinstance(widget, QTreeView) and option.state & _State.State_Selected:  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-        painter.fillRect(rect, selection_color(widget, option.palette))  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+        painter.fillRect(rect, selection_color(widget))  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
     return True
 
 
@@ -206,7 +209,7 @@ def paint_header_section(painter: QPainter, option: QStyleOption) -> bool:
     if _vertical(option):
         # Row numbers: plain cells ruled like the grid, banded when their row is selected
         if option.state & _State.State_On:  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-            accent = option.palette.color(QPalette.ColorRole.Accent)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+            accent = glass_colors().accent
             painter.fillRect(rect, _tint(accent, 0.11))
         painter.setPen(QPen(grid_color(), 1.0))
         painter.drawLine(

@@ -82,7 +82,8 @@ def paint_menu_item(
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(_tint(palette.color(QPalette.ColorRole.Accent), 0.30))
+        # Glass's own accent: a popup list can carry a platform palette of its own
+        painter.setBrush(_tint(glass_colors().accent, 0.30))
         painter.drawRoundedRect(rect, _ITEM_RADIUS, _ITEM_RADIUS)
         painter.restore()
 
