@@ -128,6 +128,11 @@ def _paint_indicator(painter: QPainter, option: QStyleOption, *, radio: bool) ->
     partial = bool(state & _State.State_NoChange)
     hovered = bool(state & _State.State_MouseOver)
 
+    # Focus moved here from the keyboard; a click leaves no ring behind
+    keyboard_focus = bool(
+        state & _State.State_HasFocus and state & _State.State_KeyboardFocusChange
+    )
+
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -138,7 +143,9 @@ def _paint_indicator(painter: QPainter, option: QStyleOption, *, radio: bool) ->
     else:
         painter.setBrush(_tint(colors.well, 0.28))
         border = _tint(accent, 0.8) if hovered else _tint(colors.ink, 0.06)
-    painter.setPen(QPen(border, 1.0))
+    if keyboard_focus:
+        border = _tint(colors.ink if on or partial else accent, 0.95)
+    painter.setPen(QPen(border, 1.5 if keyboard_focus else 1.0))
     painter.drawRoundedRect(rect, radius, radius)
 
     if on or partial:
@@ -366,6 +373,10 @@ class GlassPresentation:
                 drawn = paint_header_section(painter, option)
             case _CE.CE_HeaderLabel:
                 drawn = paint_header_label(painter, option, fusion)
+            case _CE.CE_Splitter:
+                # A faint bar between the panes
+                painter.fillRect(option.rect, _tint(glass_colors().ink, 0.08))  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+                drawn = True
             case _:
                 # Otherwise Fusion draws the control, with Glass text colors where they differ
                 changed = _label_option(element, option, widget)

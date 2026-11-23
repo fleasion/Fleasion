@@ -173,11 +173,7 @@ QScrollArea#SubplaceResultsScroll {
     background: rgba($well_rgb,0.26); border: 1px solid rgba($ink_rgb,0.09);
     border-radius: 10px;
 }
-QWidget#SubplaceFooter { background: transparent; border: 0; }
 
-QCheckBox:focus, QRadioButton:focus {
-    color: $text;
-}
 /* The badge keeps a tinted pill; other buttons are drawn by the style */
 QPushButton#ConflictBadge {
     border-radius: 8px; padding: ${control_padding}px 10px;
@@ -214,7 +210,6 @@ QComboBox QAbstractItemView {
 #PaletteCard QLineEdit { font-size: 13pt; padding: 9px 14px; border-radius: 12px; }
 #PaletteHint { color: $muted; font-size: 8.5pt; }
 
-QSplitter::handle { background: rgba($ink_rgb,0.08); }
 """)
 
 

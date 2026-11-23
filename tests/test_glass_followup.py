@@ -166,10 +166,40 @@ def test_async_blur_probe_does_not_override_explicit_refresh(
 
 
 def test_glass_keeps_keyboard_focus_indicators() -> None:
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionButton
+
+    from fleasion.gui.glass.primitives import GlassPresentation
+    from fleasion.gui.theme import ThemeManager
+
+    instance = QApplication.instance()
+    _application = instance if isinstance(instance, QApplication) else QApplication([])
+    ThemeManager.apply_appearance('Glass', 'Dark', 'Ice')
     stylesheet = style.stylesheet(GlassSettings())
     assert '* { outline: 0; }' not in stylesheet
-    assert 'QCheckBox:focus' in stylesheet
-    assert 'QRadioButton:focus' in stylesheet
+
+    def border(state: QStyle.StateFlag) -> int:
+        option = QStyleOptionButton()
+        option.rect = QRect(0, 0, 18, 18)
+        option.state = state
+        image = QImage(18, 18, QImage.Format.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        GlassPresentation.draw_primitive(
+            QStyle.PrimitiveElement.PE_IndicatorCheckBox, option, painter, None
+        )
+        painter.end()
+        return image.pixelColor(9, 0).rgba()
+
+    try:
+        # Keyboard focus rings the check box; focus from a click does not
+        enabled = QStyle.StateFlag.State_Enabled | QStyle.StateFlag.State_Off
+        focused = enabled | QStyle.StateFlag.State_HasFocus
+        assert border(focused | QStyle.StateFlag.State_KeyboardFocusChange) != border(enabled)
+        assert border(focused) == border(enabled)
+    finally:
+        ThemeManager.apply_appearance('Fusion', 'Dark', 'Ice')
 
 
 def test_settings_blur_toggle_follows_cached_compositor_state(
