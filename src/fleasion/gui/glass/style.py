@@ -244,12 +244,6 @@ QScrollArea#SubplaceResultsScroll {
     background: rgba($well_rgb,0.26); border: 1px solid rgba($ink_rgb,0.09);
     border-radius: 10px;
 }
-QPushButton#SubplaceSidebarButton {
-    padding: 4px 10px; border-radius: 8px;
-}
-QPushButton#SubplaceSidebarButton:hover {
-    background: rgba($ink_rgb,0.16);
-}
 QWidget#SubplaceFooter { background: transparent; border: 0; }
 QGroupBox {
     background: $pane; $rim border-radius: ${radius}px;
@@ -264,40 +258,13 @@ QGroupBox#ReplacerEditSection::title {
     left: 0; padding: 0;
 }
 
-QPushButton, QToolButton {
-    color: $button_text;
-    background: $pane; $rim border-radius: 8px;
-    padding: ${control_padding}px 10px; min-height: ${control_content_height}px;
-}
-QPushButton { min-width: 58px; }
-QPushButton[glassArrow="true"] {
-    background: transparent; border: 0; padding: 0; min-width: 0; color: $muted;
-}
-QPushButton[glassArrow="true"]:hover { color: $text; background: rgba($ink_rgb,0.08); }
-QPushButton[compact="true"] { padding: 0; min-width: 0; border-radius: 9px; }
-QPushButton:hover, QToolButton:hover {
-    background: $pane_hover; border-top-color: rgba($ink_rgb,0.20);
-}
-QPushButton:focus, QToolButton:focus {
-    border-color: rgba($accent_rgb,0.95);
-}
 QTabBar::tab:focus { border-color: rgba($accent_rgb,0.95); }
 QCheckBox:focus, QRadioButton:focus {
     color: $text;
 }
-QPushButton:pressed, QPushButton:checked, QToolButton:pressed, QToolButton:checked {
-    background: rgba($accent_rgb,0.30); border-color: rgba($accent_rgb,0.55);
-}
-QPushButton:default {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 $accent, stop:1 $accent);
-    color: $accent_text; border: 1px solid rgba($ink_rgb,0.30);
-}
-QPushButton:disabled, QToolButton:disabled {
-    color: rgba($ink_rgb,0.32); background: rgba($ink_rgb,0.03);
-    border: 1px solid rgba($ink_rgb,0.06);
-}
+/* The badge keeps a tinted pill; other buttons are drawn by the style */
 QPushButton#ConflictBadge {
+    border-radius: 8px; padding: ${control_padding}px 10px;
     background: rgba(255,190,69,0.16); border: 1px solid rgba(255,190,69,0.50);
     border-top-color: rgba(255,230,170,0.75); color: $warning;
 }
@@ -464,9 +431,6 @@ def stylesheet(settings: GlassSettings) -> str:
     values = {
         'text': colors.text.name(),
         'input_text': native.text().color().name() if native is not None else colors.text.name(),
-        'button_text': native.buttonText().color().name()
-        if native is not None
-        else colors.text.name(),
         'tooltip_text': native.toolTipText().color().name()
         if native is not None
         else colors.text.name(),
@@ -488,7 +452,6 @@ def stylesheet(settings: GlassSettings) -> str:
         radius=RADIUS,
         scroll_inset=SCROLLBAR_CORNER_INSET,
         control_padding=CONTROL_PADDING,
-        control_content_height=CONTROL_HEIGHT - CONTROL_PADDING * 2 - 2,
         input_padding=CONTROL_PADDING - 1,
         input_content_height=CONTROL_HEIGHT - (CONTROL_PADDING - 1) * 2 - 2,
         pane=Template(_PANE).substitute(values),

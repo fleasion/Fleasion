@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QMainWindow,
     QMenu,
-    QPushButton,
     QWidget,
 )
 from shiboken6 import isValid
@@ -42,10 +41,6 @@ if TYPE_CHECKING:
 
     from .stylesheets import WindowStyles
 
-
-# Push buttons at most this wide are restyled as compact or arrow buttons
-_COMPACT_BUTTON_MAX: Final = 40
-_ARROW_BUTTON_MAX: Final = 24
 
 # Painted under the tint when there is no alpha channel or wallpaper to show
 _FALLBACK_BACKDROP: Final = (20, 22, 34)
@@ -209,18 +204,6 @@ def paint_glass(
 #
 
 
-def _repolish_later(widget: QWidget) -> None:
-    def repolish() -> None:
-        if not isValid(widget):
-            return
-
-        style = widget.style()
-        style.unpolish(widget)
-        style.polish(widget)
-
-    QTimer.singleShot(0, repolish)
-
-
 def _is_window(obj: QObject | None) -> bool:
     return isinstance(obj, (QMainWindow, QDialog)) and obj.isWindow()
 
@@ -275,7 +258,6 @@ class GlassWindows(QObject):
         self._original_popup_attributes: WeakKeyDictionary[QWidget, tuple[bool, bool]] = (
             WeakKeyDictionary(original_popup_attributes or {})
         )
-        self._button_properties: WeakKeyDictionary[QPushButton, set[str]] = WeakKeyDictionary()
         self._original_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary()
 
         # Poll for wallpaper and compositor blur changes made outside Fleasion
@@ -362,14 +344,6 @@ class GlassWindows(QObject):
                 widget.setMask(original)
         self._original_popup_masks.clear()
         self._original_popup_attributes.clear()
-
-        # Button properties. None removes the dynamic property, restoring its initial absence
-        for button, names in list(self._button_properties.items()):
-            if not isValid(button):
-                continue
-            for name in names:
-                button.setProperty(name, None)
-        self._button_properties.clear()
 
     def remember_window(self, window: QWidget) -> None:
         # Root windows created during Glass predate their custom title bar, but
@@ -545,16 +519,6 @@ class GlassWindows(QObject):
     # Polish
     #
 
-    def _mark_button(self, button: QPushButton, name: str) -> None:
-        # Properties supplied by the application belong to the application.
-        # Only record and undo the dynamic properties Glass itself introduces
-        if button.property(name) is not None:
-            return
-
-        button.setProperty(name, True)  # ruff: ignore[boolean-positional-value-in-call] - Qt API
-        self._button_properties.setdefault(button, set()).add(name)
-        _repolish_later(button)
-
     def polish(self, widget: QWidget) -> None:
         if self._stylesheets is not None:
             self._stylesheets.polish(widget)
@@ -572,17 +536,3 @@ class GlassWindows(QObject):
         elif self.is_rounded_popup(widget):
             self.remember_window(widget)
             enable_transparency(widget)
-
-        # Small push buttons are tagged so the stylesheet can restyle them
-        elif not isinstance(widget, QPushButton):
-            return
-        elif (
-            widget.isFlat()
-            and widget.maximumWidth() <= _ARROW_BUTTON_MAX
-            and widget.property('glassArrow') is None
-        ):
-            self._mark_button(widget, 'glassArrow')
-        elif (
-            0 < widget.maximumWidth() <= _COMPACT_BUTTON_MAX and widget.property('compact') is None
-        ):
-            self._mark_button(widget, 'compact')

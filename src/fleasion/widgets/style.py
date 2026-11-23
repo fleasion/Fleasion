@@ -37,6 +37,12 @@ class Presentation(Protocol):
         """Draw a primitive and return True, or return False to leave it to Fusion."""
         ...
 
+    def control_option(
+        self, element: QStyle.ControlElement, option: QStyleOption, widget: QWidget | None
+    ) -> QStyleOption | None:
+        """Return a changed copy of a control's option, such as its colors, or None."""
+        ...
+
     def pixel_metric(
         self, metric: QStyle.PixelMetric, option: QStyleOption | None, widget: QWidget | None
     ) -> int | None:
@@ -162,6 +168,20 @@ class LayoutStyle(QProxyStyle):
             painter.restore()
             return
         super().drawPrimitive(element, option, painter, widget)
+
+    @override
+    def drawControl(
+        self,
+        element: QStyle.ControlElement,
+        option: QStyleOption,
+        painter: QPainter,
+        widget: QWidget | None = None,
+    ) -> None:
+        if (presentation := LayoutStyle.presentation) is not None and (
+            changed := presentation.control_option(element, option, widget)
+        ) is not None:
+            option = changed
+        super().drawControl(element, option, painter, widget)
 
     @override
     def subElementRect(

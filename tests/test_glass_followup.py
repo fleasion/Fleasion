@@ -171,7 +171,6 @@ def test_glass_keeps_keyboard_focus_indicators(
     monkeypatch.setattr(style, 'ICON_DIR', tmp_path)
     stylesheet = style.stylesheet(GlassSettings())
     assert '* { outline: 0; }' not in stylesheet
-    assert 'QPushButton:focus' in stylesheet
     assert 'QCheckBox:focus' in stylesheet
     assert 'QRadioButton:focus' in stylesheet
     assert 'QTabBar::tab:focus' in stylesheet

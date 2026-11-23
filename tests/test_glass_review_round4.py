@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,14 +14,12 @@ from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
-    QPushButton,
     QScrollArea,
     QVBoxLayout,
 )
-from shiboken6 import isValid
 
 from fleasion.config import manager
-from fleasion.gui.glass import chrome, surface
+from fleasion.gui.glass import chrome
 from fleasion.gui.settings_tab import SettingsTab
 
 if TYPE_CHECKING:
@@ -109,24 +106,6 @@ def test_refresh_from_config_synchronizes_all_glass_values_without_signals(
     finally:
         tab.deleteLater()
         app.processEvents()
-
-
-def test_deferred_repolish_ignores_destroyed_widget(
-    app: QApplication, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    errors: list[object] = []
-
-    def record_unraisable(details: object) -> None:
-        errors.append(details)
-
-    monkeypatch.setattr(sys, 'unraisablehook', record_unraisable)
-    widget = QPushButton()
-    surface._repolish_later(widget)  # pyright: ignore[reportPrivateUsage]
-    widget.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    assert not isValid(widget)
-    app.processEvents()
-    assert not errors
 
 
 @pytest.mark.parametrize('margins', [(17, 19, 23, 29), (0, 0, 0, 0)])

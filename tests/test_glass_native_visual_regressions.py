@@ -290,10 +290,8 @@ def test_footer_keybind_help_is_flat_in_all_themes(
         assert button.width() <= 24
         ThemeManager.apply_theme('Glass')
         assert button.isFlat()
-        assert button.property('glassArrow') is True
         ThemeManager.apply_theme('System')
         assert button.isFlat()
-        assert button.property('glassArrow') is None
     finally:
         ThemeManager.apply_theme('Light')
         window.close()
@@ -329,8 +327,6 @@ def test_misc_and_proxy_help_buttons_are_flat_and_small(
             for button in buttons:
                 assert button.isFlat()
                 assert button.maximumWidth() == 24
-                if theme == 'Glass':
-                    assert button.property('glassArrow') is True
     finally:
         ThemeManager.apply_theme('Light')
         window.close()
