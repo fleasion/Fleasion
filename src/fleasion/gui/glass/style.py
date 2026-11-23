@@ -201,7 +201,9 @@ _WELL: Final = 'background: rgba($well_rgb,0.28); border: 1px solid rgba($ink_rg
 
 _STYLESHEET: Final = Template("""
 QMainWindow, QDialog { background: transparent; }
-QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget, QTabWidget > QWidget,
+/* The viewport selector keeps scroll bars, which sit in a sibling container, with the style */
+QStackedWidget, QScrollArea, QScrollArea > QWidget#qt_scrollarea_viewport > QWidget,
+QTabWidget > QWidget,
 QSplitter, QStatusBar, QLabel { background: transparent; }
 QComboBoxPrivateContainer { background: transparent; border: 0; }
 
@@ -337,21 +339,6 @@ QTreeView { show-decoration-selected: 0; }
 #PaletteCard QLineEdit { font-size: 13pt; padding: 9px 14px; border-radius: 12px; }
 #PaletteHint { color: $muted; font-size: 8.5pt; }
 
-QScrollBar:vertical { background: transparent; width: 10px; margin: 4px 2px; }
-QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px 4px; }
-QScrollBar::handle {
-    background: rgba($ink_rgb,0.20); border-radius: 3px; min-height: 30px; min-width: 30px;
-}
-QScrollBar::handle:hover { background: rgba($ink_rgb,0.36); }
-/* Inside rounded item views the ends stay clear of the corners; a bar that already
-   starts below a column header keeps the usual top margin */
-QAbstractItemView QScrollBar:vertical { margin: ${scroll_inset}px 2px; }
-QAbstractItemView QScrollBar:horizontal { margin: 2px ${scroll_inset}px; }
-QScrollBar[glassBelowHeader="true"]:vertical { margin-top: 4px; }
-QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {
-    background: transparent; border: 0; width: 0; height: 0;
-}
-
 QSlider::groove:horizontal { height: 6px; $well border-radius: 3px; }
 QSlider::sub-page:horizontal { background: rgba($accent_rgb,0.9); border-radius: 3px; }
 QSlider::handle:horizontal {
@@ -401,7 +388,6 @@ def stylesheet(settings: GlassSettings) -> str:
     return _STYLESHEET.substitute(
         **values,
         radius=RADIUS,
-        scroll_inset=SCROLLBAR_CORNER_INSET,
         control_padding=CONTROL_PADDING,
         pane=Template(_PANE).substitute(values),
         pane_hover=Template(_PANE_HOVER).substitute(values),

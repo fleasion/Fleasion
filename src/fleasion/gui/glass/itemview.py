@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPat
 from PySide6.QtWidgets import QAbstractItemView, QGraphicsEffect, QTableView, QTreeView, QWidget
 from shiboken6 import isValid
 
+from .scrollbars import BELOW_HEADER
 from .style import RADIUS, glass_colors
 
 if TYPE_CHECKING:
@@ -20,9 +21,6 @@ if TYPE_CHECKING:
 
 # Object name the stylesheet gives the header-coloured cap above a view's scrollbar
 SCROLLBAR_HEADER_CAP = 'GlassScrollBarHeaderCap'
-
-# Scrollbar property the stylesheet reads to drop the top corner clearance
-_BELOW_HEADER = 'glassBelowHeader'
 
 # View property holding how far the rounded frame stops above the view's bottom
 FRAME_TRIM = 'glassFrameTrim'
@@ -177,11 +175,10 @@ class ItemViewChrome(QObject):
 
     def _mark_scrollbar(self, *, below_header: bool | None) -> None:
         bar = self._view.verticalScrollBar()
-        if bar.property(_BELOW_HEADER) == below_header:
+        if bar.property(BELOW_HEADER) == below_header:
             return
-        bar.setProperty(_BELOW_HEADER, below_header)
-        bar.style().unpolish(bar)
-        bar.style().polish(bar)
+        bar.setProperty(BELOW_HEADER, below_header)
+        bar.update()
 
     def _current_model(self) -> QAbstractItemModel | None:
         # Qt returns no model for a view that has not been given one yet
