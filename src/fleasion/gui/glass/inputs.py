@@ -81,7 +81,7 @@ def _paint_well(painter: QPainter, option: QStyleOption) -> None:
     if not state & _State.State_Enabled:
         border = _tint(colors.ink, 0.06)
     elif state & _State.State_HasFocus:
-        border = _tint(_palette(option).color(QPalette.ColorRole.Accent), 0.85)
+        border = _tint(colors.accent, 0.85)
     elif state & _State.State_MouseOver:
         border = _tint(colors.ink, 0.14)
     else:

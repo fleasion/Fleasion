@@ -63,7 +63,7 @@ def paint_tab(painter: QPainter, option: QStyleOption, widget: QWidget | None) -
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setBrush(fill if fill is not None else Qt.BrushStyle.NoBrush)
     if focused:
-        painter.setPen(QPen(_tint(option.palette.color(QPalette.ColorRole.Accent), 0.95), 1.0))  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+        painter.setPen(QPen(_tint(colors.accent, 0.95), 1.0))
     elif selected:
         # The same brighter top edge as the panes
         rim = QLinearGradient(rect.topLeft(), rect.bottomLeft())

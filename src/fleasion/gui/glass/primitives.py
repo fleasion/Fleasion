@@ -83,12 +83,10 @@ def _state(option: QStyleOption) -> _State:
     return option.state  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
 
 
-def _accent(option: QStyleOption) -> tuple[QColor, QColor]:
-    """The accent and the text drawn on it, from the palette the theme applied."""
-    palette: QPalette = option.palette  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-    return palette.color(QPalette.ColorRole.Accent), palette.color(
-        QPalette.ColorRole.HighlightedText
-    )
+def _accent() -> tuple[QColor, QColor]:
+    """The accent and the text drawn on it; Glass's own, as a platform palette can differ per class."""
+    colors = glass_colors()
+    return colors.accent, colors.accent_text
 
 
 #
@@ -119,14 +117,14 @@ def _mark(kind: str, rect: QRectF) -> QPainterPath:
 def _paint_indicator(painter: QPainter, option: QStyleOption, *, radio: bool) -> None:
     """Paint a check box or radio button like a recessed glass well."""
     colors = glass_colors()
-    accent, on_accent = _accent(option)
+    accent, on_accent = _accent()
     state = _state(option)
     rect = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
     radius = rect.height() / 2 if radio else _CHECK_RADIUS
 
     on = bool(state & _State.State_On)
     partial = bool(state & _State.State_NoChange)
-    hovered = bool(state & _State.State_MouseOver)
+    hovered = bool(state & _State.State_MouseOver and state & _State.State_Enabled)
 
     # Focus moved here from the keyboard; a click leaves no ring behind
     keyboard_focus = bool(
@@ -135,6 +133,8 @@ def _paint_indicator(painter: QPainter, option: QStyleOption, *, radio: bool) ->
 
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if not state & _State.State_Enabled:
+        painter.setOpacity(0.45)
 
     # A filled accent well when set, otherwise a faint recess
     if on or partial:
@@ -214,7 +214,7 @@ def _button_colors(
 def _paint_button(painter: QPainter, option: QStyleOption, widget: QWidget | None) -> None:
     """Paint a push or tool button as a rounded glass pane."""
     flat, default = _button_features(option, widget)
-    accent, _on_accent = _accent(option)
+    accent, _on_accent = _accent()
     fill, side, top = _button_colors(
         glass_colors(), accent, _state(option), flat=flat, default=default
     )
@@ -248,7 +248,7 @@ def _button_label_option(option: QStyleOption, widget: QWidget | None) -> QStyle
     if not state & _State.State_Enabled:
         return None
     if default:
-        _accent_color, text = _accent(option)
+        _accent_color, text = _accent()
     elif flat and not state & (_State.State_MouseOver | _State.State_Sunken | _State.State_On):
         text = _tint(option.palette.color(QPalette.ColorRole.ButtonText), 0.62)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
     else:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPalette, QPen
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
 
 from .style import glass_colors
@@ -123,7 +123,7 @@ def paint_slider(painter: QPainter, option: QStyleOptionComplex, widget: QWidget
     handle = slider_rect(slider, _SC.SC_SliderHandle, widget)
     if handle is None:
         return False
-    accent = slider.palette.color(QPalette.ColorRole.Accent)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+    accent = colors.accent
 
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
