@@ -25,6 +25,12 @@ _TONES: Final[dict[Tone, tuple[str, str]]] = {
 }
 
 _TONE_PROPERTY: Final = 'textTone'
+_TONE_ROLES: Final = (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text)
+_COLOR_GROUPS: Final = (
+    QPalette.ColorGroup.Active,
+    QPalette.ColorGroup.Inactive,
+    QPalette.ColorGroup.Disabled,
+)
 
 
 def tone_color(tone: Tone, palette: QPalette) -> QColor:
@@ -68,9 +74,23 @@ def _paint_tone(widget: QObject, tone: Tone) -> None:
     palette = widget.palette()
     if palette.color(QPalette.ColorRole.WindowText) == color:
         return
-    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text):
+    for role in _TONE_ROLES:
         palette.setColor(role, color)
     widget.setPalette(palette)
+
+
+def _clear_tone(widget: QWidget) -> None:
+    # Rebuild the palette from the roles the widget set itself, minus the tone's own;
+    # pinning the inherited color instead would go stale on the next theme change
+    current = widget.palette()
+    kept = QPalette()
+    for group in _COLOR_GROUPS:
+        for role in QPalette.ColorRole:
+            if role in _TONE_ROLES or role == QPalette.ColorRole.NColorRoles:
+                continue
+            if current.isBrushSet(group, role):
+                kept.setBrush(group, role, current.brush(group, role))
+    widget.setPalette(kept)
 
 
 def set_tone(widget: QWidget, tone: Tone | None) -> None:
@@ -83,14 +103,9 @@ def set_tone(widget: QWidget, tone: Tone | None) -> None:
         QPalette.ColorRole.PlaceholderText if tone == 'muted' else QPalette.ColorRole.WindowText
     )
 
-    # Drop a status color set earlier
+    # Drop a status color set earlier, so the text follows the theme again
     if isinstance(previous, str) and previous in _TONES and tone != previous:
-        palette = widget.palette()
-        parent = widget.parentWidget()
-        inherited = parent.palette() if parent is not None else QPalette()
-        for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text):
-            palette.setColor(role, inherited.color(role))
-        widget.setPalette(palette)
+        _clear_tone(widget)
 
     if tone is None or tone == 'muted':
         return

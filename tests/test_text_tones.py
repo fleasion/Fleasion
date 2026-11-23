@@ -75,6 +75,13 @@ def test_clearing_a_tone_restores_the_text_color(app: QApplication) -> None:
 
     assert label.foregroundRole() == QPalette.ColorRole.WindowText
     assert label.palette().windowText().color() == window.palette().windowText().color()
+
+    # The cleared label keeps following the theme instead of the color it had then
+    before = window.palette().windowText().color()
+    ThemeManager.apply_appearance('Fusion', 'Light', 'Ice')
+    app.processEvents()
+    assert window.palette().windowText().color() != before
+    assert label.palette().windowText().color() == window.palette().windowText().color()
     window.deleteLater()
 
 
