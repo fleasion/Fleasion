@@ -232,9 +232,7 @@ class SettingsTab(QWidget):
         self._status_label.setStyleSheet('color: #888;')
         footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton(tr('ui.gui.settings_tab.clear_cache'))
-        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
-        footer_layout.addWidget(clear_cache_btn)
+        footer_layout.addWidget(delete_cache.clear_cache_button())
 
         outer.addWidget(footer_widget)
 
@@ -820,10 +818,6 @@ class SettingsTab(QWidget):
         _set_signals_blocked(self._language_combo, blocked=False)
 
     # Handlers
-
-    def _clear_roblox_cache(self) -> None:
-        window = delete_cache.DeleteCacheWindow()
-        window.show()
 
     def _build_glass_controls(self, rows: QGridLayout, *, visible: bool) -> tuple[QWidget, ...]:
         """Backdrop, opacity and desktop-blur toggle for Glass."""

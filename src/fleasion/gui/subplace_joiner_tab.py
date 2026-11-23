@@ -47,7 +47,7 @@ from fleasion.utils.roblox_auth import (
 from fleasion.utils.windows import is_roblox_running, launch_as_standard_user
 from fleasion.widgets.spacing import CONTROL_HEIGHT, GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
-lazy from fleasion.gui.delete_cache import DeleteCacheWindow
+lazy from fleasion.gui.delete_cache import clear_cache_button
 lazy from fleasion.utils.verified_direct_https import VerifiedDirectHTTPSAdapter
 
 lazy from . import macos_rosemary_launch, rando_stuff_tab
@@ -1015,15 +1015,10 @@ class SubplaceJoinerTab(QWidget):
         self._selected_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
         footer_layout.addWidget(self._selected_label)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.clear_cache'))
+        clear_cache_btn = clear_cache_button()
         clear_cache_btn.setObjectName('SubplaceClearCacheButton')
-        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
         root.addWidget(footer_widget)
-
-    def _clear_roblox_cache(self) -> None:
-        window = DeleteCacheWindow()
-        window.show()
 
     # Settings persistence
 

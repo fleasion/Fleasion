@@ -8,7 +8,7 @@ from typing import ClassVar
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QIcon
-from PySide6.QtWidgets import QDialog, QLabel, QTextEdit, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
 
 from fleasion.localization import tr
 from fleasion.utils import delete_cache, get_icon_path, log_buffer
@@ -117,3 +117,15 @@ class DeleteCacheWindow(QDialog):
 
         thread = threading.Thread(target=perform, daemon=True)
         thread.start()
+
+
+def show_delete_cache_window() -> None:
+    """Clear the Roblox cache, reporting progress in its own window."""
+    DeleteCacheWindow().show()
+
+
+def clear_cache_button() -> QPushButton:
+    """Return the Clear Cache button shown in the footer of every tab."""
+    button = QPushButton(tr('ui.gui.delete_cache.clear_cache'))
+    button.clicked.connect(show_delete_cache_window)
+    return button

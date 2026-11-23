@@ -1313,7 +1313,7 @@ class ReplacerConfigWindow(QDialog):
         kind_action = tr('ui.gui.command_palette.kind_action')
         actions = (
             (tr('ui.gui.conflicts.palette'), self._conflict_badge.show_dialog),
-            (tr('ui.gui.replacer_config.clear_cache'), self._clear_roblox_cache),
+            (tr('ui.gui.delete_cache.clear_cache'), delete_cache.show_delete_cache_window),
             (tr('ui.gui.replacer_config.open_configs'), self._open_configs_folder),
             (tr('ui.gui.replacer_config.scraped_games'), self._open_prejsons_browser),
             (tr('ui.gui.replacer_config.undo_ctrl_z'), self._do_undo),
@@ -1723,9 +1723,7 @@ class ReplacerConfigWindow(QDialog):
         help_btn.clicked.connect(self._show_keybinds_help)
         footer_layout.addWidget(help_btn)
 
-        clear_cache_btn = QPushButton(tr('ui.gui.replacer_config.clear_cache'))
-        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
-        footer_layout.addWidget(clear_cache_btn)
+        footer_layout.addWidget(delete_cache.clear_cache_button())
 
         configs_btn = QPushButton(tr('ui.gui.replacer_config.open_configs'))
         configs_btn.clicked.connect(self._open_configs_folder)
@@ -1744,10 +1742,6 @@ class ReplacerConfigWindow(QDialog):
             tr('ui.gui.replacer_config.configs_value', value0=configs_folder)
         )
         open_folder(configs_folder)
-
-    def _clear_roblox_cache(self) -> None:
-        window = delete_cache.DeleteCacheWindow()
-        window.show()
 
     def _show_keybinds_help(self) -> None:
         msg = QMessageBox(self)

@@ -147,7 +147,7 @@ lazy from fleasion.cache.font_viewer import FontViewerWidget
 lazy from fleasion.cache.mesh_processing import convert as convert_mesh
 lazy from fleasion.cache.obj_viewer import ObjViewerPanel
 lazy from fleasion.gui import linux_hotkeys, windows_hotkeys
-lazy from fleasion.gui.delete_cache import DeleteCacheWindow
+lazy from fleasion.gui.delete_cache import clear_cache_button
 lazy from fleasion.gui.linux_hotkeys import (
     LinuxCustomFFlagHotkeyController,
     LinuxHotkeyService,
@@ -5529,9 +5529,7 @@ class ModificationsTab(QWidget):
         self._status_label.setStyleSheet('color: #888;')
         footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton(tr('ui.gui.modifications_tab.clear_cache'))
-        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
-        footer_layout.addWidget(clear_cache_btn)
+        footer_layout.addWidget(clear_cache_button())
         outer.addWidget(footer_widget)
 
     @override
@@ -5543,10 +5541,6 @@ class ModificationsTab(QWidget):
     def _update_container_bg(self) -> None:
         """Keep the tab background aligned with the active theme."""
         ThemeManager.apply_panel_background(self._mod_container)
-
-    def _clear_roblox_cache(self) -> None:
-        window = DeleteCacheWindow()
-        window.show()
 
     # Status bar
 

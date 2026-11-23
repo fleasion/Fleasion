@@ -233,7 +233,7 @@ def test_translated_onboarding_uses_the_actual_ui_labels() -> None:
         'ui.gui.json_viewer.replacement_id',
         'replacer.rules.add_new',
         'ui.gui.replacer_config.enabled',
-        'ui.gui.replacer_config.clear_cache',
+        'ui.gui.delete_cache.clear_cache',
         'ui.gui.replacer_config.scraper',
     )
 

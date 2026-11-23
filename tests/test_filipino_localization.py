@@ -51,7 +51,7 @@ def test_filipino_onboarding_names_the_actual_controls() -> None:
         'ui.gui.json_viewer.replacement_id',
         'replacer.rules.add_new',
         'ui.gui.replacer_config.enabled',
-        'ui.gui.replacer_config.clear_cache',
+        'ui.gui.delete_cache.clear_cache',
         'ui.gui.replacer_config.scraper',
     ):
         assert FILIPINO[identifier].rstrip(':') in welcome, identifier

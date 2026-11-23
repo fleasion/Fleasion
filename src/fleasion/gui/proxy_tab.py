@@ -877,9 +877,7 @@ class ProxyTrafficTab(QWidget):
         warning_label.setStyleSheet('color: #ffcc66;')
         footer_layout.addWidget(warning_label)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton(tr('ui.gui.proxy_tab.clear_cache'))
-        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
-        footer_layout.addWidget(clear_cache_btn)
+        footer_layout.addWidget(delete_cache.clear_cache_button())
         self.ui.verticalLayout_3.addWidget(footer_widget)
 
         self._refresh_traffic()
@@ -1323,10 +1321,6 @@ class ProxyTrafficTab(QWidget):
             _clear_preserved_traffic_file()
         self._traffic = []
         self._render_table()
-
-    def _clear_roblox_cache(self) -> None:
-        window = delete_cache.DeleteCacheWindow()
-        window.show()
 
     def _show_rules_dialog(self) -> None:
         if self._rules_dialog is None:

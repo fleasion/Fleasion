@@ -57,7 +57,7 @@ from fleasion.utils.roblox_auth import (
 from fleasion.utils.secure_tokens import decrypt_token, encrypt_token
 from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
-lazy from fleasion.gui.delete_cache import DeleteCacheWindow
+lazy from fleasion.gui.delete_cache import clear_cache_button
 lazy from fleasion.utils import anim_converter, platform_linux
 lazy from fleasion.utils.r15_to_r6 import (
     convert_keyframe_r6_to_r15,
@@ -1522,9 +1522,7 @@ class RandoStuffTab(QWidget):
         footer_widget = TabFooter()
         footer_layout = footer_widget.content_layout
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton(tr('ui.gui.rando_stuff_tab.clear_cache'))
-        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
-        footer_layout.addWidget(clear_cache_btn)
+        footer_layout.addWidget(clear_cache_button())
 
         outer.addWidget(footer_widget)
 
@@ -1573,10 +1571,6 @@ class RandoStuffTab(QWidget):
             gate = getattr(self, gate_name, None)
             if gate is not None:
                 gate.set_proxy_enabled(enabled)
-
-    def _clear_roblox_cache(self) -> None:
-        window = DeleteCacheWindow()
-        window.show()
 
     # Rejoin
 

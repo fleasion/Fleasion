@@ -95,7 +95,7 @@ from fleasion.widgets.image_preview import ImagePreviewLabel
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
 lazy from fleasion.gui import glass
-lazy from fleasion.gui.delete_cache import DeleteCacheWindow
+lazy from fleasion.gui.delete_cache import clear_cache_button
 lazy from fleasion.gui.theme import ThemeManager
 lazy from fleasion.proxy.addons.cache_scraper import (
     CREATOR_GAME_MAX_SCAN,
@@ -2513,9 +2513,7 @@ class CacheViewerTab(QWidget):
         delete_db_btn.clicked.connect(self._clear_cache)
         actions_layout.addWidget(delete_db_btn)
 
-        delete_cache_btn = QPushButton(tr('ui.cache.cache_viewer.clear_cache'))
-        delete_cache_btn.clicked.connect(self._delete_roblox_cache)
-        actions_layout.addWidget(delete_cache_btn)
+        actions_layout.addWidget(clear_cache_button())
 
         self.stop_preview_btn = QPushButton(tr('ui.cache.cache_viewer.stop_preview'))
         self.stop_preview_btn.clicked.connect(self._stop_preview)
@@ -4096,11 +4094,6 @@ class CacheViewerTab(QWidget):
             tr('ui.cache.cache_viewer.success'),
             tr('ui.cache.cache_viewer.database_deleted_successfully'),
         )
-
-    def _delete_roblox_cache(self) -> None:
-        """Delete Roblox cache using system tray method."""
-        window = DeleteCacheWindow()
-        window.show()
 
     def _redirect_counter_focus(
         self, current_row: int, current_col: int, _previous_row: int, _previous_col: int

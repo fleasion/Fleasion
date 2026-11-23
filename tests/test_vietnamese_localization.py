@@ -48,7 +48,7 @@ def test_vietnamese_onboarding_uses_matching_ui_labels() -> None:
         'ui.gui.replacer_config.scraped_games',
         'ui.gui.replacer_config.asset_ids',
         'ui.gui.json_viewer.replacement_id',
-        'ui.gui.replacer_config.clear_cache',
+        'ui.gui.delete_cache.clear_cache',
         'ui.gui.replacer_config.scraper',
     ):
         assert VIETNAMESE[identifier].rstrip(':') in welcome
