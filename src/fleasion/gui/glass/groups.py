@@ -1,4 +1,4 @@
-"""Glass group boxes: a rounded pane with its muted title above it."""
+"""Glass group boxes and frames: rounded panes and recessed wells."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING, Final
 
 from PySide6.QtCore import QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPalette, QPen
-from PySide6.QtWidgets import QStyle, QStyleOptionGroupBox
+from PySide6.QtWidgets import QAbstractScrollArea, QFrame, QScrollArea, QStyle, QStyleOptionGroupBox
 
 from .style import RADIUS, glass_colors
 
 if TYPE_CHECKING:
-    from PySide6.QtWidgets import QStyleOptionComplex, QWidget
+    from PySide6.QtWidgets import QStyleOption, QStyleOptionComplex, QWidget
 
 
 _SC = QStyle.SubControl
@@ -89,5 +89,54 @@ def paint_group_box(painter: QPainter, option: QStyleOptionComplex, widget: QWid
         painter.drawText(
             label, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, option.text
         )
+    painter.restore()
+    return True
+
+
+#
+# Frames
+#
+
+
+# A raised panel is a pane, like a group box; a framed scroll area is a recessed well
+_PANE_RADIUS: Final = 12.0
+_WELL_RADIUS: Final = 10.0
+
+
+def frame_kind(widget: QWidget | None) -> str | None:
+    """Whether Glass draws a frame as a pane or a well, or leaves it to Fusion."""
+    if isinstance(widget, QScrollArea) and widget.frameShape() != QFrame.Shape.NoFrame:
+        return 'well'
+    if (
+        isinstance(widget, QFrame)
+        and not isinstance(widget, QAbstractScrollArea)
+        and widget.frameShape() == QFrame.Shape.StyledPanel
+        and widget.frameShadow() == QFrame.Shadow.Raised
+    ):
+        return 'pane'
+    return None
+
+
+def paint_frame(painter: QPainter, option: QStyleOption, widget: QWidget | None) -> bool:
+    kind = frame_kind(widget)
+    if kind is None:
+        return False
+
+    colors = glass_colors()
+    rect = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+    radius = _PANE_RADIUS if kind == 'pane' else _WELL_RADIUS
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if kind == 'pane':
+        rim = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        rim.setColorAt(0, _tint(colors.ink, 0.14))
+        rim.setColorAt(min(1.0, radius / max(rect.height(), 1)), _tint(colors.ink, 0.09))
+        rim.setColorAt(1, _tint(colors.ink, 0.09))
+        painter.setPen(QPen(rim, 1.0))
+        painter.setBrush(_tint(colors.ink, 0.06))
+    else:
+        painter.setPen(QPen(_tint(colors.ink, 0.09), 1.0))
+        painter.setBrush(_tint(colors.well, 0.26))
+    painter.drawRoundedRect(rect, radius, radius)
     painter.restore()
     return True

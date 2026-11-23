@@ -163,16 +163,6 @@ QComboBoxPrivateContainer { background: transparent; border: 0; }
 
 
 
-QFrame#SubplaceSearchPanel {
-    background: rgba($ink_rgb,0.06); border: 1px solid rgba($ink_rgb,0.09);
-    border-top-color: rgba($ink_rgb,0.14); border-radius: 12px;
-}
-QScrollArea#SubplaceRecentScroll, QScrollArea#SubplaceFavoritesScroll,
-QScrollArea#SubplaceResultsScroll {
-    background: rgba($well_rgb,0.26); border: 1px solid rgba($ink_rgb,0.09);
-    border-radius: 10px;
-}
-
 /* Text edits keep style-sheet wells until item views move to the style */
 QTextEdit, QPlainTextEdit {
     color: $input_text;

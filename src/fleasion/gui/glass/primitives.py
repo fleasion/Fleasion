@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QTreeView,
 )
 
-from .groups import group_box_rect, paint_group_box
+from .groups import frame_kind, group_box_rect, paint_frame, paint_group_box
 from .inputs import (
     combo_box_rect,
     input_size,
@@ -373,6 +373,8 @@ class GlassPresentation:
                 drawn = paint_header_section(painter, option)
             case _CE.CE_HeaderLabel:
                 drawn = paint_header_label(painter, option, fusion)
+            case _CE.CE_ShapedFrame:
+                drawn = paint_frame(painter, option, widget)
             case _CE.CE_Splitter:
                 # A faint bar between the panes
                 painter.fillRect(option.rect, _tint(glass_colors().ink, 0.08))  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
@@ -484,7 +486,10 @@ class GlassPresentation:
     ) -> int | None:
         del option
         if metric == QStyle.PixelMetric.PM_DefaultFrameWidth:
-            # Item views get a hairline frame, drawn as the rim by the rounded effect
-            framed = isinstance(widget, QAbstractItemView) and not isinstance(widget, QHeaderView)
-            return 1 if framed else None
+            # Item views, panes and wells get a hairline frame; the rounded effect
+            # draws an item view's as its rim
+            item_view = isinstance(widget, QAbstractItemView) and not isinstance(
+                widget, QHeaderView
+            )
+            return 1 if item_view or frame_kind(widget) is not None else None
         return _METRICS.get(metric)
