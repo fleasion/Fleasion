@@ -19,6 +19,8 @@ from .menu_items import use_menu_items
 from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from PySide6.QtCore import QRect, QSize
     from PySide6.QtGui import QColor, QPainter, QPalette
     from PySide6.QtWidgets import (
@@ -49,14 +51,13 @@ class Presentation(Protocol):
         option: QStyleOption,
         painter: QPainter,
         widget: QWidget | None,
+        fusion: Callable[[QStyleOption], None],
     ) -> bool:
-        """Draw a control and return True, or return False to leave it to Fusion."""
-        ...
+        """Draw a control and return True, or return False to leave it to Fusion.
 
-    def control_option(
-        self, element: QStyle.ControlElement, option: QStyleOption, widget: QWidget | None
-    ) -> QStyleOption | None:
-        """Return a changed copy of a control's option, such as its colors, or None."""
+        ``fusion`` draws the control the Fusion way with any option, so a look
+        can paint beneath it or hand it changed colors.
+        """
         ...
 
     def draw_complex_control(
@@ -259,10 +260,12 @@ class LayoutStyle(QProxyStyle):
         widget: QWidget | None = None,
     ) -> None:
         if (presentation := LayoutStyle.presentation) is not None:
-            if presentation.draw_control(element, option, painter, widget):
+
+            def fusion(changed: QStyleOption) -> None:
+                QProxyStyle.drawControl(self, element, changed, painter, widget)
+
+            if presentation.draw_control(element, option, painter, widget, fusion):
                 return
-            if (changed := presentation.control_option(element, option, widget)) is not None:
-                option = changed
         super().drawControl(element, option, painter, widget)
 
     @override

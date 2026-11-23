@@ -633,7 +633,7 @@ class _ConfigMenuRow(QWidget):
     @override
     def paintEvent(self, _event: QPaintEvent) -> None:
         painter = QPainter(self)
-        draw_menu_item(painter, self._style_option(), self, rounded=glass.theme.active)
+        draw_menu_item(painter, self._style_option(), self)
 
     @override
     def enterEvent(self, event: QEnterEvent) -> None:

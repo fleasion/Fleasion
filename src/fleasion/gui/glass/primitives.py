@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QHeaderView,
+    QMenu,
     QPushButton,
     QStyle,
     QStyleOptionButton,
@@ -28,12 +29,15 @@ from .inputs import (
     spin_box_rect,
 )
 from .itemview import paint_item_focus
+from .menus import MENU_METRICS, menu_item_size, paint_menu_item, paint_menu_panel
 from .scrollbars import EXTENT, SLIDER_MIN, paint_scroll_bar, scroll_bar_rect
 from .sliders import HANDLE, paint_slider, slider_rect
 from .style import glass_colors
 from .tabs import FLAT_TAB_METRICS, paint_tab, tab_label_option
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from PySide6.QtCore import QRect, QSize
     from PySide6.QtWidgets import QStyleOption, QStyleOptionComplex, QWidget
 
@@ -237,6 +241,26 @@ def _button_label_option(option: QStyleOption, widget: QWidget | None) -> QStyle
 #
 
 
+def _label_option(
+    element: QStyle.ControlElement, option: QStyleOption, widget: QWidget | None
+) -> QStyleOption | None:
+    """A copy of a label's option with Glass text colors, or None to keep it."""
+    match element:
+        case _CE.CE_PushButtonLabel:
+            return _button_label_option(option, widget)
+        case _CE.CE_TabBarTabLabel:
+            return tab_label_option(option)
+        case _CE.CE_ComboBoxLabel if isinstance(option, QStyleOptionComboBox):
+            # A selector's value reads as input text, like the line edits beside it
+            changed = QStyleOptionComboBox(option)
+            palette = QPalette(option.palette)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+            palette.setColor(QPalette.ColorRole.ButtonText, palette.color(QPalette.ColorRole.Text))
+            changed.palette = palette  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+            return changed
+        case _:
+            return None
+
+
 class GlassPresentation:
     """The parts of Glass that the application style draws."""
 
@@ -265,6 +289,11 @@ class GlassPresentation:
             case _PE.PE_FrameTabWidget | _PE.PE_FrameTabBarBase:
                 # Tab pages and tab bars sit directly on the glass
                 pass
+            case _PE.PE_PanelMenu:
+                return paint_menu_panel(painter, option, widget)
+            case _PE.PE_FrameMenu if isinstance(widget, QMenu):
+                # The panel draws its own rim
+                pass
             case _:
                 return False
         return True
@@ -275,31 +304,25 @@ class GlassPresentation:
         option: QStyleOption,
         painter: QPainter,
         widget: QWidget | None,
+        fusion: Callable[[QStyleOption], None],
     ) -> bool:
-        if element == _CE.CE_TabBarTabShape:
-            return paint_tab(painter, option, widget)
-        return False
-
-    @staticmethod
-    def control_option(
-        element: QStyle.ControlElement, option: QStyleOption, widget: QWidget | None
-    ) -> QStyleOption | None:
         match element:
-            case _CE.CE_PushButtonLabel:
-                return _button_label_option(option, widget)
-            case _CE.CE_TabBarTabLabel:
-                return tab_label_option(option)
-            case _CE.CE_ComboBoxLabel if isinstance(option, QStyleOptionComboBox):
-                # A selector's value reads as input text, like the line edits beside it
-                changed = QStyleOptionComboBox(option)
-                palette = QPalette(option.palette)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-                palette.setColor(
-                    QPalette.ColorRole.ButtonText, palette.color(QPalette.ColorRole.Text)
-                )
-                changed.palette = palette  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-                return changed
+            case _CE.CE_TabBarTabShape:
+                return paint_tab(painter, option, widget)
+            case _CE.CE_MenuItem:
+                return paint_menu_item(painter, option, fusion)
+            case _CE.CE_MenuEmptyArea:
+                # The panel already covers the area around the items
+                return True
             case _:
-                return None
+                pass
+
+        # Otherwise Fusion draws the control, with Glass text colors where they differ
+        changed = _label_option(element, option, widget)
+        if changed is None:
+            return False
+        fusion(changed)
+        return True
 
     @staticmethod
     def draw_complex_control(
@@ -365,7 +388,8 @@ class GlassPresentation:
         widget: QWidget | None,
         result: QSize,
     ) -> QSize | None:
-        del option
+        if contents_type == QStyle.ContentsType.CT_MenuItem:
+            return menu_item_size(option, result)
         return input_size(contents_type, size, widget, result)
 
     @staticmethod
@@ -386,5 +410,7 @@ class GlassPresentation:
                 return HANDLE
             case _ if metric in FLAT_TAB_METRICS:
                 return 0
+            case _ if metric in MENU_METRICS:
+                return MENU_METRICS[metric]
             case _:
                 return None

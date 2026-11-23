@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final, override
 
-from PySide6.QtCore import QMargins, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen
+from PySide6.QtCore import QMargins, QRect, QSize, Qt
+from PySide6.QtGui import QIcon, QPainter, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -22,11 +22,8 @@ if TYPE_CHECKING:
 
 # Qt's own combo delegates, which the menu rows replace
 _NATIVE_DELEGATES: Final = frozenset({'QComboBoxDelegate', 'QComboMenuDelegate'})
-# Matches the padding of the Replacer's Editing menu, which Glass menus widen
+# Matches the padding of the Replacer's Editing menu; a style with wider menu margins wins
 _PADDING: Final = 2
-_GLASS_PADDING: Final = 5
-# Matches the rounding of Glass menu items
-_GLASS_RADIUS: Final = 7
 # Combo rows have no status icons, so their text starts near the edge of the highlight
 _TEXT_PADDING: Final = 8
 _ICON_GAP: Final = 6
@@ -48,28 +45,8 @@ def plain_style() -> QStyle:
     return style
 
 
-def _paint_rounded_highlight(painter: QPainter, option: QStyleOptionMenuItem) -> None:
-    """Paint the selection with rounded corners and hide the style's square one."""
-    palette = QPalette(option.palette)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-    highlight = palette.highlight().color()
-    painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    # The same fill and darker outline the style uses, inside a half-pixel inset
-    painter.setPen(QPen(highlight.darker(125), 1.0))
-    painter.setBrush(highlight)
-    rect = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-    painter.drawRoundedRect(rect, _GLASS_RADIUS, _GLASS_RADIUS)
-    painter.restore()
-    palette.setColor(QPalette.ColorRole.Highlight, QColor(Qt.GlobalColor.transparent))
-    option.palette = palette  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-
-
-def draw_menu_item(
-    painter: QPainter, option: QStyleOptionMenuItem, widget: QWidget | None, *, rounded: bool
-) -> None:
-    """Draw one menu row; Glass rounds the selection like its menu items."""
-    if rounded and option.state & QStyle.StateFlag.State_Selected:  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-        _paint_rounded_highlight(painter, option)
+def draw_menu_item(painter: QPainter, option: QStyleOptionMenuItem, widget: QWidget | None) -> None:
+    """Draw one menu row exactly as the style draws the rows of a QMenu."""
     plain_style().drawControl(QStyle.ControlElement.CE_MenuItem, option, painter, widget)
 
 
@@ -77,31 +54,28 @@ class MenuItemDelegate(QStyledItemDelegate):
     """Paint popup rows with the style's menu items, like every other dropdown menu."""
 
     @staticmethod
-    def _glass(widget: QWidget | None) -> bool:
-        # Glass gives the popup window its own stylesheet and surface
-        return widget is not None and bool(widget.window().styleSheet())
-
-    @staticmethod
-    def _insets(index: QModelIndex | QPersistentModelIndex, *, glass: bool) -> tuple[int, int, int]:
+    def _insets(
+        index: QModelIndex | QPersistentModelIndex, widget: QWidget | None
+    ) -> tuple[int, int, int]:
         """Return the side, top, and bottom padding; only the outer rows pad vertically.
 
         The rows carry the popup padding because a scroll area paints its own
         padding apart from the viewport, leaving a visible band in Glass
         """
-        padding = _GLASS_PADDING if glass else _PADDING
+        margin = plain_style().pixelMetric(QStyle.PixelMetric.PM_MenuVMargin, None, widget)
+        padding = max(_PADDING, margin)
         top = padding if index.row() == 0 else 0
         bottom = padding if index.row() == index.model().rowCount(index.parent()) - 1 else 0
         return padding, top, bottom
 
     @staticmethod
     def _menu_option(
-        option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex, *, glass: bool
+        option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
     ) -> QStyleOptionMenuItem:
         menu_option = QStyleOptionMenuItem()
         menu_option.rect = option.rect  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
         menu_option.menuRect = option.rect
-        # Glass tints list selections; menu rows keep the solid application colors
-        palette = QPalette(QApplication.palette() if glass else option.palette)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+        palette = QPalette(option.palette)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
         menu_option.direction = option.direction  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
         menu_option.font = option.font
         menu_option.fontMetrics = option.fontMetrics  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
@@ -185,15 +159,15 @@ class MenuItemDelegate(QStyledItemDelegate):
         index: QModelIndex | QPersistentModelIndex,
     ) -> None:
         widget = option.widget  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-        glass = self._glass(widget)
-        if not glass:
-            # Menus sit on the window color rather than the list's input color
-            painter.fillRect(option.rect, option.palette.window())  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-        menu_option = self._menu_option(option, index, glass=glass)
-        side, top, bottom = self._insets(index, glass=glass)
+
+        # Menus sit on the window color rather than the list's input color; Glass
+        # makes Window transparent, so its popup surface shows through
+        painter.fillRect(option.rect, option.palette.window())  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+        menu_option = self._menu_option(option, index)
+        side, top, bottom = self._insets(index, widget)
         menu_option.rect = option.rect.adjusted(side, top, -side, -bottom)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
         menu_option.menuRect = menu_option.rect
-        draw_menu_item(painter, menu_option, widget, rounded=glass)
+        draw_menu_item(painter, menu_option, widget)
         if menu_option.menuItemType == QStyleOptionMenuItem.MenuItemType.Normal:
             self._draw_label(painter, option, menu_option, index)
 
@@ -202,8 +176,7 @@ class MenuItemDelegate(QStyledItemDelegate):
         self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
     ) -> QSize:
         widget = option.widget  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-        glass = self._glass(widget)
-        menu_option = self._menu_option(option, index, glass=glass)
+        menu_option = self._menu_option(option, index)
         size = plain_style().sizeFromContents(
             QStyle.ContentsType.CT_MenuItem, menu_option, QSize(0, 0), widget
         )
@@ -214,7 +187,7 @@ class MenuItemDelegate(QStyledItemDelegate):
                 width += option.decorationSize.width() + _ICON_GAP
             # Match the height of the other dropdown menu rows
             size = QSize(width, max(size.height(), CONTROL_HEIGHT))
-        side, top, bottom = self._insets(index, glass=glass)
+        side, top, bottom = self._insets(index, widget)
         return size.grownBy(QMargins(side, top, side, bottom))
 
 

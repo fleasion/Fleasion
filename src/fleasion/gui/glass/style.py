@@ -315,14 +315,6 @@ QTreeView { show-decoration-selected: 0; }
 #PaletteCard QLineEdit { font-size: 13pt; padding: 9px 14px; border-radius: 12px; }
 #PaletteHint { color: $muted; font-size: 8.5pt; }
 
-QMenu {
-    background: rgba($popup_rgb,0.97); border: 1px solid rgba($ink_rgb,0.14);
-    border-top-color: rgba($ink_rgb,0.18); border-radius: 12px; padding: 5px;
-}
-QMenu::item { padding: 6px 22px; border-radius: 7px; }
-QMenu::item:selected { background: rgba($accent_rgb,0.30); }
-QMenu::separator { height: 1px; background: rgba($ink_rgb,0.10); margin: 4px 8px; }
-QMenuBar { background: transparent; }
 QSplitter::handle { background: rgba($ink_rgb,0.08); }
 """)
 
