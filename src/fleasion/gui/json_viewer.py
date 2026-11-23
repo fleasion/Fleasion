@@ -39,6 +39,11 @@ from PySide6.QtWidgets import (
 lazy import requests as _requests
 lazy from PIL import Image, UnidentifiedImageError
 
+from fleasion.cache.preview_loaders import (
+    ImageLoaderThread,
+    MeshLoaderThread,
+    SolidModelLoaderThread,
+)
 from fleasion.cache.rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from fleasion.localization import tr, tr_count
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
@@ -50,12 +55,7 @@ lazy from fleasion.cache.animation_viewer import AnimationViewerPanel
 lazy from fleasion.cache.audio_player import AudioPlayerWidget
 lazy from fleasion.cache.cache_json_viewer import CacheJsonViewer
 lazy from fleasion.cache.font_viewer import FontViewerWidget
-lazy from fleasion.cache.mesh_processing import convert
 lazy from fleasion.cache.obj_viewer import ObjViewerPanel
-lazy from fleasion.cache.tools.solidmodel_converter.converter import (
-    deserialize_rbxm,
-    export_obj_from_doc,
-)
 lazy from fleasion.proxy.addons.cache_scraper import (
     CREATOR_GAME_MAX_SCAN,
     CREATOR_GAME_PAGE_LIMITS,
@@ -443,116 +443,6 @@ class AssetFetcherThread(QThread):
         ) as exc:
             if not self._stop_requested:
                 self.error.emit(str(exc))
-
-
-def _decode_image_rgba(data: bytes) -> tuple[bytes, int, int]:
-    image = Image.open(io.BytesIO(data))
-    if image.mode != 'RGBA':
-        image = image.convert('RGBA')
-    return image.tobytes(), image.width, image.height
-
-
-def _mesh_obj_content(data: bytes) -> str | None:
-    working = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
-    return convert(working)
-
-
-def _solid_model_obj_content(data: bytes) -> str:
-    working = gzip_module.decompress(data) if data.startswith(b'\x1f\x8b') else data
-    doc = deserialize_rbxm(working)
-    with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as file:
-        temp_obj_path = Path(file.name)
-    try:
-        export_obj_from_doc(doc, temp_obj_path, decompose=False)
-        return temp_obj_path.read_text(encoding='utf-8')
-    finally:
-        try:
-            temp_obj_path.unlink()
-        except FileNotFoundError:
-            pass
-
-
-class ImageLoaderThread(QThread):
-    """Decode image bytes in a background thread."""
-
-    image_ready = Signal(bytes, int, int)
-    error = Signal(str)
-
-    def __init__(self, data: bytes) -> None:
-        super().__init__()
-        self.data = data
-        self._stop_requested = False
-
-    def stop(self) -> None:
-        self._stop_requested = True
-
-    def run(self) -> None:
-        try:
-            rgba, width, height = _decode_image_rgba(self.data)
-        except (OSError, RuntimeError, TypeError, ValueError, UnidentifiedImageError) as exc:
-            if not self._stop_requested:
-                self.error.emit(str(exc))
-            return
-        if not self._stop_requested:
-            self.image_ready.emit(rgba, width, height)
-
-
-class MeshLoaderThread(QThread):
-    """Convert raw mesh bytes to OBJ string in a background thread."""
-
-    mesh_ready = Signal(str)
-    error = Signal(str)
-
-    def __init__(self, data: bytes) -> None:
-        super().__init__()
-        self.data = data
-        self._stop_requested = False
-
-    def stop(self) -> None:
-        self._stop_requested = True
-
-    def run(self) -> None:
-        try:
-            obj_content = _mesh_obj_content(self.data)
-        except (EOFError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            if not self._stop_requested:
-                self.error.emit(str(exc))
-            return
-        if self._stop_requested:
-            return
-        if obj_content:
-            self.mesh_ready.emit(obj_content)
-        else:
-            self.error.emit(tr('json.preview.mesh_conversion_failed'))
-
-
-class SolidModelLoaderThread(QThread):
-    """Convert raw SolidModel (CSG) bytes to OBJ string in a background thread."""
-
-    mesh_ready = Signal(str)
-    error = Signal(str)
-
-    def __init__(self, data: bytes) -> None:
-        super().__init__()
-        self.data = data
-        self._stop_requested = False
-
-    def stop(self) -> None:
-        self._stop_requested = True
-
-    def run(self) -> None:
-        try:
-            obj_content = _solid_model_obj_content(self.data)
-        except (ImportError, OSError, RuntimeError, TypeError, UnicodeError, ValueError) as exc:
-            if not self._stop_requested:
-                self.error.emit(str(exc))
-            return
-        if self._stop_requested:
-            return
-        if obj_content:
-            self.mesh_ready.emit(obj_content)
-        else:
-            self.error.emit(tr('json.preview.solidmodel_conversion_failed'))
 
 
 class JsonTreeViewer(QDialog):
