@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Final, override
 
 from PySide6.QtCore import (
     Property,
+    QCoreApplication,
     QEasingCurve,
     QEvent,
     QObject,
@@ -238,6 +239,12 @@ class _TabFade(QWidget):
         # its backdrop on the window, so a page-only grab retains transparency
         # and produces a visible jump when the temporary frame disappears
         window = page.window()
+
+        # A page shown for the first time finishes settling in posted events: its
+        # layout, and the scroll bars its scroll areas show or hide through queued
+        # calls. Capture it settled, or the frame shows bars the page then drops
+        QCoreApplication.sendPostedEvents()
+
         frame_rect = QRect(page.mapTo(window, QPoint()), page.size())
         self._frame: QPixmap = window.grab(frame_rect)
         self._opacity = 0.0

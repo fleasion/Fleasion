@@ -109,3 +109,46 @@ def test_rapid_tab_switches_restore_full_page_pixels(app: QApplication) -> None:
         tabs.close()
         tabs.deleteLater()
         app.processEvents()
+
+
+def test_first_visit_frame_shows_the_page_settled(app: QApplication) -> None:
+    """A page built while hidden is captured after its scroll areas have settled.
+
+    Hidden pages keep a small default size, so a scroll area inside one needs
+    a horizontal bar that it drops through a queued call once the page is
+    shown at full size. The frame must not show that passing bar.
+    """
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout
+
+    tabs = QTabWidget()
+    tabs.addTab(QWidget(), 'First')
+    tabs.resize(500, 340)
+    command_palette.fade_tabs(tabs)
+    tabs.show()
+    app.processEvents()
+
+    # Built and added while another tab is showing, as the dashboard preloads its tabs
+    page = QWidget()
+    area = QScrollArea(page)
+    area.setWidgetResizable(True)
+    content = QLabel('Contents')
+    content.setMinimumWidth(300)
+    area.setWidget(content)
+    QVBoxLayout(page).addWidget(area)
+    tabs.addTab(page, 'Second')
+    app.processEvents()
+    try:
+        tabs.setCurrentIndex(1)
+        frame = tabs.findChild(command_palette._TabFade)  # pyright: ignore[reportPrivateUsage]
+        assert frame is not None
+        captured = frame._frame.toImage()  # pyright: ignore[reportPrivateUsage]
+        _finish_fade(tabs)
+        QTest.qWait(50)
+
+        assert not area.horizontalScrollBar().isVisible()
+        settled = tabs.grab(QRect(page.mapTo(tabs, QPoint()), page.size())).toImage()
+        assert captured.size() == settled.size()
+        assert captured == settled
+    finally:
+        tabs.close()
