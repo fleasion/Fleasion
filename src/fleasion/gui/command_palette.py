@@ -40,8 +40,10 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from fleasion.localization import tr
+from fleasion.widgets.text import style_text
 
 from . import glass
+from .glass.style import glass_colors
 from .theme import ThemeManager
 
 if TYPE_CHECKING:
@@ -56,8 +58,8 @@ _LENGTH_PENALTY_EVERY: Final = 12
 _FADE_MS: Final = 140
 _TAB_FADE_MS: Final = 180
 _SHADOW_MARGIN: Final = 24
-# Used when the Glass theme (which styles the card itself) is not active
-_FALLBACK_STYLE: Final = """
+# The card, its search field and result rows, as Fusion draws them
+_FUSION_STYLE: Final = """
 #PaletteCard { background: palette(window); border-radius: 16px;
                border: 1px solid palette(mid); }
 #PaletteCard QWidget { color: palette(window-text); }
@@ -67,7 +69,28 @@ _FALLBACK_STYLE: Final = """
 #PaletteCard QListWidget { background: transparent; border: 0; }
 #PaletteCard QListWidget::item { padding: 8px 10px; border-radius: 8px; }
 #PaletteCard QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }
-#PaletteHint { font-size: 8.5pt; }
+"""
+
+
+def _glass_style() -> str:
+    """The card as a near-opaque Glass popup, with tinted result rows."""
+    colors = glass_colors()
+
+    def rgba(color: QColor, alpha: float) -> str:
+        return f'rgba({color.red()},{color.green()},{color.blue()},{alpha})'
+
+    return f"""
+#PaletteCard {{
+    background: {rgba(colors.popup, 0.97)};
+    border: 1px solid {rgba(colors.ink, 0.12)}; border-top-color: {rgba(colors.ink, 0.18)};
+    border-radius: 18px;
+}}
+#PaletteCard QListWidget {{ background: transparent; border: 0; }}
+#PaletteCard QListWidget::item {{ padding: 8px 10px; border-radius: 10px; }}
+#PaletteCard QListWidget::item:selected {{
+    background: {rgba(colors.accent, 0.28)}; color: {colors.text.name()};
+}}
+#PaletteCard QLineEdit {{ font-size: 13pt; padding: 9px 14px; border-radius: 12px; }}
 """
 
 
@@ -135,7 +158,7 @@ class CommandPalette(QDialog):
         self.results = QListWidget()
         self.results.itemActivated.connect(self._run_item)
         hint = QLabel(tr('ui.gui.command_palette.hint'))
-        hint.setObjectName('PaletteHint')
+        style_text(hint, tone='muted', point_size=8.5)
 
         inner = QVBoxLayout(card)
         inner.setContentsMargins(14, 14, 14, 10)
@@ -151,8 +174,7 @@ class CommandPalette(QDialog):
 
     def _refresh_theme(self) -> None:
         active = glass.theme.active
-        stylesheet = '' if active else _FALLBACK_STYLE
-        self.setStyleSheet(stylesheet)
+        self.setStyleSheet(_glass_style() if active else _FUSION_STYLE)
         # Compositor blur covers the popup rect; Glass omits the shadow margin
         margin = 0 if active else _SHADOW_MARGIN
         self._outer.setContentsMargins(margin, margin, margin, margin)

@@ -176,17 +176,6 @@ QComboBox QAbstractItemView {
     border-radius: 12px; padding: 0;
 }
 
-#PaletteCard {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba($popup_rgb,0.97), stop:1 rgba($popup_rgb,0.97));
-    border: 1px solid rgba($ink_rgb,0.12); border-top-color: rgba($ink_rgb,0.18);
-    border-radius: 18px;
-}
-#PaletteCard QListWidget { background: transparent; border: 0; }
-#PaletteCard QListWidget::item { padding: 8px 10px; border-radius: 10px; }
-#PaletteCard QListWidget::item:selected { background: rgba($accent_rgb,0.28); color: $text; }
-#PaletteCard QLineEdit { font-size: 13pt; padding: 9px 14px; border-radius: 12px; }
-#PaletteHint { color: $muted; font-size: 8.5pt; }
 
 """)
 

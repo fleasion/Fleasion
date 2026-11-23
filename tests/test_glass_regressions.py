@@ -388,7 +388,8 @@ def test_palette_style_tracks_theme_changes(app: QApplication, initial: str) -> 
             palette.popup()
             app.processEvents()
             assert contrast(palette.results.palette().text().color(), app.palette().window().color()) >= 4.5
-            assert bool(palette.styleSheet()) == (theme != 'Glass')
+            # The card switches between its Glass popup and its Fusion look
+            assert ('border-radius: 18px' in palette.styleSheet()) == (theme == 'Glass')
             palette.close()
     finally:
         parent.deleteLater()
