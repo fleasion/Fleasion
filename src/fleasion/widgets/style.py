@@ -308,14 +308,6 @@ class LayoutStyle(QProxyStyle):
         """Fusion sizes with the control heights both presentations share."""
         result = super().sizeFromContents(contents_type, option, size, widget)  # pyright: ignore[reportArgumentType] - Qt accepts a null widget
         if (
-            contents_type == QStyle.ContentsType.CT_SpinBox
-            and widget is not None
-            and widget.testAttribute(Qt.WidgetAttribute.WA_StyleSheetTarget)
-        ):
-            # QSS adds its own padding around the spin box's content size
-            result.setHeight(size.height())
-            return result
-        if (
             contents_type == QStyle.ContentsType.CT_LineEdit
             and widget is not None
             and isinstance(widget.parentWidget(), QAbstractSpinBox | QComboBox)
