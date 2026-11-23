@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import chain, combinations
-from typing import TYPE_CHECKING, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Final, Literal, Protocol, override
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -34,9 +35,12 @@ from fleasion.config.manager import (
     replacement_rule_claims,
 )
 from fleasion.localization import tr
+from fleasion.widgets.text import tone_color
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from PySide6.QtGui import QPaintEvent
 
     from fleasion.config.types import ReplacementMode as Mode, ReplacementsSignature as Signature
     from fleasion.utils.json_types import JsonObject as Rule
@@ -45,6 +49,7 @@ type AnimationRig = Literal['R6', 'R15', 'unknown']
 
 _RANK: Final[dict[Mode, int]] = {'remove': 0, 'id': 1, 'cdn': 2, 'local': 3}
 _REFRESH_MS: Final = 1500
+_BADGE_RADIUS: Final = 8.0
 
 
 class RuleSource(Protocol):
@@ -294,12 +299,16 @@ class ConflictsDialog(QDialog):
 
 
 class ConflictBadge(QPushButton):
-    """Footer pill that live-updates as configs are toggled or edited."""
+    """Footer pill that live-updates as configs are toggled or edited.
+
+    It paints itself in the warning or success tone, in every theme.
+    """
 
     def __init__(self, source: RuleSource, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName('ConflictBadge')
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self._source = source
+        self._clean = True
         self._signature: Signature | None = None
         self.conflicts: list[Conflict] = []
         self.clicked.connect(self.show_dialog)
@@ -329,10 +338,29 @@ class ConflictBadge(QPushButton):
         else:
             label = tr('ui.gui.conflicts.badge_none')
         self.setText(label)
-        self.setProperty('clean', not (exact or potential))
-        style = self.style()
-        style.unpolish(self)
-        style.polish(self)
+        self._clean = not (exact or potential)
+        self.update()
+
+    @override
+    def paintEvent(self, _event: QPaintEvent, /) -> None:
+        tone = tone_color('success' if self._clean else 'warning', self.palette())
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+
+        def tint(alpha: float) -> QColor:
+            color = QColor(tone)
+            color.setAlphaF(alpha)
+            return color
+
+        # A tinted pill that brightens under the pointer
+        lift = 0.06 if self.underMouse() or self.isDown() else 0.0
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(tint(0.45), 1.0))
+        painter.setBrush(tint((0.12 if self._clean else 0.16) + lift))
+        painter.drawRoundedRect(rect, _BADGE_RADIUS, _BADGE_RADIUS)
+        painter.setPen(tone)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.text())
+        painter.end()
 
     def show_dialog(self) -> None:
         self.refresh(force=True)

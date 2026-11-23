@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Final
 from PySide6.QtGui import QColor, QPalette
 
 from fleasion.appearance.colors import accent_color, apply_accent, on_accent
-from fleasion.widgets.spacing import CONTROL_PADDING
 
 from .state import state
 
@@ -174,17 +173,6 @@ QScrollArea#SubplaceResultsScroll {
     border-radius: 10px;
 }
 
-/* The badge keeps a tinted pill; other buttons are drawn by the style */
-QPushButton#ConflictBadge {
-    border-radius: 8px; padding: ${control_padding}px 10px;
-    background: rgba(255,190,69,0.16); border: 1px solid rgba(255,190,69,0.50);
-    border-top-color: rgba(255,230,170,0.75); color: $warning;
-}
-QPushButton#ConflictBadge[clean="true"] {
-    background: rgba(79,224,166,0.12); border: 1px solid rgba(79,224,166,0.40);
-    border-top-color: rgba(190,255,225,0.6); color: $success;
-}
-
 /* Text edits keep style-sheet wells until item views move to the style */
 QTextEdit, QPlainTextEdit {
     color: $input_text;
@@ -228,14 +216,11 @@ def stylesheet(settings: GlassSettings) -> str:
         'accent_rgb': _rgb(colors.accent.name()),
         'accent': colors.accent.name(),
         'accent_text': colors.accent_text.name(),
-        'warning': '#ffd98a' if state.dark else '#805500',
-        'success': '#9ff5cf' if state.dark else '#16613f',
     }
 
     return _STYLESHEET.substitute(
         **values,
         radius=RADIUS,
-        control_padding=CONTROL_PADDING,
         pane=Template(_PANE).substitute(values),
         pane_hover=Template(_PANE_HOVER).substitute(values),
         rim=Template(_RIM).substitute(values),
