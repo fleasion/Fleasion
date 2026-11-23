@@ -1069,8 +1069,6 @@ class SystemTray:
             tr('app.linux_client.mismatch.open_settings'), QMessageBox.ButtonRole.ActionRole
         )
         dialog.addButton(tr('app.common.not_now'), QMessageBox.ButtonRole.RejectRole)
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
 
         def on_button_clicked(button: QAbstractButton) -> None:
             if button is open_settings:
@@ -1269,8 +1267,6 @@ class SystemTray:
         msg_box.setText(tr('ui.tray.discord_invite_copied_2'))
         msg_box.setInformativeText(tr('ui.tray.https_value', value0=APP_DISCORD))
         msg_box.setIcon(QMessageBox.Icon.Information)
-        if icon_path := get_icon_path():
-            msg_box.setWindowIcon(QIcon(str(icon_path)))
         msg_box.exec()
 
     def _open_kofi(self) -> None:

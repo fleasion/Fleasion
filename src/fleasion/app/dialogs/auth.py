@@ -9,7 +9,6 @@ from pathlib import PureWindowsPath
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -34,7 +33,6 @@ from fleasion.app.error_details import (
 from fleasion.localization import tr
 from fleasion.utils import (
     APP_DISCORD,
-    get_icon_path,
     launch_as_standard_user,
     log_buffer,
     run_in_thread,
@@ -148,8 +146,6 @@ def choose_macos_auth_source_on_launch(
         msg.setInformativeText(message)
         exit_button = msg.addButton(tr('app.exit_fleasion'), QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton(QMessageBox.StandardButton.Ok)
-        if icon_path := get_icon_path():
-            msg.setWindowIcon(QIcon(str(icon_path)))
         msg.exec()
         if msg.clickedButton() == exit_button:
             quit_after_modal_closes(dialog, tray, selected)
@@ -227,8 +223,6 @@ def choose_macos_auth_source_on_launch(
     def _manual_import() -> None:
         dlg = AddAccountDialog(dialog, title=tr('app.auth_source.import_title'))
         dlg.set_ok_label(tr('app.auth_source.import_button'))
-        if icon_path := get_icon_path():
-            dlg.setWindowIcon(QIcon(str(icon_path)))
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result_cookie:
             return
         valid, detail = roblox_auth.validate_roblosecurity_for_import(dlg.result_cookie)
@@ -256,9 +250,6 @@ def choose_macos_auth_source_on_launch(
     manual_btn.clicked.connect(_manual_import)
     skip_btn.clicked.connect(_continue_without_token)
     exit_btn.clicked.connect(_exit_from_auth_prompt)
-
-    if icon_path := get_icon_path():
-        dialog.setWindowIcon(QIcon(str(icon_path)))
 
     dialog.exec()
     if selected_browser := selected.get('browser'):
@@ -416,9 +407,6 @@ def show_auth_cookie_unavailable_dialog(
         open_login_button = None
         exit_button = msg.addButton(tr('app.exit_fleasion'), QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton(QMessageBox.StandardButton.Ok)
-
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
 
     for label in msg.findChildren(QLabel):
         label.setTextInteractionFlags(

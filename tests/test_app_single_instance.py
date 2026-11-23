@@ -768,7 +768,6 @@ def test_run_on_boot_failure_can_launch_one_time_admin_repair(
 
     relaunches: list[dict[str, object]] = []
     monkeypatch.setattr(dialogs_startup_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(dialogs_startup_module, 'get_icon_path', lambda: None)
     monkeypatch.setattr(
         dialogs_startup_module, 'relaunch_as_admin',
         _kwargs_callback(lambda **kwargs: relaunches.append(kwargs) or True),
@@ -823,7 +822,6 @@ def test_nonwindows_run_on_boot_failure_never_offers_admin_repair(
 
     monkeypatch.setattr(dialogs_startup_module.sys, 'platform', 'darwin')
     monkeypatch.setattr(dialogs_startup_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(dialogs_startup_module, 'get_icon_path', lambda: None)
     monkeypatch.setattr(
         dialogs_startup_module, 'relaunch_as_admin',
         _kwargs_callback(lambda **_kwargs: calls.append(('relaunch', True))),
@@ -1169,7 +1167,6 @@ def test_roblox_permission_prompt_requests_targeted_elevation(
             return self._clicked
 
     monkeypatch.setattr(dialogs_permissions_module, 'QMessageBox', _MessageBox)
-    monkeypatch.setattr(dialogs_permissions_module, 'get_icon_path', lambda: None)
     monkeypatch.setattr(dialogs_permissions_module, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(
         dialogs_permissions_module, 'relaunch_as_admin',

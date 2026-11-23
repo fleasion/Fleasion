@@ -1,7 +1,6 @@
 """About window."""
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
 
 from fleasion.localization import tr
@@ -12,7 +11,6 @@ from fleasion.utils import (
     APP_NAME,
     APP_REPO,
     APP_VERSION,
-    get_icon_path,
 )
 from fleasion.widgets.text import style_text
 
@@ -30,11 +28,6 @@ class AboutWindow(QDialog):
             | Qt.WindowType.WindowCloseButtonHint
         )
         self._setup_ui()
-        self._set_icon()
-
-    def _set_icon(self) -> None:
-        if icon_path := get_icon_path():
-            self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout()

@@ -17,7 +17,6 @@ from PySide6.QtCore import QObject, QPoint, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QFont,
-    QIcon,
     QImage,
     QMouseEvent,
     QPalette,
@@ -44,7 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr
-from fleasion.utils import CLOG_URL, ORIGINALS_DIR, PREJSONS_DIR, REPLACEMENTS_DIR, get_icon_path
+from fleasion.utils import CLOG_URL, ORIGINALS_DIR, PREJSONS_DIR, REPLACEMENTS_DIR
 from fleasion.utils.http import http_get
 from fleasion.utils.json_types import (
     JsonValue,
@@ -709,15 +708,10 @@ class PreJsonsDialog(QDialog):
         self._last_cols = 0
 
         self._setup_ui()
-        self._set_icon()
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._shutdown_workers)
         self._start_load()
-
-    def _set_icon(self) -> None:
-        if path := get_icon_path():
-            self.setWindowIcon(QIcon(str(path)))
 
     def _setup_ui(self) -> None:
         root = QVBoxLayout()

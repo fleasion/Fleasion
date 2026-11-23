@@ -49,7 +49,6 @@ from PySide6.QtGui import (
     QCloseEvent,
     QCursor,
     QFontDatabase,
-    QIcon,
     QImage,
     QKeyEvent,
     QMouseEvent,
@@ -84,7 +83,7 @@ lazy import requests
 lazy from PIL import Image
 
 from fleasion.localization import tr, tr_count
-from fleasion.utils import format_count, get_icon_path, log_buffer, open_folder
+from fleasion.utils import format_count, log_buffer, open_folder
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.json_types import JsonValue
@@ -6168,8 +6167,6 @@ class CacheViewerTab(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.cache.cache_viewer.blacklist_ids_2'))
         dialog.resize(400, 350)
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout()
 
@@ -6283,8 +6280,6 @@ class CacheViewerTab(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.cache.cache_viewer.load_assets'))
         dialog.resize(400, 350)
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout()
 

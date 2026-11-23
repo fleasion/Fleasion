@@ -6,7 +6,6 @@ import sys
 from typing import TYPE_CHECKING, cast, override
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -22,7 +21,6 @@ from PySide6.QtWidgets import (
 
 from fleasion.localization import tr
 from fleasion.utils import (
-    get_icon_path,
     log_buffer,
 )
 
@@ -216,6 +214,4 @@ def show_admin_required_dialog(parent: QWidget | None = None) -> None:
         msg.setText(tr('app.fleasion_won_t_work_unless_you_re'))
         msg.setInformativeText(tr('app.windows_did_not_start_fleasion_with_administrator'))
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()

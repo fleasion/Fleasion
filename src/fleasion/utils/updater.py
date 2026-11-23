@@ -6,13 +6,11 @@ import threading
 import webbrowser
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from fleasion.localization import tr
 
 from .metadata import APP_REPO, APP_VERSION
-from .paths import get_icon_path
 from .update_resolver import UpdateResolver
 
 
@@ -61,9 +59,6 @@ def _show_update_dialog(tag: str, html_url: str) -> None:
     if stays_on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     dialog.setWindowTitle(tr('ui.utils.updater.update_available'))
-
-    if icon_path := get_icon_path():
-        dialog.setWindowIcon(QIcon(str(icon_path)))
 
     main_layout = QVBoxLayout(dialog)
     label = QLabel(

@@ -11,7 +11,6 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontDatabase,
-    QIcon,
     QKeySequence,
     QShortcut,
     QShowEvent,
@@ -30,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr
-from fleasion.utils import LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
+from fleasion.utils import LOGS_DIR, log_buffer, open_folder, time_tracker
 from fleasion.utils.macos_proxy_helper import HELPER_LOG_DIR
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
 from fleasion.widgets.text import style_text
@@ -53,12 +52,7 @@ class LogsWindow(QDialog):
 
         self._last_count = 0
         self._setup_ui()
-        self._set_icon()
         self._start_updates()
-
-    def _set_icon(self) -> None:
-        if icon_path := get_icon_path():
-            self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout()

@@ -84,7 +84,7 @@ from fleasion.config.manager import (
 from fleasion.config.rules import is_group_rule, is_profile_rule, is_rule_entry as _is_rule_entry
 from fleasion.gui.appearance_controls import choice_label
 from fleasion.localization import tr, tr_count
-from fleasion.utils import format_count, get_icon_path, log_buffer, macos_rosemary_gate, open_folder
+from fleasion.utils import format_count, log_buffer, macos_rosemary_gate, open_folder
 from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.http import http_head_status
 from fleasion.utils.json_types import as_object_list, require_json_value
@@ -860,7 +860,6 @@ class ReplacerConfigWindow(QDialog):
         glass.theme.prepare(self)
 
         self._setup_ui()
-        self._set_icon()
         self._refresh_tree()
 
         # Restore geometry
@@ -927,11 +926,6 @@ class ReplacerConfigWindow(QDialog):
             ):
                 self.proxy_master.unregister_module_interceptor(module)
         self._registered_module_interceptors = []
-
-    def _set_icon(self) -> None:
-        """Set window icon."""
-        if icon_path := get_icon_path():
-            self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self) -> None:
         """Setup the UI with tabs."""
@@ -2593,8 +2587,6 @@ class ReplacerConfigWindow(QDialog):
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.gui.replacer_config.asset_ids_value', value0=name))
         dialog.resize(400, 350)
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout()
 
@@ -2759,8 +2751,6 @@ class ReplacerConfigWindow(QDialog):
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.gui.replacer_config.edit_replacement'))
         dialog.resize(400, 100)
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout()
         label = QLabel(tr('ui.gui.replacer_config.replacement_id_url_file_path_or_empty'))
@@ -2874,8 +2864,6 @@ class ReplacerConfigWindow(QDialog):
 
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.gui.replacer_config.filters_title'))
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
         layout = QVBoxLayout(dialog)
         help_label = QLabel(tr('ui.gui.replacer_config.filters_help'))
         help_label.setWordWrap(True)

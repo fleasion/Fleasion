@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from defusedxml import ElementTree as DefusedElementTree, minidom as defused_minidom
 from defusedxml.common import DefusedXmlException
 from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QIcon, QImage, QKeyEvent, QPixmap, QResizeEvent
+from PySide6.QtGui import QCloseEvent, QImage, QKeyEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -41,7 +41,6 @@ lazy from PIL import Image, UnidentifiedImageError
 
 from fleasion.cache.rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from fleasion.localization import tr, tr_count
-from fleasion.utils import get_icon_path
 from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 from fleasion.utils.json_types import JsonValue, require_object_dict, require_object_list
 from fleasion.widgets.image_preview import ImagePreviewLabel
@@ -616,12 +615,6 @@ class JsonTreeViewer(QDialog):
 
         self._setup_ui()
         self._populate_tree()
-        self._set_icon()
-
-    def _set_icon(self) -> None:
-        """Set window icon."""
-        if icon_path := get_icon_path():
-            self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self) -> None:
         """Setup the UI."""

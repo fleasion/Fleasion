@@ -6,7 +6,6 @@ import sys
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -31,7 +30,6 @@ from fleasion.localization import (
 )
 from fleasion.utils import (
     CONFIG_DIR,
-    get_icon_path,
     log_buffer,
 )
 lazy from fleasion.utils import autostart, desktop_integration, platform_linux
@@ -126,8 +124,6 @@ def show_run_on_boot_failure(
             msg.setText(tr('app.fleasion_could_not_remove_its_legacy_run'))
     else:
         msg.setText(tr('app.failed_to_register_autostart_check_the_application'))
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
 
     repair_button = None
     if sys.platform == 'win32':
@@ -188,8 +184,6 @@ def show_desktop_integration_failure(parent: QWidget | None) -> None:
     msg.setWindowTitle(tr('app.desktop_integration_failed'))
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(tr('app.failed_to_create_desktop_start_menu_integration'))
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()
 
 
@@ -206,8 +200,6 @@ def prompt_first_time_language(config_manager: ConfigManager) -> None:
     dialog.setWindowTitle(tr('language.picker.title'))
     if on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    if icon_path := get_icon_path():
-        dialog.setWindowIcon(QIcon(str(icon_path)))
 
     layout = QVBoxLayout(dialog)
     prompt = QLabel(tr('language.picker.prompt'), dialog)
@@ -257,8 +249,6 @@ def prompt_first_time_startup_options(
     dialog.setWindowTitle(tr('app.startup_integration'))
     if on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    if icon_path := get_icon_path():
-        dialog.setWindowIcon(QIcon(str(icon_path)))
 
     layout = QVBoxLayout(dialog)
     label = QLabel(dialog)
@@ -409,8 +399,6 @@ def complete_first_time_setup(config_manager: ConfigManager, tray: SystemTray) -
 
     countdown_timer.timeout.connect(_update_welcome_countdown)
     countdown_timer.start()
-    if icon_path := get_icon_path():
-        welcome_box.setWindowIcon(QIcon(str(icon_path)))
     welcome_box.exec()
     prompt_first_linux_client_choice(config_manager, tray)
     prompt_first_time_startup_options(config_manager, tray)

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QMessageBox,
     QWidget,
@@ -29,7 +28,6 @@ from fleasion.localization import tr
 from fleasion.utils import (
     APP_DISCORD,
     CONFIG_DIR,
-    get_icon_path,
     log_buffer,
     run_in_thread,
 )
@@ -77,8 +75,6 @@ def show_roblox_permission_failure(
             value1=listed_paths,
         )
     )
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
 
     grant_button = msg.addButton(
         tr('app.grant_access_for_this_windows_user'), QMessageBox.ButtonRole.AcceptRole

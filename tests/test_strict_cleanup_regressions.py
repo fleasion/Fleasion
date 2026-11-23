@@ -238,15 +238,11 @@ def test_macos_relay_failure_dialog_uses_exported_helper_log_directory(
     def top_level_widgets() -> list[object]:
         return []
 
-    def no_icon_path() -> None:
-        return None
-
     monkeypatch.setattr(
         dialogs_proxy_module, 'QApplication',
         SimpleNamespace(topLevelWidgets=top_level_widgets),
     )
     monkeypatch.setattr(dialogs_proxy_module, 'QMessageBox', FakeMessageBox)
-    monkeypatch.setattr(dialogs_proxy_module, 'get_icon_path', no_icon_path)
     show_dialog = cast(
         'Callable[[dict[str, object]], str]',
         vars(dialogs_proxy_module)['show_macos_relay_failed_dialog'],

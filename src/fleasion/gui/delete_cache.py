@@ -7,11 +7,11 @@ import time
 from typing import ClassVar
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFontDatabase, QIcon
+from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 from fleasion.localization import tr
-from fleasion.utils import delete_cache, get_icon_path, log_buffer
+from fleasion.utils import delete_cache, log_buffer
 from fleasion.widgets.text import style_text
 
 
@@ -41,13 +41,7 @@ class DeleteCacheWindow(QDialog):
         )
 
         self._setup_ui()
-        self._set_icon()
         self._start_deletion()
-
-    def _set_icon(self) -> None:
-        """Set window icon."""
-        if icon_path := get_icon_path():
-            self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self) -> None:
         """Setup the UI."""

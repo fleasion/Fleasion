@@ -9,14 +9,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from fleasion.localization import tr
 from fleasion.proxy.master import check_and_patch_running_roblox_ca
 from fleasion.utils import (
     delete_cache,
-    get_icon_path,
     get_roblox_player_exe_path,
     get_roblox_process_identity,
     get_roblox_studio_exe_path,
@@ -896,9 +894,6 @@ class RobloxExitMonitor(QObject):
         btn_layout.addStretch()
         btn_layout.addWidget(ok_btn)
         layout.addLayout(btn_layout)
-
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
 
         ok_btn.clicked.connect(dialog.accept)
 

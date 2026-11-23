@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -25,7 +24,6 @@ from fleasion.app.repairs import run_privileged_hosts_cleanup
 from fleasion.localization import tr
 from fleasion.utils import (
     APP_DISCORD,
-    get_icon_path,
     log_buffer,
     open_folder,
 )
@@ -277,9 +275,6 @@ def show_hosts_write_exhausted_dialog(details: ErrorDetails) -> None:
         )
         msg.addButton(QMessageBox.StandardButton.Ok)
 
-        if icon_path := get_icon_path():
-            msg.setWindowIcon(QIcon(str(icon_path)))
-
         for label in msg.findChildren(QLabel):
             label.setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextBrowserInteraction
@@ -364,9 +359,6 @@ def show_linux_hosts_read_only_dialog(details: ErrorDetails) -> None:
         log_buffer.log('Hosts', 'Copied Nix extraHosts snippet to clipboard')
 
     copy_button.clicked.connect(_copy_nix_snippet)
-
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
 
     for label in msg.findChildren(QLabel):
         label.setTextInteractionFlags(

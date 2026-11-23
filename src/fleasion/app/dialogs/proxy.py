@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -36,7 +35,6 @@ from fleasion.app.error_details import (
 from fleasion.localization import tr
 from fleasion.utils import (
     APP_DISCORD,
-    get_icon_path,
     log_buffer,
     open_folder,
 )
@@ -108,8 +106,6 @@ def show_proxy_bind_error_dialog(details: ErrorDetails) -> None:
         )
     )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
 
     for label in msg.findChildren(QLabel):
         label.setTextInteractionFlags(
@@ -186,8 +182,6 @@ def show_macos_ca_patch_failed_dialog(details: ErrorDetails) -> str | None:
         msg.setDefaultButton(install_button)
     else:
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
 
     for label in msg.findChildren(QLabel):
         label.setTextInteractionFlags(
@@ -220,8 +214,6 @@ def show_macos_ca_trust_failed_dialog(details: ErrorDetails) -> None:
         tr('app.froststrap_and_appleblox_can_contact_intercepted_roblox', value0=raw_error)
     )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-    if icon_path := get_icon_path():
-        msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()
 
 
@@ -329,8 +321,6 @@ def show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
         logs_button = msg.addButton(tr('app.open_helper_logs'), QMessageBox.ButtonRole.ActionRole)
         close_button = msg.addButton(QMessageBox.StandardButton.Close)
         msg.setDefaultButton(reinstall_button)
-        if icon_path := get_icon_path():
-            msg.setWindowIcon(QIcon(str(icon_path)))
 
         for label in msg.findChildren(QLabel):
             label.setTextInteractionFlags(

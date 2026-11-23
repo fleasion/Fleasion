@@ -334,8 +334,6 @@ def run_application() -> None:
         msg_box.setIcon(QMessageBox.Icon.Warning)
 
         # Set icon if available
-        if icon_path := get_icon_path():
-            msg_box.setWindowIcon(QIcon(str(icon_path)))
 
         msg_box.setInformativeText(tr('app.do_you_want_to_run_another_instance'))
 
@@ -727,8 +725,6 @@ def run_application() -> None:
         gate_label = QLabel(gate_text)
         gate_label.setWordWrap(True)
         gate_layout.addWidget(gate_label)
-        if icon_path := get_icon_path():
-            gate.setWindowIcon(QIcon(str(icon_path)))
         gate.show()
         gate.raise_()
         gate.activateWindow()
@@ -870,8 +866,6 @@ def run_application() -> None:
         no_roblox_msg.setText(tr('app.roblox_does_not_appear_to_be_installed'))
         no_roblox_msg.setInformativeText(tr('app.fleasion_could_not_find_any_roblox_installations'))
         no_roblox_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-        if icon_path := get_icon_path():
-            no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
         no_roblox_msg.exec()
 
     startup_tasks.completed.connect(_startup_checks_completed)

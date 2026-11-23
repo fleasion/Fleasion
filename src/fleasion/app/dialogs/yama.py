@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMessageBox
 
 from fleasion.app.dialogs.common import visible_parent_widget
 from fleasion.localization import tr
-from fleasion.utils import get_icon_path
 
 
 class YamaWarningInvoker(QObject):
@@ -51,8 +49,6 @@ class YamaWarningInvoker(QObject):
         dialog.setDetailedText(tr('app.yama.technical'))
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
         dialog.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
         dialog.finished.connect(self._on_closed)
         dialog.open()
 

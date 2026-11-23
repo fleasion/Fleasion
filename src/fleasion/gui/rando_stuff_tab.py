@@ -18,7 +18,6 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -42,7 +41,7 @@ from PySide6.QtWidgets import (
 lazy import requests as _requests
 
 from fleasion.localization import tr, tr_count
-from fleasion.utils import get_icon_path, windows as _platform_windows
+from fleasion.utils import windows as _platform_windows
 from fleasion.utils.json_types import require_object_dict
 from fleasion.utils.logging import log_buffer
 from fleasion.utils.paths import CONFIG_DIR
@@ -1638,8 +1637,6 @@ class RandoStuffTab(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.gui.rando_stuff_tab.blacklist_subplace'))
         dialog.resize(400, 350)
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout()
 
