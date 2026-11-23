@@ -16,7 +16,6 @@ from .state import state
 if TYPE_CHECKING:
     from .state import GlassSettings
 
-
 # Text on Glass's own dark surface
 TEXT: Final = '#f5f7fb'
 
@@ -28,11 +27,9 @@ RADIUS: Final = 14
 _SCROLLBAR_EDGE: Final = 3
 SCROLLBAR_CORNER_INSET: Final = ceil(RADIUS - sqrt(RADIUS**2 - (RADIUS - _SCROLLBAR_EDGE) ** 2)) + 3
 
-
 #
 # Colours
 #
-
 
 @dataclass(frozen=True)
 class GlassColors:
@@ -45,7 +42,6 @@ class GlassColors:
     popup: QColor
     accent: QColor
     accent_text: QColor
-
 
 def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
     settings = settings or state.settings
@@ -82,10 +78,8 @@ def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
         on_accent(accent),
     )
 
-
 # Enough of the surface hue to keep overlays from greying a tinted theme
 _INK_SATURATION: Final = 28
-
 
 def _ink(surface: QColor, *, dark: bool) -> QColor:
     """Highlight colour for panes and rims; pure white greys out tinted dark surfaces."""
@@ -97,17 +91,14 @@ def _ink(surface: QColor, *, dark: bool) -> QColor:
         max(surface.hsvHue(), 0), min(surface.hsvSaturation(), _INK_SATURATION), 255
     )
 
-
 #
 # Palette and stylesheet
 #
-
 
 def _rgb(hex_color: str) -> str:
     """An `r,g,b` triple for use inside QSS `rgba()`."""
     color = QColor(hex_color)
     return f'{color.red()},{color.green()},{color.blue()}'
-
 
 def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) -> QPalette:
     colors = glass_colors(settings)
@@ -146,7 +137,6 @@ def palette(settings: GlassSettings, *, base_palette: QPalette | None = None) ->
     pal.setColor(role.Window, window)
     return pal
 
-
 # Panes are flat: per-control gradients stack inside nested panes and read as harsh.
 # Rim: a slightly brighter top edge. Well: a recessed input field
 _PANE: Final = 'rgba($ink_rgb,0.06)'
@@ -154,31 +144,23 @@ _PANE_HOVER: Final = 'rgba($ink_rgb,0.11)'
 _RIM: Final = 'border: 1px solid rgba($ink_rgb,0.08); border-top-color: rgba($ink_rgb,0.13);'
 _WELL: Final = 'background: rgba($well_rgb,0.28); border: 1px solid rgba($ink_rgb,0.06);'
 
-
 _STYLESHEET: Final = Template("""
 /* QScrollArea makes its content fill its own background; the glass shows through
    instead. Naming the viewport keeps scroll bars, in a sibling container, with the style */
 QScrollArea, QScrollArea > QWidget#qt_scrollarea_viewport > QWidget { background: transparent; }
+/* A combo popup's container stays clear around the rounded list inside it */
 QComboBoxPrivateContainer { background: transparent; border: 0; }
 
-
-
-/* Text edits keep style-sheet wells until item views move to the style */
+/* Text edits pad their viewport inside the well, which a style cannot do with
+   its single frame width, so they keep these rules */
 QTextEdit, QPlainTextEdit {
     color: $input_text;
     $well border-radius: 8px; padding: 4px 8px;
     selection-background-color: $accent; selection-color: $accent_text;
 }
 QTextEdit:focus, QPlainTextEdit:focus { border: 1px solid rgba($accent_rgb,0.85); }
-/* Matches QMenu; the item-view effect paints the rim and the menu-item rows pad themselves */
-QComboBox QAbstractItemView {
-    background: rgba($popup_rgb,0.97); border: 1px solid transparent;
-    border-radius: 12px; padding: 0;
-}
-
 
 """)
-
 
 def stylesheet(settings: GlassSettings) -> str:
     colors = glass_colors(settings)

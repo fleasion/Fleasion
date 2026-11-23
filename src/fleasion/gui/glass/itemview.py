@@ -295,6 +295,12 @@ class RoundedItemViewEffect(QGraphicsEffect):
         self._rim_key: tuple[QSize, float, int, int, int, int] | None = None
         self._rim_corners: list[tuple[QPointF, QImage]] = []
 
+    def _rim_width(self, view: object) -> int:
+        """The rim drawn around a view: its frame, or a hairline for a popup's list."""
+        if not isinstance(view, QAbstractItemView):
+            return 0
+        return max(view.frameWidth(), 1 if self._popup else 0)
+
     @override
     def draw(self, painter: QPainter) -> None:
         offset = QPoint()
@@ -325,17 +331,21 @@ class RoundedItemViewEffect(QGraphicsEffect):
         clip.end()
 
         # The well behind the whole view, header and scrollbar included; the
-        # viewports stop filling their own backgrounds, see ViewSurface. Popups
-        # paint their own surface, and frameless views sit on their container
-        if not self._popup and isinstance(view, QAbstractItemView) and view.frameWidth() > 0:
+        # viewports stop filling their own backgrounds, see ViewSurface. A combo
+        # popup's list, which has no frame of its own, gets the menu surface;
+        # other frameless views sit on their container
+        width = self._rim_width(view)
+        if width > 0:
+            surface = QColor(glass_colors().popup)
+            surface.setAlphaF(0.97)
             painter.save()
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.translate(offset)
-            painter.fillPath(frame, well_color())
+            painter.fillPath(frame, surface if self._popup else well_color())
             painter.restore()
         painter.drawPixmap(offset, pixmap)
 
-        if not isinstance(view, QAbstractItemView) or (width := view.frameWidth()) <= 0:
+        if width <= 0:
             return
 
         # Paint the rim once, after clipping the rectangular child backgrounds.
