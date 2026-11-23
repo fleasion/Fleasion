@@ -339,16 +339,6 @@ QTreeView { show-decoration-selected: 0; }
 #PaletteCard QLineEdit { font-size: 13pt; padding: 9px 14px; border-radius: 12px; }
 #PaletteHint { color: $muted; font-size: 8.5pt; }
 
-QSlider::groove:horizontal { height: 6px; $well border-radius: 3px; }
-QSlider::sub-page:horizontal { background: rgba($accent_rgb,0.9); border-radius: 3px; }
-QSlider::handle:horizontal {
-    width: 18px; height: 18px; margin: -7px 0; border-radius: 9px;
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #dde2ec);
-    border: 1px solid rgba($ink_rgb,0.8);
-}
-QProgressBar { $well border-radius: 5px; text-align: center; height: 10px; color: transparent; }
-QProgressBar::chunk { background: rgba($accent_rgb,0.9); border-radius: 4px; }
-
 QMenu {
     background: rgba($popup_rgb,0.97); border: 1px solid rgba($ink_rgb,0.14);
     border-top-color: rgba($ink_rgb,0.18); border-radius: 12px; padding: 5px;

@@ -27,6 +27,7 @@ from .inputs import (
 )
 from .itemview import paint_item_focus
 from .scrollbars import EXTENT, SLIDER_MIN, paint_scroll_bar, scroll_bar_rect
+from .sliders import HANDLE, paint_slider, slider_rect
 from .style import glass_colors
 
 if TYPE_CHECKING:
@@ -295,6 +296,8 @@ class GlassPresentation:
                 return paint_spin_box(painter, option, widget)
             case _CC.CC_ScrollBar:
                 return paint_scroll_bar(painter, option, widget)
+            case _CC.CC_Slider:
+                return paint_slider(painter, option, widget)
             case _:
                 return False
 
@@ -312,6 +315,8 @@ class GlassPresentation:
                 return spin_box_rect(option, sub_control, widget)
             case _CC.CC_ScrollBar:
                 return scroll_bar_rect(option, sub_control, widget)
+            case _CC.CC_Slider:
+                return slider_rect(option, sub_control, widget)
             case _:
                 return None
 
@@ -344,5 +349,11 @@ class GlassPresentation:
                 return EXTENT
             case QStyle.PixelMetric.PM_ScrollBarSliderMin:
                 return SLIDER_MIN
+            case (
+                QStyle.PixelMetric.PM_SliderThickness
+                | QStyle.PixelMetric.PM_SliderLength
+                | QStyle.PixelMetric.PM_SliderControlThickness
+            ):
+                return HANDLE
             case _:
                 return None
