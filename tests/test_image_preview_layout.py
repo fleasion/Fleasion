@@ -82,3 +82,48 @@ def test_texture_pack_scrolls_only_when_its_images_exceed_the_viewport(app: QApp
     finally:
         scroll.close()
         scroll.deleteLater()
+
+
+@pytest.mark.parametrize('copyable', [True, False])
+def test_copyable_preview_copies_the_full_size_image(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch, copyable: bool
+) -> None:
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QContextMenuEvent
+
+    from fleasion.widgets import image_preview
+
+    copied: list[tuple[int, int]] = []
+    opened: list[str] = []
+
+    class ChooseFirstMenu:
+        """Stands in for QMenu and picks its only action without blocking."""
+
+        def __init__(self, _parent: object) -> None:
+            self._action = object()
+
+        def addAction(self, text: str) -> object:  # noqa: N802 - mirrors QMenu
+            opened.append(text)
+            return self._action
+
+        def exec(self, _position: object) -> object:
+            return self._action
+
+    def copy(pixmap: QPixmap) -> None:
+        copied.append((pixmap.width(), pixmap.height()))
+
+    monkeypatch.setattr(image_preview, 'QMenu', ChooseFirstMenu)
+    monkeypatch.setattr(image_preview, 'copy_pixmap_to_clipboard', copy)
+    label = ImagePreviewLabel(copyable=copyable)
+    source = QPixmap(640, 480)
+    source.fill(Qt.GlobalColor.red)
+    label.resize(64, 48)
+    label.set_image(source)
+    try:
+        event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5), QPoint(5, 5))
+        label.contextMenuEvent(event)
+        assert copied == ([(640, 480)] if copyable else [])
+        assert len(opened) == int(copyable)
+    finally:
+        label.deleteLater()
+        app.processEvents()

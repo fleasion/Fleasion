@@ -52,6 +52,7 @@ from PySide6.QtGui import (
     QImage,
     QKeyEvent,
     QMouseEvent,
+    QPalette,
     QPixmap,
     QResizeEvent,
     QScreen,
@@ -2202,12 +2203,13 @@ class CacheViewerTab(QWidget):
         self.loading_label.hide()
 
         # Image viewer (will show/hide as needed)
-        self.image_label = ImagePreviewLabel(tr('ui.cache.cache_viewer.select_an_asset_to_preview'))
+        self.image_label = ImagePreviewLabel(
+            tr('ui.cache.cache_viewer.select_an_asset_to_preview'), copyable=True
+        )
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; }')
-        self.image_label.setScaledContents(False)
-        self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
+        self.image_label.setBackgroundRole(QPalette.ColorRole.Base)
+        self.image_label.setAutoFillBackground(True)
+        style_text(self.image_label, tone='muted')
         self.preview_container_layout.addWidget(self.image_label)
 
         # Audio player container with centering wrapper
@@ -5294,18 +5296,6 @@ class CacheViewerTab(QWidget):
 
     def _scale_and_show_image(self, pixmap: QPixmap) -> None:
         self.image_label.set_image(pixmap)
-
-    def _show_image_context_menu(self, pos: QPoint) -> None:
-        """Show context menu for image preview."""
-        if self._current_pixmap is None or self._current_pixmap.isNull():
-            return
-
-        menu = QMenu(self)
-        copy_action = menu.addAction(tr('ui.cache.cache_viewer.copy_image'))
-
-        action = menu.exec(self.image_label.mapToGlobal(pos))
-        if action == copy_action:
-            copy_pixmap_to_clipboard(self._current_pixmap)
 
     def _preview_texturepack_impl(self, data: bytes, asset_id: str) -> None:
         # Clean up previous texture pack if any

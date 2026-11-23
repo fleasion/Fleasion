@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from defusedxml import ElementTree as DefusedElementTree, minidom as defused_minidom
 from defusedxml.common import DefusedXmlException
 from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QImage, QKeyEvent, QPixmap, QResizeEvent
+from PySide6.QtGui import QCloseEvent, QImage, QKeyEvent, QPalette, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -778,13 +778,12 @@ class JsonTreeViewer(QDialog):
 
         # Image viewer
         self.image_label = ImagePreviewLabel(
-            tr('ui.gui.json_viewer.select_a_single_asset_id_or_url')
+            tr('ui.gui.json_viewer.select_a_single_asset_id_or_url'), copyable=True
         )
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; }')
-        self.image_label.setScaledContents(False)
-        self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
+        self.image_label.setBackgroundRole(QPalette.ColorRole.Base)
+        self.image_label.setAutoFillBackground(True)
+        style_text(self.image_label, tone='muted')
         self.preview_container_layout.addWidget(self.image_label)
 
         # Audio player container with centering wrapper
@@ -1361,18 +1360,6 @@ class JsonTreeViewer(QDialog):
         self._tp_pixmaps = {}
 
     # Context menus
-
-    def _show_image_context_menu(self, pos: QPoint) -> None:
-        """Show context menu for image preview."""
-        if self._current_pixmap is None or self._current_pixmap.isNull():
-            return
-
-        menu = QMenu(self)
-        copy_action = menu.addAction(tr('ui.gui.json_viewer.copy_image'))
-
-        action = menu.exec(self.image_label.mapToGlobal(pos))
-        if action == copy_action:
-            copy_pixmap_to_clipboard(self._current_pixmap)
 
     def _show_texturepack_context_menu(self, pos: QPoint, label: QLabel) -> None:
         """Show context menu for texturepack image."""
