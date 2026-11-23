@@ -878,7 +878,7 @@ class ProxyTrafficTab(QWidget):
         style_text(warning_label, tone='warning')
         footer_layout.addWidget(warning_label)
         footer_layout.addStretch()
-        footer_layout.addWidget(delete_cache.clear_cache_button())
+        footer_layout.addWidget(delete_cache.ClearCacheButton())
         self.ui.verticalLayout_3.addWidget(footer_widget)
 
         self._refresh_traffic()

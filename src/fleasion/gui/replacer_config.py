@@ -1612,7 +1612,7 @@ class ReplacerConfigWindow(QDialog):
         help_btn.clicked.connect(self._show_keybinds_help)
         footer_layout.addWidget(help_btn)
 
-        footer_layout.addWidget(delete_cache.clear_cache_button())
+        footer_layout.addWidget(delete_cache.ClearCacheButton())
 
         configs_btn = QPushButton(tr('ui.gui.replacer_config.open_configs'))
         configs_btn.clicked.connect(self._open_configs_folder)

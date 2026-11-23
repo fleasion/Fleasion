@@ -49,7 +49,7 @@ from fleasion.widgets.card import Card
 from fleasion.widgets.spacing import CONTROL_HEIGHT, GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
 from fleasion.widgets.text import style_text
-lazy from fleasion.gui.delete_cache import clear_cache_button
+lazy from fleasion.gui.delete_cache import ClearCacheButton
 lazy from fleasion.utils.verified_direct_https import VerifiedDirectHTTPSAdapter
 
 lazy from . import macos_rosemary_launch, rando_stuff_tab
@@ -980,7 +980,7 @@ class SubplaceJoinerTab(QWidget):
         style_text(self._selected_label, tone='muted', point_size=9)
         footer_layout.addWidget(self._selected_label)
         footer_layout.addStretch()
-        clear_cache_btn = clear_cache_button()
+        clear_cache_btn = ClearCacheButton()
         clear_cache_btn.setObjectName('SubplaceClearCacheButton')
         footer_layout.addWidget(clear_cache_btn)
         root.addWidget(footer_widget)

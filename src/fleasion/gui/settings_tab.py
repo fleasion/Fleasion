@@ -233,7 +233,7 @@ class SettingsTab(QWidget):
         style_text(self._status_label, tone='muted')
         footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
-        footer_layout.addWidget(delete_cache.clear_cache_button())
+        footer_layout.addWidget(delete_cache.ClearCacheButton())
 
         outer.addWidget(footer_widget)
 

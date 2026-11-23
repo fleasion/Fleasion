@@ -58,7 +58,7 @@ from fleasion.utils.secure_tokens import decrypt_token, encrypt_token
 from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
 from fleasion.widgets.text import style_text
-lazy from fleasion.gui.delete_cache import clear_cache_button
+lazy from fleasion.gui.delete_cache import ClearCacheButton
 lazy from fleasion.utils import anim_converter, platform_linux
 lazy from fleasion.utils.r15_to_r6 import (
     convert_keyframe_r6_to_r15,
@@ -1523,7 +1523,7 @@ class RandoStuffTab(QWidget):
         footer_widget = TabFooter()
         footer_layout = footer_widget.content_layout
         footer_layout.addStretch()
-        footer_layout.addWidget(clear_cache_button())
+        footer_layout.addWidget(ClearCacheButton())
 
         outer.addWidget(footer_widget)
 

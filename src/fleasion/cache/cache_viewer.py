@@ -95,7 +95,7 @@ from fleasion.widgets.spacing import GAP, PANEL_MARGINS, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
 from fleasion.widgets.text import style_text
 lazy from fleasion.gui import glass
-lazy from fleasion.gui.delete_cache import clear_cache_button
+lazy from fleasion.gui.delete_cache import ClearCacheButton
 lazy from fleasion.gui.theme import ThemeManager
 lazy from fleasion.proxy.addons.cache_scraper import (
     CREATOR_GAME_MAX_SCAN,
@@ -2471,7 +2471,7 @@ class CacheViewerTab(QWidget):
         delete_db_btn.clicked.connect(self._clear_cache)
         actions_layout.addWidget(delete_db_btn)
 
-        actions_layout.addWidget(clear_cache_button())
+        actions_layout.addWidget(ClearCacheButton())
 
         self.stop_preview_btn = QPushButton(tr('ui.cache.cache_viewer.stop_preview'))
         self.stop_preview_btn.clicked.connect(self._stop_preview)

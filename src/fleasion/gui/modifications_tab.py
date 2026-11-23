@@ -148,7 +148,7 @@ lazy from fleasion.cache.font_viewer import FontViewerWidget
 lazy from fleasion.cache.mesh_processing import convert as convert_mesh
 lazy from fleasion.cache.obj_viewer import ObjViewerPanel
 lazy from fleasion.gui import linux_hotkeys, windows_hotkeys
-lazy from fleasion.gui.delete_cache import clear_cache_button
+lazy from fleasion.gui.delete_cache import ClearCacheButton
 lazy from fleasion.gui.linux_hotkeys import (
     LinuxCustomFFlagHotkeyController,
     LinuxHotkeyService,
@@ -5537,7 +5537,7 @@ class ModificationsTab(QWidget):
         style_text(self._status_label, tone='muted')
         footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
-        footer_layout.addWidget(clear_cache_button())
+        footer_layout.addWidget(ClearCacheButton())
         outer.addWidget(footer_widget)
 
     @override

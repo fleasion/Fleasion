@@ -8,7 +8,7 @@ from typing import ClassVar
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QIcon
-from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 from fleasion.localization import tr
 from fleasion.utils import delete_cache, get_icon_path, log_buffer
@@ -125,8 +125,9 @@ def show_delete_cache_window() -> None:
     DeleteCacheWindow().show()
 
 
-def clear_cache_button() -> QPushButton:
-    """Return the Clear Cache button shown in the footer of every tab."""
-    button = QPushButton(tr('ui.gui.delete_cache.clear_cache'))
-    button.clicked.connect(show_delete_cache_window)
-    return button
+class ClearCacheButton(QPushButton):
+    """The Clear Cache button shown in the footer of every tab."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(tr('ui.gui.delete_cache.clear_cache'), parent)
+        self.clicked.connect(show_delete_cache_window)
