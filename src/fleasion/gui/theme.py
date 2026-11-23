@@ -222,17 +222,12 @@ class ThemeManager:
         if color_mode != 'System':
             colors = resolve_theme_colors(color_mode)
             ThemeManager._set_color_scheme(app, 'Dark' if colors.dark else 'Light')
-            return ThemeManager._theme_palette(color_mode), 'Fusion'
+            return ThemeManager.theme_palette(color_mode), 'Fusion'
         ThemeManager._set_color_scheme(app, 'Unknown')
         if sys.platform == 'win32':
             effective = ThemeManager._windows_system_theme(app)
             ThemeManager._effective_theme = effective
-            return (
-                ThemeManager._dark_palette()
-                if effective == 'Dark'
-                else ThemeManager._light_palette(),
-                'Fusion',
-            )
+            return ThemeManager.theme_palette('Dark' if effective == 'Dark' else 'Light'), 'Fusion'
         widget_style = (
             ThemeManager._system_style_name or 'Fusion'
             if style == 'Fusion' and sys.platform.startswith('linux')
@@ -301,47 +296,6 @@ class ThemeManager:
         ThemeManager._system_style_name = ThemeManager._widget_style_name(app) or None
 
     @staticmethod
-    def _apply_system_theme(app: QApplication) -> None:
-        ThemeManager._set_color_scheme(app, 'Unknown')
-
-        if sys.platform.startswith('linux'):
-            # Linux deliberately keeps the desktop's real Qt style/palette.
-            # Users commonly choose a global Qt theme (Breeze, Kvantum, etc.)
-            # and System should continue to mean exactly that.
-            ThemeManager._effective_theme = 'System'
-            current_style = app.style()
-            current_style_name = current_style.objectName() if current_style else None
-            if (
-                ThemeManager._system_style_name
-                and current_style_name != ThemeManager._system_style_name
-            ):
-                app.setStyle(ThemeManager._system_style_name)
-            app.setPalette(ThemeManager._system_palette or QPalette())
-            return
-
-        if sys.platform == 'win32':
-            # Qt's Windows system dark palette is not the palette Fleasion uses
-            # for its Dark option (and can be noticeably darker).  Keep the
-            # saved/selected option as System, but resolve Windows' actual app
-            # appearance and use the exact same Fleasion palette as Light/Dark.
-            effective = ThemeManager._windows_system_theme(app)
-            ThemeManager._effective_theme = effective
-            app.setStyle('Fusion')
-            app.setPalette(
-                ThemeManager._dark_palette()
-                if effective == 'Dark'
-                else ThemeManager._light_palette()
-            )
-            return
-
-        # macOS already reports its current appearance through Qt's platform
-        # theme.  Unlike Windows, keep System dynamic/native instead of mapping
-        # it to Fleasion's forced palettes.
-        ThemeManager._effective_theme = 'System'
-        app.setStyle('Fusion')
-        app.setPalette(app.style().standardPalette())
-
-    @staticmethod
     def _windows_system_theme(app: QApplication) -> str:
         """Return the Windows app appearance as ``Light`` or ``Dark``.
 
@@ -366,120 +320,9 @@ class ThemeManager:
         return 'Dark' if app.palette().window().color().lightness() < 128 else 'Light'
 
     @staticmethod
-    def _apply_forced_theme(app: QApplication, theme: str) -> None:
-        app.setStyle('Fusion')
-        if theme == 'Dark':
-            ThemeManager._set_color_scheme(app, 'Dark')
-            app.setPalette(ThemeManager._dark_palette())
-        elif theme == 'Light':
-            ThemeManager._set_color_scheme(app, 'Light')
-            app.setPalette(ThemeManager._light_palette())
-        else:
-            app.setPalette(app.style().standardPalette())
-
-    @staticmethod
-    def _theme_palette(mode: ColorMode) -> QPalette:
-        if mode == 'Dark':
-            return ThemeManager._dark_palette()
-        if mode == 'Light':
-            return ThemeManager._light_palette()
+    def theme_palette(mode: ColorMode) -> QPalette:
+        """Qt palette of a theme from the catalog, before the accent is applied."""
         return to_qpalette(resolve_theme_colors(mode))
-
-    @staticmethod
-    def _dark_palette() -> QPalette:
-        palette = QPalette()
-        text = QColor('#f0f0f0')
-        palette.setColor(QPalette.ColorRole.Window, QColor('#323232'))
-        palette.setColor(QPalette.ColorRole.WindowText, text)
-        palette.setColor(QPalette.ColorRole.Base, QColor('#242424'))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#2b2b2b'))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor('#ffffdc'))
-        palette.setColor(QPalette.ColorRole.ToolTipText, QColor('#000000'))
-        palette.setColor(QPalette.ColorRole.Text, text)
-        palette.setColor(QPalette.ColorRole.Button, QColor('#323232'))
-        palette.setColor(QPalette.ColorRole.ButtonText, text)
-        palette.setColor(QPalette.ColorRole.BrightText, QColor('#4b4b4b'))
-        palette.setColor(QPalette.ColorRole.Link, QColor('#308cc6'))
-        palette.setColor(QPalette.ColorRole.Highlight, QColor('#308cc6'))
-        palette.setColor(QPalette.ColorRole.HighlightedText, text)
-        palette.setColor(QPalette.ColorRole.PlaceholderText, ThemeManager._placeholder_color(text))
-        palette.setColor(QPalette.ColorRole.Light, QColor('#4b4b4b'))
-        palette.setColor(QPalette.ColorRole.Midlight, QColor('#2a2a2a'))
-        palette.setColor(QPalette.ColorRole.Dark, QColor('#212121'))
-        palette.setColor(QPalette.ColorRole.Mid, QColor('#262626'))
-        palette.setColor(QPalette.ColorRole.Shadow, QColor('#191919'))
-        palette.setColor(
-            QPalette.ColorGroup.Disabled,
-            QPalette.ColorRole.Text,
-            QColor('#828282'),
-        )
-        palette.setColor(
-            QPalette.ColorGroup.Disabled,
-            QPalette.ColorRole.ButtonText,
-            QColor('#828282'),
-        )
-        palette.setColor(
-            QPalette.ColorGroup.Disabled,
-            QPalette.ColorRole.WindowText,
-            QColor('#828282'),
-        )
-        palette.setColor(
-            QPalette.ColorGroup.Disabled,
-            QPalette.ColorRole.HighlightedText,
-            QColor('#f0f0f0'),
-        )
-        return palette
-
-    @staticmethod
-    def _light_palette() -> QPalette:
-        palette = QPalette()
-        text = QColor('#000000')
-        palette.setColor(QPalette.ColorRole.Window, QColor('#efefef'))
-        palette.setColor(QPalette.ColorRole.WindowText, text)
-        palette.setColor(QPalette.ColorRole.Base, QColor('#ffffff'))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#f7f7f7'))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor('#ffffdc'))
-        palette.setColor(QPalette.ColorRole.ToolTipText, QColor('#000000'))
-        palette.setColor(QPalette.ColorRole.Text, text)
-        palette.setColor(QPalette.ColorRole.Button, QColor('#efefef'))
-        palette.setColor(QPalette.ColorRole.ButtonText, text)
-        palette.setColor(QPalette.ColorRole.BrightText, QColor('#ffffff'))
-        palette.setColor(QPalette.ColorRole.Link, QColor('#0000ff'))
-        palette.setColor(QPalette.ColorRole.Highlight, QColor('#308cc6'))
-        palette.setColor(QPalette.ColorRole.HighlightedText, QColor('#ffffff'))
-        palette.setColor(QPalette.ColorRole.PlaceholderText, ThemeManager._placeholder_color(text))
-        palette.setColor(QPalette.ColorRole.Light, QColor('#ffffff'))
-        palette.setColor(QPalette.ColorRole.Midlight, QColor('#cacaca'))
-        palette.setColor(QPalette.ColorRole.Dark, QColor('#9f9f9f'))
-        palette.setColor(QPalette.ColorRole.Mid, QColor('#b8b8b8'))
-        palette.setColor(QPalette.ColorRole.Shadow, QColor('#767676'))
-        palette.setColor(
-            QPalette.ColorGroup.Disabled,
-            QPalette.ColorRole.Text,
-            QColor('#bebebe'),
-        )
-        palette.setColor(
-            QPalette.ColorGroup.Disabled,
-            QPalette.ColorRole.ButtonText,
-            QColor('#bebebe'),
-        )
-        palette.setColor(
-            QPalette.ColorGroup.Disabled,
-            QPalette.ColorRole.WindowText,
-            QColor('#bebebe'),
-        )
-        palette.setColor(
-            QPalette.ColorGroup.Disabled,
-            QPalette.ColorRole.HighlightedText,
-            QColor('#ffffff'),
-        )
-        return palette
-
-    @staticmethod
-    def _placeholder_color(text_color: QColor) -> QColor:
-        color = QColor(text_color)
-        color.setAlpha(128)
-        return color
 
     @staticmethod
     def _set_color_scheme(app: QApplication, color_scheme_name: str) -> None:

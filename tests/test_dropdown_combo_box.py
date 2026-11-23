@@ -2,7 +2,6 @@ import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from collections.abc import Callable
 from typing import cast
 
 from PySide6.QtCore import QPoint, QRect
@@ -20,11 +19,6 @@ def _qapp() -> QApplication:
     app = QApplication.instance()
     _app = cast('QApplication', app) if app is not None else QApplication([])
     return _app
-
-
-def _theme_palette(name: str) -> QPalette:
-    callback = cast('Callable[[], QPalette]', getattr(ThemeManager, name))
-    return callback()
 
 
 def _render_combo(palette: QPalette, *, enabled: bool) -> tuple[DropdownComboBox, QImage, QRect]:
@@ -56,7 +50,7 @@ def _render_combo(palette: QPalette, *, enabled: bool) -> tuple[DropdownComboBox
 
 
 def test_dropdown_arrow_background_matches_combo_surface() -> None:
-    for palette in (_theme_palette('_light_palette'), _theme_palette('_dark_palette')):
+    for palette in (ThemeManager.theme_palette('Light'), ThemeManager.theme_palette('Dark')):
         for enabled in (True, False):
             combo, image, arrow_rect = _render_combo(palette, enabled=enabled)
             body_x = arrow_rect.left() - 20
