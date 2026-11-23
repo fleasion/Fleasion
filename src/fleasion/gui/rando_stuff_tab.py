@@ -57,6 +57,7 @@ from fleasion.utils.roblox_auth import (
 from fleasion.utils.secure_tokens import decrypt_token, encrypt_token
 from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
+from fleasion.widgets.text import style_text
 lazy from fleasion.gui.delete_cache import clear_cache_button
 lazy from fleasion.utils import anim_converter, platform_linux
 lazy from fleasion.utils.r15_to_r6 import (
@@ -1283,7 +1284,7 @@ class RandoStuffTab(QWidget):
         account_details_layout.setSpacing(6)
 
         self._selected_label = QLabel(tr('ui.gui.rando_stuff_tab.selected_none'))
-        self._selected_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
+        style_text(self._selected_label, tone='muted', point_size=9)
         account_details_layout.addWidget(self._selected_label)
 
         self._private_server_input = QLineEdit()
@@ -1643,11 +1644,11 @@ class RandoStuffTab(QWidget):
         layout = QVBoxLayout()
 
         title = QLabel(tr('ui.gui.rando_stuff_tab.blacklisted_subplace_ids'))
-        title.setStyleSheet('font-weight: bold;')
+        style_text(title, bold=True)
         layout.addWidget(title)
 
         hint = QLabel(tr('ui.gui.rando_stuff_tab.enter_subplace_ids_separated_by_commas_spaces'))
-        hint.setStyleSheet('color: gray; font-size: 9pt;')
+        style_text(hint, tone='muted', point_size=9)
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -1666,7 +1667,7 @@ class RandoStuffTab(QWidget):
         search_layout.addWidget(search_edit)
         search_layout.addStretch()
         status_label = QLabel('')
-        status_label.setStyleSheet('color: #888; font-size: 9pt;')
+        style_text(status_label, tone='muted', point_size=9)
         search_layout.addWidget(status_label)
         apply_btn = QPushButton(tr('ui.gui.rando_stuff_tab.apply_blacklist'))
         search_layout.addWidget(apply_btn)
@@ -1693,7 +1694,7 @@ class RandoStuffTab(QWidget):
                 status_label.setText('')
             else:
                 status_label.setText(tr('ui.gui.rando_stuff_tab.id_value_not_found', value0=query))
-                status_label.setStyleSheet('color: #cc5555; font-size: 9pt;')
+                style_text(status_label, tone='error', point_size=9)
 
         search_edit.returnPressed.connect(_search_id)
         search_edit.textChanged.connect(lambda: status_label.setText(''))
@@ -1710,7 +1711,7 @@ class RandoStuffTab(QWidget):
                     value0=tr_count(count, 'count.id.one', 'count.id.other'),
                 )
             )
-            status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
+            style_text(status_label, tone='success', point_size=9)
             if self._subplace_blacklisted_ids:
                 ordered = ', '.join(
                     sorted(

@@ -33,6 +33,7 @@ from fleasion.localization import tr
 from fleasion.utils import LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
 from fleasion.utils.macos_proxy_helper import HELPER_LOG_DIR
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.text import style_text
 
 
 class LogsWindow(QDialog):
@@ -99,7 +100,7 @@ class LogsWindow(QDialog):
         bottom.addWidget(self._search_input, 1)
 
         self.time_label = QLabel()
-        self.time_label.setStyleSheet('color: #888; font-size: 9pt;')
+        style_text(self.time_label, tone='muted', point_size=9)
         self._refresh_time_label()
         bottom.addWidget(self.time_label)
 

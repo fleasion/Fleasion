@@ -46,6 +46,7 @@ from fleasion.utils.clipboard import copy_pixmap_to_clipboard
 from fleasion.utils.json_types import JsonValue, require_object_dict, require_object_list
 from fleasion.widgets.image_preview import ImagePreviewLabel
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.text import style_text
 lazy from fleasion.cache.animation_viewer import AnimationViewerPanel
 lazy from fleasion.cache.audio_player import AudioPlayerWidget
 lazy from fleasion.cache.cache_json_viewer import CacheJsonViewer
@@ -678,7 +679,7 @@ class JsonTreeViewer(QDialog):
 
         # Search progress label
         self.search_progress_label = QLabel('')
-        self.search_progress_label.setStyleSheet('color: #888; font-size: 11px;')
+        style_text(self.search_progress_label, tone='muted', pixel_size=11)
         self.search_progress_label.hide()
         left_layout.addWidget(self.search_progress_label)
 
@@ -716,7 +717,7 @@ class JsonTreeViewer(QDialog):
         btn_layout.addStretch()
 
         self.match_label = QLabel('')
-        self.match_label.setStyleSheet('color: #888; font-size: 11px;')
+        style_text(self.match_label, tone='muted', pixel_size=11)
         btn_layout.addWidget(self.match_label)
 
         btn_layout.addSpacing(8)
@@ -1341,7 +1342,8 @@ class JsonTreeViewer(QDialog):
         # Create placeholder for each texture map
         for map_name, map_id in maps.items():
             header = QLabel(tr('ui.gui.json_viewer.value_value', value0=map_name, value1=map_id))
-            header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
+            style_text(header, tone='muted', bold=True)
+            header.setContentsMargins(5, 5, 5, 5)
             header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             tp_layout.addWidget(header)
 

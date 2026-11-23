@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from fleasion.localization import tr, verbatim
 from fleasion.utils.json_types import as_object_dict, as_object_list
+from fleasion.widgets.text import style_text
 
 from .roblox_class_names import ROBLOX_CLASS_NAME_SET, ROBLOX_CLASS_NAMES
 from .roblox_document import classify_roblox_document
@@ -240,7 +241,7 @@ class RbxmPreviewWidget(QWidget):
         toolbar.addWidget(self.copy_btn)
 
         self.modified_label = QLabel('')
-        self.modified_label.setStyleSheet('color: #b58900; font-size: 11px;')
+        style_text(self.modified_label, tone='warning', pixel_size=11)
         toolbar.addWidget(self.modified_label)
 
         toolbar.addStretch()
@@ -324,7 +325,7 @@ class RbxmPreviewWidget(QWidget):
         self.add_property_btn.clicked.connect(self._add_property)
         right_bottom.addWidget(self.add_property_btn)
         self.summary_label = QLabel('')
-        self.summary_label.setStyleSheet('color: #888; font-size: 11px;')
+        style_text(self.summary_label, tone='muted', pixel_size=11)
         right_bottom.addWidget(self.summary_label)
         right_bottom.addStretch()
 

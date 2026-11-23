@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayo
 
 from fleasion.localization import tr
 from fleasion.utils import delete_cache, get_icon_path, log_buffer
+from fleasion.widgets.text import style_text
 
 
 class DeleteCacheWindow(QDialog):
@@ -55,7 +56,7 @@ class DeleteCacheWindow(QDialog):
 
         # Title
         title_label = QLabel(tr('ui.gui.delete_cache.deleting_cache'))
-        title_label.setStyleSheet('font-size: 11pt; font-weight: bold;')
+        style_text(title_label, point_size=11, bold=True)
         layout.addWidget(title_label)
 
         # Status text area

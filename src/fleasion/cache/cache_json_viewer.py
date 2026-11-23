@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr, tr_count
+from fleasion.widgets.text import style_text
 
 if TYPE_CHECKING:
     from fleasion.utils.json_types import JsonValue
@@ -145,7 +146,7 @@ class CacheJsonViewer(QWidget):
         toolbar.addStretch()
 
         self.match_label = QLabel('')
-        self.match_label.setStyleSheet('color: #888; font-size: 11px;')
+        style_text(self.match_label, tone='muted', pixel_size=11)
         self.match_label.hide()
         toolbar.addWidget(self.match_label)
 

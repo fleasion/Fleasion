@@ -204,7 +204,7 @@ def test_warning_label_uses_its_own_height_without_blank_lines(
         assert 'If you are using a bootstrapper' in label.text()
         assert 'for allowlisted presets' in label.text()
         assert 'synchronizes detected' not in label.text()
-        assert 'padding: 0' in label.styleSheet()
+        assert label.property('textTone') == 'warning'
         assert label.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Maximum
         assert label.height() == label.heightForWidth(label.width())
         assert label.height() == label.fontMetrics().lineSpacing() * 2

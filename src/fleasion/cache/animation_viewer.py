@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
 from fleasion.config.values import bool_value
 from fleasion.localization import tr
 from fleasion.utils import log_buffer
+from fleasion.widgets.text import style_text
 
 from .fps_controls import (
     KEY_BACKWARD,
@@ -2043,7 +2044,7 @@ class AnimationViewerPanel(QWidget):
         ts_layout.setSpacing(0)  # Tighten gap
 
         self.ts_label = QLabel(tr('ui.cache.animation_viewer.timescale_1_0x'))
-        self.ts_label.setStyleSheet('color: palette(window-text); font-weight: normal;')
+        style_text(self.ts_label, bold=False)
         ts_layout.addWidget(self.ts_label)
 
         ts_slider = QSlider(Qt.Orientation.Horizontal)

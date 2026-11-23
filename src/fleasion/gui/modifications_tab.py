@@ -142,6 +142,7 @@ from fleasion.utils.threading import run_in_thread
 from fleasion.widgets.no_wheel import DropdownComboBox, NoWheelSlider, NoWheelSpinBox
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
+from fleasion.widgets.text import style_text
 lazy from fleasion.cache.audio_player import AudioPlayerWidget
 lazy from fleasion.cache.font_viewer import FontViewerWidget
 lazy from fleasion.cache.mesh_processing import convert as convert_mesh
@@ -585,12 +586,17 @@ def _ensure_placeholder_width(line_edit: QLineEdit, minimum_width: int = 0) -> N
 
 
 # Status badge styling
-_STATUS_STYLES = {
-    'not_set': 'color: #888; font-style: italic;',
-    'pending': 'color: #4a9eda;',
-    'applied': 'font-style: normal;',
-    'orphaned_stash': 'color: #c90; font-weight: bold;',
-}
+def _style_status(label: QLabel, status: str) -> None:
+    # Every branch sets tone, weight and slant, so no earlier status leaks through
+    match status:
+        case 'not_set':
+            style_text(label, tone='muted', italic=True, bold=False)
+        case 'pending':
+            style_text(label, tone='info', italic=False, bold=False)
+        case 'orphaned_stash':
+            style_text(label, tone='warning', italic=False, bold=True)
+        case _:
+            style_text(label, italic=False, bold=False)
 
 
 # _RichTextButton — QPushButton-like label that renders HTML/rich text
@@ -870,7 +876,7 @@ class ModRowWidget(QWidget):
 
         # Status badge — keep the compact English baseline but allow longer translations.
         self._status_label = QLabel(tr('ui.gui.modifications_tab.not_set'))
-        self._status_label.setStyleSheet(_STATUS_STYLES['not_set'])
+        _style_status(self._status_label, 'not_set')
         _ensure_text_width(self._status_label, 72)
         layout.addWidget(self._status_label)
 
@@ -993,7 +999,7 @@ class ModRowWidget(QWidget):
             'orphaned_stash': tr('modifications.status.external_modified'),
         }
         self._status_label.setText(labels.get(display_status, display_status))
-        self._status_label.setStyleSheet(_STATUS_STYLES.get(display_status, ''))
+        _style_status(self._status_label, display_status)
         _ensure_text_width(self._status_label, 72)
 
         if status == 'error':
@@ -1529,7 +1535,7 @@ class CustomFFlagWarningDialog(QDialog):
 
         layout = QVBoxLayout(self)
         title = QLabel(tr('ui.gui.modifications_tab.b_custom_fastflags_can_get_your_roblox'))
-        title.setStyleSheet('color: #d9534f; font-size: 15px;')
+        style_text(title, tone='error', pixel_size=15)
         layout.addWidget(title)
 
         message = QLabel(tr('ui.gui.modifications_tab.roblox_only_permits_a_small_allowlist_of'))
@@ -1901,7 +1907,7 @@ class FFlagBrowserDialog(QDialog):
         layout.addLayout(controls)
 
         self._count = QLabel(tr('ui.gui.modifications_tab.retrieving_fastflags'))
-        self._count.setStyleSheet('color: #999;')
+        style_text(self._count, tone='muted')
         layout.addWidget(self._count)
 
         self._table = QTableWidget(0, 2)
@@ -2385,7 +2391,7 @@ class FFlagBrowserDialog(QDialog):
         self._cache_loaded = False
         self._refresh_button.setEnabled(False)
         self._count.setText(tr('ui.gui.modifications_tab.retrieving_fastflags'))
-        self._count.setStyleSheet('color: #999;')
+        style_text(self._count, tone='muted')
         threading.Thread(target=self._fetch_flags, daemon=True).start()
 
     @classmethod
@@ -2485,7 +2491,7 @@ class FFlagBrowserDialog(QDialog):
     def _show_load_error(self, message: str) -> None:
         self._refresh_button.setEnabled(True)
         self._count.setText(message)
-        self._count.setStyleSheet('color: #ef8f8f;')
+        style_text(self._count, tone='error')
 
     def _filter_rows(self, *_args: object) -> None:
         query = self._search.text().strip().casefold()
@@ -2518,7 +2524,7 @@ class FFlagBrowserDialog(QDialog):
                         client=catalog.label,
                     )
                 )
-                self._count.setStyleSheet('color: #999;')
+                style_text(self._count, tone='muted')
                 self._update_selection_button()
                 return
             if self._local_catalog is not None:
@@ -2530,7 +2536,7 @@ class FFlagBrowserDialog(QDialog):
                         hinted=f'{self._local_catalog.hinted:,}',
                     )
                 )
-                self._count.setStyleSheet('color: #999;')
+                style_text(self._count, tone='muted')
                 self._update_selection_button()
                 return
             no_pc_value_count = sum(value is None for value in self._flags.values())
@@ -2551,7 +2557,7 @@ class FFlagBrowserDialog(QDialog):
                     value3='',
                 )
             )
-            self._count.setStyleSheet('color: #999;')
+            style_text(self._count, tone='muted')
         self._update_selection_button()
 
     def _populate_table(self) -> None:
@@ -2661,7 +2667,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
         label.setWordWrap(True)
         layout.addWidget(label)
         self._preview = QLabel(tr('ui.gui.modifications_tab.waiting_for_a_key_combination'))
-        self._preview.setStyleSheet('color: #999; padding: 10px 0;')
+        style_text(self._preview, tone='muted')
+        self._preview.setContentsMargins(0, 10, 0, 10)
         layout.addWidget(self._preview)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -2851,7 +2858,8 @@ class LinuxHotkeyCaptureDialog(QDialog):
         label.setWordWrap(True)
         layout.addWidget(label)
         self._preview = QLabel(tr('ui.gui.modifications_tab.waiting_for_a_key_combination'))
-        self._preview.setStyleSheet('color: #999; padding: 10px 0;')
+        style_text(self._preview, tone='muted')
+        self._preview.setContentsMargins(0, 10, 0, 10)
         layout.addWidget(self._preview)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         clear_button = buttons.addButton(
@@ -3566,7 +3574,7 @@ class CustomFFlagEditor(QWidget):
                 else tr('ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign_2')
             )
             hotkey_help.setWordWrap(True)
-            hotkey_help.setStyleSheet('color: #999;')
+            style_text(hotkey_help, tone='muted')
             layout.addWidget(hotkey_help)
 
         self._search = QLineEdit()
@@ -4119,7 +4127,7 @@ class CustomFFlagEditor(QWidget):
             self._status.setText(
                 tr('ui.gui.modifications_tab.linux_global_keybinds_need_access_to_dev')
             )
-            self._status.setStyleSheet('color: #ffcc66;')
+            style_text(self._status, tone='warning')
             log_buffer.log('CustomFFlags', f'Linux keybind capture unavailable: {detail}')
             return None
 
@@ -4345,7 +4353,7 @@ class CustomFFlagEditor(QWidget):
                     value1=count,
                 )
             )
-            self._status.setStyleSheet('color: #67c587;')
+            style_text(self._status, tone='success')
         else:
             self._status.setText(
                 tr(
@@ -4353,7 +4361,7 @@ class CustomFFlagEditor(QWidget):
                     value0=count,
                 )
             )
-            self._status.setStyleSheet('color: #999;')
+            style_text(self._status, tone='muted')
 
     def _refresh_proxy_hosts(self) -> None:
         if self._proxy_master is None:
@@ -4820,7 +4828,7 @@ class FFlagSection(QWidget):
         warn.setWordWrap(True)
         warn.setTextFormat(Qt.TextFormat.PlainText)
         warn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        warn.setStyleSheet('color: #c90; padding: 0;')
+        style_text(warn, tone='warning')
         self._preset_warning = warn
         layout.addWidget(warn)
 
@@ -5399,7 +5407,7 @@ class ModificationsTab(QWidget):
             )
             sober_mesh_warning.setWordWrap(True)
             sober_mesh_warning.setContentsMargins(8, 4, 8, 8)
-            sober_mesh_warning.setStyleSheet('color: #ffcc66;')
+            style_text(sober_mesh_warning, tone='warning')
             self._mesh_section.add_widget(sober_mesh_warning)
         for name, path in AVATAR_MESHES:
             row = ModRowWidget(
@@ -5526,7 +5534,7 @@ class ModificationsTab(QWidget):
         self._footer_widget = footer_widget
         footer_layout = footer_widget.content_layout
         self._status_label = QLabel()
-        self._status_label.setStyleSheet('color: #888;')
+        style_text(self._status_label, tone='muted')
         footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
         footer_layout.addWidget(clear_cache_button())
@@ -5591,7 +5599,7 @@ class ModificationsTab(QWidget):
 
         hint = QLabel(tr('ui.gui.modifications_tab.pfp_hint'))
         hint.setWordWrap(True)
-        hint.setStyleSheet('color: #888;')
+        style_text(hint, tone='muted')
         layout.addWidget(hint)
 
         table = QTableWidget()

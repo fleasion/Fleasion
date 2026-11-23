@@ -55,6 +55,7 @@ from fleasion.utils.roblox_auth import (
 from fleasion.widgets.no_wheel import DropdownComboBox, NoWheelSpinBox
 from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
+from fleasion.widgets.text import style_text
 lazy from fleasion.utils import linux_clients, platform_linux
 
 from .collapsible_section import CollapsibleSection
@@ -229,7 +230,7 @@ class SettingsTab(QWidget):
         self._footer_widget = footer_widget
         footer_layout = footer_widget.content_layout
         self._status_label = QLabel('')
-        self._status_label.setStyleSheet('color: #888;')
+        style_text(self._status_label, tone='muted')
         footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
         footer_layout.addWidget(delete_cache.clear_cache_button())
@@ -402,7 +403,7 @@ class SettingsTab(QWidget):
         self._proxy_warning_label = QLabel(
             tr('ui.gui.settings_tab.do_not_touch_unless_you_know_what')
         )
-        self._proxy_warning_label.setStyleSheet('color: #e07a00; font-weight: bold;')
+        style_text(self._proxy_warning_label, tone='warning', bold=True)
         section.add_widget(self._proxy_warning_label)
 
         mode_row = QHBoxLayout()

@@ -14,6 +14,7 @@ from fleasion.utils import (
     APP_VERSION,
     get_icon_path,
 )
+from fleasion.widgets.text import style_text
 
 
 class AboutWindow(QDialog):
@@ -42,13 +43,13 @@ class AboutWindow(QDialog):
 
         # App name
         name_label = QLabel(APP_NAME)
-        name_label.setStyleSheet('font-size: 16pt; font-weight: bold;')
+        style_text(name_label, point_size=16, bold=True)
         name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(name_label)
 
         # Version
         version_label = QLabel(tr('ui.gui.about.version_value', value0=APP_VERSION))
-        version_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
+        style_text(version_label, tone='muted', point_size=9)
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version_label)
 
@@ -76,7 +77,7 @@ class AboutWindow(QDialog):
         layout.addWidget(concept_label)
 
         handles_label = QLabel(tr('ui.gui.about.discord_handles'))
-        handles_label.setStyleSheet('color: palette(placeholder-text); font-size: 8pt;')
+        style_text(handles_label, tone='muted', point_size=8)
         handles_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(handles_label)
 

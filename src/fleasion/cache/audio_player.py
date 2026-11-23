@@ -25,6 +25,7 @@ lazy from numpy.typing import NDArray
 
 from fleasion.localization import tr
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.text import style_text
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QCloseEvent
@@ -382,7 +383,7 @@ class AudioPlayerWidget(QWidget):
         self.time_label = QLabel(
             tr('ui.cache.audio_player.00_00_000_value', value0=self._format_time(self.duration))
         )
-        self.time_label.setStyleSheet('color: #888; font-size: 11px;')
+        style_text(self.time_label, tone='muted', pixel_size=11)
         button_time_layout.addWidget(self.time_label)
 
         button_time_layout.addStretch()

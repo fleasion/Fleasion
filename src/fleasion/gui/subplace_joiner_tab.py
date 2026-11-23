@@ -48,6 +48,7 @@ from fleasion.utils.windows import is_roblox_running, launch_as_standard_user
 from fleasion.widgets.card import Card
 from fleasion.widgets.spacing import CONTROL_HEIGHT, GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
+from fleasion.widgets.text import style_text
 lazy from fleasion.gui.delete_cache import clear_cache_button
 lazy from fleasion.utils.verified_direct_https import VerifiedDirectHTTPSAdapter
 
@@ -296,7 +297,7 @@ class _JobIdEdit(QLineEdit):
         super().__init__(parent)
         self.setPlaceholderText(tr('ui.gui.subplace_joiner_tab.jobid_optional'))
         self.setMinimumHeight(CONTROL_HEIGHT)
-        self.setStyleSheet('font-size: 9pt;')
+        style_text(self, point_size=9)
 
     def get_job_id(self) -> str:
         return self.text().strip()
@@ -312,7 +313,7 @@ class _CopyPlaceIdLabel(QLabel):
         super().__init__(tr('subplace.copy_id'), parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(12)
-        self.setStyleSheet('color: palette(placeholder-text); font-size: 7pt;')
+        style_text(self, tone='muted', point_size=7)
         self.setToolTip(tr('ui.gui.subplace_joiner_tab.copy_subplace_id'))
 
     @override
@@ -403,11 +404,11 @@ class SubplaceGameCard(Card):
         layout.addWidget(self.name_label)
 
         self.created_label = QLabel('')
-        self.created_label.setStyleSheet('color: palette(placeholder-text); font-size: 8pt;')
+        style_text(self.created_label, tone='muted', point_size=8)
         layout.addWidget(self.created_label)
 
         self.updated_label = QLabel('')
-        self.updated_label.setStyleSheet('color: palette(placeholder-text); font-size: 8pt;')
+        style_text(self.updated_label, tone='muted', point_size=8)
         layout.addWidget(self.updated_label)
 
         self.copy_id_label = _CopyPlaceIdLabel(self)
@@ -976,7 +977,7 @@ class SubplaceJoinerTab(QWidget):
         footer_widget.setObjectName('SubplaceFooter')
         footer_layout = footer_widget.content_layout
         self._selected_label = QLabel(tr('ui.gui.subplace_joiner_tab.selected_none'))
-        self._selected_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
+        style_text(self._selected_label, tone='muted', point_size=9)
         footer_layout.addWidget(self._selected_label)
         footer_layout.addStretch()
         clear_cache_btn = clear_cache_button()

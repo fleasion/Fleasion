@@ -38,6 +38,7 @@ from fleasion.localization import tr
 from fleasion.utils.paths import PROXY_TRAFFIC_FILE
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
+from fleasion.widgets.text import style_text
 
 from .compact_combo import CompactCellComboBox
 from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
@@ -874,7 +875,7 @@ class ProxyTrafficTab(QWidget):
         footer_widget = TabFooter()
         footer_layout = footer_widget.content_layout
         warning_label = QLabel(tr('ui.gui.proxy_tab.warning_this_tab_may_expose_your_roblox'))
-        warning_label.setStyleSheet('color: #ffcc66;')
+        style_text(warning_label, tone='warning')
         footer_layout.addWidget(warning_label)
         footer_layout.addStretch()
         footer_layout.addWidget(delete_cache.clear_cache_button())

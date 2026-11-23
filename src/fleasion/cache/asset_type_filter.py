@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.localization import tr
+from fleasion.widgets.text import style_text
 
 type AssetType = int | str
 
@@ -204,7 +205,7 @@ class CategoryFilterPopup(QMenu):
             vbox.setSpacing(3)
 
             cat_cb = QCheckBox(_category_label(cat_name))
-            cat_cb.setStyleSheet('font-weight: bold; color: #55aaff;')
+            style_text(cat_cb, tone='info', bold=True)
             cat_cb.setTristate(True)
             self.category_checkboxes[cat_name] = cat_cb
             vbox.addWidget(cat_cb)

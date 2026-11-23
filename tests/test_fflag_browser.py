@@ -802,7 +802,7 @@ def test_custom_fflag_editor_has_no_obsolete_sober_delay_warning() -> None:
     labels = editor.findChildren(QLabel)
 
     assert any('color: #ef8f8f' in label.styleSheet() for label in labels)
-    assert not any('color: #ffcc66' in label.styleSheet() for label in labels)
+    assert not any(label.property('textTone') == 'warning' for label in labels)
     assert app is not None
 
 

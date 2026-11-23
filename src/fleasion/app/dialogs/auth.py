@@ -39,6 +39,7 @@ from fleasion.utils import (
     log_buffer,
     run_in_thread,
 )
+from fleasion.widgets.text import style_text
 lazy from fleasion.gui.rando_stuff_tab import AddAccountDialog
 lazy from fleasion.utils import roblox_auth
 
@@ -99,12 +100,12 @@ def choose_macos_auth_source_on_launch(
     layout.setSpacing(14)
 
     title = QLabel(tr('app.which_browser_is_signed_in_to_roblox'))
-    title.setStyleSheet('font-size: 18px; font-weight: 700;')
+    style_text(title, pixel_size=18, bold=True)
     layout.addWidget(title)
 
     warning = QLabel(tr('app.most_fleasion_account_aware_features_will_not'))
     warning.setWordWrap(True)
-    warning.setStyleSheet('font-weight: 600; color: #e0a53a;')
+    style_text(warning, tone='warning', bold=True)
     layout.addWidget(warning)
 
     body = QLabel(tr('app.choose_the_browser_where_roblox_com_is'))

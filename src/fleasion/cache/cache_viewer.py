@@ -94,6 +94,7 @@ from fleasion.utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from fleasion.widgets.image_preview import ImagePreviewLabel
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
+from fleasion.widgets.text import style_text
 lazy from fleasion.gui import glass
 lazy from fleasion.gui.delete_cache import clear_cache_button
 lazy from fleasion.gui.theme import ThemeManager
@@ -5598,7 +5599,8 @@ class CacheViewerTab(QWidget):
                     value2=map_index,
                 )
             )
-            header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
+            style_text(header, tone='muted', bold=True)
+            header.setContentsMargins(5, 5, 5, 5)
             header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             tp_layout.addWidget(header)
 
@@ -6215,11 +6217,11 @@ class CacheViewerTab(QWidget):
         layout = QVBoxLayout()
 
         title = QLabel(tr('ui.cache.cache_viewer.blacklisted_asset_ids'))
-        title.setStyleSheet('font-weight: bold;')
+        style_text(title, bold=True)
         layout.addWidget(title)
 
         hint = QLabel(tr('ui.cache.cache_viewer.enter_asset_ids_separated_by_commas_spaces'))
-        hint.setStyleSheet('color: gray; font-size: 9pt;')
+        style_text(hint, tone='muted', point_size=9)
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -6241,7 +6243,7 @@ class CacheViewerTab(QWidget):
         # Push the following widgets to the right side
         search_layout.addStretch()
         status_label = QLabel('')
-        status_label.setStyleSheet('color: #888; font-size: 9pt;')
+        style_text(status_label, tone='muted', point_size=9)
         search_layout.addWidget(status_label)
         apply_btn = QPushButton(tr('ui.cache.cache_viewer.apply_blacklist'))
         search_layout.addWidget(apply_btn)
@@ -6270,7 +6272,7 @@ class CacheViewerTab(QWidget):
                 status_label.setText('')
             else:
                 status_label.setText(tr('ui.cache.cache_viewer.id_value_not_found', value0=query))
-                status_label.setStyleSheet('color: #cc5555; font-size: 9pt;')
+                style_text(status_label, tone='error', point_size=9)
 
         search_edit.returnPressed.connect(_search_id)
         search_edit.textChanged.connect(lambda: status_label.setText(''))
@@ -6305,7 +6307,7 @@ class CacheViewerTab(QWidget):
                     value0=tr_count(count, 'count.id.one', 'count.id.other'),
                 )
             )
-            status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
+            style_text(status_label, tone='success', point_size=9)
             if self._blacklisted_ids:
                 log_buffer.log(
                     'Scraper',
@@ -6330,11 +6332,11 @@ class CacheViewerTab(QWidget):
         layout = QVBoxLayout()
 
         title = QLabel(tr('ui.cache.cache_viewer.load_assets_from_roblox'))
-        title.setStyleSheet('font-weight: bold;')
+        style_text(title, bold=True)
         layout.addWidget(title)
 
         hint = QLabel(tr('ui.cache.cache_viewer.enter_asset_ids_separated_by_commas_spaces'))
-        hint.setStyleSheet('color: gray; font-size: 9pt;')
+        style_text(hint, tone='muted', point_size=9)
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -6344,7 +6346,7 @@ class CacheViewerTab(QWidget):
         layout.addWidget(text_edit)
 
         status_label = QLabel('')
-        status_label.setStyleSheet('color: #888; font-size: 9pt;')
+        style_text(status_label, tone='muted', point_size=9)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -6374,7 +6376,7 @@ class CacheViewerTab(QWidget):
 
             if not raw_ids:
                 status_label.setText(tr('ui.cache.cache_viewer.no_valid_asset_ids_found'))
-                status_label.setStyleSheet('color: #cc5555; font-size: 9pt;')
+                style_text(status_label, tone='error', point_size=9)
                 return
 
             # Deduplicate while preserving order
@@ -6394,7 +6396,7 @@ class CacheViewerTab(QWidget):
                     value0=tr_count(asset_ids, 'count.asset.one', 'count.asset.other'),
                 )
             )
-            status_label.setStyleSheet('color: #888; font-size: 9pt;')
+            style_text(status_label, tone='muted', point_size=9)
 
             log_buffer.log(
                 'Scraper',
@@ -6507,7 +6509,7 @@ class CacheViewerTab(QWidget):
                     value0=tr_count(loaded, 'count.asset.one', 'count.asset.other'),
                 )
             )
-            status_label.setStyleSheet('color: #55cc66; font-size: 9pt;')
+            style_text(status_label, tone='success', point_size=9)
         else:
             status_label.setText(
                 tr(
@@ -6516,7 +6518,7 @@ class CacheViewerTab(QWidget):
                     value1=failed,
                 )
             )
-            status_label.setStyleSheet('color: #ccaa55; font-size: 9pt;')
+            style_text(status_label, tone='warning', point_size=9)
 
         log_buffer.log('Scraper', f'[Load Asset] Finished: {loaded} loaded, {failed} failed')
 

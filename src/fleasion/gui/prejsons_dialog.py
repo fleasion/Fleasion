@@ -55,6 +55,7 @@ from fleasion.utils.json_types import (
 )
 from fleasion.widgets.card import Card
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
+from fleasion.widgets.text import style_text
 
 from .file_drop import FileDropLineEdit
 lazy from . import json_viewer
@@ -563,15 +564,15 @@ class GameCard(Card):
         layout.addWidget(self.name_label)
 
         self.created_label = QLabel('')
-        self.created_label.setStyleSheet('color: palette(placeholder-text); font-size: 7pt;')
+        style_text(self.created_label, tone='muted', point_size=7)
         layout.addWidget(self.created_label)
 
         self.updated_label = QLabel('')
-        self.updated_label.setStyleSheet('color: palette(placeholder-text); font-size: 7pt;')
+        style_text(self.updated_label, tone='muted', point_size=7)
         layout.addWidget(self.updated_label)
 
         self.credit_label = QLabel('')
-        self.credit_label.setStyleSheet('color: palette(placeholder-text); font-size: 7pt;')
+        style_text(self.credit_label, tone='muted', point_size=7)
         layout.addWidget(self.credit_label)
 
         layout.addStretch()
@@ -656,12 +657,12 @@ class AddCard(Card):
 
         plus = QLabel(tr('ui.gui.prejsons_dialog.text'))
         plus.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        plus.setStyleSheet('font-size: 36pt; color: palette(placeholder-text);')
+        style_text(plus, tone='muted', point_size=36)
         layout.addWidget(plus)
 
         sub = QLabel(tr('ui.gui.prejsons_dialog.add_custom_dump'))
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
+        style_text(sub, tone='muted', point_size=9)
         layout.addWidget(sub)
 
         self.setLayout(layout)
@@ -735,9 +736,8 @@ class PreJsonsDialog(QDialog):
         root.addLayout(bar)
 
         self.status_label = QLabel(tr('ui.gui.prejsons_dialog.loading'))
-        self.status_label.setStyleSheet(
-            'color: palette(placeholder-text); font-size: 8pt; padding-left: 2px;'
-        )
+        style_text(self.status_label, tone='muted', point_size=8)
+        self.status_label.setContentsMargins(2, 0, 0, 0)
         root.addWidget(self.status_label)
 
         scroll_area = QScrollArea()

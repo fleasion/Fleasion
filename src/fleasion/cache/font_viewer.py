@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from fleasion.localization import tr
 from fleasion.utils import log_buffer
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.text import style_text
 
 
 class FontViewerWidget(QWidget):
@@ -92,7 +93,7 @@ class FontViewerWidget(QWidget):
         # Check if font loaded successfully
         if self.font_id < 0:
             error_label = QLabel(tr('ui.cache.font_viewer.font_could_not_be_loaded_for_preview'))
-            error_label.setStyleSheet('color: #c90;')
+            style_text(error_label, tone='warning')
             info_layout.addWidget(error_label)
 
         info_group.setLayout(info_layout)

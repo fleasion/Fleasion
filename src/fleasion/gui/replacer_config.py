@@ -95,6 +95,7 @@ from fleasion.utils.replacement_filters import ReplacementFilter, describe as de
 from fleasion.widgets.menu_items import draw_menu_item
 from fleasion.widgets.spacing import GAP, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
+from fleasion.widgets.text import style_text
 lazy from fleasion.cache import asset_type_filter, cache_manager as cache_manager_module
 
 from . import command_palette, glass
@@ -779,7 +780,8 @@ class _ScrollableConfigMenu(QMenu):
 
         if not entries:
             row = QLabel(tr('ui.gui.replacer_config.no_configs'))
-            row.setStyleSheet('padding: 5px 8px; color: palette(placeholder-text);')
+            style_text(row, tone='muted')
+            row.setContentsMargins(8, 5, 8, 5)
             row.setFixedHeight(_CONFIG_MENU_ROW_HEIGHT_PX)
             row.installEventFilter(self)
             layout.addWidget(row)
@@ -1532,7 +1534,7 @@ class ReplacerConfigWindow(QDialog):
         # Label
         label_layout = QHBoxLayout()
         title_label = QLabel(tr('ui.gui.replacer_config.replacement_profiles'))
-        title_label.setStyleSheet('font-weight: bold;')
+        style_text(title_label, bold=True)
         label_layout.addWidget(title_label)
 
         label_layout.addStretch()
@@ -1699,7 +1701,8 @@ class ReplacerConfigWindow(QDialog):
         self._configs_path_label = _ElidedLabel(
             tr('ui.gui.replacer_config.configs_value', value0=self.config_manager.configs_folder)
         )
-        self._configs_path_label.setStyleSheet('color: gray; font-size: 8pt; padding-left: 5px;')
+        style_text(self._configs_path_label, tone='muted', point_size=8)
+        self._configs_path_label.setContentsMargins(5, 0, 0, 0)
         footer_layout.addWidget(self._configs_path_label)
 
         footer_layout.addStretch()
@@ -2709,7 +2712,7 @@ class ReplacerConfigWindow(QDialog):
         layout = QVBoxLayout()
 
         title = QLabel(tr('ui.gui.replacer_config.profile_value', value0=name))
-        title.setStyleSheet('font-weight: bold;')
+        style_text(title, bold=True)
         layout.addWidget(title)
 
         count_label = QLabel(
