@@ -7,20 +7,19 @@ from math import ceil
 from typing import TYPE_CHECKING, cast, override
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPalette, QPen
+from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QAbstractItemView, QGraphicsEffect, QTableView, QTreeView, QWidget
 from shiboken6 import isValid
 
 from .scrollbars import BELOW_HEADER
 from .style import RADIUS, glass_colors
+from .views import header_rule_color, header_strip_color, stripe_color, well_color
 
 if TYPE_CHECKING:
     from PySide6.QtCore import QAbstractItemModel, SignalInstance
+    from PySide6.QtGui import QPaintEvent
     from PySide6.QtWidgets import QHeaderView, QStyleOption
 
-
-# Object name the stylesheet gives the header-coloured cap above a view's scrollbar
-SCROLLBAR_HEADER_CAP = 'GlassScrollBarHeaderCap'
 
 # View property holding how far the rounded frame stops above the view's bottom
 FRAME_TRIM = 'glassFrameTrim'
@@ -74,6 +73,19 @@ def paint_item_focus(painter: QPainter, option: QStyleOption, view: QAbstractIte
     painter.restore()
 
 
+class _HeaderCap(QWidget):
+    """The corner above a view's scrollbar, continuing the column header's strip."""
+
+    @override
+    def paintEvent(self, _event: QPaintEvent, /) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), header_strip_color())
+        painter.setPen(QPen(header_rule_color(), 1.0))
+        bottom = self.height() - 0.5
+        painter.drawLine(QPointF(0, bottom), QPointF(self.width(), bottom))
+        painter.end()
+
+
 class ItemViewChrome(QObject):
     """
     Header-aware extras for one table or tree while Glass is active.
@@ -106,9 +118,7 @@ class ItemViewChrome(QObject):
         self._snap_timer.timeout.connect(self._snap_to_rows)
 
         # Qt lays scrollbar widgets out above the bar inside the scrollbar column
-        self._cap = QWidget()
-        self._cap.setObjectName(SCROLLBAR_HEADER_CAP)
-        self._cap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self._cap = _HeaderCap()
         view.addScrollBarWidget(self._cap, Qt.AlignmentFlag.AlignTop)
 
         # The matching gap below the bar keeps it clear of the raised bottom corners
@@ -233,7 +243,7 @@ class ItemViewChrome(QObject):
     def _paint_row_stripes(self, rows: QHeaderView) -> None:
         if not self._view.alternatingRowColors():
             return
-        color = self._view.palette().color(QPalette.ColorRole.AlternateBase)
+        color = stripe_color()
         viewport = rows.viewport()
         first = rows.visualIndexAt(0)
         last = rows.visualIndexAt(viewport.height() - 1)
@@ -313,6 +323,16 @@ class RoundedItemViewEffect(QGraphicsEffect):
         clip.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
         clip.fillPath(outside.subtracted(frame), Qt.GlobalColor.black)
         clip.end()
+
+        # The well behind the whole view, header and scrollbar included; the
+        # viewports stop filling their own backgrounds, see ViewSurface. Popups
+        # paint their own surface, and frameless views sit on their container
+        if not self._popup and isinstance(view, QAbstractItemView) and view.frameWidth() > 0:
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.translate(offset)
+            painter.fillPath(frame, well_color())
+            painter.restore()
         painter.drawPixmap(offset, pixmap)
 
         if not isinstance(view, QAbstractItemView) or (width := view.frameWidth()) <= 0:

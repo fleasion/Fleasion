@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QStyleOptionButton,
     QStyleOptionComboBox,
     QToolButton,
+    QTreeView,
 )
 
 from .groups import group_box_rect, paint_group_box
@@ -34,6 +35,17 @@ from .scrollbars import EXTENT, SLIDER_MIN, paint_scroll_bar, scroll_bar_rect
 from .sliders import HANDLE, paint_slider, slider_rect
 from .style import glass_colors
 from .tabs import FLAT_TAB_METRICS, paint_tab, tab_label_option
+from .views import (
+    grid_color,
+    header_size,
+    item_option,
+    item_rect,
+    item_size,
+    paint_header_label,
+    paint_header_section,
+    paint_item_panel,
+    paint_item_row,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -250,6 +262,8 @@ def _label_option(
             return _button_label_option(option, widget)
         case _CE.CE_TabBarTabLabel:
             return tab_label_option(option)
+        case _CE.CE_ItemViewItem:
+            return item_option(option)
         case _CE.CE_ComboBoxLabel if isinstance(option, QStyleOptionComboBox):
             # A selector's value reads as input text, like the line edits beside it
             changed = QStyleOptionComboBox(option)
@@ -261,8 +275,24 @@ def _label_option(
             return None
 
 
+_PM = QStyle.PixelMetric
+
+# Metrics Glass sets for every widget
+_METRICS: Final[dict[QStyle.PixelMetric, int]] = {
+    _PM.PM_ScrollBarExtent: EXTENT,
+    _PM.PM_ScrollBarSliderMin: SLIDER_MIN,
+    _PM.PM_SliderThickness: HANDLE,
+    _PM.PM_SliderLength: HANDLE,
+    _PM.PM_SliderControlThickness: HANDLE,
+    **dict.fromkeys(FLAT_TAB_METRICS, 0),
+    **MENU_METRICS,
+}
+
+
 class GlassPresentation:
     """The parts of Glass that the application style draws."""
+
+    tinted_selection = True
 
     @staticmethod
     def draw_primitive(
@@ -294,6 +324,15 @@ class GlassPresentation:
             case _PE.PE_FrameMenu if isinstance(widget, QMenu):
                 # The panel draws its own rim
                 pass
+            case _PE.PE_Frame if isinstance(widget, QAbstractItemView) and not isinstance(
+                widget, QHeaderView
+            ):
+                # The rounded item-view effect draws the rim after clipping
+                pass
+            case _PE.PE_PanelItemViewItem:
+                return paint_item_panel(painter, option, widget)
+            case _PE.PE_PanelItemViewRow:
+                return paint_item_row(painter, option, widget)
             case _:
                 return False
         return True
@@ -308,21 +347,23 @@ class GlassPresentation:
     ) -> bool:
         match element:
             case _CE.CE_TabBarTabShape:
-                return paint_tab(painter, option, widget)
+                drawn = paint_tab(painter, option, widget)
             case _CE.CE_MenuItem:
-                return paint_menu_item(painter, option, fusion)
-            case _CE.CE_MenuEmptyArea:
-                # The panel already covers the area around the items
-                return True
+                drawn = paint_menu_item(painter, option, fusion)
+            case _CE.CE_MenuEmptyArea | _CE.CE_HeaderEmptyArea:
+                # The panel or view already covers the area around the items
+                drawn = True
+            case _CE.CE_HeaderSection:
+                drawn = paint_header_section(painter, option)
+            case _CE.CE_HeaderLabel:
+                drawn = paint_header_label(painter, option, fusion)
             case _:
-                pass
-
-        # Otherwise Fusion draws the control, with Glass text colors where they differ
-        changed = _label_option(element, option, widget)
-        if changed is None:
-            return False
-        fusion(changed)
-        return True
+                # Otherwise Fusion draws the control, with Glass text colors where they differ
+                changed = _label_option(element, option, widget)
+                if changed is not None:
+                    fusion(changed)
+                drawn = changed is not None
+        return drawn
 
     @staticmethod
     def draw_complex_control(
@@ -373,6 +414,12 @@ class GlassPresentation:
         match element:
             case QStyle.SubElement.SE_LineEditContents:
                 return line_edit_contents(option, widget, rect)
+            case (
+                QStyle.SubElement.SE_ItemViewItemText
+                | QStyle.SubElement.SE_ItemViewItemDecoration
+                | QStyle.SubElement.SE_ItemViewItemCheckIndicator
+            ):
+                return item_rect(element, rect, option)
             case QStyle.SubElement.SE_TabWidgetTabContents:
                 # No pane frame is drawn, so pages fill the whole pane
                 style = widget.style() if widget is not None else QApplication.style()
@@ -390,27 +437,34 @@ class GlassPresentation:
     ) -> QSize | None:
         if contents_type == QStyle.ContentsType.CT_MenuItem:
             return menu_item_size(option, result)
+        if contents_type == QStyle.ContentsType.CT_ItemViewItem:
+            return item_size(result)
+        if contents_type == QStyle.ContentsType.CT_HeaderSection:
+            return header_size(option, result)
         return input_size(contents_type, size, widget, result)
+
+    @staticmethod
+    def style_hint(
+        hint: QStyle.StyleHint, option: QStyleOption | None, widget: QWidget | None
+    ) -> int | None:
+        del option
+        if hint == QStyle.StyleHint.SH_ItemView_ShowDecorationSelected and isinstance(
+            widget, QTreeView
+        ):
+            # A selected row's band runs through its branch gutter too
+            return 1
+        if hint == QStyle.StyleHint.SH_Table_GridLineColor:
+            # The row numbers are ruled in the same color
+            return grid_color().rgba()
+        return None
 
     @staticmethod
     def pixel_metric(
         metric: QStyle.PixelMetric, option: QStyleOption | None, widget: QWidget | None
     ) -> int | None:
-        del option, widget
-        match metric:
-            case QStyle.PixelMetric.PM_ScrollBarExtent:
-                return EXTENT
-            case QStyle.PixelMetric.PM_ScrollBarSliderMin:
-                return SLIDER_MIN
-            case (
-                QStyle.PixelMetric.PM_SliderThickness
-                | QStyle.PixelMetric.PM_SliderLength
-                | QStyle.PixelMetric.PM_SliderControlThickness
-            ):
-                return HANDLE
-            case _ if metric in FLAT_TAB_METRICS:
-                return 0
-            case _ if metric in MENU_METRICS:
-                return MENU_METRICS[metric]
-            case _:
-                return None
+        del option
+        if metric == QStyle.PixelMetric.PM_DefaultFrameWidth:
+            # Item views get a hairline frame, drawn as the rim by the rounded effect
+            framed = isinstance(widget, QAbstractItemView) and not isinstance(widget, QHeaderView)
+            return 1 if framed else None
+        return _METRICS.get(metric)

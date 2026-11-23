@@ -261,47 +261,6 @@ QComboBox QAbstractItemView {
     background: rgba($popup_rgb,0.97); border: 1px solid transparent;
     border-radius: 12px; padding: 0;
 }
-/* The item-view effect paints the rim after clipping child backgrounds */
-QAbstractItemView {
-    color: $input_text;
-    background: rgba($well_rgb,0.30); alternate-background-color: rgba($ink_rgb,0.025);
-    border: 1px solid transparent;
-    border-radius: ${radius}px; selection-background-color: rgba($accent_rgb,0.24);
-    selection-color: $text;
-}
-/* Preserve all four rounded outer corners; the separate QHeaderView reset
-   below prevents duplicate header outlines without flattening the view */
-QTreeView::item, QListView::item, QTableView::item { padding: 2px 4px; border: 0; }
-QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
-    background: rgba($ink_rgb,0.05);
-}
-QTreeView::item:selected, QListView::item:selected { background: rgba($accent_rgb,0.24); }
-QTableView, QTableWidget { selection-background-color: rgba($accent_rgb,0.11); }
-QTableView::item:selected { background: rgba($accent_rgb,0.11); }
-/* QHeaderView inherits QAbstractItemView; reset the inherited inner rounded frame */
-QHeaderView { background: transparent; border: 0; border-radius: 0; }
-QHeaderView::section {
-    background: rgba($ink_rgb,0.045); color: $muted; border: 0;
-    border-bottom: 1px solid rgba($ink_rgb,0.10); padding: 4px;
-}
-/* Row numbers look like the Scraper's counter column: plain cells on the
-   view's background, ruled with the same lines Fusion draws for the grid */
-QHeaderView::section:vertical {
-    background: transparent; color: $input_text; border: 0;
-    border-right: 1px solid $grid; border-bottom: 1px solid $grid; padding: 2px 4px;
-}
-/* Selected rows carry their band across without Qt's bold highlighted number */
-QHeaderView::section:vertical:checked {
-    background: rgba($accent_rgb,0.11); font-weight: normal;
-}
-/* The corners beside the column header continue its strip, so the
-   row numbers and the scrollbar both start below it */
-QTableCornerButton::section, #GlassScrollBarHeaderCap {
-    background: rgba($ink_rgb,0.045); border: 0;
-    border-bottom: 1px solid rgba($ink_rgb,0.10);
-}
-/* Selected branch gutters share the row fill instead of Fusion's highlight */
-QTreeView { show-decoration-selected: 0; }
 
 #PaletteCard {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -337,8 +296,6 @@ def stylesheet(settings: GlassSettings) -> str:
         'accent_rgb': _rgb(colors.accent.name()),
         'accent': colors.accent.name(),
         'accent_text': colors.accent_text.name(),
-        # Fusion rules table grids with the view background darkened by 20%
-        'grid': f'rgba({_rgb(colors.well.darker(120).name())},0.30)',
         'warning': '#ffd98a' if state.dark else '#805500',
         'success': '#9ff5cf' if state.dark else '#16613f',
     }

@@ -136,7 +136,10 @@ class MenuItemDelegate(QStyledItemDelegate):
             )
             bounds.setLeft(bounds.left() + size.width() + _ICON_GAP)
         palette = menu_option.palette  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-        role = QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text
+        # Imported here: the style module installs these rows on combo boxes
+        from .style import LayoutStyle  # ruff: ignore[import-outside-top-level]
+
+        role = LayoutStyle.selected_text_role() if selected else QPalette.ColorRole.Text
         painter.save()
         painter.setFont(menu_option.font)
         painter.setPen(palette.color(role))

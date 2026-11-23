@@ -34,6 +34,7 @@ from .itemview import ItemViewChrome, RoundedItemViewEffect
 from .state import state
 from .style import RADIUS, glass_colors
 from .transparency import enable_transparency, has_alpha, restore_transparency
+from .views import ViewSurface
 from .wallpaper import wallpapers
 
 if TYPE_CHECKING:
@@ -331,6 +332,7 @@ class GlassWindows(QObject):
             if isValid(view) and isinstance(view.graphicsEffect(), RoundedItemViewEffect):
                 view.setGraphicsEffect(None)  # pyright: ignore[reportArgumentType]
         ItemViewChrome.detach_all(self._app.allWidgets())
+        ViewSurface.detach_all(self._app.allWidgets())
 
         # Popup masks. QSS removal does not always undo the masks Qt adds to native popups
         for widget in self._app.allWidgets():
@@ -454,6 +456,7 @@ class GlassWindows(QObject):
             radius = 12 if popup else RADIUS
             widget.setGraphicsEffect(RoundedItemViewEffect(widget, radius=radius, popup=popup))
         ItemViewChrome.attach(widget)
+        ViewSurface.attach(widget)
 
     #
     # Events

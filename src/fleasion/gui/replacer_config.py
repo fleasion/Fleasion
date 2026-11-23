@@ -92,6 +92,7 @@ from fleasion.utils.replacement_filters import ReplacementFilter, describe as de
 from fleasion.widgets.menu_items import draw_menu_item
 from fleasion.widgets.scrolling_menu import ScrollingMenu
 from fleasion.widgets.spacing import GAP, page_content_margins
+from fleasion.widgets.style import LayoutStyle
 from fleasion.widgets.tab_footer import TabFooter
 from fleasion.widgets.text import style_text
 lazy from fleasion.cache import asset_type_filter, cache_manager as cache_manager_module
@@ -454,7 +455,7 @@ class _ProfileNameDelegate(QStyledItemDelegate):
                 QPalette.ColorGroup.Active
                 if item_option.state & QStyle.StateFlag.State_Enabled
                 else QPalette.ColorGroup.Disabled,
-                QPalette.ColorRole.HighlightedText
+                LayoutStyle.selected_text_role()
                 if item_option.state & QStyle.StateFlag.State_Selected
                 else QPalette.ColorRole.Text,
             )
@@ -465,7 +466,7 @@ class _ProfileNameDelegate(QStyledItemDelegate):
     @staticmethod
     def _draw_folder_icon(painter: QPainter, rect: QRect, option: QStyleOptionViewItem) -> None:
         color = option.palette.color(
-            QPalette.ColorRole.HighlightedText
+            LayoutStyle.selected_text_role()
             if option.state & QStyle.StateFlag.State_Selected
             else QPalette.ColorRole.Text
         )

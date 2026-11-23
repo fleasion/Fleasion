@@ -86,7 +86,6 @@ def test_glass_scraper_selected_row_is_subtle_and_unselected_rows_keep_colors(
         before = _row_colors(table)
         assert table.objectName() == 'ScraperAssetsTable'
         # Stripes stay translucent over the Glass backdrop, like every other table
-        assert table.palette().color(QPalette.ColorRole.AlternateBase).alpha() < 255
         assert before[1].alpha() < 255
         header = table.horizontalHeader()
         header_image = header.grab().toImage()

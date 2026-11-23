@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar, Protocol, overload, override
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractSpinBox,
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from PySide6.QtCore import QRect, QSize
-    from PySide6.QtGui import QColor, QPainter, QPalette
+    from PySide6.QtGui import QColor, QPainter
     from PySide6.QtWidgets import (
         QApplication,
         QStyleHintReturn,
@@ -34,6 +35,9 @@ if TYPE_CHECKING:
 
 class Presentation(Protocol):
     """A look, such as Glass, drawn on top of the Fusion metrics."""
+
+    # Whether selections are faint tints that keep the normal text color on top
+    tinted_selection: bool
 
     def draw_primitive(
         self,
@@ -103,6 +107,12 @@ class Presentation(Protocol):
         """Return a metric of the look, or None to keep the Fusion one."""
         ...
 
+    def style_hint(
+        self, hint: QStyle.StyleHint, option: QStyleOption | None, widget: QWidget | None
+    ) -> int | None:
+        """Return a style hint of the look, or None to keep the Fusion one."""
+        ...
+
 
 class LayoutStyle(QProxyStyle):
     # The look drawn over Fusion while it is active; None draws plain Fusion
@@ -111,6 +121,14 @@ class LayoutStyle(QProxyStyle):
     def __init__(self) -> None:
         super().__init__('Fusion')
         self.setObjectName('fusion')
+
+    @staticmethod
+    def selected_text_role() -> QPalette.ColorRole:
+        """The palette role for text on a selection, solid or tinted."""
+        presentation = LayoutStyle.presentation
+        if presentation is not None and presentation.tinted_selection:
+            return QPalette.ColorRole.Text
+        return QPalette.ColorRole.HighlightedText
 
     @overload
     def polish(self, app: QApplication, /) -> None: ...
@@ -186,6 +204,10 @@ class LayoutStyle(QProxyStyle):
         widget: QWidget | None = None,
         returnData: QStyleHintReturn | None = None,
     ) -> int:
+        if (presentation := LayoutStyle.presentation) is not None and (
+            value := presentation.style_hint(hint, option, widget)
+        ) is not None:
+            return value
         if hint == QStyle.StyleHint.SH_ComboBox_Popup and isinstance(widget, QComboBox):
             # Qt otherwise opens the selected item directly over the selector
             # before the popup has painted its first frame
