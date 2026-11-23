@@ -53,7 +53,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -63,7 +62,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QStyle,
     QStyledItemDelegate,
@@ -75,7 +73,6 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
-    QWidgetAction,
 )
 
 from fleasion.appearance import ACCENT_KEYS, COLOR_MODES, STYLES
@@ -93,6 +90,7 @@ from fleasion.utils.http import http_head_status
 from fleasion.utils.json_types import as_object_list, require_json_value
 from fleasion.utils.replacement_filters import ReplacementFilter, describe as describe_filters
 from fleasion.widgets.menu_items import draw_menu_item
+from fleasion.widgets.scrolling_menu import ScrollingMenu
 from fleasion.widgets.spacing import GAP, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
 from fleasion.widgets.text import style_text
@@ -256,10 +254,6 @@ def _required_entry(value: _RuleEntry | None) -> _RuleEntry:
     return value
 
 
-def _optional_widget(value: QWidget) -> QWidget | None:
-    return value
-
-
 def _children_if_present(entry: object) -> _RuleList:
     children = as_object_list(entry.get('children')) if is_group_rule(entry) else None
     return children if children is not None else []
@@ -288,7 +282,6 @@ _GROUP_FOLDER_ICON_GAP_PX = 4
 _GROUP_GUIDE_GUTTER_PX = 2
 _GROUP_GUIDE_STEP_PX = 15
 _CONFIG_MENU_ROW_HEIGHT_PX = 28
-_CONFIG_MENU_SCREEN_MARGIN_PX = 12
 _CONFIG_MENU_OPEN_RELEASE_GRACE_SEC = 0.25
 _CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX = 24
 _ID_SPLIT_RE = re.compile(r'[,\s;]+')
@@ -684,7 +677,7 @@ class _ConfigMenuRow(QWidget):
             self.activated.emit(self._name)
 
 
-class _ScrollableConfigMenu(QMenu):
+class _ScrollableConfigMenu(ScrollingMenu):
     """Config picker popup that scrolls when the config list exceeds the screen."""
 
     item_selected = Signal(str)
@@ -694,23 +687,12 @@ class _ScrollableConfigMenu(QMenu):
         super().__init__(parent)
         self.setObjectName('ConfigMenuPopup')
         self._checkable = checkable
-        self._minimum_width = 0
-        self._natural_content_size = QSize(0, 0)
         self._opening_release_deadline = 0.0
         self.item_widgets: dict[str, QWidget] = {}
 
-        self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName('ConfigMenuScrollArea')
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_area.installEventFilter(self)
         self.scroll_area.viewport().installEventFilter(self)
-
-        self._content_action = QWidgetAction(self)
-        self._content_action.setDefaultWidget(self.scroll_area)
-        self.addAction(self._content_action)
         self.aboutToShow.connect(self._guard_opening_mouse_release)
 
     def _sync_popup_surface(self) -> None:
@@ -729,31 +711,8 @@ class _ScrollableConfigMenu(QMenu):
         if self.styleSheet() != stylesheet:
             self.setStyleSheet(stylesheet)
 
-    def _popup_insets(self) -> tuple[int, int]:
-        style = self.style()
-        panel = style.pixelMetric(QStyle.PixelMetric.PM_MenuPanelWidth, None, self)
-        horizontal = style.pixelMetric(QStyle.PixelMetric.PM_MenuHMargin, None, self)
-        vertical = style.pixelMetric(QStyle.PixelMetric.PM_MenuVMargin, None, self)
-        return panel + horizontal, panel + vertical
-
-    @override
-    def sizeHint(self) -> QSize:
-        """Include menu framing without losing the constrained scroll area size."""
-        if self._natural_content_size.isValid() and self.scroll_area.size().isValid():
-            horizontal, vertical = self._popup_insets()
-            return QSize(
-                self.scroll_area.width() + 2 * horizontal,
-                self.scroll_area.height() + 2 * vertical,
-            )
-        return super().sizeHint()
-
     def set_entries(self, entries: list[_ConfigMenuEntry], *, minimum_width: int = 0) -> None:
         """Replace the displayed config rows."""
-        old_container = _optional_widget(self.scroll_area.takeWidget())
-        if old_container is not None:
-            old_container.deleteLater()
-
-        self._minimum_width = max(0, minimum_width)
         self.item_widgets.clear()
 
         container = QWidget()
@@ -786,76 +745,8 @@ class _ScrollableConfigMenu(QMenu):
             row.installEventFilter(self)
             layout.addWidget(row)
 
-        self.scroll_area.setWidget(container)
-        container.adjustSize()
-        self._natural_content_size = container.sizeHint()
         self._sync_popup_surface()
-        self._set_popup_content_size(self._natural_content_size.height())
-        self._reset_action_geometry()
-
-    def constrain_to_button(self, button: QPushButton | None) -> None:
-        """Bound the popup to the screen containing the owning button."""
-        if button is None:
-            return
-        anchor = button.mapToGlobal(button.rect().bottomLeft())
-        screen = _optional_screen(button.screen())
-        if screen is None:
-            screen = _screen_at(anchor)
-        if screen is None:
-            return
-        self.constrain_to_available_geometry(screen.availableGeometry(), anchor.y())
-
-    def constrain_to_available_geometry(
-        self, available_geometry: QRect | None, anchor_y: int | None = None
-    ) -> None:
-        """Limit height to visible screen space; the scroll bar appears as needed."""
-        if available_geometry is None:
-            return
-
-        if anchor_y is None:
-            available_height = available_geometry.height()
-        else:
-            space_below = available_geometry.bottom() - anchor_y
-            space_above = anchor_y - available_geometry.top()
-            available_height = max(space_below, space_above)
-
-        horizontal, vertical = self._popup_insets()
-        max_height = max(1, available_height - _CONFIG_MENU_SCREEN_MARGIN_PX - 2 * vertical)
-        max_width = max(
-            1, available_geometry.width() - _CONFIG_MENU_SCREEN_MARGIN_PX - 2 * horizontal
-        )
-        self._set_popup_content_size(max_height, max_width=max_width)
-        self._reset_action_geometry()
-
-    def _set_popup_content_size(self, max_height: int, *, max_width: int | None = None) -> None:
-        natural = self._natural_content_size
-        if natural.height() <= 0:
-            return
-
-        height = min(natural.height(), max(1, max_height))
-        scrollbar_width = self.scroll_area.verticalScrollBar().sizeHint().width()
-        needs_scrollbar = natural.height() > height
-        width = max(natural.width(), self._minimum_width)
-        if needs_scrollbar:
-            width += scrollbar_width
-        if max_width is not None:
-            width = min(width, max_width)
-
-        viewport_width = max(1, width - (scrollbar_width if needs_scrollbar else 0))
-        widget = self.scroll_area.widget()
-        if widget is not None:
-            widget.setMinimumWidth(viewport_width)
-            widget.setFixedWidth(viewport_width)
-        self.scroll_area.setFixedSize(max(1, width), height)
-        self.scroll_area.updateGeometry()
-        self.updateGeometry()
-
-    def _reset_action_geometry(self) -> None:
-        """Invalidate QMenu/QWidgetAction cached geometry after row count changes."""
-        self.adjustSize()
-        self.resize(self.sizeHint())
-        self.updateGeometry()
-        self.update()
+        self.set_content(container, minimum_width=minimum_width)
 
     def _select_item(self, name: str) -> None:
         self.item_selected.emit(name)
@@ -888,12 +779,7 @@ class _ScrollableConfigMenu(QMenu):
 
     @override
     def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:
-        if event is None:
-            return
-        if self.should_ignore_opening_release():
-            return
-        action = self.actionAt(event.pos())
-        if isinstance(action, QWidgetAction) and action.defaultWidget() == self.scroll_area:
+        if event is None or self.should_ignore_opening_release():
             return
         super().mouseReleaseEvent(event)
 
@@ -1807,7 +1693,7 @@ class ReplacerConfigWindow(QDialog):
         self.config_enabled_vars.update(self.enabled_menu.item_widgets)
 
         self._update_enabled_menu_text()
-        self.enabled_menu.constrain_to_button(self.enabled_menu_btn)
+        self.enabled_menu.constrain_to_widget(self.enabled_menu_btn)
 
     def _update_enabled_menu_text(self) -> None:
         """Update the enabled menu button text."""
@@ -2232,7 +2118,7 @@ class ReplacerConfigWindow(QDialog):
         )
         # Ensure the Editing button reflects the enabled state after rebuild
         self._update_editing_button_style()
-        self.config_menu.constrain_to_button(self.config_menu_btn)
+        self.config_menu.constrain_to_widget(self.config_menu_btn)
 
     def _on_config_select(self, name: str) -> None:
         """Handle config selection from menu."""

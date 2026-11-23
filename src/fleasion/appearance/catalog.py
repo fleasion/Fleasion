@@ -92,7 +92,7 @@ THEMES: Final[tuple[Theme, ...]] = (
             section='#272727',
             section_border='#3a3a3a',
             roles=(
-                ('AlternateBase', '#2b2b2b'),
+                ('AlternateBase', '#353535'),
                 ('ToolTipBase', '#ffffdc'),
                 ('ToolTipText', '#000000'),
                 ('BrightText', '#4b4b4b'),

@@ -18,7 +18,7 @@ from .spacing import CONTROL_HEIGHT
 
 if TYPE_CHECKING:
     from PySide6.QtCore import QModelIndex, QPersistentModelIndex
-    from PySide6.QtWidgets import QStyleOptionViewItem, QWidget
+    from PySide6.QtWidgets import QMenu, QStyleOptionViewItem, QWidget
 
 # Qt's own combo delegates, which the menu rows replace
 _NATIVE_DELEGATES: Final = frozenset({'QComboBoxDelegate', 'QComboMenuDelegate'})
@@ -225,3 +225,25 @@ def use_menu_items(combo: QComboBox) -> None:
         # QComboBox.setItemDelegate deletes the old delegate behind its Python
         # wrapper; the view keeps it parented to the combo box instead
         view.setItemDelegate(MenuItemDelegate(combo))
+
+
+def sync_widget_menu_surface(menu: QMenu, container: QWidget, *, checkbox_padding: str) -> None:
+    """Paint a menu that embeds widgets, and their container, on one opaque surface.
+
+    Glass makes the Window role transparent, so the menu falls back to the
+    tooltip surface and the table underneath never shows through.
+    """
+    surface = menu.palette().window().color()
+    if surface.alpha() == 0:
+        surface = menu.palette().toolTipBase().color()
+    color = surface.name()
+
+    stylesheet = (
+        f'QMenu {{ background-color: {color}; border: 1px solid palette(mid);'
+        ' border-radius: 4px; color: palette(window-text); }'
+        f' QWidget#{container.objectName()} {{ background-color: {color}; }}'
+        f' QCheckBox {{ padding: {checkbox_padding}; font-size: 12px; }}'
+        ' QCheckBox::indicator { width: 14px; height: 14px; }'
+    )
+    if menu.styleSheet() != stylesheet:
+        menu.setStyleSheet(stylesheet)

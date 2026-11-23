@@ -2,25 +2,21 @@
 
 from __future__ import annotations
 
-from typing import override
-
-from PySide6.QtCore import QRect, QSignalBlocker, QSize, Qt, Signal
-from PySide6.QtGui import QFontMetrics, QMouseEvent
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
-    QMenu,
     QPushButton,
-    QScrollArea,
-    QStyle,
     QVBoxLayout,
     QWidget,
-    QWidgetAction,
 )
 
 from fleasion.localization import tr
+from fleasion.widgets.menu_items import sync_widget_menu_surface
+from fleasion.widgets.scrolling_menu import ScrollingMenu
 from fleasion.widgets.text import style_text
 
 type AssetType = int | str
@@ -155,7 +151,7 @@ def asset_type_display_name(type_id: AssetType) -> str:
     return labels.get(type_id, str(type_id))
 
 
-class CategoryFilterPopup(QMenu):
+class CategoryFilterPopup(ScrollingMenu):
     filters_changed = Signal(set)
 
     def __init__(
@@ -163,9 +159,8 @@ class CategoryFilterPopup(QMenu):
         parent: QWidget | None = None,
         active_filters: set[AssetType] | None = None,
     ) -> None:
-        super().__init__(parent)
-        self._sync_surface_stylesheet()
-        self.aboutToShow.connect(self._sync_surface_stylesheet)
+        super().__init__(parent, horizontal_scroll=True)
+        self.scroll_area.setObjectName('FilterScrollArea')
 
         self.active_filters: set[AssetType] = set(active_filters) if active_filters else set()
         self._updating = False
@@ -270,87 +265,12 @@ class CategoryFilterPopup(QMenu):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setObjectName('FilterScrollArea')
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll_area.setWidget(self.container)
+        self._sync_surface()
+        self.aboutToShow.connect(self._sync_surface)
+        self.set_content(self.container)
 
-        self._natural_content_size = self.container.sizeHint()
-        self._set_popup_content_size(self._natural_content_size.height())
-
-        action = QWidgetAction(self)
-        action.setDefaultWidget(self.scroll_area)
-        self.addAction(action)
-
-    def _sync_surface_stylesheet(self) -> None:
-        """Use an opaque palette role even when Glass makes Window transparent."""
-        surface = self.palette().window().color()
-        if surface.alpha() == 0:
-            surface = self.palette().toolTipBase().color()
-        color = surface.name()
-        stylesheet = f"""
-            QMenu {{ background-color: {color}; border: 1px solid palette(mid); border-radius: 4px; color: palette(window-text); }}
-            QWidget#FilterContainer {{ background-color: {color}; }}
-            QCheckBox {{ padding: 1px; color: palette(window-text); font-size: 12px; }}
-            QCheckBox::indicator {{ width: 14px; height: 14px; }}
-        """
-        if self.styleSheet() != stylesheet:
-            self.setStyleSheet(stylesheet)
-
-    def _popup_insets(self) -> tuple[int, int]:
-        style = self.style()
-        panel = style.pixelMetric(QStyle.PixelMetric.PM_MenuPanelWidth, None, self)
-        horizontal = style.pixelMetric(QStyle.PixelMetric.PM_MenuHMargin, None, self)
-        vertical = style.pixelMetric(QStyle.PixelMetric.PM_MenuVMargin, None, self)
-        return panel + horizontal, panel + vertical
-
-    @override
-    def sizeHint(self) -> QSize:
-        """Size the menu and its embedded widget together, including style margins."""
-        if self._natural_content_size.isValid() and self.scroll_area.size().isValid():
-            horizontal, vertical = self._popup_insets()
-            return QSize(
-                self.scroll_area.width() + 2 * horizontal,
-                self.scroll_area.height() + 2 * vertical,
-            )
-        return super().sizeHint()
-
-    def _set_popup_content_size(self, max_height: int, *, max_width: int | None = None) -> None:
-        natural = self._natural_content_size
-        height = min(natural.height(), max(1, max_height))
-        width = natural.width()
-        if natural.height() > height:
-            width += self.scroll_area.verticalScrollBar().sizeHint().width()
-        if max_width is not None:
-            width = min(width, max(1, max_width))
-        self.scroll_area.setFixedSize(max(1, width), max(1, height))
-        self.scroll_area.updateGeometry()
-        self.updateGeometry()
-
-    def constrain_to_available_geometry(
-        self, available_geometry: QRect | None, anchor_y: int | None = None
-    ) -> None:
-        """Bound the popup to the visible screen area and enable vertical scroll."""
-        if available_geometry is None:
-            return
-
-        if anchor_y is None:
-            available_height = available_geometry.height()
-        else:
-            space_below = available_geometry.bottom() - anchor_y
-            space_above = anchor_y - available_geometry.top()
-            available_height = max(space_below, space_above)
-
-        horizontal, vertical = self._popup_insets()
-        max_height = max(1, available_height - 12 - 2 * vertical)
-        max_width = max(1, available_geometry.width() - 12 - 2 * horizontal)
-        self._set_popup_content_size(max_height, max_width=max_width)
-        self.adjustSize()
-        self.resize(self.sizeHint())
-        self.updateGeometry()
+    def _sync_surface(self) -> None:
+        sync_widget_menu_surface(self, self.container, checkbox_padding='1px')
 
     def set_active_filters(self, active_filters: set[AssetType] | None) -> None:
         """Update the popup checks without rebuilding the widget."""
@@ -362,15 +282,6 @@ class CategoryFilterPopup(QMenu):
         for cat_name in self.categories:
             self._update_category_state(cat_name)
         self._updating = False
-
-    @override
-    def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:
-        if a0 is None:
-            return
-        action = self.actionAt(a0.pos())
-        if isinstance(action, QWidgetAction) and action.defaultWidget() == self.scroll_area:
-            return
-        super().mouseReleaseEvent(a0)
 
     def _on_category_clicked(self, type_ids: list[AssetType], cat_name: str) -> None:
         if self._updating:

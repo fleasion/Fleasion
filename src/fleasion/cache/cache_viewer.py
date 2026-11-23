@@ -47,14 +47,12 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
-    QColor,
     QCursor,
     QFontDatabase,
     QIcon,
     QImage,
     QKeyEvent,
     QMouseEvent,
-    QPalette,
     QPixmap,
     QResizeEvent,
     QScreen,
@@ -92,6 +90,7 @@ from fleasion.utils.gui_work import GuiWork
 from fleasion.utils.json_types import JsonValue
 from fleasion.utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from fleasion.widgets.image_preview import ImagePreviewLabel
+from fleasion.widgets.menu_items import sync_widget_menu_surface
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, page_content_margins
 from fleasion.widgets.tab_footer import TabFooter
 from fleasion.widgets.text import style_text
@@ -1370,14 +1369,15 @@ class ColumnFilterPopup(QMenu):
         self, parent: QWidget | None = None, active_cols: Collection[str] | None = None
     ) -> None:
         super().__init__(parent)
-        self._sync_surface_stylesheet()
-        self.aboutToShow.connect(self._sync_surface_stylesheet)
         self.active_cols = (
             set(active_cols) if active_cols is not None else set(_DEFAULT_SEARCH_COL_KEYS)
         )
 
         container = QWidget()
         container.setObjectName('ColContainer')
+        self._container = container
+        self._sync_surface_stylesheet()
+        self.aboutToShow.connect(self._sync_surface_stylesheet)
         vbox = QVBoxLayout(container)
         vbox.setContentsMargins(*PANEL_MARGINS)
         vbox.setSpacing(GAP)
@@ -1408,22 +1408,7 @@ class ColumnFilterPopup(QMenu):
         self.addAction(wa)
 
     def _sync_surface_stylesheet(self) -> None:
-        """Paint the entire widget-backed menu, even with Glass's transparent Window role."""
-        surface = self.palette().window().color()
-        if surface.alpha() == 0:
-            # Match CategoryFilterPopup: the underlying cache table must not
-            # show through the menu or its embedded checkbox container
-            surface = self.palette().toolTipBase().color()
-        color = surface.name()
-        stylesheet = f"""
-            QMenu {{ background-color: {color}; border: 1px solid palette(mid);
-                    border-radius: 4px; color: palette(window-text); }}
-            QWidget#ColContainer {{ background-color: {color}; }}
-            QCheckBox {{ padding: 2px 4px; color: palette(window-text); font-size: 12px; }}
-            QCheckBox::indicator {{ width: 14px; height: 14px; }}
-        """
-        if self.styleSheet() != stylesheet:
-            self.setStyleSheet(stylesheet)
+        sync_widget_menu_surface(self, self._container, checkbox_padding='2px 4px')
 
     def _on_toggle(self, key: str, checked: bool) -> None:
         if checked:
@@ -1997,31 +1982,6 @@ class CacheViewerTab(QWidget):
         if self._ui_ready and not self.preview_panel.isHidden():
             self._auto_snap_splitter()
 
-    @override
-    def changeEvent(self, event: QEvent) -> None:
-        super().changeEvent(event)
-        if self._ui_ready and event.type() == QEvent.Type.PaletteChange:
-            self._update_table_alt_palette()
-
-    def _update_table_alt_palette(self) -> None:
-        """Keep Scraper's alternating rows translucent in Glass, solid in Dark."""
-        window_color = self.palette().color(QPalette.ColorRole.Window)
-        if window_color.alpha() < 255:
-            # Glass uses a translucent window palette; opaque dark-mode rows
-            # would obscure its backdrop when Qt paints without QSS
-            alternate = (
-                QColor(255, 255, 255, 9) if window_color.lightness() < 128 else QColor(0, 0, 0, 9)
-            )
-        elif window_color.lightness() < 128:
-            alternate = QColor(53, 53, 53)
-        else:
-            self.table.setPalette(QPalette())
-            return
-        table_pal = self.table.palette()
-        if table_pal.color(QPalette.ColorRole.AlternateBase) != alternate:
-            table_pal.setColor(QPalette.ColorRole.AlternateBase, alternate)
-            self.table.setPalette(table_pal)
-
     def _sanitize_filename(self, name: str) -> str:
         """Replace characters that are illegal in Windows filenames with Unicode look-alikes."""
         char_map = {
@@ -2344,9 +2304,6 @@ class CacheViewerTab(QWidget):
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        # Apply a slightly darker alternating-row colour in dark mode; this is
-        # managed by _update_table_alt_palette() and kept in sync via changeEvent.
-        self._update_table_alt_palette()
         self.table.currentItemChanged.connect(self._on_selection_changed)
         self.table.verticalScrollBar().valueChanged.connect(self._schedule_visible_type_probes)
         # Prevent column 0 (counter) from ever becoming the current item.

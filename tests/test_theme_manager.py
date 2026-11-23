@@ -145,7 +145,7 @@ def test_forced_dark_resolves_to_the_catalog_dark_palette(
             QPalette.ColorRole.Window: '#323232',
             QPalette.ColorRole.WindowText: '#f0f0f0',
             QPalette.ColorRole.Base: '#242424',
-            QPalette.ColorRole.AlternateBase: '#2b2b2b',
+            QPalette.ColorRole.AlternateBase: '#353535',
             QPalette.ColorRole.ToolTipBase: '#ffffdc',
             QPalette.ColorRole.ToolTipText: '#000000',
             QPalette.ColorRole.Text: '#f0f0f0',
