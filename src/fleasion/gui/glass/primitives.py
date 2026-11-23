@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QTreeView,
 )
 
-from .groups import frame_kind, group_box_rect, paint_frame, paint_group_box
+from .groups import frame_kind, group_box_rect, paint_frame, paint_group_box, paint_splitter
 from .inputs import (
     combo_box_rect,
     input_size,
@@ -376,9 +376,7 @@ class GlassPresentation:
             case _CE.CE_ShapedFrame:
                 drawn = paint_frame(painter, option, widget)
             case _CE.CE_Splitter:
-                # A faint bar between the panes
-                painter.fillRect(option.rect, _tint(glass_colors().ink, 0.08))  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-                drawn = True
+                drawn = paint_splitter(painter, option)
             case _:
                 # Otherwise Fusion draws the control, with Glass text colors where they differ
                 changed = _label_option(element, option, widget)

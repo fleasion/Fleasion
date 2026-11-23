@@ -140,3 +140,41 @@ def paint_frame(painter: QPainter, option: QStyleOption, widget: QWidget | None)
     painter.drawRoundedRect(rect, radius, radius)
     painter.restore()
     return True
+
+
+#
+# Splitters
+#
+
+
+# A short rounded grip in the middle of the handle; the rest stays clear
+_GRIP_LENGTH: Final = 32.0
+_GRIP_THICKNESS: Final = 3.0
+
+
+def paint_splitter(painter: QPainter, option: QStyleOption) -> bool:
+    """A grip that brightens under the pointer and takes the accent while dragged."""
+    state = option.state  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+    colors = glass_colors()
+    if state & QStyle.StateFlag.State_Sunken:
+        color = _tint(colors.accent, 0.85)
+    elif state & QStyle.StateFlag.State_MouseOver:
+        color = _tint(colors.ink, 0.34)
+    else:
+        color = _tint(colors.ink, 0.16)
+
+    # A horizontal splitter lays its panes side by side, so its grip stands upright
+    rect = QRectF(option.rect)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+    upright = bool(state & QStyle.StateFlag.State_Horizontal)
+    thickness = min(_GRIP_THICKNESS, rect.width() if upright else rect.height())
+    length = min(_GRIP_LENGTH, rect.height() if upright else rect.width())
+    grip = QRectF(0, 0, thickness, length) if upright else QRectF(0, 0, length, thickness)
+    grip.moveCenter(rect.center())
+
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    painter.drawRoundedRect(grip, thickness / 2, thickness / 2)
+    painter.restore()
+    return True
