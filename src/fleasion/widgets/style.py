@@ -2,27 +2,38 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, overload, override
+from typing import TYPE_CHECKING, ClassVar, overload, override
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QAbstractItemView,
     QAbstractSpinBox,
     QComboBox,
+    QHeaderView,
     QProxyStyle,
     QStyle,
+    QTableView,
+    QTreeView,
 )
 
 from .menu_items import use_menu_items
 from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from PySide6.QtCore import QRect, QSize
     from PySide6.QtGui import QColor, QPainter, QPalette
     from PySide6.QtWidgets import QApplication, QStyleHintReturn, QStyleOption, QWidget
 
+    type ItemFocusPainter = Callable[[QPainter, QStyleOption, QAbstractItemView], None]
+
 
 class LayoutStyle(QProxyStyle):
+    # A presentation such as Glass may replace the current-item focus box of item views
+    item_focus_painter: ClassVar[ItemFocusPainter | None] = None
+
     def __init__(self) -> None:
         super().__init__('Fusion')
         self.setObjectName('fusion')
@@ -40,6 +51,10 @@ class LayoutStyle(QProxyStyle):
         if isinstance(target, QComboBox):
             # Popup rows match the menus behind every other dropdown button
             use_menu_items(target)
+        elif isinstance(target, QTableView | QTreeView):
+            # Tables and column trees stripe their rows like the Scraper, so wide rows
+            # stay easy to follow
+            target.setAlternatingRowColors(True)
         super().polish(target)
 
     @override
@@ -111,6 +126,14 @@ class LayoutStyle(QProxyStyle):
         if element == QStyle.PrimitiveElement.PE_FrameFocusRect and isinstance(
             widget, QAbstractButton
         ):
+            return
+        if (
+            element == QStyle.PrimitiveElement.PE_FrameFocusRect
+            and (paint_focus := LayoutStyle.item_focus_painter) is not None
+            and isinstance(widget, QAbstractItemView)
+            and not isinstance(widget, QHeaderView)
+        ):
+            paint_focus(painter, option, widget)
             return
         if (
             element == QStyle.PrimitiveElement.PE_FrameTabWidget

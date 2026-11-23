@@ -9,6 +9,7 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QRegion
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -23,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fleasion.gui.glass.itemview import RoundedItemViewEffect
+from fleasion.gui.glass.itemview import FRAME_TRIM, RoundedItemViewEffect
 from fleasion.gui.theme import ThemeManager
 
 if TYPE_CHECKING:
@@ -97,12 +98,13 @@ def test_tree_and_table_headers_have_no_second_rounded_frame(
                     corner = image.pixelColor(x, 0)
                     rim = image.pixelColor(inset if x == 0 else image.width() - inset - 1, 0)
                     assert corner.alpha() + 25 < rim.alpha()
-                # Check bottom corners independently so the top stays rounded
+                # Check bottom corners independently so the top stays rounded. The
+                # frame may end above the view's edge so the rows fill it exactly
+                trim = view.property(FRAME_TRIM) or 0
+                bottom = image.height() - 1 - round(trim * image.devicePixelRatio())
                 for x in (0, image.width() - 1):
-                    corner = image.pixelColor(x, image.height() - 1)
-                    rim = image.pixelColor(
-                        inset if x == 0 else image.width() - inset - 1, image.height() - 1
-                    )
+                    corner = image.pixelColor(x, bottom)
+                    rim = image.pixelColor(inset if x == 0 else image.width() - inset - 1, bottom)
                     assert corner.alpha() + 10 < rim.alpha()
             if isinstance(view, QTreeWidget):
                 # Header backgrounds must not fill either rounded outer corner
@@ -160,7 +162,10 @@ def _assert_no_inner_corner_cutout(header: QHeaderView) -> None:
     interior_alpha = image.pixelColor(round(20 * image.devicePixelRatio()), 0).alpha()
     assert header.mask().isEmpty()
     assert corner_alpha == interior_alpha
-    assert corner_alpha > 0
+
+    # Row numbers sit on the view's own background, so only column headers paint this row
+    if header.orientation() == Qt.Orientation.Horizontal:
+        assert corner_alpha > 0
 
 
 def _assert_glass_header_clip_matches_view(view: QWidget, child: QWidget) -> None:

@@ -9,11 +9,13 @@ from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QWidget
 
 from fleasion.localization import tr
+from fleasion.widgets.style import LayoutStyle
 lazy from fleasion.appearance import accent_name
 lazy from fleasion.gui.theme import ThemeManager
 
 from .chrome import apply_chrome, prepare_frameless, register, registered_windows
 from .desktop_blur import APP_ID, blur
+from .itemview import paint_item_focus
 from .state import Backdrop, state
 from .style import palette, stylesheet
 from .stylesheets import WindowStyles
@@ -100,6 +102,7 @@ class GlassTheme:
 
         ThemeManager.ensure_widget_style(app, 'Fusion')
         app.setPalette(palette(state.settings, base_palette=base_palette))
+        LayoutStyle.item_focus_painter = paint_item_focus
 
         # Popups that already exist, with the masks and attributes to restore later
         original_popups = (
@@ -151,6 +154,7 @@ class GlassTheme:
         app.removeEventFilter(window_filter)
         self._filter = None
         self._stylesheets.restore()
+        LayoutStyle.item_focus_painter = None
 
         for window in registered_windows():
             apply_chrome(window, enabled=False)

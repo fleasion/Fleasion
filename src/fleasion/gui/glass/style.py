@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import ceil, sqrt
 from string import Template
 from typing import TYPE_CHECKING, Final
 
@@ -26,6 +27,11 @@ MUTED: Final = 'rgba(245,247,251,0.62)'
 
 # Corner radius of windows, group boxes and item views
 RADIUS: Final = 14
+
+# Item-view scrollbars sit 3px in from the rim (frame plus margin); their ends stop where
+# the rounded corner has curved that far inward, plus room for the rim and some air
+_SCROLLBAR_EDGE: Final = 3
+SCROLLBAR_CORNER_INSET: Final = ceil(RADIUS - sqrt(RADIUS**2 - (RADIUS - _SCROLLBAR_EDGE) ** 2)) + 3
 
 # QSS can only load images from files, so the glyphs are written here
 ICON_DIR: Final[Path] = CONFIG_DIR / 'glass'
@@ -113,6 +119,7 @@ _ICONS: Final[dict[str, str]] = {
     'chevron-up': f'<path d="M4 10l4-4 4 4" {_STROKE} stroke="{TEXT}" stroke-width="1.8"/>',
     'check': f'<path d="M3.5 8.5l3 3 6-7" {_STROKE} stroke="#0c0d12" stroke-width="2.2"/>',
     'dot': '<circle cx="8" cy="8" r="3.2" fill="#0c0d12"/>',
+    'dash': f'<path d="M4.5 8h7" {_STROKE} stroke="#0c0d12" stroke-width="2.2"/>',
     'win-min': f'<path d="M4.5 8h7" {_STROKE} stroke="{TEXT}" stroke-width="1.6"/>',
     'win-max': f'<rect x="4.5" y="4.5" width="7" height="7" rx="1.6" {_STROKE} '
     f'stroke="{TEXT}" stroke-width="1.5"/>',
@@ -126,7 +133,7 @@ def icon_path(name: str) -> str:
 
     # One file per glyph and colour, so a palette change gets a new path
     colors = glass_colors()
-    foreground = colors.accent_text if name in {'check', 'dot'} else colors.text
+    foreground = colors.accent_text if name in {'check', 'dot', 'dash'} else colors.text
     path = ICON_DIR / f'{name}-{foreground.name()[1:]}.svg'
 
     glyph = _ICONS[name].replace(TEXT, foreground.name()).replace('#0c0d12', foreground.name())
@@ -392,7 +399,35 @@ QHeaderView::section {
     background: rgba($ink_rgb,0.045); color: $muted; border: 0;
     border-bottom: 1px solid rgba($ink_rgb,0.10); padding: 4px;
 }
-QTableCornerButton::section { background: transparent; border: 0; }
+/* Row numbers look like the Scraper's counter column: plain cells on the
+   view's background, ruled with the same lines Fusion draws for the grid */
+QHeaderView::section:vertical {
+    background: transparent; color: $input_text; border: 0;
+    border-right: 1px solid $grid; border-bottom: 1px solid $grid; padding: 2px 4px;
+}
+/* Selected rows carry their band across without Qt's bold highlighted number */
+QHeaderView::section:vertical:checked {
+    background: rgba($accent_rgb,0.11); font-weight: normal;
+}
+/* The corners beside the column header continue its strip, so the
+   row numbers and the scrollbar both start below it */
+QTableCornerButton::section, #GlassScrollBarHeaderCap {
+    background: rgba($ink_rgb,0.045); border: 0;
+    border-bottom: 1px solid rgba($ink_rgb,0.10);
+}
+/* Selected branch gutters share the row fill instead of Fusion's highlight */
+QTreeView { show-decoration-selected: 0; }
+
+/* Check marks inside item views match the standalone check boxes */
+QAbstractItemView::indicator { width: 16px; height: 16px; $well border-radius: 5px; }
+QAbstractItemView::indicator:hover { border-color: rgba($accent_rgb,0.8); }
+QAbstractItemView::indicator:checked, QAbstractItemView::indicator:indeterminate {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 $accent, stop:1 $accent);
+    border: 1px solid rgba($ink_rgb,0.30);
+}
+QAbstractItemView::indicator:checked { image: url($check); }
+QAbstractItemView::indicator:indeterminate { image: url($dash); }
 
 QCheckBox, QRadioButton { spacing: 6px; }
 QCheckBox::indicator, QRadioButton::indicator { width: 16px; height: 16px; $well }
@@ -427,6 +462,11 @@ QScrollBar::handle {
     background: rgba($ink_rgb,0.20); border-radius: 3px; min-height: 30px; min-width: 30px;
 }
 QScrollBar::handle:hover { background: rgba($ink_rgb,0.36); }
+/* Inside rounded item views the ends stay clear of the corners; a bar that already
+   starts below a column header keeps the usual top margin */
+QAbstractItemView QScrollBar:vertical { margin: ${scroll_inset}px 2px; }
+QAbstractItemView QScrollBar:horizontal { margin: 2px ${scroll_inset}px; }
+QScrollBar[glassBelowHeader="true"]:vertical { margin-top: 4px; }
 QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {
     background: transparent; border: 0; width: 0; height: 0;
 }
@@ -474,6 +514,8 @@ def stylesheet(settings: GlassSettings) -> str:
         'accent_rgb': _rgb(colors.accent.name()),
         'accent': colors.accent.name(),
         'accent_text': colors.accent_text.name(),
+        # Fusion rules table grids with the view background darkened by 20%
+        'grid': f'rgba({_rgb(colors.well.darker(120).name())},0.30)',
         'warning': '#ffd98a' if state.dark else '#805500',
         'success': '#9ff5cf' if state.dark else '#16613f',
     }
@@ -481,6 +523,7 @@ def stylesheet(settings: GlassSettings) -> str:
     return _STYLESHEET.substitute(
         **values,
         radius=RADIUS,
+        scroll_inset=SCROLLBAR_CORNER_INSET,
         control_padding=CONTROL_PADDING,
         control_content_height=CONTROL_HEIGHT - CONTROL_PADDING * 2 - 2,
         input_padding=CONTROL_PADDING - 1,
@@ -493,4 +536,5 @@ def stylesheet(settings: GlassSettings) -> str:
         chevron_up=icon_path('chevron-up'),
         check=icon_path('check'),
         dot=icon_path('dot'),
+        dash=icon_path('dash'),
     )
