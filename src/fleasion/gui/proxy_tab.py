@@ -15,15 +15,11 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QKeySequence,
-    QPainter,
-    QPaintEvent,
     QShortcut,
     QShowEvent,
-    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QDialog,
     QFileDialog,
     QLabel,
@@ -43,7 +39,7 @@ from fleasion.utils.paths import PROXY_TRAFFIC_FILE
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
 
-from . import glass
+from .compact_combo import CompactCellComboBox
 from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
 from .rules_dialog_ui import UiDialog as UiRulesDialog
 lazy from . import delete_cache
@@ -456,40 +452,6 @@ class _TableColumnResizer(QObject):
         return False
 
 
-class _CompactComboBox(QComboBox):
-    """A borderless combo box that blends into a table cell."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setProperty('compactCell', 'true')
-
-    @override
-    def wheelEvent(self, e: QWheelEvent) -> None:
-        e.ignore()
-
-    @override
-    def paintEvent(self, e: QPaintEvent) -> None:
-        if glass.theme.active:
-            super().paintEvent(e)
-            return
-        painter = QPainter(self)
-        # The editor overlaps a table item that still paints its own text
-        # Keep the entire editor opaque even when its popup owns focus
-        painter.fillRect(self.rect(), self.palette().base())
-        if self.hasFocus() or self.underMouse():
-            painter.fillRect(self.rect(), self.palette().alternateBase())
-        painter.setPen(self.palette().text().color())
-        painter.drawText(
-            self.rect().adjusted(6, 0, -18, 0),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            self.currentText(),
-        )
-        arrow_x = self.width() - 12
-        arrow_y = self.height() // 2
-        painter.drawLine(arrow_x - 3, arrow_y - 1, arrow_x, arrow_y + 2)
-        painter.drawLine(arrow_x, arrow_y + 2, arrow_x + 3, arrow_y - 1)
-
-
 class AutoReplaceRulesDialog(QDialog):
     """Dialog shown by the 'Auto replace' button - a rule table for
     search/replace transforms applied to request/response bodies (or
@@ -568,7 +530,7 @@ class AutoReplaceRulesDialog(QDialog):
             )
             table.setItem(row, 0, enabled_item)
 
-            direction_box = _CompactComboBox()
+            direction_box = CompactCellComboBox(text_inset=6, arrow_inset=12)
             for label, value in _direction_options():
                 direction_box.addItem(label, value)
             direction_index = direction_box.findData(rule.get('direction', 'both'))
@@ -580,7 +542,7 @@ class AutoReplaceRulesDialog(QDialog):
             direction_box.currentIndexChanged.connect(_direction_changed)
             table.setCellWidget(row, 1, direction_box)
 
-            type_box = _CompactComboBox()
+            type_box = CompactCellComboBox(text_inset=6, arrow_inset=12)
             for label, value in _type_options():
                 type_box.addItem(label, value)
             type_index = type_box.findData(rule.get('type', 'plain'))
@@ -608,14 +570,14 @@ class AutoReplaceRulesDialog(QDialog):
     def _on_direction_changed(self, row: int) -> None:
         if self._loading or row >= len(self._rules):
             return
-        widget = cast('_CompactComboBox', self.ui.rulesTable.cellWidget(row, 1))
+        widget = cast('CompactCellComboBox', self.ui.rulesTable.cellWidget(row, 1))
         self._rules[row]['direction'] = str(widget.currentData() or 'both')
         self._save()
 
     def _on_type_changed(self, row: int) -> None:
         if self._loading or row >= len(self._rules):
             return
-        widget = cast('_CompactComboBox', self.ui.rulesTable.cellWidget(row, 2))
+        widget = cast('CompactCellComboBox', self.ui.rulesTable.cellWidget(row, 2))
         self._rules[row]['type'] = str(widget.currentData() or 'plain')
         self._save()
 

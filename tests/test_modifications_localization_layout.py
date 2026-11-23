@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion import localization
-from fleasion.gui.modifications_tab import CollapsibleSection, ModificationsTab, ModRowWidget
+from fleasion.gui.collapsible_section import CollapsibleSection
+from fleasion.gui.modifications_tab import ModificationsTab, ModRowWidget
 from fleasion.gui.rando_stuff_tab import RandoStuffTab
 from fleasion.gui.theme import ThemeManager
 from fleasion.localization import get_language, set_language, tr

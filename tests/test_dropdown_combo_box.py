@@ -8,7 +8,7 @@ from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QImage, QPainter, QPalette
 from PySide6.QtWidgets import QApplication, QStyle, QStyleFactory, QStyleOptionComboBox
 
-from fleasion.gui.modifications_tab import DropdownComboBox
+from fleasion.widgets.no_wheel import DropdownComboBox
 from fleasion.gui.theme import ThemeManager
 
 _app: QApplication | None = None

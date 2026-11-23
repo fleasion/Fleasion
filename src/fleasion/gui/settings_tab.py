@@ -52,11 +52,12 @@ from fleasion.utils.roblox_auth import (
     store_manual_roblosecurity,
     validate_roblosecurity_for_import,
 )
+from fleasion.widgets.no_wheel import DropdownComboBox, NoWheelSpinBox
 from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
 from fleasion.widgets.tab_footer import TabFooter
 lazy from fleasion.utils import linux_clients, platform_linux
 
-from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpinBox
+from .collapsible_section import CollapsibleSection
 lazy from . import delete_cache, rando_stuff_tab
 
 if TYPE_CHECKING:

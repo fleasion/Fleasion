@@ -27,8 +27,8 @@ from PySide6.QtWidgets import (
 from fleasion import localization
 from fleasion.gui import modifications_tab
 from fleasion.utils.fflag_resolution import CLIENT_FFLAG_PREFIXES
+from fleasion.gui.compact_combo import CompactCellComboBox
 from fleasion.gui.modifications_tab import (
-    CompactBooleanComboBox,
     CustomFFlagEditor,
     FastFlagValueDelegate,
     FFlagBrowserDialog,
@@ -849,7 +849,7 @@ def test_boolean_value_cell_click_opens_selector_even_after_row_selection() -> N
     table.clicked.emit(index)
     app.processEvents()
 
-    assert any(combo.isVisible() for combo in table.findChildren(CompactBooleanComboBox))
+    assert any(combo.isVisible() for combo in table.findChildren(CompactCellComboBox))
 
 
 def test_grouped_boolean_flag_uses_canonical_name_for_delegate() -> None:
@@ -873,7 +873,7 @@ def test_grouped_boolean_flag_uses_canonical_name_for_delegate() -> None:
 
     combo = delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
 
-    assert isinstance(combo, CompactBooleanComboBox)
+    assert isinstance(combo, CompactCellComboBox)
     assert app is not None
 
 

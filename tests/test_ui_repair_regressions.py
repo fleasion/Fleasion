@@ -27,7 +27,7 @@ from fleasion.appearance import accent_name
 from fleasion.gui.appearance_controls import AccentSelector
 from fleasion.gui.command_palette import fade_tabs
 from fleasion.gui.glass import chrome
-from fleasion.gui.modifications_tab import CollapsibleSection
+from fleasion.gui.collapsible_section import CollapsibleSection
 from fleasion.gui.theme import ThemeManager
 
 if TYPE_CHECKING:

@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fleasion.gui.modifications_tab import CollapsibleSection, CustomFFlagEditor
+from fleasion.gui.collapsible_section import CollapsibleSection
+from fleasion.gui.modifications_tab import CustomFFlagEditor
 
 if TYPE_CHECKING:
     from fleasion.config.manager import ConfigManager

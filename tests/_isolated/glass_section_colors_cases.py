@@ -14,7 +14,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout
 
 from fleasion.gui.glass import style as glass_style
-from fleasion.gui.modifications_tab import CollapsibleSection
+from fleasion.gui.collapsible_section import CollapsibleSection
 from fleasion.gui.rando_stuff_tab import CollapsibleSection as MiscSection
 from fleasion.gui.settings_tab import CollapsibleSection as SettingsSection
 from fleasion.gui.theme import ThemeManager

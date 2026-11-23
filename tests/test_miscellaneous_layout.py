@@ -9,7 +9,7 @@ from PySide6.QtCore import QPoint, QPropertyAnimation
 from PySide6.QtWidgets import QApplication, QGroupBox, QLabel, QLineEdit, QListWidget, QWidget
 
 import fleasion.gui.rando_stuff_tab as rando
-from fleasion.gui.modifications_tab import CollapsibleSection
+from fleasion.gui.collapsible_section import CollapsibleSection
 
 _app: QApplication | None = None
 

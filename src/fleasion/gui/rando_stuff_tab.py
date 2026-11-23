@@ -66,7 +66,7 @@ lazy from fleasion.utils.r15_to_r6 import (
 )
 lazy from fleasion.utils.rig_data import R6_JOINTS, R6_PARTS, R15_JOINTS, R15_PARTS
 
-from .modifications_tab import CollapsibleSection
+from .collapsible_section import CollapsibleSection
 from .proxy_gate import ProxyGate
 from .theme import ThemeManager
 lazy from . import macos_rosemary_launch

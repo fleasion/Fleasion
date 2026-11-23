@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from functools import partial
 from typing import TYPE_CHECKING
 
 import pytest
@@ -12,21 +13,25 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QWidget
 
-from fleasion.gui.modifications_tab import CompactBooleanComboBox
-from fleasion.gui.proxy_tab import _CompactComboBox  # pyright: ignore[reportPrivateUsage]
+from fleasion.gui.compact_combo import CompactCellComboBox
 from fleasion.gui.theme import ThemeManager
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fleasion.appearance import AppearanceStyle, ColorMode
 
 
-@pytest.mark.parametrize('combo_type', [CompactBooleanComboBox, _CompactComboBox])
+@pytest.mark.parametrize(
+    'combo_type',
+    [CompactCellComboBox, partial(CompactCellComboBox, text_inset=6, arrow_inset=12)],
+)
 @pytest.mark.parametrize(
     ('style', 'mode'),
     [('Fusion', 'Dark'), ('Fusion', 'Light'), ('Glass', 'Dark'), ('Glass', 'Light')],
 )
 def test_compact_combo_covers_underlying_table_cell_when_popup_takes_focus(
-    combo_type: type[QComboBox], style: AppearanceStyle, mode: ColorMode
+    combo_type: Callable[[QWidget], QComboBox], style: AppearanceStyle, mode: ColorMode
 ) -> None:
     application = QApplication.instance()
     app = application if isinstance(application, QApplication) else QApplication([])
