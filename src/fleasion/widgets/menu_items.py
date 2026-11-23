@@ -29,25 +29,9 @@ _TEXT_PADDING: Final = 8
 _ICON_GAP: Final = 6
 
 
-def plain_style() -> QStyle:
-    """Return the application style beneath any stylesheet.
-
-    Stylesheet item rules for list views would otherwise restyle combo rows,
-    so every menu row draws with the same plain style
-    """
-    style = QApplication.style()
-    if style.metaObject().className() == 'QStyleSheetStyle':
-        # findChild ignores FindDirectChildrenOnly through PySide, and the base
-        # style's own Fusion child must not be picked over it
-        base = next((child for child in style.children() if isinstance(child, QStyle)), None)
-        if base is not None:
-            return base
-    return style
-
-
 def draw_menu_item(painter: QPainter, option: QStyleOptionMenuItem, widget: QWidget | None) -> None:
     """Draw one menu row exactly as the style draws the rows of a QMenu."""
-    plain_style().drawControl(QStyle.ControlElement.CE_MenuItem, option, painter, widget)
+    QApplication.style().drawControl(QStyle.ControlElement.CE_MenuItem, option, painter, widget)
 
 
 class MenuItemDelegate(QStyledItemDelegate):
@@ -62,7 +46,7 @@ class MenuItemDelegate(QStyledItemDelegate):
         The rows carry the popup padding because a scroll area paints its own
         padding apart from the viewport, leaving a visible band in Glass
         """
-        margin = plain_style().pixelMetric(QStyle.PixelMetric.PM_MenuVMargin, None, widget)
+        margin = QApplication.style().pixelMetric(QStyle.PixelMetric.PM_MenuVMargin, None, widget)
         padding = max(_PADDING, margin)
         top = padding if index.row() == 0 else 0
         bottom = padding if index.row() == index.model().rowCount(index.parent()) - 1 else 0
@@ -180,7 +164,7 @@ class MenuItemDelegate(QStyledItemDelegate):
     ) -> QSize:
         widget = option.widget  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
         menu_option = self._menu_option(option, index)
-        size = plain_style().sizeFromContents(
+        size = QApplication.style().sizeFromContents(
             QStyle.ContentsType.CT_MenuItem, menu_option, QSize(0, 0), widget
         )
         if menu_option.menuItemType == QStyleOptionMenuItem.MenuItemType.Normal:

@@ -29,7 +29,7 @@ from fleasion.config.manager import ConfigManager
 from fleasion.gui import glass
 from fleasion.gui.settings_tab import SettingsTab
 from fleasion.gui.theme import ThemeManager
-from fleasion.widgets.menu_items import MenuItemDelegate, plain_style
+from fleasion.widgets.menu_items import MenuItemDelegate
 from fleasion.widgets.spacing import CONTROL_HEIGHT
 
 if TYPE_CHECKING:
@@ -263,10 +263,3 @@ def test_fusion_combo_rows_paint_as_menu_items(app: QApplication) -> None:
     finally:
         combo.deleteLater()
         app.processEvents()
-
-
-def test_glass_menu_rows_skip_list_item_rules(app: QApplication) -> None:
-    app.setStyleSheet('QDialogButtonBox { button-layout: 0; }')
-    ThemeManager.apply_appearance('Glass', 'Dark', 'Ice')
-    # List item rules would paint a square selection under the rounded one
-    assert plain_style().metaObject().className() != 'QStyleSheetStyle'
