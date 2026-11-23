@@ -45,6 +45,7 @@ from fleasion.utils.roblox_auth import (
     wait_for_roblosecurity as _wait_for_roblosecurity,
 )
 from fleasion.utils.windows import is_roblox_running, launch_as_standard_user
+from fleasion.widgets.card import Card
 from fleasion.widgets.spacing import CONTROL_HEIGHT, GAP, PANEL_MARGINS
 from fleasion.widgets.tab_footer import TabFooter
 lazy from fleasion.gui.delete_cache import clear_cache_button
@@ -362,51 +363,20 @@ class _PlaceIdButton(QPushButton):
             self._relabel_timer.start(0)
 
 
-class SubplaceGameCard(QFrame):
+class SubplaceGameCard(Card):
     """A constant-size subplace card in every theme and viewport width."""
-
-    def _apply_style(self) -> None:
-        window_color = QApplication.palette().color(QPalette.ColorRole.Window)
-        variant = (
-            'Glass'
-            if window_color.alpha() == 0
-            else 'Dark'
-            if window_color.lightness() < 128
-            else 'Light'
-        )
-        if variant == self._style_variant:
-            return
-        self._style_variant = variant
-        if variant == 'Glass':
-            # The global Glass QSS owns the card surface and hover state
-            self.setStyleSheet('')
-            return
-        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
-        border = 'rgba(255,255,255,0.22)' if dark else 'rgba(0,0,0,0.18)'
-        bg = 'rgba(255,255,255,0.04)' if dark else 'rgba(0,0,0,0.03)'
-        hover = 'rgba(255,255,255,0.09)' if dark else 'rgba(0,0,0,0.06)'
-        self.setStyleSheet(
-            f'QFrame#SubplaceGameCard {{ border: 1px solid {border}; background: {bg}; }}'
-            f'QFrame#SubplaceGameCard:hover {{ background: {hover}; }}'
-        )
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._restyle_timer = QTimer(self)
-        self._restyle_timer.setSingleShot(True)
-        self._restyle_timer.timeout.connect(self._apply_style)
         self.place_id: int | None = None
         self.is_root: bool = False
         self.created_iso: str | None = None
         self.updated_iso: str | None = None
-        self._style_variant: str | None = None
 
         self.setObjectName('SubplaceGameCard')
-        self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setFixedSize(_SUBPLACE_CARD_W, _SUBPLACE_CARD_H)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._setup_ui()
-        self._apply_style()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout()
@@ -465,12 +435,6 @@ class SubplaceGameCard(QFrame):
 
         layout.addLayout(btn_row)
         self.setLayout(layout)
-
-    @override
-    def changeEvent(self, event: QEvent) -> None:
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.StyleChange:
-            self._restyle_timer.start(0)
 
     def set_data(self, name: str, created: str = '', updated: str = '') -> None:
         self.name_label.setText(name)

@@ -248,13 +248,6 @@ QScrollArea#SubplaceResultsScroll {
     background: rgba($well_rgb,0.26); border: 1px solid rgba($ink_rgb,0.09);
     border-radius: 10px;
 }
-QFrame#SubplaceGameCard {
-    background: rgba($ink_rgb,0.07); border: 1px solid rgba($ink_rgb,0.11);
-    border-top-color: rgba($ink_rgb,0.16); border-radius: 12px;
-}
-QFrame#SubplaceGameCard:hover {
-    background: rgba($ink_rgb,0.11); border-color: rgba($ink_rgb,0.18);
-}
 QPushButton#SubplaceSidebarButton {
     padding: 4px 10px; border-radius: 8px;
 }

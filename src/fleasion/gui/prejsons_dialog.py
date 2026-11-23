@@ -13,10 +13,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, cast, override
 
 from PIL import Image, ImageDraw
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QPoint, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QCloseEvent,
-    QEnterEvent,
     QFont,
     QIcon,
     QImage,
@@ -54,6 +53,7 @@ from fleasion.utils.json_types import (
     require_object_dict,
     require_object_list,
 )
+from fleasion.widgets.card import Card
 from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
 
 from .file_drop import FileDropLineEdit
@@ -506,26 +506,14 @@ THUMB_HEIGHT = 128
 # Game Card Widget
 
 
-class GameCard(QFrame):
+class GameCard(Card):
     """A single game card: thumbnail + name + dates + action buttons."""
-
-    def _apply_style(self, hover: bool = False) -> None:
-        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
-        border = 'rgba(255,255,255,0.22)' if dark else 'rgba(0,0,0,0.18)'
-        bg = (
-            ('rgba(255,255,255,0.07)' if hover else 'rgba(255,255,255,0.04)')
-            if dark
-            else ('rgba(0,0,0,0.06)' if hover else 'transparent')
-        )
-        self.setStyleSheet(f'GameCard {{ border: 1px solid {border}; background: {bg}; }}')
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setMinimumWidth(CARD_WIDTH)
         self.setFixedHeight(CARD_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._apply_style()
         self._game_name = ''
         self._dump_file: Path | None = None
         self._on_delete: Callable[[GameCard], object] | None = None
@@ -647,39 +635,17 @@ class GameCard(QFrame):
         if action == delete_action and self._on_delete:
             self._on_delete(self)
 
-    @override
-    def enterEvent(self, event: QEnterEvent) -> None:
-        self._apply_style(hover=True)
-        super().enterEvent(event)
-
-    @override
-    def leaveEvent(self, event: QEvent) -> None:
-        self._apply_style()
-        super().leaveEvent(event)
-
 
 # Add Card Widget  (the "+" button at the end of the grid)
 
 
-class AddCard(QFrame):
+class AddCard(Card):
     """Clickable '+' card that opens the import dialog."""
 
     clicked = Signal()
 
-    def _apply_style(self, hover: bool = False) -> None:
-        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
-        border = 'rgba(255,255,255,0.22)' if dark else 'rgba(0,0,0,0.18)'
-        bg = (
-            ('rgba(255,255,255,0.07)' if hover else 'rgba(255,255,255,0.04)')
-            if dark
-            else ('rgba(0,0,0,0.06)' if hover else 'transparent')
-        )
-        self.setStyleSheet(f'AddCard {{ border: 1px solid {border}; background: {bg}; }}')
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self._apply_style()
         self.setMinimumWidth(CARD_WIDTH)
         self.setFixedHeight(CARD_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -705,16 +671,6 @@ class AddCard(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
-
-    @override
-    def enterEvent(self, event: QEnterEvent) -> None:
-        self._apply_style(hover=True)
-        super().enterEvent(event)
-
-    @override
-    def leaveEvent(self, event: QEvent) -> None:
-        self._apply_style()
-        super().leaveEvent(event)
 
 
 # PreJsons Dialog

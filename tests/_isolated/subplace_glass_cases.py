@@ -188,7 +188,7 @@ def test_subplace_grid_shows_horizontal_scroll_when_narrow(app: QApplication) ->
         app.processEvents()
 
 
-def test_deferred_sidebar_and_card_updates_stop_when_widgets_are_deleted(
+def test_deferred_sidebar_updates_stop_when_widgets_are_deleted(
     app: QApplication, capfd: pytest.CaptureFixture[str]
 ) -> None:
     from PySide6.QtCore import QCoreApplication, QEvent
@@ -205,12 +205,7 @@ def test_deferred_sidebar_and_card_updates_stop_when_widgets_are_deleted(
         QCoreApplication.sendEvent(button, QEvent(QEvent.Type.StyleChange))
         assert button._relabel_timer.isActive()  # pyright: ignore[reportPrivateUsage]
         button.deleteLater()
-        card = SubplaceGameCard()
-        QCoreApplication.sendEvent(card, QEvent(QEvent.Type.StyleChange))
-        assert card._restyle_timer.isActive()  # pyright: ignore[reportPrivateUsage]
-        card.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         assert not isValid(button)
-        assert not isValid(card)
     QTest.qWait(40)
     assert 'RuntimeError' not in capfd.readouterr().err
