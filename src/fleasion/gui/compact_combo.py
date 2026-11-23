@@ -9,8 +9,6 @@ from PySide6.QtGui import QPainter
 
 from fleasion.widgets.no_wheel import DropdownComboBox
 
-from . import glass
-
 if TYPE_CHECKING:
     from PySide6.QtGui import QPaintEvent
     from PySide6.QtWidgets import QWidget
@@ -35,13 +33,10 @@ class CompactCellComboBox(DropdownComboBox):
         super().__init__(parent)
         self._text_inset = text_inset
         self._arrow_inset = arrow_inset
-        self.setProperty('compactCell', 'true')
 
     @override
     def paintEvent(self, e: QPaintEvent) -> None:
-        if glass.theme.active:
-            super().paintEvent(e)
-            return
+        del e
 
         # The editor overlaps a table item that still paints its own text. Keep
         # the entire editor opaque, even when its popup owns focus

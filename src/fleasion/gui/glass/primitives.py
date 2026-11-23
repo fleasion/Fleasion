@@ -12,20 +12,32 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStyle,
     QStyleOptionButton,
+    QStyleOptionComboBox,
     QToolButton,
 )
 
+from .inputs import (
+    combo_box_rect,
+    input_size,
+    line_edit_contents,
+    paint_combo_box,
+    paint_line_edit,
+    paint_spin_box,
+    spin_box_rect,
+)
 from .itemview import paint_item_focus
 from .style import glass_colors
 
 if TYPE_CHECKING:
-    from PySide6.QtWidgets import QStyleOption, QWidget
+    from PySide6.QtCore import QRect, QSize
+    from PySide6.QtWidgets import QStyleOption, QStyleOptionComplex, QWidget
 
     from .style import GlassColors
 
 
 _PE = QStyle.PrimitiveElement
 _CE = QStyle.ControlElement
+_CC = QStyle.ComplexControl
 _State = QStyle.StateFlag
 
 # Marks are drawn on a 16px grid centred in the indicator, as the old glyphs were
@@ -243,6 +255,8 @@ class GlassPresentation:
                 _paint_button(painter, option, widget)
             case _PE.PE_PanelButtonTool if isinstance(widget, QToolButton):
                 _paint_button(painter, option, widget)
+            case _PE.PE_PanelLineEdit:
+                return paint_line_edit(painter, option, widget)
             case _:
                 return False
         return True
@@ -251,9 +265,69 @@ class GlassPresentation:
     def control_option(
         element: QStyle.ControlElement, option: QStyleOption, widget: QWidget | None
     ) -> QStyleOption | None:
-        if element == _CE.CE_PushButtonLabel:
-            return _button_label_option(option, widget)
+        match element:
+            case _CE.CE_PushButtonLabel:
+                return _button_label_option(option, widget)
+            case _CE.CE_ComboBoxLabel if isinstance(option, QStyleOptionComboBox):
+                # A selector's value reads as input text, like the line edits beside it
+                changed = QStyleOptionComboBox(option)
+                palette = QPalette(option.palette)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+                palette.setColor(
+                    QPalette.ColorRole.ButtonText, palette.color(QPalette.ColorRole.Text)
+                )
+                changed.palette = palette  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+                return changed
+            case _:
+                return None
+
+    @staticmethod
+    def draw_complex_control(
+        control: QStyle.ComplexControl,
+        option: QStyleOptionComplex,
+        painter: QPainter,
+        widget: QWidget | None,
+    ) -> bool:
+        match control:
+            case _CC.CC_ComboBox:
+                return paint_combo_box(painter, option, widget)
+            case _CC.CC_SpinBox:
+                return paint_spin_box(painter, option, widget)
+            case _:
+                return False
+
+    @staticmethod
+    def sub_control_rect(
+        control: QStyle.ComplexControl,
+        option: QStyleOptionComplex,
+        sub_control: QStyle.SubControl,
+        widget: QWidget | None,
+    ) -> QRect | None:
+        match control:
+            case _CC.CC_ComboBox:
+                return combo_box_rect(option, sub_control, widget)
+            case _CC.CC_SpinBox:
+                return spin_box_rect(option, sub_control, widget)
+            case _:
+                return None
+
+    @staticmethod
+    def sub_element_rect(
+        element: QStyle.SubElement, option: QStyleOption, widget: QWidget | None, rect: QRect
+    ) -> QRect | None:
+        if element == QStyle.SubElement.SE_LineEditContents:
+            return line_edit_contents(option, widget, rect)
         return None
+
+    @staticmethod
+    def size_from_contents(
+        contents_type: QStyle.ContentsType,
+        option: QStyleOption,
+        size: QSize,
+        widget: QWidget | None,
+        result: QSize,
+    ) -> QSize | None:
+        del option
+        return input_size(contents_type, size, widget, result)
 
     @staticmethod
     def pixel_metric(

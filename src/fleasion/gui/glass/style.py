@@ -11,7 +11,7 @@ from PySide6.QtGui import QColor, QPalette
 
 from fleasion.appearance.colors import accent_color, apply_accent, on_accent
 from fleasion.utils.paths import CONFIG_DIR
-from fleasion.widgets.spacing import CONTROL_HEIGHT, CONTROL_PADDING
+from fleasion.widgets.spacing import CONTROL_PADDING
 
 from .state import state
 
@@ -115,8 +115,6 @@ _STROKE: Final = 'fill="none" stroke-linecap="round" stroke-linejoin="round"'
 
 # Drawn in TEXT; icon_path() swaps in the real colour
 _ICONS: Final[dict[str, str]] = {
-    'chevron-down': f'<path d="M4 6l4 4 4-4" {_STROKE} stroke="{TEXT}" stroke-width="1.8"/>',
-    'chevron-up': f'<path d="M4 10l4-4 4 4" {_STROKE} stroke="{TEXT}" stroke-width="1.8"/>',
     'win-min': f'<path d="M4.5 8h7" {_STROKE} stroke="{TEXT}" stroke-width="1.6"/>',
     'win-max': f'<rect x="4.5" y="4.5" width="7" height="7" rx="1.6" {_STROKE} '
     f'stroke="{TEXT}" stroke-width="1.5"/>',
@@ -273,65 +271,18 @@ QPushButton#ConflictBadge[clean="true"] {
     border-top-color: rgba(190,255,225,0.6); color: $success;
 }
 
-QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+/* Text edits keep style-sheet wells until item views move to the style */
+QTextEdit, QPlainTextEdit {
     color: $input_text;
     $well border-radius: 8px; padding: 4px 8px;
     selection-background-color: $accent; selection-color: $accent_text;
 }
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-    padding: ${input_padding}px 8px; min-height: ${input_content_height}px;
-}
-QComboBox { padding-right: 30px; }
-QComboBox[compactCell="true"] {
-    background: palette(base); border: 0; border-radius: 6px;
-    padding: 0 24px 0 5px; min-height: 0;
-}
-QComboBox[compactCell="true"]:hover, QComboBox[compactCell="true"]:focus {
-    background: palette(alternate-base); border: 0;
-}
-QAbstractSpinBox > QLineEdit, QComboBox > QLineEdit {
-    background: transparent; border: 0; border-radius: 0; padding: 0; min-height: 0;
-}
-QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: rgba($ink_rgb,0.14); }
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus,
-QDoubleSpinBox:focus, QComboBox:focus { border: 1px solid rgba($accent_rgb,0.85); }
-QComboBox::drop-down {
-    subcontrol-origin: border; subcontrol-position: center right;
-    width: 24px; margin-right: 3px; border: 0; background: transparent;
-}
-QComboBox::down-arrow { image: url($chevron_down); width: 14px; height: 14px; }
-/* Browser selectors fit the longest option rather than reserving the full generic gap */
-QComboBox[fflagBrowserCompact="true"] { padding-right: 12px; }
-QComboBox[fflagBrowserCompact="true"]::drop-down { width: 16px; margin-right: 1px; }
-QComboBox[fflagBrowserCompact="true"]::down-arrow { width: 12px; height: 12px; }
+QTextEdit:focus, QPlainTextEdit:focus { border: 1px solid rgba($accent_rgb,0.85); }
 /* Matches QMenu; the item-view effect paints the rim and the menu-item rows pad themselves */
 QComboBox QAbstractItemView {
     background: rgba($popup_rgb,0.97); border: 1px solid transparent;
     border-radius: 12px; padding: 0;
 }
-QSpinBox, QDoubleSpinBox { padding-right: 24px; }
-QSpinBox::up-button, QDoubleSpinBox::up-button,
-QSpinBox::down-button, QDoubleSpinBox::down-button {
-    subcontrol-origin: border; width: 20px; border: 0; background: transparent;
-    border-radius: 6px;
-}
-QSpinBox::up-button, QDoubleSpinBox::up-button {
-    subcontrol-position: top right; margin: 3px 3px 0 0;
-}
-QSpinBox::down-button, QDoubleSpinBox::down-button {
-    subcontrol-position: bottom right; margin: 0 3px 3px 0;
-}
-QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-    background: rgba($ink_rgb,0.10);
-}
-QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-    image: url($chevron_up); width: 11px; height: 11px;
-}
-QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-    image: url($chevron_down); width: 11px; height: 11px;
-}
-
 /* The item-view effect paints the rim after clipping child backgrounds */
 QAbstractItemView {
     color: $input_text;
@@ -452,12 +403,8 @@ def stylesheet(settings: GlassSettings) -> str:
         radius=RADIUS,
         scroll_inset=SCROLLBAR_CORNER_INSET,
         control_padding=CONTROL_PADDING,
-        input_padding=CONTROL_PADDING - 1,
-        input_content_height=CONTROL_HEIGHT - (CONTROL_PADDING - 1) * 2 - 2,
         pane=Template(_PANE).substitute(values),
         pane_hover=Template(_PANE_HOVER).substitute(values),
         rim=Template(_RIM).substitute(values),
         well=Template(_WELL).substitute(values),
-        chevron_down=icon_path('chevron-down'),
-        chevron_up=icon_path('chevron-up'),
     )

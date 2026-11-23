@@ -23,8 +23,8 @@ from PySide6.QtWidgets import (
 
 from fleasion.gui import modifications_tab
 from fleasion.gui.glass import style as glass_style
-from fleasion.gui.glass.state import state as glass_state
 from fleasion.gui.modifications_tab import FFlagBrowserDialog, FFlagSection
+from fleasion.gui.theme import ThemeManager
 from fleasion.modifications.fflag_static import ClientBinary
 
 if TYPE_CHECKING:
@@ -220,7 +220,7 @@ def test_glass_theme_compact_dropdowns_fit_the_full_longest_option(
         if not public:
             public = {f'DFStringOption{i}': None for i in range(1000)}
         dialog._apply_flags(public)  # pyright: ignore[reportPrivateUsage]
-        dialog.setStyleSheet(glass_style.stylesheet(glass_state.settings))
+        ThemeManager.apply_appearance('Glass', 'Dark', 'Ice')
         dialog.resize(1150, 700)
         dialog.show()
         app.processEvents()
@@ -245,6 +245,7 @@ def test_glass_theme_compact_dropdowns_fit_the_full_longest_option(
             assert combo.width() < combo.sizeHint().width()
         assert search.width() > 400
     finally:
+        ThemeManager.apply_appearance('Fusion', 'Dark', 'Ice')
         dialog.close()
 
 

@@ -21,7 +21,13 @@ from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING
 if TYPE_CHECKING:
     from PySide6.QtCore import QRect, QSize
     from PySide6.QtGui import QColor, QPainter, QPalette
-    from PySide6.QtWidgets import QApplication, QStyleHintReturn, QStyleOption, QWidget
+    from PySide6.QtWidgets import (
+        QApplication,
+        QStyleHintReturn,
+        QStyleOption,
+        QStyleOptionComplex,
+        QWidget,
+    )
 
 
 class Presentation(Protocol):
@@ -41,6 +47,43 @@ class Presentation(Protocol):
         self, element: QStyle.ControlElement, option: QStyleOption, widget: QWidget | None
     ) -> QStyleOption | None:
         """Return a changed copy of a control's option, such as its colors, or None."""
+        ...
+
+    def draw_complex_control(
+        self,
+        control: QStyle.ComplexControl,
+        option: QStyleOptionComplex,
+        painter: QPainter,
+        widget: QWidget | None,
+    ) -> bool:
+        """Draw a complex control and return True, or return False to leave it to Fusion."""
+        ...
+
+    def sub_control_rect(
+        self,
+        control: QStyle.ComplexControl,
+        option: QStyleOptionComplex,
+        sub_control: QStyle.SubControl,
+        widget: QWidget | None,
+    ) -> QRect | None:
+        """Return where a part of a complex control sits, or None for the Fusion place."""
+        ...
+
+    def sub_element_rect(
+        self, element: QStyle.SubElement, option: QStyleOption, widget: QWidget | None, rect: QRect
+    ) -> QRect | None:
+        """Return a replacement for the Fusion rectangle of a sub-element, or None."""
+        ...
+
+    def size_from_contents(
+        self,
+        contents_type: QStyle.ContentsType,
+        option: QStyleOption,
+        size: QSize,
+        widget: QWidget | None,
+        result: QSize,
+    ) -> QSize | None:
+        """Return a replacement for the size computed so far, or None to keep it."""
         ...
 
     def pixel_metric(
@@ -170,6 +213,34 @@ class LayoutStyle(QProxyStyle):
         super().drawPrimitive(element, option, painter, widget)
 
     @override
+    def drawComplexControl(
+        self,
+        control: QStyle.ComplexControl,
+        option: QStyleOptionComplex,
+        painter: QPainter,
+        widget: QWidget | None = None,
+    ) -> None:
+        if (
+            presentation := LayoutStyle.presentation
+        ) is not None and presentation.draw_complex_control(control, option, painter, widget):
+            return
+        super().drawComplexControl(control, option, painter, widget)
+
+    @override
+    def subControlRect(
+        self,
+        control: QStyle.ComplexControl,
+        option: QStyleOptionComplex,
+        sub_control: QStyle.SubControl,
+        widget: QWidget | None = None,
+    ) -> QRect:
+        if (presentation := LayoutStyle.presentation) is not None and (
+            rect := presentation.sub_control_rect(control, option, sub_control, widget)
+        ) is not None:
+            return rect
+        return super().subControlRect(control, option, sub_control, widget)  # pyright: ignore[reportArgumentType] - Qt accepts a null widget
+
+    @override
     def drawControl(
         self,
         element: QStyle.ControlElement,
@@ -206,6 +277,10 @@ class LayoutStyle(QProxyStyle):
                 rect.moveRight(contents.right())
             else:
                 rect.moveLeft(contents.left())
+        if (presentation := LayoutStyle.presentation) is not None and (
+            changed := presentation.sub_element_rect(element, option, widget, rect)
+        ) is not None:
+            return changed
         return rect
 
     @override
@@ -216,6 +291,21 @@ class LayoutStyle(QProxyStyle):
         size: QSize,
         widget: QWidget | None = None,
     ) -> QSize:
+        result = self._shared_size(contents_type, option, size, widget)
+        if (presentation := LayoutStyle.presentation) is not None and (
+            changed := presentation.size_from_contents(contents_type, option, size, widget, result)
+        ) is not None:
+            return changed
+        return result
+
+    def _shared_size(
+        self,
+        contents_type: QStyle.ContentsType,
+        option: QStyleOption,
+        size: QSize,
+        widget: QWidget | None,
+    ) -> QSize:
+        """Fusion sizes with the control heights both presentations share."""
         result = super().sizeFromContents(contents_type, option, size, widget)  # pyright: ignore[reportArgumentType] - Qt accepts a null widget
         if (
             contents_type == QStyle.ContentsType.CT_SpinBox
