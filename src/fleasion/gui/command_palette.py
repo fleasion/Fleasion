@@ -242,8 +242,11 @@ class _TabFade(QWidget):
 
         # A page shown for the first time finishes settling in posted events: its
         # layout, and the scroll bars its scroll areas show or hide through queued
-        # calls. Capture it settled, or the frame shows bars the page then drops
-        QCoreApplication.sendPostedEvents()
+        # calls. Capture it settled, or the frame shows bars the page then drops.
+        # Only those two kinds are delivered; a posted repaint would put the live
+        # page on screen for a frame before the fade begins
+        for kind in (QEvent.Type.LayoutRequest, QEvent.Type.MetaCall):
+            QCoreApplication.sendPostedEvents(None, kind)
 
         frame_rect = QRect(page.mapTo(window, QPoint()), page.size())
         self._frame: QPixmap = window.grab(frame_rect)

@@ -262,7 +262,10 @@ class ItemViewChrome(QObject):
         }:
             self._sync_cap()
         elif watched is self._viewport and kind == QEvent.Type.Resize:
-            self._snap_timer.start()
+            # Snap at once: a tab's fade captures a newly shown view right after
+            # its pending resize, before a timer could run
+            self._snap_timer.stop()
+            self._snap_to_rows()
         elif (
             watched is self._rows_viewport and self._rows is not None and kind == QEvent.Type.Paint
         ):

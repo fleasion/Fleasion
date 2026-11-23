@@ -249,3 +249,49 @@ def test_glass_clips_headerless_and_model_backed_item_views_on_x11(
         window.close()
         window.deleteLater()
         app.processEvents()
+
+
+def test_first_tab_visit_captures_a_table_snapped_to_its_rows(app: QApplication) -> None:
+    """A tab's fade frame shows the frame trim the table settles on, not a stale one."""
+    import time
+
+    from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect
+    from PySide6.QtWidgets import QTabWidget
+
+    from fleasion.gui import command_palette
+
+    ThemeManager.apply_theme('Glass')
+    tabs = QTabWidget()
+    tabs.addTab(QWidget(), 'First')
+    tabs.resize(700, 500)
+    command_palette.fade_tabs(tabs)
+    tabs.show()
+    app.processEvents()
+
+    # Built while hidden, as the dashboard preloads its tabs
+    page = QWidget()
+    table = QTableWidget(60, 3)
+    for row in range(60):
+        table.setItem(row, 0, QTableWidgetItem(f'Asset {row}'))
+    QVBoxLayout(page).addWidget(table)
+    tabs.addTab(page, 'Table')
+    QTest.qWait(50)
+    try:
+        tabs.setCurrentIndex(1)
+        frame = tabs.findChild(command_palette._TabFade)  # pyright: ignore[reportPrivateUsage]
+        assert frame is not None
+        captured = frame._frame.toImage()  # pyright: ignore[reportPrivateUsage]
+
+        deadline = time.monotonic() + 2.0
+        while tabs.findChild(command_palette._TabFade) is not None and time.monotonic() < deadline:  # pyright: ignore[reportPrivateUsage]
+            QTest.qWait(20)
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QTest.qWait(50)
+
+        settled = tabs.grab(QRect(page.mapTo(tabs, QPoint()), page.size())).toImage()
+        assert captured == settled
+    finally:
+        ThemeManager.apply_theme('Light')
+        tabs.close()
+        tabs.deleteLater()
+        app.processEvents()
