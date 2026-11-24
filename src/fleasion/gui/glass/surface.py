@@ -33,7 +33,12 @@ from .desktop_blur import blur
 from .itemview import ItemViewChrome, RoundedItemViewEffect
 from .state import state
 from .style import RADIUS, glass_colors
-from .transparency import enable_transparency, has_alpha, restore_transparency
+from .transparency import (
+    RECREATING_PLATFORMS,
+    enable_transparency,
+    has_alpha,
+    restore_transparency,
+)
 from .views import ViewSurface
 from .wallpaper import wallpapers
 
@@ -406,8 +411,8 @@ class GlassWindows(QObject):
         return 0
 
     def update_window_shape(self, widget: QWidget) -> None:
-        # On X11, switching a shown window to translucent commonly retains its
-        # original 24-bit visual. QSS border-radius alone does not clip it
+        # On X11 and Windows, a window made translucent after it was created can
+        # keep an opaque surface. QSS border-radius alone does not clip it
         if not widget.isWindow():
             return
 
@@ -423,7 +428,7 @@ class GlassWindows(QObject):
                 widget.clearMask()
             return
 
-        if QApplication.platformName() != 'xcb':
+        if QApplication.platformName() not in RECREATING_PLATFORMS:
             return
 
         # Nothing to round; restore the original mask

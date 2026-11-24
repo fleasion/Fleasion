@@ -1,9 +1,17 @@
-"""Give existing opaque X11 windows a real alpha channel when entering Glass."""
+"""Give existing opaque native windows a real alpha channel when entering Glass."""
 
 from __future__ import annotations
 
+from typing import Final
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QWidget
+
+# Platforms that fix a window's alpha channel when its native window is created.
+# Qt creates a window before polishing it, so Glass often sets translucency too
+# late and has to recreate the native window: X11 keeps the opaque visual, and
+# Windows fills the transparent corners in solid
+RECREATING_PLATFORMS: Final = frozenset({'xcb', 'windows'})
 
 
 def has_alpha(window: QWidget) -> bool:
@@ -15,9 +23,9 @@ def has_alpha(window: QWidget) -> bool:
 
 
 def enable_transparency(window: QWidget) -> None:
-    # A shown X11 window keeps its opaque visual until it is recreated
+    # A created native window keeps its opaque surface until it is recreated
     recreate = (
-        QApplication.platformName() == 'xcb'
+        QApplication.platformName() in RECREATING_PLATFORMS
         and window.testAttribute(Qt.WidgetAttribute.WA_WState_Created)
         and not has_alpha(window)
     )
@@ -28,9 +36,9 @@ def enable_transparency(window: QWidget) -> None:
 
 
 def restore_transparency(window: QWidget, *, translucent: bool, no_system_background: bool) -> None:
-    """Restore the original attributes and X11 visual after leaving Glass."""
+    """Restore the original attributes and native surface after leaving Glass."""
     recreate = (
-        QApplication.platformName() == 'xcb'
+        QApplication.platformName() in RECREATING_PLATFORMS
         and window.testAttribute(Qt.WidgetAttribute.WA_WState_Created)
         and has_alpha(window)
         and not translucent
@@ -43,7 +51,7 @@ def restore_transparency(window: QWidget, *, translucent: bool, no_system_backgr
 
 
 def _recreate_native_window(window: QWidget) -> None:
-    """Recreate an X11 visual while keeping window state, geometry and focus."""
+    """Recreate a native window while keeping its state, geometry and focus."""
     visible = window.isVisible()
     active = window.isActiveWindow()
     geometry = window.geometry()
