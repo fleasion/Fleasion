@@ -10,7 +10,7 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PySide6.QtCore import QObject, QPropertyAnimation, Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from fleasion import localization
 from fleasion.gui.collapsible_section import CollapsibleSection
+from fleasion.widgets.spring_animation import SpringAnimation
 from fleasion.gui.modifications_tab import ModificationsTab, ModRowWidget
 from fleasion.gui.rando_stuff_tab import RandoStuffTab
 from fleasion.gui.theme import ThemeManager
@@ -114,8 +116,8 @@ def _section_layout(section: CollapsibleSection) -> QVBoxLayout:
     return cast('QVBoxLayout', section.__dict__['_content_layout'])
 
 
-def _section_animation(section: CollapsibleSection) -> QPropertyAnimation:
-    animation = cast('QPropertyAnimation | None', section.__dict__['_animation'])
+def _section_animation(section: CollapsibleSection) -> SpringAnimation:
+    animation = cast('SpringAnimation | None', section.__dict__['_animation'])
     assert animation is not None
     return animation
 
@@ -422,14 +424,14 @@ def test_collapsing_section_clips_content_without_reflowing_children() -> None:
     assert inner.height() == initial_inner_height
     assert not _section_layout(section).isEnabled()
 
-    _section_animation(section).setCurrentTime(_section_animation(section).duration())
+    _section_animation(section).finish()
     app.processEvents()
     assert _section_content(section).height() == 0
     assert _section_layout(section).isEnabled()
 
     section.add_widget(QLabel('Added while collapsed'))
     section.toggle()
-    _section_animation(section).setCurrentTime(_section_animation(section).duration())
+    _section_animation(section).finish()
     app.processEvents()
     assert _section_content(section).height() > initial_content_height
     assert inner.height() == initial_inner_height
@@ -500,7 +502,55 @@ def test_opening_section_clips_content_instead_of_squashing_header() -> None:
         layout.activate()
         assert (header.y(), header.height()) == expected
 
-    animation.setCurrentTime(animation.duration())
+    animation.finish()
+    host.close()
+    host.deleteLater()
+    app.processEvents()
+
+
+def test_sections_animating_together_keep_growing() -> None:
+    app = _qapp()
+    # With every wrapping section sliding, nothing else in the page reports
+    # height-for-width; the scroll area must still size them by their content
+    host = QWidget()
+    host.resize(600, 400)
+    scroll = QScrollArea(host)
+    scroll.setWidgetResizable(True)
+    QVBoxLayout(host).addWidget(scroll)
+    page = QWidget()
+    page_layout = QVBoxLayout(page)
+    sections: list[CollapsibleSection] = []
+    for index in range(2):
+        section = CollapsibleSection(f'Section {index}', expanded=False)
+        note = QLabel('Wrapped text that needs more than one line at this width. ' * 3)
+        note.setWordWrap(True)
+        section.add_widget(note)
+        tall = QWidget()
+        tall.setMinimumHeight(200)
+        section.add_widget(tall)
+        page_layout.addWidget(section)
+        sections.append(section)
+    # A page taller than the viewport, as the Settings tab is
+    filler = QWidget()
+    filler.setFixedHeight(800)
+    page_layout.addWidget(filler)
+    page_layout.addStretch()
+    scroll.setWidget(page)
+    host.show()
+    app.processEvents()
+    collapsed = sections[0].height()
+
+    for section in sections:
+        section.toggle()
+    for section in sections:
+        _section_animation(section).setCurrentTime(150)
+    for _ in range(5):
+        app.processEvents()
+    assert all(section.height() > collapsed + 50 for section in sections)
+
+    for section in sections:
+        animation = _section_animation(section)
+        animation.finish()
     host.close()
     host.deleteLater()
     app.processEvents()

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from fleasion.gui.collapsible_section import CollapsibleSection
+from fleasion.widgets.spring_animation import SpringAnimation
 from fleasion.gui.modifications_tab import CustomFFlagEditor
 
 if TYPE_CHECKING:
@@ -89,6 +90,11 @@ def test_fixed_fastflag_columns_preserve_name_value_ratio_when_resized(
         editor.deleteLater()
 
 
+def _finish_animation(section: CollapsibleSection) -> None:
+    animation = cast('SpringAnimation', section.__dict__['_animation'])
+    animation.finish()
+
+
 def test_first_expansion_fits_fastflag_action_bar_without_editing() -> None:
     app = _app()
     outer = QWidget()
@@ -110,7 +116,7 @@ def test_first_expansion_fits_fastflag_action_bar_without_editing() -> None:
         outer.show()
         app.processEvents()
         section.toggle()
-        QTest.qWait(270)
+        _finish_animation(section)
         app.processEvents()
         action = next(button for button in editor.findChildren(QPushButton) if button.text() == 'Add New…')
         assert action.height() > 0
@@ -120,11 +126,11 @@ def test_first_expansion_fits_fastflag_action_bar_without_editing() -> None:
         assert section_content.height() >= section._natural_height()  # pyright: ignore[reportPrivateUsage]
 
         section.toggle()
-        QTest.qWait(270)
+        _finish_animation(section)
         app.processEvents()
         assert section_content.height() == 0
         section.toggle()
-        QTest.qWait(270)
+        _finish_animation(section)
         app.processEvents()
         assert action.mapTo(section_content, QPoint(0, action.height())).y() <= section_content.height()
     finally:
