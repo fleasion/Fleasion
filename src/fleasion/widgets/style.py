@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Protocol, overload, override
+from typing import TYPE_CHECKING, ClassVar, Final, Protocol, overload, override
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
@@ -116,6 +116,45 @@ class Presentation(Protocol):
         ...
 
 
+_PM = QStyle.PixelMetric
+
+# Metrics both presentations share. Qt asks for these hundreds of times a
+# frame, so they are a single lookup rather than a chain of comparisons
+_SHARED_METRICS: Final[dict[QStyle.PixelMetric, int]] = {
+    **dict.fromkeys(
+        (
+            _PM.PM_LayoutLeftMargin,
+            _PM.PM_LayoutTopMargin,
+            _PM.PM_LayoutRightMargin,
+            _PM.PM_LayoutBottomMargin,
+        ),
+        PANEL_PADDING,
+    ),
+    **dict.fromkeys(
+        (
+            _PM.PM_LayoutHorizontalSpacing,
+            _PM.PM_LayoutVerticalSpacing,
+            _PM.PM_CheckBoxLabelSpacing,
+            _PM.PM_RadioButtonLabelSpacing,
+        ),
+        GAP,
+    ),
+    _PM.PM_TabBarTabHSpace: PANEL_PADDING * 2,
+    _PM.PM_TabBarTabVSpace: CONTROL_PADDING * 2 + 2,
+    _PM.PM_HeaderMargin: CONTROL_PADDING,
+    _PM.PM_SplitterWidth: SPLITTER_WIDTH,
+    **dict.fromkeys(
+        (
+            _PM.PM_IndicatorWidth,
+            _PM.PM_IndicatorHeight,
+            _PM.PM_ExclusiveIndicatorWidth,
+            _PM.PM_ExclusiveIndicatorHeight,
+        ),
+        18,
+    ),
+}
+
+
 class ButtonOrderStyle(QProxyStyle):
     """A style with dialog buttons in the Windows order on every desktop.
 
@@ -215,42 +254,9 @@ class LayoutStyle(ButtonOrderStyle):
         ) is not None:
             return value
 
-        match metric:
-            case (
-                QStyle.PixelMetric.PM_LayoutLeftMargin
-                | QStyle.PixelMetric.PM_LayoutTopMargin
-                | QStyle.PixelMetric.PM_LayoutRightMargin
-                | QStyle.PixelMetric.PM_LayoutBottomMargin
-            ):
-                value = PANEL_PADDING
-            case (
-                QStyle.PixelMetric.PM_LayoutHorizontalSpacing
-                | QStyle.PixelMetric.PM_LayoutVerticalSpacing
-            ):
-                value = GAP
-            case QStyle.PixelMetric.PM_TabBarTabHSpace:
-                value = PANEL_PADDING * 2
-            case QStyle.PixelMetric.PM_TabBarTabVSpace:
-                value = CONTROL_PADDING * 2 + 2
-            case QStyle.PixelMetric.PM_HeaderMargin:
-                value = CONTROL_PADDING
-            case QStyle.PixelMetric.PM_SplitterWidth:
-                value = SPLITTER_WIDTH
-            case (
-                QStyle.PixelMetric.PM_IndicatorWidth
-                | QStyle.PixelMetric.PM_IndicatorHeight
-                | QStyle.PixelMetric.PM_ExclusiveIndicatorWidth
-                | QStyle.PixelMetric.PM_ExclusiveIndicatorHeight
-            ):
-                value = 18
-            case (
-                QStyle.PixelMetric.PM_CheckBoxLabelSpacing
-                | QStyle.PixelMetric.PM_RadioButtonLabelSpacing
-            ):
-                value = GAP
-            case _:
-                return super().pixelMetric(metric, option, widget)
-        return value
+        if (value := _SHARED_METRICS.get(metric)) is not None:
+            return value
+        return super().pixelMetric(metric, option, widget)
 
     @override
     def styleHint(
@@ -268,7 +274,11 @@ class LayoutStyle(ButtonOrderStyle):
             # Qt otherwise opens the selected item directly over the selector
             # before the popup has painted its first frame
             return 0
-        return super().styleHint(hint, option, widget, returnData)
+        if hint == QStyle.StyleHint.SH_DialogButtonLayout:
+            return QDialogButtonBox.ButtonLayout.WinLayout.value
+        # Straight to Qt: this runs hundreds of times a frame, and the button
+        # order above is all ButtonOrderStyle adds
+        return QProxyStyle.styleHint(self, hint, option, widget, returnData)
 
     @override
     def drawPrimitive(
