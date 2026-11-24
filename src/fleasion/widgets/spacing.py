@@ -9,6 +9,8 @@ PANEL_PADDING: Final = 12
 PANEL_MARGINS: Final = (PANEL_PADDING,) * 4
 CONTROL_PADDING: Final = 4
 CONTROL_HEIGHT: Final = 28
+# Splitter handles leave room on both sides of their grip
+SPLITTER_WIDTH: Final = 10
 
 # Glass needs breathing room around its rounded panes; the original Fusion
 # dashboard and Scraper use edge-to-edge section borders

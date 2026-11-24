@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from .menu_items import use_menu_items
-from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING
+from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING, SPLITTER_WIDTH
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -234,6 +234,8 @@ class LayoutStyle(ButtonOrderStyle):
                 value = CONTROL_PADDING * 2 + 2
             case QStyle.PixelMetric.PM_HeaderMargin:
                 value = CONTROL_PADDING
+            case QStyle.PixelMetric.PM_SplitterWidth:
+                value = SPLITTER_WIDTH
             case (
                 QStyle.PixelMetric.PM_IndicatorWidth
                 | QStyle.PixelMetric.PM_IndicatorHeight

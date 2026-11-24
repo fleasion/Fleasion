@@ -297,8 +297,6 @@ _METRICS: Final[dict[QStyle.PixelMetric, int]] = {
     _PM.PM_SliderThickness: HANDLE,
     _PM.PM_SliderLength: HANDLE,
     _PM.PM_SliderControlThickness: HANDLE,
-    # Room on both sides of the splitter grip
-    _PM.PM_SplitterWidth: 10,
     **dict.fromkeys(FLAT_TAB_METRICS, 0),
     **MENU_METRICS,
 }
