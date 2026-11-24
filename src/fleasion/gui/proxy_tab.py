@@ -712,8 +712,6 @@ class ProxyTrafficTab(QWidget):
             elif (child_widget := item.widget()) is not None:
                 content_layout.addWidget(child_widget)
         self.ui.verticalLayout_3.addWidget(content, 1)
-        self.ui.tableGroupSplitter.setHandleWidth(GAP)
-        self.ui.groupsSplitter.setHandleWidth(GAP)
 
         self.ui.trafficTable.setColumnCount(len(_TABLE_COLUMN_KEYS))
         self.ui.trafficTable.setHorizontalHeaderLabels(_table_headers())
@@ -1061,8 +1059,8 @@ class ProxyTrafficTab(QWidget):
             self._loaded_completed_response_key = None
             self.ui.requestText.clear()
             self.ui.responseText.clear()
-            self.ui.requestGroup.setTitle(tr('ui.gui.proxy_tab.request'))
-            self.ui.responseGroup.setTitle(tr('ui.gui.proxy_tab.response'))
+            self.ui.requestTitle.setText(tr('ui.gui.proxy_tab.request'))
+            self.ui.responseTitle.setText(tr('ui.gui.proxy_tab.response'))
 
         # setCurrentCell() auto-scrolls to keep the current cell visible, which
         # would yank the view to wherever the selected row landed. Force the
@@ -1086,8 +1084,8 @@ class ProxyTrafficTab(QWidget):
             self._loaded_completed_response_key = None
             self.ui.requestText.clear()
             self.ui.responseText.clear()
-            self.ui.requestGroup.setTitle(tr('ui.gui.proxy_tab.request'))
-            self.ui.responseGroup.setTitle(tr('ui.gui.proxy_tab.response'))
+            self.ui.requestTitle.setText(tr('ui.gui.proxy_tab.request'))
+            self.ui.responseTitle.setText(tr('ui.gui.proxy_tab.response'))
 
     def _show_entry(self, entry: _TrafficEntry) -> None:
         # Never inject any note/annotation into the box text itself - it's
@@ -1134,12 +1132,12 @@ class ProxyTrafficTab(QWidget):
                 self._loaded_completed_response_key = completed_response_key
 
         self.ui.responseText.setReadOnly(pending_stage != 'response')
-        self.ui.requestGroup.setTitle(
+        self.ui.requestTitle.setText(
             tr('ui.gui.proxy_tab.request_held_editable_then_forward_drop')
             if pending_stage == 'request'
             else tr('ui.gui.proxy_tab.request')
         )
-        self.ui.responseGroup.setTitle(
+        self.ui.responseTitle.setText(
             tr('ui.gui.proxy_tab.response_held_editable_then_forward_drop')
             if pending_stage == 'response'
             else tr('ui.gui.proxy_tab.response')
