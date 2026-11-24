@@ -45,8 +45,33 @@ class GlassColors:
     accent_text: QColor
 
 
+def _rgba(color: QColor | None) -> int | None:
+    return None if color is None else color.rgba()
+
+
+# Every painted primitive asks for the colours, so the last result is reused
+# until one of the inputs changes
+_cached_colors: dict[tuple[object, ...], GlassColors] = {}
+
+
 def glass_colors(settings: GlassSettings | None = None) -> GlassColors:
     settings = settings or state.settings
+    native = state.base_palette
+    key = (
+        settings.accent,
+        state.dark,
+        None if native is None else native.cacheKey(),
+        _rgba(state.system_accent),
+        _rgba(state.theme_accent),
+    )
+    if (colors := _cached_colors.get(key)) is None:
+        colors = _resolve_colors(settings)
+        _cached_colors.clear()
+        _cached_colors[key] = colors
+    return colors
+
+
+def _resolve_colors(settings: GlassSettings) -> GlassColors:
     native = state.base_palette
     dark = state.dark
 
