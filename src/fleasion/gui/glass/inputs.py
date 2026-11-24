@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QStyleOptionSpinBox,
 )
 
+from .panes import paint_pane
 from .style import glass_colors
 
 if TYPE_CHECKING:
@@ -87,12 +88,7 @@ def _paint_well(painter: QPainter, option: QStyleOption) -> None:
     else:
         border = _tint(colors.ink, 0.06)
 
-    painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(QPen(border, 1.0))
-    painter.setBrush(_tint(colors.well, 0.28))
-    painter.drawRoundedRect(QRectF(_rect(option)).adjusted(0.5, 0.5, -0.5, -0.5), _RADIUS, _RADIUS)
-    painter.restore()
+    paint_pane(painter, _rect(option), _RADIUS, fill=_tint(colors.well, 0.28), side=border)
 
 
 def _paint_chevron(

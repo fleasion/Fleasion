@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPalette, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -37,6 +37,7 @@ from .menus import (
     paint_menu_panel,
     paint_tooltip,
 )
+from .panes import paint_pane
 from .scrollbars import EXTENT, SLIDER_MIN, paint_scroll_bar, scroll_bar_rect
 from .sliders import HANDLE, paint_slider, slider_rect
 from .style import glass_colors
@@ -218,24 +219,8 @@ def _paint_button(painter: QPainter, option: QStyleOption, widget: QWidget | Non
     fill, side, top = _button_colors(
         glass_colors(), accent, _state(option), flat=flat, default=default
     )
-    if fill is None and side is None:
-        return
-
-    rect = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
-    painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(fill if fill is not None else Qt.BrushStyle.NoBrush)
-    if side is None or top is None:
-        painter.setPen(Qt.PenStyle.NoPen)
-    else:
-        # A brighter top edge that blends into the sides below the corners
-        rim = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-        rim.setColorAt(0, top)
-        rim.setColorAt(min(1.0, _BUTTON_RADIUS / max(rect.height(), 1)), side)
-        rim.setColorAt(1, side)
-        painter.setPen(QPen(rim, 1.0))
-    painter.drawRoundedRect(rect, _BUTTON_RADIUS, _BUTTON_RADIUS)
-    painter.restore()
+    # A brighter top edge blends into the sides below the corners
+    paint_pane(painter, option.rect, _BUTTON_RADIUS, fill=fill, side=side, top=top)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
 
 
 def _button_label_option(option: QStyleOption, widget: QWidget | None) -> QStyleOption | None:
