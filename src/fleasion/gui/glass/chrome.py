@@ -523,14 +523,23 @@ def apply_chrome(window: QWidget, *, enabled: bool) -> None:
     frameless = bool(window.windowFlags() & Qt.WindowType.FramelessWindowHint)
     if frameless != enabled:
         visible = window.isVisible()
+        active = window.isActiveWindow()
         if enabled:
+            if QApplication.platformName() == 'windows' and window.testAttribute(
+                Qt.WidgetAttribute.WA_WState_Created
+            ):
+                # Windows keeps the native window and its opaque backing store
+                # through a flag change, so the transparent corners would stay
+                # black. Start from a fresh one, as a newly opened window does
+                window.destroy()
             window.setWindowFlag(Qt.WindowType.FramelessWindowHint, on=True)
             # Sets the translucency itself: setting it here first would make the
-            # still opaque native window look like it already has alpha, and
-            # Windows would keep black corners after a switch back to Glass
+            # still opaque native window look like it already has alpha
             enable_transparency(window)
         else:
             window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=False)
             window.setWindowFlag(Qt.WindowType.FramelessWindowHint, on=False)
         if visible:
             window.show()
+            if active:
+                window.activateWindow()
