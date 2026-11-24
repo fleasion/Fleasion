@@ -456,9 +456,12 @@ class JsonTreeViewer(QDialog):
         on_import_ids: ImportIdsCallback,
         on_import_replacement: ImportReplacementCallback,
         config_manager: ConfigManager | None = None,
+        *,
+        show_preview_title: bool = False,
     ) -> None:
         super().__init__(parent)
         self.config_manager = config_manager
+        self._show_preview_title = show_preview_title
         self.setWindowTitle(tr('ui.gui.json_viewer.json_value', value0=filename))
         self.resize(1200, 650)
 
@@ -750,7 +753,9 @@ class JsonTreeViewer(QDialog):
         preview_group_layout.setContentsMargins(0, 0, 0, 0)
         preview_group_layout.setSpacing(GAP)
 
+        # The title naming the previewed asset is opt-in
         self.preview_title_label = QLabel(tr('ui.gui.json_viewer.preview'))
+        self.preview_title_label.setVisible(self._show_preview_title)
         preview_group_layout.addWidget(self.preview_title_label)
 
         self.preview_scroll = QScrollArea()

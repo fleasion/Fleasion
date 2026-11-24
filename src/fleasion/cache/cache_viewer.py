@@ -1373,8 +1373,10 @@ class CacheViewerTab(QWidget):
         config_manager: CacheViewerConfig | None = None,
         *,
         defer_setup: bool = False,
+        show_preview_title: bool = False,
     ) -> None:
         super().__init__(parent)
+        self._show_preview_title = show_preview_title
         self.replacer_window: ReplacerConfigWindow | None = None
         self.cache_manager = cache_manager
         self.cache_scraper = cache_scraper
@@ -2179,7 +2181,9 @@ class CacheViewerTab(QWidget):
         preview_group_layout.setContentsMargins(0, 0, 0, 0)
         preview_group_layout.setSpacing(GAP)
 
+        # The title naming the previewed asset is opt-in
         self.preview_title_label = QLabel(tr('ui.cache.cache_viewer.preview'))
+        self.preview_title_label.setVisible(self._show_preview_title)
         preview_group_layout.addWidget(self.preview_title_label)
 
         # Scrollable container for all preview content
