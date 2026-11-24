@@ -14,7 +14,7 @@ if sys.platform == 'win32':
     import winreg
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QPalette, QPixmapCache
 from PySide6.QtWidgets import QApplication, QColorDialog, QStyle, QWidget
 
 from fleasion.appearance import DEFAULT_ACCENT, accent_name, appearance_style, color_mode
@@ -206,6 +206,8 @@ class ThemeManager:
                         theme_accent=ThemeManager._theme_accent,
                     )
                 )
+            # Cached control pixmaps belong to the previous look
+            QPixmapCache.clear()
             ThemeManager._refresh_widgets(app)
         finally:
             ThemeManager._applying = False

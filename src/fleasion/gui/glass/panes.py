@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap, QPixmapCache
 
+from fleasion.widgets.painting import pixel_aligned
+
 if TYPE_CHECKING:
     from PySide6.QtCore import QRect
 
@@ -41,17 +43,6 @@ def _draw(
     painter.drawRoundedRect(rect, radius, radius)
 
 
-def _blittable(painter: QPainter) -> bool:
-    """Whether a pixmap drawn at whole device pixels matches a direct paint."""
-    transform = painter.worldTransform()
-    return transform.isIdentity() or not (
-        transform.isScaling()
-        or transform.isRotating()
-        or transform.dx() != int(transform.dx())
-        or transform.dy() != int(transform.dy())
-    )
-
-
 def paint_pane(
     painter: QPainter,
     rect: QRect,
@@ -82,7 +73,7 @@ def paint_pane(
         return
 
     painter.save()
-    if not _blittable(painter):
+    if not pixel_aligned(painter):
         bounds = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
         _draw(painter, bounds, radius, fill=fill, side=side, top=top)
         painter.restore()

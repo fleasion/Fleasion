@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, Final, Protocol, overload, override
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QPainter, QPalette, QPixmap, QPixmapCache
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractSpinBox,
@@ -14,19 +14,21 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QProxyStyle,
     QStyle,
+    QStyleOptionButton,
     QTableView,
     QTreeView,
 )
 from shiboken6 import isValid
 
 from .menu_items import use_menu_items
+from .painting import pixel_aligned
 from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING, SPLITTER_WIDTH
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from PySide6.QtCore import QRect, QSize
-    from PySide6.QtGui import QColor, QPainter
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QColor
     from PySide6.QtWidgets import (
         QStyleHintReturn,
         QStyleOption,
@@ -347,6 +349,22 @@ class LayoutStyle(ButtonOrderStyle):
         painter: QPainter,
         widget: QWidget | None = None,
     ) -> None:
+        if (
+            element == QStyle.ControlElement.CE_PushButton
+            and LayoutStyle.presentation is not None
+            and isinstance(option, QStyleOptionButton)
+            and self._draw_cached_button(option, painter, widget)
+        ):
+            return
+        self._draw_control(element, option, painter, widget)
+
+    def _draw_control(
+        self,
+        element: QStyle.ControlElement,
+        option: QStyleOption,
+        painter: QPainter,
+        widget: QWidget | None,
+    ) -> None:
         if (presentation := LayoutStyle.presentation) is not None:
 
             def fusion(changed: QStyleOption) -> None:
@@ -355,6 +373,46 @@ class LayoutStyle(ButtonOrderStyle):
             if presentation.draw_control(element, option, painter, widget, fusion):
                 return
         super().drawControl(element, option, painter, widget)
+
+    def _draw_cached_button(
+        self, option: QStyleOptionButton, painter: QPainter, widget: QWidget | None
+    ) -> bool:
+        """Draw a push button from a pixmap of its look, rendering it on first use.
+
+        A presentation's buttons take many Python calls apiece, and every frame of
+        an animation repaints each button it moves. The key holds everything the
+        option and painter contribute to the look; a new appearance clears the
+        cache, see ThemeManager.apply_appearance
+        """
+        rect = option.rect
+        if rect.isEmpty() or not pixel_aligned(painter):
+            return False
+
+        scale = painter.device().devicePixelRatioF()
+        font = painter.font()
+        icon_size = option.iconSize
+        key = (
+            f'fleasion-button:{rect.width()}x{rect.height()}@{scale}:'
+            f'{option.state.value}:{option.features.value}:{option.direction.value}:'
+            f'{option.palette.cacheKey()}:{font.key()}:{painter.pen().color().rgba()}:'
+            f'{option.icon.cacheKey()}:{icon_size.width()}x{icon_size.height()}:{option.text}'
+        )
+        pixmap = QPixmap()
+        if not QPixmapCache.find(key, pixmap):
+            pixmap = QPixmap(round(rect.width() * scale), round(rect.height() * scale))
+            pixmap.setDevicePixelRatio(scale)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            local = QPainter(pixmap)
+            local.setFont(font)
+            local.setPen(painter.pen())
+            local.setRenderHints(painter.renderHints())
+            moved = QStyleOptionButton(option)
+            moved.rect = QRect(0, 0, rect.width(), rect.height())
+            self._draw_control(QStyle.ControlElement.CE_PushButton, moved, local, widget)
+            local.end()
+            QPixmapCache.insert(key, pixmap)
+        painter.drawPixmap(rect.topLeft(), pixmap)
+        return True
 
     @override
     def subElementRect(
