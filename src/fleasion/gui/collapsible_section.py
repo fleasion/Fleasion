@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, override
 
-from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt
+from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPolygonF
 from PySide6.QtWidgets import (
     QFrame,
@@ -65,6 +65,47 @@ class _SectionArrowButton(QPushButton):
         painter.end()
 
 
+class _SectionContent(QWidget):
+    """The clipped content viewport, sized by its animation while it slides."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        # The open height during an animation, or None at rest
+        self.slide_height: int | None = None
+
+    # Each animation step lays the section out before its parent has resized it.
+    # A growing minimum here would squash the header to fit instead of clipping
+    # the bottom of the content, and box layouts treat height-for-width as one.
+    # The open height stands in for height-for-width meanwhile, and the animated
+    # maximum height bounds it
+
+    @override
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        if self.slide_height is not None:
+            hint.setHeight(self.slide_height)
+        return hint
+
+    @override
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        if self.slide_height is not None:
+            hint.setHeight(0)
+        return hint
+
+    @override
+    def hasHeightForWidth(self) -> bool:
+        return self.slide_height is None and super().hasHeightForWidth()
+
+
+class _SectionLayout(QVBoxLayout):
+    """Keep the inner stretch from making the whole section claim spare height."""
+
+    @override
+    def expandingDirections(self) -> Qt.Orientation:
+        return super().expandingDirections() & Qt.Orientation.Horizontal
+
+
 class CollapsibleSection(QWidget):
     """A section with a clickable header that collapses/expands its content."""
 
@@ -80,11 +121,11 @@ class CollapsibleSection(QWidget):
         show_separator: bool = True,
     ) -> None:
         super().__init__(parent)
-        # A section should never absorb spare vertical space from its parent.
-        # Its height is determined by the header plus the currently visible
-        # content; any remaining viewport height belongs outside the card.
+        # A section takes the height of its header plus the visible content and
+        # leaves spare viewport height to the parent's stretch.  Maximum would cap
+        # it at sizeHint, which clips content that wraps taller in a narrow window
         policy = self.sizePolicy()
-        policy.setVerticalPolicy(QSizePolicy.Policy.Maximum)
+        policy.setVerticalPolicy(QSizePolicy.Policy.Preferred)
         self.setSizePolicy(policy)
 
         self._expanded = expanded
@@ -122,7 +163,7 @@ class CollapsibleSection(QWidget):
                 header_layout.addWidget(w)
 
         # --- Content container ---
-        self._content = QWidget()
+        self._content = _SectionContent()
         self._content_layout = QVBoxLayout()
         self._content_layout.setContentsMargins(*PANEL_MARGINS)
         self._content_layout.setSpacing(GAP)
@@ -132,7 +173,7 @@ class CollapsibleSection(QWidget):
             self._content.setMaximumHeight(0)
 
         # --- Assemble ---
-        main = QVBoxLayout()
+        main = _SectionLayout()
         # Keep the outer border clear of the header and its separator,
         # including when the content viewport is completely collapsed
         main.setContentsMargins(1, 1, 1, 1)
@@ -179,6 +220,13 @@ class CollapsibleSection(QWidget):
     def add_widget(self, widget: QWidget) -> None:
         self._content_layout.addWidget(widget)
 
+    def _natural_height(self) -> int:
+        """The open content height at the current width, counting wrapped rows."""
+        layout = self._content_layout
+        if layout.hasHeightForWidth():
+            return layout.totalHeightForWidth(self._content.width())
+        return layout.sizeHint().height()
+
     def toggle(self) -> None:
         self._expanded = not self._expanded
         if not self._expanded:
@@ -193,7 +241,7 @@ class CollapsibleSection(QWidget):
             self._animation.stop()
             self._animation.deleteLater()
 
-        full_height = self._content_layout.sizeHint().height()
+        full_height = self._natural_height()
         if self._expanded and current_height == 0:
             # Populate natural child geometry before opening from zero height,
             # including sections constructed initially collapsed
@@ -203,6 +251,7 @@ class CollapsibleSection(QWidget):
             self._content_layout.activate()
 
         self._content_layout.setEnabled(False)
+        self._content.slide_height = full_height
         self._content.setMaximumHeight(current_height)
         self._animation = QPropertyAnimation(self._content, b'maximumHeight', self)
         self._animation.setDuration(200)
@@ -215,10 +264,14 @@ class CollapsibleSection(QWidget):
         self._animation.start()
 
     def _finish_expand(self) -> None:
+        self._content.slide_height = None
         self._content.setMaximumHeight(16777215)
         self._content_layout.setEnabled(True)
         self._content_layout.activate()
-        self._content.setMinimumHeight(self._content_layout.sizeHint().height())
+        # A scroll area shrinks content without height-for-width to its minimum
+        # size, so pin it open; wrapping content is sized by width instead
+        if not self._content_layout.hasHeightForWidth():
+            self._content.setMinimumHeight(self._content_layout.sizeHint().height())
         self.updateGeometry()
         parent = self.parentWidget()
         if parent is not None and (parent_layout := parent.layout()) is not None:
@@ -226,6 +279,7 @@ class CollapsibleSection(QWidget):
             parent_layout.activate()
 
     def _finish_collapse(self) -> None:
+        self._content.slide_height = None
         # Restore layout updates after clipping has fully closed
         self._content_layout.setEnabled(True)
         self._content_layout.activate()

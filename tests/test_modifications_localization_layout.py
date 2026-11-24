@@ -470,6 +470,42 @@ def test_collapsible_header_does_not_absorb_transient_collapse_space() -> None:
     app.processEvents()
 
 
+def test_opening_section_clips_content_instead_of_squashing_header() -> None:
+    app = _qapp()
+    # The section is not in a layout, so its geometry stays one step behind
+    # the animation the way it does before a scroll area catches up
+    host = QWidget()
+    host.resize(900, 600)
+    section = CollapsibleSection('Fast Flags', expanded=False, parent=host)
+    # Wrapped text gives the content height-for-width, which box layouts
+    # also treat as a minimum
+    note = QLabel('Fast Flags are written to every detected Roblox directory. ' * 4)
+    note.setWordWrap(True)
+    section.add_widget(note)
+    inner = QWidget()
+    inner.setMinimumHeight(300)
+    section.add_widget(inner)
+    section.setGeometry(0, 0, 900, section.sizeHint().height())
+    host.show()
+    app.processEvents()
+    header = _header_widget(section)
+    expected = (header.y(), header.height())
+
+    section.toggle()
+    animation = _section_animation(section)
+    layout = section.layout()
+    assert layout is not None
+    for elapsed in (50, 100, 150):
+        animation.setCurrentTime(elapsed)
+        layout.activate()
+        assert (header.y(), header.height()) == expected
+
+    animation.setCurrentTime(animation.duration())
+    host.close()
+    host.deleteLater()
+    app.processEvents()
+
+
 def test_collapsed_sections_do_not_absorb_parent_spare_height() -> None:
     app = _qapp()
     host = QWidget()

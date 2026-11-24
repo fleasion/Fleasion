@@ -117,7 +117,7 @@ def test_first_expansion_fits_fastflag_action_bar_without_editing() -> None:
         section_content = section._content  # pyright: ignore[reportPrivateUsage]
         bottom = action.mapTo(section_content, QPoint(0, action.height())).y()
         assert bottom <= section_content.height()
-        assert section_content.height() >= section._content_layout.sizeHint().height()  # pyright: ignore[reportPrivateUsage]
+        assert section_content.height() >= section._natural_height()  # pyright: ignore[reportPrivateUsage]
 
         section.toggle()
         QTest.qWait(270)
