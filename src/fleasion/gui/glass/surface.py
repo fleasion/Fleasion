@@ -35,8 +35,10 @@ from .state import state
 from .style import RADIUS, glass_colors
 from .transparency import (
     RECREATING_PLATFORMS,
+    enable_popup_transparency,
     enable_transparency,
     has_alpha,
+    restore_popup_flags,
     restore_transparency,
 )
 from .views import ViewSurface
@@ -316,6 +318,7 @@ class GlassWindows(QObject):
 
             # None removes the dynamic property again
             window.setProperty(_ORIGINAL_TRANSPARENCY, None)
+            restore_popup_flags(window)
             restore_transparency(
                 window,
                 translucent=bool(flags & _TRANSLUCENT),
@@ -543,4 +546,4 @@ class GlassWindows(QObject):
 
         elif self.is_rounded_popup(widget):
             self.remember_window(widget)
-            enable_transparency(widget)
+            enable_popup_transparency(widget)

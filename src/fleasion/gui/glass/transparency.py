@@ -13,6 +13,13 @@ from PySide6.QtWidgets import QApplication, QWidget
 # Windows fills the transparent corners in solid
 RECREATING_PLATFORMS: Final = frozenset({'xcb', 'windows'})
 
+# Window flags rounded popups need on Windows, and the property recording which
+# of them Glass added so leaving Glass can take them back
+_WINDOWS_POPUP_FLAGS: Final = (
+    Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
+)
+_ADDED_POPUP_FLAGS: Final = 'glassAddedPopupFlags'
+
 
 def has_alpha(window: QWidget) -> bool:
     """Whether the window's native surface already has an alpha channel."""
@@ -33,6 +40,30 @@ def enable_transparency(window: QWidget) -> None:
 
     if recreate:
         _recreate_native_window(window)
+
+
+def enable_popup_transparency(popup: QWidget) -> None:
+    """Give a menu, combo popup or tooltip an alpha channel for its rounded corners."""
+    if QApplication.platformName() == 'windows':
+        # Windows only gives a window per-pixel alpha when it is explicitly
+        # frameless, which popups are by type but not by flag, and draws its drop
+        # shadow around the popup's square bounds. Set before recreating below
+        missing = _WINDOWS_POPUP_FLAGS & ~popup.windowFlags()
+        if missing:
+            popup.setProperty(_ADDED_POPUP_FLAGS, missing.value)
+            popup.setWindowFlags(popup.windowFlags() | missing)
+    enable_transparency(popup)
+
+
+def restore_popup_flags(popup: QWidget) -> None:
+    """Take back the window flags enable_popup_transparency added."""
+    added = popup.property(_ADDED_POPUP_FLAGS)
+    if not isinstance(added, int):
+        return
+
+    # None removes the dynamic property again
+    popup.setProperty(_ADDED_POPUP_FLAGS, None)
+    popup.setWindowFlags(popup.windowFlags() & ~Qt.WindowType(added))
 
 
 def restore_transparency(window: QWidget, *, translucent: bool, no_system_background: bool) -> None:
