@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import math
 import sys
+from typing import cast
 
-from PyQt6.QtGui import QSurfaceFormat
+from PySide6.QtGui import QSurfaceFormat
+
+# Keep PyOpenGL out of the normal dashboard startup path. Importing OpenGL.GL
+# can load the platform OpenGL runtime even when no 3D preview is ever opened
+lazy from OpenGL import GL
 
 
 def legacy_gl_format() -> QSurfaceFormat:
@@ -25,20 +30,31 @@ def legacy_gl_format() -> QSurfaceFormat:
 
 def set_perspective(fov_y_degrees: float, aspect: float, near: float, far: float) -> None:
     """Set a perspective projection without relying on GLU."""
-    # Keep PyOpenGL out of the normal dashboard startup path. Importing OpenGL.GL
-    # can load the platform OpenGL runtime even when no 3D preview is ever opened.
-    from OpenGL.GL import glFrustum
-
     if aspect <= 0.0:
         aspect = 1.0
     if near <= 0.0:
-        raise ValueError('near must be positive')
+        msg = 'near must be positive'
+        raise ValueError(msg)
     if far <= near:
-        raise ValueError('far must be greater than near')
+        msg = 'far must be greater than near'
+        raise ValueError(msg)
 
     half_angle = math.radians(fov_y_degrees) / 2.0
     top = near * math.tan(half_angle)
     bottom = -top
     right = top * aspect
     left = -right
-    glFrustum(left, right, bottom, top, near, far)
+    GL.glFrustum(left, right, bottom, top, near, far)
+
+
+def multisampled_readback_skip_reason() -> str | None:
+    """Explain why reading one pixel from the active draw framebuffer is unsafe.
+
+    Offscreen previews use a multisampled renderbuffer on Windows. OpenGL
+    forbids glReadPixels directly from that framebuffer; Qt's FBO.toImage()
+    performs the required resolve for the actual on-screen presentation
+    """
+    samples = int(cast('int', GL.glGetIntegerv(0x80A9)))  # GL_SAMPLES
+    if samples > 0:
+        return f'readback_skipped=multisampled_fbo(samples={samples})'
+    return None

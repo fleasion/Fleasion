@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -15,9 +16,8 @@ def _default_settings_path() -> Path:
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
 
-    from fleasion.utils.paths import CONFIG_FILE
-
-    return Path(CONFIG_FILE)
+    paths = importlib.import_module('fleasion.utils.paths')
+    return Path(paths.CONFIG_FILE)
 
 
 def _load_settings(path: Path) -> dict:
@@ -28,7 +28,8 @@ def _load_settings(path: Path) -> dict:
         data = json.load(f)
 
     if not isinstance(data, dict):
-        raise ValueError(f'{path} must contain a JSON object')
+        msg = f'{path} must contain a JSON object'
+        raise TypeError(msg)
 
     return data
 
@@ -57,7 +58,7 @@ def main() -> int:
 
     try:
         reset_first_time_setup(args.settings.expanduser())
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         print(f'Failed to reset first-time setup flag: {exc}', file=sys.stderr)
         return 1
 

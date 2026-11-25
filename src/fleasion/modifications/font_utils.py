@@ -7,14 +7,19 @@ that all ``assetId`` fields point to ``rbxasset://fonts/CustomFont.ttf``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import stat
-from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, TypeIs
 
-from ..utils import log_buffer
+from fleasion.utils import log_buffer
+
 from .stash_paths import resource_stash_dir
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Recognised font magic bytes (first 4 bytes of the file).
 FONT_HEADERS: dict[str, bytes] = {
@@ -52,12 +57,16 @@ def validate_font_bytes(data: bytes) -> bool:
     return any(header == magic for magic in FONT_HEADERS.values())
 
 
+def _is_object_list(value: object) -> TypeIs[list[object]]:
+    return isinstance(value, list)
+
+
 def _load_generated_family_names(marker_path: Path) -> set[str]:
     try:
-        value = json.loads(marker_path.read_text(encoding='utf-8'))
+        value: object = json.loads(marker_path.read_text(encoding='utf-8'))
     except OSError, json.JSONDecodeError:
         return set()
-    if not isinstance(value, list):
+    if not _is_object_list(value):
         return set()
     return {
         name
@@ -68,10 +77,8 @@ def _load_generated_family_names(marker_path: Path) -> set[str]:
 
 def _save_generated_family_names(marker_path: Path, names: set[str]) -> None:
     if not names:
-        try:
+        with contextlib.suppress(FileNotFoundError, OSError):
             marker_path.unlink()
-        except FileNotFoundError, OSError:
-            pass
         return
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(json.dumps(sorted(names), indent=2), encoding='utf-8')
@@ -101,7 +108,9 @@ def apply_custom_font(
         if dst_font.exists() and not stash_font.exists() and not generated_font_marker.exists():
             stash_font.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dst_font, stash_font)
-        elif not dst_font.exists() and not stash_font.exists() and not generated_font_marker.exists():
+        elif (
+            not dst_font.exists() and not stash_font.exists() and not generated_font_marker.exists()
+        ):
             generated_font_marker.parent.mkdir(parents=True, exist_ok=True)
             generated_font_marker.touch()
 
@@ -189,10 +198,8 @@ def restore_font_families(
         elif dst_font.exists():
             _clear_read_only(dst_font)
             dst_font.unlink()
-        try:
+        with contextlib.suppress(FileNotFoundError, OSError):
             generated_font_marker.unlink()
-        except FileNotFoundError, OSError:
-            pass
 
         # Restore family JSONs that predated Fleasion.
         families_dir = roblox_dir / FAMILIES_REL
@@ -214,16 +221,12 @@ def restore_font_families(
             dst_json = families_dir / name
             if dst_json.exists():
                 _clear_read_only(dst_json)
-                try:
+                with contextlib.suppress(OSError):
                     dst_json.unlink()
-                except OSError:
-                    pass
         _save_generated_family_names(marker_path, set())
 
         for directory in (families_dir, roblox_dir / 'content' / 'fonts'):
-            try:
+            with contextlib.suppress(OSError):
                 directory.rmdir()
-            except OSError:
-                pass
 
         log_buffer.log('Modifications', f'Restored font families in {roblox_dir.name}')

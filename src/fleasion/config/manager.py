@@ -1,20 +1,85 @@
 """Configuration management."""
 
+from __future__ import annotations
+
 import json
 import locale
 import os
 import stat
+import sys
+import tempfile
 import threading
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
+from operator import itemgetter
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Literal, TypeGuard, TypeIs
 
-from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
+from fleasion.appearance import (
+    DEFAULT_ACCENT,
+    DEFAULT_COLOR_MODE,
+    DEFAULT_OPACITY,
+    accent_name,
+    appearance_style,
+    backdrop,
+    clamp_opacity,
+    color_mode,
+)
+from fleasion.utils import macos_rosemary_gate
+from fleasion.utils.json_types import JsonObject, JsonValue, as_json_object, is_json_value
+from fleasion.utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
+from fleasion.utils.replacement_filters import FilteredRoute, ReplacementFilter
+lazy from fleasion.localization import normalize_language
+lazy from fleasion.utils import linux_clients
+
+from .values import bool_value, int_value, parse_int, str_value, string_list
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from fleasion.appearance import AppearanceStyle, Backdrop, ColorMode
+
+    from .types import (
+        FileSignature,
+        ReplacementKey,
+        ReplacementMaps,
+        ReplacementMode,
+        ReplacementRules,
+        ReplacementsSignature,
+    )
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
 MAX_CONFIG_ASSET_FOLDER_DEPTH = 10
+_CONTROL_BYTE_LIMIT = 0x20
+_DELETE_BYTE = 0x7F
+_TEXT_CONTROL_BYTES = frozenset({0x09, 0x0A, 0x0C, 0x0D})
+_BINARY_CONTROL_RATIO = 0.1
+_BINARY_REPLACEMENT_RATIO = 0.3
+_LINUX_MAX_SCAN_CODE = 0x2FF
+_WINDOWS_MAX_SCAN_CODE = 0xFF
+_HOTKEY_KINDS = ('key', 'mouse_button')
+_MOUSE_WHEEL_PLATFORMS = ('linux_evdev', 'windows')
+_MOUSE_WHEEL_DIRECTIONS = ('up', 'down')
+_LINUX_MOUSE_BUTTON_CODES = frozenset({0x110, 0x111, 0x112, 0x113, 0x114})
+_WINDOWS_MOUSE_BUTTON_CODES = frozenset({1, 2, 4, 5, 6})
+_WINDOWS_HOTKEY_PLATFORMS = (None, 'windows')
+type ObjectCollection = list[object] | tuple[object, ...] | set[object]
+
+
+def _is_object_dict(value: object) -> TypeIs[dict[object, object]]:
+    return isinstance(value, dict)
+
+
+def _is_object_collection(value: object) -> TypeIs[ObjectCollection]:
+    return isinstance(value, list | tuple | set)
+
+
+def _replacement_rules(value: JsonValue) -> ReplacementRules:
+    return value if isinstance(value, list) else []
+
+
 _FALLBACK_JSON_ENCODINGS = (
     'utf-8-sig',
     'utf-16',
@@ -27,13 +92,11 @@ _FALLBACK_JSON_ENCODINGS = (
 )
 
 
-def _normalise_linux_client(value: str | None) -> str:
+def _normalise_linux_client(value: object) -> str:
     """Return ``auto`` or a key from the live Linux client registry."""
     normalized = str(value or 'auto').casefold()
     try:
-        from ..utils.linux_clients import LINUX_CLIENTS_BY_KEY
-
-        supported = LINUX_CLIENTS_BY_KEY
+        supported = linux_clients.LINUX_CLIENTS_BY_KEY
     except ImportError, AttributeError:
         # Keep isolated config loading and recovery usable even when platform
         # modules are unavailable. Sober is the compatibility implementation.
@@ -178,6 +241,9 @@ _ASSET_TYPE_IDS = {
     'codesnippet': 80,
 }
 _RESERVED_ASSET_TYPE_ID_MAX = max(_ASSET_TYPE_IDS.values())
+ASSET_TYPE_KEYS = frozenset(_ASSET_TYPE_IDS.values())
+ASSET_TYPE_NAMES = {code: name for name, code in _ASSET_TYPE_IDS.items()}
+TEXTUREPACK_TYPE_KEY = _ASSET_TYPE_IDS['texturepack']
 _VIRTUAL_ANIM_TYPES = {
     'r6animation': 'R6Animation',
     'r15animation': 'R15Animation',
@@ -187,8 +253,28 @@ _VIRTUAL_ANIM_TYPES = {
     'non-player animation': 'NonPlayerAnimation',
 }
 
+# Keep the GUI's overlap predicates aligned with the proxy's animation entry check
+ANIMATION_TYPE_KEYS = frozenset(
+    _ASSET_TYPE_IDS[name]
+    for name in (
+        'animation',
+        'climbanimation',
+        'deathanimation',
+        'fallanimation',
+        'idleanimation',
+        'jumpanimation',
+        'runanimation',
+        'swimanimation',
+        'walkanimation',
+        'poseanimation',
+        'emoteanimation',
+        'moodanimation',
+    )
+)
+VIRTUAL_ANIMATION_KEYS = frozenset(_VIRTUAL_ANIM_TYPES.values())
 
-def _parse_config_asset_id(value) -> int | None:
+
+def _parse_config_asset_id(value: object) -> int | None:
     """Parse an actual integer ID without truncating JSON floats."""
     if isinstance(value, bool):
         return None
@@ -201,6 +287,114 @@ def _parse_config_asset_id(value) -> int | None:
     return None
 
 
+def _parse_qualified_replacement_key(value: str) -> str | None:
+    prefix, suffix = value.split(':', 1)
+    if prefix.isdigit() and suffix.isdigit():
+        return value if int(prefix) > _RESERVED_ASSET_TYPE_ID_MAX else None
+    if prefix == 'TexturePack' and suffix.isdigit():
+        return value
+    return None
+
+
+def _parse_replacement_keys(values: ReplacementRules) -> list[ReplacementKey]:
+    parsed_ids: list[ReplacementKey] = []
+    for value in values:
+        if isinstance(value, str) and ':' in value:
+            if qualified_key := _parse_qualified_replacement_key(value):
+                parsed_ids.append(qualified_key)
+            continue
+
+        numeric_id = _parse_config_asset_id(value)
+        if numeric_id is not None:
+            if not 1 <= numeric_id <= _RESERVED_ASSET_TYPE_ID_MAX:
+                parsed_ids.append(numeric_id)
+            continue
+
+        if isinstance(value, str):
+            value_lower = value.lower()
+            if value_lower in _VIRTUAL_ANIM_TYPES:
+                parsed_ids.append(_VIRTUAL_ANIM_TYPES[value_lower])
+            elif value_lower in _ASSET_TYPE_IDS:
+                parsed_ids.append(_ASSET_TYPE_IDS[value_lower])
+    return parsed_ids
+
+
+def _replacement_mode(rule: JsonObject) -> JsonValue:
+    mode = rule.get('mode', 'id')
+    if 'remove' in rule and 'mode' not in rule:
+        return 'remove' if rule.get('remove') else 'id'
+    return mode
+
+
+def _apply_replacement_rule(rule: JsonObject, targets: ReplacementMaps) -> None:
+    replacements, removals, cdn_replacements, local_replacements = targets
+    parsed_ids = _parse_replacement_keys(_replacement_rules(rule.get('replace_ids', [])))
+    mode = _replacement_mode(rule)
+
+    if mode == 'remove':
+        removals.update(parsed_ids)
+        return
+    if mode == 'cdn':
+        cdn_url = rule.get('cdn_url')
+        if isinstance(cdn_url, str) and cdn_url:
+            cdn_replacements.update(dict.fromkeys(parsed_ids, cdn_url))
+        else:
+            removals.update(parsed_ids)
+        return
+    if mode == 'local':
+        local_path = rule.get('local_path')
+        if isinstance(local_path, str) and local_path:
+            resolved_path = str(resolve_local_replacement_path(local_path))
+            local_replacements.update(dict.fromkeys(parsed_ids, resolved_path))
+        else:
+            removals.update(parsed_ids)
+        return
+    if mode != 'id':
+        return
+
+    target = rule.get('with_id')
+    if target is None:
+        removals.update(parsed_ids)
+        return
+    target_id = _parse_config_asset_id(target)
+    if target_id is None or 0 <= target_id <= _RESERVED_ASSET_TYPE_ID_MAX:
+        return
+    replacements.update(dict.fromkeys(parsed_ids, target_id))
+
+
+def _filtered_route(rule: JsonObject) -> tuple[bool, FilteredRoute | None]:
+    """Return whether ``rule`` is a filtered local/CDN rule, and its route if usable."""
+    filters = ReplacementFilter.from_config(rule.get('filters'))
+    mode = _replacement_mode(rule)
+    if filters is None or mode not in {'cdn', 'local'}:
+        return False, None
+    if mode == 'cdn':
+        cdn_url = rule.get('cdn_url')
+        if isinstance(cdn_url, str) and cdn_url:
+            return True, FilteredRoute(filters, 'cdn', cdn_url)
+        return True, None
+    local_path = rule.get('local_path')
+    if not isinstance(local_path, str) or not local_path:
+        return True, None
+    resolved = str(resolve_local_replacement_path(local_path))
+    return True, FilteredRoute(filters, 'local', resolved)
+
+
+def replacement_rule_claims(rule: JsonObject) -> Iterator[tuple[ReplacementKey, ReplacementMode]]:
+    """Return the normalized claims actually contributed to the proxy maps."""
+    targets: ReplacementMaps = ({}, set(), {}, {})
+    _apply_replacement_rule(rule, targets)
+    replacements, removals, cdn, local = targets
+    for key in replacements:
+        yield key, 'id'
+    for key in removals:
+        yield key, 'remove'
+    for key in cdn:
+        yield key, 'cdn'
+    for key in local:
+        yield key, 'local'
+
+
 ConfigFileStatus = Literal['valid', 'invalid', 'binary', 'unreadable']
 
 
@@ -209,7 +403,7 @@ class ConfigFileInspection:
     """Result of inspecting a candidate file for import into the configs folder."""
 
     status: ConfigFileStatus
-    data: dict | None = None
+    data: JsonObject | None = None
 
 
 def _looks_like_utf16_or_utf32(raw: bytes) -> bool:
@@ -239,22 +433,31 @@ def _is_probably_binary(raw: bytes) -> bool:
 
     try:
         sample.decode('utf-8')
-        return False
     except UnicodeDecodeError:
         pass
+    else:
+        return False
 
     replacement_count = sample.decode('utf-8', errors='replace').count('\ufffd')
     control_count = sum(
-        value < 0x20 and value not in (0x09, 0x0A, 0x0C, 0x0D) or value == 0x7F for value in sample
+        (value < _CONTROL_BYTE_LIMIT and value not in _TEXT_CONTROL_BYTES) or value == _DELETE_BYTE
+        for value in sample
     )
-    return control_count / len(sample) > 0.1 or replacement_count / len(sample) > 0.3
+    return (
+        control_count / len(sample) > _BINARY_CONTROL_RATIO
+        or replacement_count / len(sample) > _BINARY_REPLACEMENT_RATIO
+    )
 
 
-DEFAULT_SETTINGS = {
+DEFAULT_SETTINGS: JsonObject = {
     'strip_textures': False,
     'enabled_configs': [],
     'last_config': 'Default',
-    'theme': 'System',  # System, Light, Dark
+    'appearance_style': 'Glass',
+    'color_mode': DEFAULT_COLOR_MODE,
+    'accent_color': DEFAULT_ACCENT,
+    'glass_opacity': DEFAULT_OPACITY,
+    'custom_accent_color': '#a17dff',
     'language': 'en',
     'audio_volume': 70,  # 0-100
     'always_on_top': False,
@@ -264,13 +467,16 @@ DEFAULT_SETTINGS = {
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
     'proxy_mode': 'env',
-    # Linux client selection is registry-backed. Sober is the only registered
-    # implementation today; ``auto`` leaves room for future backends.
+    # Linux client selection is registry-backed; auto follows a running Player or desktop handler.
     'linux_client': 'auto',
+    'rosemary_app_path': '',
+    'rosemary_binary_path': '',
+    'rosemary_prefix_path': '',
     'env_proxy_migration_v1_complete': False,
     'lock_roblox_files_read_only': False,
     'read_only_lock_migration_v1_complete': False,
     'close_env_proxy_roblox_on_exit': True,
+    'fflag_browser_source': 'public',
     'custom_fflags_enabled': False,
     'custom_fflags_warning_accepted': False,
     'custom_fflags': {},
@@ -325,6 +531,7 @@ DEFAULT_SETTINGS = {
     'scraper_blacklist': [],
     'subplace_blacklist': [],
     'subplace_blacklist_mode': 'block',
+    'profile_picture_entries': [],
     'username_spoofer': {
         'save_settings': False,
         'others_name': '',
@@ -338,17 +545,38 @@ DEFAULT_SETTINGS = {
 }
 
 
-def _json_loads(raw: bytes | str) -> Any:
-    return json.loads(raw)
+def _json_loads(raw: bytes | str) -> JsonValue:
+    value: object = json.loads(raw)
+    if not is_json_value(value):
+        msg = 'Decoded value is not valid JSON'
+        raise TypeError(msg)
+    return value
 
 
-def _write_json(path: Path, data: Any) -> None:
-    with path.open('w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
+def _write_json(path: Path, data: JsonValue) -> None:
+    """Atomically publish a complete JSON file in its destination directory."""
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            encoding='utf-8',
+            dir=path.parent,
+            prefix=f'.{path.name}.',
+            suffix='.tmp',
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(data, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
-def _normalize_custom_fflags(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
+def _normalize_custom_fflags(value: object) -> dict[str, str]:
+    if not _is_object_dict(value):
         return {}
     normalized: dict[str, str] = {}
     for raw_name, raw_value in value.items():
@@ -364,20 +592,20 @@ def _normalize_custom_fflags(value: Any) -> dict[str, str]:
     return normalized
 
 
-def _normalize_custom_fflag_disabled(value: Any) -> list[str]:
-    if not isinstance(value, list | tuple | set):
+def _normalize_custom_fflag_disabled(value: object) -> list[str]:
+    if not _is_object_collection(value):
         return []
     return sorted({str(name).strip() for name in value if str(name).strip()}, key=str.casefold)
 
 
-def _normalize_custom_fflag_folders(value: Any) -> dict[str, list[str]]:
-    if not isinstance(value, dict):
+def _normalize_custom_fflag_folders(value: object) -> dict[str, list[str]]:
+    if not _is_object_dict(value):
         return {}
     normalized: dict[str, list[str]] = {}
     assigned: set[str] = set()
     for raw_folder, raw_names in value.items():
         folder = str(raw_folder).strip()
-        if not folder or not isinstance(raw_names, list | tuple | set):
+        if not folder or not _is_object_collection(raw_names):
             continue
         names = list(normalized.get(folder, []))
         for raw_name in raw_names:
@@ -389,15 +617,80 @@ def _normalize_custom_fflag_folders(value: Any) -> dict[str, list[str]]:
     return normalized
 
 
-def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bool | str]]:
+def _valid_scan_code(value: object, maximum: int) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= maximum
+
+
+def _normalize_mouse_wheel_binding(
+    platform: object,
+    direction: object,
+    modifiers: int,
+) -> dict[str, int | str] | None:
+    if (
+        not isinstance(platform, str)
+        or not isinstance(direction, str)
+        or platform not in _MOUSE_WHEEL_PLATFORMS
+        or direction not in _MOUSE_WHEEL_DIRECTIONS
+    ):
+        return None
+    return {
+        'platform': platform,
+        'kind': 'mouse_wheel',
+        'direction': direction,
+        'modifiers': modifiers,
+    }
+
+
+def _normalize_linux_binding(
+    scan_code: object,
+    kind: object,
+    modifiers: int,
+) -> dict[str, int | str] | None:
+    if not _valid_scan_code(scan_code, _LINUX_MAX_SCAN_CODE) or kind not in _HOTKEY_KINDS:
+        return None
+    if kind == 'mouse_button' and scan_code not in _LINUX_MOUSE_BUTTON_CODES:
+        return None
+    return {
+        'platform': 'linux_evdev',
+        **({'kind': 'mouse_button'} if kind == 'mouse_button' else {}),
+        'scan_code': scan_code,
+        'modifiers': modifiers,
+    }
+
+
+def _normalize_windows_binding(
+    scan_code: object,
+    kind: object,
+    extended: object,
+    modifiers: int,
+    platform: object,
+) -> dict[str, int | bool | str] | None:
+    if not isinstance(extended, bool):
+        return None
+    if not _valid_scan_code(scan_code, _WINDOWS_MAX_SCAN_CODE) or kind not in _HOTKEY_KINDS:
+        return None
+    if kind == 'mouse_button' and scan_code not in _WINDOWS_MOUSE_BUTTON_CODES:
+        return None
+    return {
+        **({'platform': 'windows'} if platform == 'windows' else {}),
+        **({'kind': 'mouse_button'} if kind == 'mouse_button' else {}),
+        'scan_code': scan_code,
+        'extended': extended,
+        'modifiers': modifiers,
+    }
+
+
+def _normalize_custom_fflag_keybinds(
+    value: object,
+) -> dict[str, dict[str, int | bool | str]]:
     """Keep valid physical scan-code bindings for the platform hotkey services."""
-    if not isinstance(value, dict):
+    if not _is_object_dict(value):
         return {}
 
-    normalized: dict[str, dict[str, int | bool]] = {}
+    normalized: dict[str, dict[str, int | bool | str]] = {}
     for raw_name, raw_binding in value.items():
         name = str(raw_name).strip()
-        if not name or not isinstance(raw_binding, dict):
+        if not name or not _is_object_dict(raw_binding):
             continue
         scan_code = raw_binding.get('scan_code')
         modifiers = raw_binding.get('modifiers', 0)
@@ -406,117 +699,108 @@ def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bo
         extended = raw_binding.get('extended', False)
         if not isinstance(modifiers, int) or isinstance(modifiers, bool) or modifiers & ~0x0F:
             continue
+        binding: dict[str, int | bool | str] | None = None
         if kind == 'mouse_wheel':
-            direction = raw_binding.get('direction')
-            if platform not in ('linux_evdev', 'windows') or direction not in ('up', 'down'):
-                continue
-            normalized[name] = {
-                'platform': platform,
-                'kind': 'mouse_wheel',
-                'direction': direction,
-                'modifiers': modifiers,
-            }
+            binding = _normalize_mouse_wheel_binding(
+                platform,
+                raw_binding.get('direction'),
+                modifiers,
+            )
         elif platform == 'linux_evdev':
-            if (
-                not isinstance(scan_code, int)
-                or isinstance(scan_code, bool)
-                or not 0 < scan_code <= 0x2FF
-                or kind not in ('key', 'mouse_button')
-                or kind == 'mouse_button'
-                and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114)
-            ):
-                continue
-            normalized[name] = {
-                'platform': 'linux_evdev',
-                **({'kind': 'mouse_button'} if kind == 'mouse_button' else {}),
-                'scan_code': scan_code,
-                'modifiers': modifiers,
-            }
-        elif platform in (None, 'windows') and isinstance(extended, bool):
-            if (
-                not isinstance(scan_code, int)
-                or isinstance(scan_code, bool)
-                or not 0 < scan_code <= 0xFF
-                or kind not in ('key', 'mouse_button')
-                or kind == 'mouse_button'
-                and scan_code not in (1, 2, 4, 5, 6)
-            ):
-                continue
+            binding = _normalize_linux_binding(scan_code, kind, modifiers)
+        elif platform in _WINDOWS_HOTKEY_PLATFORMS:
             # Untagged bindings are the Windows format used before platform
             # tagging was added, so preserve them for existing users.
-            normalized[name] = {
-                **({'platform': 'windows'} if platform == 'windows' else {}),
-                **({'kind': 'mouse_button'} if kind == 'mouse_button' else {}),
-                'scan_code': scan_code,
-                'extended': extended,
-                'modifiers': modifiers,
-            }
+            binding = _normalize_windows_binding(scan_code, kind, extended, modifiers, platform)
+        if binding is not None:
+            normalized[name] = binding
     return normalized
 
 
-def _normalize_custom_fflag_actions(value: Any) -> dict[str, dict[str, Any]]:
+def _normalize_custom_fflag_actions(value: object) -> dict[str, JsonObject]:
     """Normalize named FastFlag actions with optional hotkey bindings."""
-    if not isinstance(value, dict):
+    if not _is_object_dict(value):
         return {}
-    normalized: dict[str, dict[str, Any]] = {}
+    normalized: dict[str, JsonObject] = {}
     for raw_name, raw_action in value.items():
         name = str(raw_name).strip()
-        if not name or not isinstance(raw_action, dict):
+        if not name or not _is_object_dict(raw_action):
             continue
         flags = _normalize_custom_fflags(raw_action.get('flags', {}))
         if not flags:
             continue
-        action: dict[str, Any] = {'flags': flags}
-        binding = _normalize_custom_fflag_keybinds(
-            {name: raw_action.get('keybind')}
-        ).get(name)
+        json_flags: JsonObject = {}
+        json_flags.update(flags)
+        action: JsonObject = {'flags': json_flags}
+        binding = _normalize_custom_fflag_keybinds({name: raw_action.get('keybind')}).get(name)
         if binding is not None:
-            action['keybind'] = binding
+            json_binding: JsonObject = {}
+            json_binding.update(binding)
+            action['keybind'] = json_binding
         normalized[name] = action
     return normalized
+
+
+class SettingsLoadError(ValueError):
+    """An existing settings file could not be loaded without losing user data."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        self.path = path
+        super().__init__(f'{reason}: {path}')
 
 
 class ConfigManager:
     """Manages application settings and replacement configurations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.RLock()
+        # Freeze the paths at construction: deferred Qt callbacks must not use
+        # another test's or application's subsequently changed module globals
+        self._config_dir = Path(CONFIG_DIR)
+        self._config_file = Path(CONFIG_FILE)
+        self._configs_folder = Path(CONFIGS_FOLDER)
         self._config_names_cache: list[str] | None = None
         self._config_names_signature: tuple[tuple[str, int, int], ...] | None = None
-        self._config_data_cache: dict[str, tuple[tuple[int, int] | None, dict]] = {}
-        self._all_replacements_cache_signature: tuple | None = None
-        self._all_replacements_cache: (
-            tuple[
-                dict[int | str, int],
-                set[int | str],
-                dict[int | str, str],
-                dict[int | str, str],
-            ]
-            | None
-        ) = None
+        self._config_data_cache: dict[str, tuple[FileSignature, JsonObject]] = {}
+        self._all_replacements_cache_signature: ReplacementsSignature | None = None
+        self._all_replacements_cache: ReplacementMaps | None = None
+        # Built alongside _all_replacements_cache, under the same signature
+        self._filtered_replacements_cache: dict[ReplacementKey, tuple[FilteredRoute, ...]] = {}
         self._replacements_generation = 0
         self.settings = self._load_settings()
         self._ensure_default_config()
         self.reconcile_configs(save=False)
+        if sys.platform == 'darwin' and not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+            if self.settings.get('macos_rosemary_enabled') is True:
+                # Do not reactivate a prior beta opt-in in dormant builds
+                self.settings['macos_rosemary_enabled'] = False
+                self._save_settings()
+            if self.settings.get('proxy_features_enabled') is not False:
+                self.settings['proxy_features_enabled'] = False
+                self._save_settings()
 
     @staticmethod
-    def _file_signature(path: Path) -> tuple[int, int] | None:
+    def _file_signature(path: Path) -> FileSignature:
         try:
             stat_result = path.stat()
         except OSError:
             return None
         return stat_result.st_mtime_ns, stat_result.st_size
 
-    def _scan_config_files(self) -> tuple[list[str], tuple[tuple[str, int, int], ...]]:
-        CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
+    @staticmethod
+    def _scan_config_files(
+        folder: Path | None = None,
+    ) -> tuple[list[str], tuple[tuple[str, int, int], ...]]:
+        folder = Path(CONFIGS_FOLDER) if folder is None else folder
+        folder.mkdir(parents=True, exist_ok=True)
         entries: list[tuple[str, str, int, int]] = []
-        for path in CONFIGS_FOLDER.glob('*.json'):
+        for path in folder.glob('*.json'):
             try:
                 stat_result = path.stat()
             except OSError:
                 continue
             entries.append((path.stem, path.name, stat_result.st_mtime_ns, stat_result.st_size))
-        entries.sort(key=lambda item: item[0])
+        entries.sort(key=itemgetter(0))
         return [name for name, *_ in entries], tuple(
             (filename, mtime, size) for _, filename, mtime, size in entries
         )
@@ -538,7 +822,7 @@ class ConfigManager:
         self._mark_replacements_dirty()
 
     def _refresh_config_names_cache(self) -> list[str]:
-        names, signature = self._scan_config_files()
+        names, signature = self._scan_config_files(self._configs_folder)
         if signature != self._config_names_signature:
             live_names = set(names)
             self._config_data_cache = {
@@ -551,71 +835,89 @@ class ConfigManager:
             self._mark_replacements_dirty()
         return list(self._config_names_cache or [])
 
-    def _load_settings(self) -> dict:
+    def _load_settings(self) -> JsonObject:
         """Load settings from disk."""
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
-        if CONFIG_FILE.exists():
-            try:
-                loaded = self._load_json_file(Path(CONFIG_FILE))
-                if 'configs' in loaded:
-                    self._migrate_old_format(loaded)
-                    return {
-                        'strip_textures': loaded.get('strip_textures', False),
-                        'enabled_configs': [],
-                        'last_config': loaded.get('active_config', 'Default'),
-                        'theme': 'System',
-                    }
-                # Migrate from old active_config to new format
-                if 'active_config' in loaded and 'enabled_configs' not in loaded:
-                    loaded['enabled_configs'] = [loaded['active_config']]
-                    loaded['last_config'] = loaded['active_config']
-                    del loaded['active_config']
-                return {**DEFAULT_SETTINGS, **loaded}
-            except json.JSONDecodeError, OSError, UnicodeDecodeError:
-                pass
-        return deepcopy(DEFAULT_SETTINGS)
+        self._config_dir.mkdir(parents=True, exist_ok=True)
+        self._configs_folder.mkdir(parents=True, exist_ok=True)
+        if not self._config_file.exists():
+            return deepcopy(DEFAULT_SETTINGS)
+        try:
+            loaded_value = self._load_json_file(self._config_file)
+        except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError) as exc:
+            raise SettingsLoadError(
+                self._config_file, 'Could not read existing Fleasion settings'
+            ) from exc
+        loaded = as_json_object(loaded_value)
+        if loaded is None:
+            raise SettingsLoadError(
+                self._config_file, 'Existing Fleasion settings are not a JSON object'
+            )
+        return self._settings_from_loaded(loaded)
 
-    def _migrate_old_format(self, old_config: dict):
+    @staticmethod
+    def reset_invalid_settings(path: Path) -> None:
+        """Replace settings with defaults only after an explicit reset decision."""
+        _write_json(path, deepcopy(DEFAULT_SETTINGS))
+
+    def _settings_from_loaded(self, loaded: JsonObject) -> JsonObject:
+        if 'configs' in loaded:
+            self._migrate_old_format(loaded)
+            return {
+                **deepcopy(DEFAULT_SETTINGS),
+                'strip_textures': loaded.get('strip_textures', False),
+                'enabled_configs': [],
+                'last_config': loaded.get('active_config', 'Default'),
+            }
+        # Migrate from old active_config to new format
+        if 'active_config' in loaded and 'enabled_configs' not in loaded:
+            loaded['enabled_configs'] = [loaded['active_config']]
+            loaded['last_config'] = loaded['active_config']
+            del loaded['active_config']
+        # Migrate before adding defaults so existing choices take precedence
+        legacy_theme = loaded.pop('theme', 'System')
+        loaded.setdefault('appearance_style', 'Glass' if legacy_theme == 'Glass' else 'Fusion')
+        loaded.setdefault(
+            'color_mode', 'Dark' if legacy_theme == 'Glass' else color_mode(legacy_theme)
+        )
+        loaded.setdefault('accent_color', accent_name(loaded.pop('glass_accent', 'Ice')))
+        return {**DEFAULT_SETTINGS, **loaded}
+
+    def _migrate_old_format(self, old_config: JsonObject) -> None:
         """Migrate old config format to new format."""
-        configs = old_config.get('configs', {})
+        configs = as_json_object(old_config.get('configs', {})) or {}
         for name, data in configs.items():
-            config_path = CONFIGS_FOLDER / f'{name}.json'
+            config_path = self._configs_folder / f'{name}.json'
             if not config_path.exists():
-                try:
+                with suppress(OSError):
                     _write_json(Path(config_path), data)
-                except OSError:
-                    pass
 
-    def _ensure_default_config(self):
+    def _ensure_default_config(self) -> None:
         """Ensure at least one default config exists."""
         if not self.config_names:
             self._save_config('Default', {'replacement_rules': []})
 
-    def _save_settings(self):
+    def _save_settings(self) -> None:
         """Save settings to disk."""
         with self._lock:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            _write_json(Path(CONFIG_FILE), self.settings)
+            self._config_dir.mkdir(parents=True, exist_ok=True)
+            _write_json(self._config_file, self.settings)
 
     def _get_config_path(self, name: str) -> Path:
         """Get the path for a config file."""
-        return CONFIGS_FOLDER / f'{name}.json'
+        return self._configs_folder / f'{name}.json'
 
     @staticmethod
     def _clear_read_only(path: Path) -> None:
         """Clear the read-only attribute on an existing file."""
         if not path.exists():
             return
-        try:
+        with suppress(OSError):
             path.chmod(path.stat().st_mode | stat.S_IWRITE)
-        except OSError:
-            pass
 
     @staticmethod
     def _fallback_json_encodings() -> tuple[str, ...]:
         """Return legacy text encodings to try after strict JSON decoding fails."""
-        preferred = locale.getpreferredencoding(False)
+        preferred = locale.getpreferredencoding(do_setlocale=False)
         encodings: list[str] = []
         seen: set[str] = set()
         for encoding in (*_FALLBACK_JSON_ENCODINGS, preferred):
@@ -625,7 +927,7 @@ class ConfigManager:
                 seen.add(normalized)
         return tuple(encodings)
 
-    def _decode_json_bytes(self, raw: bytes) -> tuple[Any, bool]:
+    def _decode_json_bytes(self, raw: bytes) -> tuple[JsonValue, bool]:
         """Decode JSON bytes and report whether a fallback text encoding was used."""
         decode_error: UnicodeDecodeError | None = None
         json_error: json.JSONDecodeError | None = None
@@ -651,7 +953,7 @@ class ConfigManager:
             raise json_error
         return _json_loads(raw), False
 
-    def _load_json_file(self, path: Path) -> Any:
+    def _load_json_file(self, path: Path) -> JsonValue:
         """Load JSON and recover legacy non-UTF files when possible."""
         raw = path.read_bytes()
         loaded, recovered = self._decode_json_bytes(raw)
@@ -702,7 +1004,7 @@ class ConfigManager:
         same_file = False
         if destination.exists():
             try:
-                same_file = os.path.samefile(path, destination)
+                same_file = path.samefile(destination)
             except OSError:
                 same_file = path == destination
             if not same_file:
@@ -712,9 +1014,7 @@ class ConfigManager:
             same_file
             and path.name != destination.name
             and path.name.casefold() == destination.name.casefold()
-        ):
-            path.rename(destination)
-        elif not same_file and path != destination:
+        ) or (not same_file and path != destination):
             path.rename(destination)
         with self._lock:
             self._config_names_cache = None
@@ -723,7 +1023,7 @@ class ConfigManager:
         return destination
 
     @staticmethod
-    def _normalize_config_data(data: Any) -> dict:
+    def _normalize_config_data(data: JsonValue) -> JsonObject:
         """Return a valid config object from decoded JSON data."""
         if isinstance(data, dict):
             rules = data.get('replacement_rules', [])
@@ -735,7 +1035,7 @@ class ConfigManager:
             return {'replacement_rules': data}
         return {'replacement_rules': []}
 
-    def _load_config(self, name: str) -> dict:
+    def _load_config(self, name: str) -> JsonObject:
         """Load a config from disk."""
         path = self._get_config_path(name)
         signature = self._file_signature(path)
@@ -748,17 +1048,18 @@ class ConfigManager:
                 self._clear_read_only(path)
                 loaded = self._normalize_config_data(self._load_json_file(Path(path)))
                 self._config_data_cache[name] = (self._file_signature(path), loaded)
-                return loaded
             except json.JSONDecodeError, OSError, UnicodeDecodeError:
                 pass
-        loaded = {'replacement_rules': []}
+            else:
+                return loaded
+        loaded: JsonObject = {'replacement_rules': []}
         self._config_data_cache[name] = (signature, loaded)
         return loaded
 
-    def _save_config(self, name: str, data: dict):
+    def _save_config(self, name: str, data: JsonObject) -> None:
         """Save a config to disk."""
         with self._lock:
-            CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
+            self._configs_folder.mkdir(parents=True, exist_ok=True)
             path = self._get_config_path(name)
             self._clear_read_only(path)
             _write_json(Path(path), data)
@@ -770,47 +1071,118 @@ class ConfigManager:
     @property
     def strip_textures(self) -> bool:
         """Get strip textures setting."""
-        return self.settings.get('strip_textures', False)
+        return bool_value(self.settings.get('strip_textures', False), default=False)
 
     @strip_textures.setter
-    def strip_textures(self, value: bool):
+    def strip_textures(self, value: bool) -> None:
         """Set strip textures setting."""
         self.settings['strip_textures'] = value
         self._save_settings()
 
     @property
     def theme(self) -> str:
-        """Get theme setting."""
-        return self.settings.get('theme', 'System')
+        """Compatibility view of the former combined theme setting."""
+        return 'Glass' if self.appearance_style == 'Glass' else self.color_mode
 
     @theme.setter
-    def theme(self, value: str):
-        """Set theme setting."""
-        self.settings['theme'] = value
+    def theme(self, value: str) -> None:
+        self.settings['appearance_style'] = 'Glass' if value == 'Glass' else 'Fusion'
+        self.settings['color_mode'] = 'Dark' if value == 'Glass' else color_mode(value)
+        self._save_settings()
+
+    @property
+    def appearance_style(self) -> AppearanceStyle:
+        return appearance_style(self.settings.get('appearance_style'))
+
+    @appearance_style.setter
+    def appearance_style(self, value: AppearanceStyle) -> None:
+        self.settings['appearance_style'] = appearance_style(value)
+        self._save_settings()
+
+    @property
+    def color_mode(self) -> ColorMode:
+        return color_mode(self.settings.get('color_mode'))
+
+    @color_mode.setter
+    def color_mode(self, value: ColorMode) -> None:
+        self.settings['color_mode'] = color_mode(value)
+        self._save_settings()
+
+    @property
+    def accent_color(self) -> str:
+        return accent_name(self.settings.get('accent_color', self.settings.get('glass_accent')))
+
+    @accent_color.setter
+    def accent_color(self, value: str) -> None:
+        self.settings['accent_color'] = accent_name(value)
+        self._save_settings()
+
+    @property
+    def custom_accent_color(self) -> str:
+        color = self.settings.get('custom_accent_color')
+        resolved = accent_name(color)
+        return resolved if resolved.startswith('#') else '#a17dff'
+
+    @custom_accent_color.setter
+    def custom_accent_color(self, value: str) -> None:
+        resolved = accent_name(value)
+        if resolved.startswith('#'):
+            self.settings['custom_accent_color'] = resolved
+            self._save_settings()
+
+    @property
+    def glass_accent(self) -> str:
+        """Compatibility alias for the shared accent preference."""
+        return self.accent_color
+
+    @glass_accent.setter
+    def glass_accent(self, value: str) -> None:
+        self.accent_color = value
+
+    @property
+    def glass_opacity(self) -> float:
+        """Glass tint over its backdrop, clamped to the supported range."""
+        value = self.settings.get('glass_opacity', DEFAULT_OPACITY)
+
+        # bool is an int subclass, but True is not an opacity
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            value = DEFAULT_OPACITY
+
+        return clamp_opacity(float(value))
+
+    @glass_opacity.setter
+    def glass_opacity(self, value: float) -> None:
+        self.settings['glass_opacity'] = round(clamp_opacity(value), 2)
+        self._save_settings()
+
+    @property
+    def glass_backdrop(self) -> Backdrop:
+        """What the Glass theme paints behind its tint."""
+        return backdrop(self.settings.get('glass_backdrop'))
+
+    @glass_backdrop.setter
+    def glass_backdrop(self, value: Backdrop) -> None:
+        self.settings['glass_backdrop'] = value
         self._save_settings()
 
     @property
     def language(self) -> str:
         """Return a supported language code, falling back to English."""
-        from ..localization import normalize_language
-
-        return normalize_language(self.settings.get('language', 'en'))
+        return normalize_language(str_value(self.settings.get('language', 'en'), 'en'))
 
     @language.setter
-    def language(self, value: str):
+    def language(self, value: str) -> None:
         """Persist a supported language code, using English for invalid values."""
-        from ..localization import normalize_language
-
         self.settings['language'] = normalize_language(value)
         self._save_settings()
 
     @property
     def audio_volume(self) -> int:
         """Get audio volume setting (0-100)."""
-        return self.settings.get('audio_volume', 70)
+        return int_value(self.settings.get('audio_volume', 70), 70)
 
     @audio_volume.setter
-    def audio_volume(self, value: int):
+    def audio_volume(self, value: int) -> None:
         """Set audio volume setting (0-100)."""
         self.settings['audio_volume'] = max(0, min(100, value))
         self._save_settings()
@@ -818,10 +1190,10 @@ class ConfigManager:
     @property
     def always_on_top(self) -> bool:
         """Get always on top setting."""
-        return self.settings.get('always_on_top', False)
+        return bool_value(self.settings.get('always_on_top', False), default=False)
 
     @always_on_top.setter
-    def always_on_top(self, value: bool):
+    def always_on_top(self, value: bool) -> None:
         """Set always on top setting."""
         self.settings['always_on_top'] = value
         self._save_settings()
@@ -829,10 +1201,10 @@ class ConfigManager:
     @property
     def open_dashboard_on_launch(self) -> bool:
         """Get open dashboard on launch setting."""
-        return self.settings.get('open_dashboard_on_launch', True)
+        return bool_value(self.settings.get('open_dashboard_on_launch', True), default=True)
 
     @open_dashboard_on_launch.setter
-    def open_dashboard_on_launch(self, value: bool):
+    def open_dashboard_on_launch(self, value: bool) -> None:
         """Set open dashboard on launch setting."""
         self.settings['open_dashboard_on_launch'] = value
         self._save_settings()
@@ -840,10 +1212,10 @@ class ConfigManager:
     @property
     def first_time_setup_complete(self) -> bool:
         """Get first time setup complete flag."""
-        return self.settings.get('first_time_setup_complete', False)
+        return bool_value(self.settings.get('first_time_setup_complete', False), default=False)
 
     @first_time_setup_complete.setter
-    def first_time_setup_complete(self, value: bool):
+    def first_time_setup_complete(self, value: bool) -> None:
         """Set first time setup complete flag."""
         self.settings['first_time_setup_complete'] = value
         self._save_settings()
@@ -851,10 +1223,10 @@ class ConfigManager:
     @property
     def auto_delete_cache_on_exit(self) -> bool:
         """Get auto delete cache on Roblox exit setting."""
-        return self.settings.get('auto_delete_cache_on_exit', True)
+        return bool_value(self.settings.get('auto_delete_cache_on_exit', True), default=True)
 
     @auto_delete_cache_on_exit.setter
-    def auto_delete_cache_on_exit(self, value: bool):
+    def auto_delete_cache_on_exit(self, value: bool) -> None:
         """Set auto delete cache on Roblox exit setting."""
         self.settings['auto_delete_cache_on_exit'] = value
         self._save_settings()
@@ -862,23 +1234,41 @@ class ConfigManager:
     @property
     def clear_cache_on_launch(self) -> bool:
         """Get clear cache on launch setting."""
-        return self.settings.get('clear_cache_on_launch', True)
+        return bool_value(self.settings.get('clear_cache_on_launch', True), default=True)
 
     @clear_cache_on_launch.setter
-    def clear_cache_on_launch(self, value: bool):
+    def clear_cache_on_launch(self, value: bool) -> None:
         """Set clear cache on launch setting."""
         self.settings['clear_cache_on_launch'] = value
         self._save_settings()
 
     @property
+    def macos_rosemary_enabled(self) -> bool:
+        """Whether the user opted into Fleasion-managed Rosemary on macOS."""
+        return macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE and bool_value(
+            self.settings.get('macos_rosemary_enabled', False), default=False
+        )
+
+    @macos_rosemary_enabled.setter
+    def macos_rosemary_enabled(self, value: bool) -> None:
+        self.settings['macos_rosemary_enabled'] = (
+            bool(value) and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE
+        )
+        self._save_settings()
+
+    @property
     def proxy_features_enabled(self) -> bool:
-        """Get proxy feature toggle."""
-        return self.settings.get('proxy_features_enabled', True)
+        """Get proxy feature toggle; macOS requires managed Rosemary."""
+        if sys.platform == 'darwin' and not self.macos_rosemary_enabled:
+            return False
+        return bool_value(self.settings.get('proxy_features_enabled', True), default=True)
 
     @proxy_features_enabled.setter
-    def proxy_features_enabled(self, value: bool):
-        """Set proxy feature toggle."""
-        self.settings['proxy_features_enabled'] = value
+    def proxy_features_enabled(self, value: bool) -> None:
+        """Set proxy toggle; macOS is restricted to the managed launch path."""
+        self.settings['proxy_features_enabled'] = bool(value) and (
+            sys.platform != 'darwin' or self.macos_rosemary_enabled
+        )
         self._save_settings()
 
     @property
@@ -888,9 +1278,22 @@ class ConfigManager:
         return mode if mode in {'hosts', 'env'} else 'env'
 
     @proxy_mode.setter
-    def proxy_mode(self, value: str):
+    def proxy_mode(self, value: str) -> None:
         value = str(value or 'env').lower()
         self.settings['proxy_mode'] = value if value in {'hosts', 'env'} else 'env'
+        self._save_settings()
+
+    @property
+    def fflag_browser_source(self) -> str:
+        """Last FastFlag browser source, independent of the current platform."""
+        return 'client' if self.settings.get('fflag_browser_source') == 'client' else 'public'
+
+    @fflag_browser_source.setter
+    def fflag_browser_source(self, value: str) -> None:
+        selected = 'client' if value == 'client' else 'public'
+        if self.fflag_browser_source == selected:
+            return
+        self.settings['fflag_browser_source'] = selected
         self._save_settings()
 
     @property
@@ -899,17 +1302,47 @@ class ConfigManager:
         return _normalise_linux_client(self.settings.get('linux_client', 'auto'))
 
     @linux_client.setter
-    def linux_client(self, value: str):
+    def linux_client(self, value: str) -> None:
         self.settings['linux_client'] = _normalise_linux_client(value)
         self._save_settings()
 
     @property
+    def rosemary_app_path(self) -> str:
+        """Optional custom macOS Roblox.app path on the Linux host."""
+        return str(self.settings.get('rosemary_app_path', '') or '')
+
+    @rosemary_app_path.setter
+    def rosemary_app_path(self, value: str) -> None:
+        self.settings['rosemary_app_path'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def rosemary_binary_path(self) -> str:
+        """Optional Rosemary executable path on the Linux host."""
+        return str(self.settings.get('rosemary_binary_path', '') or '')
+
+    @rosemary_binary_path.setter
+    def rosemary_binary_path(self, value: str) -> None:
+        self.settings['rosemary_binary_path'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def rosemary_prefix_path(self) -> str:
+        """Optional custom Rosemary guest prefix for cache and login discovery."""
+        return str(self.settings.get('rosemary_prefix_path', '') or '')
+
+    @rosemary_prefix_path.setter
+    def rosemary_prefix_path(self, value: str) -> None:
+        self.settings['rosemary_prefix_path'] = str(value or '')
+        self._save_settings()
+
+    @property
     def env_proxy_migration_v1_complete(self) -> bool:
-        """Whether the one-time Env Proxy default migration was acknowledged."""
+        """Whether the one-time Env Proxy default migration has been applied."""
         return bool(self.settings.get('env_proxy_migration_v1_complete', False))
 
     @env_proxy_migration_v1_complete.setter
-    def env_proxy_migration_v1_complete(self, value: bool):
+    def env_proxy_migration_v1_complete(self, value: bool) -> None:
         self.settings['env_proxy_migration_v1_complete'] = bool(value)
         self._save_settings()
 
@@ -919,7 +1352,7 @@ class ConfigManager:
         return bool(self.settings.get('lock_roblox_files_read_only', False))
 
     @lock_roblox_files_read_only.setter
-    def lock_roblox_files_read_only(self, value: bool):
+    def lock_roblox_files_read_only(self, value: bool) -> None:
         self.settings['lock_roblox_files_read_only'] = bool(value)
         self._save_settings()
 
@@ -928,7 +1361,7 @@ class ConfigManager:
         return bool(self.settings.get('read_only_lock_migration_v1_complete', False))
 
     @read_only_lock_migration_v1_complete.setter
-    def read_only_lock_migration_v1_complete(self, value: bool):
+    def read_only_lock_migration_v1_complete(self, value: bool) -> None:
         self.settings['read_only_lock_migration_v1_complete'] = bool(value)
         self._save_settings()
 
@@ -938,7 +1371,7 @@ class ConfigManager:
         return bool(self.settings.get('close_env_proxy_roblox_on_exit', True))
 
     @close_env_proxy_roblox_on_exit.setter
-    def close_env_proxy_roblox_on_exit(self, value: bool):
+    def close_env_proxy_roblox_on_exit(self, value: bool) -> None:
         self.settings['close_env_proxy_roblox_on_exit'] = bool(value)
         self._save_settings()
 
@@ -948,7 +1381,7 @@ class ConfigManager:
         return bool(self.settings.get('custom_fflags_enabled', False))
 
     @custom_fflags_enabled.setter
-    def custom_fflags_enabled(self, value: bool):
+    def custom_fflags_enabled(self, value: bool) -> None:
         self.settings['custom_fflags_enabled'] = bool(value)
         self._save_settings()
 
@@ -958,7 +1391,7 @@ class ConfigManager:
         return bool(self.settings.get('custom_fflags_warning_accepted', False))
 
     @custom_fflags_warning_accepted.setter
-    def custom_fflags_warning_accepted(self, value: bool):
+    def custom_fflags_warning_accepted(self, value: bool) -> None:
         self.settings['custom_fflags_warning_accepted'] = bool(value)
         self._save_settings()
 
@@ -968,8 +1401,10 @@ class ConfigManager:
         return _normalize_custom_fflags(self.settings.get('custom_fflags', {}))
 
     @custom_fflags.setter
-    def custom_fflags(self, value: dict):
-        self.settings['custom_fflags'] = _normalize_custom_fflags(value)
+    def custom_fflags(self, value: object) -> None:
+        normalized: JsonObject = {}
+        normalized.update(_normalize_custom_fflags(value))
+        self.settings['custom_fflags'] = normalized
         self._save_settings()
 
     @property
@@ -978,8 +1413,9 @@ class ConfigManager:
         return _normalize_custom_fflag_disabled(self.settings.get('custom_fflag_disabled', []))
 
     @custom_fflag_disabled.setter
-    def custom_fflag_disabled(self, value):
-        self.settings['custom_fflag_disabled'] = _normalize_custom_fflag_disabled(value)
+    def custom_fflag_disabled(self, value: object) -> None:
+        disabled: list[JsonValue] = [*_normalize_custom_fflag_disabled(value)]
+        self.settings['custom_fflag_disabled'] = disabled
         self._save_settings()
 
     @property
@@ -988,8 +1424,13 @@ class ConfigManager:
         return _normalize_custom_fflag_keybinds(self.settings.get('custom_fflag_keybinds', {}))
 
     @custom_fflag_keybinds.setter
-    def custom_fflag_keybinds(self, value):
-        self.settings['custom_fflag_keybinds'] = _normalize_custom_fflag_keybinds(value)
+    def custom_fflag_keybinds(self, value: object) -> None:
+        keybinds: JsonObject = {}
+        for name, binding in _normalize_custom_fflag_keybinds(value).items():
+            json_binding: JsonObject = {}
+            json_binding.update(binding)
+            keybinds[name] = json_binding
+        self.settings['custom_fflag_keybinds'] = keybinds
         self._save_settings()
 
     @property
@@ -998,8 +1439,12 @@ class ConfigManager:
         return _normalize_custom_fflag_folders(self.settings.get('custom_fflag_folders', {}))
 
     @custom_fflag_folders.setter
-    def custom_fflag_folders(self, value):
-        self.settings['custom_fflag_folders'] = _normalize_custom_fflag_folders(value)
+    def custom_fflag_folders(self, value: object) -> None:
+        folders: JsonObject = {}
+        for name, members in _normalize_custom_fflag_folders(value).items():
+            json_members: list[JsonValue] = [*members]
+            folders[name] = json_members
+        self.settings['custom_fflag_folders'] = folders
         self._save_settings()
 
     @property
@@ -1010,8 +1455,9 @@ class ConfigManager:
         )
 
     @custom_fflag_disabled_folders.setter
-    def custom_fflag_disabled_folders(self, value):
-        self.settings['custom_fflag_disabled_folders'] = _normalize_custom_fflag_disabled(value)
+    def custom_fflag_disabled_folders(self, value: object) -> None:
+        disabled: list[JsonValue] = [*_normalize_custom_fflag_disabled(value)]
+        self.settings['custom_fflag_disabled_folders'] = disabled
         self._save_settings()
 
     @property
@@ -1022,18 +1468,25 @@ class ConfigManager:
         )
 
     @custom_fflag_folder_keybinds.setter
-    def custom_fflag_folder_keybinds(self, value):
-        self.settings['custom_fflag_folder_keybinds'] = _normalize_custom_fflag_keybinds(value)
+    def custom_fflag_folder_keybinds(self, value: object) -> None:
+        keybinds: JsonObject = {}
+        for name, binding in _normalize_custom_fflag_keybinds(value).items():
+            json_binding: JsonObject = {}
+            json_binding.update(binding)
+            keybinds[name] = json_binding
+        self.settings['custom_fflag_folder_keybinds'] = keybinds
         self._save_settings()
 
     @property
-    def custom_fflag_actions(self) -> dict[str, dict[str, Any]]:
+    def custom_fflag_actions(self) -> dict[str, JsonObject]:
         """Named FastFlag value actions, each with an optional global hotkey."""
         return _normalize_custom_fflag_actions(self.settings.get('custom_fflag_actions', {}))
 
     @custom_fflag_actions.setter
-    def custom_fflag_actions(self, value):
-        self.settings['custom_fflag_actions'] = _normalize_custom_fflag_actions(value)
+    def custom_fflag_actions(self, value: object) -> None:
+        actions: JsonObject = {}
+        actions.update(_normalize_custom_fflag_actions(value))
+        self.settings['custom_fflag_actions'] = actions
         self._save_settings()
 
     @property
@@ -1042,7 +1495,7 @@ class ConfigManager:
         return bool(self.settings.get('linux_fflag_keybind_setup_prompted', False))
 
     @linux_fflag_keybind_setup_prompted.setter
-    def linux_fflag_keybind_setup_prompted(self, value: bool):
+    def linux_fflag_keybind_setup_prompted(self, value: bool) -> None:
         self.settings['linux_fflag_keybind_setup_prompted'] = bool(value)
         self._save_settings()
 
@@ -1064,7 +1517,7 @@ class ConfigManager:
         return value if value in valid else ''
 
     @macos_auth_source.setter
-    def macos_auth_source(self, value: str):
+    def macos_auth_source(self, value: str) -> None:
         value = str(value or '')
         valid = {
             '',
@@ -1088,7 +1541,7 @@ class ConfigManager:
         return mode if mode in valid else 'auto'
 
     @upstream_transport_mode.setter
-    def upstream_transport_mode(self, value: str):
+    def upstream_transport_mode(self, value: str) -> None:
         value = str(value or 'auto').lower()
         self.settings['upstream_transport_mode'] = (
             value
@@ -1105,7 +1558,7 @@ class ConfigManager:
         return bool(value)
 
     @wire_preserving_passthrough.setter
-    def wire_preserving_passthrough(self, value: bool):
+    def wire_preserving_passthrough(self, value: bool) -> None:
         self.settings['wire_preserving_passthrough'] = bool(value)
         self._save_settings()
 
@@ -1114,7 +1567,7 @@ class ConfigManager:
         return str(self.settings.get('upstream_http_connect_host', '') or '')
 
     @upstream_http_connect_host.setter
-    def upstream_http_connect_host(self, value: str):
+    def upstream_http_connect_host(self, value: str) -> None:
         self.settings['upstream_http_connect_host'] = str(value or '').strip()
         self._save_settings()
 
@@ -1123,13 +1576,16 @@ class ConfigManager:
         try:
             return max(
                 0,
-                min(65535, int(self.settings.get('upstream_http_connect_port', 0) or 0)),
+                min(
+                    65535,
+                    parse_int(self.settings.get('upstream_http_connect_port', 0) or 0, 0),
+                ),
             )
         except TypeError, ValueError:
             return 0
 
     @upstream_http_connect_port.setter
-    def upstream_http_connect_port(self, value: int):
+    def upstream_http_connect_port(self, value: int) -> None:
         self.settings['upstream_http_connect_port'] = max(0, min(65535, int(value or 0)))
         self._save_settings()
 
@@ -1138,7 +1594,7 @@ class ConfigManager:
         return str(self.settings.get('upstream_http_connect_username', '') or '')
 
     @upstream_http_connect_username.setter
-    def upstream_http_connect_username(self, value: str):
+    def upstream_http_connect_username(self, value: str) -> None:
         self.settings['upstream_http_connect_username'] = str(value or '')
         self._save_settings()
 
@@ -1147,7 +1603,7 @@ class ConfigManager:
         return str(self.settings.get('upstream_http_connect_password', '') or '')
 
     @upstream_http_connect_password.setter
-    def upstream_http_connect_password(self, value: str):
+    def upstream_http_connect_password(self, value: str) -> None:
         self.settings['upstream_http_connect_password'] = str(value or '')
         self._save_settings()
 
@@ -1156,19 +1612,25 @@ class ConfigManager:
         return str(self.settings.get('upstream_socks5_host', '') or '')
 
     @upstream_socks5_host.setter
-    def upstream_socks5_host(self, value: str):
+    def upstream_socks5_host(self, value: str) -> None:
         self.settings['upstream_socks5_host'] = str(value or '').strip()
         self._save_settings()
 
     @property
     def upstream_socks5_port(self) -> int:
         try:
-            return max(0, min(65535, int(self.settings.get('upstream_socks5_port', 0) or 0)))
+            return max(
+                0,
+                min(
+                    65535,
+                    parse_int(self.settings.get('upstream_socks5_port', 0) or 0, 0),
+                ),
+            )
         except TypeError, ValueError:
             return 0
 
     @upstream_socks5_port.setter
-    def upstream_socks5_port(self, value: int):
+    def upstream_socks5_port(self, value: int) -> None:
         self.settings['upstream_socks5_port'] = max(0, min(65535, int(value or 0)))
         self._save_settings()
 
@@ -1177,7 +1639,7 @@ class ConfigManager:
         return str(self.settings.get('upstream_socks5_username', '') or '')
 
     @upstream_socks5_username.setter
-    def upstream_socks5_username(self, value: str):
+    def upstream_socks5_username(self, value: str) -> None:
         self.settings['upstream_socks5_username'] = str(value or '')
         self._save_settings()
 
@@ -1186,7 +1648,7 @@ class ConfigManager:
         return str(self.settings.get('upstream_socks5_password', '') or '')
 
     @upstream_socks5_password.setter
-    def upstream_socks5_password(self, value: str):
+    def upstream_socks5_password(self, value: str) -> None:
         self.settings['upstream_socks5_password'] = str(value or '')
         self._save_settings()
 
@@ -1197,14 +1659,16 @@ class ConfigManager:
                 1,
                 min(
                     128,
-                    int(self.settings.get('vpn_compat_max_assetdelivery_connections', 16) or 16),
+                    parse_int(
+                        self.settings.get('vpn_compat_max_assetdelivery_connections', 16) or 16, 16
+                    ),
                 ),
             )
         except TypeError, ValueError:
             return 16
 
     @vpn_compat_max_assetdelivery_connections.setter
-    def vpn_compat_max_assetdelivery_connections(self, value: int):
+    def vpn_compat_max_assetdelivery_connections(self, value: int) -> None:
         self.settings['vpn_compat_max_assetdelivery_connections'] = max(
             1, min(128, int(value or 16))
         )
@@ -1217,42 +1681,42 @@ class ConfigManager:
                 1,
                 min(
                     256,
-                    int(self.settings.get('vpn_compat_max_cdn_connections', 32) or 32),
+                    parse_int(self.settings.get('vpn_compat_max_cdn_connections', 32) or 32, 32),
                 ),
             )
         except TypeError, ValueError:
             return 32
 
     @vpn_compat_max_cdn_connections.setter
-    def vpn_compat_max_cdn_connections(self, value: int):
+    def vpn_compat_max_cdn_connections(self, value: int) -> None:
         self.settings['vpn_compat_max_cdn_connections'] = max(1, min(256, int(value or 32)))
         self._save_settings()
 
     @property
     def run_on_boot(self) -> bool:
-        return self.settings.get('run_on_boot', False)
+        return bool_value(self.settings.get('run_on_boot', False), default=False)
 
     @run_on_boot.setter
-    def run_on_boot(self, value: bool):
+    def run_on_boot(self, value: bool) -> None:
         self.settings['run_on_boot'] = value
         self._save_settings()
 
     @property
     def desktop_integration(self) -> bool:
-        return self.settings.get('desktop_integration', True)
+        return bool_value(self.settings.get('desktop_integration', True), default=True)
 
     @desktop_integration.setter
-    def desktop_integration(self, value: bool):
+    def desktop_integration(self, value: bool) -> None:
         self.settings['desktop_integration'] = value
         self._save_settings()
 
     @property
     def close_to_tray(self) -> bool:
         """Get close to tray setting."""
-        return self.settings.get('close_to_tray', True)
+        return bool_value(self.settings.get('close_to_tray', True), default=True)
 
     @close_to_tray.setter
-    def close_to_tray(self, value: bool):
+    def close_to_tray(self, value: bool) -> None:
         """Set close to tray setting."""
         self.settings['close_to_tray'] = value
         self._save_settings()
@@ -1260,48 +1724,48 @@ class ConfigManager:
     @property
     def multi_instance_launching(self) -> bool:
         """Get multi-instance launching setting."""
-        return self.settings.get('multi_instance_launching', False)
+        return bool_value(self.settings.get('multi_instance_launching', False), default=False)
 
     @multi_instance_launching.setter
-    def multi_instance_launching(self, value: bool):
+    def multi_instance_launching(self, value: bool) -> None:
         """Set multi-instance launching setting."""
         self.settings['multi_instance_launching'] = value
         self._save_settings()
 
     @property
     def close_scraped_games_on_open(self) -> bool:
-        return self.settings.get('close_scraped_games_on_open', True)
+        return bool_value(self.settings.get('close_scraped_games_on_open', True), default=True)
 
     @close_scraped_games_on_open.setter
-    def close_scraped_games_on_open(self, value: bool):
+    def close_scraped_games_on_open(self, value: bool) -> None:
         self.settings['close_scraped_games_on_open'] = value
         self._save_settings()
 
     @property
     def close_scraped_games_menu_on_open(self) -> bool:
-        return self.settings.get('close_scraped_games_menu_on_open', True)
+        return bool_value(self.settings.get('close_scraped_games_menu_on_open', True), default=True)
 
     @close_scraped_games_menu_on_open.setter
-    def close_scraped_games_menu_on_open(self, value: bool):
+    def close_scraped_games_menu_on_open(self, value: bool) -> None:
         self.settings['close_scraped_games_menu_on_open'] = value
         self._save_settings()
 
     @property
     def close_viewer_on_replace(self) -> bool:
-        return self.settings.get('close_viewer_on_replace', True)
+        return bool_value(self.settings.get('close_viewer_on_replace', True), default=True)
 
     @close_viewer_on_replace.setter
-    def close_viewer_on_replace(self, value: bool):
+    def close_viewer_on_replace(self, value: bool) -> None:
         self.settings['close_viewer_on_replace'] = value
         self._save_settings()
 
     @property
     def show_replacer_notifications(self) -> bool:
         """Get show replacer notifications setting."""
-        return self.settings.get('show_replacer_notifications', True)
+        return bool_value(self.settings.get('show_replacer_notifications', True), default=True)
 
     @show_replacer_notifications.setter
-    def show_replacer_notifications(self, value: bool):
+    def show_replacer_notifications(self, value: bool) -> None:
         """Set show replacer notifications setting."""
         self.settings['show_replacer_notifications'] = value
         self._save_settings()
@@ -1309,10 +1773,10 @@ class ConfigManager:
     @property
     def window_geometry(self) -> str:
         """Get the saved window geometry (hex string)."""
-        return self.settings.get('window_geometry', '')
+        return str_value(self.settings.get('window_geometry', ''), '')
 
     @window_geometry.setter
-    def window_geometry(self, value: str):
+    def window_geometry(self, value: str) -> None:
         """Set the window geometry."""
         self.settings['window_geometry'] = value
         self._save_settings()
@@ -1322,59 +1786,94 @@ class ConfigManager:
         return True
 
     @auto_convert_anim_rig.setter
-    def auto_convert_anim_rig(self, value: bool):
+    def auto_convert_anim_rig(self, value: bool) -> None:
         self.settings['auto_convert_anim_rig'] = value
         self._save_settings()
 
     @property
     def skip_non_player_anim_replace(self) -> bool:
-        return self.settings.get('skip_non_player_anim_replace', False)
+        return bool_value(self.settings.get('skip_non_player_anim_replace', False), default=False)
 
     @skip_non_player_anim_replace.setter
-    def skip_non_player_anim_replace(self, value: bool):
+    def skip_non_player_anim_replace(self, value: bool) -> None:
         self.settings['skip_non_player_anim_replace'] = value
         self._save_settings()
 
     @property
     def scraper_blacklist(self) -> list[str]:
-        return self.settings.get('scraper_blacklist', [])
+        return string_list(self.settings.get('scraper_blacklist', []))
 
     @scraper_blacklist.setter
-    def scraper_blacklist(self, value: list[str]):
-        self.settings['scraper_blacklist'] = value
+    def scraper_blacklist(self, value: list[str]) -> None:
+        values: list[JsonValue] = [*value]
+        self.settings['scraper_blacklist'] = values
         self._save_settings()
 
     @property
     def subplace_blacklist(self) -> list[str]:
-        return self.settings.get('subplace_blacklist', [])
+        return string_list(self.settings.get('subplace_blacklist', []))
 
     @subplace_blacklist.setter
-    def subplace_blacklist(self, value: list[str]):
-        self.settings['subplace_blacklist'] = value
+    def subplace_blacklist(self, value: list[str]) -> None:
+        values: list[JsonValue] = [*value]
+        self.settings['subplace_blacklist'] = values
+        self._save_settings()
+
+    @property
+    def profile_picture_entries(self) -> list[JsonObject]:
+        """Saved Profile Picture rows: ``{enabled, target, image_url}`` objects."""
+        saved = self.settings.get('profile_picture_entries', [])
+        if not isinstance(saved, list):
+            return []
+        entries: list[JsonObject] = []
+        for item in saved:
+            row = as_json_object(item)
+            if row is None:
+                continue
+            entries.append(
+                {
+                    'enabled': bool_value(row.get('enabled', True), default=True),
+                    'target': str_value(row.get('target', '')).strip(),
+                    'image_url': str_value(row.get('image_url', '')).strip(),
+                }
+            )
+        return entries
+
+    @profile_picture_entries.setter
+    def profile_picture_entries(self, value: list[JsonObject]) -> None:
+        rows: list[JsonValue] = [
+            {
+                'enabled': bool_value(row.get('enabled', True), default=True),
+                'target': str_value(row.get('target', '')).strip(),
+                'image_url': str_value(row.get('image_url', '')).strip(),
+            }
+            for row in value
+        ]
+        self.settings['profile_picture_entries'] = rows
         self._save_settings()
 
     @property
     def subplace_blacklist_mode(self) -> str:
         mode = self.settings.get('subplace_blacklist_mode', 'block')
-        return mode if mode in ('block', 'stall') else 'block'
+        return mode if isinstance(mode, str) and mode in {'block', 'stall'} else 'block'
 
     @subplace_blacklist_mode.setter
-    def subplace_blacklist_mode(self, value: str):
-        self.settings['subplace_blacklist_mode'] = value if value in ('block', 'stall') else 'block'
+    def subplace_blacklist_mode(self, value: str) -> None:
+        self.settings['subplace_blacklist_mode'] = value if value in {'block', 'stall'} else 'block'
         self._save_settings()
 
     @property
-    def username_spoofer(self) -> dict:
-        default = deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))
+    def username_spoofer(self) -> JsonObject:
+        default = as_json_object(deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))) or {}
         saved = self.settings.get('username_spoofer', {})
         if isinstance(saved, dict):
             default.update(saved)
         return default
 
     @username_spoofer.setter
-    def username_spoofer(self, value: dict):
-        base = deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))
-        if isinstance(value, dict):
+    def username_spoofer(self, value: object) -> None:
+        base = as_json_object(deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))) or {}
+        if _is_object_dict(value):
             base.update(
                 {
                     'save_settings': bool(
@@ -1407,31 +1906,32 @@ class ConfigManager:
 
     @property
     def show_names(self) -> bool:
-        return self.settings.get('show_names', True)
+        return bool_value(self.settings.get('show_names', True), default=True)
 
     @show_names.setter
-    def show_names(self, value: bool):
+    def show_names(self, value: bool) -> None:
         self.settings['show_names'] = value
         self._save_settings()
 
     @property
     def show_creator_id(self) -> bool:
-        return self.settings.get('show_creator_id', False)
+        return bool_value(self.settings.get('show_creator_id', False), default=False)
 
     @show_creator_id.setter
-    def show_creator_id(self, value: bool):
+    def show_creator_id(self, value: bool) -> None:
         self.settings['show_creator_id'] = value
         self._save_settings()
 
     @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
-        return self.settings.get('export_naming', ['name', 'id'])
+        return string_list(self.settings.get('export_naming', ['name', 'id']), ('name', 'id'))
 
     @export_naming.setter
-    def export_naming(self, value: list[str]):
+    def export_naming(self, value: list[str]) -> None:
         """Set export naming options."""
-        self.settings['export_naming'] = value
+        values: list[JsonValue] = [*value]
+        self.settings['export_naming'] = values
         self._save_settings()
 
     def is_export_naming_enabled(self, option: str) -> bool:
@@ -1455,13 +1955,16 @@ class ConfigManager:
         """Get list of enabled configs."""
         current_configs = set(self.config_names)
         return [
-            name for name in self.settings.get('enabled_configs', []) if name in current_configs
+            name
+            for name in string_list(self.settings.get('enabled_configs', []))
+            if name in current_configs
         ]
 
     @enabled_configs.setter
-    def enabled_configs(self, value: list[str]):
+    def enabled_configs(self, value: list[str]) -> None:
         """Set list of enabled configs."""
-        self.settings['enabled_configs'] = value
+        values: list[JsonValue] = [*value]
+        self.settings['enabled_configs'] = values
         self._mark_replacements_dirty()
         self._save_settings()
 
@@ -1484,7 +1987,11 @@ class ConfigManager:
         self.enabled_configs = configs
         return new_state
 
-    def set_config_enabled(self, name: str, enabled: bool):
+    def set_config_enabled(
+        self,
+        name: str,
+        enabled: bool,
+    ) -> None:
         """Set a config's enabled state."""
         if name not in self.config_names:
             self.reconcile_configs()
@@ -1496,7 +2003,10 @@ class ConfigManager:
             configs.remove(name)
         self.enabled_configs = configs
 
-    def reconcile_configs(self, save: bool = True) -> bool:
+    def reconcile_configs(
+        self,
+        save: bool = True,
+    ) -> bool:
         """Synchronize settings with config files currently on disk.
 
         Returns True when the active settings changed.
@@ -1505,13 +2015,14 @@ class ConfigManager:
         current_configs = self.config_names
         changed = False
 
-        enabled = self.settings.get('enabled_configs', [])
+        enabled = string_list(self.settings.get('enabled_configs', []))
         cleaned_enabled = [name for name in enabled if name in current_configs]
         if cleaned_enabled != enabled:
-            self.settings['enabled_configs'] = cleaned_enabled
+            values: list[JsonValue] = [*cleaned_enabled]
+            self.settings['enabled_configs'] = values
             changed = True
 
-        last_config = self.settings.get('last_config', 'Default')
+        last_config = str_value(self.settings.get('last_config', 'Default'), 'Default')
         if last_config not in current_configs:
             self.settings['last_config'] = current_configs[0] if current_configs else 'Default'
             changed = True
@@ -1524,10 +2035,10 @@ class ConfigManager:
     def last_config(self) -> str:
         """Get the last displayed config."""
         self.reconcile_configs()
-        return self.settings.get('last_config', 'Default')
+        return str_value(self.settings.get('last_config', 'Default'), 'Default')
 
     @last_config.setter
-    def last_config(self, value: str):
+    def last_config(self, value: str) -> None:
         """Set the last displayed config."""
         self.settings['last_config'] = value
         self.reconcile_configs(save=False)
@@ -1536,49 +2047,67 @@ class ConfigManager:
     @property
     def configs_folder(self) -> Path:
         """Return the folder this manager currently uses for config files."""
-        return Path(CONFIGS_FOLDER)
+        return self._configs_folder
 
     @property
     def config_names(self) -> list[str]:
         """Get list of all config names."""
         return self._refresh_config_names_cache()
 
-    def refresh_config_names(self):
+    def refresh_config_names(self) -> None:
         """Refresh config names from disk (for external changes)."""
         self.reconcile_configs()
 
-    def get_replacement_rules(self, config_name: str) -> list:
-        """Get rules for a specific config."""
-        return self._load_config(config_name).get('replacement_rules', [])
+    def iter_enabled_rules(self) -> Iterator[tuple[str, int, JsonObject]]:
+        """Yield ``(config_name, enabled_order, rule)`` for enabled profiles.
 
-    def set_replacement_rules(self, config_name: str, rules: list):
+        Configs come in enabled order, so a later one overrides an earlier one
+        for the same asset, as in :meth:`get_all_replacements`.
+        """
+        for order, name in enumerate(self.enabled_configs):
+            for rule in self._iter_replacement_rules(self.get_replacement_rules(name)):
+                if isinstance(rule, dict) and rule.get('enabled', True):
+                    yield name, order, rule
+
+    def enabled_configs_signature(self) -> ReplacementsSignature:
+        """Changes whenever an enabled config is toggled or edited on disk."""
+        return tuple(
+            (name, self._file_signature(self._get_config_path(name)))
+            for name in self.enabled_configs
+        )
+
+    def get_replacement_rules(self, config_name: str) -> ReplacementRules:
+        """Get rules for a specific config."""
+        return _replacement_rules(self._load_config(config_name).get('replacement_rules', []))
+
+    def set_replacement_rules(self, config_name: str, rules: ReplacementRules) -> None:
         """Set rules for a specific config."""
         config = self._load_config(config_name)
         config['replacement_rules'] = rules
         self._save_config(config_name, config)
 
     @property
-    def replacement_rules(self) -> list:
+    def replacement_rules(self) -> ReplacementRules:
         """Get rules for the currently displayed (last) config."""
         return self.get_replacement_rules(self.last_config)
 
     @replacement_rules.setter
-    def replacement_rules(self, value: list):
+    def replacement_rules(self, value: ReplacementRules) -> None:
         """Set rules for the currently displayed (last) config."""
         self.set_replacement_rules(self.last_config, value)
 
     @property
     def time_wasted_seconds(self) -> int:
         """Get total time wasted in seconds (cumulative across sessions)."""
-        return self.settings.get('time_wasted_seconds', 0)
+        return int_value(self.settings.get('time_wasted_seconds', 0), 0)
 
     @time_wasted_seconds.setter
-    def time_wasted_seconds(self, value: int):
+    def time_wasted_seconds(self, value: int) -> None:
         """Set total time wasted in seconds."""
         self.settings['time_wasted_seconds'] = max(0, int(value))
         self._save_settings()
 
-    def save(self):
+    def save(self) -> None:
         """Save settings."""
         self._save_settings()
 
@@ -1602,23 +2131,24 @@ class ConfigManager:
         if name not in self.config_names or len(self.config_names) <= 1:
             return False
         try:
-            self._get_config_path(name).unlink()
-            self._config_data_cache.pop(name, None)
-            self._config_names_cache = None
-            self._config_names_signature = None
-            self._mark_replacements_dirty()
-            # Remove from enabled configs if present
-            if name in self.enabled_configs:
-                configs = self.enabled_configs.copy()
-                configs.remove(name)
-                self.enabled_configs = configs
-            # Update last_config if needed
-            if self.last_config == name:
-                self.settings['last_config'] = self.config_names[0]
-                self._save_settings()
-            return True
+            self._delete_config(name)
         except OSError:
             return False
+        return True
+
+    def _delete_config(self, name: str) -> None:
+        self._get_config_path(name).unlink()
+        self._config_data_cache.pop(name, None)
+        self._config_names_cache = None
+        self._config_names_signature = None
+        self._mark_replacements_dirty()
+        if name in self.enabled_configs:
+            configs = self.enabled_configs.copy()
+            configs.remove(name)
+            self.enabled_configs = configs
+        if self.last_config == name:
+            self.settings['last_config'] = self.config_names[0]
+            self._save_settings()
 
     def rename_config(self, old_name: str, new_name: str) -> bool:
         """Rename a config. Returns True if successful."""
@@ -1630,29 +2160,30 @@ class ConfigManager:
         ):
             return False
         try:
-            self._get_config_path(old_name).rename(self._get_config_path(new_name))
-            cached = self._config_data_cache.pop(old_name, None)
-            if cached is not None:
-                self._config_data_cache[new_name] = (
-                    self._file_signature(self._get_config_path(new_name)),
-                    cached[1],
-                )
-            self._config_names_cache = None
-            self._config_names_signature = None
-            self._mark_replacements_dirty()
-            # Update enabled_configs
-            if old_name in self.enabled_configs:
-                configs = self.enabled_configs.copy()
-                configs.remove(old_name)
-                configs.append(new_name)
-                self.enabled_configs = configs
-            # Update last_config
-            if self.settings['last_config'] == old_name:
-                self.settings['last_config'] = new_name
-                self._save_settings()
-            return True
+            self._rename_config(old_name, new_name)
         except OSError:
             return False
+        return True
+
+    def _rename_config(self, old_name: str, new_name: str) -> None:
+        self._get_config_path(old_name).rename(self._get_config_path(new_name))
+        cached = self._config_data_cache.pop(old_name, None)
+        if cached is not None:
+            self._config_data_cache[new_name] = (
+                self._file_signature(self._get_config_path(new_name)),
+                cached[1],
+            )
+        self._config_names_cache = None
+        self._config_names_signature = None
+        self._mark_replacements_dirty()
+        if old_name in self.enabled_configs:
+            configs = self.enabled_configs.copy()
+            configs.remove(old_name)
+            configs.append(new_name)
+            self.enabled_configs = configs
+        if self.settings['last_config'] == old_name:
+            self.settings['last_config'] = new_name
+            self._save_settings()
 
     def duplicate_config(self, name: str, new_name: str) -> bool:
         """Duplicate a config. Returns True if successful."""
@@ -1668,17 +2199,28 @@ class ConfigManager:
         return True
 
     @staticmethod
-    def _iter_replacement_rules(entries: list):
+    def _iter_replacement_rules(entries: ReplacementRules) -> Iterator[JsonValue]:
         """Yield profile rules depth-first, skipping organizational groups."""
         for entry in entries:
             if isinstance(entry, dict) and entry.get('type') == 'group':
-                yield from ConfigManager._iter_replacement_rules(entry.get('children', []))
+                yield from ConfigManager._iter_replacement_rules(
+                    _replacement_rules(entry.get('children', []))
+                )
             else:
                 yield entry
 
+    def get_filtered_replacements(self) -> dict[ReplacementKey, tuple[FilteredRoute, ...]]:
+        """Local/CDN rules that carry filters, by asset ID or type key, in rule order.
+
+        These are excluded from ``get_all_replacements`` because whether they
+        apply depends on the original asset's bytes.
+        """
+        self.get_all_replacements()
+        return self._filtered_replacements_cache
+
     def get_all_replacements(
         self,
-    ) -> tuple[dict[int | str, int], set[int | str], dict[int | str, str], dict[int | str, str]]:
+    ) -> ReplacementMaps:
         """Get replacements from all enabled configs.
 
         Returns
@@ -1701,100 +2243,23 @@ class ConfigManager:
         ):
             return self._all_replacements_cache
 
-        replacements: dict[int | str, int] = {}
-        removals: set[int | str] = set()
-        cdn_replacements: dict[int | str, str] = {}
-        local_replacements: dict[int | str, str] = {}
-
+        targets: ReplacementMaps = ({}, set(), {}, {})
+        filtered: dict[ReplacementKey, list[FilteredRoute]] = {}
         for config_name in enabled_configs:
             for rule in self._iter_replacement_rules(self.get_replacement_rules(config_name)):
-                if not isinstance(rule, dict):
+                if not isinstance(rule, dict) or not rule.get('enabled', True):
                     continue
-                # Skip disabled profiles
-                if not rule.get('enabled', True):
-                    continue
-
-                ids = rule.get('replace_ids', [])
-                mode = rule.get('mode', 'id')
-
-                # Legacy support: convert old 'remove' boolean to mode
-                if 'remove' in rule and 'mode' not in rule:
-                    mode = 'remove' if rule.get('remove') else 'id'
-
-                parsed_ids: list[int | str] = []
-                for v in ids:
-                    if isinstance(v, str) and ':' in v:
-                        parts = v.split(':', 1)
-                        # "parentId:mapIndex" slot key (e.g. "7547298786:1") — keep as str
-                        if parts[0].isdigit() and parts[1].isdigit():
-                            if int(parts[0]) > _RESERVED_ASSET_TYPE_ID_MAX:
-                                parsed_ids.append(v)
-                            continue
-                        # "TexturePack:N" wildcard — replace N-th slot of every TexturePack
-                        if parts[0] == 'TexturePack' and parts[1].isdigit():
-                            parsed_ids.append(v)
-                            continue
-                        continue
-
-                    # Try to parse as an actual integer ID first. Floats are
-                    # metadata, not IDs, and must never be truncated.
-                    numeric_id = _parse_config_asset_id(v)
-                    if numeric_id is not None:
-                        # Roblox reserves this range for asset-type IDs.  Bare
-                        # numbers in configs are asset IDs, never type selectors;
-                        # users select types by their existing names ("Image",
-                        # "TexturePack", etc.).  Ignoring the reserved range
-                        # prevents a stray 1 from becoming an Image wildcard.
-                        if not 1 <= numeric_id <= _RESERVED_ASSET_TYPE_ID_MAX:
-                            parsed_ids.append(numeric_id)
-                        continue
-
-                    # Known asset type names retain the established config
-                    # syntax and convert to the proxy's internal numeric key.
-                    if isinstance(v, str):
-                        v_lower = v.lower()
-                        # Virtual animation rig-filter types - kept as canonical string keys
-                        if v_lower in _VIRTUAL_ANIM_TYPES:
-                            parsed_ids.append(_VIRTUAL_ANIM_TYPES[v_lower])
-                        elif v_lower in _ASSET_TYPE_IDS:
-                            numeric_id = _ASSET_TYPE_IDS[v_lower]
-                            parsed_ids.append(numeric_id)
-
-                if mode == 'remove':
-                    removals.update(parsed_ids)
-                elif mode == 'cdn':
-                    cdn_url = rule.get('cdn_url')
-                    if cdn_url:
-                        cdn_replacements.update(dict.fromkeys(parsed_ids, cdn_url))
-                    else:
-                        # Empty CDN URL means remove
-                        removals.update(parsed_ids)
-                elif mode == 'local':
-                    local_path = rule.get('local_path')
-                    if local_path:
-                        resolved_path = str(resolve_local_replacement_path(local_path))
-                        local_replacements.update(dict.fromkeys(parsed_ids, resolved_path))
-                    else:
-                        # Empty local path means remove
-                        removals.update(parsed_ids)
-                elif mode == 'id':
-                    # Empty with_id means remove. Replacement IDs 0 and 1 are
-                    # known dummy values and should be invisible to the proxy.
-                    if (target := rule.get('with_id')) is not None:
-                        target_id = _parse_config_asset_id(target)
-                        if target_id is None:
-                            continue
-                        if 0 <= target_id <= _RESERVED_ASSET_TYPE_ID_MAX:
-                            continue
-                        replacements.update(dict.fromkeys(parsed_ids, target_id))
-                    else:
-                        removals.update(parsed_ids)
+                is_filtered, route = _filtered_route(rule)
+                if not is_filtered:
+                    _apply_replacement_rule(rule, targets)
+                elif route is not None:
+                    # Decided per download in the proxy, so these never enter
+                    # the unconditional maps
+                    keys = _parse_replacement_keys(_replacement_rules(rule.get('replace_ids', [])))
+                    for key in keys:
+                        filtered.setdefault(key, []).append(route)
 
         self._all_replacements_cache_signature = signature
-        self._all_replacements_cache = (
-            replacements,
-            removals,
-            cdn_replacements,
-            local_replacements,
-        )
+        self._filtered_replacements_cache = {key: tuple(routes) for key, routes in filtered.items()}
+        self._all_replacements_cache = targets
         return self._all_replacements_cache

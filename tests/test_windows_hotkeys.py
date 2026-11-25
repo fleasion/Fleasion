@@ -1,51 +1,255 @@
 import os
+from collections.abc import Callable
+from tests.hotkey_fakes import HotkeyConfig, HotkeyProxy
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from fleasion.gui.windows_hotkeys import (
     MOD_CTRL,
+    MOD_ALT,
     MOD_SHIFT,
     WindowsCustomFFlagHotkeyController,
+    WindowsHotkeyService,
     binding_text,
     modifier_mask_for_virtual_key,
     normalize_binding,
 )
 
 
-def test_scan_code_bindings_allow_bare_keys_modifier_keys_and_combinations():
+def test_windows_poll_activates_distinct_keys_and_shadows_same_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+
+    def key_state(virtual_key: int) -> int:
+        return 0x8000 if polls == 1 and virtual_key in {0xA0, 0x41, 0x42} else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls > 1
+
+    def translate(
+        _user32: object,
+        _bindings: object,
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {'bare_a': (0x41, 0), 'shift_a': (0x41, MOD_SHIFT), 'bare_b': (0x42, 0)}, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+    assert activations == ['shift_a', 'bare_b']
+
+
+def test_windows_active_binding_shadows_new_less_specific_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+
+    def key_state(virtual_key: int) -> int:
+        pressed = {0x41, 0xA0, 0xA2} if polls else set[int]()
+        if polls >= 2:
+            pressed.add(0xA4)
+        return 0x8000 if virtual_key in pressed else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls > 2
+
+    def translate(
+        _user32: object,
+        _bindings: object,
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {'ctrl_shift_a': (0x41, MOD_CTRL | MOD_SHIFT), 'alt_a': (0x41, MOD_ALT)}, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+    assert activations == ['ctrl_shift_a']
+
+
+def test_windows_initially_held_chord_releases_to_newly_eligible_bare_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+    # Both A and Shift are held before the poller starts, so neither is a new action
+    snapshots = ({0x41, 0xA0}, {0x41, 0xA0}, {0x41}, {0x41, 0xA0})
+
+    def key_state(virtual_key: int) -> int:
+        return 0x8000 if virtual_key in snapshots[polls] else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls >= len(snapshots)
+
+    def translate(
+        _user32: object, _bindings: object
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {'bare': (0x41, 0), 'shifted': (0x41, MOD_SHIFT)}, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+
+    assert activations == ['bare', 'shifted']
+
+
+
+def test_windows_shadowed_binding_activates_when_modifier_priority_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+    snapshots = (
+        set[int](),
+        {0x41, 0xA0, 0xA2},  # Ctrl+Shift+A
+        {0x41, 0xA0, 0xA2, 0xA4},  # Add Alt, still shadowed
+        {0x41, 0xA4},  # Release Ctrl+Shift without releasing A
+        {0x41, 0xA0, 0xA2, 0xA4},  # Restore higher-priority chord
+        {0x41, 0xA4},  # Alt+A wins again
+    )
+
+    def key_state(virtual_key: int) -> int:
+        return 0x8000 if virtual_key in snapshots[polls] else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls >= len(snapshots)
+
+    def translate(
+        _user32: object, _bindings: object
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {'ctrl_shift_a': (0x41, MOD_CTRL | MOD_SHIFT), 'alt_a': (0x41, MOD_ALT)}, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+
+    assert activations == ['ctrl_shift_a', 'alt_a', 'ctrl_shift_a', 'alt_a']
+
+
+def test_windows_identical_and_equal_specificity_bindings_both_activate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WindowsHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    polls = 0
+    snapshots = (set[int](), {0x41, 0xA0, 0xA4}, {0x41, 0xA0}, {0x41, 0xA0, 0xA4})
+
+    def key_state(virtual_key: int) -> int:
+        return 0x8000 if virtual_key in snapshots[polls] else 0
+
+    def wait(_timeout: float) -> bool:
+        nonlocal polls
+        polls += 1
+        return polls >= len(snapshots)
+
+    def translate(
+        _user32: object, _bindings: object
+    ) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[str, int]]]:
+        return {
+            'shift_a_first': (0x41, MOD_SHIFT),
+            'shift_a_second': (0x41, MOD_SHIFT),
+            'alt_a': (0x41, MOD_ALT),
+        }, {}
+
+    user32 = SimpleNamespace(GetAsyncKeyState=key_state, MapVirtualKeyW=key_state)
+    monkeypatch.setattr(
+        'fleasion.gui.windows_hotkeys._windll', lambda: SimpleNamespace(user32=user32)
+    )
+    setattr(service, '_translate_bindings', translate)
+    setattr(service, '_pump_windows_messages', lambda: None)
+    service.__dict__['_stop'] = SimpleNamespace(wait=wait)
+    run = cast('Callable[[object], None]', getattr(service, '_run'))
+    run({})
+
+    assert activations == ['shift_a_first', 'shift_a_second', 'alt_a', 'alt_a']
+
+
+def _record_toggled(values: list[str]) -> Callable[[str], None]:
+    def record(name: str) -> None:
+        values.append(name)
+
+    return record
+
+
+def test_scan_code_bindings_allow_bare_keys_modifier_keys_and_combinations() -> None:
     assert normalize_binding({'scan_code': 0x1E, 'extended': False, 'modifiers': 0}) == {
         'scan_code': 0x1E,
         'extended': False,
         'modifiers': 0,
     }
     assert normalize_binding({'scan_code': 0x1D, 'extended': False, 'modifiers': 0}) is not None
-    assert normalize_binding({'scan_code': 0x3B, 'extended': False, 'modifiers': MOD_CTRL | MOD_SHIFT}) is not None
+    assert (
+        normalize_binding({'scan_code': 0x3B, 'extended': False, 'modifiers': MOD_CTRL | MOD_SHIFT})
+        is not None
+    )
     assert normalize_binding({'scan_code': 0, 'extended': False, 'modifiers': 0}) is None
     assert normalize_binding({'scan_code': 0x1E, 'extended': False, 'modifiers': 0x10}) is None
 
 
-def test_scan_code_binding_labels_and_modifier_categories_are_human_readable():
+def test_scan_code_binding_labels_and_modifier_categories_are_human_readable() -> None:
     assert binding_text({'scan_code': 0x1E, 'extended': False, 'modifiers': 0}) == 'A'
     assert binding_text({'scan_code': 0x1D, 'extended': False, 'modifiers': 0}) == 'Left Ctrl'
     assert binding_text({'scan_code': 0x3B, 'extended': False, 'modifiers': MOD_CTRL}) == 'Ctrl+F1'
     assert modifier_mask_for_virtual_key(0xA2) == MOD_CTRL
 
 
-def test_custom_fflag_hotkey_controller_toggles_without_dashboard():
-    config = SimpleNamespace(
+def test_custom_fflag_hotkey_controller_toggles_without_dashboard() -> None:
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagExample': 'True'},
         custom_fflag_disabled=[],
         custom_fflag_keybinds={},
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    proxy = HotkeyProxy()
     controller = WindowsCustomFFlagHotkeyController(config, proxy)
-    toggled = []
-    controller.toggled.connect(toggled.append)
+    toggled: list[str] = []
+    controller.toggled.connect(_record_toggled(toggled))
 
     controller.toggle_flag('FFlagExample')
 
@@ -55,8 +259,8 @@ def test_custom_fflag_hotkey_controller_toggles_without_dashboard():
     controller.stop()
 
 
-def test_custom_fflag_hotkey_controller_toggles_folder_without_dashboard():
-    config = SimpleNamespace(
+def test_custom_fflag_hotkey_controller_toggles_folder_without_dashboard() -> None:
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
         custom_fflag_disabled=[],
@@ -65,13 +269,10 @@ def test_custom_fflag_hotkey_controller_toggles_folder_without_dashboard():
         custom_fflag_disabled_folders=[],
         custom_fflag_folder_keybinds={},
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    proxy = HotkeyProxy()
     controller = WindowsCustomFFlagHotkeyController(config, proxy)
-    toggled = []
-    controller.toggled.connect(toggled.append)
+    toggled: list[str] = []
+    controller.toggled.connect(_record_toggled(toggled))
 
     controller.toggle_target('folder:Visual')
 
@@ -82,8 +283,8 @@ def test_custom_fflag_hotkey_controller_toggles_folder_without_dashboard():
     controller.stop()
 
 
-def test_custom_fflag_actions_can_switch_same_flag_between_values():
-    config = SimpleNamespace(
+def test_custom_fflag_actions_can_switch_same_flag_between_values() -> None:
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '60'},
         custom_fflag_disabled=[],
@@ -96,13 +297,10 @@ def test_custom_fflag_actions_can_switch_same_flag_between_values():
             '144 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '144'}},
         },
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    proxy = HotkeyProxy()
     controller = WindowsCustomFFlagHotkeyController(config, proxy)
-    toggled = []
-    controller.toggled.connect(toggled.append)
+    toggled: list[str] = []
+    controller.toggled.connect(_record_toggled(toggled))
 
     controller.toggle_target('action:90 FPS')
     assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '90'

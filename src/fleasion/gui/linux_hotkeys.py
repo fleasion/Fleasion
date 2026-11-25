@@ -8,6 +8,7 @@ evdev codes also make global FastFlag keybinds work in both X11 and Wayland.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import select
@@ -15,14 +16,26 @@ import struct
 import subprocess
 import sys
 import threading
-from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
-from ..utils import log_buffer
+from fleasion.gui.hotkey_matching import most_specific_names
+from fleasion.utils import log_buffer
+
+from .hotkey_config import binding_mapping as _binding_mapping
 from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
 from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, MODIFIER_MASK
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from PySide6.QtCore import SignalInstance
+
+    from fleasion.config.types import HotkeyBinding
+
+    from .hotkey_config import HotkeyConfig, HotkeyProxy
 
 
 # ``struct input_event`` on Linux.  Native alignment keeps this correct for
@@ -194,28 +207,34 @@ echo "Installed Fleasion Linux keybind permissions for $target_user."
 
 def modifier_mask_for_evdev_code(code: int) -> int:
     """Return the generic modifier represented by an evdev key code."""
-    if code in (_KEY_LEFTSHIFT, _KEY_RIGHTSHIFT):
+    if code in {_KEY_LEFTSHIFT, _KEY_RIGHTSHIFT}:
         return MOD_SHIFT
-    if code in (_KEY_LEFTCTRL, _KEY_RIGHTCTRL):
+    if code in {_KEY_LEFTCTRL, _KEY_RIGHTCTRL}:
         return MOD_CTRL
-    if code in (_KEY_LEFTALT, _KEY_RIGHTALT):
+    if code in {_KEY_LEFTALT, _KEY_RIGHTALT}:
         return MOD_ALT
-    if code in (_KEY_LEFTMETA, _KEY_RIGHTMETA):
+    if code in {_KEY_LEFTMETA, _KEY_RIGHTMETA}:
         return MOD_WIN
     return 0
 
 
-def normalize_binding(binding) -> dict[str, int | str] | None:
+def normalize_binding(binding: object) -> HotkeyBinding | None:
     """Validate a persisted Linux physical-key binding."""
-    if not isinstance(binding, Mapping) or binding.get('platform') != 'linux_evdev':
+    binding_map = _binding_mapping(binding)
+    if binding_map is None or binding_map.get('platform') != 'linux_evdev':
         return None
-    kind = binding.get('kind', 'key')
-    modifiers = binding.get('modifiers', 0)
-    if not isinstance(modifiers, int) or isinstance(modifiers, bool) or modifiers & ~MODIFIER_MASK:
+    kind = binding_map.get('kind', 'key')
+    modifiers = binding_map.get('modifiers', 0)
+    if (
+        not isinstance(kind, str)
+        or not isinstance(modifiers, int)
+        or isinstance(modifiers, bool)
+        or modifiers & ~MODIFIER_MASK
+    ):
         return None
     if kind == 'mouse_wheel':
-        direction = binding.get('direction')
-        if direction not in ('up', 'down'):
+        direction = binding_map.get('direction')
+        if not isinstance(direction, str) or direction not in {'up', 'down'}:
             return None
         return {
             'platform': 'linux_evdev',
@@ -223,17 +242,22 @@ def normalize_binding(binding) -> dict[str, int | str] | None:
             'direction': direction,
             'modifiers': modifiers,
         }
-    scan_code = binding.get('scan_code')
-    if (
-        kind not in ('key', 'mouse_button')
-        or not isinstance(scan_code, int)
-        or isinstance(scan_code, bool)
-        or not 0 < scan_code <= 0x2FF
-        or kind == 'mouse_button'
-        and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114)
-    ):
+    scan_code = binding_map.get('scan_code')
+    invalid_kind = kind not in {'key', 'mouse_button'}
+    invalid_scan_code = (
+        not isinstance(scan_code, int) or isinstance(scan_code, bool) or not 0 < scan_code <= 0x2FF
+    )
+    invalid_mouse_button = kind == 'mouse_button' and scan_code not in {
+        0x110,
+        0x111,
+        0x112,
+        0x113,
+        0x114,
+    }
+    if invalid_kind or invalid_scan_code or invalid_mouse_button:
         return None
-    result: dict[str, int | str] = {
+    scan_code = cast('int', scan_code)
+    result: HotkeyBinding = {
         'platform': 'linux_evdev',
         'scan_code': scan_code,
         'modifiers': modifiers,
@@ -243,7 +267,7 @@ def normalize_binding(binding) -> dict[str, int | str] | None:
     return result
 
 
-def binding_text(binding) -> str:
+def binding_text(binding: object) -> str:
     """Return the SMU-formatted user-facing label for an evdev binding."""
     normalized = normalize_binding(binding)
     if normalized is None:
@@ -269,20 +293,31 @@ def binding_text(binding) -> str:
     return '+'.join([*labels, key_text])
 
 
+def _trusted_system_executable(name: str) -> str:
+    for directory in ('/usr/bin', '/bin', '/usr/sbin', '/sbin'):
+        candidate = Path(directory) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    msg = f'Required system executable not found in trusted paths: {name}'
+    raise FileNotFoundError(msg)
+
+
 def launch_permission_setup() -> None:
     """Start the one-time, Polkit-authorized input-read permission installer."""
-    subprocess.Popen(['pkexec', 'sh', '-c', _PERMISSION_INSTALLER], close_fds=True)
+    pkexec = _trusted_system_executable('pkexec')
+    shell = _trusted_system_executable('sh')
+    subprocess.Popen([pkexec, shell, '-c', _PERMISSION_INSTALLER], close_fds=True)
 
 
 class LinuxHotkeyService(QObject):
     """Read global evdev state and emit an activation once per key-down edge."""
 
-    activated = pyqtSignal(str)
-    key_pressed = pyqtSignal(int, int)
-    key_released = pyqtSignal(int)
-    wheel_scrolled = pyqtSignal(int, int)
+    activated = Signal(str)
+    key_pressed = Signal(int, int)
+    key_released = Signal(int)
+    wheel_scrolled = Signal(int, int)
 
-    def __init__(self, parent=None, input_dir: Path = Path('/dev/input')):
+    def __init__(self, parent: QObject | None = None, input_dir: Path = Path('/dev/input')) -> None:
         super().__init__(parent)
         self._input_dir = input_dir
         self._thread: threading.Thread | None = None
@@ -292,7 +327,7 @@ class LinuxHotkeyService(QObject):
         self._fds: dict[int, set[int]] = {}
         self._fd_paths: dict[int, Path] = {}
         self._pressed: set[int] = set()
-        self._bindings: dict[str, dict[str, int | str]] = {}
+        self._bindings: dict[str, HotkeyBinding] = {}
         self._was_active: dict[str, bool] = {}
         self.last_error = ''
         # A custom FastFlag editor is a child widget and can be destroyed
@@ -301,7 +336,7 @@ class LinuxHotkeyService(QObject):
         # daemon thread.
         self.destroyed.connect(self._on_qt_destroyed)
 
-    def _on_qt_destroyed(self, *_args) -> None:
+    def _on_qt_destroyed(self, *_args: object) -> None:
         self._qt_deleted.set()
         self._stop.set()
 
@@ -312,7 +347,9 @@ class LinuxHotkeyService(QObject):
             for name, spec in bindings.items()
             if (normalized := normalize_binding(spec)) is not None
         }
-        if clean == self._bindings and (not clean or (self._thread and self._thread.is_alive())):
+        if clean == self._bindings and (
+            not clean or (self._thread is not None and self._thread.is_alive())
+        ):
             return True
         self.stop()
         self._bindings = clean
@@ -360,9 +397,8 @@ class LinuxHotkeyService(QObject):
             self._fds = opened
             self._fd_paths = opened_paths
             self._pressed.clear()
-            self._was_active = {
-                name: self._binding_is_active(binding) for name, binding in self._bindings.items()
-            }
+            winning_names = set(self._winning_bindings())
+            self._was_active = {name: name in winning_names for name in self._bindings}
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name='fleasion-linux-fflag-hotkeys'
@@ -381,7 +417,7 @@ class LinuxHotkeyService(QObject):
                 break
             try:
                 readable, _, _ = select.select(fds, (), (), 0.05)
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 break
             for fd in readable:
                 self._drain_device(fd)
@@ -391,7 +427,7 @@ class LinuxHotkeyService(QObject):
             try:
                 raw = os.read(fd, _INPUT_EVENT.size * 16)
             except OSError as exc:
-                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
                     return
                 self._drop_device(fd, exc)
                 return
@@ -401,7 +437,7 @@ class LinuxHotkeyService(QObject):
             complete_size = len(raw) - len(raw) % _INPUT_EVENT.size
             for offset in range(0, complete_size, _INPUT_EVENT.size):
                 _, _, event_type, code, value = _INPUT_EVENT.unpack_from(raw, offset)
-                if event_type == _EV_KEY and value in (0, 1):
+                if event_type == _EV_KEY and value in {0, 1}:
                     self._set_key_state(fd, code, value == 1)
                 elif event_type == _EV_REL and code == _REL_WHEEL and value:
                     self._handle_wheel(value)
@@ -419,13 +455,10 @@ class LinuxHotkeyService(QObject):
             path = self._fd_paths.pop(fd, Path(f'fd:{fd}'))
             self._fds.pop(fd, None)
             self._pressed = set().union(*self._fds.values()) if self._fds else set()
-            self._was_active = {
-                name: self._binding_is_active(binding) for name, binding in self._bindings.items()
-            }
-        try:
+            winning_names = set(self._winning_bindings())
+            self._was_active = {name: name in winning_names for name in self._bindings}
+        with contextlib.suppress(OSError):
             os.close(fd)
-        except OSError:
-            pass
         detail = reason.strerror or reason if isinstance(reason, OSError) else reason
         log_buffer.log(
             'CustomFFlags',
@@ -447,26 +480,24 @@ class LinuxHotkeyService(QObject):
             if was_pressed == is_pressed:
                 return
             active_modifiers = self._active_modifiers()
-            activations: list[str] = []
-            for name, binding in self._bindings.items():
-                active = self._binding_is_active(binding, active_modifiers)
-                if active and not self._was_active.get(name, False):
-                    activations.append(name)
-                self._was_active[name] = active
+            winners = self._winning_bindings(active_modifiers)
+            activations = [name for name in winners if not self._was_active.get(name, False)]
+            winning_names = set(winners)
+            self._was_active = {name: name in winning_names for name in self._bindings}
 
         if is_pressed:
-            self._emit_signal('key_pressed', code, active_modifiers)
+            self._emit_signal(self.key_pressed, code, active_modifiers)
         else:
-            self._emit_signal('key_released', code)
+            self._emit_signal(self.key_released, code)
         for name in activations:
-            self._emit_signal('activated', name)
+            self._emit_signal(self.activated, name)
 
-    def _emit_signal(self, signal_name: str, *args) -> None:
+    def _emit_signal(self, signal: SignalInstance, *args: object) -> None:
         """Deliver a queued Qt signal unless this QObject is being deleted."""
         if self._qt_deleted.is_set():
             return
         try:
-            getattr(self, signal_name).emit(*args)
+            signal.emit(*args)
         except RuntimeError:
             # Qt may delete a parent-owned QObject between the check above and
             # emit(). The event was already obsolete, so just terminate the
@@ -484,29 +515,41 @@ class LinuxHotkeyService(QObject):
         with self._lock:
             modifiers = self._active_modifiers()
             direction = 'up' if delta > 0 else 'down'
-            activations = [
-                name
+            matches = [
+                (name, int(binding['modifiers']), 0)
                 for name, binding in self._bindings.items()
                 if binding.get('kind') == 'mouse_wheel'
                 and binding.get('direction') == direction
-                and int(binding['modifiers']) == modifiers
+                and (modifiers & int(binding['modifiers'])) == int(binding['modifiers'])
             ]
         wheel_code = SMU_MOUSE_WHEEL_UP if delta > 0 else SMU_MOUSE_WHEEL_DOWN
-        self._emit_signal('wheel_scrolled', wheel_code, modifiers)
-        for name in activations:
-            self._emit_signal('activated', name)
+        self._emit_signal(self.wheel_scrolled, wheel_code, modifiers)
+        for name in most_specific_names(matches):
+            self._emit_signal(self.activated, name)
 
-    def _binding_is_active(
-        self, binding: Mapping[str, int | str], modifiers: int | None = None
-    ) -> bool:
+    def _winning_bindings(self, modifiers: int | None = None) -> list[str]:
+        """Find the bindings eligible to activate after per-key shadowing."""
+        if modifiers is None:
+            modifiers = self._active_modifiers()
+        matches = [
+            (name, int(binding['modifiers']), int(binding['scan_code']))
+            for name, binding in self._bindings.items()
+            if self._binding_is_active(binding, modifiers)
+        ]
+        return most_specific_names(matches)
+
+    def _binding_is_active(self, binding: HotkeyBinding, modifiers: int | None = None) -> bool:
         if binding.get('kind') == 'mouse_wheel':
             return False
         code = int(binding['scan_code'])
         if modifiers is None:
             modifiers = self._active_modifiers()
-        return code in self._pressed and (modifiers & ~modifier_mask_for_evdev_code(code)) == int(
-            binding['modifiers']
-        )
+        required = int(binding['modifiers'])
+        # Extra held modifiers must not silence the binding: holding Shift
+        # while pressing the bound key still toggles.  Shadowing between a
+        # bare binding and its modified combination is resolved by firing
+        # only the most specific match for the same press.
+        return code in self._pressed and (modifiers & required) == required
 
     def stop(self) -> None:
         self._stop.set()
@@ -521,18 +564,21 @@ class LinuxHotkeyService(QObject):
             self._pressed.clear()
             self._was_active.clear()
         for fd in fds:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass
 
 
 class LinuxCustomFFlagHotkeyController(QObject):
     """Keep custom FastFlag hotkeys alive independently of the dashboard."""
 
-    toggled = pyqtSignal(str)
+    toggled = Signal(str)
 
-    def __init__(self, config_manager=None, proxy_master=None, parent=None):
+    def __init__(
+        self,
+        config_manager: HotkeyConfig | None = None,
+        proxy_master: HotkeyProxy | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._config = config_manager
         self._proxy_master = proxy_master
@@ -544,20 +590,24 @@ class LinuxCustomFFlagHotkeyController(QObject):
         return self._service
 
     def sync(self) -> None:
-        if self._config is None or not getattr(self._config, 'custom_fflags_enabled', False):
+        if self._config is None or not self._config.custom_fflags_enabled:
             self._service.set_bindings({})
             return
-        bindings = getattr(self._config, 'custom_fflag_keybinds', {}) or {}
-        merged = dict(bindings) if isinstance(bindings, Mapping) else {}
-        folder_bindings = getattr(self._config, 'custom_fflag_folder_keybinds', {}) or {}
-        if isinstance(folder_bindings, Mapping):
-            merged.update({f'folder:{name}': spec for name, spec in folder_bindings.items()})
-        actions = getattr(self._config, 'custom_fflag_actions', {}) or {}
-        if isinstance(actions, Mapping):
-            for name, action in actions.items():
-                if isinstance(action, Mapping) and isinstance(action.get('keybind'), Mapping):
-                    merged[f'action:{name}'] = action['keybind']
-        self._service.set_bindings(merged)
+        bindings = dict(self._config.custom_fflag_keybinds)
+        bindings.update(
+            {
+                f'folder:{name}': binding
+                for name, binding in self._config.custom_fflag_folder_keybinds.items()
+            }
+        )
+        for name, action_value in self._config.custom_fflag_actions.items():
+            action = _binding_mapping(action_value)
+            if action is None:
+                continue
+            keybind = _binding_mapping(action.get('keybind'))
+            if keybind is not None:
+                bindings[f'action:{name}'] = keybind
+        self._service.set_bindings(bindings)
 
     def toggle_target(self, target: str) -> None:
         if target.startswith('folder:'):
@@ -569,19 +619,15 @@ class LinuxCustomFFlagHotkeyController(QObject):
         self.toggle_flag(target)
 
     def apply_action(self, name: str) -> None:
-        if self._config is None or not getattr(self._config, 'custom_fflags_enabled', False):
+        if self._config is None or not self._config.custom_fflags_enabled:
             return
-        actions = getattr(self._config, 'custom_fflag_actions', {}) or {}
-        if not isinstance(actions, Mapping):
+        action = _binding_mapping(self._config.custom_fflag_actions.get(name))
+        if action is None:
             return
-        action = actions.get(name)
-        if not isinstance(action, Mapping):
+        action_flags = _binding_mapping(action.get('flags'))
+        if not action_flags:
             return
-        action_flags = action.get('flags')
-        if not isinstance(action_flags, Mapping) or not action_flags:
-            return
-        current_flags = getattr(self._config, 'custom_fflags', {}) or {}
-        updated = dict(current_flags) if isinstance(current_flags, Mapping) else {}
+        updated = {str(flag): str(value) for flag, value in self._config.custom_fflags.items()}
         updated.update({str(flag): str(value) for flag, value in action_flags.items()})
         self._config.custom_fflags = updated
         log_buffer.log('CustomFFlags', f'Linux keybind applied action {name}')
@@ -590,11 +636,11 @@ class LinuxCustomFFlagHotkeyController(QObject):
     def toggle_flag(self, name: str) -> None:
         if (
             self._config is None
-            or not getattr(self._config, 'custom_fflags_enabled', False)
-            or name not in (getattr(self._config, 'custom_fflags', {}) or {})
+            or not self._config.custom_fflags_enabled
+            or name not in self._config.custom_fflags
         ):
             return
-        disabled = set(getattr(self._config, 'custom_fflag_disabled', []) or [])
+        disabled = set(self._config.custom_fflag_disabled)
         is_enabled = name in disabled
         if is_enabled:
             disabled.remove(name)
@@ -604,7 +650,7 @@ class LinuxCustomFFlagHotkeyController(QObject):
         if self._proxy_master is not None:
             try:
                 self._proxy_master.refresh_custom_fflag_interception()
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
         log_buffer.log(
             'CustomFFlags',
@@ -613,15 +659,13 @@ class LinuxCustomFFlagHotkeyController(QObject):
         self.toggled.emit(name)
 
     def toggle_folder(self, name: str) -> None:
-        folders = getattr(self._config, 'custom_fflag_folders', {}) or {}
         if (
             self._config is None
-            or not getattr(self._config, 'custom_fflags_enabled', False)
-            or not isinstance(folders, Mapping)
-            or name not in folders
+            or not self._config.custom_fflags_enabled
+            or name not in self._config.custom_fflag_folders
         ):
             return
-        disabled = set(getattr(self._config, 'custom_fflag_disabled_folders', []) or [])
+        disabled = set(self._config.custom_fflag_disabled_folders)
         is_enabled = name in disabled
         if is_enabled:
             disabled.remove(name)
@@ -631,7 +675,7 @@ class LinuxCustomFFlagHotkeyController(QObject):
         if self._proxy_master is not None:
             try:
                 self._proxy_master.refresh_custom_fflag_interception()
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
         log_buffer.log(
             'CustomFFlags',

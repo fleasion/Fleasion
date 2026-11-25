@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -16,7 +17,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
+from .json_types import as_object_dict
 from .logging import log_buffer
 from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, MACOS_PROXY_HELPER_CONTROL_PORT
 
@@ -33,7 +36,7 @@ HELPER_LOG_DIR = Path('/Library/Logs')
 HELPER_LOG_PATH = HELPER_LOG_DIR / 'Fleasion.proxy-helper.log'
 HELPER_STDOUT_LOG_PATH = HELPER_LOG_DIR / 'Fleasion.proxy-helper.stdout.log'
 HELPER_STDERR_LOG_PATH = HELPER_LOG_DIR / 'Fleasion.proxy-helper.stderr.log'
-EXPECTED_HELPER_VERSION = 7
+EXPECTED_HELPER_VERSION = 8
 REQUIRED_HELPER_CAPABILITIES = {'relay', 'patch_ca', 'probe_backend'}
 # A first launch of a root-owned helper can be held briefly by macOS execution
 # policy checks even after launchd has spawned it.  Keep this comfortably above
@@ -43,15 +46,27 @@ HELPER_READY_TIMEOUT_SECONDS = 45.0
 HELPER_READY_POLL_SECONDS = 0.25
 
 
+type HelperObject = dict[str, object]
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+
+def _int_value(value: object) -> int:
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        msg = 'macOS proxy helper value must be numeric'
+        raise TypeError(msg)
+    return int(value)
+
+
 def _ensure_token() -> str:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if HELPER_TOKEN_FILE.exists():
         token = HELPER_TOKEN_FILE.read_text(encoding='utf-8').strip()
         if len(token) >= 32:
-            try:
+            with contextlib.suppress(OSError):
                 HELPER_TOKEN_FILE.chmod(0o600)
-            except OSError:
-                pass
             return token
 
     token = secrets.token_urlsafe(48)
@@ -66,10 +81,10 @@ def _request(
     timeout: float = 3.0,
     *,
     raise_on_error: bool = True,
-    **payload,
-) -> dict:
+    **payload: object,
+) -> HelperObject:
     token = _ensure_token()
-    request = {'token': token, 'action': action}
+    request: HelperObject = {'token': token, 'action': action}
     if hosts is not None:
         request['hosts'] = sorted(hosts)
     request.update(payload)
@@ -80,27 +95,34 @@ def _request(
         sock.sendall((json.dumps(request, separators=(',', ':')) + '\n').encode('utf-8'))
         sock_file = sock.makefile('rb')
         raw = sock_file.readline(1024 * 1024)
-    response = json.loads(raw.decode('utf-8'))
+    response_value: object = json.loads(raw.decode('utf-8'))
+    response = as_object_dict(response_value)
+    if response is None:
+        msg = 'macOS proxy helper response must be a JSON object'
+        raise TypeError(msg)
     if raise_on_error and not response.get('ok'):
         raise RuntimeError(str(response.get('error') or 'macOS proxy helper request failed'))
     return response
 
 
-def helper_status(timeout: float = 1.0) -> dict | None:
+def helper_status(timeout: float = 1.0) -> HelperObject | None:
     try:
         return _request('status', timeout=timeout)
-    except Exception:
+    except OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError:
         return None
 
 
-def helper_has_expected_identity(status: dict | None) -> bool:
+def helper_has_expected_identity(status: Mapping[str, object] | None) -> bool:
     if not status:
         return False
     try:
-        version_ok = int(status.get('version', 0)) == EXPECTED_HELPER_VERSION
+        version_ok = _int_value(status.get('version', 0)) == EXPECTED_HELPER_VERSION
     except TypeError, ValueError:
         version_ok = False
-    capabilities = {str(value) for value in status.get('capabilities') or []}
+    raw_capabilities = status.get('capabilities')
+    capabilities: set[str] = set()
+    if isinstance(raw_capabilities, list):
+        capabilities.update(str(value) for value in cast('list[object]', raw_capabilities))
     return version_ok and REQUIRED_HELPER_CAPABILITIES.issubset(capabilities)
 
 
@@ -109,7 +131,7 @@ def helper_is_ready() -> bool:
     if not status:
         return False
     try:
-        backend_ok = int(status.get('backend_port', 0)) == MACOS_PROXY_BACKEND_PORT
+        backend_ok = _int_value(status.get('backend_port', 0)) == MACOS_PROXY_BACKEND_PORT
     except TypeError, ValueError:
         backend_ok = False
     if not backend_ok:
@@ -130,27 +152,31 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
     """Return readiness plus the reason a newly-installed helper is not ready."""
     try:
         status = _request('status', timeout=1.0)
-    except Exception as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         return False, f'Could not contact the helper control service: {type(exc).__name__}: {exc}'
 
     try:
-        backend_ok = int(status.get('backend_port', 0)) == MACOS_PROXY_BACKEND_PORT
+        backend_ok = _int_value(status.get('backend_port', 0)) == MACOS_PROXY_BACKEND_PORT
     except TypeError, ValueError:
         backend_ok = False
     if not backend_ok:
         return (
             False,
-            'Helper reported an unexpected backend port: '
-            f'{status.get("backend_port")!r} (expected {MACOS_PROXY_BACKEND_PORT})',
+            (
+                'Helper reported an unexpected backend port: '
+                f'{status.get("backend_port")!r} (expected {MACOS_PROXY_BACKEND_PORT})'
+            ),
         )
     if not helper_has_expected_identity(status):
         return (
             False,
-            'Helper identity does not match this app build: '
-            f'version={status.get("version")!r} (expected {EXPECTED_HELPER_VERSION}), '
-            f'capabilities={status.get("capabilities")!r}, '
-            f'pid={status.get("pid")!r}, ppid={status.get("ppid")!r}, '
-            f'executable={status.get("executable")!r}',
+            (
+                'Helper identity does not match this app build: '
+                f'version={status.get("version")!r} (expected {EXPECTED_HELPER_VERSION}), '
+                f'capabilities={status.get("capabilities")!r}, '
+                f'pid={status.get("pid")!r}, ppid={status.get("ppid")!r}, '
+                f'executable={status.get("executable")!r}'
+            ),
         )
     return True, ''
 
@@ -158,33 +184,33 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
 def helper_apply_hosts(hosts: set[str]) -> bool:
     try:
         _request('apply', set(hosts), timeout=5.0)
-        return True
-    except Exception as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         log_buffer.log('ProxyHelper', f'Failed to apply macOS hosts entries: {exc}')
         return False
+    return True
 
 
 def helper_clear_hosts() -> bool:
     try:
         _request('clear', timeout=5.0)
-        return True
-    except Exception as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         log_buffer.log('ProxyHelper', f'Failed to clear macOS hosts entries: {exc}')
         return False
+    return True
 
 
 def helper_heartbeat() -> bool:
     try:
         _request('heartbeat', timeout=2.0)
-        return True
-    except Exception:
+    except OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError:
         return False
+    return True
 
 
-def helper_probe_backend() -> dict:
+def helper_probe_backend() -> HelperObject:
     try:
         return _request('probe_backend', timeout=3.0)
-    except Exception as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         return {
             'ok': False,
             'reachable': False,
@@ -195,7 +221,7 @@ def helper_probe_backend() -> dict:
         }
 
 
-def helper_patch_ca(ca_pem: str, installs: list[dict]) -> dict | None:
+def helper_patch_ca(ca_pem: str, installs: list[HelperObject]) -> HelperObject | None:
     try:
         response = _request(
             'patch_ca',
@@ -204,7 +230,7 @@ def helper_patch_ca(ca_pem: str, installs: list[dict]) -> dict | None:
             ca_pem=ca_pem,
             installs=installs,
         )
-    except Exception as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         log_buffer.log('ProxyHelper', f'Failed to request macOS Roblox CA patch: {exc}')
         return None
 
@@ -290,29 +316,34 @@ def _stage_installer_payload(source: Path) -> tuple[Path, Path, Path]:
     return staging_dir, staging_helper, staging_plist
 
 
-def install_helper() -> tuple[bool, str]:
-    """Install/start the root helper with one macOS administrator approval."""
+def _installer_source() -> tuple[Path | None, str]:
     if sys.platform != 'darwin':
-        return False, 'The macOS proxy helper is only available on macOS.'
-
+        return None, 'The macOS proxy helper is only available on macOS.'
     _ensure_token()
     source = _source_helper_path()
     if not source.exists():
-        return False, f'Bundled helper executable is missing: {source}'
-
+        return None, f'Bundled helper executable is missing: {source}'
     try:
         source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
     except OSError as exc:
-        return False, f'Could not fingerprint the bundled macOS proxy helper: {exc}'
+        return None, f'Could not fingerprint the bundled macOS proxy helper: {exc}'
 
     log_buffer.log(
         'ProxyHelper',
         f'Bundled macOS proxy helper: path={source}; sha256={source_sha256}',
     )
+    return source, ''
+
+
+def install_helper() -> tuple[bool, str]:
+    """Install/start the root helper with one macOS administrator approval."""
+    source, source_error = _installer_source()
+    if source is None:
+        return False, source_error
 
     try:
         staging_dir, staging_helper, staging_plist = _stage_installer_payload(source)
-    except Exception as exc:
+    except OSError as exc:
         return False, f'Could not stage the macOS proxy helper installer: {exc}'
 
     commands = [
@@ -386,19 +417,23 @@ def install_helper() -> tuple[bool, str]:
     kill_service = shlex.join(['/bin/launchctl', 'kill', 'SIGKILL', service_target])
     print_service = shlex.join(['/bin/launchctl', 'print', service_target])
     enable_cmd = shlex.join(['/bin/launchctl', 'enable', service_target])
-    lsof_listener = shlex.join([
-        '/usr/sbin/lsof',
-        '-nP',
-        f'-iTCP:{MACOS_PROXY_HELPER_CONTROL_PORT}',
-        '-sTCP:LISTEN',
-    ])
-    lsof_listener_pids = shlex.join([
-        '/usr/sbin/lsof',
-        '-nP',
-        '-t',
-        f'-iTCP:{MACOS_PROXY_HELPER_CONTROL_PORT}',
-        '-sTCP:LISTEN',
-    ])
+    lsof_listener = shlex.join(
+        [
+            '/usr/sbin/lsof',
+            '-nP',
+            f'-iTCP:{MACOS_PROXY_HELPER_CONTROL_PORT}',
+            '-sTCP:LISTEN',
+        ]
+    )
+    lsof_listener_pids = shlex.join(
+        [
+            '/usr/sbin/lsof',
+            '-nP',
+            '-t',
+            f'-iTCP:{MACOS_PROXY_HELPER_CONTROL_PORT}',
+            '-sTCP:LISTEN',
+        ]
+    )
     helper_hash = shlex.join(['/usr/bin/shasum', '-a', '256', str(HELPER_INSTALL_PATH)])
     helper_file = shlex.join(['/usr/bin/file', str(HELPER_INSTALL_PATH)])
     install_cmds = ' && '.join(shlex.join(command) for command in commands)
@@ -431,12 +466,30 @@ listener_pids="$({lsof_listener_pids} 2>/dev/null || true)"
 if [ -n "$listener_pids" ]; then
   for listener_pid in $listener_pids; do
     listener_executable="$(/usr/sbin/lsof -a -p "$listener_pid" -d txt -Fn 2>/dev/null | /usr/bin/sed -n 's/^n//p' | /usr/bin/head -n 1)"
-    if [ "$listener_executable" != "{HELPER_INSTALL_PATH}" ]; then
-      /bin/echo "control port {MACOS_PROXY_HELPER_CONTROL_PORT} is owned by unexpected process pid=$listener_pid executable=$listener_executable" >&2
+    listener_uid="$(/bin/ps -p "$listener_pid" -o uid= 2>/dev/null | /usr/bin/tr -d '[:space:]')"
+    listener_command="$(/bin/ps -ww -p "$listener_pid" -o command= 2>/dev/null || true)"
+    listener_is_helper=0
+    if [ "$listener_executable" = "{HELPER_INSTALL_PATH}" ]; then
+      listener_is_helper=1
+    elif [ "$listener_uid" = "0" ]; then
+      # Source-tree installs execute the installed helper script through Python,
+      # so lsof reports the interpreter as txt. Accept that form only when the
+      # root-owned listener is a Python process whose argv contains the exact
+      # installed helper path as a whitespace-delimited argument.
+      case "$listener_executable" in
+        */python|*/python[0-9]*|*/Python)
+          case " $listener_command " in
+            *" {HELPER_INSTALL_PATH} "*) listener_is_helper=1 ;;
+          esac
+          ;;
+      esac
+    fi
+    if [ "$listener_is_helper" != "1" ]; then
+      /bin/echo "control port {MACOS_PROXY_HELPER_CONTROL_PORT} is owned by unexpected process pid=$listener_pid uid=$listener_uid executable=$listener_executable command=$listener_command" >&2
       {lsof_listener} >&2 || true
       exit 43
     fi
-    /bin/echo "terminating stale Fleasion proxy helper listener pid=$listener_pid executable=$listener_executable"
+    /bin/echo "terminating stale Fleasion proxy helper listener pid=$listener_pid uid=$listener_uid executable=$listener_executable command=$listener_command"
     /bin/kill -KILL "$listener_pid" >/dev/null 2>&1 || true
   done
 
@@ -510,17 +563,17 @@ exit 0
     try:
         result = subprocess.run(
             ['/usr/bin/osascript', '-e', apple_script],
+            shell=False,
             capture_output=True,
             text=True,
             timeout=180,
+            check=False,
         )
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         return False, f'Could not run the helper installer: {exc}'
     finally:
-        try:
+        with contextlib.suppress(OSError):
             shutil.rmtree(staging_dir, ignore_errors=True)
-        except OSError:
-            pass
 
     install_output = (result.stdout or result.stderr or '').strip()
     if install_output:

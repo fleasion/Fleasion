@@ -1,27 +1,30 @@
 """Delete cache window."""
 
-from ..localization import tr
+from __future__ import annotations
 
 import threading
 import time
 from typing import ClassVar
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFontDatabase
+from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
-from ..utils import delete_cache, get_icon_path, log_buffer
+from fleasion.localization import tr
+from fleasion.utils import delete_cache, log_buffer
+from fleasion.widgets.text import style_text
 
 
 class DeleteCacheWindow(QDialog):
     """Delete cache result window."""
 
     _CLOSE_AFTER_DONE_MS = 500
-    _live_windows: ClassVar[set[QDialog]] = set()
+    _live_windows: ClassVar[set[DeleteCacheWindow]] = set()
 
-    log_signal = pyqtSignal(str)
-    done_signal = pyqtSignal()
+    log_signal = Signal(str)
+    done_signal = Signal()
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._worker_done = False
         self._dialog_finished = False
@@ -38,24 +41,16 @@ class DeleteCacheWindow(QDialog):
         )
 
         self._setup_ui()
-        self._set_icon()
         self._start_deletion()
 
-    def _set_icon(self):
-        """Set window icon."""
-        if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
-
-            self.setWindowIcon(QIcon(str(icon_path)))
-
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(20, 20, 20, 20)
 
         # Title
         title_label = QLabel(tr('ui.gui.delete_cache.deleting_cache'))
-        title_label.setStyleSheet('font-size: 11pt; font-weight: bold;')
+        style_text(title_label, point_size=11, bold=True)
         layout.addWidget(title_label)
 
         # Status text area
@@ -73,17 +68,15 @@ class DeleteCacheWindow(QDialog):
 
     def _get_monospace_font(self):
         """Get a monospace font."""
-        from PyQt6.QtGui import QFontDatabase
-
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setPointSize(9)
         return font
 
-    def _append_log(self, message: str):
+    def _append_log(self, message: str) -> None:
         """Append a log message."""
         self.status_text.append(message)
 
-    def _on_done(self):
+    def _on_done(self) -> None:
         """Called when deletion is complete."""
         self._worker_done = True
         self.status_text.append('\nDone.')
@@ -105,10 +98,10 @@ class DeleteCacheWindow(QDialog):
         if self._worker_done and self._dialog_finished:
             self._live_windows.discard(self)
 
-    def _start_deletion(self):
+    def _start_deletion(self) -> None:
         """Start the cache deletion in a background thread."""
 
-        def perform():
+        def perform() -> None:
             try:
                 for msg in delete_cache():
                     log_buffer.log('Cache', msg)
@@ -119,3 +112,16 @@ class DeleteCacheWindow(QDialog):
 
         thread = threading.Thread(target=perform, daemon=True)
         thread.start()
+
+
+def show_delete_cache_window() -> None:
+    """Clear the Roblox cache, reporting progress in its own window."""
+    DeleteCacheWindow().show()
+
+
+class ClearCacheButton(QPushButton):
+    """The Clear Cache button shown in the footer of every tab."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(tr('ui.gui.delete_cache.clear_cache'), parent)
+        self.clicked.connect(show_delete_cache_window)

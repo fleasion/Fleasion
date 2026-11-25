@@ -1,5 +1,8 @@
 """Utilities package."""
 
+from __future__ import annotations
+
+from ._updater_compat import start_update_check
 from .logging import LogBuffer, log_buffer
 from .metadata import (
     APP_AUTHOR,
@@ -44,8 +47,8 @@ from .threading import run_in_thread
 from .time_tracker import TimeTracker, time_tracker
 from .windows import (
     delete_cache,
-    get_roblox_process_identity,
     get_roblox_player_exe_path,
+    get_roblox_process_identity,
     get_roblox_studio_exe_path,
     is_roblox_running,
     is_studio_running,
@@ -56,13 +59,6 @@ from .windows import (
     wait_for_roblox_exit,
     wait_for_roblox_window,
 )
-
-
-def start_update_check(*args, **kwargs):
-    from .updater import start_update_check as _start_update_check
-
-    return _start_update_check(*args, **kwargs)
-
 
 __all__ = [
     'APP_AUTHOR',

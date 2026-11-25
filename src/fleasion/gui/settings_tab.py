@@ -1,38 +1,90 @@
-"""Settings tab – mirrors all settings available in the system tray menu."""
+"""Settings tab - mirrors all settings available in the system tray menu."""
+
+from __future__ import annotations
 
 import sys
+from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal, cast, override
 
-from PyQt6.QtCore import QEvent, Qt, QTimer
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QTimer
+from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from ..gui.theme import ThemeManager
-from ..localization import available_languages, get_language, tr
-from ..utils import CONFIG_DIR, run_in_thread
-from ..utils.autostart import sync_autostart, windows_autostart_privilege_hint
-from ..utils.desktop_integration import sync_desktop_integration
-from ..utils.roblox_auth import (
+from fleasion.app.dialogs.startup import show_run_on_boot_failure
+from fleasion.app.roblox_launch import arm_windows_gdk_env_proxy_when_ready
+from fleasion.appearance import STYLES
+from fleasion.gui import glass
+from fleasion.gui.appearance_controls import AccentSelector, ThemeSelector, choice_label
+from fleasion.gui.theme import ThemeManager
+from fleasion.localization import available_languages, get_language, tr
+from fleasion.utils import (
+    CONFIG_DIR,
+    get_roblox_player_exe_path,
+    log_buffer,
+    macos_rosemary_gate,
+    run_in_thread,
+)
+from fleasion.utils.autostart import sync_autostart, windows_autostart_privilege_hint
+from fleasion.utils.desktop_integration import sync_desktop_integration
+from fleasion.utils.macos_proxy_helper import helper_is_ready, install_helper
+from fleasion.utils.roblox_auth import (
     notify_auth_source_changed,
     store_manual_roblosecurity,
     validate_roblosecurity_for_import,
 )
-from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpinBox
+from fleasion.widgets.no_wheel import DropdownComboBox, NoWheelSpinBox
+from fleasion.widgets.spacing import PANEL_MARGINS, PANEL_PADDING
+from fleasion.widgets.tab_footer import TabFooter
+from fleasion.widgets.text import style_text
+lazy from fleasion.utils import linux_clients, platform_linux
+
+from .collapsible_section import CollapsibleSection
+lazy from . import delete_cache, rando_stuff_tab
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator
+
+    from fleasion.app.tray import SystemTray
+    from fleasion.config.manager import ConfigManager
+
+
+def _set_signals_blocked(obj: QObject, *, blocked: bool) -> None:
+    obj.blockSignals(blocked)
+
+
+def _capture_failure[T](action: Callable[[], T]) -> tuple[T | None, Exception | None]:
+    try:
+        return action(), None
+    except Exception as exc:  # ruff: ignore[blind-except]
+        return None, exc
+
+
+def _refresh_autostart_proxy_mode(proxy_mode: str) -> tuple[bool, Exception | None]:
+    enable_autostart = True
+    result, error = _capture_failure(
+        lambda: sync_autostart(enable_autostart, CONFIG_DIR, proxy_mode=proxy_mode)
+    )
+    return (False if result is None else result), error
 
 
 def _macos_auth_sources() -> tuple[tuple[str, str], ...]:
@@ -52,9 +104,6 @@ def _macos_auth_sources() -> tuple[tuple[str, str], ...]:
 
 def _ensure_macos_hosts_helper(parent: QWidget) -> bool:
     """Ensure Hosts mode has its privileged helper before a mode transition."""
-    from ..utils.logging import log_buffer
-    from ..utils.macos_proxy_helper import helper_is_ready, install_helper
-
     if helper_is_ready():
         return True
 
@@ -98,7 +147,7 @@ def _ensure_macos_hosts_helper(parent: QWidget) -> bool:
 class EnvProxyWarningDialog(QMessageBox):
     """Explain the Player-only relaunch behavior when Env Proxy is selected."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.settings_tab.roblox_env_proxy'))
         self.setIcon(QMessageBox.Icon.Information)
@@ -109,7 +158,14 @@ class EnvProxyWarningDialog(QMessageBox):
 class SettingsTab(QWidget):
     """Settings tab exposing all options found in the system tray Settings menu."""
 
-    def __init__(self, config_manager, system_tray=None, parent=None):
+    def __init__(
+        self,
+        config_manager: ConfigManager,
+        system_tray: SystemTray | None = None,
+        parent: QWidget | None = None,
+        *,
+        defer_setup: bool = False,
+    ) -> None:
         super().__init__(parent)
         self._config = config_manager
         self._tray = system_tray
@@ -119,64 +175,72 @@ class SettingsTab(QWidget):
         self._manual_proxy_credentials_timer.timeout.connect(
             self._revert_manual_proxy_without_credentials
         )
-        self._setup_ui()
+        if not defer_setup:
+            for _ in self.build_ui():
+                pass
+
+    def build_ui(self) -> Generator[None]:
+        yield from self._build_ui()
         self._sync_manual_proxy_credentials_timer()
 
     # UI construction
 
-    def _setup_ui(self):
-        outer = QVBoxLayout()
+    def _build_ui(self) -> Generator[None]:
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        scroll = QScrollArea()
+        scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         container = QWidget()
         container.setObjectName('_FleasionSettingsContainer')
         self._settings_container = container
-        self._container_layout = QVBoxLayout()
-        self._container_layout.setSpacing(10)
-        self._container_layout.setContentsMargins(10, 10, 10, 10)
-
-        self._container_layout.addWidget(self._build_language_section())
-        self._container_layout.addWidget(self._build_appearance_section())
-        if sys.platform.startswith('linux'):
-            self._container_layout.addWidget(self._build_linux_client_section())
-        self._container_layout.addWidget(self._build_proxy_section())
-        self._container_layout.addWidget(self._build_convenience_section())
-        if sys.platform == 'darwin':
-            self._container_layout.addWidget(self._build_macos_auth_section())
-        self._container_layout.addWidget(self._build_scraper_section())
-        self._container_layout.addWidget(self._build_scraped_games_section())
-        self._container_layout.addWidget(self._build_export_section())
-        self._container_layout.addStretch()
-
-        container.setLayout(self._container_layout)
-
-        footer_widget = QWidget()
-        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self._footer_widget = footer_widget
-        footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(8, 4, 8, 4)
-        self._status_label = QLabel('')
-        self._status_label.setStyleSheet('color: #888;')
-        footer_layout.addWidget(self._status_label)
-        footer_layout.addStretch()
-        clear_cache_btn = QPushButton(tr('ui.gui.settings_tab.clear_cache'))
-        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
-        footer_layout.addWidget(clear_cache_btn)
-
+        self._container_layout = QVBoxLayout(container)
+        self._container_layout.setSpacing(PANEL_PADDING)
+        self._container_layout.setContentsMargins(*PANEL_MARGINS)
+        self._update_container_bg()
         scroll.setWidget(container)
         outer.addWidget(scroll)
-        outer.addWidget(footer_widget)
-        self.setLayout(outer)
-        self._update_container_bg()
 
-    def changeEvent(self, a0: QEvent | None):
+        self._container_layout.addWidget(self._build_language_section())
+        yield
+        self._container_layout.addWidget(self._build_appearance_section())
+        yield
+        if sys.platform.startswith('linux'):
+            self._container_layout.addWidget(self._build_linux_client_section())
+            yield
+        self._container_layout.addWidget(self._build_proxy_section())
+        yield
+        self._container_layout.addWidget(self._build_convenience_section())
+        yield
+        if sys.platform == 'darwin':
+            self._container_layout.addWidget(self._build_macos_auth_section())
+            yield
+        self._container_layout.addWidget(self._build_scraper_section())
+        yield
+        self._container_layout.addWidget(self._build_scraped_games_section())
+        yield
+        self._container_layout.addWidget(self._build_export_section())
+        yield
+        self._container_layout.addStretch()
+
+        footer_widget = TabFooter()
+        self._footer_widget = footer_widget
+        footer_layout = footer_widget.content_layout
+        self._status_label = QLabel('')
+        style_text(self._status_label, tone='muted')
+        footer_layout.addWidget(self._status_label)
+        footer_layout.addStretch()
+        footer_layout.addWidget(delete_cache.ClearCacheButton())
+
+        outer.addWidget(footer_widget)
+
+    @override
+    def changeEvent(self, a0: QEvent) -> None:
         super().changeEvent(a0)
-        if a0 is not None and a0.type() == QEvent.Type.PaletteChange:
+        if a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
 
     # Language
@@ -209,89 +273,98 @@ class SettingsTab(QWidget):
     def _build_appearance_section(self) -> CollapsibleSection:
         section = CollapsibleSection(tr('settings.appearance.section'), expanded=True)
 
-        self._theme_buttons: dict[str, QCheckBox] = {}
-        btn_group = QButtonGroup(self)
-        btn_group.setExclusive(True)
-        theme_row = QHBoxLayout()
-        theme_row.setContentsMargins(0, 0, 0, 0)
-        current_theme = self._config.theme
-        for name, label in (
-            ('System', tr('settings.appearance.theme.system')),
-            ('Light', tr('settings.appearance.theme.light')),
-            ('Dark', tr('settings.appearance.theme.dark')),
-        ):
-            chk = QCheckBox(label)
-            chk.setChecked(name == current_theme)
-            chk.toggled.connect(lambda checked, t=name: self._on_theme_toggled(checked, t))
-            btn_group.addButton(chk)
-            theme_row.addWidget(chk)
-            self._theme_buttons[name] = chk
-        theme_row.addStretch()
-
-        row_widget = QWidget()
-        row_widget.setLayout(theme_row)
-        section.add_widget(row_widget)
+        self._style_buttons: dict[str, QRadioButton] = {}
+        options = QWidget()
+        rows = QGridLayout(options)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setHorizontalSpacing(18)
+        rows.setVerticalSpacing(12)
+        rows.setColumnStretch(1, 1)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        for name in STYLES:
+            button = QRadioButton(choice_label(name))
+            button.setObjectName(f'Appearance{name}')
+            button.setChecked(name == self._config.appearance_style)
+            button.toggled.connect(partial(self._on_appearance_choice, 'style', name))
+            group.addButton(button)
+            row.addWidget(button)
+            self._style_buttons[name] = button
+        row.addStretch()
+        rows.addWidget(QLabel(tr('settings.appearance.style')), 0, 0)
+        rows.addLayout(row, 0, 1)
+        self._theme_selector = ThemeSelector()
+        self._theme_selector.set_theme(self._config.color_mode)
+        self._theme_selector.theme_changed.connect(partial(self._set_appearance, 'color_mode'))
+        theme_label = QLabel(tr('settings.appearance.color_mode'))
+        theme_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        rows.addWidget(theme_label, 1, 0)
+        rows.addWidget(self._theme_selector, 1, 1)
+        self._accent_selector = AccentSelector(custom_color=self._config.custom_accent_color)
+        self._accent_selector.set_accent(self._config.accent_color)
+        self._accent_selector.accent_changed.connect(partial(self._set_appearance, 'accent'))
+        accent_label = QLabel(tr('settings.appearance.accent'))
+        accent_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        rows.addWidget(accent_label, 2, 0)
+        rows.addWidget(self._accent_selector, 2, 1)
+        self._glass_widgets = self._build_glass_controls(
+            rows, visible=self._config.appearance_style == 'Glass'
+        )
+        section.add_widget(options)
+        ThemeManager.events().changed.connect(self._refresh_appearance)
 
         return section
 
     def _build_linux_client_section(self) -> CollapsibleSection:
-        from ..utils.linux_clients import LINUX_CLIENTS
-
         section = CollapsibleSection(tr('settings.linux_client.section'), expanded=True)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(QLabel(tr('ui.gui.settings_tab.client')))
         self._linux_client_combo = DropdownComboBox()
-        self._linux_client_combo.addItem(tr('ui.gui.settings_tab.auto_desktop_handler'), 'auto')
-        for client in LINUX_CLIENTS:
+        self._linux_client_combo.addItem(tr('ui.gui.settings_tab.auto'), 'auto')
+        for client in linux_clients.LINUX_CLIENTS:
             self._linux_client_combo.addItem(client.display_name, client.key)
         index = self._linux_client_combo.findData(getattr(self._config, 'linux_client', 'auto'))
         self._linux_client_combo.setCurrentIndex(max(0, index))
         self._linux_client_combo.activated.connect(self._on_linux_client_changed)
-        if len(LINUX_CLIENTS) <= 1:
-            self._linux_client_combo.setEnabled(False)
-            self._linux_client_combo.setToolTip(
-                tr(
-                    'ui.gui.settings_tab.value_is_currently_the_only_supported_linux',
-                    value0=LINUX_CLIENTS[0].display_name,
-                )
-            )
         row.addWidget(self._linux_client_combo)
         row.addStretch()
         row_widget = QWidget()
         row_widget.setLayout(row)
         section.add_widget(row_widget)
 
-        self._linux_client_status = QLabel()
-        self._linux_client_status.setWordWrap(True)
-        self._refresh_linux_client_status()
-        section.add_widget(self._linux_client_status)
+        self._rosemary_path_edits: dict[str, QLineEdit] = {}
+        self._rosemary_path_rows: list[QWidget] = []
+        for name, setting_name, folder in (
+            (tr('settings.linux_client.rosemary_bundle'), 'rosemary_app_path', True),
+            (tr('settings.linux_client.rosemary_binary'), 'rosemary_binary_path', False),
+            (tr('settings.linux_client.rosemary_prefix'), 'rosemary_prefix_path', True),
+        ):
+            path_row = QHBoxLayout()
+            path_row.addWidget(QLabel(name))
+            edit = QLineEdit(str(getattr(self._config, setting_name, '')))
+            edit.setPlaceholderText(tr('settings.linux_client.auto_detect'))
+            self._rosemary_path_edits[setting_name] = edit
+            edit.editingFinished.connect(partial(self._on_rosemary_path_edited, setting_name, edit))
+            path_row.addWidget(edit, 1)
+            browse = QPushButton(tr('settings.linux_client.browse'))
+            browse.clicked.connect(partial(self._browse_rosemary_path, setting_name, edit, folder))
+            path_row.addWidget(browse)
+            widget = QWidget()
+            widget.setLayout(path_row)
+            self._rosemary_path_rows.append(widget)
+            section.add_widget(widget)
+
+        self._update_rosemary_path_visibility()
         return section
 
-    def _refresh_linux_client_status(self) -> None:
-        if not sys.platform.startswith('linux'):
-            return
-        try:
-            from ..utils.platform_linux import (
-                linux_client_installations,
-                selected_linux_client_display_name,
-            )
-
-            installed = ', '.join(item.display_name for item in linux_client_installations())
-            selected = selected_linux_client_display_name()
-            detail = installed or tr('settings.linux_client.none_detected')
-            self._linux_client_status.setText(
-                tr(
-                    'ui.gui.settings_tab.active_value_installed_value_fleasion_routes_linux',
-                    value0=selected,
-                    value1=detail,
-                )
-            )
-        except Exception:
-            self._linux_client_status.setText(
-                tr('ui.gui.settings_tab.unable_to_detect_linux_roblox_clients')
-            )
+    def _update_rosemary_path_visibility(self) -> None:
+        show = self._linux_client_combo.currentData() in {'auto', 'rosemary'}
+        for row in self._rosemary_path_rows:
+            row.setVisible(show)
 
     def _build_macos_auth_section(self) -> CollapsibleSection:
         section = CollapsibleSection(tr('settings.roblox_login.section'), expanded=True)
@@ -330,7 +403,7 @@ class SettingsTab(QWidget):
         self._proxy_warning_label = QLabel(
             tr('ui.gui.settings_tab.do_not_touch_unless_you_know_what')
         )
-        self._proxy_warning_label.setStyleSheet('color: #e07a00; font-weight: bold;')
+        style_text(self._proxy_warning_label, tone='warning', bold=True)
         section.add_widget(self._proxy_warning_label)
 
         mode_row = QHBoxLayout()
@@ -377,7 +450,7 @@ class SettingsTab(QWidget):
         self._wire_preserving_chk.toggled.connect(self._on_wire_preserving_toggled)
         section.add_widget(self._wire_preserving_chk)
 
-        def _proxy_row(label: str, host_value: str, port_value: int):
+        def _proxy_row(label: str, host_value: str, port_value: int) -> tuple[QLineEdit, QSpinBox]:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.addWidget(QLabel(label))
@@ -462,6 +535,31 @@ class SettingsTab(QWidget):
         limits_widget = QWidget()
         limits_widget.setLayout(limits_row)
         section.add_widget(limits_widget)
+
+        if sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+            self._proxy_warning_label.setText(tr('settings.proxy.macos_managed'))
+            self._proxy_mode_combo.setEnabled(False)
+            if not self._config.macos_rosemary_enabled:
+                self._proxy_features_chk.setEnabled(False)
+        elif sys.platform == 'darwin':
+            self._proxy_warning_label.setText(tr('settings.proxy.macos_unavailable'))
+            for control in (
+                self._proxy_features_chk,
+                self._upstream_mode_combo,
+                self._proxy_mode_combo,
+                self._wire_preserving_chk,
+                self._http_proxy_host,
+                self._http_proxy_port,
+                self._socks5_host,
+                self._socks5_port,
+                self._http_proxy_user,
+                self._http_proxy_pass,
+                self._socks5_user,
+                self._socks5_pass,
+                self._asset_limit_spin,
+                self._cdn_limit_spin,
+            ):
+                control.setEnabled(False)
 
         return section
 
@@ -569,9 +667,7 @@ class SettingsTab(QWidget):
         ):
             chk = QCheckBox(label)
             chk.setChecked(self._config.is_export_naming_enabled(option))
-            chk.toggled.connect(
-                lambda checked, opt=option: self._on_export_naming_toggled(checked, opt)
-            )
+            chk.toggled.connect(partial(self._on_export_naming_toggled, option=option))
             row.addWidget(chk)
             self._export_chks[option] = chk
         row.addStretch()
@@ -613,21 +709,24 @@ class SettingsTab(QWidget):
 
         return section
 
-    def _update_container_bg(self):
+    def _update_container_bg(self) -> None:
         """Keep the Settings tab background aligned with the tab theme."""
-        colors = ThemeManager.panel_colors(self.palette())
-        self._settings_container.setStyleSheet(
-            f'QWidget#_FleasionSettingsContainer {{ {colors.container_background_css} }}'
-        )
+        ThemeManager.apply_panel_background(self._settings_container)
 
     # Public
 
-    def refresh_from_config(self):
+    def refresh_from_config(self) -> None:
         """Re-read all settings from config and update widgets (no signals emitted)."""
-        for name, rb in self._theme_buttons.items():
-            rb.blockSignals(True)
-            rb.setChecked(name == self._config.theme)
-            rb.blockSignals(False)
+        self._refresh_appearance()
+        with QSignalBlocker(self._backdrop_combo):
+            index = self._backdrop_combo.findData(self._config.glass_backdrop)
+            self._backdrop_combo.setCurrentIndex(max(0, index))
+        with QSignalBlocker(self._opacity_slider):
+            self._opacity_slider.setValue(round(self._config.glass_opacity * 100))
+            self._update_opacity_value(self._opacity_slider.value())
+        self._refresh_blur_button()
+        if sys.platform == 'darwin' and macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+            self._proxy_features_chk.setEnabled(self._config.macos_rosemary_enabled)
 
         for chk, value in [
             (self._open_dashboard_chk, self._config.open_dashboard_on_launch),
@@ -654,26 +753,28 @@ class SettingsTab(QWidget):
             (self._show_names_chk, self._config.show_names),
             (self._show_creator_id_chk, self._config.show_creator_id),
         ]:
-            chk.blockSignals(True)
+            _set_signals_blocked(chk, blocked=True)
             chk.setChecked(value)
-            chk.blockSignals(False)
+            _set_signals_blocked(chk, blocked=False)
 
         idx = self._upstream_mode_combo.findData(self._config.upstream_transport_mode)
-        self._upstream_mode_combo.blockSignals(True)
+        _set_signals_blocked(self._upstream_mode_combo, blocked=True)
         self._upstream_mode_combo.setCurrentIndex(max(0, idx))
-        self._upstream_mode_combo.blockSignals(False)
+        _set_signals_blocked(self._upstream_mode_combo, blocked=False)
 
         idx = self._proxy_mode_combo.findData(self._config.proxy_mode)
-        self._proxy_mode_combo.blockSignals(True)
+        _set_signals_blocked(self._proxy_mode_combo, blocked=True)
         self._proxy_mode_combo.setCurrentIndex(max(0, idx))
-        self._proxy_mode_combo.blockSignals(False)
+        _set_signals_blocked(self._proxy_mode_combo, blocked=False)
 
         if sys.platform.startswith('linux'):
             idx = self._linux_client_combo.findData(getattr(self._config, 'linux_client', 'auto'))
-            self._linux_client_combo.blockSignals(True)
+            _set_signals_blocked(self._linux_client_combo, blocked=True)
             self._linux_client_combo.setCurrentIndex(max(0, idx))
-            self._linux_client_combo.blockSignals(False)
-            self._refresh_linux_client_status()
+            _set_signals_blocked(self._linux_client_combo, blocked=False)
+            for name, edit in self._rosemary_path_edits.items():
+                edit.setText(str(getattr(self._config, name, '')))
+            self._update_rosemary_path_visibility()
 
         for widget, value in [
             (self._http_proxy_host, self._config.upstream_http_connect_host),
@@ -683,9 +784,9 @@ class SettingsTab(QWidget):
             (self._socks5_user, self._config.upstream_socks5_username),
             (self._socks5_pass, self._config.upstream_socks5_password),
         ]:
-            widget.blockSignals(True)
+            _set_signals_blocked(widget, blocked=True)
             widget.setText(value)
-            widget.blockSignals(False)
+            _set_signals_blocked(widget, blocked=False)
 
         for widget, value in [
             (self._http_proxy_port, self._config.upstream_http_connect_port),
@@ -696,36 +797,141 @@ class SettingsTab(QWidget):
             ),
             (self._cdn_limit_spin, self._config.vpn_compat_max_cdn_connections),
         ]:
-            widget.blockSignals(True)
+            _set_signals_blocked(widget, blocked=True)
             widget.setValue(value)
-            widget.blockSignals(False)
+            _set_signals_blocked(widget, blocked=False)
 
         self.set_cache_scraper_enabled(self._is_cache_scraper_enabled())
 
         for option, chk in self._export_chks.items():
-            chk.blockSignals(True)
+            _set_signals_blocked(chk, blocked=True)
             chk.setChecked(self._config.is_export_naming_enabled(option))
-            chk.blockSignals(False)
+            _set_signals_blocked(chk, blocked=False)
         if sys.platform == 'darwin':
             idx = self._macos_auth_source_combo.findData(self._config.macos_auth_source)
-            self._macos_auth_source_combo.blockSignals(True)
+            _set_signals_blocked(self._macos_auth_source_combo, blocked=True)
             self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-            self._macos_auth_source_combo.blockSignals(False)
+            _set_signals_blocked(self._macos_auth_source_combo, blocked=False)
 
         idx = self._language_combo.findData(self._config.language)
-        self._language_combo.blockSignals(True)
+        _set_signals_blocked(self._language_combo, blocked=True)
         self._language_combo.setCurrentIndex(max(0, idx))
-        self._language_combo.blockSignals(False)
+        _set_signals_blocked(self._language_combo, blocked=False)
 
     # Handlers
 
-    def _clear_roblox_cache(self):
-        from .delete_cache import DeleteCacheWindow
+    def _build_glass_controls(self, rows: QGridLayout, *, visible: bool) -> tuple[QWidget, ...]:
+        """Backdrop, opacity and desktop-blur toggle for Glass."""
+        # Backdrop
+        self._backdrop_combo = QComboBox()
+        self._backdrop_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._backdrop_combo.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._backdrop_combo.setObjectName(glass.BACKDROP_COMBO)
+        self._backdrop_combo.setToolTip(tr('settings.appearance.glass_backdrop_tooltip'))
+        for mode in glass.BACKDROPS:
+            self._backdrop_combo.addItem(glass.backdrop_label(mode), mode)
+        self._backdrop_combo.setCurrentIndex(
+            max(0, self._backdrop_combo.findData(self._config.glass_backdrop))
+        )
+        self._backdrop_combo.currentIndexChanged.connect(self._on_glass_backdrop_changed)
 
-        window = DeleteCacheWindow()
-        window.show()
+        backdrop_label = QLabel(tr('settings.appearance.backdrop'))
+        rows.addWidget(backdrop_label, 3, 0)
+        rows.addWidget(self._backdrop_combo, 3, 1, alignment=Qt.AlignmentFlag.AlignLeft)
 
-    def _on_language_changed(self, *_args):
+        # Opacity; its label and tooltip depend on the backdrop, see _refresh_blur_button
+        self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._opacity_slider.setRange(
+            round(glass.MIN_OPACITY * 100), round(glass.MAX_OPACITY * 100)
+        )
+        self._opacity_slider.setFixedWidth(140)
+        self._opacity_slider.setValue(round(self._config.glass_opacity * 100))
+        self._opacity_slider.valueChanged.connect(self._on_glass_opacity_changed)
+
+        self._opacity_label = QLabel()
+        rows.addWidget(self._opacity_label, 4, 0)
+
+        # Slider and percentage share one grid cell
+        self._opacity_controls = QWidget()
+        self._opacity_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        opacity_row = QHBoxLayout(self._opacity_controls)
+        opacity_row.setContentsMargins(0, 0, 0, 0)
+        opacity_row.addWidget(self._opacity_slider)
+        self._opacity_value = QLabel(
+            tr('settings.appearance.opacity_value', value0=self._opacity_slider.value())
+        )
+        self._opacity_slider.valueChanged.connect(self._update_opacity_value)
+        opacity_row.addWidget(self._opacity_value)
+        rows.addWidget(self._opacity_controls, 4, 1, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        # Desktop blur, only offered for the Window under backdrop
+        self._blur_button = QPushButton()
+        self._blur_button.setObjectName(glass.BLUR_BUTTON)
+        self._blur_button.clicked.connect(self._toggle_desktop_blur)
+        self._blur_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        rows.addWidget(self._blur_button, 5, 1, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        # The opacity row also depends on the backdrop, so _refresh_blur_button owns it
+        widgets = (backdrop_label, self._backdrop_combo)
+        for widget in widgets:
+            widget.setVisible(visible)
+
+        self._refresh_blur_button()
+        return widgets
+
+    def _update_opacity_value(self, value: int) -> None:
+        self._opacity_value.setText(tr('settings.appearance.opacity_value', value0=value))
+
+    @staticmethod
+    def _on_glass_opacity_changed(value: int) -> None:
+        glass.theme.set_opacity(value / 100)
+
+    def _on_glass_backdrop_changed(self, _index: int) -> None:
+        mode = self._backdrop_combo.currentData()
+        if mode in glass.BACKDROPS:
+            glass.theme.set_backdrop(mode)
+        self._refresh_blur_button()
+
+    def _refresh_blur_button(self) -> None:
+        """Sync the backdrop-dependent controls: the opacity row and the blur toggle."""
+        glass_active = self._config.appearance_style == 'Glass'
+        backdrop = self._config.glass_backdrop
+        desktop = backdrop == 'desktop'
+
+        # Flat paints an opaque surface, so there is nothing for opacity to reveal
+        for widget in (self._opacity_label, self._opacity_controls):
+            widget.setVisible(glass_active and backdrop != 'flat')
+
+        # Over the desktop it is window opacity; over a painted backdrop, tint strength
+        self._opacity_label.setText(
+            tr('settings.appearance.opacity')
+            if desktop
+            else tr('settings.appearance.tint_strength')
+        )
+        self._opacity_slider.setToolTip(
+            tr('settings.appearance.window_opacity_tooltip')
+            if desktop
+            else tr('settings.appearance.glass_opacity_tooltip')
+        )
+
+        # Blur toggle, disabled while a toggle is still being applied
+        status = glass.blur.cached_status()
+        self._blur_button.setEnabled(
+            status != 'unavailable' and glass.blur.can_toggle() and not glass.blur.toggle_pending
+        )
+        self._blur_button.setToolTip(tr('settings.appearance.glass_blur_scope'))
+        self._blur_button.setVisible(glass_active and desktop and status != 'unavailable')
+
+        if status == 'on':
+            self._blur_button.setText(tr('settings.appearance.glass_blur_on'))
+        else:
+            self._blur_button.setText(tr('settings.appearance.glass_blur_off'))
+
+    def _toggle_desktop_blur(self) -> None:
+        glass.theme.toggle_desktop_blur()
+        self._refresh_blur_button()
+
+    def _on_language_changed(self, *_args: object) -> None:
         language = str(self._language_combo.currentData() or 'en')
         self._config.language = language
         if self._config.language != get_language():
@@ -735,21 +941,33 @@ class SettingsTab(QWidget):
                 tr('settings.language.restart_required_body'),
             )
 
-    def _on_theme_toggled(self, checked: bool, theme: str):
-        if not checked:
-            return
-        ThemeManager.apply_theme(theme)
-        self._config.theme = theme
-        if self._tray and hasattr(self._tray, 'theme_actions'):
-            for name, action in self._tray.theme_actions.items():
-                action.setChecked(name == theme)
+    def _refresh_appearance(self) -> None:
+        for widget in self._glass_widgets:
+            widget.setVisible(self._config.appearance_style == 'Glass')
+        for name, button in self._style_buttons.items():
+            with QSignalBlocker(button):
+                button.setChecked(name == self._config.appearance_style)
+        self._theme_selector.set_theme(self._config.color_mode)
+        self._accent_selector.set_custom_color(self._config.custom_accent_color)
+        self._accent_selector.set_accent(self._config.accent_color)
+        self._refresh_blur_button()
 
-    def _on_open_dashboard_toggled(self, checked: bool):
+    def _on_appearance_choice(self, key: str, value: str, checked: bool) -> None:
+        if checked:
+            self._set_appearance(key, value)
+
+    def _set_appearance(self, key: str, value: str) -> None:
+        if key in {'style', 'color_mode', 'accent'}:
+            ThemeManager.set_preference(
+                self._config, cast("Literal['style', 'color_mode', 'accent']", key), value
+            )
+
+    def _on_open_dashboard_toggled(self, checked: bool) -> None:
         self._config.open_dashboard_on_launch = checked
         if self._tray and hasattr(self._tray, 'open_dashboard_action'):
             self._tray.open_dashboard_action.setChecked(checked)
 
-    def _on_proxy_features_toggled(self, checked: bool):
+    def _on_proxy_features_toggled(self, checked: bool) -> None:
         if not checked:
             result = QMessageBox.warning(
                 self,
@@ -759,9 +977,9 @@ class SettingsTab(QWidget):
                 QMessageBox.StandardButton.Cancel,
             )
             if result != QMessageBox.StandardButton.Yes:
-                self._proxy_features_chk.blockSignals(True)
+                _set_signals_blocked(self._proxy_features_chk, blocked=True)
                 self._proxy_features_chk.setChecked(True)
-                self._proxy_features_chk.blockSignals(False)
+                _set_signals_blocked(self._proxy_features_chk, blocked=False)
                 return
 
         if self._tray and hasattr(self._tray, 'set_proxy_features_enabled'):
@@ -769,11 +987,54 @@ class SettingsTab(QWidget):
         else:
             self._config.proxy_features_enabled = checked
 
-    def _on_upstream_mode_changed(self, *_args):
-        self._config.upstream_transport_mode = self._upstream_mode_combo.currentData()
+    def _on_upstream_mode_changed(self, *_args: object) -> None:
+        self._config.upstream_transport_mode = cast('str', self._upstream_mode_combo.currentData())
         self._sync_manual_proxy_credentials_timer()
 
-    def _on_linux_client_changed(self, *_args):
+    def _browse_rosemary_path(
+        self, setting_name: str, edit: QLineEdit, folder: bool, _checked: bool = False
+    ) -> None:
+        current = edit.text().strip()
+        if folder:
+            title = (
+                tr('settings.linux_client.rosemary_prefix')
+                if setting_name == 'rosemary_prefix_path'
+                else tr('settings.linux_client.rosemary_bundle')
+            )
+            selected = QFileDialog.getExistingDirectory(self, title, current)
+        else:
+            selected, _filter = QFileDialog.getOpenFileName(
+                self, tr('settings.linux_client.rosemary_binary'), current
+            )
+        if selected:
+            edit.setText(selected)
+            self._on_rosemary_path_edited(setting_name, edit)
+
+    def _on_rosemary_path_edited(self, setting_name: str, edit: QLineEdit) -> None:
+        if not sys.platform.startswith('linux'):
+            return
+        path = edit.text().strip()
+        if path == getattr(self._config, setting_name, ''):
+            return
+        proxy_master = getattr(self._tray, 'proxy_master', None) if self._tray else None
+        proxy_was_running = bool(proxy_master is not None and proxy_master.is_running)
+        if proxy_was_running and proxy_master is not None:
+            proxy_master.stop()
+        mod_manager = getattr(self._tray, 'mod_manager', None) if self._tray else None
+        if mod_manager is not None:
+            mod_manager.restore_all()
+        setattr(self._config, setting_name, path)
+        platform_linux.set_rosemary_paths(
+            self._config.rosemary_app_path,
+            self._config.rosemary_binary_path,
+            self._config.rosemary_prefix_path,
+        )
+        if mod_manager is not None:
+            mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+        if proxy_was_running and proxy_master is not None:
+            proxy_master.start()
+
+    def _on_linux_client_changed(self, *_args: object) -> None:
         if not sys.platform.startswith('linux'):
             return
         new_client = str(self._linux_client_combo.currentData() or 'auto')
@@ -784,7 +1045,7 @@ class SettingsTab(QWidget):
         proxy_master = getattr(self._tray, 'proxy_master', None) if self._tray else None
         proxy_was_running = bool(proxy_master is not None and proxy_master.is_running)
         # Stop first so the old client's app-scoped Flatpak override is disarmed.
-        if proxy_was_running:
+        if proxy_master is not None and proxy_was_running:
             proxy_master.stop()
 
         mod_manager = getattr(self._tray, 'mod_manager', None) if self._tray else None
@@ -793,19 +1054,17 @@ class SettingsTab(QWidget):
             mod_manager.restore_all()
 
         self._config.linux_client = new_client
-        from ..utils.platform_linux import set_linux_client_preference
-
-        set_linux_client_preference(new_client)
+        self._update_rosemary_path_visibility()
+        platform_linux.set_linux_client_preference(new_client)
 
         if mod_manager is not None:
             mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
-        if proxy_was_running:
+        if proxy_master is not None and proxy_was_running:
             proxy_master.start()
-        self._refresh_linux_client_status()
 
-    def _on_proxy_mode_changed(self, *_args):
+    def _on_proxy_mode_changed(self, *_args: object) -> None:
         previous_mode = self._config.proxy_mode
-        new_mode = self._proxy_mode_combo.currentData()
+        new_mode = cast('str', self._proxy_mode_combo.currentData())
 
         if (
             new_mode == 'hosts'
@@ -815,33 +1074,21 @@ class SettingsTab(QWidget):
             and not _ensure_macos_hosts_helper(self)
         ):
             # Do not persist Hosts mode or enter the verified restart handoff
-            # until its privileged prerequisite is actually available. Prompting
-            # from the replacement process can deadlock the handoff while the
-            # original process waits synchronously for replacement readiness.
+            # until its privileged prerequisite is actually available
+            # Prompting from the replacement process can deadlock the handoff while
+            # the original process waits synchronously for replacement readiness
             previous_index = self._proxy_mode_combo.findData(previous_mode)
             if previous_index >= 0:
-                self._proxy_mode_combo.blockSignals(True)
+                _set_signals_blocked(self._proxy_mode_combo, blocked=True)
                 self._proxy_mode_combo.setCurrentIndex(previous_index)
-                self._proxy_mode_combo.blockSignals(False)
+                _set_signals_blocked(self._proxy_mode_combo, blocked=False)
             return
 
         self._config.proxy_mode = new_mode
         if self._config.run_on_boot:
-            try:
-                boot_ok = sync_autostart(
-                    True,
-                    CONFIG_DIR,
-                    proxy_mode=new_mode,
-                )
-            except Exception as exc:
-                boot_ok = False
-                log_message = f'Run on Boot mode refresh failed: {exc}'
-                try:
-                    from ..utils.logging import log_buffer
-
-                    log_buffer.log('Autostart', log_message)
-                except Exception:
-                    pass
+            boot_ok, sync_error = _refresh_autostart_proxy_mode(new_mode)
+            if sync_error is not None:
+                log_buffer.log('Autostart', f'Run on Boot mode refresh failed: {sync_error}')
             if not boot_ok:
                 QMessageBox.warning(
                     self,
@@ -862,23 +1109,18 @@ class SettingsTab(QWidget):
                     # The proxy may have fallen back from 58443 to a dynamic
                     # port. Arm Store/GDK only after the restarted proxy has
                     # published its final loopback URL.
-                    from ..app import _arm_windows_gdk_env_proxy_when_ready
-
-                    run_in_thread(_arm_windows_gdk_env_proxy_when_ready)(proxy_master)
+                    run_in_thread(arm_windows_gdk_env_proxy_when_ready)(proxy_master)
             monitor = getattr(self._tray, 'roblox_monitor', None) if self._tray else None
             lifecycle = getattr(monitor, 'env_lifecycle', None)
             if (
                 lifecycle is not None
+                and monitor is not None
                 and self._config.proxy_features_enabled
                 and monitor.is_player_running()
             ):
                 if sys.platform.startswith('linux'):
-                    from ..utils.platform_linux import selected_linux_client_app_id
-
-                    exe_path = Path(selected_linux_client_app_id())
+                    exe_path = Path(platform_linux.selected_linux_client_app_id())
                 else:
-                    from ..utils import get_roblox_player_exe_path
-
                     exe_path = get_roblox_player_exe_path()
                 run_in_thread(lifecycle.handle_player_launch)(exe_path)
         if new_mode == 'hosts' and previous_mode != 'hosts':
@@ -893,7 +1135,11 @@ class SettingsTab(QWidget):
                 # is sufficient; enabling proxy features later owns any helper
                 # install/elevation that mode requires.
                 pass
-            elif can_live_switch and hasattr(proxy_master, 'restart_for_mode_switch'):
+            elif (
+                proxy_master is not None
+                and can_live_switch
+                and hasattr(proxy_master, 'restart_for_mode_switch')
+            ):
                 # Prefer an in-process transition when this process already has
                 # a safe privileged path. stop() disarms Env Proxy state before
                 # start() applies hosts routing, so no stale route is left behind.
@@ -928,26 +1174,16 @@ class SettingsTab(QWidget):
                 self._config.proxy_mode = previous_mode
                 previous_index = self._proxy_mode_combo.findData(previous_mode)
                 if previous_index >= 0:
-                    self._proxy_mode_combo.blockSignals(True)
+                    _set_signals_blocked(self._proxy_mode_combo, blocked=True)
                     self._proxy_mode_combo.setCurrentIndex(previous_index)
-                    self._proxy_mode_combo.blockSignals(False)
+                    _set_signals_blocked(self._proxy_mode_combo, blocked=False)
                 if self._config.run_on_boot:
-                    try:
-                        sync_autostart(
-                            True,
-                            CONFIG_DIR,
-                            proxy_mode=previous_mode,
+                    _, sync_error = _refresh_autostart_proxy_mode(previous_mode)
+                    if sync_error is not None:
+                        log_buffer.log(
+                            'Autostart',
+                            f'Run on Boot rollback after failed mode switch failed: {sync_error}',
                         )
-                    except Exception as exc:
-                        try:
-                            from ..utils.logging import log_buffer
-
-                            log_buffer.log(
-                                'Autostart',
-                                f'Run on Boot rollback after failed mode switch failed: {exc}',
-                            )
-                        except Exception:
-                            pass
                 QMessageBox.warning(
                     self,
                     tr('ui.gui.settings_tab.proxy_mode_change_failed'),
@@ -957,23 +1193,23 @@ class SettingsTab(QWidget):
         if self._tray and hasattr(self._tray, 'notify_proxy_mode_changed'):
             self._tray.notify_proxy_mode_changed()
 
-    def _on_wire_preserving_toggled(self, checked: bool):
+    def _on_wire_preserving_toggled(self, checked: bool) -> None:
         self._config.wire_preserving_passthrough = checked
 
-    def _on_http_proxy_changed(self, *_args):
+    def _on_http_proxy_changed(self, *_args: object) -> None:
         self._config.upstream_http_connect_host = self._http_proxy_host.text()
         self._config.upstream_http_connect_port = self._http_proxy_port.value()
 
-    def _on_http_proxy_auth_changed(self):
+    def _on_http_proxy_auth_changed(self) -> None:
         self._config.upstream_http_connect_username = self._http_proxy_user.text()
         self._config.upstream_http_connect_password = self._http_proxy_pass.text()
         self._sync_manual_proxy_credentials_timer()
 
-    def _on_socks5_proxy_changed(self, *_args):
+    def _on_socks5_proxy_changed(self, *_args: object) -> None:
         self._config.upstream_socks5_host = self._socks5_host.text()
         self._config.upstream_socks5_port = self._socks5_port.value()
 
-    def _on_socks5_proxy_auth_changed(self):
+    def _on_socks5_proxy_auth_changed(self) -> None:
         self._config.upstream_socks5_username = self._socks5_user.text()
         self._config.upstream_socks5_password = self._socks5_pass.text()
         self._sync_manual_proxy_credentials_timer()
@@ -996,24 +1232,24 @@ class SettingsTab(QWidget):
         if self._selected_manual_proxy_has_credentials():
             return
         auto_index = self._upstream_mode_combo.findData('auto')
-        self._upstream_mode_combo.blockSignals(True)
+        _set_signals_blocked(self._upstream_mode_combo, blocked=True)
         self._upstream_mode_combo.setCurrentIndex(auto_index)
-        self._upstream_mode_combo.blockSignals(False)
+        _set_signals_blocked(self._upstream_mode_combo, blocked=False)
         self._config.upstream_transport_mode = 'auto'
         proxy_master = getattr(self._tray, 'proxy_master', None)
         if proxy_master is not None and proxy_master.is_running:
 
-            def _restart_proxy():
+            def _restart_proxy() -> None:
                 proxy_master.stop()
                 proxy_master.start()
 
             run_in_thread(_restart_proxy)()
 
-    def _on_connection_limits_changed(self, *_args):
+    def _on_connection_limits_changed(self, *_args: object) -> None:
         self._config.vpn_compat_max_assetdelivery_connections = self._asset_limit_spin.value()
         self._config.vpn_compat_max_cdn_connections = self._cdn_limit_spin.value()
 
-    def _on_run_on_boot_toggled(self, checked: bool):
+    def _on_run_on_boot_toggled(self, checked: bool) -> None:
         ok = sync_autostart(
             checked,
             CONFIG_DIR,
@@ -1025,43 +1261,39 @@ class SettingsTab(QWidget):
                 self._tray.run_on_boot_action.setChecked(checked)
         else:
             if sys.platform == 'win32':
-                # Imported on demand to avoid an app <-> GUI import cycle during startup.
-                from ..app import _show_run_on_boot_failure
-
-                if _show_run_on_boot_failure(self, self._config.proxy_mode, enabled=checked):
+                if show_run_on_boot_failure(self, self._config.proxy_mode, enabled=checked):
                     self._config.run_on_boot = checked
                     if self._tray and hasattr(self._tray, 'run_on_boot_action'):
                         self._tray.run_on_boot_action.setChecked(checked)
                     return
-            self._run_on_boot_chk.blockSignals(True)
+            _set_signals_blocked(self._run_on_boot_chk, blocked=True)
             self._run_on_boot_chk.setChecked(not checked)
-            self._run_on_boot_chk.blockSignals(False)
+            _set_signals_blocked(self._run_on_boot_chk, blocked=False)
             QMessageBox.warning(
                 self,
                 tr('ui.gui.settings_tab.run_on_boot_failed'),
                 tr('ui.gui.settings_tab.failed_to_register_the_autostart_task_check'),
             )
 
-    def _on_lock_roblox_files_toggled(self, checked: bool):
+    def _on_lock_roblox_files_toggled(self, checked: bool) -> None:
         self._config.lock_roblox_files_read_only = checked
         mod_manager = getattr(self._tray, 'mod_manager', None)
         if mod_manager is not None and hasattr(mod_manager, 'set_read_only_lock_enabled'):
             mod_manager.set_read_only_lock_enabled(checked)
 
-    def _on_close_env_roblox_toggled(self, checked: bool):
+    def _on_close_env_roblox_toggled(self, checked: bool) -> None:
         self._config.close_env_proxy_roblox_on_exit = checked
 
-    def _on_desktop_integration_toggled(self, checked: bool):
+    def _on_desktop_integration_toggled(self, checked: bool) -> None:
         ok = sync_desktop_integration(checked)
         if ok:
             self._config.desktop_integration = checked
             if self._tray and hasattr(self._tray, 'desktop_integration_action'):
                 self._tray.desktop_integration_action.setChecked(checked)
             if sys.platform.startswith('linux') and self._config.run_on_boot:
+                enable_autostart = True
                 if not sync_autostart(
-                    True,
-                    CONFIG_DIR,
-                    proxy_mode=self._config.proxy_mode,
+                    enable_autostart, CONFIG_DIR, proxy_mode=self._config.proxy_mode
                 ):
                     QMessageBox.warning(
                         self,
@@ -1069,16 +1301,16 @@ class SettingsTab(QWidget):
                         tr('ui.gui.settings_tab.failed_to_refresh_the_autostart_task_after'),
                     )
         else:
-            self._desktop_integration_chk.blockSignals(True)
+            _set_signals_blocked(self._desktop_integration_chk, blocked=True)
             self._desktop_integration_chk.setChecked(not checked)
-            self._desktop_integration_chk.blockSignals(False)
+            _set_signals_blocked(self._desktop_integration_chk, blocked=False)
             QMessageBox.warning(
                 self,
                 tr('ui.gui.settings_tab.desktop_integration_failed'),
                 tr('ui.gui.settings_tab.failed_to_create_desktop_start_menu_integration'),
             )
 
-    def _on_always_on_top_toggled(self, checked: bool):
+    def _on_always_on_top_toggled(self, checked: bool) -> None:
         self._config.always_on_top = checked
         if self._tray and hasattr(self._tray, 'always_on_top_action'):
             self._tray.always_on_top_action.setChecked(checked)
@@ -1093,33 +1325,34 @@ class SettingsTab(QWidget):
                     window.setWindowFlags(flags)
                     window.show()
 
-    def _on_close_to_tray_toggled(self, checked: bool):
+    def _on_close_to_tray_toggled(self, checked: bool) -> None:
         self._config.close_to_tray = checked
         if self._tray and hasattr(self._tray, 'close_to_tray_action'):
             self._tray.close_to_tray_action.setChecked(checked)
 
-    def _on_auto_clear_cache_toggled(self, checked: bool):
+    def _on_auto_clear_cache_toggled(self, checked: bool) -> None:
         self._config.auto_delete_cache_on_exit = checked
         if self._tray and hasattr(self._tray, 'auto_delete_cache_action'):
             self._tray.auto_delete_cache_action.setChecked(checked)
 
-    def _on_clear_cache_launch_toggled(self, checked: bool):
+    def _on_clear_cache_launch_toggled(self, checked: bool) -> None:
         self._config.clear_cache_on_launch = checked
         if self._tray and hasattr(self._tray, 'clear_cache_action'):
             self._tray.clear_cache_action.setChecked(checked)
 
-    def _on_macos_auth_source_changed(self, *_args):
+    def _on_macos_auth_source_changed(self, *_args: object) -> None:
         if sys.platform != 'darwin':
             return
-        self._config.macos_auth_source = self._macos_auth_source_combo.currentData()
+        self._config.macos_auth_source = cast('str', self._macos_auth_source_combo.currentData())
         notify_auth_source_changed()
 
-    def _on_import_manual_token(self):
+    def _on_import_manual_token(self) -> None:
         if sys.platform != 'darwin':
             return
-        from .rando_stuff_tab import AddAccountDialog
 
-        dlg = AddAccountDialog(self, title=tr('settings.roblox_login.import_token_title'))
+        dlg = rando_stuff_tab.AddAccountDialog(
+            self, title=tr('settings.roblox_login.import_token_title')
+        )
         dlg.set_ok_label(tr('settings.roblox_login.import'))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1146,9 +1379,9 @@ class SettingsTab(QWidget):
         self._config.macos_auth_source = 'manual'
         notify_auth_source_changed()
         idx = self._macos_auth_source_combo.findData('manual')
-        self._macos_auth_source_combo.blockSignals(True)
+        _set_signals_blocked(self._macos_auth_source_combo, blocked=True)
         self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-        self._macos_auth_source_combo.blockSignals(False)
+        _set_signals_blocked(self._macos_auth_source_combo, blocked=False)
         username = dlg.result_username or tr('settings.roblox_login.roblox_account_fallback')
         QMessageBox.information(
             self,
@@ -1156,68 +1389,74 @@ class SettingsTab(QWidget):
             tr('ui.gui.settings_tab.value_was_stored_encrypted', value0=username),
         )
 
-    def _on_close_scraped_games_toggled(self, checked: bool):
+    def _on_close_scraped_games_toggled(self, checked: bool) -> None:
         self._config.close_scraped_games_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_action'):
             self._tray.close_scraped_games_action.setChecked(checked)
 
-    def _on_close_viewer_on_replace_toggled(self, checked: bool):
+    def _on_close_viewer_on_replace_toggled(self, checked: bool) -> None:
         self._config.close_viewer_on_replace = checked
         if self._tray and hasattr(self._tray, 'close_viewer_on_replace_action'):
             self._tray.close_viewer_on_replace_action.setChecked(checked)
 
-    def _on_close_scraped_games_menu_on_open_toggled(self, checked: bool):
+    def _on_close_scraped_games_menu_on_open_toggled(self, checked: bool) -> None:
         self._config.close_scraped_games_menu_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_menu_on_open_action'):
             self._tray.close_scraped_games_menu_on_open_action.setChecked(checked)
 
-    def _on_show_replacer_notifications_toggled(self, checked: bool):
+    def _on_show_replacer_notifications_toggled(self, checked: bool) -> None:
         self._config.show_replacer_notifications = checked
         if self._tray and hasattr(self._tray, 'show_replacer_notifications_action'):
             self._tray.show_replacer_notifications_action.setChecked(checked)
 
-    def _on_show_names_toggled(self, checked: bool):
+    def _on_show_names_toggled(self, checked: bool) -> None:
         self._config.show_names = checked
         if self._tray and hasattr(self._tray, 'show_names_action'):
             self._tray.show_names_action.setChecked(checked)
         self._apply_to_cache_viewer('show_names', checked)
 
-    def _on_show_creator_id_toggled(self, checked: bool):
+    def _on_show_creator_id_toggled(self, checked: bool) -> None:
         self._config.show_creator_id = checked
         if self._tray and hasattr(self._tray, 'show_creator_id_action'):
             self._tray.show_creator_id_action.setChecked(checked)
         self._apply_to_cache_viewer('show_creator_id', checked)
 
-    def _apply_to_cache_viewer(self, setting: str, value: bool):
+    def _apply_to_cache_viewer(
+        self,
+        setting: Literal['show_names', 'show_creator_id'],
+        value: bool,
+    ) -> None:
         if self._tray and self._tray.dashboard_window:
-            tab = getattr(self._tray.dashboard_window, '_cache_viewer_tab', None)
-            if tab is not None:
-                if setting == 'show_names':
-                    tab._on_show_names_toggled(value)
-                elif setting == 'show_creator_id':
-                    tab._on_show_creator_id_toggled(value)
+            self._tray.dashboard_window.apply_cache_viewer_display_setting(
+                setting,
+                enabled=value,
+            )
 
     def _is_cache_scraper_enabled(self) -> bool:
-        if self._tray and hasattr(self._tray, '_is_cache_scraper_enabled'):
-            return self._tray._is_cache_scraper_enabled()
-        return False
+        return bool(self._tray and self._tray.proxy_master.cache_scraper.enabled)
 
-    def set_cache_scraper_enabled(self, enabled: bool):
-        self._cache_scraper_chk.blockSignals(True)
+    def set_cache_scraper_enabled(self, enabled: bool) -> None:
+        _set_signals_blocked(self._cache_scraper_chk, blocked=True)
         self._cache_scraper_chk.setChecked(enabled)
-        self._cache_scraper_chk.blockSignals(False)
+        _set_signals_blocked(self._cache_scraper_chk, blocked=False)
 
-    def _on_cache_scraper_toggled(self, checked: bool):
-        if self._tray and hasattr(self._tray, '_set_cache_scraper_enabled'):
-            self._tray._set_cache_scraper_enabled(checked)
+    def _on_cache_scraper_toggled(self, checked: bool) -> None:
+        if not self._tray:
+            return
+        self._tray.proxy_master.cache_scraper.set_enabled(checked)
+        if hasattr(self._tray, 'cache_scraper_action'):
+            with QSignalBlocker(self._tray.cache_scraper_action):
+                self._tray.cache_scraper_action.setChecked(checked)
+        if self._tray.dashboard_window:
+            self._tray.dashboard_window.set_cache_scraper_enabled(enabled=checked)
 
-    def _on_export_naming_toggled(self, checked: bool, option: str):
+    def _on_export_naming_toggled(self, checked: bool, option: str) -> None:
         current = self._config.is_export_naming_enabled(option)
         if current != checked:
             new_state = self._config.toggle_export_naming(option)
-            self._export_chks[option].blockSignals(True)
+            _set_signals_blocked(self._export_chks[option], blocked=True)
             self._export_chks[option].setChecked(new_state)
-            self._export_chks[option].blockSignals(False)
+            _set_signals_blocked(self._export_chks[option], blocked=False)
         if self._tray and hasattr(self._tray, 'export_naming_actions'):
             self._tray.export_naming_actions[option].setChecked(
                 self._config.is_export_naming_enabled(option)

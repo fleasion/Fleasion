@@ -2,18 +2,34 @@ from __future__ import annotations
 
 import io
 import struct
+from collections.abc import Callable
+from typing import cast
 
 import numpy as np
 import zstandard
 from PIL import Image
 
-from fleasion.cache.tools.ktx_to_png.ktx_to_png import (
-    KTX2_MAGIC,
-    _decode_etc_rgb,
-    _decode_etc_rgba,
-    _gamma2_ycocg_to_rgba,
-    convert,
-)
+from fleasion.cache.tools.ktx_to_png import ktx_to_png as ktx_module
+from fleasion.cache.tools.ktx_to_png.ktx_to_png import KTX2_MAGIC, convert
+
+
+def _decode_rgb(data: bytes, width: int, height: int, *, punchthrough: bool) -> np.ndarray:
+    callback = cast('Callable[..., np.ndarray]', ktx_module.__dict__['_decode_etc_rgb'])
+    return callback(data, width, height, punchthrough=punchthrough)
+
+
+def _decode_rgba(data: bytes, width: int, height: int) -> np.ndarray:
+    callback = cast(
+        'Callable[[bytes, int, int], np.ndarray]', ktx_module.__dict__['_decode_etc_rgba']
+    )
+    return callback(data, width, height)
+
+
+def _gamma_rgba(data: np.ndarray) -> np.ndarray:
+    callback = cast(
+        'Callable[[np.ndarray], np.ndarray]', ktx_module.__dict__['_gamma2_ycocg_to_rgba']
+    )
+    return callback(data)
 
 
 def _make_etc2_ktx2(
@@ -60,29 +76,29 @@ def _png_rgba(data: bytes) -> np.ndarray:
         return np.array(image.convert('RGBA'), dtype=np.uint8)
 
 
-def test_convert_ktx2_etc2_rgb_without_supercompression():
+def test_convert_ktx2_etc2_rgb_without_supercompression() -> None:
     raw_blocks = bytes.fromhex('0011223344556677')
     data = _make_etc2_ktx2(147, raw_blocks, zstd=False)
 
     png = convert(data)
 
     assert png is not None
-    expected = _decode_etc_rgb(raw_blocks, 4, 4, punchthrough=False)
+    expected = _decode_rgb(raw_blocks, 4, 4, punchthrough=False)
     assert np.array_equal(_png_rgba(png), expected)
 
 
-def test_convert_ktx2_etc2_rgba_with_zstd_supercompression():
+def test_convert_ktx2_etc2_rgba_with_zstd_supercompression() -> None:
     raw_blocks = bytes.fromhex('00112233445566778899aabbccddeeff')
     data = _make_etc2_ktx2(151, raw_blocks, zstd=True)
 
     png = convert(data)
 
     assert png is not None
-    expected = _decode_etc_rgba(raw_blocks, 4, 4)
+    expected = _decode_rgba(raw_blocks, 4, 4)
     assert np.array_equal(_png_rgba(png), expected)
 
 
-def test_convert_ktx2_etc2_undoes_roblox_gamma2_ycocg_layout():
+def test_convert_ktx2_etc2_undoes_roblox_gamma2_ycocg_layout() -> None:
     raw_blocks = bytes.fromhex('0011223344556677')
     data = _make_etc2_ktx2(
         147,
@@ -94,12 +110,12 @@ def test_convert_ktx2_etc2_undoes_roblox_gamma2_ycocg_layout():
     png = convert(data)
 
     assert png is not None
-    encoded = _decode_etc_rgb(raw_blocks, 4, 4, punchthrough=False)
-    expected = _gamma2_ycocg_to_rgba(encoded)
+    encoded = _decode_rgb(raw_blocks, 4, 4, punchthrough=False)
+    expected = _gamma_rgba(encoded)
     assert np.array_equal(_png_rgba(png), expected)
 
 
-def test_convert_ktx2_etc2_rejects_wrong_uncompressed_length():
+def test_convert_ktx2_etc2_rejects_wrong_uncompressed_length() -> None:
     data = bytearray(_make_etc2_ktx2(147, bytes(8), zstd=True))
     struct.pack_into('<Q', data, 80 + 16, 16)
 

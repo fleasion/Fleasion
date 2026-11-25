@@ -8,6 +8,8 @@ import shutil
 import sys
 from pathlib import Path
 
+lazy from fleasion.utils import platform_linux
+
 
 def resource_stash_key(resource_dir: Path) -> str:
     """Return a stable per-install key on platforms with same-named roots."""
@@ -41,10 +43,8 @@ def _is_sober_resource_path(resource_dir: Path) -> bool:
     if 'org.vinegarhq.Sober' in resource_dir.parts:
         return True
     try:
-        from ..utils.platform_linux import is_sober_resource_dir
-
-        return is_sober_resource_dir(resource_dir)
-    except Exception:
+        return platform_linux.is_sober_resource_dir(resource_dir)
+    except AttributeError, ImportError:
         return False
 
 

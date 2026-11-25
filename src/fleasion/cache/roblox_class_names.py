@@ -6,7 +6,7 @@ Source: https://setup.rbxcdn.com/version-d0e8cfcd943d4ae2-API-Dump.json
 
 API_DUMP_VERSION = 'version-d0e8cfcd943d4ae2'
 
-ROBLOX_CLASS_NAMES = (
+ROBLOX_CLASS_NAMES: tuple[str, ...] = (
     'Accessory',
     'Accoutrement',
     'Actor',
@@ -691,4 +691,4 @@ ROBLOX_CLASS_NAMES = (
     'WrapTarget',
 )
 
-ROBLOX_CLASS_NAME_SET = frozenset(ROBLOX_CLASS_NAMES)
+ROBLOX_CLASS_NAME_SET: frozenset[str] = frozenset(ROBLOX_CLASS_NAMES)

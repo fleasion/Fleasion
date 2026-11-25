@@ -6,42 +6,188 @@ on Linux. Detects whether we're running as a compiled executable or from a
 development checkout and updates the launch method when it changes.
 """
 
+from __future__ import annotations
+
 import base64
+import contextlib
+import html
 import json
-import logging
 import os
 import plistlib
-import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
+import textwrap
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 
-from ..localization import tr
+from fleasion.localization import tr
+
+from .json_types import as_object_dict
+from .logging import log_buffer
 from .paths import USER_HOME
 
-logger = logging.getLogger(__name__)
+if sys.platform.startswith('linux'):
+    from . import platform_linux as _platform_linux
+else:
+    _platform_linux = None
 
 
-# Use Fleasion's log_buffer when available, fall back to Python logger
-def _log(msg: str) -> None:
+class LaunchInfo(TypedDict):
+    mode: str
+    path: str
+    _fmt: int
+    project: NotRequired[str]
+    log: NotRequired[str]
+    proxy_mode: NotRequired[str]
+
+
+class _RegistryKey(Protocol):
+    def __enter__(self) -> object: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> None: ...
+
+
+class _Winreg(Protocol):
+    HKEY_CURRENT_USER: object
+    KEY_QUERY_VALUE: int
+    KEY_SET_VALUE: int
+    REG_SZ: int
+    OpenKey: Callable[[object, str, int, int], _RegistryKey]
+    CreateKeyEx: Callable[[object, str, int, int], _RegistryKey]
+    QueryValueEx: Callable[[object, str], tuple[object, int]]
+    SetValueEx: Callable[[object, str, int, int, str], None]
+    DeleteValue: Callable[[object, str], None]
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+winreg: _Winreg | None = None
+if sys.platform == 'win32':
     try:
-        from ..utils.logging import log_buffer
+        import winreg as _winreg_module  # pyright: ignore[reportMissingModuleSource]
+    except ImportError:
+        pass
+    else:
+        winreg = cast('_Winreg', _winreg_module)
 
-        log_buffer.log('Autostart', msg)
-    except Exception:
-        logger.info(msg)
+
+def _creation_flags() -> int:
+    return int(getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
 
-def _command_output(result) -> str:
+def _json_launch_info(value: object) -> LaunchInfo | None:
+    mapping = as_object_dict(value)
+    if mapping is None:
+        return None
+    required_types = {'mode': str, 'path': str, '_fmt': int}
+    optional_types = {'project': str, 'log': str, 'proxy_mode': str}
+    if any(not isinstance(mapping.get(key), expected) for key, expected in required_types.items()):
+        return None
+    if any(
+        key in mapping and not isinstance(mapping[key], expected)
+        for key, expected in optional_types.items()
+    ):
+        return None
+    return cast('LaunchInfo', mapping)
+
+
+def _required_project(info: LaunchInfo) -> str:
+    project = info.get('project')
+    if project is None:
+        key = 'project'
+        raise KeyError(key)
+    return project
+
+
+def _query_windows_run_value() -> tuple[object, int] | None:
+    registry = winreg
+    if registry is None:
+        msg = 'Windows registry support is unavailable'
+        raise ImportError(msg)
+
+    with registry.OpenKey(
+        registry.HKEY_CURRENT_USER,
+        _WINDOWS_RUN_KEY,
+        0,
+        registry.KEY_QUERY_VALUE,
+    ) as key:
+        return registry.QueryValueEx(key, _WINDOWS_RUN_VALUE)
+
+
+def _write_windows_run_value(command: str) -> None:
+    registry = winreg
+    if registry is None:
+        msg = 'Windows registry support is unavailable'
+        raise ImportError(msg)
+
+    with registry.CreateKeyEx(
+        registry.HKEY_CURRENT_USER,
+        _WINDOWS_RUN_KEY,
+        0,
+        registry.KEY_SET_VALUE,
+    ) as key:
+        registry.SetValueEx(key, _WINDOWS_RUN_VALUE, 0, registry.REG_SZ, command)
+
+
+def _delete_windows_run_value() -> None:
+    registry = winreg
+    if registry is None:
+        msg = 'Windows registry support is unavailable'
+        raise ImportError(msg)
+
+    with registry.OpenKey(
+        registry.HKEY_CURRENT_USER,
+        _WINDOWS_RUN_KEY,
+        0,
+        registry.KEY_SET_VALUE,
+    ) as key:
+        registry.DeleteValue(key, _WINDOWS_RUN_VALUE)
+
+
+def _log(msg: str) -> None:
+    log_buffer.log('Autostart', msg)
+
+
+def _command_output(
+    result: subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str],
+) -> str:
     """Return captured command output without hiding scheduler diagnostics."""
-    parts = []
+    parts: list[str] = []
     for output in (getattr(result, 'stdout', None), getattr(result, 'stderr', None)):
-        if isinstance(output, bytes):
-            output = output.decode(errors='replace')
-        if output:
-            parts.append(str(output).strip())
+        text = output.decode(errors='replace') if isinstance(output, bytes) else output
+        if text:
+            parts.append(str(text).strip())
     return ' '.join(parts)
+
+
+def _run_command(
+    args: list[str],
+    *,
+    timeout: float,
+    creationflags: int = 0,
+    stdin_devnull: bool = False,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a trusted shell-free command and capture diagnostics."""
+    executable = (shutil.which(args[0]) or args[0]) if os.name == 'nt' else args[0]
+    command = [executable, *args[1:]]
+    return subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL if stdin_devnull else None,
+        capture_output=True,
+        creationflags=creationflags,
+        timeout=timeout,
+        check=False,
+        shell=False,
+    )
 
 
 TASK_NAME = 'Fleasion_Autostart'
@@ -59,111 +205,90 @@ _legacy_task_cleanup_started = False
 _TASK_FORMAT_VERSION = 9
 
 
-def _windows_run_command(launch_info: dict) -> str:
+def _windows_run_command(launch_info: LaunchInfo) -> str:
     """Return the command stored in the current user's Windows Run key."""
     return subprocess.list2cmdline([str(launch_info['path']), '--no-dashboard'])
 
 
-def _windows_run_entry_matches(launch_info: dict) -> bool:
+def _windows_run_entry_matches(launch_info: LaunchInfo) -> bool:
     """Return whether the native per-user autostart value is current."""
     try:
-        import winreg
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            _WINDOWS_RUN_KEY,
-            0,
-            winreg.KEY_QUERY_VALUE,
-        ) as key:
-            value, value_type = winreg.QueryValueEx(key, _WINDOWS_RUN_VALUE)
-        return value_type == winreg.REG_SZ and value == _windows_run_command(launch_info)
+        result = _query_windows_run_value()
+        if result is None:
+            return False
+        value, value_type = result
+        # REG_SZ == 1 on Windows; keeping the comparison numeric avoids importing
+        # winreg into non-Windows type-checking environments.
+        return value_type == 1 and value == _windows_run_command(launch_info)
     except ImportError, OSError:
         return False
 
 
-def _set_windows_run_entry(launch_info: dict) -> bool:
+def _set_windows_run_entry(launch_info: LaunchInfo) -> bool:
     """Create/update packaged Fleasion autostart without starting a subprocess."""
     try:
-        import winreg
-
-        with winreg.CreateKeyEx(
-            winreg.HKEY_CURRENT_USER,
-            _WINDOWS_RUN_KEY,
-            0,
-            winreg.KEY_SET_VALUE,
-        ) as key:
-            winreg.SetValueEx(
-                key,
-                _WINDOWS_RUN_VALUE,
-                0,
-                winreg.REG_SZ,
-                _windows_run_command(launch_info),
-            )
-        return True
+        _write_windows_run_value(_windows_run_command(launch_info))
     except (ImportError, OSError) as exc:
         _log(f'Failed to update native Windows autostart: {exc}')
         return False
+    return True
 
 
 def _delete_windows_run_entry() -> bool:
     """Remove packaged Fleasion autostart from the current user's Run key."""
     try:
-        import winreg
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            _WINDOWS_RUN_KEY,
-            0,
-            winreg.KEY_SET_VALUE,
-        ) as key:
-            winreg.DeleteValue(key, _WINDOWS_RUN_VALUE)
-        return True
+        _delete_windows_run_value()
     except FileNotFoundError:
         return True
     except (ImportError, OSError) as exc:
         _log(f'Failed to remove native Windows autostart: {exc}')
         return False
+    return True
+
+
+def _cleanup_legacy_windows_task(marker: Path, flags: int) -> None:
+    """Delete the old scheduled task and persist the migration result."""
+    query = _run_command(
+        ['schtasks', '/Query', '/TN', TASK_NAME],
+        timeout=30,
+        creationflags=flags,
+        stdin_devnull=True,
+    )
+    if query.returncode != 0:
+        marker.write_text('legacy task absent\n', encoding='utf-8')
+        return
+
+    deleted = _run_command(
+        ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
+        timeout=30,
+        creationflags=flags,
+        stdin_devnull=True,
+    )
+    if deleted.returncode == 0:
+        marker.write_text('legacy task deleted\n', encoding='utf-8')
+        return
+
+    _log(
+        f'Legacy scheduled-task cleanup failed (rc={deleted.returncode}): '
+        f'{_command_output(deleted)}'
+    )
+
+
+def _mark_legacy_task_cleanup_started() -> None:
+    globals()['_legacy_task_cleanup_started'] = True
 
 
 def _delete_legacy_windows_task_async(config_dir: Path) -> None:
     """Remove the old task in a retryable background migration."""
-    global _legacy_task_cleanup_started
-
     marker = config_dir / _LEGACY_TASK_CLEANUP_MARKER
     if _legacy_task_cleanup_started or marker.exists():
         return
-    _legacy_task_cleanup_started = True
+    _mark_legacy_task_cleanup_started()
 
     def _cleanup() -> None:
-        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         try:
-            query = subprocess.run(
-                ['schtasks', '/Query', '/TN', TASK_NAME],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                creationflags=flags,
-                timeout=30,
-            )
-            if query.returncode != 0:
-                marker.write_text('legacy task absent\n', encoding='utf-8')
-                return
-            deleted = subprocess.run(
-                ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                creationflags=flags,
-                timeout=30,
-            )
-            if deleted.returncode == 0:
-                marker.write_text('legacy task deleted\n', encoding='utf-8')
-            else:
-                _log(
-                    f'Legacy scheduled-task cleanup failed (rc={deleted.returncode}): '
-                    f'{_command_output(deleted)}'
-                )
-        except Exception as exc:
+            _cleanup_legacy_windows_task(marker, _creation_flags())
+        except (OSError, subprocess.SubprocessError) as exc:
             # No marker means a later Fleasion launch retries, while this slow
             # or unhealthy Task Scheduler call never delays the current launch.
             _log(f'Legacy scheduled-task cleanup deferred: {exc}')
@@ -183,13 +308,11 @@ def _project_root() -> Path:
 
 def _windows_uv_executable() -> str:
     """Return a stable absolute uv path for Windows task registration."""
-    import shutil
-
     for name in ('uv', 'uv.exe'):
         found = shutil.which(name)
         if found:
-            if os.name == 'nt' and not os.path.isabs(found):
-                found = os.path.abspath(found)
+            if os.name == 'nt' and not Path(found).is_absolute():
+                found = str(Path(found).resolve())
             return found
 
     user_profile = os.environ.get('USERPROFILE') or str(Path.home())
@@ -226,19 +349,18 @@ def _desktop_exec_join(parts: list[str]) -> str:
 
 
 def _linux_installed_launcher() -> Path | None:
-    try:
-        from .platform_linux import LINUX_LAUNCHER_PATH
-    except Exception:
+    if _platform_linux is None:
         return None
+    launcher_path = _platform_linux.LINUX_LAUNCHER_PATH
     try:
-        if LINUX_LAUNCHER_PATH.is_file():
-            return LINUX_LAUNCHER_PATH
+        if launcher_path.is_file():
+            return launcher_path
     except OSError:
         return None
     return None
 
 
-def _get_launch_info() -> dict:
+def _get_launch_info() -> LaunchInfo:
     """Return a dict describing how to launch the current instance."""
     if sys.platform.startswith('linux'):
         installed_launcher = _linux_installed_launcher()
@@ -250,7 +372,11 @@ def _get_launch_info() -> dict:
             }
 
     if getattr(sys, 'frozen', False):
-        return {'mode': 'exe', 'path': sys.executable, '_fmt': _TASK_FORMAT_VERSION}
+        return {
+            'mode': 'exe',
+            'path': str(sys.executable or ''),
+            '_fmt': _TASK_FORMAT_VERSION,
+        }
 
     if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         check = Path(__file__).resolve().parent
@@ -260,7 +386,7 @@ def _get_launch_info() -> dict:
             check = check.parent
         return {
             'mode': 'python',
-            'path': sys.executable,
+            'path': str(sys.executable or ''),
             'project': str(check),
             '_fmt': _TASK_FORMAT_VERSION,
         }
@@ -269,8 +395,6 @@ def _get_launch_info() -> dict:
     if sys.platform == 'win32':
         uv = _windows_uv_executable()
     else:
-        import shutil
-
         uv = shutil.which('uv') or shutil.which('uv.exe') or 'uv'
     # Find project root (dir containing pyproject.toml)
     check = _project_root()
@@ -288,61 +412,49 @@ def _task_exists() -> bool:
     if sys.platform.startswith('linux'):
         return LINUX_AUTOSTART_PATH.exists()
     try:
-        r = subprocess.run(
+        result = _run_command(
             ['schtasks', '/Query', '/TN', TASK_NAME],
-            capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=10,
+            creationflags=_creation_flags(),
         )
-        return r.returncode == 0
-    except Exception:
+    except OSError, subprocess.SubprocessError:
         return False
+    return result.returncode == 0
 
 
 def _delete_task() -> bool:
     if sys.platform == 'darwin':
-        try:
-            subprocess.run(
-                ['launchctl', 'unload', str(LAUNCH_AGENT_PATH)],
-                capture_output=True,
-                timeout=10,
-            )
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            _run_command(['launchctl', 'unload', str(LAUNCH_AGENT_PATH)], timeout=10)
+        with contextlib.suppress(OSError):
             LAUNCH_AGENT_PATH.unlink(missing_ok=True)
-        except OSError:
-            pass
         return not LAUNCH_AGENT_PATH.exists()
     if sys.platform.startswith('linux'):
-        try:
+        with contextlib.suppress(OSError):
             LINUX_AUTOSTART_PATH.unlink(missing_ok=True)
-        except OSError:
-            pass
         return not LINUX_AUTOSTART_PATH.exists()
     try:
-        result = subprocess.run(
+        result = _run_command(
             ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
-            capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=10,
+            creationflags=_creation_flags(),
         )
-        if result.returncode != 0:
-            _log(
-                f'Failed to delete scheduled task {TASK_NAME!r} (rc={result.returncode}): '
-                f'{_command_output(result)}'
-            )
-            return False
-        if _task_exists():
-            _log(f'Scheduled task {TASK_NAME!r} still exists after deletion')
-            return False
-        return True
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         _log(f'Failed to delete scheduled task {TASK_NAME!r}: {exc}')
         return False
+    if result.returncode != 0:
+        _log(
+            f'Failed to delete scheduled task {TASK_NAME!r} (rc={result.returncode}): '
+            f'{_command_output(result)}'
+        )
+        return False
+    if _task_exists():
+        _log(f'Scheduled task {TASK_NAME!r} still exists after deletion')
+        return False
+    return True
 
 
-def _windows_launch_action(launch_info: dict) -> tuple[str, str]:
+def _windows_launch_action(launch_info: LaunchInfo) -> tuple[str, str]:
     """Return the executable and arguments used by the Windows task."""
     if launch_info['mode'] == 'exe':
         return launch_info['path'], '--no-dashboard'
@@ -350,7 +462,7 @@ def _windows_launch_action(launch_info: dict) -> tuple[str, str]:
     # For uv, wrap in PowerShell with -WindowStyle Hidden to suppress the
     # console window that uv.exe would otherwise show at logon.
     uv_path = launch_info['path']
-    proj_path = launch_info['project']
+    proj_path = _required_project(launch_info)
     uv_args = subprocess.list2cmdline(['--project', proj_path, 'run', 'fleasion', '--no-dashboard'])
     log_path = launch_info.get('log')
     ps_script = (
@@ -371,12 +483,14 @@ def _windows_launch_action(launch_info: dict) -> tuple[str, str]:
     ps_encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
     return (
         'powershell.exe',
-        f'-WindowStyle Hidden -NoProfile -NonInteractive '
-        f'-ExecutionPolicy Bypass -EncodedCommand {ps_encoded}',
+        (
+            f'-WindowStyle Hidden -NoProfile -NonInteractive '
+            f'-ExecutionPolicy Bypass -EncodedCommand {ps_encoded}'
+        ),
     )
 
 
-def _create_windows_task_as_current_user(launch_info: dict) -> bool:
+def _create_windows_task_as_current_user(launch_info: LaunchInfo) -> bool:
     """Create/update the per-user task without requiring elevation.
 
     ``schtasks /Create`` rejects standard-user task creation on current Windows
@@ -384,8 +498,6 @@ def _create_windows_task_as_current_user(launch_info: dict) -> bool:
     The Task Scheduler COM API supports the intended per-user interactive-token
     task without that elevation requirement.
     """
-    import textwrap
-
     command, args = _windows_launch_action(launch_info)
     script = textwrap.dedent(
         f"""
@@ -420,7 +532,7 @@ def _create_windows_task_as_current_user(launch_info: dict) -> bool:
     ).strip()
     encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
     try:
-        result = subprocess.run(
+        result = _run_command(
             [
                 'powershell.exe',
                 '-NoProfile',
@@ -430,20 +542,19 @@ def _create_windows_task_as_current_user(launch_info: dict) -> bool:
                 '-EncodedCommand',
                 encoded,
             ],
-            capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=15,
+            creationflags=_creation_flags(),
         )
-        if result.returncode != 0:
-            _log(
-                f'PowerShell Task Scheduler registration failed (rc={result.returncode}): '
-                f'{result.stdout.decode(errors="replace").strip()} '
-                f'{result.stderr.decode(errors="replace").strip()}'
-            )
-        return result.returncode == 0
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         _log(f'Failed to create per-user scheduled task: {exc}')
         return False
+    if result.returncode != 0:
+        _log(
+            f'PowerShell Task Scheduler registration failed (rc={result.returncode}): '
+            f'{result.stdout.decode(errors="replace").strip()} '
+            f'{result.stderr.decode(errors="replace").strip()}'
+        )
+    return result.returncode == 0
 
 
 def _grant_windows_task_user_control(windows_user_id: str) -> bool:
@@ -454,8 +565,6 @@ def _grant_windows_task_user_control(windows_user_id: str) -> bool:
     user.  Preserve the task's existing ACL and add full control for the user
     that will update it on future normal launches.
     """
-    import textwrap
-
     script = textwrap.dedent(
         f"""
         $ErrorActionPreference = 'Stop'
@@ -473,7 +582,7 @@ def _grant_windows_task_user_control(windows_user_id: str) -> bool:
     ).strip()
     encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
     try:
-        result = subprocess.run(
+        result = _run_command(
             [
                 'powershell.exe',
                 '-NoProfile',
@@ -483,167 +592,115 @@ def _grant_windows_task_user_control(windows_user_id: str) -> bool:
                 '-EncodedCommand',
                 encoded,
             ],
-            capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=15,
+            creationflags=_creation_flags(),
         )
-        if result.returncode != 0:
-            _log(
-                f'PowerShell Task Scheduler ACL repair failed (rc={result.returncode}): '
-                f'{result.stdout.decode(errors="replace").strip()} '
-                f'{result.stderr.decode(errors="replace").strip()}'
-            )
-        return result.returncode == 0
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         _log(f'Failed to repair scheduled task permissions: {exc}')
         return False
+    if result.returncode != 0:
+        _log(
+            f'PowerShell Task Scheduler ACL repair failed (rc={result.returncode}): '
+            f'{result.stdout.decode(errors="replace").strip()} '
+            f'{result.stderr.decode(errors="replace").strip()}'
+        )
+    return result.returncode == 0
 
 
-def _create_task(
-    launch_info: dict,
-    *,
-    windows_user_id: str | None = None,
-) -> bool:
-    """Create a per-user autostart entry without elevation."""
-    if sys.platform == 'darwin':
-        try:
-            if launch_info['mode'] == 'exe':
-                args = [launch_info['path'], '--no-dashboard']
-                working_dir = str(Path(launch_info['path']).parent)
-                env = {}
-            else:
-                project = Path(launch_info['project'])
-                args = [
-                    launch_info['path'],
-                    str(project / 'launcher.py'),
-                    '--no-dashboard',
-                ]
-                working_dir = str(project)
-                env = {'PYTHONPATH': str(project / 'src')}
-
-            plist = {
-                'Label': LAUNCH_AGENT_ID,
-                'ProgramArguments': args,
-                'RunAtLoad': True,
-                'WorkingDirectory': working_dir,
-                'StandardOutPath': str(
-                    USER_HOME / 'Library' / 'Logs' / 'Fleasion.autostart.out.log'
-                ),
-                'StandardErrorPath': str(
-                    USER_HOME / 'Library' / 'Logs' / 'Fleasion.autostart.err.log'
-                ),
-            }
-            if env:
-                plist['EnvironmentVariables'] = env
-
-            LAUNCH_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with LAUNCH_AGENT_PATH.open('wb') as f:
-                plistlib.dump(plist, f)
-            # Do not load the agent in the current login session. RunAtLoad
-            # would immediately launch a second Fleasion instance while the
-            # first one is still completing startup. macOS discovers the plist
-            # automatically on the next login.
-            _log('LaunchAgent updated; it will take effect at the next login')
-            return True
-        except Exception as e:
-            _log(f'Failed to create LaunchAgent: {e}')
-            return False
-
-    if sys.platform.startswith('linux'):
-        try:
-            if launch_info['mode'] == 'linux-launcher':
-                launcher = Path(launch_info['path'])
-                command = _desktop_exec_join([str(launcher), '--no-dashboard'])
-                working_dir = str(launcher.parent)
-            elif launch_info['mode'] == 'exe':
-                command = _desktop_exec_join([launch_info['path'], '--no-dashboard'])
-                working_dir = str(Path(launch_info['path']).parent)
-            else:
-                project = Path(launch_info['project'])
-                command = _desktop_exec_join(
-                    [
-                        launch_info['path'],
-                        str(project / 'launcher.py'),
-                        '--no-dashboard',
-                    ]
-                )
-                working_dir = str(project)
-
-            content = (
-                '[Desktop Entry]\n'
-                'Type=Application\n'
-                'Name=Fleasion\n'
-                f'Exec={command}\n'
-                f'Path={working_dir}\n'
-                'Terminal=false\n'
-                'X-GNOME-Autostart-enabled=true\n'
-            )
-            LINUX_AUTOSTART_PATH.parent.mkdir(parents=True, exist_ok=True)
-            LINUX_AUTOSTART_PATH.write_text(content, encoding='utf-8')
-            _log('XDG autostart entry updated; it will take effect at the next login')
-            return True
-        except Exception as e:
-            _log(f'Failed to create XDG autostart entry: {e}')
-            return False
-
-    if not windows_user_id:
-        return _create_windows_task_as_current_user(launch_info)
-
-    import html as _html
-    import tempfile
-    import textwrap
-
-    # Resolve the current user so the task is scoped to them specifically.
-    # Without an explicit <UserId> in the XML, Windows may not associate the
-    # task with the correct user and can silently discard it after a restart.
-    if windows_user_id:
-        raw_user_id = str(windows_user_id)
-    else:
-        _username = os.environ.get('USERNAME', '')
-        _domain = os.environ.get('USERDOMAIN', os.environ.get('COMPUTERNAME', ''))
-        raw_user_id = f'{_domain}\\{_username}' if _domain else _username
-    user_id = _html.escape(raw_user_id)
-
+def _macos_launch_agent_payload(launch_info: LaunchInfo) -> dict[str, object]:
+    """Build the LaunchAgent payload for the current launch mode."""
     if launch_info['mode'] == 'exe':
-        command = _html.escape(launch_info['path'])
-        args = '--no-dashboard'
+        args = [launch_info['path'], '--no-dashboard']
+        working_dir = str(Path(launch_info['path']).parent)
+        env: dict[str, str] = {}
     else:
-        # For uv, wrap in PowerShell with -WindowStyle Hidden to suppress the
-        # console window that uv.exe would otherwise show at logon.
-        uv_path = launch_info['path']
-        proj_path = launch_info['project']
-        uv_args = subprocess.list2cmdline(
-            ['--project', proj_path, 'run', 'fleasion', '--no-dashboard']
-        )
-        log_path = launch_info.get('log')
-        ps_script = (
-            'try{'
-            f'Start-Process -FilePath {_ps_single_quote(uv_path)} '
-            f'-ArgumentList {_ps_single_quote(uv_args)} '
-            '-WindowStyle Hidden -ErrorAction Stop'
-            '}catch{'
-        )
-        if log_path:
-            ps_script += (
-                f'New-Item -ItemType Directory -Force -Path {_ps_single_quote(str(Path(log_path).parent))}|Out-Null;'
-                f'Add-Content -LiteralPath {_ps_single_quote(log_path)} '
-                "-Value ((Get-Date -Format o)+' '+($_|Out-String));"
-            )
-        ps_script += 'exit 1}'
-        ps_encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
-        ps_cmd = (
-            f'-WindowStyle Hidden -NoProfile -NonInteractive '
-            f'-ExecutionPolicy Bypass -EncodedCommand {ps_encoded}'
-        )
-        command = 'powershell.exe'
-        args = _html.escape(ps_cmd)
+        project = Path(_required_project(launch_info))
+        args = [
+            launch_info['path'],
+            '-m',
+            'fleasion',
+            '--no-dashboard',
+        ]
+        working_dir = str(project)
+        env = {'PYTHONPATH': str(project / 'src')}
 
-    # Use a per-user interactive task. Env Proxy does not need elevation, and
-    # hosts mode can request it only when the user explicitly selects that mode.
-    # Both <Principal> and <LogonTrigger> must carry <UserId> so that:
-    #   - The task is owned by (and runs as) the correct user account.
-    #   - The logon trigger fires only when that specific user logs on.
-    xml = textwrap.dedent(f"""
+    payload: dict[str, object] = {
+        'Label': LAUNCH_AGENT_ID,
+        'ProgramArguments': args,
+        'RunAtLoad': True,
+        'WorkingDirectory': working_dir,
+        'StandardOutPath': str(USER_HOME / 'Library' / 'Logs' / 'Fleasion.autostart.out.log'),
+        'StandardErrorPath': str(USER_HOME / 'Library' / 'Logs' / 'Fleasion.autostart.err.log'),
+    }
+    if env:
+        payload['EnvironmentVariables'] = env
+    return payload
+
+
+def _create_macos_task(launch_info: LaunchInfo) -> bool:
+    """Write the macOS LaunchAgent without loading it in the current session."""
+    try:
+        payload = _macos_launch_agent_payload(launch_info)
+        LAUNCH_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LAUNCH_AGENT_PATH.open('wb') as stream:
+            plistlib.dump(payload, stream)
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        _log(f'Failed to create LaunchAgent: {exc}')
+        return False
+
+    # Do not load the agent in the current login session. RunAtLoad would
+    # immediately launch a second Fleasion instance while the first one is
+    # still completing startup. macOS discovers the plist on the next login.
+    _log('LaunchAgent updated; it will take effect at the next login')
+    return True
+
+
+def _linux_autostart_content(launch_info: LaunchInfo) -> str:
+    """Build the XDG desktop entry for the current launch mode."""
+    if launch_info['mode'] == 'linux-launcher':
+        launcher = Path(launch_info['path'])
+        command = _desktop_exec_join([str(launcher), '--no-dashboard'])
+        working_dir = str(launcher.parent)
+    elif launch_info['mode'] == 'exe':
+        command = _desktop_exec_join([launch_info['path'], '--no-dashboard'])
+        working_dir = str(Path(launch_info['path']).parent)
+    else:
+        project = Path(_required_project(launch_info))
+        command = _desktop_exec_join([launch_info['path'], '-m', 'fleasion', '--no-dashboard'])
+        working_dir = str(project)
+
+    return (
+        '[Desktop Entry]\n'
+        'Type=Application\n'
+        'Name=Fleasion\n'
+        f'Exec={command}\n'
+        f'Path={working_dir}\n'
+        'Terminal=false\n'
+        'X-GNOME-Autostart-enabled=true\n'
+    )
+
+
+def _create_linux_task(launch_info: LaunchInfo) -> bool:
+    """Write the XDG autostart desktop entry."""
+    try:
+        content = _linux_autostart_content(launch_info)
+        LINUX_AUTOSTART_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LINUX_AUTOSTART_PATH.write_text(content, encoding='utf-8')
+    except (KeyError, OSError) as exc:
+        _log(f'Failed to create XDG autostart entry: {exc}')
+        return False
+
+    _log('XDG autostart entry updated; it will take effect at the next login')
+    return True
+
+
+def _windows_task_xml(launch_info: LaunchInfo, windows_user_id: str) -> str:
+    """Build Task Scheduler XML for a specific interactive user."""
+    user_id = html.escape(windows_user_id)
+    command, args = _windows_launch_action(launch_info)
+    command = html.escape(command)
+    args = html.escape(args)
+    return textwrap.dedent(f"""
         <?xml version="1.0" encoding="UTF-16"?>
         <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
           <Triggers>
@@ -676,48 +733,70 @@ def _create_task(
         </Task>
     """).strip()
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', encoding='utf-16', delete=False) as f:
-        f.write(xml)
-        tmp = f.name
+
+def _create_windows_task_for_user(launch_info: LaunchInfo, windows_user_id: str) -> bool:
+    """Create an interactive scheduled task for an explicitly selected user."""
+    xml = _windows_task_xml(launch_info, windows_user_id)
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.xml', encoding='utf-16', delete=False
+        ) as stream:
+            stream.write(xml)
+            tmp_path = Path(stream.name)
+    except OSError as exc:
+        _log(f'Failed to create scheduled-task XML: {exc}')
+        return False
 
     try:
-        r = subprocess.run(
-            ['schtasks', '/Create', '/TN', TASK_NAME, '/XML', tmp, '/F'],
-            capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+        result = _run_command(
+            ['schtasks', '/Create', '/TN', TASK_NAME, '/XML', str(tmp_path), '/F'],
             timeout=15,
+            creationflags=_creation_flags(),
         )
-        if r.returncode != 0:
-            _log(
-                f'schtasks failed (rc={r.returncode}): '
-                f'{r.stdout.decode(errors="replace").strip()} '
-                f'{r.stderr.decode(errors="replace").strip()}'
-            )
+        if result.returncode != 0:
+            _log(f'schtasks failed (rc={result.returncode}): {_command_output(result)}')
             return False
-        return _grant_windows_task_user_control(raw_user_id)
-    except Exception as e:
-        _log(f'Failed to create scheduled task: {e}')
+        return _grant_windows_task_user_control(windows_user_id)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log(f'Failed to create scheduled task: {exc}')
         return False
     finally:
-        try:
-            os.unlink(tmp)
-        except Exception:
-            pass
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
 
 
-def _get_stored_launch_info(config_dir: Path) -> dict | None:
-    p = config_dir / 'autostart_info.json'
+def _create_task(
+    launch_info: LaunchInfo,
+    *,
+    windows_user_id: str | None = None,
+) -> bool:
+    """Create a per-user autostart entry without elevation."""
+    if sys.platform == 'darwin':
+        return _create_macos_task(launch_info)
+    if sys.platform.startswith('linux'):
+        return _create_linux_task(launch_info)
+    if windows_user_id is None:
+        return _create_windows_task_as_current_user(launch_info)
+    return _create_windows_task_for_user(launch_info, windows_user_id)
+
+
+def _get_stored_launch_info(config_dir: Path) -> LaunchInfo | None:
+    path = config_dir / 'autostart_info.json'
     try:
-        return json.loads(p.read_text()) if p.exists() else None
-    except Exception:
+        payload: object = json.loads(path.read_text(encoding='utf-8'))
+    except OSError, UnicodeError, json.JSONDecodeError:
         return None
+    return _json_launch_info(payload)
 
 
-def _save_launch_info(config_dir: Path, info: dict) -> None:
+def _save_launch_info(config_dir: Path, info: LaunchInfo) -> None:
     try:
-        (config_dir / 'autostart_info.json').write_text(json.dumps(info))
-    except Exception:
-        pass
+        (config_dir / 'autostart_info.json').write_text(
+            json.dumps(info),
+            encoding='utf-8',
+        )
+    except OSError:
+        return
 
 
 def sync_autostart(

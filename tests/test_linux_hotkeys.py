@@ -1,30 +1,95 @@
 import errno
 import os
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from tests.hotkey_fakes import HotkeyConfig, HotkeyProxy
 from types import SimpleNamespace
+from typing import Never, cast
 
 import pytest
 
 from fleasion.gui.linux_hotkeys import (
-    LinuxCustomFFlagHotkeyController,
-    LinuxHotkeyService,
     MOD_ALT,
     MOD_CTRL,
     MOD_SHIFT,
+    LinuxCustomFFlagHotkeyController,
+    LinuxHotkeyService,
     binding_text,
     modifier_mask_for_evdev_code,
     normalize_binding,
 )
 from fleasion.gui.windows_hotkeys import binding_text as windows_binding_text
 
-
 pytestmark = pytest.mark.skipif(
     sys.platform == 'win32', reason='Linux-only hotkey translation tests'
 )
 
 
-def test_linux_keybinding_uses_tagged_evdev_codes():
+def _fds(service: LinuxHotkeyService) -> dict[int, set[int]]:
+    return cast('dict[int, set[int]]', service.__dict__['_fds'])
+
+
+def _fd_paths(service: LinuxHotkeyService) -> dict[int, Path]:
+    return cast('dict[int, Path]', service.__dict__['_fd_paths'])
+
+
+def _drain(service: LinuxHotkeyService, fd: int) -> None:
+    callback = cast('Callable[[int], None]', getattr(service, '_drain_device'))
+    callback(fd)
+
+
+def _set_key_state(service: LinuxHotkeyService, fd: int, code: int, pressed: bool) -> None:
+    callback = cast('Callable[[int, int, bool], None]', getattr(service, '_set_key_state'))
+    callback(fd, code, pressed)
+
+
+def _run(service: LinuxHotkeyService) -> None:
+    callback = cast('Callable[[], None]', getattr(service, '_run'))
+    callback()
+
+
+def _raise_enodev(*_args: object) -> Never:
+    raise OSError(errno.ENODEV, 'No such device')
+
+
+def _record_close(values: list[int]) -> Callable[[int], None]:
+    def close(fd: int) -> None:
+        values.append(fd)
+
+    return close
+
+
+def _select_once(
+    calls: list[tuple[Sequence[int], Sequence[int], Sequence[int], float]],
+) -> Callable[
+    [Sequence[int], Sequence[int], Sequence[int], float],
+    tuple[list[int], list[int], list[int]],
+]:
+    def select_call(
+        read: Sequence[int],
+        write: Sequence[int],
+        error: Sequence[int],
+        timeout: float,
+    ) -> tuple[list[int], list[int], list[int]]:
+        calls.append((read, write, error, timeout))
+        return [43], [], []
+
+    return select_call
+
+
+def _noop_close(_fd: int) -> None:
+    return None
+
+
+def _record_toggled(values: list[str]) -> Callable[[str], None]:
+    def record(name: str) -> None:
+        values.append(name)
+
+    return record
+
+
+def test_linux_keybinding_uses_tagged_evdev_codes() -> None:
     assert normalize_binding(
         {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_CTRL | MOD_SHIFT}
     ) == {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_CTRL | MOD_SHIFT}
@@ -37,7 +102,7 @@ def test_linux_keybinding_uses_tagged_evdev_codes():
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 76, 'modifiers': 0}) == 'Numpad 5'
 
 
-def test_linux_keybinding_uses_the_complete_smu_evdev_translation_table():
+def test_linux_keybinding_uses_the_complete_smu_evdev_translation_table() -> None:
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 1, 'modifiers': 0}) == 'Escape'
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 183, 'modifiers': 0}) == 'F13'
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 194, 'modifiers': 0}) == 'F24'
@@ -50,7 +115,7 @@ def test_linux_keybinding_uses_the_complete_smu_evdev_translation_table():
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 98, 'modifiers': 0}) == '0x6F'
 
 
-def test_windows_and_linux_bindings_share_smu_key_names():
+def test_windows_and_linux_bindings_share_smu_key_names() -> None:
     assert windows_binding_text({'scan_code': 0x1E, 'extended': False, 'modifiers': 0}) == 'A'
     assert (
         windows_binding_text({'scan_code': 0x4C, 'extended': False, 'modifiers': 0}) == 'Numpad 5'
@@ -79,13 +144,13 @@ def test_windows_and_linux_bindings_share_smu_key_names():
     )
 
 
-def test_linux_keybinding_rejects_windows_or_malformed_settings():
+def test_linux_keybinding_rejects_windows_or_malformed_settings() -> None:
     assert normalize_binding({'scan_code': 30, 'extended': False, 'modifiers': 0}) is None
     assert normalize_binding({'platform': 'windows', 'scan_code': 30, 'modifiers': 0}) is None
     assert normalize_binding({'platform': 'linux_evdev', 'scan_code': 0, 'modifiers': 0}) is None
 
 
-def test_linux_mouse_buttons_and_wheel_use_smu_codes():
+def test_linux_mouse_buttons_and_wheel_use_smu_codes() -> None:
     mouse_four = {
         'platform': 'linux_evdev',
         'kind': 'mouse_button',
@@ -99,27 +164,25 @@ def test_linux_mouse_buttons_and_wheel_use_smu_codes():
     assert binding_text(wheel_up) == 'Mouse Wheel Up'
 
 
-def test_linux_modifier_codes_are_combined_generically():
+def test_linux_modifier_codes_are_combined_generically() -> None:
     assert modifier_mask_for_evdev_code(29) == MOD_CTRL
     assert modifier_mask_for_evdev_code(100) == MOD_ALT
     assert modifier_mask_for_evdev_code(42) == MOD_SHIFT
     assert modifier_mask_for_evdev_code(30) == 0
 
 
-def test_linux_hotkey_controller_toggles_without_the_dashboard():
-    config = SimpleNamespace(
+def test_linux_hotkey_controller_toggles_without_the_dashboard() -> None:
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagExample': 'True'},
         custom_fflag_disabled=[],
         custom_fflag_keybinds={},
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    proxy = HotkeyProxy()
+
     controller = LinuxCustomFFlagHotkeyController(config, proxy)
-    toggled = []
-    controller.toggled.connect(toggled.append)
+    toggled: list[str] = []
+    controller.toggled.connect(_record_toggled(toggled))
 
     controller.service.activated.emit('FFlagExample')
 
@@ -129,47 +192,198 @@ def test_linux_hotkey_controller_toggles_without_the_dashboard():
     controller.stop()
 
 
-def test_linux_hotkey_reader_drops_disconnected_evdev_device(monkeypatch):
+def test_linux_hotkey_reader_drops_disconnected_evdev_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = LinuxHotkeyService()
-    service._fds = {43: set()}
-    service._fd_paths = {43: Path('/dev/input/event27')}
-    closed = []
+    service.__dict__['_fds'] = {43: set[int]()}
+    service.__dict__['_fd_paths'] = {43: Path('/dev/input/event27')}
+    closed: list[int] = []
     monkeypatch.setattr(
         os,
         'read',
-        lambda *_args: (_ for _ in ()).throw(OSError(errno.ENODEV, 'No such device')),
+        _raise_enodev,
     )
-    monkeypatch.setattr(os, 'close', closed.append)
+    monkeypatch.setattr(os, 'close', _record_close(closed))
 
-    service._drain_device(43)
+    _drain(service, 43)
 
-    assert service._fds == {}
-    assert service._fd_paths == {}
+    assert _fds(service) == {}
+    assert _fd_paths(service) == {}
     assert closed == [43]
 
 
-def test_linux_hotkey_reader_does_not_spin_after_all_devices_disconnect(monkeypatch):
+def test_linux_hotkey_reader_does_not_spin_after_all_devices_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = LinuxHotkeyService()
-    service._fds = {43: set()}
-    service._fd_paths = {43: Path('/dev/input/event27')}
-    select_calls = []
+    service.__dict__['_fds'] = {43: set[int]()}
+    service.__dict__['_fd_paths'] = {43: Path('/dev/input/event27')}
+    select_calls: list[tuple[Sequence[int], Sequence[int], Sequence[int], float]] = []
     monkeypatch.setattr(
         'fleasion.gui.linux_hotkeys.select.select',
-        lambda *args: select_calls.append(args) or ([43], [], []),
+        _select_once(select_calls),
     )
     monkeypatch.setattr(
         os,
         'read',
-        lambda *_args: (_ for _ in ()).throw(OSError(errno.ENODEV, 'No such device')),
+        _raise_enodev,
     )
-    monkeypatch.setattr(os, 'close', lambda _fd: None)
+    monkeypatch.setattr(os, 'close', _noop_close)
 
-    service._run()
+    _run(service)
 
     assert len(select_calls) == 1
 
 
-def test_linux_hotkey_controller_toggles_fastflag_folder():
+def test_linux_bare_binding_still_fires_when_shift_is_held() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'flag1': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': 0},
+    }
+    service.__dict__['_fds'] = {43: set()}
+
+    # Hold Shift first, then press the bound key.
+    _set_key_state(service, 43, 42, True)
+    _set_key_state(service, 43, 30, True)
+
+    assert activations == ['flag1']
+
+
+def test_linux_shifted_binding_shadows_bare_binding_on_the_same_key() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'bare': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': 0},
+        'shifted': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+    }
+    service.__dict__['_fds'] = {43: set()}
+
+    _set_key_state(service, 43, 42, True)
+    _set_key_state(service, 43, 30, True)
+    assert activations == ['shifted']
+
+    # Release Shift while keeping the key held, then press it again bare.
+    _set_key_state(service, 43, 30, False)
+    _set_key_state(service, 43, 42, False)
+    _set_key_state(service, 43, 30, True)
+    assert activations == ['shifted', 'bare']
+
+
+def test_linux_modifier_press_activates_independent_keys() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'shift_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+        'ctrl_shift_b': {
+            'platform': 'linux_evdev',
+            'scan_code': 48,
+            'modifiers': MOD_CTRL | MOD_SHIFT,
+        },
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+    for code in (29, 30, 48, 42):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['shift_a', 'ctrl_shift_b']
+
+
+def test_linux_already_active_binding_shadows_new_less_specific_match() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'ctrl_shift_a': {
+            'platform': 'linux_evdev',
+            'scan_code': 30,
+            'modifiers': MOD_CTRL | MOD_SHIFT,
+        },
+        'alt_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_ALT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+    for code in (29, 42, 30, 56):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['ctrl_shift_a']
+
+
+def test_linux_bare_binding_activates_when_shift_is_released_with_key_held() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'bare': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': 0},
+        'shifted': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+
+    _set_key_state(service, 43, 42, True)
+    _set_key_state(service, 43, 30, True)
+    assert activations == ['shifted']
+
+    _set_key_state(service, 43, 42, False)
+    assert activations == ['shifted', 'bare']
+    _set_key_state(service, 43, 42, True)
+    assert activations == ['shifted', 'bare', 'shifted']
+
+
+
+def test_linux_shadowed_binding_activates_when_modifier_priority_changes() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'ctrl_shift_a': {
+            'platform': 'linux_evdev',
+            'scan_code': 30,
+            'modifiers': MOD_CTRL | MOD_SHIFT,
+        },
+        'alt_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_ALT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+
+    for code in (29, 42, 30):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['ctrl_shift_a']
+
+    _set_key_state(service, 43, 56, True)  # Alt matches but remains shadowed
+    assert activations == ['ctrl_shift_a']
+
+    _set_key_state(service, 43, 29, False)
+    _set_key_state(service, 43, 42, False)
+    assert activations == ['ctrl_shift_a', 'alt_a']
+
+    # Reversing the modifier transition must rearm the previously shadowed chord
+    _set_key_state(service, 43, 29, True)
+    _set_key_state(service, 43, 42, True)
+    assert activations == ['ctrl_shift_a', 'alt_a', 'ctrl_shift_a']
+    _set_key_state(service, 43, 29, False)
+    assert activations == ['ctrl_shift_a', 'alt_a', 'ctrl_shift_a', 'alt_a']
+
+
+def test_linux_identical_and_equal_specificity_bindings_both_activate() -> None:
+    service = LinuxHotkeyService()
+    activations: list[str] = []
+    service.activated.connect(activations.append)
+    service.__dict__['_bindings'] = {
+        'shift_a_first': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+        'shift_a_second': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_SHIFT},
+        'alt_a': {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_ALT},
+    }
+    service.__dict__['_fds'] = {43: set[int]()}
+
+    for code in (42, 56, 30):
+        _set_key_state(service, 43, code, True)
+    assert activations == ['shift_a_first', 'shift_a_second', 'alt_a']
+
+    _set_key_state(service, 43, 56, False)
+    _set_key_state(service, 43, 56, True)
+    assert activations == ['shift_a_first', 'shift_a_second', 'alt_a', 'alt_a']
+
+
+def test_linux_hotkey_controller_toggles_fastflag_folder() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
@@ -179,13 +393,11 @@ def test_linux_hotkey_controller_toggles_fastflag_folder():
         custom_fflag_disabled_folders=[],
         custom_fflag_folder_keybinds={},
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
-    controller = LinuxCustomFFlagHotkeyController(config, proxy)
-    toggled = []
-    controller.toggled.connect(toggled.append)
+    proxy = HotkeyProxy()
+
+    controller = LinuxCustomFFlagHotkeyController(cast('HotkeyConfig', config), proxy)
+    toggled: list[str] = []
+    controller.toggled.connect(_record_toggled(toggled))
 
     controller.service.activated.emit('folder:Visual')
 
@@ -196,8 +408,8 @@ def test_linux_hotkey_controller_toggles_fastflag_folder():
     controller.stop()
 
 
-def test_linux_custom_fflag_actions_can_switch_same_flag_between_values():
-    config = SimpleNamespace(
+def test_linux_custom_fflag_actions_can_switch_same_flag_between_values() -> None:
+    config = HotkeyConfig(
         custom_fflags_enabled=True,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '60'},
         custom_fflag_disabled=[],
@@ -210,13 +422,10 @@ def test_linux_custom_fflag_actions_can_switch_same_flag_between_values():
             '144 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '144'}},
         },
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    proxy = HotkeyProxy()
     controller = LinuxCustomFFlagHotkeyController(config, proxy)
-    toggled = []
-    controller.toggled.connect(toggled.append)
+    toggled: list[str] = []
+    controller.toggled.connect(_record_toggled(toggled))
 
     controller.toggle_target('action:90 FPS')
     assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '90'

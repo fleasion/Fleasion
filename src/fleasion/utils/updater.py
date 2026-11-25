@@ -1,14 +1,14 @@
 """Qt integration for the GitHub update resolver."""
 
 from __future__ import annotations
-from ..localization import tr
 
 import threading
 import webbrowser
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+
+from fleasion.localization import tr
 
 from .metadata import APP_REPO, APP_VERSION
 from .update_resolver import UpdateResolver
@@ -17,8 +17,8 @@ from .update_resolver import UpdateResolver
 class QtUpdateChecker(QObject):
     """Run an owned update resolver off-thread and emit results through Qt."""
 
-    found = pyqtSignal(str, str)  # (tag, html_url)
-    finished = pyqtSignal()
+    found = Signal(str, str)  # (tag, html_url)
+    finished = Signal()
 
     def __init__(self, resolver: UpdateResolver | None = None) -> None:
         super().__init__()
@@ -46,8 +46,6 @@ _active_checkers: set[QtUpdateChecker] = set()
 
 def _show_update_dialog(tag: str, html_url: str) -> None:
     """Display an available update on the Qt main thread."""
-    from PyQt6.QtWidgets import QApplication
-
     latest_display = UpdateResolver.display_version(tag)
     current = APP_VERSION.strip()
 
@@ -61,14 +59,6 @@ def _show_update_dialog(tag: str, html_url: str) -> None:
     if stays_on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     dialog.setWindowTitle(tr('ui.utils.updater.update_available'))
-
-    try:
-        from .paths import get_icon_path
-
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
-    except Exception:
-        pass
 
     main_layout = QVBoxLayout(dialog)
     label = QLabel(

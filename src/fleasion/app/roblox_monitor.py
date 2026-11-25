@@ -1,0 +1,917 @@
+"""Roblox process monitoring and launch lifecycle handling."""
+
+from __future__ import annotations
+
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+
+from fleasion.localization import tr
+from fleasion.proxy.master import check_and_patch_running_roblox_ca
+from fleasion.utils import (
+    delete_cache,
+    get_roblox_player_exe_path,
+    get_roblox_process_identity,
+    get_roblox_studio_exe_path,
+    is_roblox_running,
+    is_studio_running,
+    log_buffer,
+    run_in_thread,
+)
+from fleasion.utils.community_flatpak_replay import (
+    capture_community_flatpak_launches,
+    flatpak_community_scopes,
+    replay_community_flatpak_launch,
+)
+from fleasion.utils.cordial_launch_interceptor import (
+    CordialLaunchInterceptor,
+    cordial_engine_executable,
+)
+from fleasion.utils.linux_clients import (
+    CORDIAL_CLIENT,
+    NIGHTCAP_CLIENT,
+    LinuxClientInstallation,
+    running_sober_launchers,
+    running_sober_players,
+    sober_flatpak_session_identity,
+)
+from fleasion.utils.mocktail_launch_interceptor import MocktailLaunchInterceptor
+from fleasion.utils.platform_linux import (
+    get_selected_linux_client_installation,
+    is_roblox_running as is_linux_client_running,
+    mocktail_proxy_environment,
+    native_proxy_environment,
+    rosemary_proxy_environment,
+    selected_linux_client_app_id,
+    selected_linux_client_display_name,
+)
+from fleasion.utils.rosemary_launch_interceptor import RosemaryLaunchInterceptor
+from fleasion.utils.sober_launch_replay import (
+    SoberLaunchSnapshot,
+    capture_sober_launch,
+    replay_sober_launch,
+)
+lazy from fleasion.utils import platform_linux
+
+if sys.platform == 'darwin':
+    from fleasion.utils.platform_macos import (
+        MacOSRobloxUriInterceptor as _MacOSRobloxUriInterceptor,
+    )
+else:
+    _MacOSRobloxUriInterceptor = None
+
+if sys.platform == 'win32':
+    from fleasion.utils import platform_windows as _platform_windows
+else:
+    _platform_windows = None
+
+if TYPE_CHECKING:
+    from fleasion.config import ConfigManager
+    from fleasion.modifications import ModificationManager
+    from fleasion.proxy.env_lifecycle import EnvProxyLifecycleController
+    from fleasion.proxy.master import ProxyMaster
+    from fleasion.utils.platform_macos import (
+        MacOSRobloxPlayerLaunch,
+        MacOSRobloxUriInterceptor,
+    )
+
+
+_MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS = 2.0
+
+
+class RobloxExitMonitor(QObject):
+    """Monitors Roblox process and triggers cache deletion on exit."""
+
+    _studio_detected = Signal()
+    player_status_changed = Signal(
+        bool
+    )  # Emitted when RobloxPlayerBeta opens/closes (True = running)
+
+    def __init__(
+        self,
+        config_manager: ConfigManager,
+        proxy_master: ProxyMaster | None = None,
+        mod_manager: ModificationManager | None = None,
+        env_lifecycle: EnvProxyLifecycleController | None = None,
+    ) -> None:
+        super().__init__()
+        self.config_manager = config_manager
+        self._proxy_master = proxy_master
+        self._mod_manager = mod_manager
+        self.env_lifecycle = env_lifecycle
+        self._status_lock = threading.Lock()
+        self._linux_auto_observed_running: bool | None = None
+        adopted_running = bool(env_lifecycle and env_lifecycle.owns_player)
+        self.was_running = adopted_running
+        self._player_was_running = adopted_running
+        self._suppress_next_player_exit_cache_delete = False
+        self._mocktail_replay_suppress_until = 0.0
+        self._sober_replay_suppress_until = 0.0
+        self._sober_handoff_until = 0.0
+        self._community_handoff: tuple[str, float] | None = None
+        self._stud_relaunch_suppress_until = 0.0
+        self._community_preexisting_scopes = (
+            {
+                descriptor.key: flatpak_community_scopes(
+                    LinuxClientInstallation(descriptor, descriptor.paths(), None)
+                )
+                for descriptor in (NIGHTCAP_CLIENT, CORDIAL_CLIENT)
+            }
+            if sys.platform.startswith('linux') and proxy_master is not None
+            else {}
+        )
+        # Never forcibly restart Sober instances predating this Fleasion monitor
+        self._sober_preexisting_scope = (
+            sober_flatpak_session_identity()
+            if sys.platform.startswith('linux') and proxy_master is not None
+            else None
+        )
+        self._sober_preexisting_ambiguous = bool(
+            sys.platform.startswith('linux')
+            and proxy_master is not None
+            and self._sober_preexisting_scope is None
+            and (running_sober_launchers() or running_sober_players())
+        )
+        self._studio_was_running = False
+        self._studio_notified = False
+        self._studio_suppress_session = False
+        self._macos_uri_interceptor: MacOSRobloxUriInterceptor | None = None
+        self._macos_plain_launch_lock = threading.Lock()
+        self._macos_plain_launches: dict[int, Path] = {}
+        self._rosemary_launch_interceptor: RosemaryLaunchInterceptor | None = None
+        self._mocktail_launch_interceptor: MocktailLaunchInterceptor | None = None
+        self._cordial_launch_interceptor: CordialLaunchInterceptor | None = None
+        if (
+            sys.platform.startswith('linux')
+            and proxy_master is not None
+            and callable(getattr(proxy_master, 'roblox_env_proxy_url', None))
+            and callable(getattr(proxy_master, 'wait_for_env_proxy_ready', None))
+        ):
+            self._rosemary_launch_interceptor = RosemaryLaunchInterceptor(
+                is_armed=self._rosemary_uri_interception_armed,
+                proxy_url=proxy_master.roblox_env_proxy_url,
+                proxy_environment=rosemary_proxy_environment,
+            )
+            self._rosemary_launch_interceptor.start()
+            self._mocktail_launch_interceptor = MocktailLaunchInterceptor(
+                is_armed=self._mocktail_interception_armed,
+                proxy_url=proxy_master.roblox_env_proxy_url,
+                proxy_environment=mocktail_proxy_environment,
+                on_replay=self._note_mocktail_replay,
+                executable=lambda: (
+                    installation.executable
+                    if (
+                        (
+                            installation := getattr(
+                                proxy_master, '_active_linux_client_installation', None
+                            )
+                        )
+                        is not None
+                        and installation.client.runtime == 'native'
+                    )
+                    else None
+                ),
+            )
+            self._mocktail_launch_interceptor.start()
+            self._cordial_launch_interceptor = CordialLaunchInterceptor(
+                is_armed=self._cordial_interception_armed,
+                proxy_url=proxy_master.roblox_env_proxy_url,
+                proxy_environment=native_proxy_environment,
+                executable=lambda: cordial_engine_executable(
+                    installation.executable
+                    if (
+                        (
+                            installation := getattr(
+                                proxy_master, '_active_linux_client_installation', None
+                            )
+                        )
+                        is not None
+                        and installation.key == 'cordial'
+                        and installation.client.runtime == 'native'
+                    )
+                    else None
+                ),
+                on_replay=self._note_mocktail_replay,
+            )
+            self._cordial_launch_interceptor.start()
+        macos_env_proxy_enabled = (
+            sys.platform == 'darwin'
+            and env_lifecycle is not None
+            and proxy_master is not None
+            and config_manager.proxy_mode == 'env'
+            and config_manager.proxy_features_enabled
+        )
+        if (
+            macos_env_proxy_enabled
+            and _MacOSRobloxUriInterceptor is not None
+            and callable(getattr(proxy_master, 'wait_for_env_proxy_ready', None))
+        ):
+            try:
+                self._macos_uri_interceptor = _MacOSRobloxUriInterceptor(
+                    is_armed=self._macos_uri_interception_armed,
+                    on_intercepted=self._handle_macos_uri_interception,
+                )
+                self._macos_uri_interceptor.start()
+            except (
+                AttributeError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                log_buffer.log(
+                    'Launcher',
+                    f'Could not start macOS Roblox URI watcher: {type(exc).__name__}: {exc}',
+                )
+        self._studio_detected.connect(self._on_studio_detected)
+
+    def mark_player_running_at_startup(self) -> None:
+        """Record a Player that was already running before monitoring began."""
+        self.was_running = True
+        self._player_was_running = True
+
+    def is_player_running(self) -> bool:
+        """Return whether Roblox Player is currently running."""
+        return is_roblox_running()
+
+    def stop(self) -> None:
+        """Release the macOS URI watcher during normal application shutdown."""
+        with self._macos_plain_launch_lock:
+            self._macos_plain_launches.clear()
+        interceptor = self._macos_uri_interceptor
+        if interceptor is not None:
+            interceptor.stop()
+        if self._rosemary_launch_interceptor is not None:
+            self._rosemary_launch_interceptor.stop()
+        if self._mocktail_launch_interceptor is not None:
+            self._mocktail_launch_interceptor.stop()
+        if self._cordial_launch_interceptor is not None:
+            self._cordial_launch_interceptor.stop()
+
+    def _rosemary_uri_interception_armed(self) -> bool:
+        """Only replay Player after the Rosemary proxy is actually listening."""
+        master = self._proxy_master
+        if (
+            master is None
+            or self.config_manager.proxy_mode != 'env'
+            or not self.config_manager.proxy_features_enabled
+            or getattr(master, '_active_linux_client_key', None) != 'rosemary'
+        ):
+            return False
+        return master.wait_for_env_proxy_ready(timeout=0.0)
+
+    def _note_mocktail_replay(self) -> None:
+        """Skip automatic cache deletion during deliberate Player replacement."""
+        self._mocktail_replay_suppress_until = time.monotonic() + 4.0
+
+    def _mocktail_interception_armed(self) -> bool:
+        master = self._proxy_master
+        return bool(
+            master is not None
+            and self.config_manager.proxy_mode == 'env'
+            and self.config_manager.proxy_features_enabled
+            and getattr(master, '_active_linux_client_key', None) in {'mocktail', 'nightcap'}
+            and (installation := get_selected_linux_client_installation()) is not None
+            and installation.client.runtime == 'native'
+            and master.wait_for_env_proxy_ready(timeout=0.0)
+        )
+
+    def _cordial_interception_armed(self) -> bool:
+        master = self._proxy_master
+        return bool(
+            master is not None
+            and self.config_manager.proxy_mode == 'env'
+            and self.config_manager.proxy_features_enabled
+            and getattr(master, '_active_linux_client_key', None) == 'cordial'
+            and (installation := get_selected_linux_client_installation()) is not None
+            and installation.client.runtime == 'native'
+            and master.wait_for_env_proxy_ready(timeout=0.0)
+        )
+
+    def _macos_uri_interception_armed(self) -> bool:
+        """Return whether it is safe to stop and replay a browser URI launch."""
+        if sys.platform != 'darwin' or self._proxy_master is None or self.env_lifecycle is None:
+            return False
+        if self.config_manager.macos_rosemary_enabled:
+            # Browser/deeplink replay is not implemented for pinned Rosemary.
+            return False
+        if (
+            self.config_manager.proxy_mode != 'env'
+            or not self.config_manager.proxy_features_enabled
+            or self.env_lifecycle.owns_player
+            or self.env_lifecycle.operation_in_progress
+        ):
+            return False
+        ready = getattr(self._proxy_master, 'wait_for_env_proxy_ready', None)
+        if not callable(ready):
+            return False
+        try:
+            return bool(ready(timeout=0.0))
+        except OSError, RuntimeError, TypeError, ValueError:
+            return False
+
+    def _handle_macos_uri_interception(self, launch: MacOSRobloxPlayerLaunch, target: str) -> None:
+        """Run after the watcher has already SIGKILLed the original Player."""
+        if self.env_lifecycle is None:
+            return
+        self._suppress_next_player_exit_cache_delete = True
+        with self._macos_plain_launch_lock:
+            self._macos_plain_launches.pop(int(launch.pid), None)
+        self.env_lifecycle.handle_intercepted_player_launch(Path(launch.executable_path), target)
+
+    def _schedule_macos_plain_launch_fallback(self, exe_path: Path) -> None:
+        """Keep ordinary Dock/Finder launches on the existing Env Proxy path."""
+        if self._macos_uri_interceptor is None:
+            return
+        identity = get_roblox_process_identity()
+        if not isinstance(identity, tuple) or not identity:
+            return
+        try:
+            pid = int(identity[0])
+        except TypeError, ValueError:
+            return
+        with self._macos_plain_launch_lock:
+            if pid in self._macos_plain_launches:
+                return
+            self._macos_plain_launches[pid] = Path(exe_path)
+
+        def _fallback() -> None:
+            time.sleep(_MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS)
+            with self._macos_plain_launch_lock:
+                pending_exe = self._macos_plain_launches.pop(pid, None)
+            if pending_exe is None or self.env_lifecycle is None:
+                return
+            if (
+                self._macos_uri_interceptor is not None
+                and self._macos_uri_interceptor.has_claimed_pid(pid)
+            ):
+                return
+            current_identity = get_roblox_process_identity()
+            if not isinstance(current_identity, tuple) or not current_identity:
+                return
+            try:
+                if int(current_identity[0]) != pid:
+                    return
+            except TypeError, ValueError:
+                return
+            if not self._macos_uri_interception_armed():
+                return
+            self._suppress_next_player_exit_cache_delete = True
+            self.env_lifecycle.handle_player_launch(pending_exe)
+
+        threading.Thread(
+            target=_fallback,
+            name='FleasionMacOSPlainLaunchFallback',
+            daemon=True,
+        ).start()
+
+    @run_in_thread
+    def check_roblox_status(self) -> None:
+        """Coalesce timer ticks so process edges are handled exactly once."""
+        if not self._status_lock.acquire(blocking=False):
+            return
+        try:
+            self._check_roblox_status_locked()
+        finally:
+            self._status_lock.release()
+
+    def _handle_player_launch_detected(self) -> None:
+        if sys.platform.startswith('linux'):  # ruff: ignore[too-many-nested-blocks]
+            exe_path = Path(selected_linux_client_app_id())
+            if self._mod_manager is not None:
+                self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+            proxy_features_enabled = self.config_manager.proxy_features_enabled
+            if (
+                self.config_manager.proxy_mode == 'env'
+                and self._proxy_master is not None
+                and proxy_features_enabled
+            ):
+                if self.env_lifecycle is not None:
+                    selected = get_selected_linux_client_installation()
+                    if selected is not None and getattr(selected, 'stud_managed', False):
+                        url = self._proxy_master.roblox_env_proxy_url()
+                        if platform_linux.running_rosemary_proxy_status(url) != 'configured':
+                            if time.monotonic() >= self._stud_relaunch_suppress_until:
+                                self._stud_relaunch_suppress_until = time.monotonic() + 20.0
+                                self._suppress_next_player_exit_cache_delete = True
+                                run_in_thread(self.env_lifecycle.handle_player_launch)(
+                                    get_roblox_player_exe_path()
+                                )
+                            else:
+                                log_buffer.log(
+                                    'Launcher',
+                                    'Stud still lacks verified proxy routing after a recent '
+                                    'relaunch; refusing an automatic restart loop',
+                                )
+                        else:
+                            run_in_thread(self.env_lifecycle.handle_adopted_player_launch)(
+                                get_roblox_player_exe_path()
+                            )
+                    else:
+                        run_in_thread(self.env_lifecycle.handle_adopted_player_launch)(exe_path)
+            elif self._proxy_master is not None and proxy_features_enabled:
+                run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
+            elif self._proxy_master is None and proxy_features_enabled:
+                run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
+            elif not proxy_features_enabled:
+                log_buffer.log(
+                    'Certificate',
+                    f'{selected_linux_client_display_name()} launch detected: proxy features '
+                    'disabled, skipping proxy CA refresh',
+                )
+        else:
+            exe_path = get_roblox_player_exe_path()
+            if exe_path is None:
+                # Process may still be initializing — retry for up to 10 s
+                for _ in range(10):
+                    time.sleep(1.0)
+                    exe_path = get_roblox_player_exe_path()
+                    if exe_path is not None:
+                        break
+            if exe_path is not None:
+                proxy_features_enabled = self.config_manager.proxy_features_enabled
+                if self._mod_manager is not None:
+                    self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+                if (
+                    sys.platform == 'win32'
+                    and self.config_manager.proxy_mode == 'env'
+                    and self._proxy_master is not None
+                    and proxy_features_enabled
+                ):
+                    platform_windows = _platform_windows
+                    if platform_windows is None:
+                        log_buffer.log(
+                            'Launcher',
+                            'Windows platform support is unavailable; leaving Player untouched',
+                        )
+                        return
+
+                    if platform_windows.is_roblox_gdk_exe_path(exe_path):
+                        gdk_env_proxy_armed = (
+                            platform_windows.is_roblox_gdk_env_proxy_armed()
+                            or platform_windows.is_gdk_env_proxy_activation_in_progress()
+                        )
+                        if gdk_env_proxy_armed and self.env_lifecycle is not None:
+                            log_buffer.log(
+                                'Launcher',
+                                'Xbox/GDK Env Proxy package activation supplied the '
+                                'initial Player; handing it to Env Proxy lifecycle monitoring',
+                            )
+                            self._suppress_next_player_exit_cache_delete = True
+                            run_in_thread(self.env_lifecycle.handle_adopted_player_launch)(exe_path)
+                        else:
+                            log_buffer.log(
+                                'Launcher',
+                                'Xbox/GDK Env Proxy package activation is unavailable; '
+                                'leaving the initial package Player untouched',
+                            )
+                            self._suppress_next_player_exit_cache_delete = False
+                    elif platform_windows.is_env_proxy_relaunched_player_running():
+                        log_buffer.log(
+                            'Launcher',
+                            'Roblox Env Proxy Player already running; skipping duplicate launch handling',
+                        )
+                        self._suppress_next_player_exit_cache_delete = False
+                    else:
+                        self._suppress_next_player_exit_cache_delete = True
+
+                        def _handle_env_proxy_player_launch() -> None:
+                            lifecycle = self.env_lifecycle
+                            started = bool(
+                                lifecycle is not None and lifecycle.handle_player_launch(exe_path)
+                            )
+                            if not started:
+                                self._suppress_next_player_exit_cache_delete = False
+
+                        run_in_thread(_handle_env_proxy_player_launch)()
+                elif (
+                    self.config_manager.proxy_mode == 'env'
+                    and self._proxy_master is not None
+                    and proxy_features_enabled
+                ):
+                    if self.env_lifecycle is not None:
+                        if sys.platform == 'darwin':
+                            self._schedule_macos_plain_launch_fallback(exe_path)
+                        else:
+                            run_in_thread(self.env_lifecycle.handle_player_launch)(exe_path)
+                elif self._proxy_master is not None and proxy_features_enabled:
+                    run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
+                elif self._proxy_master is None and proxy_features_enabled:
+                    run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
+                elif not proxy_features_enabled:
+                    log_buffer.log(
+                        'Certificate',
+                        'Roblox launch detected: proxy features disabled, skipping proxy CA refresh',
+                    )
+            else:
+                log_buffer.log(
+                    'Certificate',
+                    'Roblox launch detected but could not resolve exe path for CA check',
+                )
+
+    def _sync_linux_auto_hosts_client(self, selected: LinuxClientInstallation) -> bool:
+        """Retarget Hosts TLS recovery for Auto without recycling the port-443 helper."""
+        proxy = self._proxy_master
+        if proxy is None or not proxy.wait_for_hosts_proxy_ready(timeout=0.0):
+            return False
+        if self.env_lifecycle is not None and self.env_lifecycle.operation_in_progress:
+            return False
+
+        pending_sober: SoberLaunchSnapshot | None = None
+        if selected.key == 'sober':
+            pending_sober = capture_sober_launch()
+            if pending_sober is not None and (
+                pending_sober.scope == self._sober_preexisting_scope
+                or self._sober_preexisting_ambiguous
+            ):
+                # Never restart an instance that predates this monitor.
+                pending_sober = None
+
+        replay_needed = bool(
+            selected.key == 'sober'
+            and pending_sober is not None
+            and not getattr(proxy, '_hosts_sober_native_keylog_active', False)
+        )
+        if not proxy.switch_linux_hosts_splice_client(selected, replay_sober=replay_needed):
+            return False
+        if selected.key == 'sober':
+            if (
+                replay_needed
+                and pending_sober is not None
+                and getattr(proxy, '_hosts_sober_native_keylog_active', False)
+            ):
+                # A live Flatpak cannot inherit the new SSLKEYLOGFILE override.
+                # Replay only its verified generation after the backend is ready.
+                self._sober_replay_suppress_until = time.monotonic() + 5.0
+                if replay_sober_launch(pending_sober):
+                    self._sober_handoff_until = time.monotonic() + 10.0
+                    proxy.rearm_custom_fflag_delivery_for_player_launch()
+                    self._player_was_running = False
+                    self.was_running = False
+                    self._linux_auto_observed_running = None
+                    return False
+            if not getattr(proxy, '_hosts_sober_native_keylog_active', False):
+                log_buffer.log(
+                    'Launcher',
+                    'Auto Hosts now targets Sober; the already-running instance cannot '
+                    'inherit a newly armed native TLS key log without a safe launch replay',
+                )
+        return True
+
+    def _sync_linux_auto_proxy_client(self) -> bool:  # ruff: ignore[too-many-return-statements]
+        """Re-arm Env Proxy when Auto detects a newly running Linux client.
+
+        A Flatpak process already running cannot inherit a newly installed
+        override. Do not misclassify that existing process as Env-proxied.
+        """
+        proxy = self._proxy_master
+        if (
+            not sys.platform.startswith('linux')
+            or proxy is None
+            or not getattr(proxy, 'is_running', False)
+        ):
+            return True
+        if (
+            getattr(self.config_manager, 'linux_client', 'auto') != 'auto'
+            or self.config_manager.proxy_mode not in {'env', 'hosts'}
+            or not self.config_manager.proxy_features_enabled
+        ):
+            return True
+        selected = get_selected_linux_client_installation()
+        if selected is None:
+            return True
+        if (
+            selected.key != 'sober'
+            and getattr(proxy, '_active_linux_client_key', None) == 'sober'
+            and time.monotonic() < self._sober_handoff_until
+        ):
+            # The replacement Flatpak launcher has not appeared yet
+            # Do not bounce the proxy back to Rosemary during this handoff
+            return False
+        handoff = self._community_handoff
+        if (
+            handoff is not None
+            and selected.key != handoff[0]
+            and getattr(proxy, '_active_linux_client_key', None) == handoff[0]
+            and time.monotonic() < handoff[1]
+        ):
+            # The newly replayed Flatpak is not visible yet; retain its proxy
+            return False
+        self._linux_auto_observed_running = is_linux_client_running(selected)
+        if selected.key == 'sober' and self._linux_auto_observed_running:
+            self._sober_handoff_until = 0.0
+        if handoff is not None and selected.key == handoff[0] and self._linux_auto_observed_running:
+            self._community_handoff = None
+        if not self._linux_auto_observed_running:
+            if (
+                self.config_manager.proxy_mode == 'hosts'
+                and selected.key == getattr(proxy, '_active_linux_client_key', None) == 'sober'
+                and not getattr(proxy, '_hosts_sober_native_keylog_active', False)
+            ):
+                # A preexisting Sober couldn't inherit the override while
+                # running. Arm it now for the NEXT Sober launch.
+                proxy.arm_linux_hosts_sober_keylog_if_idle()
+            return True
+        if selected.key == getattr(proxy, '_active_linux_client_key', None):
+            if (
+                self.config_manager.proxy_mode == 'hosts'
+                and selected.key == 'sober'
+                and not getattr(proxy, '_hosts_sober_native_keylog_active', False)
+                and not self._sober_preexisting_ambiguous
+            ):
+                candidate = capture_sober_launch()
+                if candidate is not None and candidate.scope != self._sober_preexisting_scope:
+                    # The first detection may precede Flatpak's complete
+                    # launcher metadata; replay the verified generation once
+                    # it becomes available, without changing backend again.
+                    return self._sync_linux_auto_hosts_client(selected)
+            return True
+        if self.config_manager.proxy_mode == 'hosts':
+            return self._sync_linux_auto_hosts_client(selected)
+        # Capture one-time launch arguments before reconfiguring the proxy
+        # Flatpak overrides only affect a process started after they are armed
+        pending_sober: SoberLaunchSnapshot | None = None
+        if selected.key == 'sober':
+            pending_sober = capture_sober_launch()
+            if pending_sober is not None and (
+                pending_sober.scope == self._sober_preexisting_scope
+                or self._sober_preexisting_ambiguous
+            ):
+                pending_sober = None
+        pending_community = ()
+        if (
+            selected.key in {'nightcap', 'cordial'}
+            and selected.client.runtime == 'flatpak'
+            and callable(getattr(proxy, 'roblox_env_proxy_url', None))
+        ):
+            preexisting = self._community_preexisting_scopes.get(selected.key, frozenset())
+            pending_community = tuple(
+                snapshot
+                for snapshot in capture_community_flatpak_launches(
+                    selected, proxy_url=proxy.roblox_env_proxy_url()
+                )
+                if snapshot.scope not in preexisting and not snapshot.already_proxied
+            )
+        if not proxy.wait_for_env_proxy_ready(timeout=0.0):
+            # The initial owner may still be starting; retry on the next poll
+            return False
+        lifecycle = self.env_lifecycle
+        if lifecycle is not None and lifecycle.operation_in_progress:
+            return False
+
+        previous = getattr(proxy, '_active_linux_client_key', None)
+        log_buffer.log(
+            'Launcher',
+            f'Auto detected {selected.display_name} while Env Proxy targeted '
+            f'{previous or "no client"}; switching proxy ownership',
+        )
+        if lifecycle is not None:
+            lifecycle.note_unexpected_player_exit()
+        proxy.stop()
+        proxy.start()
+        if (
+            not proxy.wait_for_env_proxy_ready(timeout=15.0)
+            or getattr(proxy, '_active_linux_client_key', None) != selected.key
+        ):
+            log_buffer.log(
+                'Launcher',
+                f'Auto could not finish switching Env Proxy to {selected.display_name}',
+            )
+            return False
+
+        if (
+            pending_sober is not None
+            and getattr(proxy, '_sober_env_proxy_override_active', False)
+            and getattr(proxy, '_active_linux_client_key', None) == 'sober'
+        ):
+            # Prevent an intentional handoff from triggering automatic cache cleanup
+            self._sober_replay_suppress_until = time.monotonic() + 5.0
+            if replay_sober_launch(pending_sober):
+                self._sober_handoff_until = time.monotonic() + 10.0
+                proxy.rearm_custom_fflag_delivery_for_player_launch()
+                # The next poll sees the replacement as a new adopted Player
+                self._player_was_running = False
+                self.was_running = False
+                self._linux_auto_observed_running = None
+                return False
+
+        if (
+            pending_community
+            and getattr(proxy, '_linux_env_proxy_override_client_key', None) == selected.key
+            and getattr(proxy, '_active_linux_client_key', None) == selected.key
+        ):
+            replayed = False
+            for snapshot in pending_community:
+                # Avoid an automatic cache purge while Flatpak exits
+                self._mocktail_replay_suppress_until = time.monotonic() + 5.0
+                if replay_community_flatpak_launch(
+                    selected, snapshot, proxy_url=proxy.roblox_env_proxy_url()
+                ):
+                    replayed = True
+            if replayed:
+                self._community_handoff = (selected.key, time.monotonic() + 10.0)
+                proxy.rearm_custom_fflag_delivery_for_player_launch()
+                self._player_was_running = False
+                self.was_running = False
+                self._linux_auto_observed_running = None
+                return False
+
+        # Stud must be restarted through its own launcher, even when Auto
+        # switches to Stud after an unrelated client was previously selected
+        if (
+            getattr(selected, 'stud_managed', False)
+            and lifecycle is not None
+            and platform_linux.running_rosemary_proxy_status(proxy.roblox_env_proxy_url())
+            != 'configured'
+        ):
+            if time.monotonic() >= self._stud_relaunch_suppress_until:
+                self._stud_relaunch_suppress_until = time.monotonic() + 20.0
+                self._suppress_next_player_exit_cache_delete = True
+                self._player_was_running = True
+                self.was_running = True
+                run_in_thread(lifecycle.handle_player_launch)(get_roblox_player_exe_path())
+            return False
+
+        # A preexisting process cannot inherit a newly armed Flatpak override
+        # Do not claim ownership unless the replacement was successfully launched
+        was_running = self._player_was_running
+        self._player_was_running = True
+        self.was_running = True
+        if not was_running:
+            player_running = True
+            self.player_status_changed.emit(player_running)
+            proxy.set_roblox_player_running(player_running)
+        if self._mod_manager is not None:
+            self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+        log_buffer.log(
+            'Launcher',
+            f'Auto Env Proxy now targets {selected.display_name}; relaunch an '
+            'already-running Player to inherit its newly armed proxy settings',
+        )
+        return True
+
+    def _check_roblox_status_locked(self) -> None:
+        """Check if Roblox has exited and trigger cache deletion if needed."""
+        self._linux_auto_observed_running = None
+        if not self._sync_linux_auto_proxy_client():
+            return
+        # Reuse the Auto detection from this tick instead of rescanning /proc
+        is_running = (
+            self._linux_auto_observed_running
+            if self._linux_auto_observed_running is not None
+            else is_roblox_running()
+        )
+        player_status_observed_at = time.monotonic()
+        intentional_player_exit = False
+
+        # Roblox Player: player status changed signal
+        if self._player_was_running != is_running:
+            self.player_status_changed.emit(is_running)
+            if self._proxy_master is not None:
+                self._proxy_master.set_roblox_player_running(is_running)
+            if self._player_was_running and not is_running and self.env_lifecycle is not None:
+                intentional_player_exit = self.env_lifecycle.consume_intentional_player_exit(
+                    player_status_observed_at
+                )
+                if not intentional_player_exit:
+                    self.env_lifecycle.note_unexpected_player_exit()
+
+        # Roblox Player: launch detection - check CA cert on new launch
+        if not self._player_was_running and is_running:
+            self._handle_player_launch_detected()
+        self._player_was_running = is_running
+
+        # Roblox Player: auto cache deletion on exit
+        if self.config_manager.auto_delete_cache_on_exit:
+            if self.was_running and not is_running:
+                if (
+                    intentional_player_exit
+                    or self._suppress_next_player_exit_cache_delete
+                    or time.monotonic() < self._mocktail_replay_suppress_until
+                    or time.monotonic() < self._sober_replay_suppress_until
+                ):
+                    self._suppress_next_player_exit_cache_delete = False
+                    self._mocktail_replay_suppress_until = 0.0
+                    log_buffer.log(
+                        'Cache',
+                        'Roblox exited during env-proxy relaunch; skipping auto cache deletion',
+                    )
+                else:
+                    log_buffer.log('Cache', 'Roblox exited, deleting cache...')
+                    run_in_thread(self._delete_cache_background)()
+            self.was_running = is_running
+        else:
+            self.was_running = False
+
+        # Roblox Studio: Env Proxy deliberately leaves Studio untouched
+        studio_running = is_studio_running()
+
+        if not self._studio_was_running and studio_running:
+            env_proxy_mode = self.config_manager.proxy_mode == 'env'
+            if env_proxy_mode:
+                log_buffer.log(
+                    'Launcher',
+                    'Studio launch detected in Env Proxy mode; leaving Studio untouched',
+                )
+                studio_exe_path = None
+            else:
+                studio_exe_path = get_roblox_studio_exe_path()
+                if studio_exe_path is None:
+                    for _ in range(10):
+                        time.sleep(1.0)
+                        studio_exe_path = get_roblox_studio_exe_path()
+                        if studio_exe_path is not None:
+                            break
+
+            if (
+                not env_proxy_mode
+                and studio_exe_path is not None
+                and self.config_manager.proxy_features_enabled
+            ):
+                if sys.platform == 'darwin':
+                    log_buffer.log(
+                        'Certificate',
+                        'Studio launch detected on macOS: skipping proxy CA refresh',
+                    )
+                else:
+                    run_in_thread(check_and_patch_running_roblox_ca)(studio_exe_path)
+            elif not env_proxy_mode and studio_exe_path is not None:
+                log_buffer.log(
+                    'Certificate',
+                    'Studio launch detected: proxy features disabled, skipping proxy CA refresh',
+                )
+            elif not env_proxy_mode:
+                log_buffer.log(
+                    'Certificate',
+                    'Studio launch detected but could not resolve exe path for CA check',
+                )
+
+            if (
+                not env_proxy_mode
+                and not self._studio_suppress_session
+                and not self._studio_notified
+            ):
+                self._studio_notified = True
+                self._studio_detected.emit()
+
+        if self._studio_was_running and not studio_running:
+            self._studio_notified = False
+
+        self._studio_was_running = studio_running
+
+    def _on_studio_detected(self) -> None:
+        """Show the Roblox Studio warning dialog (called on the main thread via signal)."""
+        top = QApplication.topLevelWidgets()
+        parent = next((w for w in top if w.isVisible()), None)
+        on_top = any(
+            w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+            for w in top
+        )
+        dialog = QDialog(parent)
+        if on_top:
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        dialog.setWindowTitle(tr('app.roblox_studio_detected'))
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        label = QLabel(tr('app.roblox_studio_is_currently_open_asset_modification'))
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        btn_layout = QHBoxLayout()
+        suppress_btn = QPushButton(tr('app.don_t_show_for_session'))
+        ok_btn = QPushButton(tr('app.ok'))
+        ok_btn.setDefault(True)
+        ok_btn.setFixedWidth(80)
+
+        btn_layout.addWidget(suppress_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(ok_btn)
+        layout.addLayout(btn_layout)
+
+        ok_btn.clicked.connect(dialog.accept)
+
+        def _suppress() -> None:
+            self._studio_suppress_session = True
+            dialog.accept()
+
+        suppress_btn.clicked.connect(_suppress)
+        dialog.exec()
+
+    def _delete_cache_background(self) -> None:
+        """Delete cache only after a stable exit, without closing a replacement Player."""
+        if sys.platform.startswith('linux'):
+            # A short Sober launcher-to-engine handoff is not a real logout
+            # The automatic path must never terminate a newly launched client
+            time.sleep(1.5)
+            messages = delete_cache(terminate_running=False)
+        else:
+            messages = delete_cache()
+        for msg in messages:
+            log_buffer.log('Cache', msg)

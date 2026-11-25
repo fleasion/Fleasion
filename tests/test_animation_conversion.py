@@ -1,18 +1,20 @@
 import base64
 import struct
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
+import pytest
 
 from fleasion.cache import cache_manager as cache_manager_module
 from fleasion.cache.animation_viewer import load_animation_data
 from fleasion.cache.roblox_document import export_roblox_document
 from fleasion.cache.tools.solidmodel_converter.rbxm.types import (
+    PropertyFormat,
     RbxDocument,
     RbxInstance,
     RbxMetadata,
     RbxProperty,
-    PropertyFormat,
 )
 from fleasion.cache.tools.solidmodel_converter.rbxm.xml_writer import write_rbxmx
 from fleasion.utils.r15_to_r6 import keyframe_to_curve_anim
@@ -51,7 +53,7 @@ def _sparse_weight_animation() -> bytes:
 </roblox>""".encode()
 
 
-def test_zero_weight_pose_does_not_interrupt_sparse_body_track():
+def test_zero_weight_pose_does_not_interrupt_sparse_body_track() -> None:
     keys = load_animation_data(_sparse_weight_animation())
 
     assert len(keys) == 3
@@ -59,7 +61,7 @@ def test_zero_weight_pose_does_not_interrupt_sparse_body_track():
     assert np.isclose(keys[1].pose_by_part_name['FaceBone'][0, 3], 2.0)
 
 
-def test_curve_animation_export_uses_binary_metadata_and_preserves_sparse_track():
+def test_curve_animation_export_uses_binary_metadata_and_preserves_sparse_track() -> None:
     curve_xml = keyframe_to_curve_anim(_sparse_weight_animation())
     root = ET.fromstring(curve_xml)
 
@@ -87,6 +89,7 @@ def test_curve_animation_export_uses_binary_metadata_and_preserves_sparse_track(
         and item.findtext("Properties/string[@name='Name']") == 'X'
     )
     encoded = x_curve.findtext("Properties/BinaryString[@name='ValuesAndTimes']")
+    assert encoded is not None
     values_and_times = base64.b64decode(encoded)
     version, key_count = struct.unpack_from('<II', values_and_times)
     values = [struct.unpack_from('<f', values_and_times, 10 + i * 14)[0] for i in range(key_count)]
@@ -103,7 +106,9 @@ def test_curve_animation_export_uses_binary_metadata_and_preserves_sparse_track(
     assert ticks == [0, 14400]
 
 
-def test_cache_manager_exports_binary_keyframes_as_curve_animation(tmp_path, monkeypatch):
+def test_cache_manager_exports_binary_keyframes_as_curve_animation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source_binary, _ = export_roblox_document(
         _sparse_weight_animation(),
         'converted_document_rbxm',
@@ -123,7 +128,7 @@ def test_cache_manager_exports_binary_keyframes_as_curve_animation(tmp_path, mon
     assert not list(root.iterfind(".//string[@name='Tags']"))
 
 
-def test_engine_binary_string_properties_keep_rbxmx_type():
+def test_engine_binary_string_properties_keep_rbxmx_type() -> None:
     instance = RbxInstance(
         class_name='KeyframeSequence',
         referent=1,

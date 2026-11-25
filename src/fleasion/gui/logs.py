@@ -1,12 +1,23 @@
 """Logs window."""
 
-from ..localization import tr
+from __future__ import annotations
 
 import sys
+from typing import override
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QFont,
+    QFontDatabase,
+    QKeySequence,
+    QShortcut,
+    QShowEvent,
+    QTextCharFormat,
+    QTextCursor,
+)
+from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QHBoxLayout,
@@ -17,14 +28,17 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..utils import LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
-from ..utils.macos_proxy_helper import HELPER_LOG_DIR
+from fleasion.localization import tr
+from fleasion.utils import LOGS_DIR, log_buffer, open_folder, time_tracker
+from fleasion.utils.macos_proxy_helper import HELPER_LOG_DIR
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.text import style_text
 
 
 class LogsWindow(QDialog):
     """Logs viewer window."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowTitle(tr('ui.gui.logs.logs'))
@@ -38,18 +52,12 @@ class LogsWindow(QDialog):
 
         self._last_count = 0
         self._setup_ui()
-        self._set_icon()
         self._start_updates()
 
-    def _set_icon(self):
-        if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
-
-            self.setWindowIcon(QIcon(str(icon_path)))
-
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(*PANEL_MARGINS)
+        layout.setSpacing(GAP)
 
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
@@ -58,46 +66,35 @@ class LogsWindow(QDialog):
 
         bottom = QHBoxLayout()
         bottom.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        bottom.setSpacing(GAP)
 
         copy_btn = QPushButton(tr('ui.gui.logs.copy_all'))
         copy_btn.setMinimumWidth(max(80, copy_btn.sizeHint().width()))
-        copy_btn.setFixedHeight(22)
         copy_btn.clicked.connect(self._copy_all)
         bottom.addWidget(copy_btn)
 
-        bottom.addSpacing(6)
-
         open_folder_btn = QPushButton(tr('ui.gui.logs.open_log_folder'))
         open_folder_btn.setMinimumWidth(max(110, open_folder_btn.sizeHint().width()))
-        open_folder_btn.setFixedHeight(22)
         open_folder_btn.clicked.connect(lambda: open_folder(LOGS_DIR))
         bottom.addWidget(open_folder_btn)
 
         if sys.platform == 'darwin':
-            bottom.addSpacing(6)
-
             open_helper_logs_btn = QPushButton(tr('ui.gui.logs.open_helper_logs'))
             open_helper_logs_btn.setMinimumWidth(max(118, open_helper_logs_btn.sizeHint().width()))
-            open_helper_logs_btn.setFixedHeight(22)
             open_helper_logs_btn.setToolTip(
                 tr('ui.gui.logs.open_the_root_owned_macos_proxy_helper')
             )
             open_helper_logs_btn.clicked.connect(lambda: open_folder(HELPER_LOG_DIR))
             bottom.addWidget(open_helper_logs_btn)
 
-        bottom.addSpacing(6)
-
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText(tr('ui.gui.logs.search'))
-        self._search_input.setFixedHeight(22)
         self._search_input.setClearButtonEnabled(True)
         self._search_input.textChanged.connect(self._on_search)
         bottom.addWidget(self._search_input, 1)
 
-        bottom.addSpacing(6)
-
         self.time_label = QLabel()
-        self.time_label.setStyleSheet('color: #888; font-size: 9pt;')
+        style_text(self.time_label, tone='muted', point_size=9)
         self._refresh_time_label()
         bottom.addWidget(self.time_label)
 
@@ -112,24 +109,22 @@ class LogsWindow(QDialog):
         esc = QShortcut(QKeySequence('Escape'), self._search_input)
         esc.activated.connect(self._clear_search)
 
-    def _get_monospace_font(self):
-        from PyQt6.QtGui import QFontDatabase
-
+    def _get_monospace_font(self) -> QFont:
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setPointSize(10)
         return font
 
-    def _focus_search(self):
+    def _focus_search(self) -> None:
         self._search_input.setFocus()
         self._search_input.selectAll()
 
-    def _clear_search(self):
+    def _clear_search(self) -> None:
         self._search_input.clear()
         self.text_edit.setFocus()
 
-    def _on_search(self, text: str):
+    def _on_search(self, text: str) -> None:
         """Highlight all occurrences of the search text."""
-        extra_selections = []
+        extra_selections: list[QTextEdit.ExtraSelection] = []
 
         if text:
             highlight_fmt = QTextCharFormat()
@@ -154,7 +149,7 @@ class LogsWindow(QDialog):
 
         self.text_edit.setExtraSelections(extra_selections)
 
-    def _start_updates(self):
+    def _start_updates(self) -> None:
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_logs)
         self.timer.start(250)
@@ -164,7 +159,8 @@ class LogsWindow(QDialog):
         self.time_timer.timeout.connect(self._refresh_time_label)
         self.time_timer.start(1000)
 
-    def showEvent(self, a0):
+    @override
+    def showEvent(self, a0: QShowEvent) -> None:
         if not self.timer.isActive():
             self.timer.start(250)
         if not self.time_timer.isActive():
@@ -174,14 +170,13 @@ class LogsWindow(QDialog):
         self._refresh_time_label()
         super().showEvent(a0)
 
-    def _update_logs(self):
-        logs = log_buffer.get_all()
-        count = len(logs)
+    def _update_logs(self) -> None:
+        count, new_logs = log_buffer.get_since(self._last_count)
         if count != self._last_count:
             scrollbar = self.text_edit.verticalScrollBar()
             was_at_bottom = scrollbar.value() >= scrollbar.maximum() - 4
 
-            new_text = '\n'.join(logs[self._last_count :])
+            new_text = '\n'.join(new_logs)
             prefix = '\n' if self._last_count > 0 else ''
 
             cursor = QTextCursor(self.text_edit.document())
@@ -197,16 +192,17 @@ class LogsWindow(QDialog):
             if self._search_input.text():
                 self._on_search(self._search_input.text())
 
-    def _copy_all(self):
+    def _copy_all(self) -> None:
         QApplication.clipboard().setText(self.text_edit.toPlainText())
 
-    def _refresh_time_label(self):
+    def _refresh_time_label(self) -> None:
         total = time_tracker.get_total_seconds()
         self.time_label.setText(
             tr('ui.gui.logs.time_wasted_value', value0=time_tracker.format_duration(total))
         )
 
-    def closeEvent(self, a0):
+    @override
+    def closeEvent(self, a0: QCloseEvent) -> None:
         self.timer.stop()
         self.time_timer.stop()
         super().closeEvent(a0)

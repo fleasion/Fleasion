@@ -1,5 +1,9 @@
-# -*- mode: python ; coding: utf-8 -*-
+from __future__ import annotations
+
 import sys
+
+from PyInstaller.building.api import EXE, PYZ
+from PyInstaller.building.build_main import Analysis
 
 _use_upx = sys.platform == 'win32'
 
@@ -8,13 +12,13 @@ a = Analysis(
     pathex=['src'],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=['cryptography.x509', 'cryptography.x509.oid'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
-    optimize=0,
+    optimize=1,
 )
 pyz = PYZ(a.pure)
 
@@ -27,7 +31,7 @@ exe = EXE(
     name='fleasion-linux-proxy-helper',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=sys.platform.startswith('linux'),
     upx=_use_upx,
     console=True,
     disable_windowed_traceback=False,

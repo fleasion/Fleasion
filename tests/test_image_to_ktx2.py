@@ -1,10 +1,15 @@
+from pathlib import Path
+
+import pytest
 from PIL import Image
 
 from fleasion.cache.tools.image_to_ktx2 import converter
 from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2_levels
 
 
-def test_image_converter_generates_full_mips_and_keys_cache_by_mode(monkeypatch, tmp_path):
+def test_image_converter_generates_full_mips_and_keys_cache_by_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(converter, 'APP_CACHE_DIR', tmp_path / 'cache')
     image_path = tmp_path / 'checker.png'
 

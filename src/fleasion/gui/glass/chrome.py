@@ -1,0 +1,545 @@
+"""Glass title bar and edge resizing for frameless dashboard windows."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final, Literal, override
+from weakref import WeakKeyDictionary, ref
+
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSignalBlocker, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QFont,
+    QHoverEvent,
+    QLinearGradient,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
+from PySide6.QtWidgets import (
+    QAbstractButton,
+    QApplication,
+    QBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QTabBar,
+    QTabWidget,
+    QWidget,
+)
+from shiboken6 import isValid
+
+from .style import glass_colors
+from .transparency import enable_transparency
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from PySide6.QtGui import QPaintEvent, QWindow
+
+
+type WindowButton = Literal['min', 'max', 'close']
+
+_TITLE_BAR_HEIGHT: Final = 36
+_ICON_SIZE: Final = QSize(20, 20)
+
+# Window controls: a pill holding a glyph drawn on a 16px grid at 14px
+_BUTTON_SIZE: Final = QSize(32, 24)
+_BUTTON_RADIUS: Final = 11.0
+_GLYPH_SIZE: Final = 14
+
+# How far in from the window edge a press starts a resize
+_RESIZE_MARGIN: Final = 6
+
+# The title bar sits flush against the window edges
+_CHROME_MARGINS: Final = (0, 0, 0, 0)
+
+
+def _window_handle(window: QWidget) -> QWindow | None:
+    # Qt has no native window until the widget is first shown
+    return window.windowHandle()
+
+
+#
+# Title bar
+#
+
+
+class _WindowButton(QAbstractButton):
+    """A minimize, maximize or close pill that paints its own glyph."""
+
+    def __init__(self, role: WindowButton) -> None:
+        super().__init__()
+        self.role = role
+        self.setFixedSize(_BUTTON_SIZE)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+
+    def _glyph(self, rect: QRectF) -> QPainterPath:
+        scale = _GLYPH_SIZE / 16
+        origin = rect.center() - QPointF(_GLYPH_SIZE / 2, _GLYPH_SIZE / 2)
+
+        def point(x: float, y: float) -> QPointF:
+            return origin + QPointF(x * scale, y * scale)
+
+        path = QPainterPath()
+        if self.role == 'min':
+            path.moveTo(point(4.5, 8))
+            path.lineTo(point(11.5, 8))
+        elif self.role == 'max':
+            path.addRoundedRect(
+                QRectF(point(4.5, 4.5), point(11.5, 11.5)), 1.6 * scale, 1.6 * scale
+            )
+        else:
+            path.moveTo(point(5, 5))
+            path.lineTo(point(11, 11))
+            path.moveTo(point(11, 5))
+            path.lineTo(point(5, 11))
+        return path
+
+    @override
+    def paintEvent(self, _event: QPaintEvent, /) -> None:
+        colors = glass_colors()
+        hovered = self.underMouse() or self.isDown()
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+
+        def tint(color: QColor, alpha: float) -> QColor:
+            tinted = QColor(color)
+            tinted.setAlphaF(alpha)
+            return tinted
+
+        # Close turns red under the pointer; the others brighten like the panes
+        if hovered and self.role == 'close':
+            fill, side, top = (
+                QColor(255, 90, 104, 217),
+                tint(colors.ink, 0.35),
+                tint(colors.ink, 0.35),
+            )
+        else:
+            fill = tint(colors.ink, 0.11 if hovered else 0.06)
+            side, top = tint(colors.ink, 0.08), tint(colors.ink, 0.13)
+        rim = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        rim.setColorAt(0, top)
+        rim.setColorAt(0.45, side)
+        rim.setColorAt(1, side)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(rim, 1.0))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, _BUTTON_RADIUS, _BUTTON_RADIUS)
+
+        pen = QPen(colors.text, 1.5 if self.role == 'max' else 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(self._glyph(rect))
+        painter.end()
+
+
+class GlassTitleBar(QWidget):
+    """Draggable glass header with pill window controls."""
+
+    def __init__(self, window: QWidget) -> None:
+        super().__init__(window)
+        self._window = window
+        self.setFixedHeight(_TITLE_BAR_HEIGHT)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 4, 8, 4)
+        row.setSpacing(6)
+
+        # The dashboard shows its tabs in the title bar; other windows show icon and title
+        self._dashboard_tabs = window.findChild(QTabWidget, 'DashboardTabs')
+        self._navigation: QTabBar | None = None
+        if self._dashboard_tabs is None:
+            icon = QLabel()
+            app_icon = window.windowIcon()
+            if app_icon.isNull():
+                app_icon = QApplication.windowIcon()
+            if not app_icon.isNull():
+                icon.setPixmap(app_icon.pixmap(_ICON_SIZE))
+
+            title = QLabel(window.windowTitle())
+            font = QFont()
+            font.setBold(True)
+            font.setPointSizeF(10.5)
+            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.3)
+            title.setFont(font)
+            window.windowTitleChanged.connect(title.setText)
+
+            row.addWidget(icon)
+            row.addWidget(title)
+        else:
+            # A mirror of the dashboard's own tab bar, which is hidden meanwhile
+            navigation = QTabBar(self)
+            navigation.setExpanding(False)
+            navigation.setDrawBase(False)
+            navigation.setObjectName('GlassDashboardNavigation')
+            navigation.currentChanged.connect(self._dashboard_tabs.setCurrentIndex)
+            self._dashboard_tabs.currentChanged.connect(navigation.setCurrentIndex)
+            self._navigation = navigation
+
+            row.addWidget(navigation)
+            self.sync_tabs()
+            self._dashboard_tabs.tabBar().hide()
+
+        row.addStretch()
+
+        # Window controls
+        buttons: tuple[WindowButton, ...] = ('min', 'max', 'close')
+        for role in buttons:
+            button = _WindowButton(role)
+            button.clicked.connect(self._presser(role))
+            row.addWidget(button)
+
+    def sync_tabs(self) -> None:
+        tabs = self._dashboard_tabs
+        navigation = self._navigation
+        if tabs is None or navigation is None:
+            return
+
+        # Rebuilding a QTabBar selects tab zero by default. Suppress its
+        # change signal so theme switches never navigate away from the page
+        # the user already has open
+        with QSignalBlocker(navigation):
+            while navigation.count() < tabs.count():
+                navigation.addTab(tabs.tabText(navigation.count()))
+            while navigation.count() > tabs.count():
+                navigation.removeTab(navigation.count() - 1)
+
+            for index in range(tabs.count()):
+                navigation.setTabText(index, tabs.tabText(index))
+                navigation.setTabEnabled(index, tabs.isTabEnabled(index))
+            navigation.setCurrentIndex(tabs.currentIndex())
+
+    def restore_tabs(self) -> None:
+        if self._dashboard_tabs is not None:
+            self._dashboard_tabs.tabBar().show()
+
+    #
+    # Window controls
+    #
+
+    def _presser(self, role: WindowButton) -> Callable[[], None]:
+        return lambda: self._press(role)
+
+    def _press(self, role: WindowButton) -> None:
+        window = self._window
+        if role == 'min':
+            window.showMinimized()
+        elif role == 'close':
+            window.close()
+        elif window.isMaximized():
+            window.showNormal()
+        else:
+            window.showMaximized()
+
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        # Let the window manager drag the window
+        handle = _window_handle(self._window)
+        if event.button() == Qt.MouseButton.LeftButton and handle is not None:
+            handle.startSystemMove()
+
+        super().mousePressEvent(event)
+
+    @override
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press('max')
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+
+#
+# Edge resizing
+#
+
+
+_SIDE_CURSORS: Final = {
+    Qt.Edge.LeftEdge: Qt.CursorShape.SizeHorCursor,
+    Qt.Edge.RightEdge: Qt.CursorShape.SizeHorCursor,
+    Qt.Edge.TopEdge: Qt.CursorShape.SizeVerCursor,
+    Qt.Edge.BottomEdge: Qt.CursorShape.SizeVerCursor,
+}
+
+# Corners whose diagonal runs top left to bottom right
+_FALLING_DIAGONALS: Final = (
+    Qt.Edge.LeftEdge | Qt.Edge.TopEdge,
+    Qt.Edge.RightEdge | Qt.Edge.BottomEdge,
+)
+
+
+# Events the edge resizer reacts to; it filters every event in the application
+_RESIZER_EVENTS: Final = frozenset(
+    {
+        QEvent.Type.Polish,
+        QEvent.Type.Leave,
+        QEvent.Type.Hide,
+        QEvent.Type.WindowDeactivate,
+        QEvent.Type.MouseMove,
+        QEvent.Type.HoverMove,
+        QEvent.Type.MouseButtonPress,
+    }
+)
+
+
+class EdgeResizer(QObject):
+    """Frameless windows still need resizable edges."""
+
+    def __init__(self, window: QWidget) -> None:
+        super().__init__(window)
+        self._window = window
+        app = QApplication.instance()
+        self._app = app if isinstance(app, QApplication) else None
+
+        # Original WA_Hover per widget, restored on detach
+        self._hover: WeakKeyDictionary[QWidget, bool] = WeakKeyDictionary()
+
+        # The widget currently showing a resize cursor, and what it showed before
+        self._cursor_widget: QWidget | None = None
+        self._previous_cursor: QCursor | None = None
+        self._cursor_was_set = False
+
+        # Hover events are needed on every child to update the cursor over edges
+        for widget in [window, *window.findChildren(QWidget)]:
+            self._track(widget)
+        if self._app is not None:
+            self._app.installEventFilter(self)
+
+    def _track(self, widget: QWidget) -> None:
+        if widget not in self._hover:
+            self._hover[widget] = widget.testAttribute(Qt.WidgetAttribute.WA_Hover)
+            widget.setAttribute(Qt.WidgetAttribute.WA_Hover)
+
+    def _restore_cursor(self) -> None:
+        widget = self._cursor_widget
+        if widget is not None and isValid(widget):
+            if self._cursor_was_set and self._previous_cursor is not None:
+                widget.setCursor(self._previous_cursor)
+            else:
+                widget.unsetCursor()
+
+        self._cursor_widget = None
+        self._previous_cursor = None
+
+    def detach(self) -> None:
+        if self._app is not None:
+            self._app.removeEventFilter(self)
+        self._restore_cursor()
+
+        for widget, hovered in list(self._hover.items()):
+            if isValid(widget):
+                widget.setAttribute(Qt.WidgetAttribute.WA_Hover, on=hovered)
+        self._hover.clear()
+
+    def _edges(self, pos: QPoint) -> Qt.Edge:
+        window = self._window
+        if not window.rect().contains(pos):
+            return Qt.Edge(0)
+
+        edges = Qt.Edge(0)
+        if pos.x() <= _RESIZE_MARGIN:
+            edges |= Qt.Edge.LeftEdge
+        elif pos.x() >= window.width() - _RESIZE_MARGIN:
+            edges |= Qt.Edge.RightEdge
+
+        if pos.y() <= _RESIZE_MARGIN:
+            edges |= Qt.Edge.TopEdge
+        elif pos.y() >= window.height() - _RESIZE_MARGIN:
+            edges |= Qt.Edge.BottomEdge
+
+        return edges
+
+    def _update_cursor(self, widget: QWidget, edges: Qt.Edge) -> None:
+        if not edges or widget is not self._cursor_widget:
+            self._restore_cursor()
+        if not edges:
+            return
+
+        # Remember the cursor to put back once the pointer leaves the edge
+        if self._cursor_widget is None:
+            self._cursor_widget = widget
+            self._previous_cursor = QCursor(widget.cursor())
+            self._cursor_was_set = widget.testAttribute(Qt.WidgetAttribute.WA_SetCursor)
+
+        if edges in _SIDE_CURSORS:
+            widget.setCursor(_SIDE_CURSORS[edges])
+        else:
+            diagonal = edges in _FALLING_DIAGONALS
+            cursor = Qt.CursorShape.SizeFDiagCursor if diagonal else Qt.CursorShape.SizeBDiagCursor
+            widget.setCursor(cursor)
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        # Rejects most events by type before the costlier validity checks
+        kind = event.type()
+        if (
+            kind not in _RESIZER_EVENTS
+            or not isinstance(watched, QWidget)
+            or not isValid(self._window)
+        ):
+            return False
+
+        # The pointer moved into another window
+        if watched.window() is not self._window:
+            if kind in {QEvent.Type.MouseMove, QEvent.Type.HoverMove, QEvent.Type.MouseButtonPress}:
+                self._restore_cursor()
+            return False
+
+        # Widgets created later need hover events too
+        if kind == QEvent.Type.Polish:
+            self._track(watched)
+
+        # Maximized windows have no edges to drag; the pointer left or the window went away
+        if (
+            self._window.isMaximized()
+            or (kind == QEvent.Type.Leave and watched is self._cursor_widget)
+            or (
+                kind in {QEvent.Type.Hide, QEvent.Type.WindowDeactivate} and watched is self._window
+            )
+        ):
+            self._restore_cursor()
+            return False
+
+        if not isinstance(event, QMouseEvent | QHoverEvent):
+            return False
+
+        position = watched.mapTo(self._window, event.position().toPoint())
+        edges = self._edges(position)
+        if kind in {QEvent.Type.MouseMove, QEvent.Type.HoverMove}:
+            self._update_cursor(self._window.childAt(position) or self._window, edges)
+        elif (
+            isinstance(event, QMouseEvent)
+            and kind == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+            and edges
+            and (handle := _window_handle(self._window)) is not None
+        ):
+            # Let the window manager run the resize
+            return handle.startSystemResize(edges)
+
+        return False
+
+
+#
+# Installation
+#
+
+
+@dataclass(frozen=True)
+class _Chrome:
+    title_bar: GlassTitleBar
+    resizer: EdgeResizer
+    original_margins: tuple[int, int, int, int]
+
+
+# Windows wearing the glass chrome, and windows allowed to wear it
+_installed: WeakKeyDictionary[QWidget, _Chrome] = WeakKeyDictionary()
+_capable: WeakKeyDictionary[QWidget, bool] = WeakKeyDictionary()
+
+
+def register(window: QWidget) -> None:
+    """Mark a window whose platform title bar Glass may replace."""
+    if window in _capable or not isValid(window):
+        return
+
+    _capable[window] = True
+    reference = ref(window)
+
+    def forget() -> None:
+        if (deleted := reference()) is not None:
+            _installed.pop(deleted, None)
+            _capable.pop(deleted, None)
+
+    window.destroyed.connect(forget)
+
+
+def registered_windows() -> list[QWidget]:
+    return [window for window in _capable if isValid(window)]
+
+
+def _layout(window: QWidget) -> QBoxLayout | None:
+    layout = window.layout()
+    return layout if isinstance(layout, QBoxLayout) else None
+
+
+def sync_dashboard_tabs(window: QWidget) -> None:
+    chrome = _installed.get(window)
+    if chrome is not None and isValid(chrome.title_bar):
+        chrome.title_bar.sync_tabs()
+
+
+def prepare_frameless(window: QWidget) -> None:
+    """Make a window frameless and translucent before it has any children.
+
+    Changing window flags re-parents the window and resends events to every
+    descendant, about 100 ms on the finished dashboard. apply_chrome skips
+    the change when the flags already match.
+    """
+    window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=True)
+    window.setWindowFlag(Qt.WindowType.FramelessWindowHint, on=True)
+
+
+def apply_chrome(window: QWidget, *, enabled: bool) -> None:
+    """Swap the platform title bar for the glass one, or restore it."""
+    if not isValid(window):
+        _installed.pop(window, None)
+        _capable.pop(window, None)
+        return
+
+    layout = _layout(window)
+    chrome = _installed.get(window)
+
+    # Install the title bar and resizer above the window's own content
+    if enabled and chrome is None and layout is not None:
+        margins = layout.contentsMargins()
+        original_margins = (margins.left(), margins.top(), margins.right(), margins.bottom())
+        chrome = _Chrome(GlassTitleBar(window), EdgeResizer(window), original_margins)
+        layout.insertWidget(0, chrome.title_bar)
+        layout.setContentsMargins(*_CHROME_MARGINS)
+        _installed[window] = chrome
+
+    # Remove them again and put the layout back as it was
+    elif not enabled and chrome is not None:
+        chrome.title_bar.restore_tabs()
+        chrome.title_bar.hide()
+        if layout is not None:
+            layout.removeWidget(chrome.title_bar)
+            layout.setContentsMargins(*chrome.original_margins)
+
+        chrome.title_bar.deleteLater()
+        chrome.resizer.detach()
+        chrome.resizer.deleteLater()
+        del _installed[window]
+
+    window.setProperty('glassChrome', enabled)
+
+    # Changing window flags hides the window, so show it again if it was visible
+    frameless = bool(window.windowFlags() & Qt.WindowType.FramelessWindowHint)
+    if frameless != enabled:
+        visible = window.isVisible()
+        active = window.isActiveWindow()
+        if enabled:
+            if QApplication.platformName() == 'windows' and window.testAttribute(
+                Qt.WidgetAttribute.WA_WState_Created
+            ):
+                # Windows keeps the native window and its opaque backing store
+                # through a flag change, so the transparent corners would stay
+                # black. Start from a fresh one, as a newly opened window does
+                window.destroy()
+            window.setWindowFlag(Qt.WindowType.FramelessWindowHint, on=True)
+            # Sets the translucency itself: setting it here first would make the
+            # still opaque native window look like it already has alpha
+            enable_transparency(window)
+        else:
+            window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=False)
+            window.setWindowFlag(Qt.WindowType.FramelessWindowHint, on=False)
+        if visible:
+            window.show()
+            if active:
+                window.activateWindow()

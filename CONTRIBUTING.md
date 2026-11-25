@@ -4,7 +4,7 @@ Thanks for contributing to Fleasion. This document covers the development enviro
 
 ## Development Requirements
 
-- **Windows 10+, macOS 11+, or Linux with the Sober Flatpak**
+- **Windows 10+, macOS 14.4+, or Linux with the Sober Flatpak**
 - [**uv**](https://docs.astral.sh/uv/) package manager
 - Linux desktop installs need `pkexec`/Polkit available (installed by default on Mint and most desktop distributions)
 
@@ -77,7 +77,6 @@ The draft-release workflow accepts stable and prerelease project versions. Prere
 
 ```text
 ├── Fleasion.spec   # PyInstaller specification for the standalone build
-├── launcher.py     # Thin launcher used to start the packaged app
 ├── pyproject.toml  # Project metadata and dependency configuration
 ├── README.md       # User-facing project overview and usage guide
 ├── CONTRIBUTING.md # Development, build, validation, and release guide
@@ -85,8 +84,8 @@ The draft-release workflow accepts stable and prerelease project versions. Prere
 │   └── clear_first_time_setup.py  # Development utility for resetting initial setup
 ├── src/
 │   └── fleasion/
-│       ├── app.py                        # Application entrypoint, lifecycle, and startup wiring
-│       ├── tray.py                       # System tray / menu bar integration
+│       ├── __main__.py                   # Application entry point
+│       ├── app/                          # Startup, tray, arguments, process control, and lifecycle
 │       ├── cache/                        # Cache, preview, export, and conversion tooling
 │       ├── config/                       # Settings persistence and config management
 │       ├── gui/                          # Dashboard and supporting Qt widgets

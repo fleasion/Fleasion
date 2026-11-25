@@ -4,20 +4,38 @@ from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer
+from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer
 
-from ..utils import log_buffer
-from ..utils.platform_macos import (
+from fleasion.utils import log_buffer
+from fleasion.utils.platform_macos import (
     FROSTSTRAP_MOD_BACKUP_DIR,
     FROSTSTRAP_VERSIONS_DIR,
     appleblox_data_dir,
     find_bootstrapper_restore_resource_dirs,
     is_roblox_running,
 )
-from ..utils.threading import run_in_thread
+from fleasion.utils.threading import run_in_thread
+
 from .fflag_manager import CLIENT_SETTINGS_REL
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from .manager import ModificationManager
+
+
+type VoidCallback = Callable[[], object]
+
+
+def _invoke_custom_fflag(callback: VoidCallback, *, failure_message: str) -> None:
+    try:
+        callback()
+    except Exception as exc:  # ruff: ignore[blind-except]
+        log_buffer.log('CustomFFlags', f'{failure_message}: {exc}')
+
 
 _SETTINGS_POLL_INTERVAL_MS = 25
 _TOPOLOGY_POLL_INTERVAL_MS = 500
@@ -40,15 +58,15 @@ class MacBootstrapperBridge(QObject):
 
     def __init__(
         self,
-        modification_manager,
+        modification_manager: ModificationManager,
         parent: QObject | None = None,
-        custom_fflag_seed=None,
-        custom_fflag_prepare=None,
-    ):
+        custom_fflag_seed: VoidCallback | None = None,
+        custom_fflag_prepare: VoidCallback | None = None,
+    ) -> None:
         super().__init__(parent)
-        self._manager = modification_manager
-        self._custom_fflag_seed = custom_fflag_seed
-        self._custom_fflag_prepare = custom_fflag_prepare
+        self._manager: ModificationManager = modification_manager
+        self._custom_fflag_seed: VoidCallback | None = custom_fflag_seed
+        self._custom_fflag_prepare: VoidCallback | None = custom_fflag_prepare
         self._stopped = False
         self._settings_signatures: dict[Path, tuple[int, int] | None] = {}
         self._restore_signature: tuple[str, ...] = ()
@@ -107,10 +125,7 @@ class MacBootstrapperBridge(QObject):
         return directories
 
     def _settings_targets(self) -> list[Path]:
-        return [
-            macos_dir / CLIENT_SETTINGS_REL
-            for macos_dir in self._live_macos_directories()
-        ]
+        return [macos_dir / CLIENT_SETTINGS_REL for macos_dir in self._live_macos_directories()]
 
     def _directories_to_watch(self) -> set[str]:
         candidates: set[Path] = set(self._live_macos_directories())
@@ -156,9 +171,9 @@ class MacBootstrapperBridge(QObject):
     def _file_signature(path: Path) -> tuple[int, int] | None:
         try:
             stat_result = path.stat()
-            return stat_result.st_mtime_ns, stat_result.st_size
         except OSError:
             return None
+        return stat_result.st_mtime_ns, stat_result.st_size
 
     def _reconcile_launch_settings(self) -> None:
         if self._stopped:
@@ -178,9 +193,7 @@ class MacBootstrapperBridge(QObject):
                 self._settings_signatures[target] = signature
                 changed = changed or signature is not None
                 launch_rewrite = launch_rewrite or (
-                    was_known
-                    and signature is not None
-                    and not self._internal_reapply_active
+                    was_known and signature is not None and not self._internal_reapply_active
                 )
 
         if changed:
@@ -193,13 +206,10 @@ class MacBootstrapperBridge(QObject):
             self._sync_watches()
             if launch_rewrite:
                 if callable(self._custom_fflag_prepare):
-                    try:
-                        self._custom_fflag_prepare()
-                    except Exception as exc:
-                        log_buffer.log(
-                            'CustomFFlags',
-                            f'Failed to arm a fresh response after bootstrapper rewrite: {exc}',
-                        )
+                    _invoke_custom_fflag(
+                        self._custom_fflag_prepare,
+                        failure_message='Failed to arm a fresh response after bootstrapper rewrite',
+                    )
                 self._start_launch_guard()
 
     @staticmethod
@@ -210,9 +220,7 @@ class MacBootstrapperBridge(QObject):
         """Guard managed Resources while AppleBlox runs its pre-launch mod pass."""
         self._launch_guard_deadline = time.monotonic() + _LAUNCH_GUARD_TIMEOUT_SECONDS
         self._player_seen_at = time.monotonic() if is_roblox_running() else 0.0
-        self._managed_signatures = self._path_signatures(
-            self._manager.managed_resource_paths()
-        )
+        self._managed_signatures = self._path_signatures(self._manager.managed_resource_paths())
         # Two passes avoid accepting an AppleBlox write that races between a
         # Fleasion write and the signature captured at the end of that pass.
         self._managed_reapply_passes = max(self._managed_reapply_passes, 2)
@@ -255,16 +263,11 @@ class MacBootstrapperBridge(QObject):
             self._internal_reapply_active = True
             self._manager.reapply_all()
             if callable(self._custom_fflag_seed):
-                try:
-                    self._custom_fflag_seed()
-                except Exception as exc:
-                    log_buffer.log(
-                        'CustomFFlags',
-                        f'Failed to re-seed custom FastFlags after bootstrapper rewrite: {exc}',
-                    )
-            self._managed_signatures = self._path_signatures(
-                self._manager.managed_resource_paths()
-            )
+                _invoke_custom_fflag(
+                    self._custom_fflag_seed,
+                    failure_message='Failed to re-seed custom FastFlags after bootstrapper rewrite',
+                )
+            self._managed_signatures = self._path_signatures(self._manager.managed_resource_paths())
             self._managed_reapply_passes = max(self._managed_reapply_passes - 1, 0)
         finally:
             self._internal_reapply_active = False

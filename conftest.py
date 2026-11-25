@@ -1,27 +1,104 @@
 """Repository-wide pytest environment guards."""
 
+import os
 import socket
+import sys
 import threading
+from collections.abc import Callable, Iterator
+from tempfile import TemporaryDirectory
+from typing import Protocol
 
 import pytest
-
 
 _THREADED_ASYNCIO_MARKER = 'threaded_asyncio'
 
 
+class _PytestConfigIsolation:
+    config_home: TemporaryDirectory[str] | None = None
+    environment_key: str | None = None
+    original_value: str | None = None
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Keep all Fleasion config paths in an isolated tree during pytest."""
+    del session
+    if 'fleasion.utils.paths' in sys.modules:
+        pytest.exit('Fleasion paths were initialized before pytest could isolate the user config')
+    key = (
+        'LOCALAPPDATA'
+        if sys.platform == 'win32'
+        else 'FLEASION_USER_HOME'
+        if sys.platform == 'darwin'
+        else 'XDG_CONFIG_HOME'
+    )
+    _PytestConfigIsolation.environment_key = key
+    _PytestConfigIsolation.original_value = os.environ.get(key)
+    _PytestConfigIsolation.config_home = TemporaryDirectory(prefix='fleasion-pytest-config-')
+    os.environ[key] = _PytestConfigIsolation.config_home.name
+
+
+def _delete_leftover_top_level_widgets() -> None:
+    """Delete widgets that tests left alive while Qt can still do it in order.
+
+    PySide6 6.12 (and 6.11 on Python 3.15) crashes in its exit cleanup when it
+    destroys parentless widgets after the interpreter starts finalizing.
+    """
+    if 'PySide6.QtWidgets' not in sys.modules:
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent  # ruff: ignore[import-outside-top-level]
+    from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
+
+    app = QApplication.instance()
+    if not isinstance(app, QApplication):
+        return
+    for widget in QApplication.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Restore the external environment after pytest finishes."""
+    del session, exitstatus
+    _delete_leftover_top_level_widgets()
+    key = _PytestConfigIsolation.environment_key
+    if key is not None:
+        if _PytestConfigIsolation.original_value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = _PytestConfigIsolation.original_value
+    if _PytestConfigIsolation.config_home is not None:
+        _PytestConfigIsolation.config_home.cleanup()
+        _PytestConfigIsolation.config_home = None
+
+
+class _ThreadFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        target: Callable[[], None],
+        name: str,
+        daemon: bool,
+    ) -> threading.Thread: ...
+
+
+type _SocketPairFactory = Callable[[], tuple[socket.socket, socket.socket]]
+
+
 def _cross_thread_socket_wakeup_failure(
     *,
-    socketpair=socket.socketpair,
-    thread_factory=threading.Thread,
+    socketpair: _SocketPairFactory = socket.socketpair,
+    thread_factory: _ThreadFactory = threading.Thread,
 ) -> str | None:
     """Return why a socket wakeup failed, or ``None`` when it works."""
     receiver, sender = socketpair()
-    errors: list[BaseException] = []
+    errors: list[OSError] = []
 
     def wake() -> None:
         try:
             sender.sendall(b'\0')
-        except BaseException as exc:
+        except OSError as exc:
             errors.append(exc)
 
     worker = thread_factory(target=wake, name='pytest-sandbox-wakeup-probe', daemon=True)
@@ -48,9 +125,7 @@ def _cross_thread_socket_wakeup_failure(
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Fail fast when selected async/thread tests would deadlock in a sandbox."""
-    guarded_items = [
-        item for item in items if item.get_closest_marker(_THREADED_ASYNCIO_MARKER)
-    ]
+    guarded_items = [item for item in items if item.get_closest_marker(_THREADED_ASYNCIO_MARKER)]
     if not guarded_items:
         return
 
@@ -67,3 +142,17 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         'Rerun pytest outside the restricted sandbox.',
         returncode=2,
     )
+
+
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse]
+def _finish_qt_deletions() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Dispatch Qt deferred destruction after each test and its fixtures finish."""
+    yield
+    # Most tests never import Qt; do not initialize it just for teardown
+    if 'PySide6.QtWidgets' not in sys.modules:
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent  # ruff: ignore[import-outside-top-level]
+    from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
+
+    if isinstance(QApplication.instance(), QApplication):
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

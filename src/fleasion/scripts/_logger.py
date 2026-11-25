@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import logging
 import traceback
-from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from colorama import Back, Fore, Style, just_fix_windows_console
 
 if TYPE_CHECKING:
-    from typing import ClassVar
+    from types import TracebackType
 
 
 class ColorFormatter(logging.Formatter):
@@ -44,8 +43,11 @@ class ColorFormatter(logging.Formatter):
             return None
 
         return ''.join(
-            traceback.format_exception(  # pyright: ignore[reportCallIssue]
-                exception_type, exception, exception_traceback, colorize=True
+            traceback.format_exception(
+                exception_type,
+                exception,
+                exception_traceback,
+                colorize=True,  # pyright: ignore[reportCallIssue, reportUnknownArgumentType]
             )
         ).rstrip('\n')
 

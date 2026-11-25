@@ -7,6 +7,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+lazy from fleasion.utils import linux_clients, paths, platform_linux
+
 SOBER_TARGET_PATHS: dict[str, str] = {
     r'PlatformContent\pc\textures\sky\sky512_bk.tex': 'android/textures/sky/sky512_bk.tex',
     r'PlatformContent\pc\textures\sky\sky512_dn.tex': 'android/textures/sky/sky512_dn.tex',
@@ -37,7 +39,8 @@ def _normalise_relative_target(target_path: str | Path) -> str:
     drive, _tail = ntpath.splitdrive(text)
     parts = [part for part in normalised.split('/') if part and part != '.']
     if drive or normalised.startswith('/') or not parts or any(part == '..' for part in parts):
-        raise ValueError('Target path must be a safe relative resource path')
+        msg = 'Target path must be a safe relative resource path'
+        raise ValueError(msg)
     return '/'.join(parts)
 
 
@@ -78,19 +81,15 @@ def _linux_resource_client_key(resource_dir: Path) -> str | None:
         return None
     root = Path(resource_dir)
     try:
-        from ..utils.linux_clients import LINUX_CLIENTS
-        from ..utils.paths import USER_HOME
-        from ..utils.platform_linux import is_sober_resource_dir
-
-        for descriptor in LINUX_CLIENTS:
-            if descriptor.paths(home=USER_HOME).owns_resource_path(root):
+        for descriptor in linux_clients.LINUX_CLIENTS:
+            if descriptor.paths(home=paths.USER_HOME).owns_resource_path(root):
                 return descriptor.key
         # Preserve the narrow legacy Sober adapter used by tests and existing
         # installations whose Flatpak metadata is temporarily unavailable.
-        if is_sober_resource_dir(root):
+        if platform_linux.is_sober_resource_dir(root):
             return 'sober'
-    except Exception:
-        pass
+    except ImportError, AttributeError, OSError:
+        return None
     return None
 
 
@@ -165,19 +164,26 @@ def _read_zip_member(archive_path: Path, member: str) -> bytes | None:
         return None
 
 
-def _read_sober_original_asset(target_path: str | Path) -> bytes | None:
+def _sober_platform_paths() -> tuple[Path, Path] | None:
     try:
-        from ..utils.platform_linux import SOBER_DATA_DIR, SOBER_LEGACY_EXE_DIR
-    except Exception:
+        return platform_linux.SOBER_DATA_DIR, platform_linux.SOBER_LEGACY_EXE_DIR
+    except ImportError, AttributeError:
         return None
 
+
+def _read_sober_original_asset(target_path: str | Path) -> bytes | None:
+    sober_paths = _sober_platform_paths()
+    if sober_paths is None:
+        return None
+    sober_data_dir, sober_legacy_exe_dir = sober_paths
+
     for rel in target_path_candidates_for_current_platform(target_path):
-        for root in (SOBER_DATA_DIR / 'assets', SOBER_LEGACY_EXE_DIR):
+        for root in (sober_data_dir / 'assets', sober_legacy_exe_dir):
             direct = _read_file(root / rel)
             if direct is not None:
                 return direct
 
-        packages_dir = SOBER_DATA_DIR / 'packages'
+        packages_dir = sober_data_dir / 'packages'
         try:
             apks = sorted(packages_dir.glob('*/com.roblox.client/base.apk'))
         except OSError:
@@ -191,10 +197,10 @@ def _read_sober_original_asset(target_path: str | Path) -> bytes | None:
 
 def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, bytes]:
     """Read immediate files from a directory in Sober's packaged assets."""
-    try:
-        from ..utils.platform_linux import SOBER_DATA_DIR, SOBER_LEGACY_EXE_DIR
-    except Exception:
+    sober_paths = _sober_platform_paths()
+    if sober_paths is None:
         return {}
+    sober_data_dir, sober_legacy_exe_dir = sober_paths
 
     try:
         rel = _normalise_relative_target(target_dir)
@@ -202,7 +208,7 @@ def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, by
         return {}
 
     result: dict[str, bytes] = {}
-    for root in (SOBER_DATA_DIR / 'assets', SOBER_LEGACY_EXE_DIR):
+    for root in (sober_data_dir / 'assets', sober_legacy_exe_dir):
         directory = root / rel
         try:
             paths = sorted(path for path in directory.iterdir() if path.is_file())
@@ -213,7 +219,7 @@ def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, by
             if data is not None:
                 result.setdefault(path.name, data)
 
-    packages_dir = SOBER_DATA_DIR / 'packages'
+    packages_dir = sober_data_dir / 'packages'
     try:
         apks = sorted(packages_dir.glob('*/com.roblox.client/base.apk'))
     except OSError:
@@ -222,20 +228,28 @@ def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, by
     prefix = f'assets/{rel.rstrip("/")}/'
     for apk in apks:
         try:
-            with zipfile.ZipFile(apk) as archive:
-                for member in archive.namelist():
-                    if not member.startswith(prefix):
-                        continue
-                    name = member[len(prefix) :]
-                    if not name or '/' in name or name in result:
-                        continue
-                    try:
-                        result[name] = archive.read(member)
-                    except KeyError:
-                        continue
+            archive = zipfile.ZipFile(apk)
         except OSError, zipfile.BadZipFile:
             continue
+        with archive:
+            for member in archive.namelist():
+                if not member.startswith(prefix):
+                    continue
+                name = member[len(prefix) :]
+                if not name or '/' in name or name in result:
+                    continue
+                try:
+                    result[name] = archive.read(member)
+                except KeyError:
+                    continue
     return result
+
+
+def _selected_linux_client_key() -> str:
+    try:
+        return platform_linux.selected_linux_client_key()
+    except ImportError, AttributeError, OSError, ValueError:
+        return 'sober'
 
 
 def read_current_platform_original_asset(
@@ -246,15 +260,11 @@ def read_current_platform_original_asset(
     if not sys.platform.startswith('linux'):
         return None
 
-    if resource_dir is not None:
-        client_key = _linux_resource_client_key(resource_dir)
-    else:
-        try:
-            from ..utils.platform_linux import selected_linux_client_key
-
-            client_key = selected_linux_client_key()
-        except Exception:
-            client_key = 'sober'
+    client_key = (
+        _linux_resource_client_key(resource_dir)
+        if resource_dir is not None
+        else _selected_linux_client_key()
+    )
     if client_key == 'sober':
         return _read_sober_original_asset(target_path)
     return None
@@ -268,15 +278,11 @@ def read_current_platform_original_directory(
     if not sys.platform.startswith('linux'):
         return {}
 
-    if resource_dir is not None:
-        client_key = _linux_resource_client_key(resource_dir)
-    else:
-        try:
-            from ..utils.platform_linux import selected_linux_client_key
-
-            client_key = selected_linux_client_key()
-        except Exception:
-            client_key = 'sober'
+    client_key = (
+        _linux_resource_client_key(resource_dir)
+        if resource_dir is not None
+        else _selected_linux_client_key()
+    )
     if client_key == 'sober':
         return _read_sober_original_asset_directory(target_dir)
     return {}

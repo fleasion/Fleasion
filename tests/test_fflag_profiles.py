@@ -1,14 +1,18 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from fleasion.modifications.fflag_profiles import FastFlagProfileManager
 
 
-def test_profiles_save_load_rename_and_delete(tmp_path):
+def test_profiles_save_load_rename_and_delete(tmp_path: Path) -> None:
     profiles = FastFlagProfileManager(tmp_path)
 
-    assert profiles.save('Performance', {'DFIntTaskSchedulerTargetFps': 240, 'FFlagExample': True}) == 'Performance'
+    assert (
+        profiles.save('Performance', {'DFIntTaskSchedulerTargetFps': 240, 'FFlagExample': True})
+        == 'Performance'
+    )
     assert profiles.list_profiles() == ['Performance']
     assert profiles.load('Performance') == {
         'DFIntTaskSchedulerTargetFps': '240',
@@ -21,7 +25,7 @@ def test_profiles_save_load_rename_and_delete(tmp_path):
     assert profiles.list_profiles() == []
 
 
-def test_profiles_reject_unsafe_names_and_invalid_content(tmp_path):
+def test_profiles_reject_unsafe_names_and_invalid_content(tmp_path: Path) -> None:
     profiles = FastFlagProfileManager(tmp_path)
 
     with pytest.raises(ValueError, match='invalid character'):
@@ -35,7 +39,7 @@ def test_profiles_reject_unsafe_names_and_invalid_content(tmp_path):
         profiles.load('broken')
 
 
-def test_profiles_reject_unsupported_values(tmp_path):
+def test_profiles_reject_unsupported_values(tmp_path: Path) -> None:
     profiles = FastFlagProfileManager(tmp_path)
     (tmp_path / 'invalid.json').write_text('{"FFlagExample": ["no"]}', encoding='utf-8')
 

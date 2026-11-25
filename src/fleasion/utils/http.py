@@ -2,32 +2,44 @@
 
 from __future__ import annotations
 
+import http.client
 import shutil
+import socket
 import ssl
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 from functools import lru_cache
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+import certifi
+
+from fleasion.utils.logging import log_buffer
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _USER_AGENT = 'FleasionNT/1.2.0'
 
 
+def _validate_http_url(url: str) -> None:
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme not in {'http', 'https'}:
+        msg = f'Unsupported URL scheme: {scheme or "missing"}'
+        raise ValueError(msg)
+
+
 def _log_http(message: str) -> None:
-    try:
-        from .logging import log_buffer
-    except Exception:
-        return
     log_buffer.log('HTTP', message)
 
 
 @lru_cache(maxsize=1)
 def _certifi_context() -> ssl.SSLContext | None:
     try:
-        import certifi
-    except Exception:
+        return ssl.create_default_context(cafile=certifi.where())
+    except OSError, ssl.SSLError:
         return None
-    return ssl.create_default_context(cafile=certifi.where())
 
 
 @lru_cache(maxsize=1)
@@ -41,10 +53,9 @@ def _tls12_context() -> ssl.SSLContext:
 @lru_cache(maxsize=1)
 def _certifi_tls12_context() -> ssl.SSLContext | None:
     try:
-        import certifi
-    except Exception:
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except OSError, ssl.SSLError:
         return None
-    ctx = ssl.create_default_context(cafile=certifi.where())
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.maximum_version = ssl.TLSVersion.TLSv1_2
     return ctx
@@ -78,6 +89,101 @@ def _is_tls_record_layer_error(exc: BaseException) -> bool:
     return 'RECORD_LAYER_FAILURE' in text or 'RECORD LAYER FAILURE' in text
 
 
+def _request(
+    url: str, headers: dict[str, str], *, method: str | None = None
+) -> urllib.request.Request:
+    _validate_http_url(url)
+    return urllib.request.Request(  # ruff: ignore[suspicious-url-open-usage] - scheme validated above
+        url,
+        headers=headers,
+        method=method,
+    )
+
+
+def _configure_connection_socket(
+    sock: socket.socket,
+    timeout: object,
+    source_address: tuple[str, int] | None,
+) -> None:
+    if timeout is None:
+        sock.settimeout(None)
+    elif isinstance(timeout, int | float):
+        sock.settimeout(float(timeout))
+    if source_address:
+        sock.bind(source_address)
+
+
+def _create_connection_ipv4_first(
+    address: tuple[str, int],
+    timeout: object,
+    source_address: tuple[str, int] | None,
+) -> socket.socket:
+    """Connect using IPv4 candidates before IPv6 while retaining IPv6 fallback."""
+    host, port = address
+    addrinfos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    addrinfos.sort(key=lambda result: result[0] != socket.AF_INET)
+
+    last_exc: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in addrinfos:
+        sock: socket.socket | None = None
+        try:
+            sock = socket.socket(family, socktype, proto)
+            _configure_connection_socket(sock, timeout, source_address)
+            sock.connect(sockaddr)
+        except OSError as exc:
+            last_exc = exc
+            if sock is not None:
+                sock.close()
+        else:
+            return sock
+
+    if last_exc is not None:
+        raise last_exc
+    msg = 'getaddrinfo returned an empty list'
+    raise OSError(msg)
+
+
+class _IPv4FirstHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        self._create_connection = _create_connection_ipv4_first
+        super().connect()
+
+
+class _IPv4FirstHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        self._create_connection = _create_connection_ipv4_first
+        super().connect()
+
+
+class _IPv4FirstHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        return self.do_open(_IPv4FirstHTTPConnection, req)
+
+
+class _IPv4FirstHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, *, context: ssl.SSLContext | None) -> None:
+        super().__init__(context=context)
+        # The base class keeps it as _context, which typeshed does not declare
+        self._ipv4_context = context
+
+    def https_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        return self.do_open(_IPv4FirstHTTPSConnection, req, context=self._ipv4_context)
+
+
+def _urlopen(
+    req: urllib.request.Request,
+    *,
+    timeout: int,
+    context: ssl.SSLContext | None = None,
+) -> http.client.HTTPResponse:
+    _validate_http_url(req.full_url)
+    opener = urllib.request.build_opener(
+        _IPv4FirstHTTPHandler(),
+        _IPv4FirstHTTPSHandler(context=context),
+    )
+    return opener.open(req, timeout=timeout)
+
+
 def _open_with_contexts(
     req: urllib.request.Request,
     timeout: int,
@@ -94,13 +200,14 @@ def _open_with_contexts(
             continue
         seen.add(ident)
         try:
-            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+            return _urlopen(req, timeout=timeout, context=ctx)
         except urllib.error.URLError as exc:
             last_exc = exc
 
     if last_exc is not None:
         raise last_exc
-    raise RuntimeError('No HTTPS fallback context available')
+    msg = 'No HTTPS fallback context available'
+    raise RuntimeError(msg)
 
 
 def _open_verified(
@@ -109,7 +216,7 @@ def _open_verified(
     timeout: int,
 ):
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        return _urlopen(req, timeout=timeout)
     except urllib.error.URLError as exc:
         if not url.lower().startswith('https://'):
             raise
@@ -133,20 +240,22 @@ def _open_verified(
 
 
 def http_get(url: str, timeout: int = 15, headers: dict[str, str] | None = None) -> bytes:
+    _validate_http_url(url)
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers)
+    req = _request(url, request_headers)
 
     with _open_verified(req, url, timeout) as resp:
         return resp.read()
 
 
 def http_head_status(url: str, timeout: int = 15, headers: dict[str, str] | None = None) -> int:
+    _validate_http_url(url)
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers, method='HEAD')
+    req = _request(url, request_headers, method='HEAD')
 
     with _open_verified(req, url, timeout) as resp:
         return resp.status
@@ -158,10 +267,11 @@ def http_download_to(
     timeout: int = 15,
     headers: dict[str, str] | None = None,
 ) -> None:
+    _validate_http_url(url)
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers)
+    req = _request(url, request_headers)
 
     try:
         with _open_verified(req, url, timeout) as resp, dest.open('wb') as out:
@@ -177,6 +287,7 @@ def _curl_download_to(
     headers: dict[str, str],
     original_exc: Exception,
 ) -> None:
+    _validate_http_url(url)
     curl = shutil.which('curl')
     if curl is None:
         raise original_exc
@@ -199,7 +310,7 @@ def _curl_download_to(
             cmd.extend(['--user-agent', value])
         else:
             cmd.extend(['--header', f'{key}: {value}'])
-    cmd.append(url)
+    cmd.extend(['--', url])
 
     try:
         result = subprocess.run(
@@ -213,8 +324,7 @@ def _curl_download_to(
             detail = (result.stderr or result.stdout or '').strip()
             raise RuntimeError(detail or f'curl exited with code {result.returncode}')
         tmp.replace(dest)
-    except Exception as exc:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         tmp.unlink(missing_ok=True)
-        raise RuntimeError(
-            f'urllib download failed: {original_exc}; curl fallback failed: {exc}'
-        ) from original_exc
+        msg = f'urllib download failed: {original_exc}; curl fallback failed: {exc}'
+        raise RuntimeError(msg) from original_exc

@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+lazy from fleasion.scripts import macos_build
+
 from ._logger import setup_script_logging
 from ._pyinstaller import run_pyinstaller
 
@@ -52,7 +54,7 @@ def main(arguments: list[str] | None = None) -> int:
             command.append('--clean')
 
         log.info('Restarting build with reproducible environment')
-        result = subprocess.run(command, cwd=Path.cwd(), env=environment, check=False)
+        result = subprocess.run(command, cwd=Path.cwd(), env=environment, check=False, shell=False)
         return result.returncode
 
     os.environ[CLEAN_BUILD_ENV] = '1' if options.clean else '0'
@@ -60,19 +62,16 @@ def main(arguments: list[str] | None = None) -> int:
     # Build macOS
     # Slice subprocesses bypass orchestration and run PyInstaller exactly once
     if sys.platform == 'darwin' and os.environ.get(MACOS_SLICE_BUILD_ENV) != '1':
-        from .macos_build import build_macos_release
-
-        build_macos_release()
+        macos_build.build_macos_release()
         return 0
-    else:
-        # Build Windows and Linux
-        pyinstaller_arguments = ['--noconfirm', 'Fleasion.spec']
-        if options.clean:
-            pyinstaller_arguments.insert(0, '--clean')
+    # Build Windows and Linux
+    pyinstaller_arguments = ['--noconfirm', 'Fleasion.spec']
+    if options.clean:
+        pyinstaller_arguments.insert(0, '--clean')
 
-        log.info(f'Building Fleasion from {Path.cwd()}')
-        run_pyinstaller(pyinstaller_arguments, skip_setup_logging=True)
-        return 0
+    log.info('Building Fleasion from %s', Path.cwd())
+    run_pyinstaller(pyinstaller_arguments, skip_setup_logging=True)
+    return 0
 
 
 if __name__ == '__main__':

@@ -4,23 +4,40 @@ This implementation properly handles motor joint hierarchies and quaternion
 interpolation, matching the Reference pyvista/vtk implementation.
 """
 
-from ..localization import tr
+from __future__ import annotations
 
+import base64
+import binascii
 import math
-import os
 import re
+import struct
 import sys
 import time
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+import traceback
+from contextlib import suppress
+from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, TypedDict, cast, override
 
 import numpy as np
-from OpenGL.GL import *
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QAction, QGuiApplication
-from PyQt6.QtWidgets import (
+from defusedxml import ElementTree as DefusedElementTree
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import ParseError
+from OpenGL import GL
+from OpenGL.error import Error as OpenGLError
+from OpenGL.GL import glDeleteLists
+from PySide6.QtCore import QPoint, QSignalBlocker, Qt, QTimer
+from PySide6.QtGui import (
+    QCloseEvent,
+    QFocusEvent,
+    QGuiApplication,
+    QKeyEvent,
+    QMouseEvent,
+    QScreen,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -32,7 +49,11 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
 )
 
-from ..utils import log_buffer
+from fleasion.config.values import bool_value
+from fleasion.localization import tr
+from fleasion.utils import log_buffer
+from fleasion.widgets.text import style_text
+
 from .fps_controls import (
     KEY_BACKWARD,
     KEY_DOWN,
@@ -47,8 +68,257 @@ from .fps_controls import (
     MovementKey,
     movement_key_from_event,
 )
-from .gl_format import legacy_gl_format, set_perspective
+from .gl_format import legacy_gl_format, multisampled_readback_skip_reason, set_perspective
 from .offscreen_gl_widget import OffscreenOpenGLWidget
+lazy from . import rbxm_parser as parser
+lazy from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
+
+if TYPE_CHECKING:
+    import xml.etree.ElementTree as ET
+    from collections.abc import Callable
+
+    from numpy.typing import NDArray
+
+    from fleasion.config.types import SettingsSource
+
+    from .rbxm_parser import RbxmInstance
+    from .tools.solidmodel_converter.rbxm.types import RbxDocument, RbxInstance
+
+
+type PartRef = str
+type FloatArray = NDArray[np.float32] | NDArray[np.float64]
+type CurveSample = tuple[float, float]
+type CurveSamples = list[CurveSample]
+type Rotation3 = list[list[float]]
+type Quaternion = tuple[float, float, float, float]
+
+
+def _animation_boundary[T](
+    action: Callable[[], T],
+    *,
+    message: str,
+    fallback: T,
+    include_traceback: bool = False,
+) -> T:
+    try:
+        return action()
+    except Exception as exc:  # ruff: ignore[blind-except]
+        log_buffer.log('AnimationViewer', f'{message}: {exc}')
+        if include_traceback:
+            log_buffer.log('AnimationViewer', traceback.format_exc())
+        return fallback
+
+
+class MeshFace(TypedDict):
+    v: list[int]
+    n: list[int] | None
+
+
+class MeshData(TypedDict):
+    vertices: FloatArray
+    normals: FloatArray | None
+    faces: list[MeshFace]
+
+
+class BoneCurve(TypedDict):
+    px: CurveSamples
+    py: CurveSamples
+    pz: CurveSamples
+    rx: CurveSamples
+    ry: CurveSamples
+    rz: CurveSamples
+
+
+def _optional_screen(value: QScreen) -> QScreen | None:
+    return value
+
+
+def _bone_curve_has_samples(curve: BoneCurve) -> bool:
+    return any((curve['px'], curve['py'], curve['pz'], curve['rx'], curve['ry'], curve['rz']))
+
+
+def _empty_bone_curve() -> BoneCurve:
+    return {'px': [], 'py': [], 'pz': [], 'rx': [], 'ry': [], 'rz': []}
+
+
+def _load_rbxm_curve_data(
+    anim_data: bytes,
+    decode_values: Callable[[bytes], CurveSamples],
+) -> dict[str, BoneCurve] | None:
+    """Collect bone curves from a binary CurveAnimation RBXM payload."""
+
+    def load_tree() -> RbxDocument:
+        return RbxmDeserializer().deserialize(anim_data)
+
+    tree = _animation_boundary(
+        load_tree,
+        message='CurveAnimation RBXM deserialize error',
+        fallback=None,
+    )
+    if tree is None:
+        return None
+
+    bone_curves: dict[str, BoneCurve] = {}
+
+    def _prop(inst: RbxInstance, key: str) -> object:
+        for prop_name, prop_value in inst.properties.items():
+            if prop_name == key:
+                value: object = prop_value.value
+                return value
+        return None
+
+    def _values_and_times(inst: RbxInstance) -> CurveSamples:
+        for prop_name, prop_value in inst.properties.items():
+            if prop_name != 'ValuesAndTimes':
+                continue
+            raw = prop_value.value
+            if not isinstance(raw, str | bytes) or not raw:
+                return []
+            raw_bytes = raw.encode('latin-1') if isinstance(raw, str) else bytes(raw)
+            return decode_values(raw_bytes)
+        return []
+
+    def _walk(inst: RbxInstance) -> None:
+        if inst.class_name == 'CurveAnimation':
+            for child in inst.children:
+                _walk(child)
+            return
+        if inst.class_name != 'Folder':
+            return
+
+        name = _prop(inst, 'Name')
+        if not isinstance(name, str) or not name:
+            return
+
+        curve = _empty_bone_curve()
+        for child in inst.children:
+            child_class = child.class_name
+            if child_class == 'Folder':
+                _walk(child)
+                continue
+            if child_class not in {'Vector3Curve', 'EulerRotationCurve'}:
+                continue
+
+            for float_curve in child.children:
+                if float_curve.class_name != 'FloatCurve':
+                    continue
+                axis_value = _prop(float_curve, 'Name')
+                if not isinstance(axis_value, str):
+                    continue
+                axis = axis_value.upper()
+                values = _values_and_times(float_curve)
+                if child_class == 'Vector3Curve':
+                    if axis == 'X':
+                        curve['px'] = values
+                    elif axis == 'Y':
+                        curve['py'] = values
+                    elif axis == 'Z':
+                        curve['pz'] = values
+                elif axis == 'X':
+                    curve['rx'] = values
+                elif axis == 'Y':
+                    curve['ry'] = values
+                elif axis == 'Z':
+                    curve['rz'] = values
+
+        if _bone_curve_has_samples(curve):
+            bone_curves[name] = curve
+
+    for root_inst in tree.roots:
+        _walk(root_inst)
+    return bone_curves
+
+
+def _load_xml_curve_data(
+    anim_data: bytes,
+    decode_values: Callable[[bytes], CurveSamples],
+) -> dict[str, BoneCurve] | None:
+    """Collect bone curves from an XML CurveAnimation payload."""
+    try:
+        text = anim_data.decode('utf-8-sig', errors='replace')
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+        root = DefusedElementTree.fromstring(text)
+    except ParseError, DefusedXmlException:
+        return None
+
+    bone_curves: dict[str, BoneCurve] = {}
+
+    def _values_and_times(float_curve: ET.Element) -> CurveSamples:
+        for binary_string in float_curve.iter('BinaryString'):
+            if binary_string.get('name') != 'ValuesAndTimes' or not binary_string.text:
+                continue
+            with suppress(binascii.Error, ValueError, struct.error):
+                return decode_values(base64.b64decode(binary_string.text.strip()))
+        for string_value in float_curve.iter('string'):
+            if string_value.get('name') != 'ValuesAndTimes' or not string_value.text:
+                continue
+            with suppress(UnicodeEncodeError, struct.error):
+                return decode_values(string_value.text.encode('latin-1'))
+        return []
+
+    def _curve_name(float_curve: ET.Element) -> str:
+        props = float_curve.find('Properties')
+        if props is None:
+            return ''
+        name_element = props.find("string[@name='Name']")
+        return (name_element.text or '').upper() if name_element is not None else ''
+
+    def _apply_curve_group(item: ET.Element, curve: BoneCurve, *, rotation: bool) -> None:
+        for float_curve in item:
+            if float_curve.get('class') != 'FloatCurve':
+                continue
+            axis = _curve_name(float_curve)
+            values = _values_and_times(float_curve)
+            if rotation:
+                if axis == 'X':
+                    curve['rx'] = values
+                elif axis == 'Y':
+                    curve['ry'] = values
+                elif axis == 'Z':
+                    curve['rz'] = values
+            elif axis == 'X':
+                curve['px'] = values
+            elif axis == 'Y':
+                curve['py'] = values
+            elif axis == 'Z':
+                curve['pz'] = values
+
+    def _walk(item: ET.Element) -> None:
+        item_class = item.get('class', '')
+        if item_class == 'CurveAnimation':
+            for child in item:
+                _walk(child)
+            return
+        if item_class != 'Folder':
+            return
+
+        props = item.find('Properties')
+        name = ''
+        if props is not None:
+            name_element = props.find("string[@name='Name']")
+            if name_element is not None:
+                name = name_element.text or ''
+        if not name:
+            return
+
+        curve = _empty_bone_curve()
+        for child in item:
+            child_class = child.get('class', '')
+            if child_class == 'Vector3Curve':
+                _apply_curve_group(child, curve, rotation=False)
+            elif child_class == 'EulerRotationCurve':
+                _apply_curve_group(child, curve, rotation=True)
+            elif child_class == 'Folder':
+                _walk(child)
+        if _bone_curve_has_samples(curve):
+            bone_curves[name] = curve
+
+    for item in root.iter('Item'):
+        if item.get('class') == 'CurveAnimation':
+            _walk(item)
+            break
+    return bone_curves
+
 
 # Math helpers
 
@@ -58,7 +328,7 @@ def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
 
-def quat_from_rot3(r: List[List[float]]) -> Tuple[float, float, float, float]:
+def quat_from_rot3(r: Rotation3) -> Quaternion:
     """Convert 3x3 rotation matrix to quaternion (w, x, y, z)."""
     trace = r[0][0] + r[1][1] + r[2][2]
     if trace > 0.0:
@@ -89,7 +359,7 @@ def quat_from_rot3(r: List[List[float]]) -> Tuple[float, float, float, float]:
     return (w / n, x / n, y / n, z / n)
 
 
-def rot3_from_quat(q: Tuple[float, float, float, float]) -> List[List[float]]:
+def rot3_from_quat(q: Quaternion) -> Rotation3:
     """Convert quaternion to 3x3 rotation matrix."""
     w, x, y, z = q
     xx, yy, zz = x * x, y * y, z * z
@@ -103,10 +373,10 @@ def rot3_from_quat(q: Tuple[float, float, float, float]) -> List[List[float]]:
 
 
 def quat_slerp(
-    q0: Tuple[float, float, float, float],
-    q1: Tuple[float, float, float, float],
+    q0: Quaternion,
+    q1: Quaternion,
     t: float,
-) -> Tuple[float, float, float, float]:
+) -> Quaternion:
     """Spherical linear interpolation between quaternions."""
     w0, x0, y0, z0 = q0
     w1, x1, y1, z1 = q1
@@ -132,12 +402,12 @@ def quat_slerp(
 # Matrix operations using numpy
 
 
-def mat_identity() -> np.ndarray:
+def mat_identity() -> FloatArray:
     """Create identity 4x4 matrix."""
     return np.eye(4, dtype=np.float32)
 
 
-def mat_from_cframe(pos: Tuple[float, float, float], r: List[float]) -> np.ndarray:
+def mat_from_cframe(pos: tuple[float, float, float], r: list[float]) -> FloatArray:
     """Create 4x4 matrix from CFrame position and rotation values."""
     m = np.eye(4, dtype=np.float32)
     m[0, 0:3] = r[0:3]
@@ -149,29 +419,29 @@ def mat_from_cframe(pos: Tuple[float, float, float], r: List[float]) -> np.ndarr
     return m
 
 
-def mat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def mat_mul(a: FloatArray, b: FloatArray) -> FloatArray:
     """Multiply two 4x4 matrices."""
     return np.matmul(a, b)
 
 
-def mat_inv(a: np.ndarray) -> np.ndarray:
+def mat_inv(a: FloatArray) -> FloatArray:
     """Invert 4x4 matrix."""
     return np.linalg.inv(a)
 
 
-def mat_get_translation(m: np.ndarray) -> Tuple[float, float, float]:
+def mat_get_translation(m: FloatArray) -> tuple[float, float, float]:
     """Get translation from 4x4 matrix."""
     return (float(m[0, 3]), float(m[1, 3]), float(m[2, 3]))
 
 
-def mat_set_translation(m: np.ndarray, t: Tuple[float, float, float]) -> None:
+def mat_set_translation(m: FloatArray, t: tuple[float, float, float]) -> None:
     """Set translation in 4x4 matrix."""
     m[0, 3] = t[0]
     m[1, 3] = t[1]
     m[2, 3] = t[2]
 
 
-def mat_get_rot3(m: np.ndarray) -> List[List[float]]:
+def mat_get_rot3(m: FloatArray) -> Rotation3:
     """Get 3x3 rotation from 4x4 matrix."""
     return [
         [float(m[0, 0]), float(m[0, 1]), float(m[0, 2])],
@@ -180,14 +450,14 @@ def mat_get_rot3(m: np.ndarray) -> List[List[float]]:
     ]
 
 
-def mat_set_rot3(m: np.ndarray, r: List[List[float]]) -> None:
+def mat_set_rot3(m: FloatArray, r: Rotation3) -> None:
     """Set 3x3 rotation in 4x4 matrix."""
     m[0, 0:3] = r[0]
     m[1, 0:3] = r[1]
     m[2, 0:3] = r[2]
 
 
-def matrix_trs_lerp(m0: np.ndarray, m1: np.ndarray, t: float) -> np.ndarray:
+def matrix_trs_lerp(m0: FloatArray, m1: FloatArray, t: float) -> FloatArray:
     """Interpolate between two matrices using TRS decomposition and slerp."""
     t0 = mat_get_translation(m0)
     t1 = mat_get_translation(m1)
@@ -213,9 +483,9 @@ class Part:
 
     referent: str
     name: str
-    size: Tuple[float, float, float]
-    cframe: np.ndarray
-    mesh_data: Optional[Dict] = None
+    size: tuple[float, float, float]
+    cframe: FloatArray
+    mesh_data: MeshData | None = None
 
 
 @dataclass
@@ -225,14 +495,13 @@ class Motor6D:
     name: str
     part0_ref: str
     part1_ref: str
-    c0: np.ndarray
-    c1: np.ndarray
-    c1_inv: np.ndarray = None  # Cached inverse of c1
+    c0: FloatArray
+    c1: FloatArray
+    c1_inv: FloatArray = field(init=False)  # Cached inverse of c1
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Cache the inverse of c1 for performance."""
-        if self.c1_inv is None:
-            self.c1_inv = mat_inv(self.c1)
+        self.c1_inv = mat_inv(self.c1)
 
 
 @dataclass
@@ -240,10 +509,10 @@ class Keyframe:
     """Animation keyframe."""
 
     time: float
-    pose_by_part_name: Dict[str, np.ndarray]
+    pose_by_part_name: dict[str, FloatArray]
 
 
-def _fill_sparse_pose_tracks(keys: List[Keyframe]) -> List[Keyframe]:
+def _fill_sparse_pose_tracks(keys: list[Keyframe]) -> list[Keyframe]:
     """Interpolate poses through keyframes that do not contribute to that track.
 
     Roblox-authored animations can contain dense facial keyframes alongside much
@@ -255,7 +524,7 @@ def _fill_sparse_pose_tracks(keys: List[Keyframe]) -> List[Keyframe]:
     if len(keys) < 2:
         return keys
 
-    tracks: Dict[str, List[Tuple[int, np.ndarray]]] = {}
+    tracks: dict[str, list[tuple[int, FloatArray]]] = {}
     for index, keyframe in enumerate(keys):
         for name, transform in keyframe.pose_by_part_name.items():
             tracks.setdefault(name, []).append((index, transform))
@@ -265,7 +534,7 @@ def _fill_sparse_pose_tracks(keys: List[Keyframe]) -> List[Keyframe]:
         for index in range(first_index):
             keys[index].pose_by_part_name[name] = first_transform
 
-        for (left_index, left), (right_index, right) in zip(samples, samples[1:]):
+        for (left_index, left), (right_index, right) in pairwise(samples):
             if right_index == left_index + 1:
                 continue
             left_time = keys[left_index].time
@@ -284,12 +553,12 @@ def _fill_sparse_pose_tracks(keys: List[Keyframe]) -> List[Keyframe]:
 # XML parsing helpers
 
 
-def _text(elem: Optional[ET.Element], default: str = '') -> str:
+def _text(elem: ET.Element | None, default: str = '') -> str:
     """Get text from XML element."""
     return elem.text if elem is not None and elem.text is not None else default
 
 
-def find_prop(props: ET.Element, tag: str, names: List[str]) -> Optional[ET.Element]:
+def find_prop(props: ET.Element, tag: str, names: list[str]) -> ET.Element | None:
     """Find property element by tag and name."""
     for n in names:
         e = props.find(f"{tag}[@name='{n}']")
@@ -305,7 +574,7 @@ def find_prop(props: ET.Element, tag: str, names: List[str]) -> Optional[ET.Elem
     return None
 
 
-def parse_vector3(elem: ET.Element) -> Tuple[float, float, float]:
+def parse_vector3(elem: ET.Element) -> tuple[float, float, float]:
     """Parse Vector3 from XML."""
     return (
         float(_text(elem.find('X'), '0')),
@@ -314,14 +583,14 @@ def parse_vector3(elem: ET.Element) -> Tuple[float, float, float]:
     )
 
 
-def parse_cframe(elem: ET.Element) -> Tuple[Tuple[float, float, float], List[float]]:
+def parse_cframe(elem: ET.Element) -> tuple[tuple[float, float, float], list[float]]:
     """Parse CFrame from XML."""
     x = float(_text(elem.find('X'), '0'))
     y = float(_text(elem.find('Y'), '0'))
     z = float(_text(elem.find('Z'), '0'))
-    r = []
+    r: list[float] = []
     for k in ('R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22'):
-        if k in ('R00', 'R11', 'R22'):
+        if k in {'R00', 'R11', 'R22'}:
             r.append(float(_text(elem.find(k), '1')))
         else:
             r.append(float(_text(elem.find(k), '0')))
@@ -331,13 +600,13 @@ def parse_cframe(elem: ET.Element) -> Tuple[Tuple[float, float, float], List[flo
 # Rig and animation loading
 
 
-def load_rig(rig_path: str) -> Tuple[Dict[str, Part], List[Motor6D]]:
+def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
     """Load rig from XML file."""
-    tree = ET.parse(rig_path)
-    root = tree.getroot()
+    tree = DefusedElementTree.parse(rig_path)
+    root = cast('ET.Element', tree.getroot())
 
-    parts: Dict[str, Part] = {}
-    motors: List[Motor6D] = []
+    parts: dict[str, Part] = {}
+    motors: list[Motor6D] = []
 
     for item in root.iter('Item'):
         cls = item.attrib.get('class', '')
@@ -382,16 +651,16 @@ def load_rig(rig_path: str) -> Tuple[Dict[str, Part], List[Motor6D]]:
     return parts, motors
 
 
-def load_animation_from_xml(anim_data: bytes) -> List[Keyframe]:
+def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:
     """Load animation from XML bytes (RBXMX format)."""
     try:
         text = anim_data.decode('utf-8-sig', errors='replace')
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
-        root = ET.fromstring(text)
-    except Exception:
+        root = DefusedElementTree.fromstring(text)
+    except ParseError, DefusedXmlException:
         return []
 
-    keys: List[Keyframe] = []
+    keys: list[Keyframe] = []
     for item in root.iter('Item'):
         if item.attrib.get('class') != 'Keyframe':
             continue
@@ -404,7 +673,7 @@ def load_animation_from_xml(anim_data: bytes) -> List[Keyframe]:
             continue
         t = float(_text(t_elem, '0'))
 
-        poses: Dict[str, np.ndarray] = {}
+        poses: dict[str, FloatArray] = {}
         for pose_item in item.iter('Item'):
             if pose_item.attrib.get('class') != 'Pose':
                 continue
@@ -429,53 +698,37 @@ def load_animation_from_xml(anim_data: bytes) -> List[Keyframe]:
     return keys
 
 
-def load_animation_from_rbxm(anim_data: bytes) -> List[Keyframe]:
+def _parse_rbxm_keyframes(anim_data: bytes) -> list[Keyframe]:
+    instances = parser.parse_rbxm(anim_data)
+    keyframe_instances = parser.find_by_class(instances, 'Keyframe')
+    if not keyframe_instances:
+        log_buffer.log('AnimationViewer', 'No Keyframe instances found in RBXM')
+        return []
+
+    keys: list[Keyframe] = []
+    for kf_inst in keyframe_instances:
+        time_val = kf_inst.properties.get('Time', 0.0)
+        t = float(time_val) if isinstance(time_val, (int, float)) else 0.0
+        poses: dict[str, FloatArray] = {}
+        _collect_poses(kf_inst, poses)
+        if poses:
+            keys.append(Keyframe(t, poses))
+
+    keys.sort(key=lambda keyframe: keyframe.time)
+    return keys
+
+
+def load_animation_from_rbxm(anim_data: bytes) -> list[Keyframe]:
     """Load animation from binary RBXM format."""
-    try:
-        from .rbxm_parser import find_by_class, parse_rbxm
-    except ImportError:
-        log_buffer.log('AnimationViewer', 'RBXM parser not available')
-        return []
-
-    try:
-        instances = parse_rbxm(anim_data)
-
-        # Find all Keyframe instances
-        keyframe_instances = find_by_class(instances, 'Keyframe')
-
-        if not keyframe_instances:
-            log_buffer.log('AnimationViewer', 'No Keyframe instances found in RBXM')
-            return []
-
-        keys: List[Keyframe] = []
-
-        for kf_inst in keyframe_instances:
-            # Get keyframe time
-            time_val = kf_inst.properties.get('Time', 0.0)
-            if isinstance(time_val, (int, float)):
-                t = float(time_val)
-            else:
-                t = 0.0
-
-            # Find all Pose children (recursively)
-            poses: Dict[str, np.ndarray] = {}
-            _collect_poses(kf_inst, poses)
-
-            if poses:
-                keys.append(Keyframe(t, poses))
-
-        keys.sort(key=lambda k: k.time)
-        return keys
-
-    except Exception as e:
-        log_buffer.log('AnimationViewer', f'Error parsing RBXM animation: {e}')
-        import traceback
-
-        log_buffer.log('AnimationViewer', traceback.format_exc())
-        return []
+    return _animation_boundary(
+        lambda: _parse_rbxm_keyframes(anim_data),
+        message='Error parsing RBXM animation',
+        fallback=[],
+        include_traceback=True,
+    )
 
 
-def _collect_poses(instance, poses: Dict[str, np.ndarray]):
+def _collect_poses(instance: RbxmInstance, poses: dict[str, FloatArray]) -> None:
     """Recursively collect Pose instances from a Keyframe."""
     for child in instance.children:
         if child.class_name == 'Pose':
@@ -483,24 +736,24 @@ def _collect_poses(instance, poses: Dict[str, np.ndarray]):
             cframe = child.properties.get('CFrame')
             weight = child.properties.get('Weight', 1.0)
 
-            if name and cframe and isinstance(weight, (int, float)) and weight > 0:
+            if name and cframe and isinstance(weight, int | float) and weight > 0:
                 # CFrame is a dict with 'position' and 'rotation'
-                pos = cframe.get('position', (0, 0, 0))
-                rot = cframe.get('rotation', [1, 0, 0, 0, 1, 0, 0, 0, 1])
+                if not isinstance(cframe, dict) or not isinstance(name, str):
+                    continue
+                parsed_cframe = cframe
+                pos = parsed_cframe.get('position', (0, 0, 0))
+                rot = parsed_cframe.get('rotation', [1, 0, 0, 0, 1, 0, 0, 0, 1])
                 poses[name] = mat_from_cframe(pos, rot)
 
             # Recursively check for nested poses
             _collect_poses(child, poses)
 
 
-def load_curve_animation_data(anim_data: bytes) -> List[Keyframe]:
+def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
     """Load animation keyframes from a CurveAnimation (binary RBXM or XML)."""
-    import base64 as _b64
-    import struct
+    ticks = 14400.0
 
-    TICKS = 14400.0
-
-    def _vat(raw_b: bytes):
+    def _vat(raw_b: bytes) -> CurveSamples:
         """Decode ValuesAndTimes blob → [(time_sec, value), ...]"""
         if len(raw_b) < 8:
             return []
@@ -511,14 +764,14 @@ def load_curve_animation_data(anim_data: bytes) -> List[Keyframe]:
         if off_t + 8 + n * 4 > len(raw_b):
             return []
         _, sn = struct.unpack_from('<II', raw_b, off_t)
-        out = []
+        out: CurveSamples = []
         for i in range(min(n, sn)):
             v = struct.unpack_from('<f', raw_b, 8 + i * 14 + 2)[0]
             tk = struct.unpack_from('<I', raw_b, off_t + 8 + i * 4)[0]
-            out.append((tk / TICKS, v))
+            out.append((tk / ticks, v))
         return out
 
-    def _lerp(tv, t):
+    def _lerp(tv: CurveSamples, t: float) -> float:
         if not tv:
             return 0.0
         if t <= tv[0][0]:
@@ -533,7 +786,7 @@ def load_curve_animation_data(anim_data: bytes) -> List[Keyframe]:
                 return v0 + f * (v1 - v0)
         return tv[-1][1]
 
-    def _rot(rx, ry, rz):
+    def _rot(rx: float, ry: float, rz: float) -> list[float]:
         cx, sx = math.cos(rx), math.sin(rx)
         cy, sy = math.cos(ry), math.sin(ry)
         cz, sz = math.cos(rz), math.sin(rz)
@@ -549,181 +802,39 @@ def load_curve_animation_data(anim_data: bytes) -> List[Keyframe]:
             cx * cy,
         ]
 
-    bone_curves: Dict[str, dict] = {}
-
-    def _empty_bc():
-        return {'px': [], 'py': [], 'pz': [], 'rx': [], 'ry': [], 'rz': []}
+    bone_curves: dict[str, BoneCurve] = {}
 
     # Binary RBXM path
     if anim_data.startswith(b'<roblox!'):
-        try:
-            from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
-
-            tree = RbxmDeserializer().deserialize(anim_data)
-        except Exception as e:
-            log_buffer.log('AnimationViewer', f'CurveAnimation RBXM deserialize error: {e}')
+        binary_curves = _load_rbxm_curve_data(anim_data, _vat)
+        if binary_curves is None:
             return []
-
-        def _prop(inst, key: str):
-            for k, v in inst.properties.items():
-                pk = k.name if hasattr(k, 'name') else str(k)
-                if pk == key:
-                    return v.value if hasattr(v, 'value') else v
-            return None
-
-        def _vat_rbxm(inst):
-            for k, v in inst.properties.items():
-                pk = k.name if hasattr(k, 'name') else str(k)
-                if pk == 'ValuesAndTimes':
-                    raw = v.value if hasattr(v, 'value') else v
-                    if raw:
-                        rb = raw.encode('latin-1') if isinstance(raw, str) else bytes(raw)
-                        return _vat(rb)
-            return []
-
-        def _walk_rbxm(inst):
-            cls = inst.class_name
-            if cls == 'Folder':
-                name = _prop(inst, 'Name') or ''
-                if name:
-                    bc = _empty_bc()
-                    for child in inst.children:
-                        ccls = child.class_name
-                        if ccls == 'Vector3Curve':
-                            for fc in child.children:
-                                if fc.class_name != 'FloatCurve':
-                                    continue
-                                axis = (_prop(fc, 'Name') or '').upper()
-                                tv = _vat_rbxm(fc)
-                                if axis == 'X':
-                                    bc['px'] = tv
-                                elif axis == 'Y':
-                                    bc['py'] = tv
-                                elif axis == 'Z':
-                                    bc['pz'] = tv
-                        elif ccls == 'EulerRotationCurve':
-                            for fc in child.children:
-                                if fc.class_name != 'FloatCurve':
-                                    continue
-                                axis = (_prop(fc, 'Name') or '').upper()
-                                tv = _vat_rbxm(fc)
-                                if axis == 'X':
-                                    bc['rx'] = tv
-                                elif axis == 'Y':
-                                    bc['ry'] = tv
-                                elif axis == 'Z':
-                                    bc['rz'] = tv
-                        elif ccls == 'Folder':
-                            _walk_rbxm(child)
-                    if any(bc[k] for k in bc):
-                        bone_curves[name] = bc
-            elif cls == 'CurveAnimation':
-                for child in inst.children:
-                    _walk_rbxm(child)
-
-        for root_inst in tree.roots:
-            _walk_rbxm(root_inst)
+        bone_curves = binary_curves
 
     # XML path
     else:
-        try:
-            text = anim_data.decode('utf-8-sig', errors='replace')
-            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
-            root = ET.fromstring(text)
-        except Exception:
+        xml_curves = _load_xml_curve_data(anim_data, _vat)
+        if xml_curves is None:
             return []
-
-        def _vat_xml(fc_item):
-            for bs in fc_item.iter('BinaryString'):
-                if bs.get('name') == 'ValuesAndTimes' and bs.text:
-                    try:
-                        return _vat(_b64.b64decode(bs.text.strip()))
-                    except Exception:
-                        pass
-            for s in fc_item.iter('string'):
-                if s.get('name') == 'ValuesAndTimes' and s.text:
-                    try:
-                        return _vat(s.text.encode('latin-1'))
-                    except Exception:
-                        pass
-            return []
-
-        def _walk_xml(item):
-            cls = item.get('class', '')
-            if cls == 'Folder':
-                props = item.find('Properties')
-                name = ''
-                if props is not None:
-                    ne = props.find("string[@name='Name']")
-                    if ne is not None:
-                        name = ne.text or ''
-                if name:
-                    bc = _empty_bc()
-                    for child in item:
-                        ccls = child.get('class', '')
-                        if ccls == 'Vector3Curve':
-                            for fc in child:
-                                if fc.get('class') != 'FloatCurve':
-                                    continue
-                                fcp = fc.find('Properties')
-                                if fcp is None:
-                                    continue
-                                ae = fcp.find("string[@name='Name']")
-                                axis = (ae.text or '').upper() if ae is not None else ''
-                                tv = _vat_xml(fc)
-                                if axis == 'X':
-                                    bc['px'] = tv
-                                elif axis == 'Y':
-                                    bc['py'] = tv
-                                elif axis == 'Z':
-                                    bc['pz'] = tv
-                        elif ccls == 'EulerRotationCurve':
-                            for fc in child:
-                                if fc.get('class') != 'FloatCurve':
-                                    continue
-                                fcp = fc.find('Properties')
-                                if fcp is None:
-                                    continue
-                                ae = fcp.find("string[@name='Name']")
-                                axis = (ae.text or '').upper() if ae is not None else ''
-                                tv = _vat_xml(fc)
-                                if axis == 'X':
-                                    bc['rx'] = tv
-                                elif axis == 'Y':
-                                    bc['ry'] = tv
-                                elif axis == 'Z':
-                                    bc['rz'] = tv
-                        elif ccls == 'Folder':
-                            _walk_xml(child)
-                    if any(bc[k] for k in bc):
-                        bone_curves[name] = bc
-            elif cls == 'CurveAnimation':
-                for child in item:
-                    _walk_xml(child)
-
-        for item in root.iter('Item'):
-            if item.get('class') == 'CurveAnimation':
-                _walk_xml(item)
-                break
+        bone_curves = xml_curves
 
     if not bone_curves:
         log_buffer.log('AnimationViewer', 'CurveAnimation: no bone curves found')
         return []
 
     # Gather all unique time points across all bones/axes
-    times_set: set = set()
+    times_set: set[float] = set()
     for bc in bone_curves.values():
-        for tv in bc.values():
-            for t, _ in tv:
-                times_set.add(round(t, 6))
+        for tv in (bc['px'], bc['py'], bc['pz'], bc['rx'], bc['ry'], bc['rz']):
+            times_set.update(round(t, 6) for t, _ in tv)
 
     if not times_set:
         return []
 
     all_times = sorted(times_set)
-    keyframes: List[Keyframe] = []
+    keyframes: list[Keyframe] = []
     for t in all_times:
-        poses: Dict[str, np.ndarray] = {}
+        poses: dict[str, FloatArray] = {}
         for name, bc in bone_curves.items():
             px = _lerp(bc['px'], t)
             py = _lerp(bc['py'], t)
@@ -741,7 +852,7 @@ def load_curve_animation_data(anim_data: bytes) -> List[Keyframe]:
     return keyframes
 
 
-def load_animation_data(anim_data: bytes) -> List[Keyframe]:
+def load_animation_data(anim_data: bytes) -> list[Keyframe]:
     """Load animation from either XML or binary RBXM format."""
     # CurveAnimation has a distinct structure - try it first
     if b'CurveAnimation' in anim_data:
@@ -750,13 +861,13 @@ def load_animation_data(anim_data: bytes) -> List[Keyframe]:
             return _fill_sparse_pose_tracks(keys)
 
     # Strip UTF-8 BOM for format detection (Roblox Studio emits BOM-prefixed RBXMX)
-    _detect = anim_data[3:] if anim_data[:3] == b'\xef\xbb\xbf' else anim_data
+    detect = anim_data[3:] if anim_data[:3] == b'\xef\xbb\xbf' else anim_data
 
     # Try to detect format
-    if _detect.startswith(b'<roblox!'):
+    if detect.startswith(b'<roblox!'):
         # Binary RBXM format
         keys = load_animation_from_rbxm(anim_data)
-    elif _detect.strip().startswith(b'<'):
+    elif detect.strip().startswith(b'<'):
         # XML format
         keys = load_animation_from_xml(anim_data)
     else:
@@ -764,12 +875,12 @@ def load_animation_data(anim_data: bytes) -> List[Keyframe]:
     return _fill_sparse_pose_tracks(keys)
 
 
-def load_animation_from_file(anim_path: str) -> List[Keyframe]:
+def load_animation_from_file(anim_path: str) -> list[Keyframe]:
     """Load animation from XML file."""
-    tree = ET.parse(anim_path)
-    root = tree.getroot()
+    tree = DefusedElementTree.parse(anim_path)
+    root = cast('ET.Element', tree.getroot())
 
-    keys: List[Keyframe] = []
+    keys: list[Keyframe] = []
     for item in root.iter('Item'):
         if item.attrib.get('class') != 'Keyframe':
             continue
@@ -782,7 +893,7 @@ def load_animation_from_file(anim_path: str) -> List[Keyframe]:
             continue
         t = float(_text(t_elem, '0'))
 
-        poses: Dict[str, np.ndarray] = {}
+        poses: dict[str, FloatArray] = {}
         for pose_item in item.iter('Item'):
             if pose_item.attrib.get('class') != 'Pose':
                 continue
@@ -807,7 +918,7 @@ def load_animation_from_file(anim_path: str) -> List[Keyframe]:
     return _fill_sparse_pose_tracks(keys)
 
 
-def sample_keyframes(keys: List[Keyframe], t: float) -> Tuple[Keyframe, Keyframe, float]:
+def sample_keyframes(keys: list[Keyframe], t: float) -> tuple[Keyframe, Keyframe, float]:
     """Sample animation at time t, returning interpolation data."""
     if not keys:
         return Keyframe(0, {}), Keyframe(0, {}), 0.0
@@ -823,7 +934,7 @@ def sample_keyframes(keys: List[Keyframe], t: float) -> Tuple[Keyframe, Keyframe
     return keys[-1], keys[-1], 0.0
 
 
-def pick_root_ref(parts: Dict[str, Part]) -> str:
+def pick_root_ref(parts: dict[str, Part]) -> str:
     """Pick the root part reference."""
     preferred = ('HumanoidRootPart', 'LowerTorso', 'Torso', 'UpperTorso', 'Head')
     for want in preferred:
@@ -833,7 +944,7 @@ def pick_root_ref(parts: Dict[str, Part]) -> str:
     return next(iter(parts.keys()))
 
 
-def detect_rig_type(parts: Dict[str, Part]) -> str:
+def detect_rig_type(parts: dict[str, Part]) -> str:
     """Detect if rig is R6 or R15."""
     names = {p.name for p in parts.values()}
     if 'Torso' in names and 'UpperTorso' not in names:
@@ -844,49 +955,52 @@ def detect_rig_type(parts: Dict[str, Part]) -> str:
 # Mesh loading
 
 
-def load_obj_mesh(mesh_path: str) -> Optional[Dict]:
+def _parse_obj_mesh(path: Path) -> MeshData:
+    vertices: list[list[float]] = []
+    normals: list[list[float]] = []
+    faces: list[MeshFace] = []
+
+    with path.open(encoding='utf-8') as f:
+        for line in f:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            if parts[0] == 'v':
+                vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+            elif parts[0] == 'vn':
+                normals.append([float(parts[1]), float(parts[2]), float(parts[3])])
+            elif parts[0] == 'f':
+                face_verts: list[int] = []
+                face_norms: list[int] = []
+                for vertex_str in parts[1:]:
+                    indices = vertex_str.split('/')
+                    face_verts.append(int(indices[0]) - 1)
+                    if len(indices) >= 3 and indices[2]:
+                        face_norms.append(int(indices[2]) - 1)
+                faces.append({'v': face_verts, 'n': face_norms or None})
+
+    return {
+        'vertices': np.array(vertices, dtype=np.float32),
+        'normals': np.array(normals, dtype=np.float32) if normals else None,
+        'faces': faces,
+    }
+
+
+def load_obj_mesh(mesh_path: str | Path) -> MeshData | None:
     """Load OBJ mesh file."""
-    if not os.path.exists(mesh_path):
+    path = Path(mesh_path)
+    if not path.exists():
         return None
-
-    vertices = []
-    normals = []
-    faces = []
-
     try:
-        with open(mesh_path, 'r') as f:
-            for line in f:
-                parts = line.strip().split()
-                if not parts:
-                    continue
-
-                if parts[0] == 'v':
-                    vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
-                elif parts[0] == 'vn':
-                    normals.append([float(parts[1]), float(parts[2]), float(parts[3])])
-                elif parts[0] == 'f':
-                    face_verts = []
-                    face_norms = []
-                    for vertex_str in parts[1:]:
-                        indices = vertex_str.split('/')
-                        v_idx = int(indices[0]) - 1
-                        face_verts.append(v_idx)
-                        if len(indices) >= 3 and indices[2]:
-                            n_idx = int(indices[2]) - 1
-                            face_norms.append(n_idx)
-                    faces.append({'v': face_verts, 'n': face_norms if face_norms else None})
-
-        return {
-            'vertices': np.array(vertices, dtype=np.float32),
-            'normals': np.array(normals, dtype=np.float32) if normals else None,
-            'faces': faces,
-        }
-    except Exception as e:
-        log_buffer.log('AnimationViewer', f'Error loading mesh {mesh_path}: {e}')
+        mesh = _parse_obj_mesh(path)
+    except (OSError, UnicodeError, ValueError, IndexError) as e:
+        log_buffer.log('AnimationViewer', f'Error loading mesh {path}: {e}')
         return None
+    else:
+        return mesh
 
 
-def create_cube_mesh(sx: float, sy: float, sz: float) -> Dict:
+def create_cube_mesh(sx: float, sy: float, sz: float) -> MeshData:
     """Create a simple cube mesh."""
     hx, hy, hz = sx / 2, sy / 2, sz / 2
     vertices = np.array(
@@ -909,7 +1023,7 @@ def create_cube_mesh(sx: float, sy: float, sz: float) -> Dict:
         dtype=np.float32,
     )
 
-    faces = [
+    faces: list[MeshFace] = [
         {'v': [0, 1, 2, 3], 'n': [0, 0, 0, 0]},  # Front
         {'v': [5, 4, 7, 6], 'n': [1, 1, 1, 1]},  # Back
         {'v': [0, 1, 5, 4], 'n': [2, 2, 2, 2]},  # Bottom
@@ -936,42 +1050,49 @@ def get_rig_path(rig_type: str) -> Path:
     return get_animpreview_dir() / f'{rig_type}RIG.rbxmx'
 
 
+def _delete_display_list_ids(display_lists: tuple[int, ...]) -> None:
+    """Delete non-zero OpenGL display list identifiers."""
+    for display_list in display_lists:
+        if display_list:
+            glDeleteLists(display_list, 1)
+
+
 # OpenGL viewer widget
 
 
 class AnimationGLWidget(OffscreenOpenGLWidget):
     """Offscreen OpenGL renderer presented through a normal QWidget."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         # Keep the animation renderer on the same offscreen-raster path as OBJ
         # previews so Windows never has to present a native OpenGL child surface.
         super().__init__(parent)
-        self.parts: Dict[str, Part] = {}
-        self.motors: List[Motor6D] = []
-        self.keyframes: List[Keyframe] = []
+        self.parts: dict[str, Part] = {}
+        self.motors: list[Motor6D] = []
+        self.keyframes: list[Keyframe] = []
         self.current_time = 0.0
         self.duration = 0.0
 
         # Root tracking
-        self.root_ref: Optional[str] = None
+        self.root_ref: PartRef | None = None
         self.root_name: str = ''
-        self.base_root_world: Optional[np.ndarray] = None
+        self.base_root_world: FloatArray | None = None
 
         # World transforms for each part
-        self.world_transforms: Dict[str, np.ndarray] = {}
+        self.world_transforms: dict[PartRef, FloatArray] = {}
 
         # Camera
         self.rotation_x = 20
         self.rotation_y = 205
         self.zoom = 20
         self.camera_target = (0, 2, 0)
-        self.last_pos = None
+        self.last_pos: QPoint | None = None
 
         # Rig type
         self.rig_type = 'R15'
 
         # Display lists for mesh caching (major performance boost)
-        self.display_lists: Dict[str, int] = {}
+        self.display_lists: dict[PartRef, int] = {}
         self.grid_display_list: int = 0
         self._gl_context_logged = False
         self._paint_error_logged = False
@@ -980,7 +1101,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         self._first_paint_completed_logged = False
         self._first_frame_presented_logged = False
         self._presentation_watchdog_scheduled = False
-        self.framePresented.connect(self._on_frame_presented)
+        self.frame_presented.connect(self._on_frame_presented)
 
         self.setFormat(legacy_gl_format())
 
@@ -1000,32 +1121,32 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_tick)
         try:
-            screen = self.screen() or QGuiApplication.primaryScreen()
+            screen = _optional_screen(self.screen() or QGuiApplication.primaryScreen())
             refresh = float(screen.refreshRate()) if screen is not None else 60.0
             if not refresh or refresh <= 0:
                 refresh = 60.0
-        except Exception:
+        except RuntimeError, TypeError, ValueError:
             refresh = 60.0
-        interval_ms = max(1, int(round(1000.0 / refresh)))
+        interval_ms = max(1, round(1000.0 / refresh))
         self.timer.start(interval_ms)
 
     def get_refresh_interval_ms(self) -> int:
         """Return a safe refresh interval (ms) based on the current screen or primary screen."""
         try:
-            screen = self.screen() or QGuiApplication.primaryScreen()
+            screen = _optional_screen(self.screen() or QGuiApplication.primaryScreen())
             refresh = float(screen.refreshRate()) if screen is not None else 60.0
             if not refresh or refresh <= 0:
                 refresh = 60.0
-        except Exception:
+        except RuntimeError, TypeError, ValueError:
             refresh = 60.0
-        return max(1, int(round(1000.0 / refresh)))
+        return max(1, round(1000.0 / refresh))
 
     def _create_placeholder_rig(
-        self, pose_names: set
-    ) -> Tuple[Dict[int, 'Part'], Dict[str, 'Motor']]:
+        self, pose_names: set[str]
+    ) -> tuple[dict[str, Part], list[Motor6D]]:
         """Create placeholder rig with simple cubes for unsupported animation types."""
-        parts = {}
-        motors = {}
+        parts: dict[str, Part] = {}
+        motors: list[Motor6D] = []
 
         # Create a cube for each unique part in the animation
         for idx, part_name in enumerate(sorted(pose_names)):
@@ -1038,7 +1159,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             )
             # Create a simple cube mesh
             part.mesh_data = create_cube_mesh(0.5, 0.5, 0.5)
-            parts[idx] = part
+            parts[str(idx)] = part
 
             # Position blocks in a grid
             grid_x = idx % 5
@@ -1050,101 +1171,107 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
     def load_animation_data(self, anim_data: bytes) -> bool:
         """Load animation from raw bytes and setup rig."""
-        try:
-            # Parse animation (handles both XML and binary RBXM)
-            self.keyframes = load_animation_data(anim_data)
-            if not self.keyframes:
-                log_buffer.log('AnimationViewer', 'No keyframes found in animation data')
-                return False
+        return _animation_boundary(
+            lambda: self._load_animation_data_impl(anim_data),
+            message='Error loading animation',
+            fallback=False,
+            include_traceback=True,
+        )
 
-            # Retain angles between meshes, but cleanly exit FPS mode & reset distance
-            if self.camera_mode == 'fps':
-                self.camera_mode = 'orbit'
-                self.rotation_x = self.cam_pitch
-                self.rotation_y = self.cam_yaw
-            self.zoom = 20.0
+    def _load_animation_data_impl(self, anim_data: bytes) -> bool:
+        """Parse animation data and configure the matching rig."""
+        # Parse animation (handles both XML and binary RBXM)
+        self.keyframes = load_animation_data(anim_data)
+        if not self.keyframes:
+            log_buffer.log('AnimationViewer', 'No keyframes found in animation data')
+            return False
 
+        # Retain angles between meshes, but cleanly exit FPS mode & reset distance
+        if self.camera_mode == 'fps':
+            self.camera_mode = 'orbit'
+            self.rotation_x = self.cam_pitch
+            self.rotation_y = self.cam_yaw
+        self.zoom = 20.0
+
+        self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
+
+        # Detect rig type from animation pose names
+        all_pose_names: set[str] = set()
+        for kf in self.keyframes:
+            all_pose_names.update(kf.pose_by_part_name.keys())
+
+        # R6 uses Torso, R15 uses UpperTorso/LowerTorso
+        if 'Torso' in all_pose_names and 'UpperTorso' not in all_pose_names:
+            self.rig_type = 'R6'
+        elif 'UpperTorso' in all_pose_names or 'LowerTorso' in all_pose_names:
+            self.rig_type = 'R15'
+        else:
+            # Unsupported rig type - use placeholder blocks
+            log_buffer.log(
+                'AnimationViewer',
+                'Unsupported animation rig type, using placeholder blocks',
+            )
+            self.rig_type = 'PLACEHOLDER'
+            placeholder_parts, placeholder_motors = self._create_placeholder_rig(all_pose_names)
+            self.parts = placeholder_parts
+            self.motors = placeholder_motors
             self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
-
-            # Detect rig type from animation pose names
-            all_pose_names: set = set()
-            for kf in self.keyframes:
-                all_pose_names.update(kf.pose_by_part_name.keys())
-
-            # R6 uses Torso, R15 uses UpperTorso/LowerTorso
-            if 'Torso' in all_pose_names and 'UpperTorso' not in all_pose_names:
-                self.rig_type = 'R6'
-            elif 'UpperTorso' in all_pose_names or 'LowerTorso' in all_pose_names:
-                self.rig_type = 'R15'
-            else:
-                # Unsupported rig type - use placeholder blocks
-                log_buffer.log(
-                    'AnimationViewer',
-                    'Unsupported animation rig type, using placeholder blocks',
-                )
-                self.rig_type = 'PLACEHOLDER'
-                self.parts, self.motors = self._create_placeholder_rig(all_pose_names)
-                self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
-                self.root_ref = list(self.parts.keys())[0] if self.parts else 0
-                self.root_name = self.parts[self.root_ref].name if self.parts else 'Root'
-                self.base_root_world = (
-                    self.parts[self.root_ref].cframe.copy() if self.parts else np.eye(4)
-                )
-                self.current_time = 0
-                self.update()
-                return True
-
-            # Load rig
-            rig_path = get_rig_path(self.rig_type)
-            if not rig_path.exists():
-                log_buffer.log('AnimationViewer', f'Rig file not found: {rig_path}')
-                return False
-
-            self.parts, self.motors = load_rig(str(rig_path))
-            if not self.parts:
-                log_buffer.log('AnimationViewer', 'No parts found in rig')
-                return False
-
-            # Load meshes
-            mesh_dir = get_mesh_dir()
-            for part in self.parts.values():
-                # Try exact name first
-                mesh_path = mesh_dir / f'{self.rig_type}{part.name}.obj'
-                mesh = load_obj_mesh(str(mesh_path))
-                if mesh is None:
-                    # R6 parts have spaces (e.g., "Left Arm" -> "R6Left Arm.obj")
-                    mesh_path = mesh_dir / f'{self.rig_type}{part.name.replace("_", " ")}.obj'
-                    mesh = load_obj_mesh(str(mesh_path))
-                if mesh is None:
-                    # Try without any prefix manipulation
-                    for file in mesh_dir.glob(f'{self.rig_type}*.obj'):
-                        if part.name.lower().replace(' ', '') in file.stem.lower().replace(' ', ''):
-                            mesh = load_obj_mesh(str(file))
-                            if mesh:
-                                break
-                if mesh is None:
-                    mesh = create_cube_mesh(*part.size)
-                part.mesh_data = mesh
-
-            # Setup root
-            self.root_ref = pick_root_ref(self.parts)
-            self.root_name = self.parts[self.root_ref].name
-            self.base_root_world = self.parts[self.root_ref].cframe.copy()
-
+            self.root_ref = next(iter(placeholder_parts), '0')
+            self.root_name = placeholder_parts[self.root_ref].name if placeholder_parts else 'Root'
+            self.base_root_world = (
+                placeholder_parts[self.root_ref].cframe.copy() if placeholder_parts else np.eye(4)
+            )
             self.current_time = 0
             self.update()
             return True
 
-        except Exception as e:
-            log_buffer.log('AnimationViewer', f'Error loading animation: {e}')
-            import traceback
-
-            log_buffer.log('AnimationViewer', traceback.format_exc())
+        # Load rig
+        rig_path = get_rig_path(self.rig_type)
+        if not rig_path.exists():
+            log_buffer.log('AnimationViewer', f'Rig file not found: {rig_path}')
             return False
+
+        rig_parts, rig_motors = load_rig(str(rig_path))
+        self.parts = rig_parts
+        self.motors = rig_motors
+        if not rig_parts:
+            log_buffer.log('AnimationViewer', 'No parts found in rig')
+            return False
+
+        # Load meshes
+        mesh_dir = get_mesh_dir()
+        for part in rig_parts.values():
+            # Try exact name first
+            mesh_path = mesh_dir / f'{self.rig_type}{part.name}.obj'
+            mesh = load_obj_mesh(str(mesh_path))
+            if mesh is None:
+                # R6 parts have spaces (e.g., "Left Arm" -> "R6Left Arm.obj")
+                mesh_path = mesh_dir / f'{self.rig_type}{part.name.replace("_", " ")}.obj'
+                mesh = load_obj_mesh(str(mesh_path))
+            if mesh is None:
+                # Try without any prefix manipulation
+                for file in mesh_dir.glob(f'{self.rig_type}*.obj'):
+                    if part.name.lower().replace(' ', '') in file.stem.lower().replace(' ', ''):
+                        mesh = load_obj_mesh(str(file))
+                        if mesh:
+                            break
+            if mesh is None:
+                mesh = create_cube_mesh(*part.size)
+            part.mesh_data = mesh
+
+        # Setup root
+        self.root_ref = pick_root_ref(rig_parts)
+        self.root_name = rig_parts[self.root_ref].name
+        self.base_root_world = rig_parts[self.root_ref].cframe.copy()
+
+        self.current_time = 0
+        self.update()
+
+        return True
 
     @staticmethod
     def _gl_error_text(error: int) -> str:
-        return 'GL_NO_ERROR' if error == GL_NO_ERROR else f'0x{int(error):04X}'
+        return 'GL_NO_ERROR' if error == GL.GL_NO_ERROR else f'0x{int(error):04X}'
 
     def _surface_state(self) -> str:
         try:
@@ -1157,54 +1284,62 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                 f'visible={self.isVisible()} exposed={self.isExposed()} '
                 f'context_valid={context_valid} fbo={self.defaultFramebufferObject()}'
             )
-        except Exception as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             return f'state_unavailable={type(exc).__name__}: {exc}'
+
+    def _read_center_pixel_values(self) -> NDArray[np.uint8]:
+        size = self.size()
+        x = max(0, size.width() // 2)
+        y = max(0, size.height() // 2)
+        pixel = GL.glReadPixels(x, y, 1, 1, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+        return np.frombuffer(pixel, dtype=np.uint8)
 
     def _sample_center_pixel(self) -> str:
         """Sample one rendered pixel so logs can separate rendering from presentation."""
         try:
-            size = self.size()
-            x = max(0, size.width() // 2)
-            y = max(0, size.height() // 2)
-            pixel = glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE)
-            if isinstance(pixel, (bytes, bytearray, memoryview)):
-                values = np.frombuffer(pixel, dtype=np.uint8)
-            else:
-                values = np.asarray(pixel, dtype=np.uint8).reshape(-1)
-            if values.size < 4:
-                return f'unexpected_readback_size={values.size}'
-            return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
-        except Exception as exc:
+            skip_reason = multisampled_readback_skip_reason()
+            if skip_reason is not None:
+                return skip_reason
+            values = self._read_center_pixel_values()
+        except (OpenGLError, RuntimeError, TypeError, ValueError) as exc:
             return f'readback_failed={type(exc).__name__}: {exc}'
+        if values.size < 4:
+            return f'unexpected_readback_size={values.size}'
+        return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
+
+    def _gl_context_description(self) -> str | None:
+        context = self.context()
+        if context is None:
+            return None
+        fmt = context.format()
+        version = GL.glGetString(GL.GL_VERSION)
+        renderer = GL.glGetString(GL.GL_RENDERER)
+        vendor = GL.glGetString(GL.GL_VENDOR)
+        return (
+            'Animation viewer context: '
+            f'{fmt.majorVersion()}.{fmt.minorVersion()} '
+            f'profile={fmt.profile().name} '
+            f'renderable={fmt.renderableType().name} '
+            f'samples={fmt.samples()} '
+            f'depth={fmt.depthBufferSize()} stencil={fmt.stencilBufferSize()} '
+            f'alpha={fmt.alphaBufferSize()} swap={fmt.swapBehavior().name} '
+            f'swap_interval={fmt.swapInterval()} context_valid={context.isValid()} '
+            f'version={version.decode(errors="replace") if version else "unknown"} '
+            f'renderer={renderer.decode(errors="replace") if renderer else "unknown"} '
+            f'vendor={vendor.decode(errors="replace") if vendor else "unknown"}'
+        )
 
     def _log_gl_context_once(self) -> None:
         if self._gl_context_logged:
             return
         self._gl_context_logged = True
         try:
-            context = self.context()
-            fmt = context.format()
-            version = glGetString(GL_VERSION)
-            renderer = glGetString(GL_RENDERER)
-            vendor = glGetString(GL_VENDOR)
-            log_buffer.log(
-                'OpenGL',
-                (
-                    'Animation viewer context: '
-                    f'{fmt.majorVersion()}.{fmt.minorVersion()} '
-                    f'profile={fmt.profile().name} '
-                    f'renderable={fmt.renderableType().name} '
-                    f'samples={fmt.samples()} '
-                    f'depth={fmt.depthBufferSize()} stencil={fmt.stencilBufferSize()} '
-                    f'alpha={fmt.alphaBufferSize()} swap={fmt.swapBehavior().name} '
-                    f'swap_interval={fmt.swapInterval()} context_valid={context.isValid()} '
-                    f'version={version.decode(errors="replace") if version else "unknown"} '
-                    f'renderer={renderer.decode(errors="replace") if renderer else "unknown"} '
-                    f'vendor={vendor.decode(errors="replace") if vendor else "unknown"}'
-                ),
-            )
-        except Exception as exc:
+            description = self._gl_context_description()
+        except (OpenGLError, RuntimeError) as exc:
             log_buffer.log('OpenGL', f'Could not read animation viewer context details: {exc}')
+            return
+        if description is not None:
+            log_buffer.log('OpenGL', description)
 
     def _schedule_presentation_watchdog(self) -> None:
         if self._presentation_watchdog_scheduled:
@@ -1232,69 +1367,73 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             'OpenGL', f'Animation viewer first raster frame presented; {self._surface_state()}'
         )
 
-    def initializeGL(self):
+    @override
+    def initializeGL(self) -> None:
         """Initialize OpenGL settings."""
         self._log_gl_context_once()
         self._schedule_presentation_watchdog()
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_LIGHTING)
-        glEnable(GL_LIGHT0)
-        glEnable(GL_LIGHT1)
-        glEnable(GL_COLOR_MATERIAL)
-        glEnable(GL_NORMALIZE)
-        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glEnable(GL.GL_LIGHTING)
+        GL.glEnable(GL.GL_LIGHT0)
+        GL.glEnable(GL.GL_LIGHT1)
+        GL.glEnable(GL.GL_COLOR_MATERIAL)
+        GL.glEnable(GL.GL_NORMALIZE)
+        GL.glColorMaterial(GL.GL_FRONT_AND_BACK, GL.GL_AMBIENT_AND_DIFFUSE)
 
         # Main light
-        glLightfv(GL_LIGHT0, GL_POSITION, [1, 1, 1, 0])
-        glLightfv(GL_LIGHT0, GL_AMBIENT, [0.3, 0.3, 0.3, 1])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.8, 1])
-        glLightfv(GL_LIGHT0, GL_SPECULAR, [0.2, 0.2, 0.2, 1])
+        GL.glLightfv(GL.GL_LIGHT0, GL.GL_POSITION, [1, 1, 1, 0])
+        GL.glLightfv(GL.GL_LIGHT0, GL.GL_AMBIENT, [0.3, 0.3, 0.3, 1])
+        GL.glLightfv(GL.GL_LIGHT0, GL.GL_DIFFUSE, [0.8, 0.8, 0.8, 1])
+        GL.glLightfv(GL.GL_LIGHT0, GL.GL_SPECULAR, [0.2, 0.2, 0.2, 1])
 
         # Fill light
-        glLightfv(GL_LIGHT1, GL_POSITION, [-1, 0.5, -1, 0])
-        glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.3, 0.3, 0.3, 1])
+        GL.glLightfv(GL.GL_LIGHT1, GL.GL_POSITION, [-1, 0.5, -1, 0])
+        GL.glLightfv(GL.GL_LIGHT1, GL.GL_DIFFUSE, [0.3, 0.3, 0.3, 1])
 
-        glClearColor(0.15, 0.15, 0.18, 1.0)
-        error = glGetError()
+        GL.glClearColor(0.15, 0.15, 0.18, 1.0)
+        error = GL.glGetError()
         log_buffer.log(
             'OpenGL',
             f'Animation viewer initializeGL complete; gl_error={self._gl_error_text(error)}; '
             f'{self._surface_state()}',
         )
 
-    def resizeGL(self, w: int, h: int):
+    @override
+    def resizeGL(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, w: int, h: int
+    ) -> None:
         """Handle resize."""
-        glViewport(0, 0, w, h)
-        glMatrixMode(GL_PROJECTION)
-        glLoadIdentity()
+        GL.glViewport(0, 0, w, h)
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glLoadIdentity()
         aspect = w / h if h > 0 else 1
         set_perspective(30, aspect, 0.1, 500.0)
-        glMatrixMode(GL_MODELVIEW)
+        GL.glMatrixMode(GL.GL_MODELVIEW)
         if not self._first_resize_logged:
             self._first_resize_logged = True
-            error = glGetError()
+            error = GL.glGetError()
             log_buffer.log(
                 'OpenGL',
                 f'Animation viewer first resizeGL {w}x{h}; '
                 f'gl_error={self._gl_error_text(error)}; {self._surface_state()}',
             )
 
-    def _paint_scene(self):
+    def _paint_scene(self) -> None:
         """Render the animation frame."""
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glLoadIdentity()
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        GL.glLoadIdentity()
 
         # Camera Transform setup
         if self.camera_mode == 'orbit':
-            glTranslatef(0.0, 0.0, -self.zoom)  # Invert zoom to match obj_viewer math
-            glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
-            glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
-            glTranslatef(-self.camera_target[0], -self.camera_target[1], -self.camera_target[2])
+            GL.glTranslatef(0.0, 0.0, -self.zoom)  # Invert zoom to match obj_viewer math
+            GL.glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
+            GL.glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
+            GL.glTranslatef(-self.camera_target[0], -self.camera_target[1], -self.camera_target[2])
         else:
             # FPS Look & Move transform
-            glRotatef(self.cam_pitch, 1.0, 0.0, 0.0)
-            glRotatef(self.cam_yaw, 0.0, 1.0, 0.0)
-            glTranslatef(-self.cam_pos[0], -self.cam_pos[1], -self.cam_pos[2])
+            GL.glRotatef(self.cam_pitch, 1.0, 0.0, 0.0)
+            GL.glRotatef(self.cam_yaw, 0.0, 1.0, 0.0)
+            GL.glTranslatef(-self.cam_pos[0], -self.cam_pos[1], -self.cam_pos[2])
 
         # Update world transforms
         self._update_world_transforms()
@@ -1308,26 +1447,26 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             if world_mat is None:
                 world_mat = part.cframe
 
-            glPushMatrix()
+            GL.glPushMatrix()
 
             # Apply world transform (transpose for OpenGL column-major)
             gl_mat = world_mat.T.flatten().tolist()
-            glMultMatrixf(gl_mat)
+            GL.glMultMatrixf(gl_mat)
 
             # Color based on part
             if part.name.lower() == 'humanoidrootpart':
-                glColor4f(1.0, 0.2, 0.2, 0.5)
-                glEnable(GL_BLEND)
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+                GL.glColor4f(1.0, 0.2, 0.2, 0.5)
+                GL.glEnable(GL.GL_BLEND)
+                GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
             else:
-                glColor3f(0.82, 0.82, 0.84)
-                glDisable(GL_BLEND)
+                GL.glColor3f(0.82, 0.82, 0.84)
+                GL.glDisable(GL.GL_BLEND)
 
             # Use display list for fast rendering
             dl = self._get_or_compile_display_list(ref, part.mesh_data)
-            glCallList(dl)
+            GL.glCallList(dl)
 
-            glPopMatrix()
+            GL.glPopMatrix()
 
         if self.show_grid:
             self._draw_grid()
@@ -1335,7 +1474,22 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         # Draw XYZ axis indicator
         self._draw_axis_indicator()
 
-    def paintGL(self):
+    def _log_first_paint_completion(self) -> None:
+        render_error = GL.glGetError()
+        center_pixel = self._sample_center_pixel()
+        readback_error = GL.glGetError()
+        self._first_paint_completed_logged = True
+        log_buffer.log(
+            'OpenGL',
+            f'Animation viewer first paintGL complete; '
+            f'render_gl_error={self._gl_error_text(render_error)}; '
+            f'center_pixel={center_pixel}; '
+            f'readback_gl_error={self._gl_error_text(readback_error)}; '
+            f'{self._surface_state()}',
+        )
+
+    @override
+    def paintGL(self) -> None:
         """Render an animation frame and log the first presentation lifecycle."""
         first_paint = not self._first_paint_started_logged
         if first_paint:
@@ -1346,32 +1500,19 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         try:
             self._paint_scene()
             if first_paint:
-                render_error = glGetError()
-                center_pixel = self._sample_center_pixel()
-                readback_error = glGetError()
-                self._first_paint_completed_logged = True
-                log_buffer.log(
-                    'OpenGL',
-                    f'Animation viewer first paintGL complete; '
-                    f'render_gl_error={self._gl_error_text(render_error)}; '
-                    f'center_pixel={center_pixel}; '
-                    f'readback_gl_error={self._gl_error_text(readback_error)}; '
-                    f'{self._surface_state()}',
-                )
-        except Exception as exc:
+                self._log_first_paint_completion()
+        except (OpenGLError, RuntimeError, TypeError, ValueError, KeyError, IndexError) as exc:
             if not self._paint_error_logged:
                 self._paint_error_logged = True
                 log_buffer.log(
                     'OpenGL',
                     f'Animation viewer paint failed: {type(exc).__name__}: {exc}',
                 )
-            try:
-                glClearColor(0.08, 0.08, 0.10, 1.0)
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-            except Exception:
-                pass
+            with suppress(OpenGLError, RuntimeError):
+                GL.glClearColor(0.08, 0.08, 0.10, 1.0)
+                GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
-    def _update_world_transforms(self):
+    def _update_world_transforms(self) -> None:
         """Update world transforms for all parts based on current animation frame."""
         if not self.keyframes or self.root_ref is None:
             return
@@ -1381,7 +1522,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             kf_a, kf_b, alpha = sample_keyframes(self.keyframes, self.current_time)
 
             # Interpolate poses
-            pose: Dict[str, np.ndarray] = {}
+            pose: dict[str, FloatArray] = {}
             all_names = set(kf_a.pose_by_part_name.keys()) | set(kf_b.pose_by_part_name.keys())
             ident = mat_identity()
 
@@ -1396,7 +1537,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                     pose[name] = matrix_trs_lerp(a, b, alpha)
 
             # Apply pose to each part independently (no hierarchy)
-            world: Dict[str, np.ndarray] = {}
+            world: dict[PartRef, FloatArray] = {}
             for ref, part in self.parts.items():
                 part_pose = pose.get(part.name, ident)
                 world[ref] = mat_mul(part.cframe, part_pose)
@@ -1408,7 +1549,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         kf_a, kf_b, alpha = sample_keyframes(self.keyframes, self.current_time)
 
         # Interpolate poses
-        pose: Dict[str, np.ndarray] = {}
+        pose: dict[str, FloatArray] = {}
         all_names = set(kf_a.pose_by_part_name.keys()) | set(kf_b.pose_by_part_name.keys())
         ident = mat_identity()
 
@@ -1424,34 +1565,37 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         # Start with root
         root_pose = pose.get(self.root_name, ident)
-        world: Dict[str, np.ndarray] = {}
+        world: dict[PartRef, FloatArray] = {}
         if self.base_root_world is not None:
             world[self.root_ref] = mat_mul(self.base_root_world, root_pose)
         else:
             world[self.root_ref] = root_pose
 
         # Propagate through motor hierarchy (limited passes)
-        num_motors = len(self.motors)
+        rig_parts = self.parts
+        motors = self.motors
+        num_motors = len(motors)
         max_passes = min(num_motors + 2, 15)  # Limit iterations
 
         for _ in range(max_passes):
             changed = False
-            for motor in self.motors:
+            for motor in motors:
                 if motor.part0_ref not in world:
                     continue
                 if motor.part1_ref in world:
                     continue  # Already computed
-                child = self.parts.get(motor.part1_ref)
+                child = rig_parts.get(motor.part1_ref)
                 if child is None:
                     continue
 
                 # Get child pose transform
-                T = pose.get(child.name, ident)
+                transform = pose.get(child.name, ident)
 
                 # Calculate world transform: parent_world * C0 * pose * inv(C1)
                 # Use cached c1_inv for performance
                 part1_world = mat_mul(
-                    mat_mul(mat_mul(world[motor.part0_ref], motor.c0), T), motor.c1_inv
+                    mat_mul(mat_mul(world[motor.part0_ref], motor.c0), transform),
+                    motor.c1_inv,
                 )
 
                 world[motor.part1_ref] = part1_world
@@ -1462,10 +1606,10 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         self.world_transforms = world
 
-    def _compile_mesh_display_list(self, part_ref: str, mesh_data: Dict) -> int:
+    def _compile_mesh_display_list(self, _part_ref: PartRef, mesh_data: MeshData) -> int:
         """Compile mesh into a display list for fast rendering."""
-        dl = glGenLists(1)
-        glNewList(dl, GL_COMPILE)
+        dl = GL.glGenLists(1)
+        GL.glNewList(dl, GL.GL_COMPILE)
 
         vertices = mesh_data['vertices']
         normals = mesh_data.get('normals')
@@ -1475,22 +1619,22 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             v_indices = face['v']
             n_indices = face.get('n')
 
-            glBegin(GL_POLYGON)
+            GL.glBegin(GL.GL_POLYGON)
             for i, v_idx in enumerate(v_indices):
                 if 0 <= v_idx < len(vertices):
                     if normals is not None and n_indices and i < len(n_indices):
                         n_idx = n_indices[i]
                         if 0 <= n_idx < len(normals):
                             n = normals[n_idx]
-                            glNormal3f(n[0], n[1], n[2])
+                            GL.glNormal3f(n[0], n[1], n[2])
                     v = vertices[v_idx]
-                    glVertex3f(v[0], v[1], v[2])
-            glEnd()
+                    GL.glVertex3f(v[0], v[1], v[2])
+            GL.glEnd()
 
-        glEndList()
+        GL.glEndList()
         return dl
 
-    def _get_or_compile_display_list(self, part_ref: str, mesh_data: Dict) -> int:
+    def _get_or_compile_display_list(self, part_ref: PartRef, mesh_data: MeshData) -> int:
         """Get cached display list or compile a new one."""
         if part_ref not in self.display_lists:
             self.display_lists[part_ref] = self._compile_mesh_display_list(part_ref, mesh_data)
@@ -1511,132 +1655,131 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                     return
                 self.makeCurrent()
                 made_current = True
-            for display_list in display_lists:
-                if display_list:
-                    glDeleteLists(display_list, 1)
-        except Exception as exc:
+            _delete_display_list_ids(display_lists)
+        except (OpenGLError, RuntimeError) as exc:
             log_buffer.log('AnimationViewer', f'Could not delete display lists: {exc}')
         finally:
             if made_current:
-                try:
+                with suppress(OpenGLError, RuntimeError):
                     self.doneCurrent()
-                except Exception:
-                    pass
 
-    def closeEvent(self, event):
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Release GPU resources before Qt destroys this widget's context."""
         self.timer.stop()
         self.release_display_lists()
         super().closeEvent(event)
 
-    def _draw_grid(self):
+    def _draw_grid(self) -> None:
         """Draw a subtle floor grid to provide spatial context."""
-        glPushAttrib(GL_ALL_ATTRIB_BITS)
-        glDisable(GL_LIGHTING)
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        GL.glPushAttrib(GL.GL_ALL_ATTRIB_BITS)
+        GL.glDisable(GL.GL_LIGHTING)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
 
-        glColor4f(1.0, 1.0, 1.0, 0.08)  # Very subtle white lines
-        glLineWidth(1.0)
+        GL.glColor4f(1.0, 1.0, 1.0, 0.08)  # Very subtle white lines
+        GL.glLineWidth(1.0)
 
         grid_size = 10.0
         grid_step = 0.5
 
         bottom_y = 0.0
 
-        glBegin(GL_LINES)
+        GL.glBegin(GL.GL_LINES)
         val = -grid_size
         while val <= grid_size + 0.001:
             if abs(val) < 0.01:
-                glColor4f(1.0, 0.2, 0.2, 0.15)  # X axis highlight
+                GL.glColor4f(1.0, 0.2, 0.2, 0.15)  # X axis highlight
             else:
-                glColor4f(1.0, 1.0, 1.0, 0.08)
-            glVertex3f(val, bottom_y, -grid_size)
-            glVertex3f(val, bottom_y, grid_size)
+                GL.glColor4f(1.0, 1.0, 1.0, 0.08)
+            GL.glVertex3f(val, bottom_y, -grid_size)
+            GL.glVertex3f(val, bottom_y, grid_size)
 
             if abs(val) < 0.01:
-                glColor4f(0.2, 0.4, 1.0, 0.15)  # Z axis highlight
+                GL.glColor4f(0.2, 0.4, 1.0, 0.15)  # Z axis highlight
             else:
-                glColor4f(1.0, 1.0, 1.0, 0.08)
-            glVertex3f(-grid_size, bottom_y, val)
-            glVertex3f(grid_size, bottom_y, val)
+                GL.glColor4f(1.0, 1.0, 1.0, 0.08)
+            GL.glVertex3f(-grid_size, bottom_y, val)
+            GL.glVertex3f(grid_size, bottom_y, val)
 
             val += grid_step
-        glEnd()
+        GL.glEnd()
 
-        glPopAttrib()
+        GL.glPopAttrib()
 
-    def _draw_axis_indicator(self):
+    def _draw_axis_indicator(self) -> None:
         """Draw XYZ axis indicator in bottom left corner."""
         # Save current state
-        glPushAttrib(GL_ALL_ATTRIB_BITS)
-        glPushMatrix()
+        GL.glPushAttrib(GL.GL_ALL_ATTRIB_BITS)
+        GL.glPushMatrix()
 
         # Setup viewport for axis indicator (bottom left corner)
         w, h = self.width(), self.height()
         indicator_size = 80  # pixels
         margin = 10
 
-        glViewport(margin, margin, indicator_size, indicator_size)
+        GL.glViewport(margin, margin, indicator_size, indicator_size)
 
         # Setup orthographic projection for indicator
-        glMatrixMode(GL_PROJECTION)
-        glPushMatrix()
-        glLoadIdentity()
-        glOrtho(-2, 2, -2, 2, -10, 10)
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glPushMatrix()
+        GL.glLoadIdentity()
+        GL.glOrtho(-2, 2, -2, 2, -10, 10)
 
-        glMatrixMode(GL_MODELVIEW)
-        glLoadIdentity()
+        GL.glMatrixMode(GL.GL_MODELVIEW)
+        GL.glLoadIdentity()
 
         # Apply same rotation as main model
-        glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
-        glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
+        GL.glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
+        GL.glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
 
         # Disable lighting for axes
-        glDisable(GL_LIGHTING)
-        glDisable(GL_DEPTH_TEST)
-        glLineWidth(2.0)
+        GL.glDisable(GL.GL_LIGHTING)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glLineWidth(2.0)
 
         axis_length = 1.5
 
         # Draw X axis (red)
-        glColor3f(1.0, 0.2, 0.2)
-        glBegin(GL_LINES)
-        glVertex3f(0, 0, 0)
-        glVertex3f(axis_length, 0, 0)
-        glEnd()
+        GL.glColor3f(1.0, 0.2, 0.2)
+        GL.glBegin(GL.GL_LINES)
+        GL.glVertex3f(0, 0, 0)
+        GL.glVertex3f(axis_length, 0, 0)
+        GL.glEnd()
 
         # Draw Y axis (green)
-        glColor3f(0.2, 1.0, 0.2)
-        glBegin(GL_LINES)
-        glVertex3f(0, 0, 0)
-        glVertex3f(0, axis_length, 0)
-        glEnd()
+        GL.glColor3f(0.2, 1.0, 0.2)
+        GL.glBegin(GL.GL_LINES)
+        GL.glVertex3f(0, 0, 0)
+        GL.glVertex3f(0, axis_length, 0)
+        GL.glEnd()
 
         # Draw Z axis (blue)
-        glColor3f(0.2, 0.4, 1.0)
-        glBegin(GL_LINES)
-        glVertex3f(0, 0, 0)
-        glVertex3f(0, 0, axis_length)
-        glEnd()
+        GL.glColor3f(0.2, 0.4, 1.0)
+        GL.glBegin(GL.GL_LINES)
+        GL.glVertex3f(0, 0, 0)
+        GL.glVertex3f(0, 0, axis_length)
+        GL.glEnd()
 
         # Restore projection matrix
-        glMatrixMode(GL_PROJECTION)
-        glPopMatrix()
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glPopMatrix()
 
         # Restore modelview and attributes
-        glMatrixMode(GL_MODELVIEW)
-        glPopMatrix()
-        glPopAttrib()
+        GL.glMatrixMode(GL.GL_MODELVIEW)
+        GL.glPopMatrix()
+        GL.glPopAttrib()
 
         # Restore viewport
-        glViewport(0, 0, w, h)
+        GL.glViewport(0, 0, w, h)
 
-    def mousePressEvent(self, event):
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press."""
         self.last_pos = event.pos()
 
-    def mouseMoveEvent(self, event):
+    @override
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Handle mouse drag."""
         if self.last_pos is None:
             return
@@ -1655,7 +1798,8 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         self.last_pos = event.pos()
 
-    def wheelEvent(self, event):
+    @override
+    def wheelEvent(self, event: QWheelEvent) -> None:
         """Handle mouse wheel."""
         delta = event.angleDelta().y()
         if self.camera_mode == 'orbit':
@@ -1677,7 +1821,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         self.update()
 
-    def set_time(self, time: float):
+    def set_time(self, time: float) -> None:
         """Set animation time."""
         self.current_time = max(0, min(time, self.duration))
         self.update()
@@ -1685,7 +1829,8 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
     def _is_movement_pressed(self, movement_key: MovementKey) -> bool:
         return movement_key in self.keys_pressed
 
-    def keyPressEvent(self, event):
+    @override
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         movement_key = movement_key_from_event(event)
         if self.camera_mode == 'orbit':
             if movement_key in WASD_MOVEMENT_KEYS:
@@ -1696,22 +1841,24 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             self.keys_pressed.add(movement_key)
         super().keyPressEvent(event)
 
-    def keyReleaseEvent(self, event):
+    @override
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
         movement_key = movement_key_from_event(event)
         if movement_key is not None:
             self.keys_pressed.discard(movement_key)
         super().keyReleaseEvent(event)
 
-    def focusOutEvent(self, event):
+    @override
+    def focusOutEvent(self, event: QFocusEvent) -> None:
         self.keys_pressed.clear()
         super().focusOutEvent(event)
 
-    def set_auto_rotate(self, enabled: bool):
+    def set_auto_rotate(self, enabled: bool) -> None:
         self.auto_rotate = enabled
         if enabled and self.camera_mode == 'fps':
             self.reset_view()
 
-    def _transition_to_fps(self):
+    def _transition_to_fps(self) -> None:
         if self.camera_mode == 'fps':
             return
         self.camera_mode = 'fps'
@@ -1736,7 +1883,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         self.cam_pos = np.array([px, py, pz], dtype=float)
 
-    def _update_tick(self):
+    def _update_tick(self) -> None:
         needs_update = False
         current_time = time.time()
         dt = current_time - self.last_tick_time
@@ -1805,14 +1952,14 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         if needs_update:
             self.update()
 
-    def reset_view(self):
+    def reset_view(self) -> None:
         self.camera_mode = 'orbit'
         self.rotation_x = 20.0
         self.rotation_y = 205.0
         self.zoom = 20.0
         self.update()
 
-    def toggle_grid(self, enabled: bool):
+    def toggle_grid(self, enabled: bool) -> None:
         self.show_grid = enabled
         self.update()
 
@@ -1823,7 +1970,9 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 class AnimationViewerPanel(QWidget):
     """Animation viewer with playback controls."""
 
-    def __init__(self, parent=None, config_manager=None):
+    def __init__(
+        self, parent: QWidget | None = None, config_manager: SettingsSource | None = None
+    ) -> None:
         super().__init__(parent)
         self.config_manager = config_manager
         self.gl_widget = AnimationGLWidget()
@@ -1835,7 +1984,9 @@ class AnimationViewerPanel(QWidget):
                 updated = True
             if updated:
                 self.config_manager.save()
-            self.gl_widget.show_grid = self.config_manager.settings.get('obj_show_grid', True)
+            self.gl_widget.show_grid = bool_value(
+                self.config_manager.settings.get('obj_show_grid', True), default=True
+            )
 
         self.is_playing = False
         self.is_loaded = False
@@ -1893,7 +2044,7 @@ class AnimationViewerPanel(QWidget):
         ts_layout.setSpacing(0)  # Tighten gap
 
         self.ts_label = QLabel(tr('ui.cache.animation_viewer.timescale_1_0x'))
-        self.ts_label.setStyleSheet('color: palette(window-text); font-weight: normal;')
+        style_text(self.ts_label, bold=False)
         ts_layout.addWidget(self.ts_label)
 
         ts_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1924,15 +2075,15 @@ class AnimationViewerPanel(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_playback)
         self.slider_pressed = False
-        self.last_tick_time: Optional[float] = None
+        self.last_tick_time: float | None = None
 
-    def _toggle_grid_and_save(self, enabled: bool):
+    def _toggle_grid_and_save(self, enabled: bool) -> None:
         self.gl_widget.toggle_grid(enabled)
         if self.config_manager:
             self.config_manager.settings['obj_show_grid'] = enabled
             self.config_manager.save()
 
-    def show_help(self):
+    def show_help(self) -> None:
         msg = QMessageBox(self)
         msg.setWindowTitle(tr('ui.cache.animation_viewer.camera_controls'))
         msg.setText(tr('ui.cache.animation_viewer.h3_orbit_mode_default_h3_ul_li'))
@@ -1958,7 +2109,7 @@ class AnimationViewerPanel(QWidget):
 
         return success
 
-    def _toggle_play_pause(self):
+    def _toggle_play_pause(self) -> None:
         """Toggle playback."""
         if self.is_playing:
             self.is_playing = False
@@ -1972,16 +2123,14 @@ class AnimationViewerPanel(QWidget):
             # Start playback timer at monitor refresh rate for smooth sync
             try:
                 interval = self.gl_widget.get_refresh_interval_ms()
-            except Exception:
+            except RuntimeError, TypeError, ValueError:
                 interval = 33
             self.timer.start(interval)
 
-    def _update_playback(self):
+    def _update_playback(self) -> None:
         """Update playback position using actual elapsed time."""
-        import time as time_module
-
         if not self.slider_pressed and self.is_loaded:
-            current_tick = time_module.perf_counter()
+            current_tick = time.perf_counter()
 
             if self.last_tick_time is not None:
                 # Use actual elapsed time for accurate playback speed
@@ -2002,28 +2151,27 @@ class AnimationViewerPanel(QWidget):
             # Update slider
             if self.gl_widget.duration > 0:
                 slider_val = int((new_time / self.gl_widget.duration) * 1000)
-                self.time_slider.blockSignals(True)
-                self.time_slider.setValue(slider_val)
-                self.time_slider.blockSignals(False)
+                with QSignalBlocker(self.time_slider):
+                    self.time_slider.setValue(slider_val)
 
             self._update_time_label()
 
-    def _on_slider_press(self):
+    def _on_slider_press(self) -> None:
         """Handle slider press."""
         self.slider_pressed = True
 
-    def _on_slider_release(self):
+    def _on_slider_release(self) -> None:
         """Handle slider release."""
         self.slider_pressed = False
 
-    def _on_slider_changed(self, value: int):
+    def _on_slider_changed(self, value: int) -> None:
         """Handle slider change."""
         if self.gl_widget.duration > 0:
             new_time = (value / 1000.0) * self.gl_widget.duration
             self.gl_widget.set_time(new_time)
             self._update_time_label()
 
-    def _update_time_label(self):
+    def _update_time_label(self) -> None:
         """Update time display."""
         current = self.gl_widget.current_time
         duration = self.gl_widget.duration
@@ -2031,14 +2179,14 @@ class AnimationViewerPanel(QWidget):
             tr('ui.cache.animation_viewer.value_s_value_s', value0=current, value1=duration)
         )
 
-    def _on_timescale_changed(self, value: int):
+    def _on_timescale_changed(self, value: int) -> None:
         self.timescale = value / 10.0
         if hasattr(self, 'ts_label'):
             self.ts_label.setText(
                 tr('ui.cache.animation_viewer.timescale_value_x', value0=self.timescale)
             )
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear animation data."""
         self.is_playing = False
         self.is_loaded = False
@@ -2057,7 +2205,7 @@ class AnimationViewerPanel(QWidget):
         self.gl_widget.release_display_lists()
         self.gl_widget.update()
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop playback."""
         self.is_playing = False
         self.timer.stop()

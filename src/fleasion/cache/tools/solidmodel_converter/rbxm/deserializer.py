@@ -11,6 +11,7 @@ import struct
 from typing import Any
 
 import lz4.block  # type: ignore[import-untyped]
+lazy import zstandard
 
 from .binary_reader import (
     decode_ids,
@@ -46,49 +47,47 @@ FILE_HEADER_SIZE = 32  # 14 (magic+sig) + 2 (version) + 4 + 4 + 8 (reserved)
 ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 
 
-def _decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
+def decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
     if raw.startswith(ZSTD_MAGIC):
         try:
-            import zstandard  # type: ignore[import-untyped]
+            decompressor = zstandard.ZstdDecompressor()
         except ImportError as exc:
             msg = 'RBXM contains a ZSTD-compressed chunk; install zstandard to read it'
             raise RuntimeError(msg) from exc
-        return zstandard.ZstdDecompressor().decompress(  # type: ignore[no-any-return]
-            raw, max_output_size=uncompressed_size
-        )
+        return decompressor.decompress(raw, max_output_size=uncompressed_size)
 
     return lz4.block.decompress(  # type: ignore[no-any-return]
         raw, uncompressed_size=uncompressed_size
     )
 
 
-# 24 axis-aligned rotation matrices (orientation IDs 0..23).
-# Each is a 3x3 matrix stored row-major as 9 floats.
+# 24 axis-aligned rotation matrices keyed by Roblox's sparse orientation IDs
+# Each is a 3x3 matrix stored row-major as 9 floats
 _ORIENTATION_MATRICES: dict[int, tuple[float, ...]] = {
-    0: (1, 0, 0, 0, 1, 0, 0, 0, 1),
-    1: (1, 0, 0, 0, 0, -1, 0, 1, 0),
-    2: (1, 0, 0, 0, -1, 0, 0, 0, -1),
-    3: (1, 0, 0, 0, 0, 1, 0, -1, 0),
-    4: (0, 1, 0, 1, 0, 0, 0, 0, -1),
-    5: (0, 0, 1, 1, 0, 0, 0, 1, 0),
-    6: (0, -1, 0, 1, 0, 0, 0, 0, 1),
-    7: (0, 0, -1, 1, 0, 0, 0, -1, 0),
-    8: (0, 1, 0, 0, 0, 1, 1, 0, 0),
-    9: (0, 0, -1, 0, 1, 0, 1, 0, 0),
-    10: (0, -1, 0, 0, 0, -1, 1, 0, 0),
-    11: (0, 0, 1, 0, -1, 0, 1, 0, 0),
-    12: (-1, 0, 0, 0, 1, 0, 0, 0, -1),
-    13: (-1, 0, 0, 0, 0, 1, 0, 1, 0),
-    14: (-1, 0, 0, 0, -1, 0, 0, 0, 1),
-    15: (-1, 0, 0, 0, 0, -1, 0, -1, 0),
-    16: (0, 1, 0, -1, 0, 0, 0, 0, 1),
-    17: (0, 0, -1, -1, 0, 0, 0, 1, 0),
-    18: (0, -1, 0, -1, 0, 0, 0, 0, -1),
-    19: (0, 0, 1, -1, 0, 0, 0, -1, 0),
-    20: (0, 1, 0, 0, 0, -1, -1, 0, 0),
-    21: (0, 0, 1, 0, 1, 0, -1, 0, 0),
-    22: (0, -1, 0, 0, 0, 1, -1, 0, 0),
-    23: (0, 0, -1, 0, -1, 0, -1, 0, 0),
+    0x02: (1, 0, 0, 0, 1, 0, 0, 0, 1),
+    0x03: (1, 0, 0, 0, 0, -1, 0, 1, 0),
+    0x05: (1, 0, 0, 0, -1, 0, 0, 0, -1),
+    0x06: (1, 0, 0, 0, 0, 1, 0, -1, 0),
+    0x07: (0, 1, 0, 1, 0, 0, 0, 0, -1),
+    0x09: (0, 0, 1, 1, 0, 0, 0, 1, 0),
+    0x0A: (0, -1, 0, 1, 0, 0, 0, 0, 1),
+    0x0C: (0, 0, -1, 1, 0, 0, 0, -1, 0),
+    0x0D: (0, 1, 0, 0, 0, 1, 1, 0, 0),
+    0x0E: (0, 0, -1, 0, 1, 0, 1, 0, 0),
+    0x10: (0, -1, 0, 0, 0, -1, 1, 0, 0),
+    0x11: (0, 0, 1, 0, -1, 0, 1, 0, 0),
+    0x14: (-1, 0, 0, 0, 1, 0, 0, 0, -1),
+    0x15: (-1, 0, 0, 0, 0, 1, 0, 1, 0),
+    0x17: (-1, 0, 0, 0, -1, 0, 0, 0, 1),
+    0x18: (-1, 0, 0, 0, 0, -1, 0, -1, 0),
+    0x19: (0, 1, 0, -1, 0, 0, 0, 0, 1),
+    0x1B: (0, 0, -1, -1, 0, 0, 0, 1, 0),
+    0x1C: (0, -1, 0, -1, 0, 0, 0, 0, -1),
+    0x1E: (0, 0, 1, -1, 0, 0, 0, -1, 0),
+    0x1F: (0, 1, 0, 0, 0, -1, -1, 0, 0),
+    0x20: (0, 0, 1, 0, 1, 0, -1, 0, 0),
+    0x22: (0, -1, 0, 0, 0, 1, -1, 0, 0),
+    0x23: (0, 0, -1, 0, -1, 0, -1, 0, 0),
 }
 
 
@@ -162,7 +161,7 @@ class RbxmDeserializer:
                 offset += uncompressed_size
             else:
                 raw = data[offset : offset + compressed_size]
-                chunk_data = _decompress_chunk(raw, uncompressed_size)
+                chunk_data = decompress_chunk(raw, uncompressed_size)
                 offset += compressed_size
 
             self._process_chunk(chunk_name, chunk_data)
@@ -340,74 +339,75 @@ class RbxmDeserializer:
         """Decode property values based on the format type."""
         match fmt:
             case PropertyFormat.STRING:
-                return self._read_strings(data, offset, count)
+                values = self._read_strings(data, offset, count)
             case PropertyFormat.BOOL:
-                return self._read_bools(data, offset, count)
+                values = self._read_bools(data, offset, count)
             case PropertyFormat.INT:
-                return self._read_ints(data, offset, count)
+                values = self._read_ints(data, offset, count)
             case PropertyFormat.FLOAT:
-                return self._read_floats(data, offset, count)
+                values = self._read_floats(data, offset, count)
             case PropertyFormat.DOUBLE:
-                return self._read_doubles(data, offset, count)
+                values = self._read_doubles(data, offset, count)
             case PropertyFormat.UDIM:
-                return self._read_udims(data, offset, count)
+                values = self._read_udims(data, offset, count)
             case PropertyFormat.UDIM2:
-                return self._read_udim2s(data, offset, count)
+                values = self._read_udim2s(data, offset, count)
             case PropertyFormat.RAY:
-                return self._read_rays(data, offset, count)
+                values = self._read_rays(data, offset, count)
             case PropertyFormat.FACES:
-                return self._read_faces(data, offset, count)
+                values = self._read_faces(data, offset, count)
             case PropertyFormat.AXES:
-                return self._read_axes(data, offset, count)
+                values = self._read_axes(data, offset, count)
             case PropertyFormat.BRICK_COLOR:
-                return self._read_brick_colors(data, offset, count)
+                values = self._read_brick_colors(data, offset, count)
             case PropertyFormat.COLOR3:
-                return self._read_color3s(data, offset, count)
+                values = self._read_color3s(data, offset, count)
             case PropertyFormat.VECTOR2:
-                return self._read_vector2s(data, offset, count)
+                values = self._read_vector2s(data, offset, count)
             case PropertyFormat.VECTOR3:
-                return self._read_vector3s(data, offset, count)
+                values = self._read_vector3s(data, offset, count)
             case PropertyFormat.VECTOR2INT16:
-                return self._read_vector2int16s(data, offset, count)
+                values = self._read_vector2int16s(data, offset, count)
             case PropertyFormat.CFRAME_MATRIX | PropertyFormat.CFRAME_QUAT:
-                return self._read_cframes(data, offset, count, fmt)
+                values = self._read_cframes(data, offset, count, fmt)
             case PropertyFormat.ENUM:
-                return self._read_enums(data, offset, count)
+                values = self._read_enums(data, offset, count)
             case PropertyFormat.REF:
-                return self._read_refs(data, offset, count)
+                values = self._read_refs(data, offset, count)
             case PropertyFormat.VECTOR3INT16:
-                return self._read_vector3int16s(data, offset, count)
+                values = self._read_vector3int16s(data, offset, count)
             case PropertyFormat.NUMBER_SEQUENCE:
-                return self._read_number_sequences(data, offset, count)
+                values = self._read_number_sequences(data, offset, count)
             case PropertyFormat.COLOR_SEQUENCE:
-                return self._read_color_sequences(data, offset, count)
+                values = self._read_color_sequences(data, offset, count)
             case PropertyFormat.NUMBER_RANGE:
-                return self._read_number_ranges(data, offset, count)
+                values = self._read_number_ranges(data, offset, count)
             case PropertyFormat.RECT2D:
-                return self._read_rect2ds(data, offset, count)
+                values = self._read_rect2ds(data, offset, count)
             case PropertyFormat.PHYSICAL_PROPERTIES:
-                return self._read_physical_properties(data, offset, count)
+                values = self._read_physical_properties(data, offset, count)
             case PropertyFormat.COLOR3UINT8:
-                return self._read_color3uint8s(data, offset, count)
+                values = self._read_color3uint8s(data, offset, count)
             case PropertyFormat.INT64:
-                return self._read_int64s(data, offset, count)
+                values = self._read_int64s(data, offset, count)
             case PropertyFormat.SHARED_STRING:
-                return self._read_shared_strings(data, offset, count)
+                values = self._read_shared_strings(data, offset, count)
             case PropertyFormat.BYTECODE:
-                return self._read_bytecodes(data, offset, count)
+                values = self._read_bytecodes(data, offset, count)
             case PropertyFormat.OPTIONAL_CFRAME:
-                return self._read_optional_cframes(data, offset, count)
+                values = self._read_optional_cframes(data, offset, count)
             case PropertyFormat.UNIQUE_ID:
-                return self._read_unique_ids(data, offset, count)
+                values = self._read_unique_ids(data, offset, count)
             case PropertyFormat.FONT:
-                return self._read_fonts(data, offset, count)
+                values = self._read_fonts(data, offset, count)
             case PropertyFormat.SECURITY_CAPABILITIES:
-                return self._read_security_capabilities(data, offset, count)
+                values = self._read_security_capabilities(data, offset, count)
             case PropertyFormat.CONTENT:
-                return self._read_contents(data, offset, count)
+                values = self._read_contents(data, offset, count)
             case _:
                 log.warning('Unhandled property format: %s', fmt)
-                return [None] * count
+                values = [None] * count
+        return values
 
     # --- Property readers ---
 
@@ -538,8 +538,10 @@ class RbxmDeserializer:
             if orient_id != 0:
                 # Axis-aligned rotation from lookup table.
                 # Special matrices start at type byte 0x02 (identity), matching rbxm_parser.py.
-                mat_idx = orient_id - 2
-                mat = _ORIENTATION_MATRICES.get(mat_idx, (1, 0, 0, 0, 1, 0, 0, 0, 1))
+                mat = _ORIENTATION_MATRICES.get(
+                    orient_id,
+                    (1, 0, 0, 0, 1, 0, 0, 0, 1),
+                )
                 rotations.append(mat)
             elif fmt == PropertyFormat.CFRAME_QUAT:
                 # Quaternion: 4 floats
@@ -823,8 +825,7 @@ class RbxmDeserializer:
         """Identify root instances (those not parented to another)."""
         parented: set[int] = set()
         for inst in self._instances.values():
-            for child in inst.children:
-                parented.add(child.referent)
+            parented.update(child.referent for child in inst.children)
 
         return [inst for inst in self._instances.values() if inst.referent not in parented]
 

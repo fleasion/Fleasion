@@ -1,33 +1,213 @@
 import inspect
+import json
 import os
+from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtWidgets import QApplication, QStyleOptionViewItem, QTableWidget, QTableWidgetItem
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QHelpEvent
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QStyleOptionViewItem,
+    QTableWidget,
+    QTableWidgetItem,
+)
 
 from fleasion import localization
 from fleasion.gui import modifications_tab
+from fleasion.utils.fflag_resolution import CLIENT_FFLAG_PREFIXES
+from fleasion.gui.compact_combo import CompactCellComboBox
 from fleasion.gui.modifications_tab import (
     CustomFFlagEditor,
-    FFlagBrowserDialog,
     FastFlagValueDelegate,
-    CompactBooleanComboBox,
+    FFlagBrowserDialog,
 )
 
+if TYPE_CHECKING:
+    from fleasion.config.manager import ConfigManager
+    from fleasion.proxy.master import ProxyMaster
 
-def _qapp():
-    return QApplication.instance() or QApplication([])
+
+type BrowserFlags = dict[str, str | None]
 
 
-def test_fflag_browser_reports_retrieved_and_filtered_totals(monkeypatch):
+@pytest.fixture(autouse=True)
+def _isolate_browser_client_detection(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Public-browser tests must not scan the developer's installed Roblox binaries."""
+    monkeypatch.setattr(modifications_tab, 'detect_client_binary', lambda: None)
+
+
+def _qapp() -> QApplication:
+    app = QApplication.instance()
+    return cast('QApplication', app) if app is not None else QApplication([])
+
+
+def _noop_refresh(_self: FFlagBrowserDialog, force: bool = False) -> None:
+    del force
+
+
+def _apply_flags(dialog: FFlagBrowserDialog, flags: BrowserFlags) -> None:
+    callback = cast(
+        'Callable[[FFlagBrowserDialog, BrowserFlags], None]',
+        FFlagBrowserDialog.__dict__['_apply_flags'],
+    )
+    callback(dialog, flags)
+
+
+def _extract_flags(payload: object) -> dict[str, str]:
+    callback = cast(
+        'Callable[[object], dict[str, str]]',
+        getattr(FFlagBrowserDialog, '_extract_flags'),
+    )
+    return callback(payload)
+
+
+def _extract_tracker_flags(payload: bytes) -> dict[str, None]:
+    callback = cast(
+        'Callable[[bytes], dict[str, None]]',
+        getattr(FFlagBrowserDialog, '_extract_tracker_flags'),
+    )
+    return callback(payload)
+
+
+def _add_selected(dialog: FFlagBrowserDialog) -> None:
+    callback = cast(
+        'Callable[[FFlagBrowserDialog], None]',
+        FFlagBrowserDialog.__dict__['_add_selected'],
+    )
+    callback(dialog)
+
+
+def _display_value(value: str | None) -> str:
+    callback = cast(
+        'Callable[[str | None], str]',
+        FFlagBrowserDialog.__dict__['_display_value'],
+    )
+    return callback(value)
+
+
+def _settings_urls() -> tuple[str, ...]:
+    callback = cast(
+        'Callable[[], tuple[str, ...]]',
+        getattr(FFlagBrowserDialog, '_settings_urls'),
+    )
+    return callback()
+
+
+def _fetch_flags(dialog: FFlagBrowserDialog) -> None:
+    callback = cast(
+        'Callable[[FFlagBrowserDialog], None]',
+        FFlagBrowserDialog.__dict__['_fetch_flags'],
+    )
+    callback(dialog)
+
+
+def _write_cache(flags: BrowserFlags, *, now: float | None = None) -> None:
+    callback = cast(
+        'Callable[..., None]',
+        getattr(FFlagBrowserDialog, '_write_cache'),
+    )
+    callback(flags, now=now)
+
+
+def _read_cache(*, now: float | None = None) -> BrowserFlags | None:
+    callback = cast(
+        'Callable[..., BrowserFlags | None]',
+        getattr(FFlagBrowserDialog, '_read_cache'),
+    )
+    return callback(now=now)
+
+
+def _refresh(dialog: FFlagBrowserDialog, *, force: bool = False) -> None:
+    callback = cast(
+        'Callable[..., None]',
+        FFlagBrowserDialog.__dict__['_refresh'],
+    )
+    callback(dialog, force=force)
+
+
+def _dialog_table(dialog: FFlagBrowserDialog) -> QTableWidget:
+    return cast('QTableWidget', dialog.__dict__['_table'])
+
+
+def _dialog_count(dialog: FFlagBrowserDialog) -> QLabel:
+    return cast('QLabel', dialog.__dict__['_count'])
+
+
+def _dialog_search(dialog: FFlagBrowserDialog) -> QLineEdit:
+    return cast('QLineEdit', dialog.__dict__['_search'])
+
+
+def _dialog_family_filter(dialog: FFlagBrowserDialog) -> QComboBox:
+    return cast('QComboBox', dialog.__dict__['_family_filter'])
+
+
+def _dialog_flags(dialog: FFlagBrowserDialog) -> BrowserFlags:
+    return cast('BrowserFlags', dialog.__dict__['_flags'])
+
+
+def _settings_url() -> str:
+    return cast('str', FFlagBrowserDialog.__dict__['_SETTINGS_URL'])
+
+
+def _bypass_header() -> dict[str, str]:
+    return cast('dict[str, str]', FFlagBrowserDialog.__dict__['_BYPASS_CUSTOM_FFLAGS_HEADER'])
+
+
+def _tracker_url(name: str) -> str:
+    return cast('str', FFlagBrowserDialog.__dict__[name])
+
+
+def _loaded_translations() -> dict[str, dict[str, str]]:
+    return cast('dict[str, dict[str, str]]', localization.__dict__['_loaded_translations'])
+
+
+def _empty_cache(_cls: type[FFlagBrowserDialog]) -> BrowserFlags:
+    return {'DFIntTaskSchedulerTargetFps': None}
+
+
+def _record_fetch(values: list[bool]) -> None:
+    values.append(True)
+
+
+def _no_timer(*_args: object) -> None:
+    return None
+
+
+def _refresh_proxy_noop() -> None:
+    return None
+
+
+def _editor_table(editor: CustomFFlagEditor) -> QTableWidget:
+    return cast('QTableWidget', editor.__dict__['_table'])
+
+
+def _add_flag_source() -> str:
+    callback = cast('Callable[..., object]', CustomFFlagEditor.__dict__['_add_flag'])
+    return inspect.getsource(callback)
+
+
+def test_fflag_browser_reports_retrieved_and_filtered_totals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _qapp()
-    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', lambda _self: None)
+    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
     dialog = FFlagBrowserDialog()
-    dialog._apply_flags(
+    _apply_flags(
+        dialog,
         {
             'DFFlagAlpha': 'True',
             'DFFlagBeta': 'False',
@@ -35,41 +215,44 @@ def test_fflag_browser_reports_retrieved_and_filtered_totals(monkeypatch):
             'FFlagGamma': 'True',
             'FIntLevel': '2',
             'UnclassifiedFlag': 'enabled',
-        }
+        },
     )
 
-    assert dialog._count.text() == 'Showing 6 FastFlags • 6 retrieved from Roblox'
-    assert dialog._table.columnCount() == 2
-    assert dialog._family_filter.minimumWidth() == 165
+    assert _dialog_count(dialog).text() == 'Showing 6 FastFlags • 6 retrieved from Roblox'
+    assert _dialog_table(dialog).columnCount() == 2
+    assert _dialog_family_filter(dialog).sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+    assert _dialog_family_filter(dialog).sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToContents
 
-    dialog._family_filter.setCurrentIndex(dialog._family_filter.findData('DFFlag'))
-    assert dialog._count.text() == 'Showing 2 FastFlags • 6 retrieved from Roblox'
+    _dialog_family_filter(dialog).setCurrentIndex(_dialog_family_filter(dialog).findData('DFFlag'))
+    assert _dialog_count(dialog).text() == 'Showing 2 FastFlags • 6 retrieved from Roblox'
 
-    dialog._search.setText('beta')
-    assert dialog._count.text() == 'Showing 1 FastFlags • 6 retrieved from Roblox'
+    _dialog_search(dialog).setText('beta')
+    assert _dialog_count(dialog).text() == 'Showing 1 FastFlags • 6 retrieved from Roblox'
     assert app is not None
 
 
-def test_fflag_browser_extracts_current_values_and_selection(monkeypatch):
+def test_fflag_browser_extracts_current_values_and_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _qapp()
-    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', lambda _self: None)
-    assert FFlagBrowserDialog._extract_flags(
+    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
+    assert _extract_flags(
         {'applicationSettings': {'FFlagExample': True, 'DFIntLimit': 120, 'skip': []}}
     ) == {'FFlagExample': 'True', 'DFIntLimit': '120'}
     with pytest.raises(ValueError, match='application FastFlags'):
-        FFlagBrowserDialog._extract_flags({})
+        _extract_flags({})
 
     dialog = FFlagBrowserDialog()
-    dialog._apply_flags({'FFlagExample': 'True'})
-    dialog._table.selectRow(0)
+    _apply_flags(dialog, {'FFlagExample': 'True'})
+    _dialog_table(dialog).selectRow(0)
     app.processEvents()
-    dialog._add_selected()
+    _add_selected(dialog)
 
     assert dialog.selected_flags == {'FFlagExample': 'True'}
 
 
-def test_fflag_browser_extracts_tracker_only_fastvariables():
-    assert FFlagBrowserDialog._extract_tracker_flags(
+def test_fflag_browser_extracts_tracker_only_fastvariables() -> None:
+    assert _extract_tracker_flags(
         b'[C++] DFFlagDebugDrawBroadPhaseAABBs\n'
         b'[C++] DFIntTaskSchedulerTargetFps\n'
         b'[C++] NotAFastVariable\n'
@@ -78,64 +261,90 @@ def test_fflag_browser_extracts_tracker_only_fastvariables():
         'DFIntTaskSchedulerTargetFps': None,
     }
 
+    assert _extract_tracker_flags(
+        b'SFFlagServerSynced\n'
+        b'[Lua] FFlagNewLuauFlag\n'
+        b'[Com] FStringAnotherFlag\n'
+        b'FFlag\n'
+        b'FFlagWith-Dash\n'
+        b'InvalidFlag\n'
+    ) == {
+        'FFlagNewLuauFlag': None,
+        'FStringAnotherFlag': None,
+    }
 
-def test_fflag_browser_adds_tracker_only_fastvariables_blank(monkeypatch):
+
+def test_fflag_browser_adds_tracker_only_fastvariables_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _qapp()
-    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', lambda _self: None)
+    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
     dialog = FFlagBrowserDialog()
-    dialog._apply_flags({'DFIntTaskSchedulerTargetFps': None})
-    dialog._table.selectRow(0)
+    _apply_flags(dialog, {'DFIntTaskSchedulerTargetFps': None})
+    _dialog_table(dialog).selectRow(0)
     app.processEvents()
-    dialog._add_selected()
+    _add_selected(dialog)
 
     assert dialog.selected_flags == {'DFIntTaskSchedulerTargetFps': ''}
 
 
-def test_fflag_browser_translates_unpublished_display_without_changing_none_sentinel(monkeypatch):
+def test_fflag_browser_translates_unpublished_display_without_changing_none_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _qapp()
-    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', lambda _self: None)
+    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
     pseudo = dict(localization.ENGLISH)
     pseudo['modifications.fastflags.no_value'] = '⟦no-value⟧'
-    monkeypatch.setitem(localization._TRANSLATIONS, 'zz', pseudo)
+    # Stand in for a real language so set_language keeps it selected
+    monkeypatch.setitem(_loaded_translations(), 'de', pseudo)
     try:
-        localization.set_language('zz')
+        localization.set_language('de')
         dialog = FFlagBrowserDialog()
-        dialog._apply_flags({'DFIntTaskSchedulerTargetFps': None})
+        _apply_flags(dialog, {'DFIntTaskSchedulerTargetFps': None})
 
-        assert dialog._flags['DFIntTaskSchedulerTargetFps'] is None
-        assert dialog._display_value(None) == '⟦no-value⟧'
-        assert dialog._table.item(0, 1).text() == '⟦no-value⟧'
+        assert _dialog_flags(dialog)['DFIntTaskSchedulerTargetFps'] is None
+        assert _display_value(None) == '⟦no-value⟧'
+        item = _dialog_table(dialog).item(0, 1)
+        assert item is not None
+        assert item.text() == '⟦no-value⟧'
 
-        dialog._search.setText('⟦no-value⟧')
-        assert not dialog._table.isRowHidden(0)
+        _dialog_search(dialog).setText('⟦no-value⟧')
+        assert not _dialog_table(dialog).isRowHidden(0)
         assert app is not None
     finally:
         localization.set_language('en')
 
 
-def test_fflag_browser_merges_live_values_with_the_tracker_lists(monkeypatch, tmp_path):
+def test_fflag_browser_merges_live_values_with_the_tracker_lists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     app = _qapp()
-    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', lambda _self: None)
+    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
     monkeypatch.setattr(FFlagBrowserDialog, '_CACHE_PATH', tmp_path / 'fflag_browser.json')
     dialog = FFlagBrowserDialog()
-    fetched = []
-    dialog.flags_loaded.connect(fetched.append)
+    fetched: list[BrowserFlags] = []
 
-    def fake_http_get(url, timeout, headers=None):
-        if url == dialog._SETTINGS_URL:
-            assert headers == dialog._BYPASS_CUSTOM_FFLAGS_HEADER
+    def record_flags(flags: object) -> None:
+        fetched.append(cast('BrowserFlags', flags))
+
+    dialog.flags_loaded.connect(record_flags)
+
+    def fake_http_get(url: str, timeout: int = 15, headers: dict[str, str] | None = None) -> bytes:
+        if url == _settings_url():
+            assert headers == _bypass_header()
             return b'{"applicationSettings":{"DFFlagDebugDrawBroadPhaseAABBs":"False"}}'
-        if url in dialog._settings_urls():
-            assert headers == dialog._BYPASS_CUSTOM_FFLAGS_HEADER
+        if url in _settings_urls():
+            assert headers == _bypass_header()
             return b'{"applicationSettings":{"DFIntTaskSchedulerTargetFps":"60"}}'
-        if url == dialog._TRACKER_VARIABLES_URL:
+        if url == _tracker_url('_TRACKER_VARIABLES_URL'):
             return b'[C++] DFFlagDebugDrawBroadPhaseAABBs\n'
-        if url == dialog._HISTORICAL_TRACKER_VARIABLES_URL:
-            return b'[C++] DFIntTaskSchedulerTargetFps\n'
-        raise AssertionError(f'unexpected URL: {url}')
+        if url == _tracker_url('_PLAYER_VARIABLES_URL'):
+            return b'DFIntTaskSchedulerTargetFps\n'
+        msg = f'unexpected URL: {url}'
+        raise AssertionError(msg)
 
     monkeypatch.setattr(modifications_tab, 'http_get', fake_http_get)
-    dialog._fetch_flags()
+    _fetch_flags(dialog)
 
     assert fetched == [
         {
@@ -143,136 +352,571 @@ def test_fflag_browser_merges_live_values_with_the_tracker_lists(monkeypatch, tm
             'DFIntTaskSchedulerTargetFps': None,
         }
     ]
+    assert _read_cache() == fetched[0]
     assert app is not None
 
 
-def test_fflag_browser_cache_expires_after_one_hour(monkeypatch, tmp_path):
+def test_fflag_browser_still_loads_when_public_settings_are_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
+    dialog = FFlagBrowserDialog()
+
+    def fake_http_get(
+        url: str, timeout: int = 15, headers: dict[str, str] | None = None
+    ) -> bytes:
+        del timeout, headers
+        if url == _tracker_url('_TRACKER_VARIABLES_URL'):
+            return b'[C++] FFlagStudioOnly\n'
+        if url == _tracker_url('_PLAYER_VARIABLES_URL'):
+            return b'FFlagPlayerOnly\n'
+        raise OSError('public endpoint unavailable')
+
+    monkeypatch.setattr(modifications_tab, 'http_get', fake_http_get)
+    assert dialog._collect_flags() == {  # pyright: ignore[reportPrivateUsage]
+        'FFlagStudioOnly': None,
+        'FFlagPlayerOnly': None,
+    }
+
+
+def test_fflag_browser_filters_malformed_clientsettings_names() -> None:
+    assert _extract_flags({
+        'applicationSettings': {
+            'FFlagValid': True,
+            'FFlagInvalid-Name': False,
+            'SFFlagServerSynced': False,
+            'BareNameFromClientSettings': True,
+            'FFlagOther': [],
+        },
+    }) == {'FFlagValid': 'True'}
+
+
+def test_fflag_browser_settings_enumerate_current_channels_and_platforms() -> None:
+    urls = _settings_urls()
+    assert len(urls) == len(set(urls)) == 70
+    assert _settings_url() in urls
+    assert any('PCDesktopClientCJV' in url for url in urls)
+    assert any(url.endswith('/bucket/zlive') for url in urls)
+    assert any(url.endswith('/bucket/zbeta') for url in urls)
+
+
+def test_fflag_browser_cache_expires_after_24_hours(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     cache_path = tmp_path / 'fflag_browser.json'
     monkeypatch.setattr(FFlagBrowserDialog, '_CACHE_PATH', cache_path)
-    flags = {'DFFlagDebugDrawBroadPhaseAABBs': None, 'FFlagExample': 'True'}
+    flags = {
+        'DFFlagDebugDrawBroadPhaseAABBs': None,
+        'SFFlagServerSynced': None,
+        'FFlagExample': 'True',
+        'BareNameFromClientSettings': 'on',
+    }
 
-    FFlagBrowserDialog._write_cache(flags, now=10_000)
+    _write_cache(flags, now=10_000)
 
-    assert FFlagBrowserDialog._read_cache(now=13_599) == flags
-    assert FFlagBrowserDialog._read_cache(now=13_600) is None
+    assert _read_cache(now=10_000 + 86_399) == {
+        'DFFlagDebugDrawBroadPhaseAABBs': None,
+        'FFlagExample': 'True',
+    }
+    assert _read_cache(now=10_000 + 86_400) is None
+
+    # Old caches included a pinned historical inventory and must be discarded
+    stale = json.loads(cache_path.read_text(encoding='utf-8'))
+    stale['version'] = 1
+    cache_path.write_text(json.dumps(stale), encoding='utf-8')
+    assert _read_cache(now=10_001) is None
 
 
-def test_fflag_browser_refresh_bypasses_a_fresh_cache(monkeypatch):
+def test_custom_fflag_catalog_prefetch_requires_enabled_and_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _qapp()
-    cached_flags = {'DFIntTaskSchedulerTargetFps': None}
+    assert app is not None
+    # Avoid any network calls and drive the worker synchronously
+    catalog = frozenset({'DFFlagDebugDrawBroadPhaseAABBs'})
+    names: list[frozenset[str] | None] = [None]
+    monkeypatch.setattr(modifications_tab, 'known_typed_names', lambda: names[0])
+    is_current = [False]
+    fetched: list[bool] = []
+    def current(_cls: type[FFlagBrowserDialog]) -> bool:
+        return is_current[0]
+
+    monkeypatch.setattr(FFlagBrowserDialog, 'cache_is_current', classmethod(current))
+
+    def refresh(_cls: type[FFlagBrowserDialog]) -> bool:
+        fetched.append(True)
+        names[0] = catalog
+        is_current[0] = True
+        return True
+
+    monkeypatch.setattr(
+        FFlagBrowserDialog, 'refresh_cache_if_stale', classmethod(refresh)
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target: Callable[[], None], daemon: bool) -> None:
+            assert daemon
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+    monkeypatch.setattr(modifications_tab.threading, 'Thread', ImmediateThread)
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'DebugDrawBroadPhaseAABBs': 'True'},
+        custom_fflags_enabled=False,
+        custom_fflag_keybinds={},
+        custom_fflag_folder_keybinds={},
+        custom_fflag_actions={},
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    try:
+        editor.prefetch_flag_catalog_if_needed()
+        assert not fetched
+        config.custom_fflags_enabled = True
+        table = _editor_table(editor)
+        delegate = table.itemDelegateForColumn(0)
+        assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+        index = table.model().index(0, 0)
+        # With no available catalog, do not show any speculative warning
+        assert delegate._matches(index) == ()  # pyright: ignore[reportPrivateUsage]
+        editor.prefetch_flag_catalog_if_needed()
+        assert fetched == [True]
+        assert editor._known_flag_names == catalog  # pyright: ignore[reportPrivateUsage]
+        # This was orange in the screenshot despite existing in the browser
+        assert delegate._matches(index) == ('DFFlagDebugDrawBroadPhaseAABBs',)  # pyright: ignore[reportPrivateUsage]
+        editor.prefetch_flag_catalog_if_needed()
+        assert fetched == [True]
+    finally:
+        editor.close()
+
+
+def test_failed_catalog_prefetch_is_not_repeated_on_every_tab_visit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    attempts: list[bool] = []
+
+    def never_current(_cls: type[FFlagBrowserDialog]) -> bool:
+        return False
+
+    def fails(_cls: type[FFlagBrowserDialog]) -> bool:
+        attempts.append(True)
+        raise OSError('offline')
+
+    class ImmediateThread:
+        def __init__(self, *, target: Callable[[], None], daemon: bool) -> None:
+            assert daemon
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+    monkeypatch.setattr(FFlagBrowserDialog, 'cache_is_current', classmethod(never_current))
+    monkeypatch.setattr(FFlagBrowserDialog, 'refresh_cache_if_stale', classmethod(fails))
+    monkeypatch.setattr(modifications_tab.threading, 'Thread', ImmediateThread)
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={},
+        custom_fflags_enabled=True,
+        custom_fflag_keybinds={},
+        custom_fflag_folder_keybinds={},
+        custom_fflag_actions={},
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    try:
+        editor.prefetch_flag_catalog_if_needed()
+        assert attempts == [True]
+        editor.prefetch_flag_catalog_if_needed()
+        assert attempts == [True]
+        editor._catalog_retry_not_before = 0  # pyright: ignore[reportPrivateUsage]
+        editor.prefetch_flag_catalog_if_needed()
+        assert attempts == [True, True]
+    finally:
+        editor.close()
+        app.processEvents()
+
+
+def test_catalog_load_refreshes_custom_warning_without_reloading_flag_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    assert app is not None
+    known: list[frozenset[str] | None] = [None]
+    monkeypatch.setattr(modifications_tab, 'known_typed_names', lambda: known[0])
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'DebugDrawBroadPhaseAABBs': 'True'}, custom_fflags_enabled=False,
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    table = _editor_table(editor)
+    delegate = table.itemDelegateForColumn(0)
+    assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+    index = table.model().index(0, 0)
+    try:
+        assert delegate._matches(index) == ()  # pyright: ignore[reportPrivateUsage]
+        known[0] = frozenset({'DFFlagDebugDrawBroadPhaseAABBs'})
+        editor._on_browser_inventory_loaded({})  # pyright: ignore[reportPrivateUsage]
+        assert delegate._matches(index) == ('DFFlagDebugDrawBroadPhaseAABBs',)  # pyright: ignore[reportPrivateUsage]
+        assert config.custom_fflags == {'DebugDrawBroadPhaseAABBs': 'True'}
+        assert table.rowCount() == 1
+    finally:
+        editor.close()
+
+
+def test_fflag_browser_refresh_bypasses_a_fresh_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _qapp()
+    cached_flags: BrowserFlags = {'DFIntTaskSchedulerTargetFps': None}
     monkeypatch.setattr(
         FFlagBrowserDialog,
         '_read_cache',
-        classmethod(lambda _cls: cached_flags),
+        classmethod(_empty_cache),
     )
     dialog = FFlagBrowserDialog()
-    assert dialog._flags == cached_flags
-    assert dialog._count.text().endswith('cached')
+    assert _dialog_flags(dialog) == cached_flags
+    assert 'cached' not in _dialog_count(dialog).text()
 
-    fetched = []
-    monkeypatch.setattr(dialog, '_fetch_flags', lambda: fetched.append(True))
+    fetched: list[bool] = []
+    def record_refresh(_generation: int | None = None) -> None:
+        _record_fetch(fetched)
+
+    monkeypatch.setattr(dialog, '_fetch_flags', record_refresh)
 
     class ImmediateThread:
-        def __init__(self, *, target, daemon):
+        def __init__(self, *, target: Callable[[], None], daemon: bool, args: tuple[int, ...] = ()) -> None:
+            del daemon
             self._target = target
+            self._args = args
 
-        def start(self):
-            self._target()
+        def start(self) -> None:
+            self._target(*self._args)
 
     monkeypatch.setattr(modifications_tab.threading, 'Thread', ImmediateThread)
-    dialog._refresh(force=True)
+    _refresh(dialog, force=True)
 
     assert fetched == [True]
     assert app is not None
 
 
-def test_custom_fflag_editor_uses_an_edit_on_demand_boolean_selector():
+@pytest.mark.parametrize('virtual', [False, True])
+@pytest.mark.parametrize('catalog', [None, frozenset[str]()])
+def test_unavailable_catalog_does_not_show_speculative_type_warning(
+    monkeypatch: pytest.MonkeyPatch, virtual: bool, catalog: frozenset[str] | None
+) -> None:
     app = _qapp()
-    config = SimpleNamespace(
-        custom_fflags={'FFlagExample': 'True', 'DFIntExample': '60'},
+    if virtual:
+        monkeypatch.setattr(CustomFFlagEditor, '_VIRTUAL_THRESHOLD', 1)
+    monkeypatch.setattr(modifications_tab, 'known_typed_names', lambda: catalog)
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'DebugDrawBroadPhaseAABBs': 'True', 'TaskSchedulerTargetFps': '50'},
         custom_fflags_enabled=False,
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    editor.resize(1000, 500)
+    editor.show()
+    app.processEvents()
+    table = editor._virtual_table if virtual else _editor_table(editor)  # pyright: ignore[reportPrivateUsage]
+    delegate = table.itemDelegateForColumn(0)
+    assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+    tooltips: list[str] = []
+
+    def record_tooltip(_position: object, message: str, _parent: object) -> None:
+        tooltips.append(message)
+
+    monkeypatch.setattr(modifications_tab.QToolTip, 'showText', record_tooltip)
+    try:
+        for row in range(table.model().rowCount()):
+            index = table.model().index(row, 0)
+            if catalog is None:
+                assert delegate._warning_kind(index) is None  # pyright: ignore[reportPrivateUsage]
+            else:
+                assert delegate._warning_kind(index) == 'missing'  # pyright: ignore[reportPrivateUsage]
+            rect = table.visualRect(index)
+            option = QStyleOptionViewItem()
+            option.rect = rect
+            position = delegate._warning_rect(rect).center()  # pyright: ignore[reportPrivateUsage]
+            event = QHelpEvent(
+                QEvent.Type.ToolTip, position, table.viewport().mapToGlobal(position)
+            )
+            delegate.helpEvent(event, table, option, index)
+        if catalog is None:
+            assert tooltips == []
+        else:
+            assert len(tooltips) == table.model().rowCount()
+            assert all('No matching FastFlag' in text for text in tooltips)
+    finally:
+        editor.close()
+
+
+def test_fflag_browser_cache_logs_saved_reused_and_write_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events: list[str] = []
+
+    def log(_category: str, message: str) -> None:
+        events.append(message)
+
+    monkeypatch.setattr(modifications_tab.log_buffer, 'log', log)
+    path = tmp_path / 'fflag_browser.json'
+    monkeypatch.setattr(FFlagBrowserDialog, '_CACHE_PATH', path)
+    assert FFlagBrowserDialog._write_cache({'DFIntExample': '42'})  # pyright: ignore[reportPrivateUsage]
+    assert path.is_file()
+    assert any('Saved 1 FastFlags' in message for message in events)
+    assert FFlagBrowserDialog.cache_is_current()
+
+    dialog = FFlagBrowserDialog()
+    try:
+        assert any('Loaded 1 FastFlags from catalog cache' in message for message in events)
+    finally:
+        dialog.close()
+
+    blocker = tmp_path / 'not_a_directory'
+    blocker.write_text('blocker', encoding='utf-8')
+    monkeypatch.setattr(FFlagBrowserDialog, '_CACHE_PATH', blocker / 'fflag_browser.json')
+    assert not FFlagBrowserDialog._write_cache({'DFIntExample': '42'})  # pyright: ignore[reportPrivateUsage]
+    assert any('Could not save catalog cache' in message for message in events)
+
+
+def test_unprefixed_custom_flag_warning_is_in_editor_not_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    monkeypatch.setattr(
+        modifications_tab, 'known_typed_names',
+        lambda: frozenset({'DFIntNetwork', 'FLogNetwork', 'FIntSingle'}),
     )
-    proxy = SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    monkeypatch.setattr(FFlagBrowserDialog, '_refresh', _noop_refresh)
+    browser = FFlagBrowserDialog()
+    _apply_flags(browser, {'DFIntNetwork': '3', 'FLogNetwork': '3'})
+    try:
+        actual_names: list[str] = []
+        for row in range(2):
+            item = _dialog_table(browser).item(row, 0)
+            assert item is not None
+            actual_names.append(item.text())
+        assert actual_names == ['DFIntNetwork', 'FLogNetwork']
+        assert not isinstance(
+            _dialog_table(browser).itemDelegateForColumn(0),
+            modifications_tab.CustomFFlagNameDelegate,
+        )
+    finally:
+        browser.close()
+
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'Network': '3', 'TaskSchedulerTargetFps': '50', 'FIntSingle': '25'},
+        custom_fflags_enabled=False,
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    editor.show()
+    app.processEvents()
+    table = _editor_table(editor)
+    delegate = table.itemDelegateForColumn(0)
+    assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+    seen: list[str] = []
+
+    def show_tooltip(_position: object, message: str, _parent: object) -> None:
+        seen.append(message)
+
+    monkeypatch.setattr(modifications_tab.QToolTip, 'showText', show_tooltip)
+    try:
+        for name, expected_prefixes, expected_message in (
+            ('Network', ('DFIntNetwork', 'FLogNetwork'), 'multiple types: DFInt, FLog.'),
+            ('TaskSchedulerTargetFps', tuple(
+                f'{prefix}TaskSchedulerTargetFps' for prefix in CLIENT_FFLAG_PREFIXES
+            ), 'No matching FastFlag'),
+        ):
+            row = next(i for i in range(table.rowCount()) if editor._row_name(i) == name)  # pyright: ignore[reportPrivateUsage]
+            index = table.model().index(row, 0)
+            matches = delegate._matches(index)  # pyright: ignore[reportPrivateUsage]
+            assert matches == expected_prefixes
+            rect = table.visualRect(index)
+            option = QStyleOptionViewItem()
+            option.rect = rect
+            location = delegate._warning_rect(rect).center()  # pyright: ignore[reportPrivateUsage]
+            event = QHelpEvent(QEvent.Type.ToolTip, location, table.viewport().mapToGlobal(location))
+            assert delegate.helpEvent(event, table, option, index)
+            assert expected_message in seen[-1]
+        row = next(i for i in range(table.rowCount()) if editor._row_name(i) == 'FIntSingle')  # pyright: ignore[reportPrivateUsage]
+        assert delegate._matches(table.model().index(row, 0)) == ()  # pyright: ignore[reportPrivateUsage]
+        assert config.custom_fflags == {
+            'Network': '3', 'TaskSchedulerTargetFps': '50', 'FIntSingle': '25'
+        }
+        exported = json.loads(editor._json_text())  # pyright: ignore[reportPrivateUsage]
+        # JSON export retains the user's original spelling; only the proxy's
+        # runtime delivery expands unprefixed names using cached inventories
+        assert exported['Network'] == '3'
+        assert exported['TaskSchedulerTargetFps'] == '50'
+        assert exported['FIntSingle'] == '25'
+        assert 'DFIntNetwork' not in exported
+    finally:
+        editor.close()
+
+
+def test_virtual_custom_flag_warning_uses_same_name_delegate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qapp()
+    monkeypatch.setattr(CustomFFlagEditor, '_VIRTUAL_THRESHOLD', 1)
+    monkeypatch.setattr(
+        modifications_tab, 'known_typed_names',
+        lambda: frozenset({'FIntNetwork', 'FLogNetwork'}),
+    )
+    config = cast('ConfigManager', SimpleNamespace(
+        custom_fflags={'Network': '3', 'FIntUnique': '25'}, custom_fflags_enabled=False
+    ))
+    editor = CustomFFlagEditor(config, cast('ProxyMaster', SimpleNamespace(
+        refresh_custom_fflag_interception=_refresh_proxy_noop
+    )))
+    try:
+        assert editor._virtual_active  # pyright: ignore[reportPrivateUsage]
+        table = editor._virtual_table  # pyright: ignore[reportPrivateUsage]
+        delegate = table.itemDelegateForColumn(0)
+        assert isinstance(delegate, modifications_tab.CustomFFlagNameDelegate)
+        row = next(i for i in range(table.model().rowCount()) if editor._row_name(i) == 'Network')  # pyright: ignore[reportPrivateUsage]
+        assert delegate._matches(table.model().index(row, 0)) == (  # pyright: ignore[reportPrivateUsage]
+            'FIntNetwork', 'FLogNetwork'
+        )
+    finally:
+        editor.close()
+
+
+def test_custom_fflag_editor_has_no_obsolete_sober_delay_warning() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(custom_fflags={}, custom_fflags_enabled=False),
+    )
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
+    )
+    editor = CustomFFlagEditor(config, proxy)
+    labels = editor.findChildren(QLabel)
+
+    assert any('color: #ef8f8f' in label.styleSheet() for label in labels)
+    assert not any(label.property('textTone') == 'warning' for label in labels)
+    assert app is not None
+
+
+def test_custom_fflag_editor_uses_an_edit_on_demand_boolean_selector() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'FFlagExample': 'True', 'DFIntExample': '60'},
+            custom_fflags_enabled=False,
+        ),
+    )
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
+    )
 
     editor = CustomFFlagEditor(config, proxy)
 
-    assert editor._table.rowCount() == 2
-    assert editor._table.cellWidget(0, 1) is None
-    assert isinstance(editor._table.itemDelegateForColumn(1), FastFlagValueDelegate)
+    assert _editor_table(editor).rowCount() == 2
+    assert _editor_table(editor).cellWidget(0, 1) is None
+    assert isinstance(_editor_table(editor).itemDelegateForColumn(1), FastFlagValueDelegate)
     assert app is not None
 
 
 
-def test_boolean_value_cell_click_opens_selector_even_after_row_selection():
+def test_boolean_value_cell_click_opens_selector_even_after_row_selection() -> None:
     app = _qapp()
-    config = SimpleNamespace(
-        custom_fflags={'DFFlagExample': 'False'},
-        custom_fflags_enabled=False,
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(custom_fflags={'DFFlagExample': 'False'}, custom_fflags_enabled=False),
     )
-    editor = CustomFFlagEditor(
-        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
     )
+    editor = CustomFFlagEditor(config, proxy)
     editor.show()
     app.processEvents()
-    table = editor._table
+    table = _editor_table(editor)
     table.selectRow(0)
     index = table.model().index(0, 1)
 
-    editor._edit_value_cell(index)
+    table.clicked.emit(index)
     app.processEvents()
 
-    assert any(combo.isVisible() for combo in table.findChildren(CompactBooleanComboBox))
+    assert any(combo.isVisible() for combo in table.findChildren(CompactCellComboBox))
 
 
-def test_grouped_boolean_flag_uses_canonical_name_for_delegate():
+def test_grouped_boolean_flag_uses_canonical_name_for_delegate() -> None:
     app = _qapp()
-    config = SimpleNamespace(
-        custom_fflags={'DFFlagExample': 'False'},
-        custom_fflags_enabled=False,
-        custom_fflag_folders={'Visual': ['DFFlagExample']},
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'DFFlagExample': 'False'},
+            custom_fflags_enabled=False,
+            custom_fflag_folders={'Visual': ['DFFlagExample']},
+        ),
     )
-    editor = CustomFFlagEditor(
-        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
     )
-    table = editor._table
+    editor = CustomFFlagEditor(config, proxy)
+    table = _editor_table(editor)
     index = table.model().index(1, 1)
     delegate = table.itemDelegateForColumn(1)
 
     combo = delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
 
-    assert isinstance(combo, CompactBooleanComboBox)
+    assert isinstance(combo, CompactCellComboBox)
     assert app is not None
 
 
-def test_flag_value_mutation_does_not_refresh_interception_routes():
+def test_flag_value_mutation_does_not_refresh_interception_routes() -> None:
     app = _qapp()
-    config = SimpleNamespace(
-        custom_fflags={'DFFlagExample': 'False'},
-        custom_fflags_enabled=False,
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(custom_fflags={'DFFlagExample': 'False'}, custom_fflags_enabled=False),
     )
-    proxy = SimpleNamespace(refresh_calls=0)
-    proxy.refresh_custom_fflag_interception = lambda: setattr(
-        proxy, 'refresh_calls', proxy.refresh_calls + 1
-    )
+    refresh_calls: list[None] = []
+
+    def refresh() -> None:
+        refresh_calls.append(None)
+
+    proxy = cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=refresh))
     editor = CustomFFlagEditor(config, proxy)
 
-    editor._set_flags({'DFFlagExample': 'True', 'DFIntExample': '60'})
+    editor._set_flags({'DFFlagExample': 'True', 'DFIntExample': '60'})  # pyright: ignore[reportPrivateUsage]
 
-    assert proxy.refresh_calls == 0
+    assert refresh_calls == []
     assert app is not None
 
-def test_boolean_fflag_picker_commits_and_closes_after_selection():
+def test_boolean_fflag_picker_commits_and_closes_after_selection() -> None:
     app = _qapp()
     table = QTableWidget(1, 2)
     table.setItem(0, 0, QTableWidgetItem('FFlagExample'))
     table.setItem(0, 1, QTableWidgetItem('True'))
     delegate = FastFlagValueDelegate(table)
     index = table.model().index(0, 1)
-    combo = delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
-    committed = []
-    closed = []
-    delegate.commitData.connect(committed.append)
-    delegate.closeEditor.connect(lambda editor, hint: closed.append((editor, hint)))
+    combo = cast(
+        'QComboBox', delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
+    )
+    committed: list[object] = []
+    closed: list[tuple[object, object]] = []
+
+    def record_committed(editor: object) -> None:
+        committed.append(editor)
+
+    def record_closed(editor: object, hint: object) -> None:
+        closed.append((editor, hint))
+
+    delegate.commitData.connect(record_committed)
+    delegate.closeEditor.connect(record_closed)
 
     combo.activated.emit(1)
 
@@ -281,7 +925,9 @@ def test_boolean_fflag_picker_commits_and_closes_after_selection():
     assert app is not None
 
 
-def test_boolean_fflag_editor_reads_canonical_user_role_not_translated_display(monkeypatch):
+def test_boolean_fflag_editor_reads_canonical_user_role_not_translated_display(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _qapp()
     table = QTableWidget(1, 2)
     table.setItem(0, 0, QTableWidgetItem('FFlagExample'))
@@ -290,8 +936,10 @@ def test_boolean_fflag_editor_reads_canonical_user_role_not_translated_display(m
     table.setItem(0, 1, value_item)
     delegate = FastFlagValueDelegate(table)
     index = table.model().index(0, 1)
-    combo = delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
-    monkeypatch.setattr(modifications_tab.QTimer, 'singleShot', lambda *_args: None)
+    combo = cast(
+        'QComboBox', delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
+    )
+    monkeypatch.setattr(modifications_tab.QTimer, 'singleShot', _no_timer)
 
     delegate.setEditorData(combo, index)
 
@@ -299,36 +947,52 @@ def test_boolean_fflag_editor_reads_canonical_user_role_not_translated_display(m
     assert app is not None
 
 
-def test_add_custom_boolean_fflag_uses_combo_item_data_not_translated_text():
-    source = inspect.getsource(CustomFFlagEditor._add_flag)
+def test_add_custom_boolean_fflag_uses_combo_item_data_not_translated_text() -> None:
+    source = _add_flag_source()
     assert 'value_combo.currentData()' in source
     assert 'value_combo.currentText()' not in source
 
 
-def test_custom_fflag_editor_renders_and_toggles_folder_rows():
+def test_custom_fflag_editor_renders_and_toggles_folder_rows() -> None:
     app = _qapp()
-    config = SimpleNamespace(
-        custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
-        custom_fflags_enabled=True,
-        custom_fflag_disabled=[],
-        custom_fflag_keybinds={},
-        custom_fflag_folders={'Visual': ['FFlagOne', 'FFlagTwo']},
-        custom_fflag_disabled_folders=[],
-        custom_fflag_folder_keybinds={},
-        custom_fflags_warning_accepted=True,
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'FFlagOne': 'True', 'FFlagTwo': 'False'},
+            custom_fflags_enabled=True,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={'Visual': ['FFlagOne', 'FFlagTwo']},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
     )
-    proxy = SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
+    )
 
     editor = CustomFFlagEditor(config, proxy)
-    table = editor._table
+    table = _editor_table(editor)
 
     assert table.rowCount() == 3
-    assert table.item(0, 0).text() == 'Visual'
-    assert table.item(0, 1).text() == '2 FastFlags'
-    assert table.item(1, 0).text().strip() == 'FFlagOne'
-    assert table.item(2, 0).text().strip() == 'FFlagTwo'
+    folder_name = table.item(0, 0)
+    folder_value = table.item(0, 1)
+    first_flag = table.item(1, 0)
+    second_flag = table.item(2, 0)
+    folder_status = table.item(0, 2)
+    assert folder_name is not None
+    assert folder_value is not None
+    assert first_flag is not None
+    assert second_flag is not None
+    assert folder_status is not None
+    assert folder_name.text() == 'Visual'
+    assert folder_value.text() == '2 FastFlags'
+    assert first_flag.text().strip() == 'FFlagOne'
+    assert second_flag.text().strip() == 'FFlagTwo'
 
-    table.item(0, 2).setCheckState(Qt.CheckState.Unchecked)
+    folder_status.setCheckState(Qt.CheckState.Unchecked)
     app.processEvents()
 
     assert config.custom_fflag_disabled_folders == ['Visual']
@@ -336,23 +1000,29 @@ def test_custom_fflag_editor_renders_and_toggles_folder_rows():
     assert app is not None
 
 
-def test_custom_fflag_toolbar_uses_compact_json_menu_and_custom_actions_button():
-    app = _qapp()
-    config = SimpleNamespace(
-        custom_fflags={},
-        custom_fflags_enabled=False,
-        custom_fflag_disabled=[],
-        custom_fflag_keybinds={},
-        custom_fflag_folders={},
-        custom_fflag_disabled_folders=[],
-        custom_fflag_folder_keybinds={},
-        custom_fflag_actions={},
-    )
-    editor = CustomFFlagEditor(
-        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
-    )
 
-    button_texts = {button.text() for button in editor.findChildren(modifications_tab.QPushButton)}
+def test_custom_fflag_toolbar_uses_compact_json_menu_and_custom_actions_button() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={},
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
+    )
+    proxy = cast(
+        'ProxyMaster',
+        SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop),
+    )
+    editor = CustomFFlagEditor(config, proxy)
+
+    button_texts = {button.text() for button in editor.findChildren(QPushButton)}
 
     assert 'JSON' in button_texts
     assert 'Custom Actions' in button_texts
@@ -361,30 +1031,16 @@ def test_custom_fflag_toolbar_uses_compact_json_menu_and_custom_actions_button()
     assert app is not None
 
 
-def test_custom_actions_manager_preserves_multiple_actions_for_same_fastflag():
+def test_custom_actions_keybind_column_double_click_assigns_hotkey() -> None:
     app = _qapp()
-    actions = {
-        '90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}},
-        '144 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '144'}},
+    captured: list[str] = []
+    binding: dict[str, int | bool | str] = {
+        'scan_code': 0x10,
+        'extended': False,
+        'modifiers': 0,
     }
-    dialog = modifications_tab.FastFlagActionsDialog(
-        actions,
-        {},
-        lambda _name: (False, None),
-        lambda _binding: 'Not assigned',
-    )
 
-    assert dialog.actions['90 FPS']['flags']['DFIntTaskSchedulerTargetFps'] == '90'
-    assert dialog.actions['144 FPS']['flags']['DFIntTaskSchedulerTargetFps'] == '144'
-    assert app is not None
-
-
-def test_custom_actions_keybind_column_double_click_assigns_hotkey():
-    app = _qapp()
-    captured = []
-    binding = {'scan_code': 0x10, 'extended': False, 'modifiers': 0}
-
-    def capture(name):
+    def capture(name: str) -> tuple[bool, dict[str, int | bool | str] | None]:
         captured.append(name)
         return True, binding
 
@@ -392,98 +1048,328 @@ def test_custom_actions_keybind_column_double_click_assigns_hotkey():
         {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}},
         {},
         capture,
-        lambda _binding: 'Not assigned',
     )
 
-    dialog._table.cellDoubleClicked.emit(0, 2)
+    dialog._table.cellDoubleClicked.emit(0, 2)  # pyright: ignore[reportPrivateUsage]
     app.processEvents()
 
     assert captured == ['90 FPS']
-    assert dialog.actions['90 FPS']['keybind'] == binding
-    button_texts = {
-        button.text() for button in dialog.findChildren(modifications_tab.QPushButton)
-    }
+    assert dialog.action_definitions['90 FPS'].get('keybind') == binding
+    button_texts = {button.text() for button in dialog.findChildren(QPushButton)}
     assert 'Assign Hotkey…' not in button_texts
     assert 'Clear Keybind' not in button_texts
 
 
-def test_custom_actions_non_keybind_double_click_edits_action(monkeypatch):
+def test_custom_actions_non_keybind_double_click_edits_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _qapp()
     dialog = modifications_tab.FastFlagActionsDialog(
         {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}},
         {},
         lambda _name: (False, None),
-        lambda _binding: 'Not assigned',
     )
-    edited = []
+    edited: list[None] = []
 
-    def edit_action():
+    def edit_action(_row: int | None = None, _column: int | None = None) -> None:
         edited.append(None)
 
     monkeypatch.setattr(dialog, '_edit_action', edit_action)
 
-    dialog._table.cellDoubleClicked.emit(0, 1)
+    dialog._table.cellDoubleClicked.emit(0, 1)  # pyright: ignore[reportPrivateUsage]
     app.processEvents()
 
     assert edited == [None]
 
 
-def test_create_folder_rejects_existing_name_without_changing_membership(monkeypatch):
-    app = _qapp()
-    config = SimpleNamespace(
-        custom_fflags={'FFlagOne': '1', 'FFlagTwo': '2'},
-        custom_fflags_enabled=False,
-        custom_fflag_disabled=[],
-        custom_fflag_keybinds={},
-        custom_fflag_folders={'Visual': ['FFlagOne']},
-        custom_fflag_disabled_folders=[],
-        custom_fflag_folder_keybinds={},
-        custom_fflag_actions={},
-    )
-    editor = CustomFFlagEditor(
-        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
-    )
-    table = editor._table
-    table.selectRow(2)
-    monkeypatch.setattr(
-        modifications_tab.QInputDialog, 'getText', lambda *_a, **_k: ('Visual', True)
-    )
-    warnings = []
-    monkeypatch.setattr(
-        modifications_tab.QMessageBox,
-        'warning',
-        lambda *args, **_kwargs: warnings.append(args),
+def test_custom_actions_without_hotkey_are_parsed_without_crashing() -> None:
+    parsed = modifications_tab._fastflag_actions(  # pyright: ignore[reportPrivateUsage]
+        {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}}
     )
 
-    editor._create_folder_from_selected()
+    assert parsed == {'90 FPS': {'flags': {'DFIntTaskSchedulerTargetFps': '90'}}}
+
+
+def test_create_folder_rejects_existing_name_without_changing_membership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'FFlagOne': '1', 'FFlagTwo': '2'},
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={'Visual': ['FFlagOne']},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    table = _editor_table(editor)
+    # Visual folder, FFlagOne, then ungrouped FFlagTwo.
+    table.selectRow(2)
+    def fake_get_text(*_args: object, **_kwargs: object) -> tuple[str, bool]:
+        return 'Visual', True
+
+    warnings: list[tuple[object, ...]] = []
+
+    def record_warning(*args: object, **_kwargs: object) -> None:
+        warnings.append(args)
+
+    monkeypatch.setattr(modifications_tab.QInputDialog, 'getText', fake_get_text)
+    monkeypatch.setattr(modifications_tab.QMessageBox, 'warning', record_warning)
+
+    editor._create_folder_from_selected()  # pyright: ignore[reportPrivateUsage]
 
     assert config.custom_fflag_folders == {'Visual': ['FFlagOne']}
     assert warnings
     assert app is not None
 
 
-def test_inline_duplicate_fastflag_rename_is_reverted(monkeypatch):
+def test_fastflag_rename_preserves_same_family_values_and_converts_to_boolean() -> None:
     app = _qapp()
-    config = SimpleNamespace(
-        custom_fflags={'FFlagOne': '1', 'FFlagTwo': '2'},
-        custom_fflags_enabled=False,
-        custom_fflag_disabled=[],
-        custom_fflag_keybinds={},
-        custom_fflag_folders={},
-        custom_fflag_disabled_folders=[],
-        custom_fflag_folder_keybinds={},
-        custom_fflag_actions={},
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={
+                'DFIntSpeed': '360',
+                'FStringMessage': 'hello world',
+                'FFlagEnabled': 'True',
+            },
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
     )
     editor = CustomFFlagEditor(
-        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
     )
-    warnings = []
-    monkeypatch.setattr(
-        modifications_tab.QMessageBox,
-        'warning',
-        lambda *args, **_kwargs: warnings.append(args),
+    table = _editor_table(editor)
+    try:
+        for old_name, new_name, expected in (
+            ('DFIntSpeed', 'DFIntRenamedSpeed', '360'),
+            ('FStringMessage', 'FStringRenamedMessage', 'hello world'),
+            ('FFlagEnabled', 'DFFlagEnabled', 'True'),
+        ):
+            row = next(r for r in range(table.rowCount()) if editor._row_name(r) == old_name)  # pyright: ignore[reportPrivateUsage]
+            name_item = table.item(row, 0)
+            assert name_item is not None
+            name_item.setText(new_name)
+            app.processEvents()
+            assert config.custom_fflags[new_name] == expected
+            assert editor._value_from_row(row) == expected  # pyright: ignore[reportPrivateUsage]
+            assert old_name not in config.custom_fflags
+        row = next(r for r in range(table.rowCount()) if editor._row_name(r) == 'DFIntRenamedSpeed')  # pyright: ignore[reportPrivateUsage]
+        name_item = table.item(row, 0)
+        assert name_item is not None
+        name_item.setText('FFlagSpeed')
+        app.processEvents()
+        assert config.custom_fflags['FFlagSpeed'] == 'False'
+    finally:
+        editor.close()
+
+
+def test_fastflag_text_edits_update_stored_value_before_editor_closes() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'DFIntTaskSchedulerTargetFps': ''},
+            custom_fflags_enabled=False,
+        ),
     )
-    first_name = editor._table.item(0, 0)
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    try:
+        editor.show()
+        app.processEvents()
+        table = _editor_table(editor)
+        index = table.model().index(0, 1)
+        table.edit(index)
+        app.processEvents()
+        text_editors = table.viewport().findChildren(QLineEdit)
+        assert len(text_editors) == 1
+        text_editor = text_editors[0]
+        text_editor.setFocus()
+        QTest.keyClicks(text_editor, '50')
+        app.processEvents()
+        assert text_editor.text() == '50'
+        value_item = table.item(0, 1)
+        assert value_item is not None
+        assert value_item.text() == '50'
+        assert value_item.data(Qt.ItemDataRole.UserRole) == '50'
+        assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
+        editor._load_flags()  # pyright: ignore[reportPrivateUsage]
+        app.processEvents()
+        value_item = table.item(0, 1)
+        assert value_item is not None
+        assert value_item.text() == '50'
+        assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
+    finally:
+        editor.close()
+
+
+def test_fastflag_text_edit_survives_configuration_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fleasion.config import manager as config_manager_module
+
+    app = _qapp()
+    config_dir = tmp_path / 'Fleasion'
+    config_file = config_dir / 'settings.json'
+    monkeypatch.setattr(config_manager_module, 'CONFIG_DIR', config_dir)
+    monkeypatch.setattr(config_manager_module, 'CONFIG_FILE', config_file)
+    monkeypatch.setattr(config_manager_module, 'CONFIGS_FOLDER', config_dir / 'configs')
+    config = config_manager_module.ConfigManager()
+    config.custom_fflags = {'DFIntTaskSchedulerTargetFps': ''}
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    try:
+        editor.show()
+        app.processEvents()
+        table = _editor_table(editor)
+        table.edit(table.model().index(0, 1))
+        app.processEvents()
+        text_editor = table.viewport().findChildren(QLineEdit)[0]
+        text_editor.setFocus()
+        QTest.keyClicks(text_editor, '50')
+        app.processEvents()
+        assert config.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
+        assert json.loads(config_file.read_text(encoding='utf-8'))['custom_fflags'][
+            'DFIntTaskSchedulerTargetFps'
+        ] == '50'
+        reloaded = config_manager_module.ConfigManager()
+        assert reloaded.custom_fflags['DFIntTaskSchedulerTargetFps'] == '50'
+    finally:
+        editor.close()
+
+
+@pytest.mark.parametrize('virtual', [False, True])
+def test_inline_fastflag_name_editor_is_opaque_aligned_and_preserves_value(
+    monkeypatch: pytest.MonkeyPatch, virtual: bool
+) -> None:
+    app = _qapp()
+    if virtual:
+        monkeypatch.setattr(CustomFFlagEditor, '_VIRTUAL_THRESHOLD', 1)
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'DFIntSpeed': '360', 'FStringOther': 'hello'},
+            custom_fflags_enabled=False,
+        ),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    try:
+        editor.resize(1100, 540)
+        editor.show()
+        app.processEvents()
+        assert editor._virtual_active == virtual  # pyright: ignore[reportPrivateUsage]
+        table = editor._virtual_table if virtual else _editor_table(editor)  # pyright: ignore[reportPrivateUsage]
+        row = next(i for i in range(table.model().rowCount()) if editor._row_name(i) == 'DFIntSpeed')  # pyright: ignore[reportPrivateUsage]
+        index = table.model().index(row, 0)
+        assert table.edit(index) is None
+        app.processEvents()
+        editors = table.viewport().findChildren(QLineEdit)
+        assert len(editors) == 1
+        text_editor = editors[0]
+        assert text_editor.text() == 'DFIntSpeed'
+        assert 'background-color: palette(base)' in text_editor.styleSheet()
+        assert not text_editor.hasFrame()
+        assert text_editor.alignment() & Qt.AlignmentFlag.AlignVCenter
+        assert text_editor.textMargins().top() == 0
+        assert text_editor.textMargins().bottom() == 0
+        assert text_editor.geometry() == table.visualRect(index)
+
+        text_editor.setFocus()
+        text_editor.selectAll()
+        QTest.keyClicks(text_editor, 'DFIntRenamedSpeed')
+        QTest.keyClick(text_editor, Qt.Key.Key_Return)
+        app.processEvents()
+        assert config.custom_fflags['DFIntRenamedSpeed'] == '360'
+        assert 'DFIntSpeed' not in config.custom_fflags
+    finally:
+        editor.close()
+
+
+def test_inline_fastflag_text_editor_is_opaque_and_vertically_aligned() -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(custom_fflags={'FStringMessage': 'original text'}, custom_fflags_enabled=False),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    try:
+        editor.resize(1100, 540)
+        editor.show()
+        app.processEvents()
+        table = _editor_table(editor)
+        index = table.model().index(0, 1)
+        assert table.edit(index) is None
+        app.processEvents()
+        text_editors = table.viewport().findChildren(QLineEdit)
+        assert len(text_editors) == 1
+        text_editor = text_editors[0]
+        assert text_editor.text() == 'original text'
+        assert 'background-color: palette(base)' in text_editor.styleSheet()
+        assert not text_editor.hasFrame()
+        assert text_editor.alignment() & Qt.AlignmentFlag.AlignVCenter
+        assert text_editor.textMargins().top() == 0
+        assert text_editor.textMargins().bottom() == 0
+        assert text_editor.geometry() == table.visualRect(index)
+    finally:
+        editor.close()
+
+
+def test_inline_duplicate_fastflag_rename_is_reverted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _qapp()
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'FFlagOne': '1', 'FFlagTwo': '2'},
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
+    )
+    editor = CustomFFlagEditor(
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
+    )
+    table = _editor_table(editor)
+    warnings: list[tuple[object, ...]] = []
+
+    def record_warning(*args: object, **_kwargs: object) -> None:
+        warnings.append(args)
+
+    monkeypatch.setattr(modifications_tab.QMessageBox, 'warning', record_warning)
+    first_name = table.item(0, 0)
     assert first_name is not None
 
     first_name.setText('FFlagTwo')
@@ -494,37 +1380,42 @@ def test_inline_duplicate_fastflag_rename_is_reverted(monkeypatch):
     assert warnings
 
 
-def test_hotkey_refresh_preserves_active_value_sort():
+def test_hotkey_refresh_preserves_active_value_sort() -> None:
     app = _qapp()
-    config = SimpleNamespace(
-        custom_fflags={'FFlagOne': '2', 'FFlagTwo': '1'},
-        custom_fflags_enabled=False,
-        custom_fflag_disabled=[],
-        custom_fflag_keybinds={},
-        custom_fflag_folders={},
-        custom_fflag_disabled_folders=[],
-        custom_fflag_folder_keybinds={},
-        custom_fflag_actions={},
+    config = cast(
+        'ConfigManager',
+        SimpleNamespace(
+            custom_fflags={'FFlagOne': '2', 'FFlagTwo': '1'},
+            custom_fflags_enabled=False,
+            custom_fflag_disabled=[],
+            custom_fflag_keybinds={},
+            custom_fflag_folders={},
+            custom_fflag_disabled_folders=[],
+            custom_fflag_folder_keybinds={},
+            custom_fflag_actions={},
+        ),
     )
     editor = CustomFFlagEditor(
-        config, SimpleNamespace(refresh_custom_fflag_interception=lambda: None)
+        config,
+        cast('ProxyMaster', SimpleNamespace(refresh_custom_fflag_interception=_refresh_proxy_noop)),
     )
-    editor._sort_rows(1)
+    editor._sort_rows(1)  # pyright: ignore[reportPrivateUsage]
     config.custom_fflags = {'FFlagOne': '0', 'FFlagTwo': '3'}
 
-    editor._on_hotkey_toggled('action:test')
+    editor._on_hotkey_toggled('action:test')  # pyright: ignore[reportPrivateUsage]
 
-    names = []
-    for row in range(editor._table.rowCount()):
-        item = editor._table.item(row, 0)
+    table = _editor_table(editor)
+    names: list[str] = []
+    for row in range(table.rowCount()):
+        item = table.item(row, 0)
         if item is not None:
             names.append(item.text().strip())
     assert names == ['FFlagOne', 'FFlagTwo']
     assert app is not None
 
 
-def test_windows_hotkey_capture_marks_numpad_divide_and_enter_extended():
-    divide_event = QKeyEvent(
+def test_windows_hotkey_capture_marks_numpad_divide_and_enter_extended() -> None:
+    divide_event = modifications_tab.QKeyEvent(
         modifications_tab.QEvent.Type.KeyPress,
         int(Qt.Key.Key_Slash),
         Qt.KeyboardModifier.KeypadModifier,
@@ -532,7 +1423,7 @@ def test_windows_hotkey_capture_marks_numpad_divide_and_enter_extended():
         0x6F,
         0,
     )
-    enter_event = QKeyEvent(
+    enter_event = modifications_tab.QKeyEvent(
         modifications_tab.QEvent.Type.KeyPress,
         int(Qt.Key.Key_Enter),
         Qt.KeyboardModifier.KeypadModifier,
@@ -541,8 +1432,12 @@ def test_windows_hotkey_capture_marks_numpad_divide_and_enter_extended():
         0,
     )
 
-    divide = modifications_tab.WindowsHotkeyCaptureDialog._event_binding(divide_event, 0)
-    enter = modifications_tab.WindowsHotkeyCaptureDialog._event_binding(enter_event, 0)
+    divide = modifications_tab.WindowsHotkeyCaptureDialog._event_binding(  # pyright: ignore[reportPrivateUsage]
+        divide_event, 0
+    )
+    enter = modifications_tab.WindowsHotkeyCaptureDialog._event_binding(  # pyright: ignore[reportPrivateUsage]
+        enter_event, 0
+    )
 
     assert divide is not None and divide['extended'] is True
     assert enter is not None and enter['extended'] is True

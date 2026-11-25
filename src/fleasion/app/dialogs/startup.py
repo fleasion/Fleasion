@@ -1,0 +1,406 @@
+"""First-run onboarding, proxy migration, and desktop startup settings."""
+
+from __future__ import annotations
+
+import sys
+from typing import TYPE_CHECKING
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from fleasion.app.dialogs.common import FirstTimeSetupDialog, visible_parent_widget, window_handle
+from fleasion.app.elevation import is_admin, relaunch_as_admin
+from fleasion.localization import (
+    apply_language_direction,
+    available_languages,
+    set_language,
+    tr,
+)
+from fleasion.utils import (
+    CONFIG_DIR,
+    log_buffer,
+)
+lazy from fleasion.utils import autostart, desktop_integration, platform_linux
+
+if TYPE_CHECKING:
+    from fleasion.app.tray import SystemTray
+    from fleasion.config import ConfigManager
+
+
+def prompt_reset_unreadable_settings(error_path: str) -> bool:
+    """Offer an explicit destructive reset, defaulting to preserving the file."""
+    prompt = QMessageBox()
+    prompt.setWindowTitle(tr('app.settings_load_failed.title'))
+    prompt.setIcon(QMessageBox.Icon.Warning)
+    prompt.setText(tr('app.settings_load_failed.message'))
+    prompt.setInformativeText(tr('app.settings_load_failed.details', path=error_path))
+    exit_button = prompt.addButton(
+        tr('app.settings_load_failed.exit'), QMessageBox.ButtonRole.RejectRole
+    )
+    reset_button = prompt.addButton(
+        tr('app.settings_load_failed.reset'), QMessageBox.ButtonRole.DestructiveRole
+    )
+    prompt.setDefaultButton(exit_button)
+    prompt.setEscapeButton(exit_button)
+    prompt.exec()
+    return prompt.clickedButton() is reset_button
+
+
+def prepare_env_proxy_migration(config_manager: ConfigManager) -> bool:
+    """Apply the one-time Env Proxy default migration without prompting."""
+    if config_manager.env_proxy_migration_v1_complete:
+        return False
+    if sys.platform == 'darwin':
+        # Native macOS cannot enable the proxy, so this migration is obsolete
+        config_manager.env_proxy_migration_v1_complete = True
+        return False
+
+    # Save the new default before marking migration complete so it cannot
+    # silently overwrite a later manual choice of Hosts File mode
+    config_manager.proxy_mode = 'env'
+    config_manager.env_proxy_migration_v1_complete = True
+
+    # Only existing users need the monitor to preserve a running Player session
+    return bool(config_manager.first_time_setup_complete)
+
+
+def should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
+    if not run_on_boot:
+        return False
+    if sys.platform == 'darwin':
+        return not is_admin()
+    if sys.platform.startswith('linux'):
+        return True
+    if sys.platform == 'win32':
+        return True
+    return False
+
+
+def refresh_run_on_boot_ui(tray: SystemTray | None, enabled: bool) -> None:
+    if tray is not None and hasattr(tray, 'run_on_boot_action'):
+        tray.run_on_boot_action.setChecked(enabled)
+    if tray is not None:
+        tray.refresh_settings_tab()
+
+
+def refresh_desktop_integration_ui(tray: SystemTray | None, enabled: bool) -> None:
+    if tray is not None and hasattr(tray, 'desktop_integration_action'):
+        tray.desktop_integration_action.setChecked(enabled)
+    if tray is not None:
+        tray.refresh_settings_tab()
+
+
+def show_run_on_boot_failure(
+    parent: QWidget | None, proxy_mode: str | None = None, *, enabled: bool = True
+) -> bool:
+    msg = QMessageBox(parent)
+    msg.setWindowTitle(
+        tr('app.run_on_boot_needs_repair')
+        if enabled
+        else tr('app.run_on_boot_could_not_be_disabled')
+    )
+    msg.setIcon(QMessageBox.Icon.Warning)
+    if sys.platform == 'win32':
+        if enabled:
+            msg.setText(
+                tr(
+                    'app.fleasion_could_not_update_its_run_on',
+                    value0=autostart.windows_autostart_privilege_hint(proxy_mode),
+                )
+            )
+        else:
+            msg.setText(tr('app.fleasion_could_not_remove_its_legacy_run'))
+    else:
+        msg.setText(tr('app.failed_to_register_autostart_check_the_application'))
+
+    repair_button = None
+    if sys.platform == 'win32':
+        repair_label = tr('app.autostart.repair_now') if enabled else tr('app.autostart.remove_now')
+        repair_button = msg.addButton(repair_label, QMessageBox.ButtonRole.AcceptRole)
+        ignore_button = msg.addButton(
+            tr('app.keep_run_on_boot_enabled'), QMessageBox.ButtonRole.RejectRole
+        )
+        msg.setDefaultButton(ignore_button)
+    else:
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    msg.exec()
+
+    if repair_button is not None and msg.clickedButton() == repair_button:
+        repair_args = '--repair-autostart' if enabled else '--repair-autostart --disable-autostart'
+        if relaunch_as_admin(
+            extra_args=repair_args,
+            parent_hwnd=window_handle(parent),
+            wait_for_completion=True,
+        ):
+            log_buffer.log(
+                'Autostart',
+                'Elevated autostart repair completed'
+                if enabled
+                else 'Elevated legacy autostart-task removal completed',
+            )
+            msg.setWindowTitle(
+                tr('app.run_on_boot_fixed') if enabled else tr('app.run_on_boot_disabled')
+            )
+            msg.setIcon(QMessageBox.Icon.Information)
+            if enabled:
+                msg.setText(tr('app.it_worked_fleasion_repaired_the_run_on'))
+            else:
+                msg.setText(tr('app.it_worked_fleasion_removed_the_legacy_run'))
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            return True
+        log_buffer.log(
+            'Autostart',
+            'Elevated autostart repair did not complete successfully'
+            if enabled
+            else 'Elevated legacy autostart-task removal did not complete successfully',
+        )
+        msg.setWindowTitle(
+            tr('app.run_on_boot_repair_incomplete')
+            if enabled
+            else tr('app.run_on_boot_disable_incomplete')
+        )
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText(tr('app.fleasion_could_not_confirm_that_the_run'))
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+    return False
+
+
+def show_desktop_integration_failure(parent: QWidget | None) -> None:
+    msg = QMessageBox(parent)
+    msg.setWindowTitle(tr('app.desktop_integration_failed'))
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText(tr('app.failed_to_create_desktop_start_menu_integration'))
+    msg.exec()
+
+
+def prompt_first_time_language(config_manager: ConfigManager) -> None:
+    """Make language the first choice shown to a new user."""
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
+    )
+
+    dialog = QDialog(parent)
+    dialog.setModal(True)
+    dialog.setWindowTitle(tr('language.picker.title'))
+    if on_top:
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+
+    layout = QVBoxLayout(dialog)
+    prompt = QLabel(tr('language.picker.prompt'), dialog)
+    prompt.setWordWrap(True)
+    layout.addWidget(prompt)
+
+    row = QHBoxLayout()
+    row.addWidget(QLabel(tr('language.picker.label'), dialog))
+    combo = QComboBox(dialog)
+    for code, display_name in available_languages():
+        combo.addItem(display_name, code)
+    current_index = combo.findData(config_manager.language)
+    combo.setCurrentIndex(max(0, current_index))
+    row.addWidget(combo, 1)
+    layout.addLayout(row)
+
+    button_row = QHBoxLayout()
+    continue_button = QPushButton(tr('language.picker.continue'), dialog)
+    continue_button.setDefault(True)
+    continue_button.setAutoDefault(True)
+    button_row.addStretch(1)
+    button_row.addWidget(continue_button)
+    layout.addLayout(button_row)
+    continue_button.clicked.connect(dialog.accept)
+
+    dialog.exec()
+    selected = str(combo.currentData() or 'en')
+    config_manager.language = selected
+    set_language(config_manager.language)
+    app = QApplication.instance()
+    if isinstance(app, QApplication):
+        apply_language_direction(app)
+
+
+def prompt_first_time_startup_options(
+    config_manager: ConfigManager, tray: SystemTray | None = None
+) -> None:
+    """Ask first-time users which startup integrations Fleasion should create."""
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
+    )
+
+    dialog = QDialog(parent)
+    dialog.setModal(True)
+    dialog.setWindowTitle(tr('app.startup_integration'))
+    if on_top:
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+
+    layout = QVBoxLayout(dialog)
+    label = QLabel(dialog)
+    label.setWordWrap(True)
+    message = tr('app.startup_integration.body')
+    if sys.platform == 'win32':
+        message += tr('app.startup_integration.windows_note')
+    label.setText(message)
+    layout.addWidget(label)
+
+    checkbox_row = QHBoxLayout()
+    run_on_boot_chk = QCheckBox(tr('app.run_on_boot'), dialog)
+    desktop_integration_chk = QCheckBox(tr('app.desktop_start_menu_integration'), dialog)
+    run_on_boot_chk.setChecked(config_manager.run_on_boot)
+    desktop_integration_chk.setChecked(config_manager.desktop_integration)
+    checkbox_row.addWidget(run_on_boot_chk)
+    checkbox_row.addWidget(desktop_integration_chk)
+    checkbox_row.addStretch(1)
+    layout.addLayout(checkbox_row)
+
+    button_row = QHBoxLayout()
+    ok_button = QPushButton(tr('app.ok'), dialog)
+    ok_button.setDefault(True)
+    ok_button.setAutoDefault(True)
+    button_row.addStretch(1)
+    button_row.addWidget(ok_button)
+    layout.addLayout(button_row)
+    ok_button.clicked.connect(dialog.accept)
+
+    ok_button.setFocus(Qt.FocusReason.OtherFocusReason)
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
+    dialog.exec()
+
+    enable_run_on_boot = run_on_boot_chk.isChecked()
+    enable_desktop_integration = desktop_integration_chk.isChecked()
+    try:
+        desktop_ok = desktop_integration.sync_desktop_integration(
+            enabled=enable_desktop_integration
+        )
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        desktop_ok = False
+        log_buffer.log('DesktopIntegration', f'First-time desktop integration prompt failed: {exc}')
+
+    try:
+        boot_ok = autostart.sync_autostart(
+            enabled=enable_run_on_boot,
+            config_dir=CONFIG_DIR,
+            proxy_mode=config_manager.proxy_mode,
+        )
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        boot_ok = False
+        log_buffer.log('Autostart', f'First-time run-on-boot prompt failed: {exc}')
+
+    config_manager.run_on_boot = enable_run_on_boot if boot_ok else False
+    config_manager.desktop_integration = enable_desktop_integration if desktop_ok else False
+    refresh_run_on_boot_ui(tray, config_manager.run_on_boot)
+    refresh_desktop_integration_ui(tray, config_manager.desktop_integration)
+
+    if enable_run_on_boot and not boot_ok:
+        show_run_on_boot_failure(dialog.parentWidget(), config_manager.proxy_mode)
+    if enable_desktop_integration and not desktop_ok:
+        show_desktop_integration_failure(dialog.parentWidget())
+
+
+def prompt_first_linux_client_choice(config_manager: ConfigManager, tray: SystemTray) -> None:
+    """Offer installed Linux Roblox clients without requiring a running Player."""
+    if not sys.platform.startswith('linux'):
+        return
+
+    installed = platform_linux.linux_client_installations()
+    if not installed:
+        msg = QMessageBox(visible_parent_widget())
+        msg.setWindowTitle(tr('settings.linux_client.section'))
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText(tr('settings.linux_client.not_found'))
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+        return
+
+    choices = [(tr('ui.gui.settings_tab.auto'), 'auto')]
+    choices.extend((item.display_name, item.key) for item in installed)
+    # Preselect the configured preference, not auto mode's current fallback
+    initial = next(
+        (index for index, (_, key) in enumerate(choices) if key == config_manager.linux_client),
+        0,
+    )
+    choice, accepted = QInputDialog.getItem(
+        visible_parent_widget(),
+        tr('settings.linux_client.section'),
+        tr('settings.linux_client.first_launch'),
+        [name for name, _key in choices],
+        initial,
+        editable=False,
+    )
+    if not accepted:
+        return
+    new_key = next((key for name, key in choices if name == choice), 'auto')
+    if new_key == config_manager.linux_client:
+        return
+    proxy_master = getattr(tray, 'proxy_master', None)
+    running = bool(proxy_master is not None and proxy_master.is_running)
+    if running and proxy_master is not None:
+        proxy_master.stop()
+    mod_manager = getattr(tray, 'mod_manager', None)
+    if mod_manager is not None:
+        mod_manager.restore_all()
+    config_manager.linux_client = new_key
+    platform_linux.set_linux_client_preference(new_key)
+    if mod_manager is not None:
+        mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+    if running and proxy_master is not None:
+        proxy_master.start()
+
+
+def complete_first_time_setup(config_manager: ConfigManager, tray: SystemTray) -> None:
+    """Show the required welcome guide and persist the chosen startup settings."""
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
+    )
+    welcome_box = FirstTimeSetupDialog(parent)
+    if on_top:
+        welcome_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+    welcome_box.setWindowTitle(tr('onboarding.welcome.title'))
+    welcome_box.set_text(tr('onboarding.welcome.body'))
+    ok_button = welcome_box.ok_button
+    wait_seconds = 15
+    remaining_seconds = wait_seconds
+    ok_button.setEnabled(False)
+    ok_button.setText(tr('onboarding.welcome.ok_countdown', seconds=remaining_seconds))
+
+    countdown_timer = QTimer(welcome_box)
+    countdown_timer.setInterval(1000)
+
+    def _update_welcome_countdown() -> None:
+        nonlocal remaining_seconds
+        remaining_seconds -= 1
+        if remaining_seconds <= 0:
+            countdown_timer.stop()
+            welcome_box.allow_accept()
+            ok_button.setText(tr('onboarding.welcome.ok'))
+            ok_button.setEnabled(True)
+        else:
+            ok_button.setText(tr('onboarding.welcome.ok_countdown', seconds=remaining_seconds))
+
+    countdown_timer.timeout.connect(_update_welcome_countdown)
+    countdown_timer.start()
+    welcome_box.exec()
+    prompt_first_linux_client_choice(config_manager, tray)
+    prompt_first_time_startup_options(config_manager, tray)
+    config_manager.env_proxy_migration_v1_complete = True
+    config_manager.first_time_setup_complete = True

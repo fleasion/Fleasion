@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import atexit
 import ctypes
-from ctypes import wintypes
 import json
 import os
 import platform
@@ -19,32 +18,81 @@ import sys
 import threading
 import time
 import traceback
+from ctypes import wintypes
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+    from types import FrameType
+
+    from .json_types import JsonObject, JsonValue
 
 _SAMPLE_INTERVAL_SECONDS = 1.0
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _TH32CS_SNAPTHREAD = 0x00000004
 _THREAD_QUERY_LIMITED_INFORMATION = 0x0800
 _THREAD_QUERY_INFORMATION = 0x0040
+_INHERIT_THREAD_HANDLE = False
 
 
-def _kernel32():
-    """Return kernel32 with pointer-sized handles and explicit signatures."""
-    kernel32 = ctypes.windll.kernel32
+class _PythonThreadDetails(TypedDict):
+    name: str
+    daemon: bool
+    python_stack: str
+
+
+class _Kernel32(Protocol):
+    CreateToolhelp32Snapshot: Callable[[int, int], int]
+    Thread32First: Callable[[int, object], int]
+    Thread32Next: Callable[[int, object], int]
+    OpenThread: Callable[[int, bool, int], int]
+    GetThreadTimes: Callable[[int, object, object, object, object], int]
+    GetProcessTimes: Callable[[object, object, object, object, object], int]
+    CloseHandle: Callable[[int], int]
+    GetCurrentProcess: Callable[[], int]
+
+
+class _Psapi(Protocol):
+    GetProcessMemoryInfo: Callable[[object, object, int], int]
+
+
+class _CFunction(Protocol):
+    argtypes: list[object]
+    restype: object
+
+    def __call__(self, *args: object) -> Any: ...
+
+
+class _Kernel32Library(Protocol):
+    CreateToolhelp32Snapshot: _CFunction
+    Thread32First: _CFunction
+    Thread32Next: _CFunction
+    OpenThread: _CFunction
+    GetThreadTimes: _CFunction
+    GetProcessTimes: _CFunction
+    CloseHandle: _CFunction
+    GetCurrentProcess: _CFunction
+
+
+class _PsapiLibrary(Protocol):
+    GetProcessMemoryInfo: _CFunction
+
+
+class _WindowsDllLoader(Protocol):
+    kernel32: _Kernel32Library
+    psapi: _PsapiLibrary
+
+
+def _kernel32() -> _Kernel32:
+    loader = cast('_WindowsDllLoader', vars(ctypes)['windll'])
+    kernel32 = loader.kernel32
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     kernel32.Thread32First.restype = wintypes.BOOL
-    kernel32.Thread32First.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(_ThreadEntry32),
-    ]
+    kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]
     kernel32.Thread32Next.restype = wintypes.BOOL
-    kernel32.Thread32Next.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(_ThreadEntry32),
-    ]
+    kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32)]
     kernel32.OpenThread.restype = wintypes.HANDLE
     kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.GetThreadTimes.restype = wintypes.BOOL
@@ -67,7 +115,27 @@ def _kernel32():
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.GetCurrentProcess.argtypes = []
-    return kernel32
+    return cast('_Kernel32', kernel32)
+
+
+def _psapi() -> _Psapi:
+    loader = cast('_WindowsDllLoader', vars(ctypes)['windll'])
+    psapi = loader.psapi
+    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+    psapi.GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ProcessMemoryCountersEx),
+        wintypes.DWORD,
+    ]
+    return cast('_Psapi', psapi)
+
+
+def _python_frames() -> Mapping[int, FrameType]:
+    current_frames = cast(
+        'Callable[[], Mapping[int, FrameType]]',
+        vars(sys)['_current_frames'],
+    )
+    return current_frames()
 
 
 class _FileTime(ctypes.Structure):
@@ -138,7 +206,7 @@ def _thread_cpu_seconds(thread_id: int) -> float | None:
     """Read user+kernel CPU seconds for a native thread."""
     kernel32 = _kernel32()
     access = _THREAD_QUERY_INFORMATION | _THREAD_QUERY_LIMITED_INFORMATION
-    handle = kernel32.OpenThread(access, False, thread_id)
+    handle = kernel32.OpenThread(access, _INHERIT_THREAD_HANDLE, thread_id)
     if not handle:
         return None
 
@@ -160,7 +228,7 @@ def _thread_cpu_seconds(thread_id: int) -> float | None:
         kernel32.CloseHandle(handle)
 
 
-def _process_cpu_seconds(process_handle: Any) -> float | None:
+def _process_cpu_seconds(process_handle: int) -> float | None:
     """Read user+kernel CPU seconds for the current process."""
     kernel32 = _kernel32()
     creation = _FileTime()
@@ -178,19 +246,7 @@ def _process_cpu_seconds(process_handle: Any) -> float | None:
     return _filetime_seconds(kernel_time) + _filetime_seconds(user_time)
 
 
-def _psapi():
-    """Return psapi with its process-memory API declared safely."""
-    psapi = ctypes.windll.psapi
-    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
-    psapi.GetProcessMemoryInfo.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(_ProcessMemoryCountersEx),
-        wintypes.DWORD,
-    ]
-    return psapi
-
-
-def _process_memory(process_handle: Any) -> dict[str, int] | None:
+def _process_memory(process_handle: int) -> JsonObject | None:
     """Read working-set/private-memory counters for the current process."""
     psapi = _psapi()
     counters = _ProcessMemoryCountersEx()
@@ -211,15 +267,16 @@ def _process_memory(process_handle: Any) -> dict[str, int] | None:
     }
 
 
-def _python_thread_details() -> dict[int, dict[str, Any]]:
+def _python_thread_details() -> dict[int, _PythonThreadDetails]:
     """Return names and sampled Python stacks indexed by native thread ID."""
-    frames = sys._current_frames()
-    result: dict[int, dict[str, Any]] = {}
+    frames = _python_frames()
+    result: dict[int, _PythonThreadDetails] = {}
     for thread in threading.enumerate():
         native_id = thread.native_id
         if native_id is None:
             continue
-        frame = frames.get(thread.ident)
+        ident = thread.ident
+        frame = frames.get(ident) if ident is not None else None
         stack = ''
         if frame is not None:
             stack = ''.join(traceback.format_stack(frame, limit=24)).strip()
@@ -232,10 +289,17 @@ def _python_thread_details() -> dict[int, dict[str, Any]]:
     return result
 
 
+def _thread_cpu_percent(record: JsonObject) -> float:
+    value = record.get('cpu_percent_one_core', 0.0)
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
 class MicroProfiler:
     """Background sampler that writes one JSON object per line."""
 
-    def __init__(self, output_path: Path, interval_seconds: float = _SAMPLE_INTERVAL_SECONDS):
+    def __init__(
+        self, output_path: Path, interval_seconds: float = _SAMPLE_INTERVAL_SECONDS
+    ) -> None:
         self.output_path = output_path
         self.interval_seconds = interval_seconds
         self._stop_event = threading.Event()
@@ -247,18 +311,20 @@ class MicroProfiler:
         self._previous_thread_cpu: dict[int, float] = {}
         self._previous_process_cpu: float | None = None
         self._previous_sample_time: float | None = None
-        self._process_handle: Any = None
+        self._process_handle: int | None = None
 
     def start(self) -> None:
         """Write metadata and start sampling."""
         self._process_handle = _kernel32().GetCurrentProcess()
+        argv: list[JsonValue] = []
+        argv.extend(sys.argv)
         self._write(
             {
                 'record_type': 'header',
                 'timestamp': time.time(),
                 'pid': os.getpid(),
                 'executable': sys.executable,
-                'argv': sys.argv,
+                'argv': argv,
                 'python': sys.version,
                 'platform': platform.platform(),
                 'interval_seconds': self.interval_seconds,
@@ -272,7 +338,7 @@ class MicroProfiler:
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=max(2.0, self.interval_seconds + 1.0))
 
-    def _write(self, record: dict[str, Any]) -> None:
+    def _write(self, record: JsonObject) -> None:
         with self.output_path.open('a', encoding='utf-8') as output:
             output.write(json.dumps(record, separators=(',', ':'), default=str))
             output.write('\n')
@@ -281,7 +347,9 @@ class MicroProfiler:
         while not self._stop_event.wait(self.interval_seconds):
             try:
                 self._write(self._sample())
-            except Exception as exc:  # Diagnostics must never terminate Fleasion.
+            except (
+                Exception  # ruff: ignore[blind-except]
+            ) as exc:  # Diagnostics must never terminate Fleasion.
                 try:
                     self._write(
                         {
@@ -290,14 +358,14 @@ class MicroProfiler:
                             'error': f'{type(exc).__name__}: {exc}',
                         }
                     )
-                except Exception:
+                except OSError, TypeError, ValueError:
                     return
 
-    def _sample(self) -> dict[str, Any]:
+    def _sample(self) -> JsonObject:
         now = time.monotonic()
         process_id = os.getpid()
         python_threads = _python_thread_details()
-        thread_records: list[dict[str, Any]] = []
+        thread_records: list[JsonObject] = []
         current_thread_cpu: dict[int, float] = {}
 
         for thread_id in _thread_ids(process_id):
@@ -305,13 +373,15 @@ class MicroProfiler:
             if cpu_seconds is None:
                 continue
             current_thread_cpu[thread_id] = cpu_seconds
-            record: dict[str, Any] = {
+            record: JsonObject = {
                 'thread_id': thread_id,
                 'cpu_seconds': round(cpu_seconds, 6),
             }
             details = python_threads.get(thread_id)
             if details is not None:
-                record.update(details)
+                record['name'] = details['name']
+                record['daemon'] = details['daemon']
+                record['python_stack'] = details['python_stack']
             if self._previous_sample_time is not None:
                 elapsed = now - self._previous_sample_time
                 previous_cpu = self._previous_thread_cpu.get(thread_id)
@@ -322,7 +392,11 @@ class MicroProfiler:
                     )
             thread_records.append(record)
 
-        process_cpu = _process_cpu_seconds(self._process_handle)
+        process_handle = self._process_handle
+        if process_handle is None:
+            msg = 'Microprofiler must be started before sampling'
+            raise RuntimeError(msg)
+        process_cpu = _process_cpu_seconds(process_handle)
         process_cpu_percent = None
         if (
             process_cpu is not None
@@ -339,26 +413,25 @@ class MicroProfiler:
         self._previous_thread_cpu = current_thread_cpu
         self._previous_process_cpu = process_cpu
         self._previous_sample_time = now
-        thread_records.sort(
-            key=lambda record: record.get('cpu_percent_one_core', 0.0),
-            reverse=True,
-        )
+        thread_records.sort(key=_thread_cpu_percent, reverse=True)
 
         memory_error = None
         try:
-            memory = _process_memory(self._process_handle)
-        except Exception as exc:  # Keep CPU/thread samples if memory inspection fails.
+            memory = _process_memory(process_handle)
+        except (AttributeError, OSError) as exc:
             memory = None
             memory_error = f'{type(exc).__name__}: {exc}'
 
-        result = {
+        threads: list[JsonValue] = []
+        threads.extend(thread_records)
+        result: JsonObject = {
             'record_type': 'sample',
             'timestamp': time.time(),
             'monotonic_seconds': now,
             'process_cpu_percent_one_core': process_cpu_percent,
             'thread_count': len(thread_records),
             'memory': memory,
-            'threads': thread_records,
+            'threads': threads,
         }
         if memory_error is not None:
             result['memory_error'] = memory_error
@@ -374,11 +447,11 @@ def _output_path() -> Path:
         path = executable_dir / filename
         with path.open('a', encoding='utf-8'):
             pass
-        return path
     except OSError:
         fallback_dir = Path.home() / 'AppData' / 'Local' / 'FleasionNT' / 'logs'
         fallback_dir.mkdir(parents=True, exist_ok=True)
         return fallback_dir / filename
+    return path
 
 
 def start_microprofiler(
@@ -392,7 +465,7 @@ def start_microprofiler(
     try:
         profiler = MicroProfiler(_output_path(), interval_seconds)
         profiler.start()
-    except Exception:
+    except AttributeError, OSError, RuntimeError, TypeError, ValueError:
         return None
     atexit.register(profiler.stop)
     return profiler

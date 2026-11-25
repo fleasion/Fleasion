@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING, override
 
-from PyQt6.QtCore import QDir, QMimeData, pyqtSignal
-from PyQt6.QtWidgets import QLineEdit
+from PySide6.QtCore import QDir, QMimeData, Signal
+from PySide6.QtWidgets import QLineEdit, QWidget
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 
 
 def local_file_path_example() -> str:
@@ -33,25 +37,33 @@ def local_file_path_from_mime_data(mime_data: QMimeData) -> str | None:
 class FileDropLineEdit(QLineEdit):
     """QLineEdit that accepts a dragged local file and inserts its path."""
 
-    fileDropped = pyqtSignal(str)
+    fileDropped = Signal(str)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, text: str | QWidget = '', parent: QWidget | None = None) -> None:
+        if isinstance(text, QWidget):
+            super().__init__(text)
+        elif parent is None and not text:
+            super().__init__()
+        else:
+            super().__init__(text, parent)
         self.setAcceptDrops(True)
 
-    def dragEnterEvent(self, event):  # noqa: N802
+    @override
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if local_file_path_from_mime_data(event.mimeData()):
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
-    def dragMoveEvent(self, event):  # noqa: N802
+    @override
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
         if local_file_path_from_mime_data(event.mimeData()):
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
 
-    def dropEvent(self, event):  # noqa: N802
+    @override
+    def dropEvent(self, event: QDropEvent) -> None:
         path = local_file_path_from_mime_data(event.mimeData())
         if not path:
             super().dropEvent(event)

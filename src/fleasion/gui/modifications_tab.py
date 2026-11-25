@@ -1,27 +1,60 @@
 """Modifications tab — combined Fishstrap Mods + FastFlags panel."""
 
 from __future__ import annotations
-from ..localization import tr, tr_count, translation_values
 
+import contextlib
 import json
 import os
+import re
+import struct
+import subprocess
 import sys
+import tempfile
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING, cast, override
 
-from PyQt6.QtCore import (
-    QEasingCurve,
+from PySide6.QtCore import (
+    QAbstractItemModel,
     QEvent,
-    QPropertyAnimation,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
+    QPointF,
+    QRect,
+    QSignalBlocker,
+    QSize,
     Qt,
     QTimer,
-    pyqtSignal,
+    Signal,
+    Slot,
 )
-from PyQt6.QtGui import QPainter
-from PyQt6.QtWidgets import (
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QFont,
+    QFontMetrics,
+    QHelpEvent,
+    QIcon,
+    QKeyEvent,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPalette,
+    QPen,
+    QPixmap,
+    QPolygonF,
+    QResizeEvent,
+    QShortcut,
+    QShowEvent,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import (
     QAbstractItemDelegate,
     QAbstractItemView,
     QApplication,
@@ -33,50 +66,221 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
-    QGroupBox,
-    QHeaderView,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
-    QMessageBox,
+    QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
-    QStyle,
-    QSpinBox,
     QStackedWidget,
+    QStyle,
     QStyledItemDelegate,
+    QStyleOptionButton,
+    QStyleOptionViewItem,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTextEdit,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
+lazy import requests
 
-from ..cache.tools.ktx_to_png import convert as ktx_to_png, strip_prefixed_ktx
-from ..modifications.manager import (
-    ModificationManager,
+from fleasion.cache.tools.ktx_to_png import convert as ktx_to_png, strip_prefixed_ktx
+from fleasion.localization import tr, tr_count, translation_values
+from fleasion.modifications.fflag_profiles import FastFlagProfileManager
+from fleasion.modifications.fflag_static import (
+    ClientBinary,
+    StaticFlagCatalog,
+    cached_cross_client_type_hints,
+    detect_client_binary,
+    load_scan,
+    resolve_catalog_from_snapshot,
+    save_scan,
+    scan_binary,
+    scan_is_current,
+)
+from fleasion.modifications.fflag_windows_catalog import (
+    WindowsStaticFlagCatalog,
+    display_initial_value,
+    parse_fvariables,
+    scan_windows_player,
+    selectable_qualified_name,
+)
+from fleasion.modifications.manager import (
+    MOD_ORIGINALS_DIR,
     normalise_target_path,
     target_path_for_roblox_dir,
 )
-from ..modifications.fflag_profiles import FastFlagProfileManager
-from ..modifications.platform_targets import (
+from fleasion.modifications.platform_targets import (
     read_current_platform_original_asset,
     target_path_for_current_platform,
 )
-from ..modifications.stash_paths import resource_stash_dir
-from ..utils import APP_CACHE_DIR, log_buffer, open_folder
-from ..utils.http import http_get
-from ..utils.threading import run_in_thread
+from fleasion.modifications.stash_paths import resource_stash_dir
+from fleasion.utils import APP_CACHE_DIR, log_buffer, open_folder
+from fleasion.utils.fflag_resolution import (
+    FFLAG_CATALOG_CACHE_TTL_SECONDS,
+    full_prefix,
+    invalidate_selected_player_cache,
+    known_typed_names,
+    known_untyped_names,
+    qualified_matches,
+)
+from fleasion.utils.http import http_get
+from fleasion.utils.json_types import as_json_object
+from fleasion.utils.paths import FFLAG_CATALOG_CACHE_FILENAME
+from fleasion.utils.threading import run_in_thread
+from fleasion.widgets.no_wheel import DropdownComboBox, NoWheelSlider, NoWheelSpinBox
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS, PANEL_PADDING
+from fleasion.widgets.tab_footer import TabFooter
+from fleasion.widgets.text import style_text
+lazy from fleasion.cache.audio_player import AudioPlayerWidget
+lazy from fleasion.cache.font_viewer import FontViewerWidget
+lazy from fleasion.cache.mesh_processing import convert as convert_mesh
+lazy from fleasion.cache.obj_viewer import ObjViewerPanel
+lazy from fleasion.gui import linux_hotkeys, windows_hotkeys
+lazy from fleasion.gui.delete_cache import ClearCacheButton
+lazy from fleasion.gui.linux_hotkeys import (
+    LinuxCustomFFlagHotkeyController,
+    LinuxHotkeyService,
+    launch_permission_setup,
+    modifier_mask_for_evdev_code,
+)
+lazy from fleasion.gui.windows_hotkeys import (
+    MOD_ALT,
+    MOD_CTRL,
+    MOD_SHIFT,
+    MOD_WIN,
+    WindowsCustomFFlagHotkeyController,
+    modifier_mask_for_virtual_key,
+)
+lazy from fleasion.modifications.dds_to_png import tex_to_png_bytes
+lazy from fleasion.proxy.addons.custom_fflags import normalize_custom_fflags
+lazy from fleasion.proxy.addons.profile_picture_spoofer import clean_local_path, is_remote_image_url
+lazy from fleasion.proxy.original_thumbnail import fetch_original_avatar_url
+
+from .collapsible_section import CollapsibleSection
+from .compact_combo import CompactCellComboBox
+from .fflag_virtual_model import VirtualFastFlagModel
 from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
 
-# Built-in entry definitions
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator, Mapping, Sequence
+    from typing import ClassVar, TypeIs
 
+    from fleasion.app.roblox_monitor import RobloxExitMonitor
+    from fleasion.config.manager import ConfigManager
+    from fleasion.config.types import (
+        FastFlagAction as _FastFlagAction,
+        FastFlagActions as _FastFlagActions,
+        HotkeyBinding as _HotkeyBinding,
+        HotkeyBindings as _HotkeyBindings,
+    )
+    from fleasion.gui.hotkeys.types import (
+        CustomFFlagHotkeyController,
+        HotkeyService as _HotkeyService,
+    )
+    from fleasion.modifications.fflag_windows_values import WindowsValueSlot
+    from fleasion.modifications.manager import ModificationManager
+    from fleasion.modifications.types import (
+        FastFlagSettings as _FastFlagSettings,
+        NewModificationEntry as _NewModificationEntry,
+    )
+    from fleasion.proxy.master import ProxyMaster
+    from fleasion.utils.json_types import JsonObject, JsonValue
+
+
+type _HotkeyCapture = Callable[[str], tuple[bool, _HotkeyBinding | None]]
+
+
+_FFLAG_ROW_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
+_FFLAG_CANONICAL_NAME_ROLE = int(Qt.ItemDataRole.UserRole) + 21
+_FFLAG_ROW_FLAG = 'flag'
+_FFLAG_ROW_FOLDER = 'folder'
+
+
+def _style_or_none(widget: QWidget) -> QStyle | None:
+    return widget.style()
+
+
+def _current_list_item(widget: QListWidget) -> QListWidgetItem | None:
+    return widget.currentItem()
+
+
+def _standard_button_or_none(
+    button_box: QDialogButtonBox, button: QDialogButtonBox.StandardButton
+) -> QPushButton | None:
+    return button_box.button(button)
+
+
+def _is_object_dict(value: object) -> TypeIs[dict[object, object]]:
+    return isinstance(value, dict)
+
+
+def _is_object_collection(
+    value: object,
+) -> TypeIs[list[object] | tuple[object, ...] | set[object]]:
+    return isinstance(value, list | tuple | set)
+
+
+def _is_hotkey_bindings(value: object) -> TypeIs[_HotkeyBindings]:
+    if not _is_object_dict(value):
+        return False
+    return all(
+        isinstance(name, str)
+        and _is_object_dict(binding)
+        and all(
+            isinstance(key, str) and isinstance(item, int | str) for key, item in binding.items()
+        )
+        for name, binding in value.items()
+    )
+
+
+def _fastflag_actions(value: object) -> _FastFlagActions:
+    if not _is_object_dict(value):
+        return {}
+    actions: _FastFlagActions = {}
+    for raw_name, raw_action in value.items():
+        name = str(raw_name).strip()
+        if not name or not _is_object_dict(raw_action):
+            continue
+        raw_flags = raw_action.get('flags')
+        if not _is_object_dict(raw_flags):
+            continue
+        flags = {str(flag): str(flag_value) for flag, flag_value in raw_flags.items()}
+        if not flags:
+            continue
+        action: _FastFlagAction = {'flags': flags}
+        raw_binding = raw_action.get('keybind')
+        if _is_object_dict(raw_binding):
+            binding: _HotkeyBinding = {}
+            for raw_key, raw_value in raw_binding.items():
+                if isinstance(raw_value, int | bool | str):
+                    binding[str(raw_key)] = raw_value
+            if binding:
+                action['keybind'] = binding
+        actions[name] = action
+    return actions
+
+
+def _required_config(config: ConfigManager | None) -> ConfigManager:
+    if config is None:
+        msg = 'FastFlag configuration is unavailable'
+        raise RuntimeError(msg)
+    return config
+
+
+# Built-in entry definition
 AVATAR_MESHES = [
     (
         'modifications.builtin.avatar.left_arm',
@@ -219,7 +423,7 @@ SOUNDS = [
 ]
 
 if sys.platform.startswith('linux'):
-    SOUNDS = [
+    SOUNDS[:] = [
         sound
         for sound in SOUNDS
         if sound[1].replace('\\', '/').strip('/') != 'content/sounds/ouch.ogg'
@@ -382,12 +586,18 @@ def _ensure_placeholder_width(line_edit: QLineEdit, minimum_width: int = 0) -> N
 
 
 # Status badge styling
-_STATUS_STYLES = {
-    'not_set': 'color: #888; font-style: italic;',
-    'pending': 'color: #4a9eda;',
-    'applied': 'font-style: normal;',
-    'orphaned_stash': 'color: #c90; font-weight: bold;',
-}
+def _style_status(label: QLabel, status: str) -> None:
+    # Every branch sets tone, weight and slant, so no earlier status leaks through
+    match status:
+        case 'not_set':
+            style_text(label, tone='muted', italic=True, bold=False)
+        case 'pending':
+            style_text(label, tone='info', italic=False, bold=False)
+        case 'orphaned_stash':
+            style_text(label, tone='warning', italic=False, bold=True)
+        case _:
+            style_text(label, italic=False, bold=False)
+
 
 # _RichTextButton — QPushButton-like label that renders HTML/rich text
 
@@ -399,13 +609,14 @@ class _RichTextButton(QPushButton):
     def __init__(
         self,
         label: str,
+        *,
         suffix: str = '',
         suffix_size_offset: int = 0,
         y_offset: int = 0,
         suffix_x_offset: int = 0,
         suffix_pixel_size: int | None = None,
-        parent=None,
-    ):
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._label = label
         self._suffix = suffix
@@ -417,9 +628,8 @@ class _RichTextButton(QPushButton):
         # the style's actual button padding/minimum width, not a dummy glyph.
         super().setText(self._label + (f' {self._suffix}' if self._suffix else ''))
 
-    def sizeHint(self):
-        from PyQt6.QtGui import QFont, QFontMetrics
-
+    @override
+    def sizeHint(self) -> QSize:
         hint = super().sizeHint()
         if not self._suffix:
             return hint
@@ -442,15 +652,13 @@ class _RichTextButton(QPushButton):
         hint.setWidth(hint.width() + extra_width)
         return hint
 
-    def paintEvent(self, a0):
-        from PyQt6.QtGui import QFont, QFontMetrics, QPainter, QPalette
-        from PyQt6.QtWidgets import QStyle, QStyleOptionButton
-
+    @override
+    def paintEvent(self, a0: QPaintEvent) -> None:
         opt = QStyleOptionButton()
         self.initStyleOption(opt)
         opt.text = ''
         painter = QPainter(self)
-        st = self.style()
+        st = _style_or_none(self)
         if st is None:
             painter.end()
             return
@@ -514,266 +722,15 @@ class _RichTextButton(QPushButton):
         painter.end()
 
 
-# CollapsibleSection
-
-
-class CollapsibleSection(QWidget):
-    """A section with a clickable header that collapses/expands its content."""
-
-    _EXPANDED_ARROW = '\u25bc'
-    _COLLAPSED_ARROW = '\u25b6'
-    _DEFAULT_ARROW_STYLE = 'border: none;'
-    _WINDOWS_COLLAPSED_ARROW_SIZE = 19
-    _WINDOWS_EXPANDED_ARROW_STYLE = 'font-size: 11px; border: none;'
-    _WINDOWS_COLLAPSED_ARROW_STYLE = f'font-size: {_WINDOWS_COLLAPSED_ARROW_SIZE}px; border: none;'
-
-    def __init__(
-        self,
-        title: str,
-        parent=None,
-        expanded: bool = True,
-        header_widgets: list[QWidget] | None = None,
-    ):
-        super().__init__(parent)
-        # A section should never absorb spare vertical space from its parent.
-        # Its height is determined by the header plus the currently visible
-        # content; any remaining viewport height belongs outside the card.
-        policy = self.sizePolicy()
-        policy.setVerticalPolicy(QSizePolicy.Policy.Maximum)
-        self.setSizePolicy(policy)
-
-        self._expanded = expanded
-        self._animation: QPropertyAnimation | None = None
-
-        # --- Header row ---
-        # Keep the header in its own fixed-height widget.  During a collapse,
-        # the content's maximumHeight changes before the parent layout has
-        # necessarily applied the section's new sizeHint.  A bare QHBoxLayout
-        # can absorb that transient spare height and visibly push the header
-        # separator downward for a paint frame.  A fixed-height wrapper keeps
-        # the header geometry stable while the content viewport clips closed.
-        self._header_widget = QWidget()
-        self._header_widget.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Fixed,
-        )
-        header_layout = QHBoxLayout(self._header_widget)
-        header_layout.setContentsMargins(4, 4, 4, 4)
-
-        self._arrow = QPushButton()
-        self._arrow.setFixedSize(22, 22)
-        self._arrow.setFlat(True)
-        self._set_arrow_state(expanded)
-        self._arrow.clicked.connect(self.toggle)
-        header_layout.addWidget(self._arrow)
-
-        self._title_label = QLabel(tr('ui.gui.modifications_tab.b_value_b', value0=title))
-        self._title_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._title_label.mousePressEvent = lambda _: self.toggle()
-        header_layout.addWidget(self._title_label)
-
-        header_layout.addStretch()
-
-        if header_widgets:
-            for w in header_widgets:
-                header_layout.addWidget(w)
-
-        # --- Content container ---
-        self._content = QWidget()
-        self._content_layout = QVBoxLayout()
-        self._content_layout.setContentsMargins(8, 0, 8, 8)
-        self._content_layout.setSpacing(4)
-        self._content.setLayout(self._content_layout)
-
-        if not expanded:
-            self._content.setMaximumHeight(0)
-
-        # --- Separator ---
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFrameShadow(QFrame.Shadow.Sunken)
-
-        # --- Assemble ---
-        main = QVBoxLayout()
-        main.setContentsMargins(0, 0, 0, 4)
-        main.setSpacing(0)
-        main.addWidget(self._header_widget)
-        main.addWidget(sep)
-        main.addWidget(self._content)
-        # Absorb any transient excess section height below the content.  This
-        # is important during collapse because the child maximumHeight can be
-        # updated one event-loop turn before the parent geometry catches up.
-        main.addStretch()
-        self.setLayout(main)
-
-    def paintEvent(self, a0):  # noqa: N802
-        """Draw a rounded-rect card that adapts to dark and light themes."""
-        from PyQt6.QtCore import QRectF
-        from PyQt6.QtGui import QPainter, QPainterPath
-
-        colors = ThemeManager.panel_colors(self.palette())
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        path = QPainterPath()
-        path.addRoundedRect(rect, 8.0, 8.0)
-        painter.fillPath(path, colors.section_background)
-        painter.setPen(colors.section_border)
-        painter.drawPath(path)
-        painter.end()
-
-    @property
-    def content_layout(self) -> QVBoxLayout:
-        return self._content_layout
-
-    def add_widget(self, widget: QWidget):
-        self._content_layout.addWidget(widget)
-
-    def _arrow_style(self, expanded: bool) -> str:
-        """Return platform-specific arrow styling for Unicode triangle glyphs."""
-        if os.name == 'nt':
-            return (
-                self._WINDOWS_EXPANDED_ARROW_STYLE
-                if expanded
-                else self._WINDOWS_COLLAPSED_ARROW_STYLE
-            )
-        return self._DEFAULT_ARROW_STYLE
-
-    def _set_arrow_state(self, expanded: bool):
-        self._arrow.setText(self._EXPANDED_ARROW if expanded else self._COLLAPSED_ARROW)
-        self._arrow.setStyleSheet(self._arrow_style(expanded))
-
-    def toggle(self):
-        self._expanded = not self._expanded
-        self._set_arrow_state(self._expanded)
-
-        # A collapse animates the clipping height of _content.  If its layout
-        # remains active, Qt re-lays out (and squashes) every child on every
-        # animation frame; complex sections such as Fast Flags then visibly
-        # bounce/reflow instead of simply sliding closed.  Freeze the existing
-        # child geometries while collapsing so _content behaves as a viewport.
-        # Re-enable the layout once the content is fully clipped away.
-        self._content_layout.setEnabled(True)
-
-        self._animation = QPropertyAnimation(self._content, b'maximumHeight')
-        self._animation.setDuration(200)
-        self._animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        if self._expanded:
-            self._animation.setStartValue(self._content.maximumHeight())
-            self._animation.setEndValue(self._content.sizeHint().height())
-            self._animation.finished.connect(lambda: self._content.setMaximumHeight(16777215))
-        else:
-            # Capture the real rendered height so the animation starts from
-            # the actual visible size rather than QWIDGETSIZE_MAX.
-            actual = self._content.height()
-            self._content.setMaximumHeight(actual)
-            self._content_layout.setEnabled(False)
-            self._animation.setStartValue(actual)
-            self._animation.setEndValue(0)
-            self._animation.finished.connect(self._finish_collapse)
-
-        self._animation.start()
-
-    def _finish_collapse(self):
-        self._content_layout.setEnabled(True)
-        self._content_layout.activate()
-        self.updateGeometry()
-        parent = self.parentWidget()
-        if parent is not None:
-            parent_layout = parent.layout()
-            if parent_layout is not None:
-                parent_layout.invalidate()
-                parent_layout.activate()
-
-
-# NoWheelSpinBox — QSpinBox that ignores mouse wheel events
-
-
-class NoWheelSpinBox(QSpinBox):
-    """QSpinBox that ignores wheel events to prevent accidental value changes."""
-
-    def wheelEvent(self, e):
-        e.ignore()
-
-
-class NoWheelSlider(QSlider):
-    """QSlider that ignores wheel events to prevent accidental value changes."""
-
-    def wheelEvent(self, e):
-        e.ignore()
-
-
-# DropdownComboBox — QComboBox with ▼ indicator instead of OS arrow
-
-
-class DropdownComboBox(QComboBox):
-    """QComboBox that paints ▼ as the dropdown indicator and ignores wheel events."""
-
-    def wheelEvent(self, e):
-        """Ignore wheel events to prevent accidental value changes."""
-        e.ignore()
-
-    def paintEvent(self, e):
-        from PyQt6.QtWidgets import QStyle, QStyleOptionComboBox, QStylePainter
-
-        style = self.style()
-        if style is None:
-            super().paintEvent(e)
-            return
-
-        painter = QStylePainter(self)
-        opt = QStyleOptionComboBox()
-        self.initStyleOption(opt)
-
-        # Draw the full combo box (frame, edit field, and arrow button border)
-        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)
-        # Draw the selected-item label
-        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, opt)
-
-        # Replace the native arrow without painting a separate button-colored block.
-        # Redraw an adjacent slice of the edit field over the arrow interior so the
-        # background remains exactly continuous for the active Qt style/theme.
-        arrow_rect = style.subControlRect(
-            QStyle.ComplexControl.CC_ComboBox,
-            opt,
-            QStyle.SubControl.SC_ComboBoxArrow,
-            self,
-        )
-        painter.save()
-        painter.setClipRect(arrow_rect.adjusted(0, 1, -1, -1))
-        background_opt = QStyleOptionComboBox(opt)
-        background_opt.rect = opt.rect.translated(arrow_rect.width(), 0)
-        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, background_opt)
-        painter.restore()
-
-        painter.setPen(self.palette().buttonText().color())
-        f = painter.font()
-        f.setPointSize(8)
-        painter.setFont(f)
-        painter.drawText(arrow_rect, Qt.AlignmentFlag.AlignCenter, '\u25bc')
-
-
-class CompactBooleanComboBox(QComboBox):
-    """A borderless True/False selector that blends into a table cell."""
-
-    def wheelEvent(self, e):
-        e.ignore()
-
-    def paintEvent(self, e):
-        painter = QPainter(self)
-        if self.hasFocus() or self.underMouse():
-            painter.fillRect(self.rect(), self.palette().alternateBase())
-        painter.setPen(self.palette().text().color())
-        painter.drawText(
-            self.rect().adjusted(4, 0, -18, 0),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            self.currentText(),
-        )
-        arrow_x = self.width() - 10
-        arrow_y = self.height() // 2
-        painter.drawLine(arrow_x - 3, arrow_y - 1, arrow_x, arrow_y + 2)
-        painter.drawLine(arrow_x, arrow_y + 2, arrow_x + 3, arrow_y - 1)
+def _style_fastflag_text_editor(editor: QLineEdit) -> None:
+    """Cover the underlying table text and align inline edits with their row."""
+    editor.setFrame(False)
+    editor.setAutoFillBackground(True)
+    editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    editor.setTextMargins(4, 0, 4, 0)
+    editor.setStyleSheet(
+        'QLineEdit { background-color: palette(base); border: 0; margin: 0; padding: 0; }'
+    )
 
 
 class FastFlagValueDelegate(QStyledItemDelegate):
@@ -781,7 +738,13 @@ class FastFlagValueDelegate(QStyledItemDelegate):
 
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
 
-    def createEditor(self, parent, option, index):
+    @override
+    def createEditor(
+        self,
+        parent: QWidget,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> QWidget:
         name_index = index.sibling(index.row(), 0)
         name = str(
             name_index.data(_FFLAG_CANONICAL_NAME_ROLE)
@@ -789,19 +752,37 @@ class FastFlagValueDelegate(QStyledItemDelegate):
             or ''
         ).strip()
         if name.startswith(self._BOOLEAN_FLAG_PREFIXES):
-            editor = CompactBooleanComboBox(parent)
+            editor = CompactCellComboBox(parent)
             editor.addItem(tr('ui.gui.modifications_tab.true'), 'True')
             editor.addItem(tr('ui.gui.modifications_tab.false'), 'False')
             editor.activated.connect(partial(self._commit_and_close_boolean_editor, editor))
             return editor
-        return super().createEditor(parent, option, index)
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            # Inline editors must cover the underlying cell text completely
+            # and align with the row rather than using the platform input frame
+            editor.setFrame(False)
+            editor.setAutoFillBackground(True)
+            editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            editor.setTextMargins(4, 0, 4, 0)
+            editor.setStyleSheet(
+                'QLineEdit { background-color: palette(base); border: 0; margin: 0; padding: 0; }'
+            )
+            # The live editor must write through while typing, not only on Enter
+            # or focus loss, since closing Fleasion can destroy an open editor
+            editor.textEdited.connect(partial(self._commit_text_editor, editor))
+        return editor
 
-    def _commit_and_close_boolean_editor(self, editor: QComboBox, _selected_index: int):
+    def _commit_text_editor(self, editor: QLineEdit, _text: str) -> None:
+        self.commitData.emit(editor)
+
+    def _commit_and_close_boolean_editor(self, editor: QComboBox, _selected_index: int) -> None:
         """Finish the table edit as soon as a boolean is picked from its popup."""
         self.commitData.emit(editor)
         self.closeEditor.emit(editor, QAbstractItemDelegate.EndEditHint.NoHint)
 
-    def setEditorData(self, editor, index):
+    @override
+    def setEditorData(self, editor: QWidget, index: QModelIndex | QPersistentModelIndex) -> None:
         if isinstance(editor, QComboBox):
             stored = index.data(Qt.ItemDataRole.UserRole)
             if stored is None:
@@ -816,7 +797,10 @@ class FastFlagValueDelegate(QStyledItemDelegate):
             return
         super().setEditorData(editor, index)
 
-    def setModelData(self, editor, model, index):
+    @override
+    def setModelData(
+        self, editor: QWidget, model: QAbstractItemModel, index: QModelIndex | QPersistentModelIndex
+    ) -> None:
         if isinstance(editor, QComboBox):
             value = str(editor.currentData())
             display = (
@@ -827,6 +811,18 @@ class FastFlagValueDelegate(QStyledItemDelegate):
             model.setData(index, display, Qt.ItemDataRole.DisplayRole)
             model.setData(index, value, Qt.ItemDataRole.UserRole)
             return
+        if isinstance(editor, QLineEdit):
+            value = editor.text()
+            if isinstance(model, VirtualFastFlagModel):
+                model.setData(index, value, Qt.ItemDataRole.EditRole)
+            else:
+                # Update both the visible text and the authoritative UserRole
+                # before notifying the table, so one save sees the new value
+                with QSignalBlocker(model):
+                    model.setData(index, value, Qt.ItemDataRole.UserRole)
+                    model.setData(index, value, Qt.ItemDataRole.EditRole)
+                model.dataChanged.emit(index, index)
+            return
         super().setModelData(editor, model, index)
 
 
@@ -836,19 +832,20 @@ class FastFlagValueDelegate(QStyledItemDelegate):
 class ModRowWidget(QWidget):
     """A single row representing one modification entry."""
 
-    delete_requested = pyqtSignal(str)  # entry_id
+    delete_requested = Signal(str)  # entry_id
 
     def __init__(
         self,
         manager: ModificationManager,
         display_name: str,
         target_path: str,
+        *,
         file_filter: str = 'modifications.filter.all_files',
         deletable: bool = False,
         mute_bundled: str | None = None,
         is_font: bool = False,
-        parent=None,
-    ):
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._manager = manager
         self._display_name = display_name
@@ -867,10 +864,10 @@ class ModRowWidget(QWidget):
         # Try to find an existing entry for this target
         self._sync_from_manager()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QHBoxLayout()
-        layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(GAP)
 
         # Display name
         self._name_label = QLabel(self._display_name)
@@ -879,7 +876,7 @@ class ModRowWidget(QWidget):
 
         # Status badge — keep the compact English baseline but allow longer translations.
         self._status_label = QLabel(tr('ui.gui.modifications_tab.not_set'))
-        self._status_label.setStyleSheet(_STATUS_STYLES['not_set'])
+        _style_status(self._status_label, 'not_set')
         _ensure_text_width(self._status_label, 72)
         layout.addWidget(self._status_label)
 
@@ -901,7 +898,7 @@ class ModRowWidget(QWidget):
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(1000)
         self._debounce.timeout.connect(self._apply_from_text)
-        self._source_edit.textChanged.connect(lambda _: self._debounce.start())
+        self._source_edit.textChanged.connect(self._restart_debounce)
         self._source_edit.editingFinished.connect(self._on_editing_finished)
 
         # Pending-visibility timer: show 'Applying...' only if apply takes > 500 ms
@@ -926,11 +923,11 @@ class ModRowWidget(QWidget):
 
         # Preview button
         preview_arrow_size = (
-            CollapsibleSection._WINDOWS_COLLAPSED_ARROW_SIZE if os.name == 'nt' else None
+            CollapsibleSection.WINDOWS_COLLAPSED_ARROW_SIZE if os.name == 'nt' else None
         )
         self._preview_btn = _RichTextButton(
             tr('modifications.preview'),
-            '\u25b6',
+            suffix='\u25b6',
             suffix_x_offset=3,
             suffix_pixel_size=preview_arrow_size,
         )
@@ -950,7 +947,7 @@ class ModRowWidget(QWidget):
 
     # Sync with manager
 
-    def _sync_from_manager(self):
+    def _sync_from_manager(self) -> None:
         """Find our entry in the manager (by target_path) and update UI."""
         for entry in self._manager.entries:
             if entry.get('target_path') == self._target_path:
@@ -967,10 +964,8 @@ class ModRowWidget(QWidget):
         # No entry in JSON at all — still check for an orphaned stash.
         self._check_for_orphaned_stash()
 
-    def _check_for_orphaned_stash(self):
+    def _check_for_orphaned_stash(self) -> None:
         """Show a warning if a stash file exists but Fleasion has no active record."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR
-
         roblox_dirs = self._manager.roblox_dirs
         if not roblox_dirs:
             return
@@ -985,11 +980,11 @@ class ModRowWidget(QWidget):
                 tr('ui.gui.modifications_tab.a_stash_of_the_original_file_was')
             )
 
-    def _on_status_changed(self, entry_id: str, status: str, error_msg: str):
+    def _on_status_changed(self, entry_id: str, status: str, error_msg: str) -> None:
         if entry_id == self._entry_id:
             self._update_status(status, error_msg)
 
-    def _update_status(self, status: str, error_msg: str = ''):
+    def _update_status(self, status: str, error_msg: str | None = '') -> None:
         # Final status: stop the pending-visibility timer
         if status != 'pending':
             self._pending_timer.stop()
@@ -1004,23 +999,23 @@ class ModRowWidget(QWidget):
             'orphaned_stash': tr('modifications.status.external_modified'),
         }
         self._status_label.setText(labels.get(display_status, display_status))
-        self._status_label.setStyleSheet(_STATUS_STYLES.get(display_status, ''))
+        _style_status(self._status_label, display_status)
         _ensure_text_width(self._status_label, 72)
 
         if status == 'error':
             self._show_source_error(error_msg or tr('modifications.error.failed_to_apply'))
-        elif status in ('applied', 'not_set'):
+        elif status in {'applied', 'not_set'}:
             self._clear_source_error()
 
-        if status not in ('orphaned_stash',):
+        if status != 'orphaned_stash':
             self._status_label.setToolTip('')
 
-        self._reset_btn.setVisible(status in ('applied', 'error', 'orphaned_stash'))
+        self._reset_btn.setVisible(status in {'applied', 'error', 'orphaned_stash'})
 
     # Actions
 
-    def _apply_source(self, source_type: str, source_value: str):
-        entry_data = {
+    def _apply_source(self, source_type: str, source_value: str) -> None:
+        entry_data: _NewModificationEntry = {
             'display_name': self._display_name,
             'target_path': self._target_path,
             'source_type': source_type,
@@ -1039,11 +1034,11 @@ class ModRowWidget(QWidget):
         # Show 'Applying...' only if the apply takes longer than 500 ms
         self._pending_timer.start()
 
-    def _on_edit(self):
-        # Kept as a no-op stub — inline textbox replaced the Edit dialog.
+    def _on_edit(self) -> None:
+        # Kept as a no-op stub — inline textbox replaced the Edit dialog
         pass
 
-    def _on_reset(self):
+    def _on_reset(self) -> None:
         self._debounce.stop()
         if self._entry_id:
             if not self._manager.clear_entry(self._entry_id):
@@ -1051,20 +1046,18 @@ class ModRowWidget(QWidget):
             # clear_entry deletes the entry from JSON; drop our reference
             # so _apply_source correctly calls add_entry next time.
             self._entry_id = None
-        else:
-            # Orphaned stash with no JSON entry at all — restore directly.
-            if not self._manager.restore_orphaned_stash(self._target_path):
-                return
+        # Orphaned stash with no JSON entry at all — restore directly
+        elif not self._manager.restore_orphaned_stash(self._target_path):
+            return
         self._set_source_text_silent('')
         self._update_status('not_set')
 
-    def _on_delete(self):
-        if self._entry_id:
-            if not self._manager.remove_entry(self._entry_id):
-                return
+    def _on_delete(self) -> None:
+        if self._entry_id and not self._manager.remove_entry(self._entry_id):
+            return
         self.delete_requested.emit(self._entry_id or '')
 
-    def _on_preview(self):
+    def _on_preview(self) -> None:
         dlg = ModPreviewDialog(
             self._manager,
             self._target_path,
@@ -1075,16 +1068,24 @@ class ModRowWidget(QWidget):
 
     # External helpers
 
-    def apply_source_external(self, source_type: str, source_value: str):
-        """Called externally (e.g. by ‘Apply to All Sky Faces’)."""
+    @property
+    def target_path(self) -> str:
+        return self._target_path
+
+    def apply_raw_source(self, raw_source: str) -> None:
+        self._set_source_text_silent(raw_source)
+        self._apply_from_text()
+
+    def apply_source_external(self, source_type: str, source_value: str) -> None:
+        """Called externally (e.g. by 'Apply to All Sky Faces')."""
         self._apply_source(source_type, source_value)
-        display = source_value if source_type in ('local_file', 'asset_id', 'bundled') else ''
+        display = source_value if source_type in {'local_file', 'asset_id', 'bundled'} else ''
         self._set_source_text_silent(display)
 
     # Inline source editing
 
     def _get_source_display_text(self) -> str:
-        """Return the textbox display string for the current entry’s source."""
+        """Return the textbox display string for the current entry's source."""
         for entry in self._manager.entries:
             if entry.get('target_path') == self._target_path:
                 src_type = entry.get('source_type')
@@ -1094,7 +1095,7 @@ class ModRowWidget(QWidget):
                     if src_val == self._resolve_bundled_empty() or src_val == 'bundled:zero':
                         return tr('replacer.action.remove').casefold()
                     return src_val
-                if src_type in ('local_file', 'asset_id', 'cdn_url'):
+                if src_type in {'local_file', 'asset_id', 'cdn_url'}:
                     return src_val
                 return ''
         return ''
@@ -1102,9 +1103,8 @@ class ModRowWidget(QWidget):
     def _set_source_text_silent(self, text: str) -> None:
         """Set textbox text without triggering the apply debounce."""
         self._debounce.stop()
-        self._source_edit.blockSignals(True)
-        self._source_edit.setText(text)
-        self._source_edit.blockSignals(False)
+        with QSignalBlocker(self._source_edit):
+            self._source_edit.setText(text)
         self._clear_source_error()
 
     def _show_source_error(self, tooltip: str = '') -> None:
@@ -1118,7 +1118,7 @@ class ModRowWidget(QWidget):
         self._source_edit.setToolTip('')
 
     # Map target-file extensions to their bundled empty counterpart.
-    _BUNDLED_EMPTY_BY_EXT: dict[str, str] = {
+    _BUNDLED_EMPTY_BY_EXT: ClassVar[dict[str, str]] = {
         '.mp3': 'bundled:empty.mp3',
         '.ogg': 'bundled:empty.ogg',
         '.wav': 'bundled:empty.mp3',
@@ -1138,25 +1138,25 @@ class ModRowWidget(QWidget):
     def _detect_source_from_text(self, text: str) -> tuple[str, str]:
         """Detect source type and value from a textbox string."""
         text = text.strip().strip('"\'')
+        lowered = text.lower()
         # Any registered translation of the remove action is accepted, so newly
         # added languages work automatically without changing this validator.
         remove_tokens = {
             value.strip().casefold() for value in translation_values('replacer.action.remove')
         }
-        if text.casefold() in remove_tokens:
-            return 'bundled', self._resolve_bundled_empty()
-        if text.isdigit():
-            return 'asset_id', text
-        if text.lower().startswith('rbxassetid://'):
-            return 'asset_id', text[len('rbxassetid://') :]
-        # 'bundled:empty' shorthand → resolve based on target extension
-        if text.lower() == 'bundled:empty':
-            return 'bundled', self._resolve_bundled_empty()
-        if text.lower().startswith('bundled:'):
-            return 'bundled', text
-        if text.lower().startswith(('http://', 'https://')):
-            return 'cdn_url', text
-        return 'local_file', text
+        if text.casefold() in remove_tokens or lowered == 'bundled:empty':
+            source = ('bundled', self._resolve_bundled_empty())
+        elif text.isdigit():
+            source = ('asset_id', text)
+        elif lowered.startswith('rbxassetid://'):
+            source = ('asset_id', text[len('rbxassetid://') :])
+        elif lowered.startswith('bundled:'):
+            source = ('bundled', text)
+        elif lowered.startswith(('http://', 'https://')):
+            source = ('cdn_url', text)
+        else:
+            source = ('local_file', text)
+        return source
 
     def _apply_from_text(self) -> None:
         """Apply (or clear) the modification from the current textbox value."""
@@ -1165,7 +1165,7 @@ class ModRowWidget(QWidget):
 
         if not text:
             self._clear_source_error()
-            # Empty box = user wants to clear the modification.
+            # Empty box = user wants to clear the modification
             self._on_reset()
             return
 
@@ -1173,12 +1173,15 @@ class ModRowWidget(QWidget):
 
         if src_type == 'local_file' and not Path(src_value).is_file():
             # Show red border but still apply — the manager will fail and
-            # the status indicator will show 'error', matching asset-ID behaviour.
+            # the status indicator will show 'error', matching asset-ID behaviour
             self._show_source_error(tr('modifications.error.file_not_found', path=src_value))
         else:
             self._clear_source_error()
 
         self._apply_source(src_type, src_value)
+
+    def _restart_debounce(self, _text: str) -> None:
+        self._debounce.start()
 
     def _on_editing_finished(self) -> None:
         """Apply immediately on Return / focus-loss.
@@ -1226,8 +1229,8 @@ class ModPreviewDialog(QDialog):
         manager: ModificationManager,
         target_path: str,
         display_name: str,
-        parent=None,
-    ):
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._manager = manager
         self._target_path = target_path
@@ -1264,6 +1267,37 @@ class ModPreviewDialog(QDialog):
         layout.addLayout(btn_row)
 
         self.setLayout(layout)
+
+    def _build_mesh_preview(self, data: bytes, mode: str) -> QWidget:
+        obj_text = convert_mesh(data)
+        if not obj_text:
+            return QLabel(tr('ui.gui.modifications_tab.could_not_convert_mesh_for_preview'))
+        if mode == 'mod':
+            self._mod_converted_bytes = obj_text.encode()
+            self._mod_converted_ext = '.obj'
+
+        viewer = ObjViewerPanel()
+        viewer.load_obj(obj_text)
+        return viewer
+
+    def _build_audio_preview(self, data: bytes) -> QWidget:
+        suffix = Path(self._target_path).suffix
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+
+        return AudioPlayerWidget(tmp_path)
+
+    def _build_font_preview(self, data: bytes) -> QWidget:
+        decoded = data.decode('utf-8', errors='replace')
+        try:
+            parsed = json.loads(decoded)
+        except ValueError:
+            return FontViewerWidget(data)
+        viewer = QTextEdit()
+        viewer.setReadOnly(True)
+        viewer.setPlainText(json.dumps(parsed, indent=2))
+        return viewer
 
     def _build_preview_widget(self, mode: str) -> QWidget:
         """Build a widget that previews the file based on its type."""
@@ -1310,14 +1344,12 @@ class ModPreviewDialog(QDialog):
             elif lower.endswith(('.tex', '.dds')):
                 # The replacement may be a plain image (PNG/JPEG) even though
                 # the target path ends in .tex/.dds — detect by magic bytes first.
-                _is_raw_image = (
+                is_raw_image = (
                     data[:8] == b'\x89PNG\r\n\x1a\n'  # PNG
                     or data[:2] == b'\xff\xd8'  # JPEG
-                    or data[:6] in (b'GIF87a', b'GIF89a')
+                    or data[:6] in {b'GIF87a', b'GIF89a'}
                 )
-                if not _is_raw_image:
-                    from ..modifications.dds_to_png import tex_to_png_bytes
-
+                if not is_raw_image:
                     converted = tex_to_png_bytes(data)
                     if converted:
                         display_bytes = converted
@@ -1330,8 +1362,6 @@ class ModPreviewDialog(QDialog):
                         )
                         container.setLayout(layout)
                         return container
-
-            from PyQt6.QtGui import QPixmap
 
             pixmap = QPixmap()
             pixmap.loadFromData(display_bytes)
@@ -1350,23 +1380,8 @@ class ModPreviewDialog(QDialog):
         # Mesh
         elif lower.endswith('.mesh'):
             try:
-                from ..cache import mesh_processing
-
-                obj_text = mesh_processing.convert(data)
-                if obj_text:
-                    if mode == 'mod':
-                        self._mod_converted_bytes = obj_text.encode()
-                        self._mod_converted_ext = '.obj'
-                    from ..cache.obj_viewer import ObjViewerPanel
-
-                    viewer = ObjViewerPanel()
-                    viewer.load_obj(obj_text)
-                    layout.addWidget(viewer)
-                else:
-                    layout.addWidget(
-                        QLabel(tr('ui.gui.modifications_tab.could_not_convert_mesh_for_preview'))
-                    )
-            except Exception as exc:
+                layout.addWidget(self._build_mesh_preview(data, mode))
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError, IndexError) as exc:
                 layout.addWidget(
                     QLabel(tr('ui.gui.modifications_tab.mesh_preview_error_value', value0=exc))
                 )
@@ -1374,18 +1389,8 @@ class ModPreviewDialog(QDialog):
         # Audio
         elif lower.endswith(('.mp3', '.ogg', '.wav')):
             try:
-                # Write to temp file for AudioPlayerWidget
-                import tempfile
-
-                suffix = Path(self._target_path).suffix
-                tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-                tmp.write(data)
-                tmp.close()
-                from ..cache.audio_player import AudioPlayerWidget
-
-                player = AudioPlayerWidget(tmp.name)
-                layout.addWidget(player)
-            except Exception as exc:
+                layout.addWidget(self._build_audio_preview(data))
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
                 layout.addWidget(
                     QLabel(tr('ui.gui.modifications_tab.audio_preview_error_value', value0=exc))
                 )
@@ -1393,31 +1398,8 @@ class ModPreviewDialog(QDialog):
         # Fonts
         elif lower.endswith(('.ttf', '.otf', '.ttc')):
             try:
-                # Check if it's actually JSON (FontFamily) instead of a font file
-                try:
-                    import json as json_module
-
-                    decoded = data.decode('utf-8', errors='replace')
-                    json_module.loads(decoded)
-                    # It's valid JSON, show as JSON instead
-                    from PyQt6.QtWidgets import QTextEdit
-
-                    viewer = QTextEdit()
-                    viewer.setReadOnly(True)
-                    # Pretty print the JSON
-                    import json as json_module
-
-                    parsed = json_module.loads(decoded)
-                    pretty_json = json_module.dumps(parsed, indent=2)
-                    viewer.setPlainText(pretty_json)
-                    layout.addWidget(viewer)
-                except ValueError, UnicodeDecodeError:
-                    # Not JSON, treat as font file
-                    from ..cache.font_viewer import FontViewerWidget
-
-                    font_viewer = FontViewerWidget(data)
-                    layout.addWidget(font_viewer)
-            except Exception as exc:
+                layout.addWidget(self._build_font_preview(data))
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
                 layout.addWidget(
                     QLabel(tr('ui.gui.modifications_tab.font_json_preview_error_value', value0=exc))
                 )
@@ -1432,8 +1414,6 @@ class ModPreviewDialog(QDialog):
 
     def _load_data(self, mode: str) -> bytes | None:
         """Load file bytes for preview. mode='mod' or 'original'."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR
-
         if not self._manager.roblox_dirs:
             return None
         roblox_dir = self._manager.roblox_dirs[0]
@@ -1442,29 +1422,28 @@ class ModPreviewDialog(QDialog):
         except ValueError:
             return None
 
-        if mode == 'original':
-            # Try stash first
-            stash = resource_stash_dir(MOD_ORIGINALS_DIR, roblox_dir) / target_path
-            if stash.is_file():
-                return stash.read_bytes()
-            original = read_current_platform_original_asset(self._target_path, roblox_dir)
-            if original is not None:
-                return original
-            mod_active = any(
-                e.get('target_path') == self._target_path for e in self._manager.entries
+        destination = roblox_dir / target_path
+        if mode != 'original':
+            return (
+                destination.read_bytes()
+                if destination.is_file()
+                else read_current_platform_original_asset(self._target_path, roblox_dir)
             )
-            if mod_active:
-                return None
-            dst = roblox_dir / target_path
-            return dst.read_bytes() if dst.is_file() else None
 
-        # mode == 'mod' — read the current (modified) file from Roblox dir
-        dst = roblox_dir / target_path
-        if dst.is_file():
-            return dst.read_bytes()
-        return read_current_platform_original_asset(self._target_path, roblox_dir)
+        stash = resource_stash_dir(MOD_ORIGINALS_DIR, roblox_dir) / target_path
+        if stash.is_file():
+            result = stash.read_bytes()
+        else:
+            result = read_current_platform_original_asset(self._target_path, roblox_dir)
+            if result is None:
+                mod_active = any(
+                    entry.get('target_path') == self._target_path for entry in self._manager.entries
+                )
+                if not mod_active and destination.is_file():
+                    result = destination.read_bytes()
+        return result
 
-    def _on_export(self):
+    def _on_export(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
             tr('ui.gui.modifications_tab.export_original_file'),
@@ -1481,7 +1460,7 @@ class ModPreviewDialog(QDialog):
                     [export_path],
                 )
 
-    def _on_export_converted(self):
+    def _on_export_converted(self) -> None:
         if not self._mod_converted_bytes:
             return
         stem = Path(self._target_path).stem
@@ -1500,7 +1479,28 @@ class ModPreviewDialog(QDialog):
                 [export_path],
             )
 
-    def _show_export_complete_message(self, title: str, message: str, exported_paths):
+    @staticmethod
+    def _open_export_location(paths: list[Path]) -> None:
+        if len(paths) == 1 and paths[0].is_file():
+            explorer = (
+                Path(os.environ.get('WINDIR', r'C:\Windows')) / 'explorer.exe'
+                if sys.platform == 'win32'
+                else Path('explorer.exe')
+            )
+            subprocess.Popen(
+                [str(explorer), '/select,', str(paths[0].resolve())],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        elif paths:
+            target = paths[0] if paths[0].is_dir() else paths[0].parent
+            open_folder(target)
+
+    def _show_export_complete_message(
+        self, title: str, message: str, exported_paths: list[Path]
+    ) -> None:
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Information)
         msg.setWindowTitle(title)
@@ -1513,21 +1513,8 @@ class ModPreviewDialog(QDialog):
 
         if msg.clickedButton() == open_button:
             try:
-                import subprocess
-
-                paths = [Path(path) for path in exported_paths if path]
-                if len(paths) == 1 and paths[0].is_file():
-                    subprocess.Popen(
-                        ['explorer.exe', '/select,', str(paths[0].resolve())],
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-                    )
-                elif paths:
-                    target = paths[0] if paths[0].is_dir() else paths[0].parent
-                    open_folder(target)
-            except Exception as exc:
+                self._open_export_location(exported_paths)
+            except (OSError, ValueError) as exc:
                 log_buffer.log('Export', f'Could not open exported file location: {exc}')
 
 
@@ -1539,7 +1526,7 @@ class CustomFFlagWarningDialog(QDialog):
 
     CONFIRM_DELAY_SECONDS = 15
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.modifications_tab.are_you_sure'))
         self.setModal(True)
@@ -1548,7 +1535,7 @@ class CustomFFlagWarningDialog(QDialog):
 
         layout = QVBoxLayout(self)
         title = QLabel(tr('ui.gui.modifications_tab.b_custom_fastflags_can_get_your_roblox'))
-        title.setStyleSheet('color: #d9534f; font-size: 15px;')
+        style_text(title, tone='error', pixel_size=15)
         layout.addWidget(title)
 
         message = QLabel(tr('ui.gui.modifications_tab.roblox_only_permits_a_small_allowlist_of'))
@@ -1568,7 +1555,7 @@ class CustomFFlagWarningDialog(QDialog):
         self._update_confirm_text()
         self._timer.start()
 
-    def _update_confirm_text(self):
+    def _update_confirm_text(self) -> None:
         if self._seconds_remaining > 0:
             self._confirm_button.setText(
                 tr(
@@ -1581,7 +1568,7 @@ class CustomFFlagWarningDialog(QDialog):
                 tr('ui.gui.modifications_tab.i_accept_the_risk_enable_custom_fastflags')
             )
 
-    def _tick(self):
+    def _tick(self) -> None:
         self._seconds_remaining = max(0, self._seconds_remaining - 1)
         self._update_confirm_text()
         if self._seconds_remaining == 0:
@@ -1592,7 +1579,7 @@ class CustomFFlagWarningDialog(QDialog):
 class FastFlagProfilesDialog(QDialog):
     """Manage named, on-disk FastFlag profiles without hiding the current editor."""
 
-    def __init__(self, flags: dict[str, str], parent=None):
+    def __init__(self, flags: dict[str, str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.modifications_tab.custom_fastflag_profiles'))
         self.setMinimumWidth(560)
@@ -1602,7 +1589,7 @@ class FastFlagProfilesDialog(QDialog):
         self._setup_ui()
         self._refresh_profiles()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
         description = QLabel(tr('ui.gui.modifications_tab.save_the_current_custom_fastflags_as_a'))
@@ -1620,7 +1607,7 @@ class FastFlagProfilesDialog(QDialog):
 
         self._profile_list = QListWidget()
         self._profile_list.itemSelectionChanged.connect(self._on_selection_changed)
-        self._profile_list.itemDoubleClicked.connect(lambda _item: self._load_profile())
+        self._profile_list.itemDoubleClicked.connect(self._on_profile_double_clicked)
         layout.addWidget(self._profile_list)
 
         self._replace_flags = QCheckBox(
@@ -1653,13 +1640,16 @@ class FastFlagProfilesDialog(QDialog):
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.reject)
         layout.addWidget(close)
-        self._set_actions_enabled(False)
+        self._set_actions_enabled(enabled=False)
+
+    def _on_profile_double_clicked(self, _item: QListWidgetItem) -> None:
+        self._load_profile()
 
     def _selected_name(self) -> str | None:
-        item = self._profile_list.currentItem()
+        item = _current_list_item(self._profile_list)
         return item.text() if item is not None else None
 
-    def _set_actions_enabled(self, enabled: bool):
+    def _set_actions_enabled(self, enabled: bool) -> None:
         for button in (
             self._load_button,
             self._update_button,
@@ -1669,13 +1659,13 @@ class FastFlagProfilesDialog(QDialog):
         ):
             button.setEnabled(enabled)
 
-    def _on_selection_changed(self):
+    def _on_selection_changed(self) -> None:
         name = self._selected_name()
         self._set_actions_enabled(name is not None)
         if name:
             self._name.setText(name)
 
-    def _refresh_profiles(self, selected: str | None = None):
+    def _refresh_profiles(self, selected: str | None = None) -> None:
         selected = selected or self._selected_name()
         self._profile_list.clear()
         for name in self._profiles.list_profiles():
@@ -1686,22 +1676,22 @@ class FastFlagProfilesDialog(QDialog):
                 self._profile_list.setCurrentItem(matches[0])
         self._set_actions_enabled(self._selected_name() is not None)
 
-    def _show_error(self, action: str, exc: Exception):
+    def _show_error(self, action: str, exc: Exception) -> None:
         QMessageBox.warning(
             self,
             tr('ui.gui.modifications_tab.could_not_value_profile', value0=action),
             str(exc),
         )
 
-    def _save_profile(self):
+    def _save_profile(self) -> None:
         try:
-            name = self._profiles.save(self._name.text(), self._flags)
+            name = self._profiles.save(self._name.text(), dict(self._flags))
         except (OSError, ValueError) as exc:
             self._show_error(tr('ui.gui.modifications_tab.profile_action_save'), exc)
             return
         self._refresh_profiles(name)
 
-    def _load_profile(self):
+    def _load_profile(self) -> None:
         name = self._selected_name()
         if not name:
             return
@@ -1713,16 +1703,16 @@ class FastFlagProfilesDialog(QDialog):
         self.loaded_flags = flags if self._replace_flags.isChecked() else {**self._flags, **flags}
         self.accept()
 
-    def _update_profile(self):
+    def _update_profile(self) -> None:
         name = self._selected_name()
         if not name:
             return
         try:
-            self._profiles.save(name, self._flags)
+            self._profiles.save(name, dict(self._flags))
         except (OSError, ValueError) as exc:
             self._show_error(tr('ui.gui.modifications_tab.profile_action_update'), exc)
 
-    def _copy_profile(self):
+    def _copy_profile(self) -> None:
         name = self._selected_name()
         if not name:
             return
@@ -1731,7 +1721,7 @@ class FastFlagProfilesDialog(QDialog):
         except (OSError, ValueError) as exc:
             self._show_error(tr('ui.gui.modifications_tab.profile_action_copy'), exc)
 
-    def _rename_profile(self):
+    def _rename_profile(self) -> None:
         old_name = self._selected_name()
         if not old_name:
             return
@@ -1750,7 +1740,7 @@ class FastFlagProfilesDialog(QDialog):
             return
         self._refresh_profiles(name)
 
-    def _delete_profile(self):
+    def _delete_profile(self) -> None:
         name = self._selected_name()
         if not name:
             return
@@ -1777,6 +1767,7 @@ class FFlagBrowserDialog(QDialog):
     _SETTINGS_URL = 'https://clientsettingscdn.roblox.com/v2/settings/application/PCDesktopClient'
     _SETTINGS_APPLICATIONS = (
         'PCDesktopClient',
+        'PCDesktopClientCJV',
         'MacDesktopClient',
         'PlayStationClient',
         'XboxClient',
@@ -1790,18 +1781,27 @@ class FFlagBrowserDialog(QDialog):
         'PCClientBootstrapper',
         'MacClientBootstrapper',
     )
-    _SETTINGS_BUCKETS = ('', '/bucket/zcanary', '/bucket/zintegration')
+    _SETTINGS_BUCKETS = (
+        '',
+        '/bucket/zcanary',
+        '/bucket/zintegration',
+        '/bucket/zlive',
+        '/bucket/zbeta',
+    )
     _TRACKER_VARIABLES_URL = (
         'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox/FVariables.txt'
     )
-    _HISTORICAL_TRACKER_VARIABLES_URL = (
-        'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/'
-        '03a46e5f35e7aa5d85310189b477caee20b20761/FVariables.txt'
+    _PLAYER_VARIABLES_URL = (
+        'https://raw.githubusercontent.com/MoraineArchive/RobloxPlayer-Datamining/'
+        'main/current/FastVariables/cpp.txt'
     )
-    _BYPASS_CUSTOM_FFLAGS_HEADER = {'X-Fleasion-Bypass-Custom-FFlags': '1'}
-    _CACHE_PATH = APP_CACHE_DIR / 'fflag_browser.json'
-    _CACHE_TTL_SECONDS = 60 * 60
-    _CACHE_VERSION = 1
+    _BYPASS_CUSTOM_FFLAGS_HEADER: ClassVar[dict[str, str]] = {
+        'X-Fleasion-Bypass-Custom-FFlags': '1'
+    }
+    _CACHE_PATH = APP_CACHE_DIR / FFLAG_CATALOG_CACHE_FILENAME
+    _CACHE_TTL_SECONDS = FFLAG_CATALOG_CACHE_TTL_SECONDS
+    _CACHE_VERSION = 3
+    _COMBO_EXTRA_WIDTH = 40  # Glass arrow region (30px) + left padding and borders
     _FAMILIES = (
         'DFFlag',
         'DFInt',
@@ -1815,24 +1815,46 @@ class FFlagBrowserDialog(QDialog):
         'FFloat',
     )
 
-    flags_loaded = pyqtSignal(object)
-    load_failed = pyqtSignal(str)
+    flags_loaded = Signal(object)
+    local_scan_loaded = Signal(object)
+    local_scan_failed = Signal(object)
+    installed_scan_loaded = Signal(object)
+    installed_scan_failed = Signal(object)
+    load_failed = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        config_manager: ConfigManager | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._config_manager = config_manager
         self.setWindowTitle(tr('ui.gui.modifications_tab.browse_roblox_fastflags'))
         self.setMinimumSize(820, 580)
-        # ``None`` means the variable is known to exist in the client, but
-        # Roblox has not published a current value through ClientSettings.
+        # ``None`` means no current PCDesktopClient value was retrieved
+        # Other published settings or tracker inventories may contain stale flags
         self._flags: dict[str, str | None] = {}
         self._cache_loaded = False
+        self._local_catalog: WindowsStaticFlagCatalog | None = None
+        self._local_rows: dict[str, WindowsValueSlot] = {}
+        self._local_generation = 0
+        self._local_exe: Path | None = self._detect_installed_windows_exe()
+        self._installed_catalog: StaticFlagCatalog | None = None
+        self._installed_source: ClientBinary | None = (
+            detect_client_binary() if self._client_source_mode() == 'installed' else None
+        )
         self.selected_flags: dict[str, str] = {}
         self._setup_ui()
-        self.flags_loaded.connect(self._apply_flags)
-        self.load_failed.connect(self._show_load_error)
+        self.flags_loaded.connect(self._apply_public_flags)
+        self.local_scan_loaded.connect(self._apply_local_scan)
+        self.local_scan_failed.connect(self._apply_local_error)
+        self.installed_scan_loaded.connect(self._apply_installed_scan)
+        self.installed_scan_failed.connect(self._apply_installed_error)
+        self.load_failed.connect(self._show_public_load_error)
         self._refresh()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
@@ -1845,6 +1867,24 @@ class FFlagBrowserDialog(QDialog):
         layout.addWidget(description)
 
         controls = QHBoxLayout()
+        self._source_mode = QComboBox()
+        self._source_mode.setProperty('fflagBrowserCompact', 'true')
+        self._source_mode.addItem(tr('modifications.fastflags.public_catalog'), 'public')
+        self._source_mode.addItem(
+            tr('modifications.fastflags.client_source', client=self._client_display_name()),
+            self._client_source_mode(),
+        )
+        self._source_mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._source_mode.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        if getattr(self._config_manager, 'fflag_browser_source', 'public') == 'client':
+            self._source_mode.setCurrentIndex(1)
+        self._fit_source_width()
+        self._source_mode.currentIndexChanged.connect(self._on_source_changed)
+        controls.addWidget(self._source_mode)
+        self._choose_exe_button = QPushButton(tr('modifications.fastflags.choose_exe'))
+        self._choose_exe_button.clicked.connect(self._choose_windows_exe)
+        self._choose_exe_button.setVisible(self._source_mode.currentData() == 'windows')
+        controls.addWidget(self._choose_exe_button)
         self._search = QLineEdit()
         self._search.setPlaceholderText(
             tr('ui.gui.modifications_tab.search_fastflag_names_or_current_values')
@@ -1853,7 +1893,11 @@ class FFlagBrowserDialog(QDialog):
         controls.addWidget(self._search, 1)
 
         self._family_filter = QComboBox()
-        self._family_filter.setMinimumWidth(165)
+        self._family_filter.setProperty('fflagBrowserCompact', 'true')
+        self._family_filter.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._family_filter.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._family_filter.addItem(tr('ui.gui.modifications_tab.all_fastflags'), '')
+        self._fit_combo_to_options(self._family_filter)
         self._family_filter.currentIndexChanged.connect(self._filter_rows)
         controls.addWidget(self._family_filter)
 
@@ -1863,14 +1907,16 @@ class FFlagBrowserDialog(QDialog):
         layout.addLayout(controls)
 
         self._count = QLabel(tr('ui.gui.modifications_tab.retrieving_fastflags'))
-        self._count.setStyleSheet('color: #999;')
+        style_text(self._count, tone='muted')
         layout.addWidget(self._count)
 
         self._table = QTableWidget(0, 2)
         self._table.setHorizontalHeaderLabels(
             [
                 tr('ui.gui.modifications_tab.name'),
-                tr('ui.gui.modifications_tab.current_roblox_value'),
+                tr('modifications.fastflags.initial_value')
+                if self._source_mode.currentData() != 'public'
+                else tr('modifications.table.value'),
             ]
         )
         header = self._table.horizontalHeader()
@@ -1892,6 +1938,238 @@ class FFlagBrowserDialog(QDialog):
         layout.addWidget(buttons)
 
     @classmethod
+    def _fit_combo_to_options(cls, combo: QComboBox) -> None:
+        """Reserve only the longest option and the standard Glass arrow/padding area."""
+        widest = max(
+            (
+                combo.fontMetrics().horizontalAdvance(combo.itemText(i))
+                for i in range(combo.count())
+            ),
+            default=0,
+        )
+        combo.setFixedWidth(widest + cls._COMBO_EXTRA_WIDTH)
+
+    def _fit_source_width(self) -> None:
+        self._fit_combo_to_options(self._source_mode)
+
+    @staticmethod
+    def _client_source_mode() -> str:
+        """Use one platform-appropriate local client source in the browser."""
+        return 'windows' if sys.platform == 'win32' else 'installed'
+
+    def _client_display_name(self) -> str:
+        """Name the selected client rather than its scanning implementation."""
+        if self._client_source_mode() == 'windows':
+            return tr('modifications.fastflags.client_windows')
+        source = self._installed_source
+        if source is None:
+            return tr('modifications.fastflags.client_unavailable')
+        return (
+            tr('modifications.fastflags.client_macos') if source.client == 'macos' else source.label
+        )
+
+    def _update_client_source_label(self) -> None:
+        self._source_mode.setItemText(
+            1, tr('modifications.fastflags.client_source', client=self._client_display_name())
+        )
+        self._fit_source_width()
+
+    @staticmethod
+    def _detect_installed_windows_exe() -> Path | None:
+        """Prefer the newest local Windows Player, without launching it."""
+        if sys.platform != 'win32':
+            return None
+        root = Path(os.environ.get('LOCALAPPDATA', '')) / 'Roblox' / 'Versions'
+        if not root.is_dir():
+            return None
+        found = sorted(
+            root.glob('*/RobloxPlayerBeta.exe'),
+            key=lambda candidate: candidate.stat().st_mtime_ns,
+            reverse=True,
+        )
+        return found[0] if found else None
+
+    def _choose_windows_exe(self) -> None:
+        """Select a Player EXE; never read or modify a running process."""
+        chosen, _filter = QFileDialog.getOpenFileName(
+            self,
+            tr('modifications.fastflags.choose_windows_exe'),
+            str(self._local_exe.parent if self._local_exe else Path.home()),
+            tr('modifications.fastflags.windows_executable_filter'),
+        )
+        if not chosen:
+            return
+        self._local_exe = Path(chosen)
+        if self._source_mode.currentData() == 'windows':
+            # Invalidate a pending scan of the previously chosen executable
+            self._local_generation += 1
+            self._local_catalog = None
+            self._refresh_button.setEnabled(True)
+            self._refresh(force=True)
+
+    def _on_source_changed(self, _index: int) -> None:
+        self._local_generation += 1
+        # A pending request from the other source must not block this scan
+        self._refresh_button.setEnabled(True)
+        local = self._source_mode.currentData() == 'windows'
+        self._choose_exe_button.setVisible(local)
+        self._local_catalog = None
+        self._local_rows = {}
+        self._installed_catalog = None
+        self._flags = {}
+        self._table.setRowCount(0)
+        if self._source_mode.currentData() == 'installed':
+            self._installed_source = detect_client_binary()
+            self._update_client_source_label()
+        if local and self._local_exe is None:
+            self._choose_windows_exe()
+            if self._local_exe is None:
+                with QSignalBlocker(self._source_mode):
+                    self._source_mode.setCurrentIndex(0)
+                self._choose_exe_button.setVisible(False)
+                local = False
+        if self._config_manager is not None:
+            self._config_manager.fflag_browser_source = (
+                'public' if self._source_mode.currentData() == 'public' else 'client'
+            )
+        self._table.setHorizontalHeaderLabels(
+            [
+                tr('ui.gui.modifications_tab.name'),
+                tr('modifications.fastflags.initial_value')
+                if self._source_mode.currentData() != 'public'
+                else tr('modifications.table.value'),
+            ]
+        )
+        self._refresh()
+
+    def _fetch_local_scan(self, generation: int, binary_path: Path) -> None:
+        """Keep binary I/O and optional public inventory requests off the GUI thread."""
+        qualified: frozenset[str] = frozenset()
+        try:
+            payload = http_get(
+                self._TRACKER_VARIABLES_URL,
+                timeout=15,
+                headers=self._BYPASS_CUSTOM_FFLAGS_HEADER,
+            )
+            qualified = parse_fvariables(payload)
+        except OSError, ValueError:
+            # Offline scans remain complete; absent type hints stay unresolved
+            pass
+        try:
+            catalog = scan_windows_player(
+                binary_path,
+                qualified_type_hints=qualified,
+                hint_source='fvariables' if qualified else 'none',
+            )
+        except (OSError, ValueError) as exc:
+            self.local_scan_failed.emit((generation, str(exc)))
+        else:
+            self.local_scan_loaded.emit((generation, catalog))
+
+    def _apply_local_error(self, payload: tuple[int, str]) -> None:
+        generation, message = payload
+        if generation != self._local_generation or self._source_mode.currentData() != 'windows':
+            return
+        self._show_load_error(tr('modifications.fastflags.windows_scan_failed', error=message))
+
+    def _apply_local_scan(self, payload: tuple[int, WindowsStaticFlagCatalog]) -> None:
+        generation, catalog = payload
+        if generation != self._local_generation or self._source_mode.currentData() != 'windows':
+            return
+        self._local_catalog = catalog
+        flags: dict[str, str | None] = {}
+        records: dict[str, WindowsValueSlot] = {}
+        for slot in catalog.entries:
+            label = slot.qualifier_hint or tr(
+                'modifications.fastflags.type_unknown_label', name=slot.name
+            )
+            if label in records:
+                label = f'{label} [RVA {slot.value_rva:08X}]'
+            flags[label] = display_initial_value(slot)
+            records[label] = slot
+        self._local_rows = records
+        self._cache_loaded = False
+        self._apply_flags(flags)
+
+    @staticmethod
+    def scan_installed_client(binary: ClientBinary, force: bool) -> tuple[StaticFlagCatalog, bool]:
+        """Load an unchanged cached snapshot or rescan the selected Player."""
+        cached = None if force else load_scan(binary.client)
+        if cached is not None and scan_is_current(cached, binary):
+            catalog = cached
+            saved = True
+        else:
+            published = FFlagBrowserDialog._read_cache() or {}
+            try:
+                names = parse_fvariables(
+                    http_get(
+                        FFlagBrowserDialog._TRACKER_VARIABLES_URL,
+                        timeout=15,
+                        headers=FFlagBrowserDialog._BYPASS_CUSTOM_FFLAGS_HEADER,
+                    )
+                )
+                for name in names:
+                    published.setdefault(name, None)
+            except OSError, ValueError:
+                # The native scanner must work without public connectivity
+                pass
+            for name in cached_cross_client_type_hints(binary.client):
+                published.setdefault(name, None)
+            catalog = scan_binary(binary, published)
+            save_scan(catalog)
+            saved = False
+        hints = dict(catalog.flags)
+        if published_cache := FFlagBrowserDialog._read_cache():
+            hints.update(published_cache)
+        for name in cached_cross_client_type_hints(binary.client):
+            hints.setdefault(name, None)
+        return resolve_catalog_from_snapshot(catalog, hints), saved
+
+    @staticmethod
+    def _compute_installed_scan(
+        binary: ClientBinary, force: bool
+    ) -> tuple[StaticFlagCatalog, bool]:
+        """Use the installed-client scanner shared with automatic cache recovery."""
+        return FFlagBrowserDialog.scan_installed_client(binary, force)
+
+    def _fetch_installed_scan(self, generation: int, binary: ClientBinary, force: bool) -> None:
+        """Perform offline scan and source validation off the GUI thread."""
+        try:
+            catalog, saved = self._compute_installed_scan(binary, force)
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            IndexError,
+            struct.error,
+            zipfile.BadZipFile,
+        ) as exc:
+            self.installed_scan_failed.emit((generation, str(exc)))
+        else:
+            self.installed_scan_loaded.emit((generation, catalog, binary, saved))
+
+    def _apply_installed_error(self, payload: tuple[int, str]) -> None:
+        generation, message = payload
+        if generation != self._local_generation or self._source_mode.currentData() != 'installed':
+            return
+        self._show_load_error(tr('modifications.fastflags.installed_scan_failed', error=message))
+
+    def _apply_installed_scan(
+        self, payload: tuple[int, StaticFlagCatalog, ClientBinary, bool]
+    ) -> None:
+        generation, catalog, binary, cached = payload
+        if generation != self._local_generation or self._source_mode.currentData() != 'installed':
+            return
+        self._installed_catalog = catalog
+        self._installed_source = binary
+        self._cache_loaded = cached
+        self._apply_flags(catalog.flags)
+        # The editor can now update warnings from this selected-client scan
+        invalidate_selected_player_cache()
+        self.flags_loaded.emit(catalog.flags)
+
+    @classmethod
     def _family_for(cls, name: str) -> str:
         for family in cls._FAMILIES:
             if name.startswith(family):
@@ -1903,51 +2181,67 @@ class FFlagBrowserDialog(QDialog):
         """Keep the canonical unpublished sentinel as None and translate only presentation."""
         return value if value is not None else tr('modifications.fastflags.no_value')
 
-    @staticmethod
-    def _extract_flags(payload: object) -> dict[str, str]:
+    @classmethod
+    def _extract_flags(cls, payload: JsonValue) -> dict[str, str]:
         """Validate the public ClientSettings response without accepting arbitrary JSON."""
-        if not isinstance(payload, dict):
-            raise ValueError('Roblox returned an invalid FastFlag response.')
+        if type(payload) is not dict:
+            msg = 'Roblox returned an invalid FastFlag response.'
+            raise ValueError(msg)
         settings = payload.get('applicationSettings')
-        if not isinstance(settings, dict):
-            raise ValueError('Roblox returned no application FastFlags.')
+        if type(settings) is not dict:
+            msg = 'Roblox returned no application FastFlags.'
+            raise ValueError(msg)
 
         flags: dict[str, str] = {}
         for raw_name, raw_value in settings.items():
             name = str(raw_name).strip()
-            if not name or not isinstance(raw_value, str | int | float | bool):
+            if (
+                not name.isascii()
+                or not name.isidentifier()
+                or not any(
+                    name.startswith(family) and len(name) > len(family) for family in cls._FAMILIES
+                )
+                or not isinstance(raw_value, str | int | float | bool)
+            ):
                 continue
             flags[name] = (
                 'True' if raw_value is True else 'False' if raw_value is False else str(raw_value)
             )
         if not flags:
-            raise ValueError('Roblox returned no usable FastFlags.')
+            msg = 'Roblox returned no usable FastFlags.'
+            raise ValueError(msg)
         return flags
 
     @classmethod
     def _extract_tracker_flags(cls, payload: bytes) -> dict[str, None]:
-        """Extract known FastVariable names from the public Client Tracker list."""
+        """Extract names from current Studio or Player binary inventories."""
         try:
             lines = payload.decode('utf-8').splitlines()
         except UnicodeDecodeError as exc:
-            raise ValueError('The FastVariable tracker returned invalid text.') from exc
+            msg = 'The FastVariable tracker returned invalid text.'
+            raise ValueError(msg) from exc
 
         flags: dict[str, None] = {}
         for line in lines:
-            # The tracker currently writes entries as ``[C++] FFlagExample``.
+            # Studio uses [C++]/[Lua] annotations; Player lists bare names
             _, marker, raw_name = line.partition('] ')
-            if not marker:
-                continue
-            name = raw_name.strip()
-            if name.startswith(cls._FAMILIES):
+            name = (raw_name if marker else line).strip()
+            if (
+                name.isascii()
+                and name.isidentifier()
+                and any(
+                    name.startswith(family) and len(name) > len(family) for family in cls._FAMILIES
+                )
+            ):
                 flags[name] = None
         if not flags:
-            raise ValueError('The FastVariable tracker returned no usable FastFlags.')
+            msg = 'The FastVariable tracker returned no usable FastFlags.'
+            raise ValueError(msg)
         return flags
 
     @classmethod
     def _settings_urls(cls) -> tuple[str, ...]:
-        """Return the live, canary, and integration endpoints used by the tracker."""
+        """Enumerate current application settings, including published channel buckets."""
         base_url = 'https://clientsettingscdn.roblox.com/v2/settings/application/'
         urls = [cls._SETTINGS_URL]
         urls.extend(
@@ -1962,28 +2256,43 @@ class FFlagBrowserDialog(QDialog):
     def _read_cache(cls, *, now: float | None = None) -> dict[str, str | None] | None:
         """Return the recent merged result, ignoring malformed or expired cache files."""
         try:
-            cached = json.loads(cls._CACHE_PATH.read_text(encoding='utf-8'))
-            if cached.get('version') != cls._CACHE_VERSION:
-                return None
-            fetched_at = float(cached['fetched_at'])
-            age = (time.time() if now is None else now) - fetched_at
-            raw_flags = cached['flags']
-            if not 0 <= age < cls._CACHE_TTL_SECONDS or not isinstance(raw_flags, dict):
-                return None
-        except OSError, ValueError, TypeError, AttributeError, KeyError, json.JSONDecodeError:
+            cached = cast('JsonValue', json.loads(cls._CACHE_PATH.read_text(encoding='utf-8')))
+        except OSError, ValueError, json.JSONDecodeError:
+            return None
+        if not isinstance(cached, dict) or cached.get('version') != cls._CACHE_VERSION:
+            return None
+        raw_fetched_at = cached.get('fetched_at')
+        if not isinstance(raw_fetched_at, str | int | float):
+            return None
+        try:
+            fetched_at = float(raw_fetched_at)
+        except TypeError, ValueError, OverflowError:
+            return None
+        age = (time.time() if now is None else now) - fetched_at
+        raw_flags = cached.get('flags')
+        if not 0 <= age < cls._CACHE_TTL_SECONDS or not isinstance(raw_flags, dict):
             return None
 
         flags: dict[str, str | None] = {}
         for raw_name, value in raw_flags.items():
-            name = raw_name.strip() if isinstance(raw_name, str) else ''
-            if name.startswith(cls._FAMILIES) and (value is None or isinstance(value, str)):
+            name = raw_name.strip()
+            if (
+                name.isascii()
+                and name.isidentifier()
+                and any(
+                    name.startswith(family) and len(name) > len(family) for family in cls._FAMILIES
+                )
+                and (value is None or isinstance(value, str))
+            ):
                 flags[name] = value
         return flags or None
 
     @classmethod
-    def _write_cache(cls, flags: dict[str, str | None], *, now: float | None = None):
-        """Atomically persist a successfully resolved union for the next hour."""
-        temporary_path = cls._CACHE_PATH.with_name(f'.{cls._CACHE_PATH.name}.tmp')
+    def _write_cache(cls, flags: dict[str, str | None], *, now: float | None = None) -> bool:
+        """Atomically persist a successfully resolved union for the next 24 hours."""
+        temporary_path = cls._CACHE_PATH.with_name(
+            f'.{cls._CACHE_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp'
+        )
         try:
             cls._CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
             temporary_path.write_text(
@@ -1998,84 +2307,157 @@ class FFlagBrowserDialog(QDialog):
                 encoding='utf-8',
             )
             temporary_path.replace(cls._CACHE_PATH)
-        except OSError:
-            # The browser remains useful if its optional cache cannot be written.
-            pass
+        except OSError as exc:
+            log_buffer.log('FastFlags', f'Could not save catalog cache: {exc}')
+            return False
+        else:
+            log_buffer.log(
+                'FastFlags', f'Saved {len(flags):,} FastFlags to catalog cache: {cls._CACHE_PATH}'
+            )
+            return True
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
-    def _refresh(self, force: bool = False):
+    @classmethod
+    def cache_is_current(cls) -> bool:
+        """Whether the shared inventory has been refreshed within 24 hours."""
+        return cls._read_cache() is not None
+
+    @classmethod
+    def refresh_cache_if_stale(cls) -> bool:
+        """Refresh a stale inventory without constructing or displaying the browser."""
+        if cls.cache_is_current():
+            return False
+        flags = cls._collect_flags()
+        return cls._write_cache(flags)
+
+    def _refresh(self, force: bool = False) -> None:  # ruff: ignore[too-many-return-statements]
         if self._refresh_button.isEnabled() is False:
+            return
+        if self._source_mode.currentData() == 'installed':
+            source = detect_client_binary()
+            self._installed_source = source
+            self._update_client_source_label()
+            if source is None:
+                self._count.setText(tr('modifications.fastflags.no_installed_player'))
+                self._refresh_button.setEnabled(True)
+                return
+            self._installed_source = source
+            if self._installed_catalog is not None and not force:
+                self._apply_installed_scan(
+                    (self._local_generation, self._installed_catalog, source, self._cache_loaded)
+                )
+                return
+            self._local_generation += 1
+            generation = self._local_generation
+            self._refresh_button.setEnabled(False)
+            self._count.setText(
+                tr('modifications.fastflags.reading_installed', client=source.label)
+            )
+            threading.Thread(
+                target=self._fetch_installed_scan,
+                args=(generation, source, force),
+                daemon=True,
+            ).start()
+            return
+        if self._source_mode.currentData() == 'windows':
+            if self._local_exe is None:
+                self._count.setText(tr('modifications.fastflags.select_windows_exe'))
+                return
+            if self._local_catalog is not None and not force:
+                self._apply_local_scan((self._local_generation, self._local_catalog))
+                return
+            self._local_generation += 1
+            generation = self._local_generation
+            self._refresh_button.setEnabled(False)
+            self._count.setText(tr('modifications.fastflags.reading_windows'))
+            threading.Thread(
+                target=self._fetch_local_scan,
+                args=(generation, self._local_exe),
+                daemon=True,
+            ).start()
             return
         if not force:
             cached_flags = self._read_cache()
             if cached_flags is not None:
                 self._cache_loaded = True
+                log_buffer.log(
+                    'FastFlags', f'Loaded {len(cached_flags):,} FastFlags from catalog cache'
+                )
                 self.flags_loaded.emit(cached_flags)
                 return
 
         self._cache_loaded = False
         self._refresh_button.setEnabled(False)
         self._count.setText(tr('ui.gui.modifications_tab.retrieving_fastflags'))
-        self._count.setStyleSheet('color: #999;')
+        style_text(self._count, tone='muted')
         threading.Thread(target=self._fetch_flags, daemon=True).start()
 
-    def _fetch_flags(self):
-        try:
-            # Tell Fleasion's ClientSettings interceptor to pass this browser
-            # request through. Active custom flags must not look like values
-            # published by Roblox.
-            flags: dict[str, str | None] = {}
-            settings_urls = self._settings_urls()
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                futures = {
-                    executor.submit(
-                        http_get,
-                        url,
-                        20,
-                        self._BYPASS_CUSTOM_FFLAGS_HEADER,
-                    ): url
-                    for url in settings_urls
-                }
-                for future in as_completed(futures):
-                    url = futures[future]
-                    try:
-                        settings = self._extract_flags(json.loads(future.result()))
-                    except OSError, ValueError, json.JSONDecodeError:
-                        # Some platform/channel combinations are intentionally
-                        # unavailable. The remaining published endpoints are
-                        # still useful to the browser.
-                        continue
-                    if url == self._SETTINGS_URL:
-                        flags.update(settings)
-                    else:
-                        flags.update({name: None for name in settings if name not in flags})
-
-            for tracker_url in (
-                self._TRACKER_VARIABLES_URL,
-                self._HISTORICAL_TRACKER_VARIABLES_URL,
-            ):
+    @classmethod
+    def _collect_flags(cls) -> dict[str, str | None]:
+        """Merge current public settings and binary names, preferring live PC values."""
+        flags: dict[str, str | None] = {}
+        settings_urls = cls._settings_urls()
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {
+                executor.submit(
+                    http_get,
+                    url,
+                    20,
+                    cls._BYPASS_CUSTOM_FFLAGS_HEADER,
+                ): url
+                for url in settings_urls
+            }
+            for future in as_completed(futures):
+                url = futures[future]
                 try:
-                    tracker_flags = self._extract_tracker_flags(http_get(tracker_url, timeout=20))
-                except OSError, ValueError:
-                    # A tracker snapshot should add names when available, but a
-                    # temporary GitHub failure must not hide published values.
+                    settings = cls._extract_flags(json.loads(future.result()))
+                except OSError, TypeError, ValueError, json.JSONDecodeError:
+                    # Some platform/channel combinations are intentionally unavailable.
                     continue
-                flags.update(
-                    {name: value for name, value in tracker_flags.items() if name not in flags}
-                )
+                if url == cls._SETTINGS_URL:
+                    flags.update(settings)
+                else:
+                    flags.update({name: None for name in settings if name not in flags})
 
-            if not flags:
-                raise ValueError('No configured FastFlag source returned usable data.')
+        # Only current binary inventories: historical snapshots retain removed flags
+        for tracker_url in (
+            cls._TRACKER_VARIABLES_URL,
+            cls._PLAYER_VARIABLES_URL,
+        ):
+            try:
+                tracker_flags = cls._extract_tracker_flags(http_get(tracker_url, timeout=20))
+            except OSError, ValueError:
+                # A tracker snapshot is optional; published values remain useful.
+                continue
+            flags.update(
+                {name: value for name, value in tracker_flags.items() if name not in flags}
+            )
+        if not flags:
+            msg = 'No configured FastFlag source returned usable data.'
+            raise ValueError(msg)
+        log_buffer.log('FastFlags', f'Downloaded {len(flags):,} FastFlags from public sources')
+        return flags
+
+    def _fetch_flags(self) -> None:
+        try:
+            flags = self._collect_flags()
             self._write_cache(flags)
             self.flags_loaded.emit(flags)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self.load_failed.emit(tr('modifications.fastflags.load_failed', error=exc))
 
-    def _apply_flags(self, flags: dict[str, str | None]):
+    def _apply_public_flags(self, flags: dict[str, str | None]) -> None:
+        if self._source_mode.currentData() == 'public':
+            self._apply_flags(flags)
+
+    def _apply_flags(self, flags: dict[str, str | None]) -> None:
+        if self._source_mode.currentData() != 'windows':
+            self._local_catalog = None
+            self._local_rows = {}
+        if self._source_mode.currentData() != 'installed':
+            self._installed_catalog = None
         self._flags = dict(sorted(flags.items(), key=lambda item: item[0].casefold()))
         current_family = self._family_filter.currentData()
         family_counts: dict[str, int] = {}
@@ -2083,31 +2465,35 @@ class FFlagBrowserDialog(QDialog):
             family = self._family_for(name)
             family_counts[family] = family_counts.get(family, 0) + 1
 
-        self._family_filter.blockSignals(True)
-        self._family_filter.clear()
-        self._family_filter.addItem(tr('ui.gui.modifications_tab.all_fastflags'), '')
-        for family in sorted(family_counts):
-            self._family_filter.addItem(
-                tr(
-                    'ui.gui.modifications_tab.value_value',
-                    value0=family,
-                    value1=family_counts[family],
-                ),
-                family,
-            )
-        previous_index = self._family_filter.findData(current_family)
-        self._family_filter.setCurrentIndex(max(0, previous_index))
-        self._family_filter.blockSignals(False)
+        with QSignalBlocker(self._family_filter):
+            self._family_filter.clear()
+            self._family_filter.addItem(tr('ui.gui.modifications_tab.all_fastflags'), '')
+            for family in sorted(family_counts):
+                self._family_filter.addItem(
+                    tr(
+                        'ui.gui.modifications_tab.value_value',
+                        value0=family,
+                        value1=family_counts[family],
+                    ),
+                    family,
+                )
+            previous_index = self._family_filter.findData(current_family)
+            self._family_filter.setCurrentIndex(max(0, previous_index))
+        self._fit_combo_to_options(self._family_filter)
         self._refresh_button.setEnabled(True)
         self._populate_table()
         self._filter_rows()
 
-    def _show_load_error(self, message: str):
+    def _show_public_load_error(self, message: str) -> None:
+        if self._source_mode.currentData() == 'public':
+            self._show_load_error(message)
+
+    def _show_load_error(self, message: str) -> None:
         self._refresh_button.setEnabled(True)
         self._count.setText(message)
-        self._count.setStyleSheet('color: #ef8f8f;')
+        style_text(self._count, tone='error')
 
-    def _filter_rows(self, *_args):
+    def _filter_rows(self, *_args: object) -> None:
         query = self._search.text().strip().casefold()
         family = self._family_filter.currentData() or ''
         visible_count = 0
@@ -2124,6 +2510,35 @@ class FFlagBrowserDialog(QDialog):
             self._table.setUpdatesEnabled(True)
 
         if self._flags:
+            if (
+                self._installed_catalog is not None
+                and self._source_mode.currentData() == 'installed'
+            ):
+                catalog = self._installed_catalog
+                self._count.setText(
+                    tr(
+                        'modifications.fastflags.registered_summary',
+                        visible=f'{visible_count:,}',
+                        total=f'{len(self._flags):,}',
+                        verified=f'{len(catalog.verified):,}',
+                        client=catalog.label,
+                    )
+                )
+                style_text(self._count, tone='muted')
+                self._update_selection_button()
+                return
+            if self._local_catalog is not None:
+                self._count.setText(
+                    tr(
+                        'modifications.fastflags.windows_summary',
+                        visible=f'{visible_count:,}',
+                        total=f'{len(self._flags):,}',
+                        hinted=f'{self._local_catalog.hinted:,}',
+                    )
+                )
+                style_text(self._count, tone='muted')
+                self._update_selection_button()
+                return
             no_pc_value_count = sum(value is None for value in self._flags.values())
             source_detail = (
                 tr(
@@ -2133,46 +2548,72 @@ class FFlagBrowserDialog(QDialog):
                 if no_pc_value_count
                 else tr('modifications.fastflags.retrieved_from_roblox')
             )
-            cache_detail = tr('modifications.fastflags.cached_suffix') if self._cache_loaded else ''
             self._count.setText(
                 tr(
                     'ui.gui.modifications_tab.showing_value_fastflags_value_value_value',
                     value0=visible_count,
                     value1=len(self._flags),
                     value2=source_detail,
-                    value3=cache_detail,
+                    value3='',
                 )
             )
-            self._count.setStyleSheet('color: #999;')
+            style_text(self._count, tone='muted')
         self._update_selection_button()
 
-    def _populate_table(self):
+    def _populate_table(self) -> None:
         """Populate once per download; search and filters only hide existing rows."""
         self._table.setUpdatesEnabled(False)
-        self._table.blockSignals(True)
+        blocker = QSignalBlocker(self._table)
         try:
             self._table.setRowCount(len(self._flags))
             for row, (name, value) in enumerate(self._flags.items()):
                 name_item = QTableWidgetItem(name)
                 name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                name_item.setToolTip(name)
+                slot = self._local_rows.get(name)
+                if slot is None:
+                    name_item.setToolTip(name)
+                else:
+                    source = (
+                        tr('modifications.fastflags.unverified_fvariables_hint')
+                        if slot.qualifier_hint
+                        else tr('modifications.fastflags.type_unknown')
+                    )
+                    name_item.setToolTip(
+                        tr(
+                            'modifications.fastflags.raw_slot_tooltip',
+                            name=slot.name,
+                            source=source,
+                            rva=f'{slot.value_rva:X}',
+                            raw=f'{slot.raw_u64:016X}',
+                        )
+                    )
                 self._table.setItem(row, 0, name_item)
                 value_item = QTableWidgetItem(self._display_value(value))
                 value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row, 1, value_item)
         finally:
-            self._table.blockSignals(False)
+            del blocker
             self._table.setUpdatesEnabled(True)
 
     def _selected_names(self) -> list[str]:
-        return [
-            self._table.item(row, 0).text()
-            for row in sorted({index.row() for index in self._table.selectedIndexes()})
-            if self._table.item(row, 0) is not None
-        ]
+        names: list[str] = []
+        for row in sorted({index.row() for index in self._table.selectedIndexes()}):
+            item = self._table.item(row, 0)
+            if item is not None:
+                names.append(item.text())
+        return names
 
-    def _update_selection_button(self):
-        selected_count = len(self._selected_names())
+    def _update_selection_button(self) -> None:
+        names = self._selected_names()
+        selected_count = (
+            sum(
+                selectable_qualified_name(self._local_rows[name]) is not None
+                for name in names
+                if name in self._local_rows
+            )
+            if self._local_catalog is not None
+            else len(names)
+        )
         self._add_button.setText(
             tr('modifications.add_selected_count', count=selected_count)
             if selected_count
@@ -2180,13 +2621,21 @@ class FFlagBrowserDialog(QDialog):
         )
         self._add_button.setEnabled(selected_count > 0)
 
-    def _add_selected(self):
-        self.selected_flags = {
-            name: value if value is not None else ''
-            for name in self._selected_names()
-            for value in (self._flags.get(name),)
-            if name in self._flags
-        }
+    def _add_selected(self) -> None:
+        if self._local_catalog is not None:
+            self.selected_flags = {
+                qualified: self._flags[name] or ''
+                for name in self._selected_names()
+                if name in self._local_rows and name in self._flags
+                if (qualified := selectable_qualified_name(self._local_rows[name])) is not None
+            }
+        else:
+            self.selected_flags = {
+                name: value if value is not None else ''
+                for name in self._selected_names()
+                for value in (self._flags.get(name),)
+                if name in self._flags
+            }
         if self.selected_flags:
             self.accept()
 
@@ -2194,7 +2643,7 @@ class FFlagBrowserDialog(QDialog):
 class WindowsHotkeyCaptureDialog(QDialog):
     """Capture one physical Windows key, including a bare modifier key."""
 
-    _MODIFIER_KEYS = {
+    _MODIFIER_KEYS: ClassVar[set[int]] = {
         int(Qt.Key.Key_Control),
         int(Qt.Key.Key_Shift),
         int(Qt.Key.Key_Alt),
@@ -2202,11 +2651,11 @@ class WindowsHotkeyCaptureDialog(QDialog):
         int(Qt.Key.Key_AltGr),
     }
 
-    def __init__(self, flag_name: str, parent=None):
+    def __init__(self, flag_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.binding: dict[str, int | bool] | None = None
+        self.binding: _HotkeyBinding | None = None
         self.clear_requested = False
-        self._pending_modifier: dict[str, int | bool] | None = None
+        self._pending_modifier: _HotkeyBinding | None = None
         self._pending_modifier_key: int | None = None
         self._suppress_mouse_capture = False
         self.setWindowTitle(tr('ui.gui.modifications_tab.set_fastflag_keybind'))
@@ -2218,7 +2667,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
         label.setWordWrap(True)
         layout.addWidget(label)
         self._preview = QLabel(tr('ui.gui.modifications_tab.waiting_for_a_key_combination'))
-        self._preview.setStyleSheet('color: #999; padding: 10px 0;')
+        style_text(self._preview, tone='muted')
+        self._preview.setContentsMargins(0, 10, 0, 10)
         layout.addWidget(self._preview)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -2229,20 +2679,18 @@ class WindowsHotkeyCaptureDialog(QDialog):
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
         clear_button.installEventFilter(self)
-        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_button = _standard_button_or_none(buttons, QDialogButtonBox.StandardButton.Cancel)
         if cancel_button is not None:
             cancel_button.installEventFilter(self)
         layout.addWidget(buttons)
 
     @staticmethod
-    def _enum_value(value) -> int:
-        """PyQt6 flag enums expose `.value`; they are not reliably int-convertible."""
-        return int(getattr(value, 'value', value))
+    def _enum_value(value: Qt.KeyboardModifier) -> int:
+        """PySide6 flag enums expose `.value`; they are not reliably int-convertible."""
+        return value.value
 
     @classmethod
-    def _modifier_mask(cls, modifiers) -> int:
-        from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN
-
+    def _modifier_mask(cls, modifiers: Qt.KeyboardModifier) -> int:
         qt_modifiers = cls._enum_value(modifiers)
         result = 0
         if qt_modifiers & 0x02000000:
@@ -2256,9 +2704,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
         return result
 
     @staticmethod
-    def _event_binding(event, modifiers: int) -> dict[str, int | bool] | None:
-        from .windows_hotkeys import modifier_mask_for_virtual_key
-
+    def _event_binding(event: QKeyEvent, modifiers: int) -> _HotkeyBinding | None:
         scan_code = int(event.nativeScanCode())
         virtual_key = int(event.nativeVirtualKey())
         if not 0 < scan_code <= 0xFF:
@@ -2289,14 +2735,12 @@ class WindowsHotkeyCaptureDialog(QDialog):
             'modifiers': modifiers & ~modifier_mask_for_virtual_key(virtual_key),
         }
 
-    def _clear(self):
+    def _clear(self) -> None:
         self.clear_requested = True
         self.accept()
 
     @staticmethod
     def _modifier_preview(modifiers: int) -> str:
-        from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN
-
         labels = [
             label
             for flag, label in (
@@ -2313,7 +2757,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
             else tr('modifications.hotkey.waiting_for_combination')
         )
 
-    def keyPressEvent(self, event):
+    @override
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         key = int(event.key())
         if event.isAutoRepeat():
             return
@@ -2323,8 +2768,6 @@ class WindowsHotkeyCaptureDialog(QDialog):
             self._preview.setText(tr('ui.gui.modifications_tab.that_key_could_not_be_read_as'))
             return
         if key in self._MODIFIER_KEYS:
-            from .windows_hotkeys import modifier_mask_for_virtual_key
-
             self._pending_modifier = binding
             self._pending_modifier_key = key
             self._preview.setText(
@@ -2336,7 +2779,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self.binding = binding
         self.accept()
 
-    def keyReleaseEvent(self, event):
+    @override
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
         if (
             event.isAutoRepeat()
             or self._pending_modifier is None
@@ -2346,7 +2790,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self.binding = self._pending_modifier
         self.accept()
 
-    def mousePressEvent(self, event):
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._suppress_mouse_capture:
             return super().mousePressEvent(event)
         button_map = {
@@ -2365,10 +2810,11 @@ class WindowsHotkeyCaptureDialog(QDialog):
                 'modifiers': self._modifier_mask(event.modifiers()),
             }
             self.accept()
-            return
-        super().mousePressEvent(event)
+            return None
+        return super().mousePressEvent(event)
 
-    def wheelEvent(self, event):
+    @override
+    def wheelEvent(self, event: QWheelEvent) -> None:
         delta = event.angleDelta().y()
         if delta:
             self.binding = {
@@ -2381,7 +2827,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
             return
         super().wheelEvent(event)
 
-    def eventFilter(self, watched, event):
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.MouseButtonPress:
             self._suppress_mouse_capture = True
         return super().eventFilter(watched, event)
@@ -2390,9 +2837,14 @@ class WindowsHotkeyCaptureDialog(QDialog):
 class LinuxHotkeyCaptureDialog(QDialog):
     """Capture a physical evdev key from Fleasion's passive Linux reader."""
 
-    def __init__(self, flag_name: str, hotkey_service, parent=None):
+    def __init__(
+        self,
+        flag_name: str,
+        hotkey_service: LinuxHotkeyService,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.binding: dict[str, int | str] | None = None
+        self.binding: _HotkeyBinding | None = None
         self.clear_requested = False
         self._service = hotkey_service
         self._pending_modifier: int | None = None
@@ -2406,7 +2858,8 @@ class LinuxHotkeyCaptureDialog(QDialog):
         label.setWordWrap(True)
         layout.addWidget(label)
         self._preview = QLabel(tr('ui.gui.modifications_tab.waiting_for_a_key_combination'))
-        self._preview.setStyleSheet('color: #999; padding: 10px 0;')
+        style_text(self._preview, tone='muted')
+        self._preview.setContentsMargins(0, 10, 0, 10)
         layout.addWidget(self._preview)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         clear_button = buttons.addButton(
@@ -2416,7 +2869,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
         clear_button.installEventFilter(self)
-        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_button = _standard_button_or_none(buttons, QDialogButtonBox.StandardButton.Cancel)
         if cancel_button is not None:
             cancel_button.installEventFilter(self)
         layout.addWidget(buttons)
@@ -2424,22 +2877,17 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self._service.key_released.connect(self._key_released)
         self._service.wheel_scrolled.connect(self._wheel_scrolled)
 
-    def _clear(self):
+    def _clear(self) -> None:
         self.clear_requested = True
         self.accept()
 
-    def _key_pressed(self, code: int, modifiers: int):
-        from .linux_hotkeys import modifier_mask_for_evdev_code
-
+    def _key_pressed(self, code: int, modifiers: int) -> None:
         # Raw evdev sees the dialog controls too. Only Clear and Cancel arm
         # this suppression; every other mouse button remains bindable. Delay
         # button capture a moment so Qt has time to deliver a Clear/Cancel
         # click first; if it closes this dialog, the queued capture is ignored.
         if code >= 0x100:
-            QTimer.singleShot(
-                25,
-                lambda code=code, modifiers=modifiers: self._capture_mouse_button(code, modifiers),
-            )
+            QTimer.singleShot(25, partial(self._capture_mouse_button, code, modifiers))
             return
         own_modifier = modifier_mask_for_evdev_code(code)
         binding = {
@@ -2456,7 +2904,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self.binding = binding
         self.accept()
 
-    def _capture_mouse_button(self, code: int, modifiers: int):
+    def _capture_mouse_button(self, code: int, modifiers: int) -> None:
         if self._suppress_mouse_capture or not self.isVisible():
             return
         self.binding = {
@@ -2467,7 +2915,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         }
         self.accept()
 
-    def _wheel_scrolled(self, code: int, modifiers: int):
+    def _wheel_scrolled(self, code: int, modifiers: int) -> None:
         self.binding = {
             'platform': 'linux_evdev',
             'kind': 'mouse_wheel',
@@ -2476,13 +2924,14 @@ class LinuxHotkeyCaptureDialog(QDialog):
         }
         self.accept()
 
-    def _key_released(self, code: int):
+    def _key_released(self, code: int) -> None:
         if code != self._pending_modifier:
             return
         self.binding = {'platform': 'linux_evdev', 'scan_code': code, 'modifiers': 0}
         self.accept()
 
-    def done(self, result: int):
+    @override
+    def done(self, result: int) -> None:
         try:
             self._service.key_pressed.disconnect(self._key_pressed)
             self._service.key_released.disconnect(self._key_released)
@@ -2491,21 +2940,33 @@ class LinuxHotkeyCaptureDialog(QDialog):
             pass
         super().done(result)
 
-    def eventFilter(self, watched, event):
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.MouseButtonPress:
             self._suppress_mouse_capture = True
         return super().eventFilter(watched, event)
 
 
+def _format_hotkey_binding(binding: _HotkeyBinding | None) -> str:
+    if sys.platform.startswith('linux'):
+        return linux_hotkeys.binding_text(binding)
+    return windows_hotkeys.binding_text(binding)
+
+
 class FastFlagActionEditorDialog(QDialog):
     """Edit one named Custom Action and its FastFlag value patch."""
 
-    def __init__(self, name='', flags=None, parent=None):
+    def __init__(
+        self,
+        name: str = '',
+        flags: dict[str, str] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.modifications_tab.edit_custom_action'))
         self.setMinimumSize(560, 360)
         self.action_name = ''
-        self.flags = {}
+        self.flags: dict[str, str] = {}
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -2522,14 +2983,15 @@ class FastFlagActionEditorDialog(QDialog):
         self._table.setHorizontalHeaderLabels(
             [tr('modifications.table.name'), tr('modifications.table.value')]
         )
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         layout.addWidget(self._table)
 
         row_buttons = QHBoxLayout()
         add_button = QPushButton(tr('ui.gui.modifications_tab.add_fastflag'))
-        add_button.clicked.connect(lambda: self._append_row('', ''))
+        add_button.clicked.connect(self._append_empty_row)
         row_buttons.addWidget(add_button)
         delete_button = QPushButton(tr('ui.gui.modifications_tab.delete_selected'))
         delete_button.clicked.connect(self._delete_selected)
@@ -2538,7 +3000,7 @@ class FastFlagActionEditorDialog(QDialog):
         layout.addLayout(row_buttons)
 
         for flag_name, value in (flags or {}).items():
-            self._append_row(str(flag_name), str(value))
+            self._append_row(flag_name, value)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -2547,20 +3009,25 @@ class FastFlagActionEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _append_row(self, name, value):
+    def _append_empty_row(self) -> None:
+        self._append_row('', '')
+
+    def _append_row(self, name: str, value: str) -> None:
         row = self._table.rowCount()
         self._table.insertRow(row)
         self._table.setItem(row, 0, QTableWidgetItem(name))
         self._table.setItem(row, 1, QTableWidgetItem(value))
         if not name:
-            self._table.setCurrentCell(row, 0)
-            self._table.editItem(self._table.item(row, 0))
+            item = self._table.item(row, 0)
+            if item is not None:
+                self._table.setCurrentCell(row, 0)
+                self._table.editItem(item)
 
-    def _delete_selected(self):
+    def _delete_selected(self) -> None:
         for row in sorted({index.row() for index in self._table.selectedIndexes()}, reverse=True):
             self._table.removeRow(row)
 
-    def _save(self):
+    def _save(self) -> None:
         name = self._name.text().strip()
         if not name:
             QMessageBox.warning(
@@ -2569,7 +3036,7 @@ class FastFlagActionEditorDialog(QDialog):
                 tr('ui.gui.modifications_tab.custom_action_name_required'),
             )
             return
-        flags = {}
+        flags: dict[str, str] = {}
         for row in range(self._table.rowCount()):
             name_item = self._table.item(row, 0)
             value_item = self._table.item(row, 1)
@@ -2603,21 +3070,24 @@ class FastFlagActionEditorDialog(QDialog):
 class FastFlagActionsDialog(QDialog):
     """Manage named FastFlag value patches and their global hotkeys."""
 
-    def __init__(self, actions, seed_flags, capture_binding, keybind_text, parent=None):
+    def __init__(
+        self,
+        actions: _FastFlagActions,
+        seed_flags: dict[str, str],
+        capture_binding: _HotkeyCapture,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr('ui.gui.modifications_tab.custom_actions'))
         self.setMinimumSize(760, 430)
-        self.actions = {
-            str(name): {
-                'flags': dict(action.get('flags', {})),
-                **({'keybind': dict(action['keybind'])} if isinstance(action.get('keybind'), dict) else {}),
-            }
-            for name, action in actions.items()
-            if isinstance(action, dict) and isinstance(action.get('flags'), dict)
-        }
+        self.action_definitions: _FastFlagActions = {}
+        for name, action in actions.items():
+            copied: _FastFlagAction = {'flags': dict(action.get('flags', {}))}
+            if keybind := action.get('keybind'):
+                copied['keybind'] = dict(keybind)
+            self.action_definitions[name] = copied
         self._seed_flags = dict(seed_flags)
         self._capture_binding = capture_binding
-        self._keybind_text = keybind_text
 
         layout = QVBoxLayout(self)
         description = QLabel(tr('ui.gui.modifications_tab.custom_actions_description'))
@@ -2662,7 +3132,7 @@ class FastFlagActionsDialog(QDialog):
         layout.addWidget(buttons)
         self._refresh()
 
-    def _selected_name(self):
+    def _selected_name(self) -> str | None:
         row = self._table.currentRow()
         if row < 0:
             return None
@@ -2670,7 +3140,7 @@ class FastFlagActionsDialog(QDialog):
         return item.text() if item is not None else None
 
     @staticmethod
-    def _changes_text(action):
+    def _changes_text(action: _FastFlagAction) -> str:
         flags = action.get('flags', {})
         if len(flags) == 1:
             name, value = next(iter(flags.items()))
@@ -2681,11 +3151,11 @@ class FastFlagActionsDialog(QDialog):
             'ui.gui.modifications_tab.fastflag_folder_count_other',
         )
 
-    def _refresh(self, selected=None):
+    def _refresh(self, selected: str | None = None) -> None:
         selected = selected or self._selected_name()
         self._table.setRowCount(0)
-        for name in sorted(self.actions, key=str.casefold):
-            action = self.actions[name]
+        for name in sorted(self.action_definitions, key=str.casefold):
+            action = self.action_definitions[name]
             row = self._table.rowCount()
             self._table.insertRow(row)
             self._table.setItem(row, 0, QTableWidgetItem(name))
@@ -2693,62 +3163,62 @@ class FastFlagActionsDialog(QDialog):
             self._table.setItem(
                 row,
                 2,
-                QTableWidgetItem(self._keybind_text(action.get('keybind'))),
+                QTableWidgetItem(_format_hotkey_binding(action.get('keybind'))),
             )
             if name == selected:
                 self._table.selectRow(row)
 
-    def _new_action(self):
+    def _new_action(self) -> None:
         dialog = FastFlagActionEditorDialog(flags=self._seed_flags, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if dialog.action_name in self.actions:
+        if dialog.action_name in self.action_definitions:
             QMessageBox.warning(
                 self,
                 tr('ui.gui.modifications_tab.custom_actions'),
                 tr('ui.gui.modifications_tab.custom_action_name_exists', value0=dialog.action_name),
             )
             return
-        self.actions[dialog.action_name] = {'flags': dialog.flags}
+        self.action_definitions[dialog.action_name] = {'flags': dialog.flags}
         self._refresh(dialog.action_name)
 
-    def _edit_action(self):
+    def _edit_action(self, _row: int | None = None, _column: int | None = None) -> None:
         name = self._selected_name()
         if not name:
             return
-        action = self.actions[name]
+        action = self.action_definitions[name]
         dialog = FastFlagActionEditorDialog(name, action.get('flags', {}), self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if dialog.action_name != name and dialog.action_name in self.actions:
+        if dialog.action_name != name and dialog.action_name in self.action_definitions:
             QMessageBox.warning(
                 self,
                 tr('ui.gui.modifications_tab.custom_actions'),
                 tr('ui.gui.modifications_tab.custom_action_name_exists', value0=dialog.action_name),
             )
             return
-        updated = {'flags': dialog.flags}
-        if 'keybind' in action:
-            updated['keybind'] = action['keybind']
+        updated: _FastFlagAction = {'flags': dialog.flags}
+        if keybind := action.get('keybind'):
+            updated['keybind'] = keybind
         if dialog.action_name != name:
-            self.actions.pop(name)
-        self.actions[dialog.action_name] = updated
+            self.action_definitions.pop(name)
+        self.action_definitions[dialog.action_name] = updated
         self._refresh(dialog.action_name)
 
-    def _delete_action(self):
+    def _delete_action(self) -> None:
         name = self._selected_name()
         if name:
-            self.actions.pop(name, None)
+            self.action_definitions.pop(name, None)
             self._refresh()
 
-    def _handle_double_click(self, row: int, column: int):
+    def _handle_double_click(self, row: int, column: int) -> None:
         self._table.selectRow(row)
         if column == 2:
             self._assign_hotkey()
             return
         self._edit_action()
 
-    def _assign_hotkey(self):
+    def _assign_hotkey(self) -> None:
         name = self._selected_name()
         if not name:
             return
@@ -2756,42 +3226,191 @@ class FastFlagActionsDialog(QDialog):
         if not accepted:
             return
         if binding is None:
-            self.actions[name].pop('keybind', None)
+            self.action_definitions[name].pop('keybind', None)
         else:
-            self.actions[name]['keybind'] = binding
+            self.action_definitions[name]['keybind'] = binding
         self._refresh(name)
 
-    def _clear_hotkey(self):
+    def _clear_hotkey(self) -> None:
         name = self._selected_name()
         if name:
-            self.actions[name].pop('keybind', None)
+            self.action_definitions[name].pop('keybind', None)
             self._refresh(name)
 
 
-_FFLAG_ROW_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
-_FFLAG_CANONICAL_NAME_ROLE = int(Qt.ItemDataRole.UserRole) + 21
-_FFLAG_ROW_FLAG = 'flag'
-_FFLAG_ROW_FOLDER = 'folder'
+def _custom_fflag_warning_kind(
+    name: str, names: frozenset[str] | None, raw_names: frozenset[str]
+) -> str | None:
+    """Classify the warnings shared by the editor and its name delegate."""
+    if names is None:
+        return None
+    if full_prefix(name):
+        return None if name in names else 'missing'
+    matches = tuple(match for match in qualified_matches(name, names) if match in names)
+    if len(matches) == 1:
+        return None
+    if len(matches) > 1:
+        return 'multiple'
+    return 'untyped' if name in raw_names else 'missing'
+
+
+class CustomFFlagNameDelegate(QStyledItemDelegate):
+    """Warn only when a custom name is ambiguous, untyped, or absent from catalogs."""
+
+    @override
+    def createEditor(
+        self,
+        parent: QWidget,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> QWidget:
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            _style_fastflag_text_editor(editor)
+        return editor
+
+    def __init__(
+        self,
+        parent: QTableView,
+        names: Callable[[], frozenset[str] | None],
+        raw_names: Callable[[], frozenset[str]] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._known_names = names
+        self._raw_names = raw_names or cast('Callable[[], frozenset[str]]', frozenset)
+
+    @staticmethod
+    def _warning_rect(rect: QRect) -> QRect:
+        return QRect(rect.right() - 22, rect.center().y() - 7, 15, 15)
+
+    def _matches(self, index: QModelIndex | QPersistentModelIndex) -> tuple[str, ...]:
+        if index.data(_FFLAG_ROW_KIND_ROLE) != _FFLAG_ROW_FLAG:
+            return ()
+        name = index.data(_FFLAG_CANONICAL_NAME_ROLE)
+        if not isinstance(name, str) or full_prefix(name):
+            return ()
+        names = self._known_names()
+        if names is None:
+            return ()
+        return qualified_matches(name, names)
+
+    def _warning_kind(self, index: QModelIndex | QPersistentModelIndex) -> str | None:
+        """White means uncertain type; orange means absent from available inventories."""
+        name = index.data(_FFLAG_CANONICAL_NAME_ROLE)
+        names = self._known_names()
+        if (
+            index.data(_FFLAG_ROW_KIND_ROLE) != _FFLAG_ROW_FLAG
+            or not isinstance(name, str)
+            or names is None
+        ):
+            return None
+        warning = _custom_fflag_warning_kind(name, names, self._raw_names())
+        if warning == 'missing' and sys.platform == 'win32':
+            return None
+        return warning
+
+    @override
+    def initStyleOption(
+        self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
+    ) -> None:
+        super().initStyleOption(option, index)
+        if self._warning_kind(index) is not None:
+            option.text = option.fontMetrics.elidedText(
+                option.text, Qt.TextElideMode.ElideRight, max(0, option.rect.width() - 30)
+            )
+
+    @override
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> None:
+        super().paint(painter, option, index)
+        warning = self._warning_kind(index)
+        if warning is None:
+            return
+        rect = self._warning_rect(option.rect)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        cx, top = rect.center().x(), rect.top()
+        triangle = QPolygonF(
+            [
+                QPointF(cx, top + 1),
+                QPointF(rect.left() + 1, rect.bottom() - 1),
+                QPointF(rect.right() - 1, rect.bottom() - 1),
+            ]
+        )
+        if warning != 'missing':
+            # A dark outline keeps the white indicator visible on light themes
+            painter.setPen(QPen(QColor('#444444'), 3))
+            painter.drawPolygon(triangle)
+        painter.setPen(QPen(QColor('#ff9d40' if warning == 'missing' else '#ffffff'), 1.3))
+        painter.drawPolygon(triangle)
+        painter.drawLine(cx, top + 5, cx, top + 9)
+        painter.drawPoint(cx, top + 11)
+        painter.restore()
+
+    @override
+    def helpEvent(
+        self,
+        event: QHelpEvent,
+        view: QAbstractItemView,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> bool:
+        warning = self._warning_kind(index)
+        if (
+            event.type() == QEvent.Type.ToolTip
+            and warning is not None
+            and self._warning_rect(option.rect).contains(event.pos())
+        ):
+            if warning == 'missing':
+                tooltip = tr('modifications.fastflags.name_not_found_tooltip')
+            else:
+                prefixes = ', '.join(
+                    prefix for match in self._matches(index) if (prefix := full_prefix(match))
+                )
+                tooltip = (
+                    tr('modifications.fastflags.multiple_types_tooltip', types=prefixes)
+                    if warning == 'multiple'
+                    else tr('modifications.fastflags.untyped_name_tooltip', types=prefixes)
+                )
+            QToolTip.showText(event.globalPos(), tooltip, view)
+            return True
+        return super().helpEvent(event, view, option, index)
 
 
 class CustomFFlagEditor(QWidget):
     """Fishstrap-style name/value editor backed by Fleasion's proxy settings."""
 
+    _catalog_updated = Signal()
+    _catalog_prefetch_lock = threading.Lock()
+    _catalog_retry_not_before = 0.0
+    _missing_scan_lock = threading.Lock()
+    _missing_scan_retry_not_before = 0.0
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
+    _VIRTUAL_THRESHOLD = 10_000
 
-    def __init__(self, config_manager=None, proxy_master=None, parent=None, hotkey_controller=None):
+    def __init__(
+        self,
+        config_manager: ConfigManager | None = None,
+        proxy_master: ProxyMaster | None = None,
+        parent: QWidget | None = None,
+        hotkey_controller: CustomFFlagHotkeyController | None = None,
+    ) -> None:
         super().__init__(parent)
         self._config = config_manager
         self._proxy_master = proxy_master
         self._windows_keybinds = sys.platform == 'win32'
         self._linux_keybinds = sys.platform.startswith('linux')
         self._hotkeys_supported = self._windows_keybinds or self._linux_keybinds
-        self._hotkey_service = None
-        self._hotkey_controller = None
+        self._hotkey_service: _HotkeyService | None = None
+        self._linux_hotkey_service: LinuxHotkeyService | None = None
+        self._hotkey_controller: CustomFFlagHotkeyController | None = None
         self._owns_hotkey_controller = False
         if self._windows_keybinds:
-            from .windows_hotkeys import WindowsCustomFFlagHotkeyController
-
             self._hotkey_controller = hotkey_controller
             if self._hotkey_controller is None:
                 self._hotkey_controller = WindowsCustomFFlagHotkeyController(
@@ -2801,8 +3420,6 @@ class CustomFFlagEditor(QWidget):
             self._hotkey_service = self._hotkey_controller.service
             self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         elif self._linux_keybinds:
-            from .linux_hotkeys import LinuxCustomFFlagHotkeyController
-
             self._hotkey_controller = hotkey_controller
             if self._hotkey_controller is None:
                 self._hotkey_controller = LinuxCustomFFlagHotkeyController(
@@ -2810,14 +3427,117 @@ class CustomFFlagEditor(QWidget):
                 )
                 self._owns_hotkey_controller = True
             self._hotkey_service = self._hotkey_controller.service
+            if isinstance(self._hotkey_service, LinuxHotkeyService):
+                self._linux_hotkey_service = self._hotkey_service
             self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         self._loading = False
         self._sort_column: int | None = 0
         self._sort_ascending = True
+        self._virtual_active = False
+        self._virtual_flags: dict[str, str] = {}
         self._setup_ui()
         self._load_flags()
+        self._catalog_updated.connect(self._reload_known_flag_names)
 
-    def _setup_ui(self):
+    @Slot()
+    def _reload_known_flag_names(self) -> None:
+        """Update existing warnings when a browser download finishes."""
+        names = known_typed_names()
+        raw_names = known_untyped_names()
+        if names == self._known_flag_names and raw_names == self._known_untyped_names:
+            return
+        self._known_flag_names = names
+        self._known_untyped_names = raw_names
+        self._table.viewport().update()
+        self._virtual_table.viewport().update()
+        self._maybe_scan_missing_client_cache()
+
+    def _maybe_scan_missing_client_cache(self) -> None:
+        """Scan only when an orange custom name needs an uncached client inventory."""
+        flags = getattr(self._config, 'custom_fflags', {}) if self._config else {}
+        if (
+            not flags
+            or self._known_flag_names is None
+            or time.monotonic() < self._missing_scan_retry_not_before
+            or not any(
+                _custom_fflag_warning_kind(name, self._known_flag_names, self._known_untyped_names)
+                == 'missing'
+                for name in flags
+            )
+            or not self._missing_scan_lock.acquire(blocking=False)
+        ):
+            return
+        try:
+            threading.Thread(target=self._scan_missing_client_cache, daemon=True).start()
+        except RuntimeError:
+            self._missing_scan_lock.release()
+            raise
+
+    def _scan_missing_client_cache(self) -> None:
+        """Populate missing static scans in the background using the browser scanner."""
+        try:
+            source = detect_client_binary()
+            if source is None or load_scan(source.client) is not None:
+                return
+            FFlagBrowserDialog.scan_installed_client(source, force=False)
+            log_buffer.log('FastFlags', f'Automatically cached {source.label} FastFlag scan')
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            IndexError,
+            struct.error,
+            zipfile.BadZipFile,
+        ) as exc:
+            self._missing_scan_retry_not_before = time.monotonic() + 15 * 60
+            log_buffer.log('FastFlags', f'Could not automatically scan client FastFlags: {exc}')
+        else:
+            invalidate_selected_player_cache()
+            with contextlib.suppress(RuntimeError):
+                self._catalog_updated.emit()
+        finally:
+            self._missing_scan_lock.release()
+
+    def prefetch_flag_catalog_if_needed(self) -> None:
+        """Fetch current browser data only with custom FastFlags active and cache stale."""
+        self._reload_known_flag_names()
+        self._maybe_scan_missing_client_cache()
+        if not (self._config and getattr(self._config, 'custom_fflags_enabled', False)):
+            return
+        if FFlagBrowserDialog.cache_is_current():
+            return
+        if time.monotonic() < self._catalog_retry_not_before:
+            return
+        if not self._catalog_prefetch_lock.acquire(blocking=False):
+            return
+        try:
+            threading.Thread(target=self._prefetch_flag_catalog, daemon=True).start()
+        except RuntimeError:
+            self._catalog_prefetch_lock.release()
+            raise
+
+    def _report_catalog_refresh_result(self, stored: bool) -> None:
+        if stored:
+            # The window may have closed while the background fetch ran
+            with contextlib.suppress(RuntimeError):
+                self._catalog_updated.emit()
+        elif not FFlagBrowserDialog.cache_is_current():
+            # A failed cache write must not cause an immediate retry loop
+            self._catalog_retry_not_before = time.monotonic() + 15 * 60
+
+    def _prefetch_flag_catalog(self) -> None:
+        try:
+            # The refresh method rechecks freshness in case another download won the race
+            stored = FFlagBrowserDialog.refresh_cache_if_stale()
+            self._report_catalog_refresh_result(stored)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._catalog_retry_not_before = time.monotonic() + 15 * 60
+            log_buffer.log('CustomFFlags', f'Could not refresh FastFlag catalog: {exc}')
+        finally:
+            self._catalog_prefetch_lock.release()
+
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(7)
@@ -2834,17 +3554,6 @@ class CustomFFlagEditor(QWidget):
             'border: 1px solid rgba(210, 70, 70, 0.55); padding: 7px;'
         )
         layout.addWidget(warning)
-
-        if sys.platform.startswith('linux'):
-            sober_delay_warning = QLabel(
-                tr('ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security')
-            )
-            sober_delay_warning.setWordWrap(True)
-            sober_delay_warning.setStyleSheet(
-                'color: #ffcc66; background: rgba(190, 145, 30, 0.15); '
-                'border: 1px solid rgba(220, 175, 55, 0.55); padding: 7px;'
-            )
-            layout.addWidget(sober_delay_warning)
 
         self._enable_toggle = QCheckBox(tr('ui.gui.modifications_tab.enable_custom_fastflags'))
         self._enable_toggle.setChecked(
@@ -2865,7 +3574,7 @@ class CustomFFlagEditor(QWidget):
                 else tr('ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign_2')
             )
             hotkey_help.setWordWrap(True)
-            hotkey_help.setStyleSheet('color: #999;')
+            style_text(hotkey_help, tone='muted')
             layout.addWidget(hotkey_help)
 
         self._search = QLineEdit()
@@ -2888,13 +3597,13 @@ class CustomFFlagEditor(QWidget):
             )
         self._table.setHorizontalHeaderLabels(base_headers)
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        header.setStretchLastSection(False)
+        header.setSectionsMovable(False)
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(True)
         header.setSortIndicator(0, Qt.SortOrder.AscendingOrder)
         header.sectionClicked.connect(self._sort_rows)
-        self._table.setColumnWidth(0, 300)
         self._table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         self._table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -2902,15 +3611,66 @@ class CustomFFlagEditor(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setMinimumHeight(180)
+        self._table.setItemDelegateForColumn(
+            0,
+            CustomFFlagNameDelegate(
+                self._table,
+                lambda: self._known_flag_names,
+                lambda: self._known_untyped_names,
+            ),
+        )
         self._table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._table))
         self._table.clicked.connect(self._edit_value_cell)
         self._table.cellChanged.connect(self._on_cell_changed)
         if self._hotkeys_supported:
             self._table.cellDoubleClicked.connect(self._edit_keybind)
-        if self._hotkeys_supported:
-            self._table.setColumnWidth(2, 85)
-            self._table.setColumnWidth(3, 160)
         layout.addWidget(self._table)
+
+        # Qt's item-based table requires multiple C++ objects per flag and
+        # cannot represent huge lists without exhausting memory
+        self._virtual_model = VirtualFastFlagModel()
+        self._virtual_model.value_changed.connect(self._on_virtual_value_changed)
+        self._virtual_model.name_changed.connect(self._on_virtual_name_changed)
+        self._virtual_model.status_changed.connect(self._on_virtual_status_changed)
+        self._virtual_model.invalid_name.connect(self._on_virtual_invalid_name)
+        self._virtual_table = QTableView(self)
+        self._virtual_table.setModel(self._virtual_model)
+        self._virtual_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._virtual_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._virtual_table.setEditTriggers(self._table.editTriggers())
+        self._virtual_table.setItemDelegateForColumn(
+            0,
+            CustomFFlagNameDelegate(
+                self._virtual_table,
+                lambda: self._known_flag_names,
+                lambda: self._known_untyped_names,
+            ),
+        )
+        self._virtual_table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._virtual_table))
+        virtual_header = self._virtual_table.horizontalHeader()
+        virtual_header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        virtual_header.setStretchLastSection(False)
+        virtual_header.setSectionsMovable(False)
+        virtual_header.setSectionsClickable(True)
+        virtual_header.setSortIndicatorShown(True)
+        virtual_header.setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        virtual_header.sectionClicked.connect(self._sort_rows)
+        self._virtual_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self._virtual_table.setFixedHeight(420)
+        self._virtual_table.clicked.connect(self._edit_value_cell)
+        self._virtual_table.doubleClicked.connect(self._on_virtual_double_clicked)
+        self._virtual_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._virtual_table.hide()
+        layout.addWidget(self._virtual_table)
+
+        self._column_resize_timer = QTimer(self)
+        self._column_resize_timer.setSingleShot(True)
+        self._column_resize_timer.timeout.connect(self._resize_visible_fastflag_columns)
+        for table in (self._table, self._virtual_table):
+            table.viewport().installEventFilter(self)
+            self._resize_fastflag_columns(table)
+            delete_shortcut = QShortcut(QKeySequence('Delete'), table)
+            delete_shortcut.activated.connect(self._delete_selected)
 
         buttons = QHBoxLayout()
         browse_button = QPushButton(tr('ui.gui.modifications_tab.browse_fastflags'))
@@ -2972,19 +3732,90 @@ class CustomFFlagEditor(QWidget):
         else:
             self._update_status()
 
-    def _load_flags(self, sync_hotkeys: bool = True):
+    def _resize_fastflag_columns(self, table: QTableView) -> None:
+        """Keep the name/value columns in a 3:2 ratio without draggable headers."""
+        # Qt may expose a provisional viewport width before the row header
+        # finishes its initial layout; take the available frame width too
+        header_width = 0 if table.verticalHeader().isHidden() else table.verticalHeader().width()
+        scrollbar = table.verticalScrollBar()
+        scrollbar_width = scrollbar.width() if scrollbar.isVisible() else 0
+        frame_width = table.width() - 2 * table.frameWidth() - header_width - scrollbar_width
+        viewport_width = min(table.viewport().width(), frame_width)
+        if viewport_width <= 0:
+            return
+        reserved = 0
+        if self._hotkeys_supported:
+            metrics = table.fontMetrics()
+            checkbox_width = table.style().pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth)
+            status_width = max(
+                135,
+                checkbox_width
+                + 28
+                + max(
+                    metrics.horizontalAdvance(tr('ui.gui.modifications_tab.enabled')),
+                    metrics.horizontalAdvance('Disabled'),
+                ),
+            )
+            keybind_width = 175
+            table.setColumnWidth(2, status_width)
+            table.setColumnWidth(3, keybind_width)
+            reserved = status_width + keybind_width
+        flexible_width = max(0, viewport_width - reserved)
+        name_width = flexible_width * 3 // 5
+        table.setColumnWidth(0, name_width)
+        table.setColumnWidth(1, flexible_width - name_width)
+
+    def _resize_visible_fastflag_columns(self) -> None:
+        table = self._virtual_table if self._virtual_active else self._table
+        self._resize_fastflag_columns(table)
+
+    @override
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Resize:
+            for table in (self._table, self._virtual_table):
+                if watched is table.viewport():
+                    self._resize_fastflag_columns(table)
+                    # The row-number gutter can change width after the initial
+                    # viewport resize; correct for its final geometry next tick
+                    self._column_resize_timer.start(0)
+                    break
+        return super().eventFilter(watched, event)
+
+    def _load_flags(self, sync_hotkeys: bool = True) -> None:
+        previous_names = getattr(self, '_known_flag_names', None)
+        self._known_flag_names = known_typed_names()
+        self._known_untyped_names = known_untyped_names()
+        if previous_names is None and self._known_flag_names is not None:
+            log_buffer.log(
+                'FastFlags', f'Loaded {len(self._known_flag_names):,} cached names for warnings'
+            )
         flags = dict(getattr(self._config, 'custom_fflags', {}) or {}) if self._config else {}
-        self._replace_table_rows(self._ordered_flag_rows(flags))
+        if len(flags) > self._VIRTUAL_THRESHOLD:
+            self._virtual_active = True
+            self._virtual_flags = flags
+            self._table.hide()
+            self._virtual_table.show()
+            self._replace_virtual_rows(self._ordered_flag_rows(flags))
+        else:
+            self._virtual_active = False
+            self._virtual_flags = {}
+            self._virtual_model.replace(
+                {}, [], {}, set(), set(), {}, {}, hotkeys_supported=self._hotkeys_supported
+            )
+            self._virtual_table.hide()
+            self._table.show()
+            self._replace_table_rows(self._ordered_flag_rows(flags))
         self._filter_rows(self._search.text())
+        self._resize_fastflag_columns(self._virtual_table if self._virtual_active else self._table)
         self._update_status()
         if sync_hotkeys:
             self._sync_hotkeys()
 
-    def _replace_table_rows(self, rows: list[tuple[str, str]]):
+    def _replace_table_rows(self, rows: list[tuple[str, str]]) -> None:
         """Bulk-load flag and folder rows without persistent cell widgets."""
         self._loading = True
         self._table.setUpdatesEnabled(False)
-        self._table.blockSignals(True)
+        blocker = QSignalBlocker(self._table)
         try:
             values = dict(rows)
             order = {name: index for index, (name, _value) in enumerate(rows)}
@@ -2992,7 +3823,7 @@ class CustomFFlagEditor(QWidget):
             grouped_names = {
                 name for members in folders.values() for name in members if name in values
             }
-            rendered = []
+            rendered: list[tuple[str, str, str | None]] = []
             for folder_name in sorted(folders, key=str.casefold):
                 members = [name for name in folders[folder_name] if name in values]
                 rendered.append((_FFLAG_ROW_FOLDER, folder_name, None))
@@ -3003,6 +3834,7 @@ class CustomFFlagEditor(QWidget):
             rendered.extend(
                 (_FFLAG_ROW_FLAG, name, value) for name, value in rows if name not in grouped_names
             )
+
             self._table.setRowCount(len(rendered))
             disabled_flags = self._disabled_flag_names()
             disabled_folders = self._disabled_folder_names()
@@ -3027,6 +3859,7 @@ class CustomFFlagEditor(QWidget):
                     name_item.setFont(font)
                     name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row, 0, name_item)
+
                 if kind == _FFLAG_ROW_FOLDER:
                     member_count = sum(1 for member in folders.get(name, []) if member in values)
                     value_item = QTableWidgetItem(
@@ -3040,6 +3873,7 @@ class CustomFFlagEditor(QWidget):
                     self._table.setItem(row, 1, value_item)
                 else:
                     self._set_value_editor(row, name, str(value or ''))
+
                 if self._hotkeys_supported:
                     status_item = QTableWidgetItem(tr('ui.gui.modifications_tab.enabled'))
                     status_item.setFlags(
@@ -3061,16 +3895,20 @@ class CustomFFlagEditor(QWidget):
                     )
                     self._table.setItem(row, 3, keybind_item)
         finally:
-            self._table.blockSignals(False)
+            del blocker
             self._table.setUpdatesEnabled(True)
             self._loading = False
 
     def _row_kind(self, row: int) -> str:
+        if self._virtual_active:
+            return self._virtual_model.entry_at(row)[0]
         item = self._table.item(row, 0)
         value = item.data(_FFLAG_ROW_KIND_ROLE) if item is not None else None
         return value if value in {_FFLAG_ROW_FLAG, _FFLAG_ROW_FOLDER} else _FFLAG_ROW_FLAG
 
     def _row_name(self, row: int) -> str:
+        if self._virtual_active:
+            return self._virtual_model.entry_at(row)[1]
         item = self._table.item(row, 0)
         if item is None:
             return ''
@@ -3078,6 +3916,8 @@ class CustomFFlagEditor(QWidget):
         return str(canonical).strip() if canonical is not None else item.text().strip()
 
     def _flags_from_table(self) -> dict[str, str]:
+        if self._virtual_active:
+            return dict(self._virtual_flags)
         flags: dict[str, str] = {}
         for row in range(self._table.rowCount()):
             if self._row_kind(row) != _FFLAG_ROW_FLAG:
@@ -3092,18 +3932,21 @@ class CustomFFlagEditor(QWidget):
         return name.startswith(cls._BOOLEAN_FLAG_PREFIXES)
 
     def _value_from_row(self, row: int) -> str:
+        if self._virtual_active:
+            return self._virtual_model.entry_at(row)[2] or ''
         value_item = self._table.item(row, 1)
         if value_item is None:
             return ''
         stored = value_item.data(Qt.ItemDataRole.UserRole)
         return str(stored) if stored is not None else value_item.text()
 
-    def _set_value_editor(self, row: int, name: str, value: str):
+    def _set_value_editor(self, row: int, name: str, value: str) -> None:
         """Store a lightweight value item; the boolean selector is created only when editing."""
         was_loading = self._loading
         self._loading = True
         try:
             value_item = self._table.item(row, 1)
+            # Boolean flag families use canonical True/False values
             normalized_value = (
                 'True'
                 if str(value).strip().lower() == 'true'
@@ -3131,48 +3974,67 @@ class CustomFFlagEditor(QWidget):
         return set(getattr(self._config, 'custom_fflag_disabled', []) or [])
 
     def _folders(self) -> dict[str, list[str]]:
-        raw = getattr(self._config, 'custom_fflag_folders', {}) or {}
-        if not isinstance(raw, dict):
+        raw: object = getattr(self._config, 'custom_fflag_folders', {})
+        if not _is_object_dict(raw):
             return {}
-        return {
-            str(folder): [str(name) for name in names]
-            for folder, names in raw.items()
-            if isinstance(folder, str) and isinstance(names, list)
-        }
+        folders: dict[str, list[str]] = {}
+        for raw_folder, raw_names in raw.items():
+            if not isinstance(raw_folder, str) or not _is_object_collection(raw_names):
+                continue
+            folders[raw_folder] = [str(name) for name in raw_names]
+        return folders
 
     def _disabled_folder_names(self) -> set[str]:
-        return set(getattr(self._config, 'custom_fflag_disabled_folders', []) or [])
+        raw: object = getattr(self._config, 'custom_fflag_disabled_folders', [])
+        if not _is_object_collection(raw):
+            return set()
+        return {str(name) for name in raw}
 
-    def _folder_keybinds(self) -> dict[str, dict[str, int | bool | str]]:
-        bindings = getattr(self._config, 'custom_fflag_folder_keybinds', {}) or {}
-        return bindings if isinstance(bindings, dict) else {}
+    def _folder_keybinds(self) -> _HotkeyBindings:
+        raw: object = getattr(self._config, 'custom_fflag_folder_keybinds', {})
+        return raw if _is_hotkey_bindings(raw) else {}
 
-    def _keybinds(self) -> dict[str, dict[str, int | bool | str]]:
-        bindings = getattr(self._config, 'custom_fflag_keybinds', {}) or {}
-        return bindings if isinstance(bindings, dict) else {}
+    def _keybinds(self) -> _HotkeyBindings:
+        empty_bindings: _HotkeyBindings = {}
+        bindings: object = (
+            getattr(self._config, 'custom_fflag_keybinds', empty_bindings) or empty_bindings
+        )
+        return bindings if _is_hotkey_bindings(bindings) else empty_bindings
 
-    def _custom_actions(self):
-        actions = getattr(self._config, 'custom_fflag_actions', {}) or {}
-        return actions if isinstance(actions, dict) else {}
+    def _custom_actions(self) -> _FastFlagActions:
+        raw: object = getattr(self._config, 'custom_fflag_actions', {})
+        return _fastflag_actions(raw)
 
     @staticmethod
-    def _keybind_text(binding) -> str:
-        if sys.platform.startswith('linux'):
-            from .linux_hotkeys import binding_text
-        else:
-            from .windows_hotkeys import binding_text
-
-        return binding_text(binding)
+    def _keybind_text(binding: _HotkeyBinding | None) -> str:
+        return _format_hotkey_binding(binding)
 
     def _flag_is_enabled(self, row: int) -> bool:
+        if self._virtual_active:
+            kind, name, _value = self._virtual_model.entry_at(row)
+            disabled = (
+                self._virtual_model.disabled_folders
+                if kind == _FFLAG_ROW_FOLDER
+                else self._virtual_model.disabled_flags
+            )
+            return name not in disabled
         item = self._table.item(row, 2)
         return item is not None and item.checkState() == Qt.CheckState.Checked
 
-    def _save_hotkey_settings(self):
+    def _save_hotkey_settings(self) -> None:
         if not self._hotkeys_supported or self._config is None or self._loading:
             return
-        disabled = set()
-        disabled_folders = set()
+        if self._virtual_active:
+            virtual_disabled = sorted(self._virtual_model.disabled_flags)
+            virtual_disabled_folders = sorted(self._virtual_model.disabled_folders)
+            if virtual_disabled != sorted(self._disabled_flag_names()):
+                self._config.custom_fflag_disabled = virtual_disabled
+            if virtual_disabled_folders != sorted(self._disabled_folder_names()):
+                self._config.custom_fflag_disabled_folders = virtual_disabled_folders
+            self._update_status()
+            return
+        disabled: set[str] = set()
+        disabled_folders: set[str] = set()
         for row in range(self._table.rowCount()):
             if self._flag_is_enabled(row):
                 continue
@@ -3191,7 +4053,7 @@ class CustomFFlagEditor(QWidget):
         # Runtime flag reads pick up the saved state directly.
         self._update_status()
 
-    def _prune_hotkey_settings(self, names: set[str], *, sync_hotkeys: bool = True):
+    def _prune_hotkey_settings(self, names: set[str], *, sync_hotkeys: bool = True) -> None:
         if self._config is None:
             return
         current_folders = self._folders()
@@ -3223,7 +4085,7 @@ class CustomFFlagEditor(QWidget):
         if sync_hotkeys:
             self._sync_hotkeys()
 
-    def _sync_hotkeys(self):
+    def _sync_hotkeys(self) -> None:
         if self._hotkey_controller is not None:
             self._hotkey_controller.sync()
         elif self._hotkey_service is not None:
@@ -3234,16 +4096,20 @@ class CustomFFlagEditor(QWidget):
             bindings.update(
                 {f'folder:{name}': spec for name, spec in self._folder_keybinds().items()}
             )
-            for name, action in self._custom_actions().items():
-                keybind = action.get('keybind') if isinstance(action, dict) else None
-                if isinstance(keybind, dict):
-                    bindings[f'action:{name}'] = keybind
+            bindings.update(
+                {
+                    f'action:{name}': keybind
+                    for name, action in self._custom_actions().items()
+                    if (keybind := action.get('keybind')) is not None
+                }
+            )
             self._hotkey_service.set_bindings(bindings if feature_enabled else {})
 
-    def _begin_linux_hotkey_capture(self) -> bool:
+    def _begin_linux_hotkey_capture(self) -> LinuxHotkeyService | None:
         """Open evdev only when a user first tries to set a Linux keybind."""
-        if self._hotkey_service is not None and self._hotkey_service.begin_capture():
-            return True
+        service = self._linux_hotkey_service
+        if service is not None and service.begin_capture():
+            return service
 
         first_attempt = bool(
             self._config is not None
@@ -3261,9 +4127,9 @@ class CustomFFlagEditor(QWidget):
             self._status.setText(
                 tr('ui.gui.modifications_tab.linux_global_keybinds_need_access_to_dev')
             )
-            self._status.setStyleSheet('color: #ffcc66;')
+            style_text(self._status, tone='warning')
             log_buffer.log('CustomFFlags', f'Linux keybind capture unavailable: {detail}')
-            return False
+            return None
 
         prompt = QMessageBox(self)
         prompt.setWindowTitle(tr('ui.gui.modifications_tab.enable_linux_fastflag_keybinds'))
@@ -3278,16 +4144,12 @@ class CustomFFlagEditor(QWidget):
         setup_button = prompt.addButton(
             tr('ui.gui.modifications_tab.set_up_permissions'), QMessageBox.ButtonRole.AcceptRole
         )
-        not_now_button = prompt.addButton(
-            tr('ui.gui.modifications_tab.not_now'), QMessageBox.ButtonRole.RejectRole
-        )
+        prompt.addButton(tr('ui.gui.modifications_tab.not_now'), QMessageBox.ButtonRole.RejectRole)
         prompt.setDefaultButton(setup_button)
         prompt.exec()
         if prompt.clickedButton() != setup_button:
-            return False
+            return None
         try:
-            from .linux_hotkeys import launch_permission_setup
-
             launch_permission_setup()
         except OSError as exc:
             QMessageBox.warning(
@@ -3298,30 +4160,32 @@ class CustomFFlagEditor(QWidget):
                     value0=exc,
                 ),
             )
-            return False
+            return None
         QMessageBox.information(
             self,
             tr('ui.gui.modifications_tab.linux_keybind_setup_started'),
             tr('ui.gui.modifications_tab.complete_the_administrator_prompt_then_log_out'),
         )
-        return False
+        return None
 
-    def _capture_hotkey_binding(self, name: str):
+    def _capture_hotkey_binding(self, name: str) -> tuple[bool, _HotkeyBinding | None]:
         if not self._hotkeys_supported:
             return False, None
         if self._linux_keybinds:
-            if not self._begin_linux_hotkey_capture():
+            service = self._begin_linux_hotkey_capture()
+            if service is None:
                 return False, None
-            dialog = LinuxHotkeyCaptureDialog(name, self._hotkey_service, self)
+            dialog = LinuxHotkeyCaptureDialog(name, service, self)
         else:
             dialog = WindowsHotkeyCaptureDialog(name, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return False, None
         if dialog.clear_requested:
             return True, None
-        return (dialog.binding is not None), dialog.binding
+        binding = dialog.binding
+        return (binding is not None), binding
 
-    def _edit_keybind(self, row: int, column: int):
+    def _edit_keybind(self, row: int, column: int) -> None:
         if column != 3:
             return
         name = self._row_name(row)
@@ -3332,44 +4196,79 @@ class CustomFFlagEditor(QWidget):
         if not accepted:
             return
         bindings = self._folder_keybinds() if is_folder else self._keybinds()
+        config = _required_config(self._config)
         if binding is None:
             bindings.pop(name, None)
             if is_folder:
-                self._config.custom_fflag_folder_keybinds = bindings
+                config.custom_fflag_folder_keybinds = bindings
             else:
-                self._config.custom_fflag_keybinds = bindings
+                config.custom_fflag_keybinds = bindings
             self._load_flags()
             return
         bindings[name] = binding
         if is_folder:
-            self._config.custom_fflag_folder_keybinds = bindings
+            config.custom_fflag_folder_keybinds = bindings
         else:
-            self._config.custom_fflag_keybinds = bindings
+            config.custom_fflag_keybinds = bindings
         self._load_flags()
 
-    def _toggle_flag_from_hotkey(self, name: str):
+    def _toggle_flag_from_hotkey(self, name: str) -> None:
         if self._hotkey_controller is not None:
             self._hotkey_controller.toggle_flag(name)
 
-    def _on_hotkey_toggled(self, _name: str):
+    def _on_hotkey_toggled(self, _name: str) -> None:
         if hasattr(self, '_table'):
             self._load_flags(sync_hotkeys=False)
 
-    def closeEvent(self, event):
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._owns_hotkey_controller and self._hotkey_controller is not None:
             self._hotkey_controller.stop()
         super().closeEvent(event)
 
-    def _edit_value_cell(self, index):
+    def _edit_value_cell(self, index: QModelIndex) -> None:
         """Open boolean value selectors explicitly instead of relying on Qt edit heuristics."""
         if (
             index.column() == 1
             and self._row_kind(index.row()) == _FFLAG_ROW_FLAG
             and self._is_boolean_flag(self._row_name(index.row()))
         ):
-            self._table.edit(index)
+            (self._virtual_table if self._virtual_active else self._table).edit(index)
 
-    def _on_cell_changed(self, row: int, column: int):
+    def _on_virtual_double_clicked(self, index: QModelIndex) -> None:
+        if index.column() == 3:
+            self._edit_keybind(index.row(), index.column())
+
+    def _on_virtual_value_changed(self, _name: str, _value: str) -> None:
+        self._save_table()
+
+    def _on_virtual_name_changed(self, previous: str, name: str) -> None:
+        if self._config is None:
+            return
+        folders = self._folders()
+        changed_folders = False
+        for members in folders.values():
+            for index, member in enumerate(members):
+                if member == previous:
+                    members[index] = name
+                    changed_folders = True
+        if changed_folders:
+            self._config.custom_fflag_folders = folders
+        self._save_table()
+
+    def _on_virtual_status_changed(self, _kind: str, _name: str, _enabled: bool) -> None:
+        self._save_hotkey_settings()
+
+    def _on_virtual_invalid_name(self, name: str) -> None:
+        QMessageBox.warning(
+            self,
+            tr('ui.gui.modifications_tab.invalid_fastflag_name'),
+            tr('ui.gui.modifications_tab.fastflag_name_already_exists', value0=name)
+            if name
+            else tr('ui.gui.modifications_tab.fastflag_name_cannot_be_empty'),
+        )
+
+    def _on_cell_changed(self, row: int, column: int) -> None:
         if self._loading:
             return
         if self._hotkeys_supported and column == 2:
@@ -3385,7 +4284,7 @@ class CustomFFlagEditor(QWidget):
                     for other_row in range(self._table.rowCount())
                     if other_row != row and self._row_kind(other_row) == _FFLAG_ROW_FLAG
                 }
-                error_message = None
+                error_message: str | None = None
                 if not name:
                     error_message = tr('ui.gui.modifications_tab.fastflag_name_cannot_be_empty')
                 elif name in other_names:
@@ -3393,13 +4292,13 @@ class CustomFFlagEditor(QWidget):
                         'ui.gui.modifications_tab.fastflag_name_already_exists', value0=name
                     )
                 if error_message is not None:
-                    previous_block_state = self._table.blockSignals(True)
+                    blocker = QSignalBlocker(self._table)
                     try:
                         name_item.setText(previous_name)
                         name_item.setData(_FFLAG_CANONICAL_NAME_ROLE, previous_name)
                         name_item.setToolTip(previous_name)
                     finally:
-                        self._table.blockSignals(previous_block_state)
+                        del blocker
                     QMessageBox.warning(
                         self,
                         tr('ui.gui.modifications_tab.invalid_fastflag_name'),
@@ -3409,26 +4308,42 @@ class CustomFFlagEditor(QWidget):
                 name_item.setText(name)
                 name_item.setData(_FFLAG_CANONICAL_NAME_ROLE, name)
                 name_item.setToolTip(name)
-            self._set_value_editor(row, self._row_name(row), self._value_from_row(row))
+            self._set_value_editor(
+                row,
+                self._row_name(row),
+                self._value_from_row(row),
+            )
         self._save_table()
 
-    def _save_table(self, *_args):
+    def _save_table(self, *_args: object) -> None:
         if self._loading or self._config is None:
             return
-        self._config.custom_fflags = self._flags_from_table()
-        self._prune_hotkey_settings(set(self._config.custom_fflags))
+        flags = self._flags_from_table()
+        self._config.custom_fflags = flags
+        self._prune_hotkey_settings(set(flags))
         self._update_status()
-        self._filter_rows(self._search.text())
+        self._maybe_scan_missing_client_cache()
+        if self._virtual_active:
+            if self._search.text().strip():
+                QTimer.singleShot(0, lambda: self._filter_rows(self._search.text()))
+        else:
+            self._filter_rows(self._search.text())
 
-    def _update_status(self):
+    def _update_status(self) -> None:
         if not hasattr(self, '_status'):
             return
-        flags = self._flags_from_table() if hasattr(self, '_table') else {}
+        flags = (
+            self._virtual_flags
+            if self._virtual_active
+            else (self._flags_from_table() if hasattr(self, '_table') else {})
+        )
         count = len(flags)
         disabled = self._disabled_flag_names()
         for folder in self._disabled_folder_names():
             disabled.update(self._folders().get(folder, []))
-        active_count = len(set(flags) - disabled) if self._hotkeys_supported else count
+        active_count = (
+            count - sum(name in flags for name in disabled) if self._hotkeys_supported else count
+        )
         enabled = bool(self._config and getattr(self._config, 'custom_fflags_enabled', False))
         if enabled:
             self._status.setText(
@@ -3438,7 +4353,7 @@ class CustomFFlagEditor(QWidget):
                     value1=count,
                 )
             )
-            self._status.setStyleSheet('color: #67c587;')
+            style_text(self._status, tone='success')
         else:
             self._status.setText(
                 tr(
@@ -3446,36 +4361,37 @@ class CustomFFlagEditor(QWidget):
                     value0=count,
                 )
             )
-            self._status.setStyleSheet('color: #999;')
+            style_text(self._status, tone='muted')
 
-    def _refresh_proxy_hosts(self):
+    def _refresh_proxy_hosts(self) -> None:
         if self._proxy_master is None:
             return
         try:
             self._proxy_master.refresh_custom_fflag_interception()
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
 
-    def _on_enabled_toggled(self, checked: bool):
+    def _on_enabled_toggled(self, checked: bool) -> None:
         if self._config is None or self._proxy_master is None:
             return
 
         if checked and not self._config.custom_fflags_warning_accepted:
             warning = CustomFFlagWarningDialog(self)
             if warning.exec() != QDialog.DialogCode.Accepted:
-                self._enable_toggle.blockSignals(True)
-                self._enable_toggle.setChecked(False)
-                self._enable_toggle.blockSignals(False)
+                with QSignalBlocker(self._enable_toggle):
+                    self._enable_toggle.setChecked(False)
                 self._update_status()
                 return
             self._config.custom_fflags_warning_accepted = True
 
         self._config.custom_fflags_enabled = checked
+        if checked:
+            self.prefetch_flag_catalog_if_needed()
         self._sync_hotkeys()
         self._refresh_proxy_hosts()
         self._update_status()
 
-    def _add_flag(self):
+    def _add_flag(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('ui.gui.modifications_tab.add_custom_fastflag'))
         dialog.setMinimumWidth(620)
@@ -3484,7 +4400,7 @@ class CustomFFlagEditor(QWidget):
         name_edit.setMinimumWidth(500)
         value_edit = QLineEdit()
         value_edit.setMinimumWidth(500)
-        value_combo = CompactBooleanComboBox()
+        value_combo = CompactCellComboBox()
         value_combo.addItem(tr('ui.gui.modifications_tab.true'), 'True')
         value_combo.addItem(tr('ui.gui.modifications_tab.false'), 'False')
         value_stack = QStackedWidget()
@@ -3493,7 +4409,7 @@ class CustomFFlagEditor(QWidget):
         form.addRow(tr('modifications.fastflag.name'), name_edit)
         form.addRow(tr('modifications.fastflag.value'), value_stack)
 
-        def update_add_value_editor(name: str):
+        def update_add_value_editor(name: str) -> None:
             value_stack.setCurrentWidget(
                 value_combo if self._is_boolean_flag(name.strip()) else value_edit
             )
@@ -3522,27 +4438,33 @@ class CustomFFlagEditor(QWidget):
         )
         self._set_flags(flags)
 
-    def _browse_fflags(self):
-        dialog = FFlagBrowserDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.selected_flags:
+    def _on_browser_inventory_loaded(self, _flags: object) -> None:
+        self._reload_known_flag_names()
+
+    def _browse_fflags(self) -> None:
+        dialog = FFlagBrowserDialog(self, config_manager=self._config)
+        dialog.flags_loaded.connect(self._on_browser_inventory_loaded)
+        self._reload_known_flag_names()
+        result = dialog.exec()
+        self._reload_known_flag_names()
+        if result != QDialog.DialogCode.Accepted or not dialog.selected_flags:
             return
         flags = self._flags_from_table()
         flags.update(dialog.selected_flags)
         self._set_flags(flags)
 
-    def _set_flags(self, flags: dict):
+    def _set_flags(self, flags: dict[str, str]) -> None:
         if self._config is None:
             return
         self._config.custom_fflags = flags
-        self._prune_hotkey_settings(set(self._config.custom_fflags), sync_hotkeys=False)
+        self._prune_hotkey_settings(set(flags), sync_hotkeys=False)
         # Flag values are consumed directly from settings; only the master
         # enable toggle changes the interception route set.
         self._load_flags()
+        self._maybe_scan_missing_client_cache()
 
-    def _import_mapping(self, payload):
-        from ..proxy.addons.custom_fflags import normalize_custom_fflags
-
-        if not isinstance(payload, dict):
+    def _import_mapping(self, payload: object) -> None:
+        if not _is_object_dict(payload):
             raise ValueError(tr('modifications.fastflag.import_root_must_be_object'))
         normalized = normalize_custom_fflags(payload)
         if len(normalized) != len(payload):
@@ -3551,7 +4473,7 @@ class CustomFFlagEditor(QWidget):
         merged.update(normalized)
         self._set_flags(merged)
 
-    def _import_json(self):
+    def _import_json(self) -> None:
         text, ok = QInputDialog.getMultiLineText(
             self,
             tr('modifications.fastflag.import_title'),
@@ -3567,7 +4489,7 @@ class CustomFFlagEditor(QWidget):
                 self, tr('ui.gui.modifications_tab.invalid_fastflag_json'), str(exc)
             )
 
-    def _import_file(self):
+    def _import_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
             tr('ui.gui.modifications_tab.import_custom_fastflags'),
@@ -3583,7 +4505,7 @@ class CustomFFlagEditor(QWidget):
                 self, tr('ui.gui.modifications_tab.could_not_import_fastflags'), str(exc)
             )
 
-    def _export_json(self):
+    def _export_json(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
             tr('ui.gui.modifications_tab.export_custom_fastflags'),
@@ -3602,15 +4524,15 @@ class CustomFFlagEditor(QWidget):
     def _json_text(self) -> str:
         return json.dumps(self._flags_from_table(), indent=2, ensure_ascii=False)
 
-    def _copy_json(self):
+    def _copy_json(self) -> None:
         QApplication.clipboard().setText(self._json_text())
 
-    def _show_profiles(self):
+    def _show_profiles(self) -> None:
         dialog = FastFlagProfilesDialog(self._flags_from_table(), self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.loaded_flags is not None:
             self._set_flags(dialog.loaded_flags)
 
-    def _show_custom_actions(self):
+    def _show_custom_actions(self) -> None:
         if self._config is None:
             return
         flags = self._flags_from_table()
@@ -3619,51 +4541,97 @@ class CustomFFlagEditor(QWidget):
             self._custom_actions(),
             seed_flags,
             self._capture_hotkey_binding,
-            self._keybind_text,
             self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self._config.custom_fflag_actions = dialog.actions
+        self._config.custom_fflag_actions = dialog.action_definitions
         self._sync_hotkeys()
-
-    def _sort_value(self, entry: tuple[str, str], column: int) -> str:
-        if column == 0:
-            return entry[0]
-        if column == 1:
-            return entry[1]
-        if column == 2:
-            return 'disabled' if entry[0] in self._disabled_flag_names() else 'enabled'
-        return self._keybind_text(self._keybinds().get(entry[0]))
 
     def _ordered_flag_rows(self, flags: dict[str, str]) -> list[tuple[str, str]]:
         column = self._sort_column if self._sort_column is not None else 0
         rows = list(flags.items())
-        rows.sort(
-            key=lambda entry: (
-                self._sort_value(entry, column).casefold(),
-                entry[0].casefold(),
-                entry[1].casefold(),
-            ),
-            reverse=not self._sort_ascending,
-        )
+        disabled: set[str] = self._disabled_flag_names() if column == 2 else set()
+        bindings = self._keybinds() if column == 3 else {}
+
+        def sort_key(entry: tuple[str, str]) -> tuple[str, str, str]:
+            name, value = entry
+            if column == 0:
+                primary = name
+            elif column == 1:
+                primary = value
+            elif column == 2:
+                primary = 'disabled' if name in disabled else 'enabled'
+            else:
+                primary = self._keybind_text(bindings.get(name))
+            return primary.casefold(), name.casefold(), value.casefold()
+
+        rows.sort(key=sort_key, reverse=not self._sort_ascending)
         return rows
 
-    def _sort_rows(self, column: int):
+    def _replace_virtual_rows(self, rows: list[tuple[str, str]]) -> None:
+        values = self._virtual_flags
+        folders = self._folders()
+        grouped = {name for members in folders.values() for name in members if name in values}
+        order = {name: index for index, (name, _value) in enumerate(rows)} if grouped else {}
+        entries: list[tuple[str, str, str | None]] = []
+        for folder in sorted(folders, key=str.casefold):
+            entries.append((_FFLAG_ROW_FOLDER, folder, None))
+            members = (name for name in folders[folder] if name in values)
+            entries.extend(
+                (_FFLAG_ROW_FLAG, name, values[name])
+                for name in sorted(members, key=lambda name: order[name])
+            )
+        entries.extend(
+            (_FFLAG_ROW_FLAG, name, value) for name, value in rows if name not in grouped
+        )
+        self._virtual_model.replace(
+            values,
+            entries,
+            folders,
+            self._disabled_flag_names(),
+            self._disabled_folder_names(),
+            {name: self._keybind_text(binding) for name, binding in self._keybinds().items()},
+            {
+                name: self._keybind_text(binding)
+                for name, binding in self._folder_keybinds().items()
+            },
+            hotkeys_supported=self._hotkeys_supported,
+        )
+
+    def _sort_rows(self, column: int) -> None:
         if self._sort_column == column:
             self._sort_ascending = not self._sort_ascending
         else:
             self._sort_column = column
             self._sort_ascending = True
-        self._replace_table_rows(self._ordered_flag_rows(self._flags_from_table()))
-        self._table.horizontalHeader().setSortIndicator(
+
+        rows = self._ordered_flag_rows(self._flags_from_table())
+        if self._virtual_active:
+            self._replace_virtual_rows(rows)
+        else:
+            self._replace_table_rows(rows)
+        (
+            self._virtual_table if self._virtual_active else self._table
+        ).horizontalHeader().setSortIndicator(
             column,
             Qt.SortOrder.AscendingOrder if self._sort_ascending else Qt.SortOrder.DescendingOrder,
         )
         self._filter_rows(self._search.text())
 
-    def _delete_selected(self):
-        rows = sorted({index.row() for index in self._table.selectedIndexes()})
+    def _delete_selected(self) -> None:
+        table = self._virtual_table if self._virtual_active else self._table
+        selection = table.selectionModel()
+        if self._virtual_active:
+            # Ctrl+A produces a single selection range regardless of row count
+            ranges = selection.selection()
+            if ranges.count() == 1 and (
+                ranges.at(0).top() == 0
+                and ranges.at(0).bottom() == self._virtual_model.rowCount() - 1
+            ):
+                self._clear_all_flags()
+                return
+        rows = sorted(index.row() for index in selection.selectedRows(0))
         if not rows or self._config is None:
             return
         flags = self._flags_from_table()
@@ -3675,22 +4643,23 @@ class CustomFFlagEditor(QWidget):
             else:
                 flags.pop(name, None)
                 for members in folders.values():
-                    if name in members:
+                    with contextlib.suppress(ValueError):
                         members.remove(name)
         self._config.custom_fflag_folders = folders
         self._set_flags(flags)
 
     def _selected_flag_names(self) -> list[str]:
+        table = self._virtual_table if self._virtual_active else self._table
         return sorted(
             {
                 self._row_name(index.row())
-                for index in self._table.selectedIndexes()
+                for index in table.selectionModel().selectedRows(0)
                 if self._row_kind(index.row()) == _FFLAG_ROW_FLAG and self._row_name(index.row())
             },
             key=str.casefold,
         )
 
-    def _create_folder_from_selected(self):
+    def _create_folder_from_selected(self) -> None:
         if self._config is None:
             return
         selected = self._selected_flag_names()
@@ -3723,7 +4692,7 @@ class CustomFFlagEditor(QWidget):
         self._config.custom_fflag_folders = folders
         self._load_flags()
 
-    def _move_selected_to_folder(self):
+    def _move_selected_to_folder(self) -> None:
         if self._config is None:
             return
         selected = self._selected_flag_names()
@@ -3751,7 +4720,7 @@ class CustomFFlagEditor(QWidget):
         self._config.custom_fflag_folders = folders
         self._load_flags()
 
-    def _remove_selected_from_folders(self):
+    def _remove_selected_from_folders(self) -> None:
         if self._config is None:
             return
         selected = set(self._selected_flag_names())
@@ -3763,16 +4732,34 @@ class CustomFFlagEditor(QWidget):
         self._config.custom_fflag_folders = folders
         self._load_flags()
 
-    def _filter_rows(self, text: str):
+    def _clear_all_flags(self) -> None:
+        if self._config is None or not (
+            self._virtual_flags if self._virtual_active else self._flags_from_table()
+        ):
+            return
+        if (
+            QMessageBox.question(
+                self,
+                tr('ui.gui.modifications_tab.clear_custom_fastflags'),
+                tr('ui.gui.modifications_tab.clear_custom_fastflags_confirmation'),
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self._set_flags({})
+
+    def _filter_rows(self, text: str) -> None:
+        if self._virtual_active:
+            self._virtual_model.filter(str(text or ''))
+            return
         query = str(text or '').strip().lower()
         visible_count = 0
         for row in range(self._table.rowCount()):
             name_text = self._row_name(row)
             value_text = self._value_from_row(row)
+            keybind_item = self._table.item(row, 3)
             keybind_text = (
-                self._table.item(row, 3).text()
-                if self._hotkeys_supported and self._table.item(row, 3)
-                else ''
+                keybind_item.text() if self._hotkeys_supported and keybind_item is not None else ''
             )
             matches = (
                 not query
@@ -3784,7 +4771,7 @@ class CustomFFlagEditor(QWidget):
             visible_count += matches
         self._resize_table_to_contents(visible_count)
 
-    def _resize_table_to_contents(self, visible_count: int):
+    def _resize_table_to_contents(self, visible_count: int) -> None:
         """Let the outer modifications-page scroll area handle page overflow."""
         header_height = self._table.horizontalHeader().height()
         row_height = self._table.verticalHeader().defaultSectionSize() * visible_count
@@ -3798,12 +4785,13 @@ class FFlagSection(QWidget):
     def __init__(
         self,
         manager: ModificationManager,
-        roblox_monitor=None,
-        config_manager=None,
-        proxy_master=None,
-        hotkey_controller=None,
-        parent=None,
-    ):
+        *,
+        roblox_monitor: RobloxExitMonitor | None = None,
+        config_manager: ConfigManager | None = None,
+        proxy_master: ProxyMaster | None = None,
+        hotkey_controller: CustomFFlagHotkeyController | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._manager = manager
         self._roblox_monitor = roblox_monitor
@@ -3824,31 +4812,29 @@ class FFlagSection(QWidget):
         self._setup_ui()
         self._load_from_manager()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        # Warning
+        # Both warnings concern only the allowlisted preset settings, not custom FastFlags
         warn = QLabel(
             tr(
                 'ui.gui.modifications_tab.fast_flags_are_written_to_clientsettings_clientappsettings'
             )
+            + '\n'
+            + tr('modifications.fastflags.disable_bootstrapper_flag_management')
         )
         warn.setWordWrap(True)
-        warn.setStyleSheet('color: #c90; padding: 4px;')
+        warn.setTextFormat(Qt.TextFormat.PlainText)
+        warn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        style_text(warn, tone='warning')
+        self._preset_warning = warn
         layout.addWidget(warn)
 
-        warn2 = QLabel(
-            tr(
-                'ui.gui.modifications_tab.fleasion_synchronizes_detected_bootstrapper_launch_settings_if'
-            )
-        )
-        warn2.setWordWrap(True)
-        warn2.setStyleSheet('color: #c90; padding: 4px;')
-        layout.addWidget(warn2)
-
         grid = QGridLayout()
+        margins = grid.contentsMargins()
+        grid.setContentsMargins(margins.left(), 0, margins.right(), margins.bottom())
         grid.setSpacing(8)
         row = 0
 
@@ -3914,13 +4900,7 @@ class FFlagSection(QWidget):
         self._mesh_lod_slider.setTickInterval(1)
         self._mesh_lod_slider.valueChanged.connect(self._schedule_write)
         self._mesh_lod_value = QLabel(tr('ui.gui.modifications_tab.level_3'))
-        self._mesh_lod_slider.valueChanged.connect(
-            lambda v: self._mesh_lod_value.setText(
-                tr('ui.gui.modifications_tab.default')
-                if v == 0
-                else tr('modifications.level', level=v - 1)
-            )
-        )
+        self._mesh_lod_slider.valueChanged.connect(self._update_mesh_lod_label)
         lod_row.addWidget(self._mesh_lod_slider)
         lod_row.addWidget(self._mesh_lod_value)
         lod_container = QWidget()
@@ -3943,13 +4923,7 @@ class FFlagSection(QWidget):
         self._frm_slider.valueChanged.connect(self._schedule_write)
         frm_row.addWidget(self._frm_slider)
         self._frm_value = QLabel(tr('ui.gui.modifications_tab.quality_21'))
-        self._frm_slider.valueChanged.connect(
-            lambda v: self._frm_value.setText(
-                tr('ui.gui.modifications_tab.default')
-                if v == 0
-                else tr('modifications.quality', quality=v)
-            )
-        )
+        self._frm_slider.valueChanged.connect(self._update_frm_label)
         frm_row.addWidget(self._frm_value)
         frm_container = QWidget()
         frm_container.setLayout(frm_row)
@@ -3969,6 +4943,9 @@ class FFlagSection(QWidget):
         row += 1
 
         # Grass spinners
+        self._grass_max: NoWheelSpinBox
+        self._grass_min: NoWheelSpinBox
+        self._grass_motion: NoWheelSpinBox
         for label_text, attr_name in [
             (tr('modifications.grass_distance_max'), '_grass_max'),
             (tr('modifications.grass_distance_min'), '_grass_min'),
@@ -4021,24 +4998,53 @@ class FFlagSection(QWidget):
 
         self.setLayout(layout)
 
-    def set_presets_enabled(self, enabled: bool):
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        # QLabel's wrapped sizeHint reserves three lines even when only two fit
+        # Keep this preset-only notice exactly as tall as its rendered text
+        warning = self._preset_warning
+        width = max(1, self.contentsRect().width())
+        needed_height = warning.heightForWidth(width)
+        if needed_height > 0 and warning.height() != needed_height:
+            warning.setFixedHeight(needed_height)
+
+    def set_presets_enabled(self, enabled: bool) -> None:
         """Enable the allowlisted/local controls without disabling the proxy editor."""
         self._preset_container.setEnabled(enabled)
         self._reset_btn.setEnabled(enabled)
 
-    def _on_mesh_lod_toggle(self, checked):
+    def _update_mesh_lod_label(self, value: int) -> None:
+        self._mesh_lod_value.setText(
+            tr('ui.gui.modifications_tab.default')
+            if value == 0
+            else tr('modifications.level', level=value - 1)
+        )
+
+    def _update_frm_label(self, value: int) -> None:
+        self._frm_value.setText(
+            tr('ui.gui.modifications_tab.default')
+            if value == 0
+            else tr('modifications.quality', quality=value)
+        )
+
+    def _on_mesh_lod_toggle(self, checked: bool) -> None:
         self._mesh_lod_slider.setEnabled(checked)
         self._schedule_write()
 
-    def _on_frm_toggle(self, checked):
+    def _on_frm_toggle(self, checked: bool) -> None:
         self._frm_slider.setEnabled(checked)
         self._schedule_write()
 
-    def _on_framerate_changed(self, *_args):
+    def _on_framerate_changed(self, *_args: object) -> None:
         """Schedule a write of the framerate cap setting."""
         self._framerate_debounce_timer.start()
 
-    def _write_framerate_cap(self):
+    def apply_current_settings(self) -> None:
+        self._schedule_write()
+        self._write_framerate_cap()
+
+    def _write_framerate_cap(self) -> None:
         """Write the framerate cap to GlobalBasicSettings_13.xml only if FFlagsare enabled."""
         value = self._framerate_cap.value()
         self._manager.framerate_cap = value
@@ -4055,16 +5061,15 @@ class FFlagSection(QWidget):
         if is_roblox_running:
             # Queue the modification instead of writing immediately
             self._manager.pending_modifications_queue.enqueue_framerate_cap(value)
+        elif value:
+            run_in_thread(self._manager.sync_saved_global_settings)()
         else:
-            if value:
-                run_in_thread(self._manager.sync_saved_global_settings)()
-            else:
-                run_in_thread(self._manager.reset_framerate_cap)()
+            run_in_thread(self._manager.reset_framerate_cap)()
 
-    def _schedule_write(self, *_args):
+    def _schedule_write(self, *_args: object) -> None:
         self._debounce_timer.start()
 
-    def _gather_settings(self) -> dict:
+    def _gather_settings(self) -> _FastFlagSettings:
         return {
             'rendering_mode': str(self._rendering_mode.currentData() or 'Default'),
             'msaa': str(self._msaa.currentData() or 'Default'),
@@ -4082,7 +5087,7 @@ class FFlagSection(QWidget):
             'grass_motion': self._grass_motion.value() or None,
         }
 
-    def _write_flags(self):
+    def _write_flags(self) -> None:
         settings = self._gather_settings()
 
         # Check if Roblox Player is running
@@ -4097,7 +5102,7 @@ class FFlagSection(QWidget):
             # Write immediately
             run_in_thread(self._manager.write_fast_flags)(settings)
 
-    def _load_from_manager(self):
+    def _load_from_manager(self) -> None:
         """Populate controls from the persisted fast-flag settings."""
         s = self._manager.fast_flags
 
@@ -4119,8 +5124,7 @@ class FFlagSection(QWidget):
             self._grass_motion,
             self._framerate_cap,
         ]
-        for w in widgets:
-            w.blockSignals(True)
+        blockers = [QSignalBlocker(widget) for widget in widgets]
 
         idx = self._rendering_mode.findData(str(s.get('rendering_mode') or 'Default'))
         if idx >= 0:
@@ -4178,10 +5182,9 @@ class FFlagSection(QWidget):
         )
         self._framerate_cap.setValue(framerate_cap)
 
-        for w in widgets:
-            w.blockSignals(False)
+        blockers.clear()
 
-    def _on_reset_all(self):
+    def _on_reset_all(self) -> None:
         """Reset all fast-flag controls to default and restore files."""
         self._rendering_mode.setCurrentIndex(0)
         self._msaa.setCurrentIndex(0)
@@ -4212,15 +5215,25 @@ class FFlagSection(QWidget):
 class ModificationsTab(QWidget):
     """The entire Modifications tab, added to the dashboard's QTabWidget."""
 
-    def __init__(
+    # Emitted from the background username-lookup thread; queued
+    # automatically across the thread boundary since this is a QObject,
+    # so the connected slot always runs safely on the GUI thread.
+    _pfp_username_resolved = Signal(str, str)  # target_id, username
+    _pfp_image_loaded = Signal(str, bytes)  # cache key, raw image bytes (empty on failure)
+    _pfp_self_id_resolved = Signal(int, str)  # lookup generation, active user id
+    _pfp_identity_changed = Signal()
+
+    def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
         mod_manager: ModificationManager,
-        roblox_monitor=None,
-        config_manager=None,
-        proxy_master=None,
-        hotkey_controller=None,
-        parent=None,
-    ):
+        roblox_monitor: RobloxExitMonitor | None = None,
+        config_manager: ConfigManager | None = None,
+        proxy_master: ProxyMaster | None = None,
+        hotkey_controller: CustomFFlagHotkeyController | None = None,
+        parent: QWidget | None = None,
+        *,
+        defer_setup: bool = False,
+    ) -> None:
         super().__init__(parent)
         self._manager = mod_manager
         self._roblox_monitor = roblox_monitor
@@ -4229,13 +5242,55 @@ class ModificationsTab(QWidget):
         self._hotkey_controller = hotkey_controller
         self._row_widgets: dict[str, ModRowWidget] = {}  # target_path -> widget
         self._custom_rows: list[ModRowWidget] = []
+        self._pfp_username_cache: dict[str, str] = {}
+        self._pfp_username_inflight: set[str] = set()
+        self._pfp_username_resolved.connect(self._on_pfp_username_resolved)
+        self._pfp_image_loaded.connect(self._on_pfp_image_loaded)
+        self._pfp_self_id_resolved.connect(self._on_pfp_self_id_resolved)
+        self._pfp_identity_changed.connect(self.invalidate_profile_picture_preview)
+        self._pfp_pixmaps: dict[str, QPixmap] = {}
+        self._pfp_image_inflight: set[str] = set()
+        self._pfp_failed_until: dict[str, float] = {}
+        self._pfp_retry_timer = QTimer(self)
+        self._pfp_retry_timer.setSingleShot(True)
+        self._pfp_retry_timer.timeout.connect(self._retry_failed_pfp_images)
+        self._pfp_self_id: str | None = None
+        self._pfp_self_id_inflight = False
+        self._pfp_self_id_lookup_generation = 0
+        # Importing many rows must not create an unbounded number of threads
+        self._pfp_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='FleasionPfp')
+        executor = self._pfp_executor
+        self.destroyed.connect(lambda: executor.shutdown(wait=False, cancel_futures=True))
+        spoofer = getattr(proxy_master, 'profile_picture_spoofer', None)
+        if spoofer is not None:
 
-        self._setup_ui()
+            def on_identity_change() -> None:
+                try:
+                    self._pfp_identity_changed.emit()
+                except RuntimeError:
+                    pass
+
+            spoofer.add_identity_listener(on_identity_change)
+            self.destroyed.connect(lambda: spoofer.remove_identity_listener(on_identity_change))
+
+        if not defer_setup:
+            for _ in self.build_ui():
+                pass
+
+    @override
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        editor = getattr(getattr(self, '_fflag_widget', None), '_custom_fflag_editor', None)
+        if editor is not None:
+            editor.prefetch_flag_catalog_if_needed()
+
+    def build_ui(self) -> Generator[None]:
+        yield from self._build_ui()
         self._update_status_bar()
 
         # Connect for live status bar updates
-        mod_manager.apply_finished.connect(lambda _: self._update_status_bar())
-        mod_manager.restore_finished.connect(self._update_status_bar)
+        self._manager.apply_finished.connect(self._on_apply_finished)
+        self._manager.restore_finished.connect(self._update_status_bar)
 
         # Connect for Roblox player status changes
         if self._roblox_monitor:
@@ -4243,23 +5298,25 @@ class ModificationsTab(QWidget):
                 self._on_roblox_player_status_changed
             )
 
-    def _setup_ui(self):
-        outer = QVBoxLayout()
+    def _build_ui(self) -> Generator[None]:
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        scroll = QScrollArea()
+        scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         container = QWidget()
-        # Explicitly paint with the AlternateBase palette colour (the same
-        # grey used by QTreeWidget / QGroupBox content in the Replacer and
-        # Scraper tabs).  Without this, Fusion paints through to Window (#202020).
+        # Use the same window background as the other tabs
         container.setObjectName('_FleasionModContainer')
         self._mod_container = container
-        self._container_layout = QVBoxLayout()
-        self._container_layout.setSpacing(10)
-        self._container_layout.setContentsMargins(10, 10, 10, 10)
+        self._container_layout = QVBoxLayout(container)
+        self._container_layout.setSpacing(PANEL_PADDING)
+        self._container_layout.setContentsMargins(*PANEL_MARGINS)
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
+        self._update_container_bg()
 
         # Fast Flags
         self._fflag_toggle = QCheckBox(
@@ -4272,18 +5329,20 @@ class ModificationsTab(QWidget):
             tr('modifications.section.fast_flags'),
             expanded=False,
             header_widgets=[self._fflag_toggle],
+            show_separator=False,
         )
         self._fflag_widget = FFlagSection(
             self._manager,
-            self._roblox_monitor,
-            self._config_manager,
-            self._proxy_master,
+            roblox_monitor=self._roblox_monitor,
+            config_manager=self._config_manager,
+            proxy_master=self._proxy_master,
             hotkey_controller=self._hotkey_controller,
         )
         self._fflag_widget.set_presets_enabled(self._manager.fast_flags_enabled)
         fflag_section.add_widget(self._fflag_widget)
 
         self._container_layout.addWidget(fflag_section)
+        yield
 
         # Default Skyboxes
         sky_section = CollapsibleSection(
@@ -4302,9 +5361,11 @@ class ModificationsTab(QWidget):
                 _builtin_label(name),
                 path,
                 file_filter=IMAGE_FILTER,
+                parent=sky_section,
             )
             sky_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
 
         # Indoor sub-label
         indoor_label = QLabel(tr('ui.gui.modifications_tab.i_indoor_skybox_i'))
@@ -4317,11 +5378,14 @@ class ModificationsTab(QWidget):
                 _builtin_label(name),
                 path,
                 file_filter=IMAGE_FILTER,
+                parent=sky_section,
             )
             sky_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
 
         self._container_layout.addWidget(sky_section)
+        yield
 
         # Textures
         tex_section = CollapsibleSection(tr('modifications.section.textures'), expanded=True)
@@ -4329,7 +5393,9 @@ class ModificationsTab(QWidget):
             row = ModRowWidget(self._manager, _builtin_label(name), path, file_filter=filt)
             tex_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
         self._container_layout.addWidget(tex_section)
+        yield
 
         # R6 Default Avatar Meshes
         self._mesh_section = CollapsibleSection(
@@ -4341,7 +5407,7 @@ class ModificationsTab(QWidget):
             )
             sober_mesh_warning.setWordWrap(True)
             sober_mesh_warning.setContentsMargins(8, 4, 8, 8)
-            sober_mesh_warning.setStyleSheet('color: #ffcc66;')
+            style_text(sober_mesh_warning, tone='warning')
             self._mesh_section.add_widget(sober_mesh_warning)
         for name, path in AVATAR_MESHES:
             row = ModRowWidget(
@@ -4352,6 +5418,7 @@ class ModificationsTab(QWidget):
             )
             self._mesh_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
 
         # Add Head Variant button
         add_head_btn = QPushButton(tr('ui.gui.modifications_tab.add_head_variant'))
@@ -4361,6 +5428,7 @@ class ModificationsTab(QWidget):
         self._mesh_section.add_widget(add_head_btn)
 
         self._container_layout.addWidget(self._mesh_section)
+        yield
 
         # Sounds
         sounds_section = CollapsibleSection(tr('modifications.section.sounds'), expanded=True)
@@ -4374,8 +5442,10 @@ class ModificationsTab(QWidget):
             )
             sounds_section.add_widget(row)
             self._row_widgets[path] = row
+            yield
 
         self._container_layout.addWidget(sounds_section)
+        yield
 
         # Custom Font
         font_section = CollapsibleSection(tr('modifications.section.custom_font'), expanded=True)
@@ -4392,15 +5462,24 @@ class ModificationsTab(QWidget):
         )
 
         self._container_layout.addWidget(font_section)
+        yield
 
-        # Rebuild persisted head variant rows (headA–headP added in a previous session)
-        _head_variant_set = set(HEAD_VARIANTS)
+        # Profile Pictures
+        pfp_section = CollapsibleSection(
+            tr('modifications.section.profile_pictures'), expanded=False
+        )
+        pfp_section.add_widget(self._build_profile_picture_widget())
+        self._container_layout.addWidget(pfp_section)
+        yield
+
+        # Rebuild persisted head variant rows (headA-headP added in a previous session)
+        head_variant_set = set(HEAD_VARIANTS)
         for entry in self._manager.entries:
             target = entry.get('target_path', '')
             if not target or target in self._row_widgets:
                 continue
             fname = Path(target.replace('\\', '/')).name
-            if fname in _head_variant_set:
+            if fname in head_variant_set:
                 name = tr('modifications.head_variant', variant=fname[4:-5].upper())
                 row = ModRowWidget(
                     self._manager,
@@ -4415,6 +5494,7 @@ class ModificationsTab(QWidget):
                     row,
                 )
                 self._row_widgets[target] = row
+                yield
 
         # Custom Modifications
         self._custom_section = CollapsibleSection(
@@ -4431,79 +5511,51 @@ class ModificationsTab(QWidget):
         # Rebuild persisted custom entries
         for entry in self._manager.entries:
             target = entry.get('target_path', '')
-            if target and target not in self._row_widgets:
+            known_target = (
+                any(target == path for _, path in AVATAR_MESHES)
+                or any(target == path for _, path in SKYBOX_FACES)
+                or any(target == path for _, path in INDOOR_FACES)
+                or any(target == path for _, path, _ in SOUNDS)
+            )
+            if target and target not in self._row_widgets and not known_target:
                 # This is likely a custom entry
-                if not any(target == p for _, p in AVATAR_MESHES):
-                    if not any(target == p for _, p in SKYBOX_FACES):
-                        if not any(target == p for _, p in INDOOR_FACES):
-                            if not any(target == p for _, p, _ in SOUNDS):
-                                self._add_custom_row(
-                                    entry.get('display_name', Path(target).name),
-                                    target,
-                                )
+                self._add_custom_row(
+                    entry.get('display_name', Path(target).name),
+                    target,
+                )
 
         self._container_layout.addWidget(self._custom_section)
+        yield
 
         # Stretch at bottom
         self._container_layout.addStretch()
 
-        container.setLayout(self._container_layout)
-        scroll.setWidget(container)
-        outer.addWidget(scroll)
-
-        footer_widget = QWidget()
-        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        footer_widget = TabFooter()
         self._footer_widget = footer_widget
-        footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(8, 4, 8, 4)
+        footer_layout = footer_widget.content_layout
         self._status_label = QLabel()
-        self._status_label.setStyleSheet('color: #888;')
+        style_text(self._status_label, tone='muted')
         footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton(tr('ui.gui.modifications_tab.clear_cache'))
-        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
-        footer_layout.addWidget(clear_cache_btn)
+        footer_layout.addWidget(ClearCacheButton())
         outer.addWidget(footer_widget)
 
-        self.setLayout(outer)
-        self._update_container_bg()
-
-    def changeEvent(self, a0: QEvent | None):
-        from PyQt6.QtCore import QEvent
-
+    @override
+    def changeEvent(self, a0: QEvent) -> None:
         super().changeEvent(a0)
-        if a0 is not None and a0.type() == QEvent.Type.PaletteChange:
+        if a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
 
-    def _update_container_bg(self):
-        """Keep the modifications container background consistent across themes.
-
-        On the explicit Dark theme AlternateBase (64,64,64) is lighter than
-        Window (32,32,32), giving a subtle card effect.  On the System theme
-        with Windows dark mode the OS palette can make AlternateBase darker
-        than Window, which looks wrong.  When that happens we force the same
-        card colour the Dark theme uses.
-        """
-        pal = self.palette()
-        win_light = pal.window().color().lightness()
-        alt_light = pal.alternateBase().color().lightness()
-        if win_light < 128 and alt_light <= win_light:
-            # System dark mode: alternate-base is no lighter than window —
-            # force the same card colour as the explicit dark theme.
-            bg = 'background-color: rgb(64, 64, 64);'
-        else:
-            bg = 'background-color: palette(alternate-base);'
-        self._mod_container.setStyleSheet(f'QWidget#_FleasionModContainer {{ {bg} }}')
-
-    def _clear_roblox_cache(self):
-        from .delete_cache import DeleteCacheWindow
-
-        window = DeleteCacheWindow()
-        window.show()
+    def _update_container_bg(self) -> None:
+        """Keep the tab background aligned with the active theme."""
+        ThemeManager.apply_panel_background(self._mod_container)
 
     # Status bar
 
-    def _update_status_bar(self):
+    def _on_apply_finished(self, _result: object) -> None:
+        self._update_status_bar()
+
+    def _update_status_bar(self) -> None:
         applied = sum(1 for e in self._manager.entries if e.get('status') == 'applied')
         roblox_count = len(self._manager.roblox_dirs)
         noun = tr_count(
@@ -4518,7 +5570,6 @@ class ModificationsTab(QWidget):
             status_label.setText(
                 tr(
                     'ui.gui.modifications_tab.value_value_applied_value_detected',
-                    value0=applied,
                     value1=noun,
                     value2=tr_count(
                         roblox_count,
@@ -4530,11 +5581,602 @@ class ModificationsTab(QWidget):
         except RuntimeError:
             return
 
+    # Section: Profile Pictures
+
+    _PFP_COL_ENABLED = 0
+    _PFP_COL_TARGET = 1
+    _PFP_COL_USERNAME = 2
+    _PFP_COL_IMAGE_URL = 3
+    _PFP_SELF = '__self__'
+    _PFP_ICON_SIZE = 32
+    _PFP_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+    _PFP_RETRY_DELAY_SECONDS = 5.0
+
+    def _build_profile_picture_widget(self) -> QWidget:
+        wrapper = QWidget()
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        hint = QLabel(tr('ui.gui.modifications_tab.pfp_hint'))
+        hint.setWordWrap(True)
+        style_text(hint, tone='muted')
+        layout.addWidget(hint)
+
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(
+            [
+                tr('ui.gui.modifications_tab.pfp_col_enabled'),
+                tr('ui.gui.modifications_tab.pfp_col_target'),
+                tr('ui.gui.modifications_tab.pfp_col_username'),
+                tr('ui.gui.modifications_tab.pfp_col_image_url'),
+            ]
+        )
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        table.setAlternatingRowColors(True)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(self._PFP_COL_ENABLED, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self._PFP_COL_TARGET, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(self._PFP_COL_USERNAME, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(self._PFP_COL_IMAGE_URL, QHeaderView.ResizeMode.Stretch)
+        table.setColumnWidth(self._PFP_COL_TARGET, 160)
+        table.setColumnWidth(self._PFP_COL_USERNAME, 160)
+        table.setMinimumHeight(140)
+        table.setIconSize(QSize(self._PFP_ICON_SIZE, self._PFP_ICON_SIZE))
+        table.verticalHeader().setDefaultSectionSize(self._PFP_ICON_SIZE + 8)
+        self._pfp_table = table
+        self._pfp_loading = False
+
+        button_row = QHBoxLayout()
+        add_me_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_add_me'))
+        add_me_btn.clicked.connect(self._on_pfp_add_me)
+        add_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_add_row'))
+        add_btn.clicked.connect(self._on_pfp_add_row)
+        remove_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_remove_selected'))
+        remove_btn.clicked.connect(self._on_pfp_remove_selected)
+        browse_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_browse_local_image'))
+        browse_btn.clicked.connect(self._on_pfp_browse_local_image)
+        export_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_export'))
+        export_btn.clicked.connect(self._on_pfp_export)
+        import_btn = QPushButton(tr('ui.gui.modifications_tab.pfp_import'))
+        import_btn.clicked.connect(self._on_pfp_import)
+        button_row.addWidget(add_me_btn)
+        button_row.addWidget(add_btn)
+        button_row.addWidget(browse_btn)
+        button_row.addWidget(remove_btn)
+        button_row.addStretch()
+        button_row.addWidget(export_btn)
+        button_row.addWidget(import_btn)
+
+        layout.addWidget(table)
+        layout.addLayout(button_row)
+
+        self._load_pfp_rows()
+        table.itemChanged.connect(self._on_pfp_item_changed)
+        return wrapper
+
+    def _load_pfp_rows(self) -> None:
+        entries = (
+            self._config_manager.profile_picture_entries if self._config_manager is not None else []
+        )
+        self._pfp_loading = True
+        try:
+            for entry in entries:
+                self._append_pfp_row(entry)
+        finally:
+            self._pfp_loading = False
+        self._push_pfp_entries(entries)
+
+    def _append_pfp_row(self, entry: Mapping[str, object]) -> None:
+        table = self._pfp_table
+        row = table.rowCount()
+        table.insertRow(row)
+
+        enabled_item = QTableWidgetItem()
+        enabled_item.setFlags(
+            Qt.ItemFlag.ItemIsUserCheckable
+            | Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+        )
+        enabled_item.setCheckState(
+            Qt.CheckState.Checked if entry.get('enabled', True) else Qt.CheckState.Unchecked
+        )
+        table.setItem(row, self._PFP_COL_ENABLED, enabled_item)
+
+        target = self._normalize_pfp_target(str(entry.get('target', '')))
+        target_display = (
+            tr('ui.gui.modifications_tab.pfp_target_me') if target == self._PFP_SELF else target
+        )
+        table.setItem(row, self._PFP_COL_TARGET, QTableWidgetItem(target_display))
+
+        username_item = QTableWidgetItem('')
+        username_item.setFlags(username_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        table.setItem(row, self._PFP_COL_USERNAME, username_item)
+
+        table.setItem(
+            row, self._PFP_COL_IMAGE_URL, QTableWidgetItem(str(entry.get('image_url', '')))
+        )
+        self._request_pfp_username(row, target)
+        self._refresh_pfp_row_icons(row)
+
+    def _set_pfp_username_text(self, item: QTableWidgetItem, text: str) -> None:
+        """Set a Username cell without it counting as a user edit."""
+        previous = self._pfp_loading
+        self._pfp_loading = True
+        try:
+            item.setText(text)
+        finally:
+            self._pfp_loading = previous
+
+    def _request_pfp_username(self, row: int, target: str) -> None:
+        """Kick off a background username lookup for a Player ID cell, if
+        it looks like a numeric Roblox user id we haven't already resolved.
+        """
+        username_item = self._pfp_table.item(row, self._PFP_COL_USERNAME)
+        if username_item is None:
+            return
+        if target == self._PFP_SELF:
+            self._set_pfp_username_text(username_item, tr('ui.gui.modifications_tab.pfp_target_me'))
+            return
+        if not target.isdigit():
+            self._set_pfp_username_text(username_item, '')
+            return
+        cached = self._pfp_username_cache.get(target)
+        if cached is not None:
+            self._set_pfp_username_text(username_item, cached)
+            return
+        self._set_pfp_username_text(username_item, '…')
+        if target in self._pfp_username_inflight:
+            return
+        self._pfp_username_inflight.add(target)
+        self._pfp_executor.submit(self._resolve_pfp_username_worker, target)
+
+    def _resolve_pfp_username_worker(self, target: str) -> None:
+        username = ''
+        try:
+            resp = requests.get(f'https://users.roblox.com/v1/users/{target}', timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                username = str(data.get('name') or '')
+        except requests.RequestException, ValueError, AttributeError:
+            username = ''
+        try:
+            self._pfp_username_resolved.emit(target, username)
+        except RuntimeError:
+            # The tab was destroyed while the lookup was in flight.
+            return
+
+    def _on_pfp_username_resolved(self, target: str, username: str) -> None:
+        self._pfp_username_inflight.discard(target)
+        display = username or tr('ui.gui.modifications_tab.pfp_username_not_found')
+        self._pfp_username_cache[target] = display
+        table = self._pfp_table
+        for row in range(table.rowCount()):
+            target_item = table.item(row, self._PFP_COL_TARGET)
+            if target_item is not None and self._normalize_pfp_target(target_item.text()) == target:
+                username_item = table.item(row, self._PFP_COL_USERNAME)
+                if username_item is not None:
+                    self._set_pfp_username_text(username_item, display)
+
+    # Preview icons: the player's current avatar next to the username, and the
+    # replacement image next to its link/path.
+
+    def _pfp_image_source(self, raw: str) -> tuple[str, str, str] | None:
+        """Return (cache key, kind, source) for a replacement image cell."""
+        text = raw.strip()
+        if not text:
+            return None
+        if is_remote_image_url(text):
+            return f'url:{text}', 'remote', text
+        path = Path(clean_local_path(text))
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        return f'file:{path}|{mtime}', 'local', str(path)
+
+    def _set_pfp_icon(self, item: QTableWidgetItem | None, pixmap: QPixmap | None) -> None:
+        """Set or clear a cell's icon without it counting as a user edit."""
+        if item is None:
+            return
+        previous = self._pfp_loading
+        self._pfp_loading = True
+        try:
+            item.setIcon(QIcon(pixmap) if pixmap is not None and not pixmap.isNull() else QIcon())
+        finally:
+            self._pfp_loading = previous
+
+    def _refresh_pfp_row_icons(self, row: int) -> None:
+        table = self._pfp_table
+        target_item = table.item(row, self._PFP_COL_TARGET)
+        target = self._normalize_pfp_target(target_item.text()) if target_item is not None else ''
+        if target == self._PFP_SELF:
+            target = self._pfp_self_id or ''
+            if not target:
+                self._request_pfp_self_id()
+        avatar_key = f'avatar:{target}' if target.isdigit() else None
+        self._apply_pfp_icon(
+            table.item(row, self._PFP_COL_USERNAME),
+            avatar_key,
+            ('avatar', target) if avatar_key else None,
+        )
+
+        image_item = table.item(row, self._PFP_COL_IMAGE_URL)
+        source = self._pfp_image_source(image_item.text()) if image_item is not None else None
+        self._apply_pfp_icon(
+            image_item,
+            source[0] if source else None,
+            (source[1], source[2]) if source else None,
+        )
+
+    def _apply_pfp_icon(
+        self,
+        item: QTableWidgetItem | None,
+        key: str | None,
+        fetch: tuple[str, str] | None,
+    ) -> None:
+        if key is None or fetch is None:
+            self._set_pfp_icon(item, None)
+            return
+        pixmap = self._pfp_pixmaps.get(key)
+        if pixmap is not None:
+            self._set_pfp_icon(item, pixmap)
+            return
+        self._set_pfp_icon(item, None)
+        retry_at = self._pfp_failed_until.get(key)
+        if retry_at is not None:
+            if time.monotonic() < retry_at:
+                return
+            self._pfp_failed_until.pop(key, None)
+        if key in self._pfp_image_inflight:
+            return
+        self._pfp_image_inflight.add(key)
+        self._pfp_executor.submit(self._fetch_pfp_image_worker, key, fetch[0], fetch[1])
+
+    def _schedule_pfp_preview_retry(self) -> None:
+        """Schedule a single Qt timer for the earliest failed preview retry."""
+        if not self._pfp_failed_until:
+            self._pfp_retry_timer.stop()
+            return
+        remaining = min(self._pfp_failed_until.values()) - time.monotonic()
+        self._pfp_retry_timer.start(max(1, int(remaining * 1000) + 1))
+
+    def _retry_failed_pfp_images(self) -> None:
+        """Allow expired failures to retry without reopening the tab."""
+        now = time.monotonic()
+        for key, retry_at in tuple(self._pfp_failed_until.items()):
+            if retry_at <= now:
+                del self._pfp_failed_until[key]
+        table = getattr(self, '_pfp_table', None)
+        if table is not None:
+            for row in range(table.rowCount()):
+                self._refresh_pfp_row_icons(row)
+        self._schedule_pfp_preview_retry()
+
+    def _fetch_pfp_image_worker(self, key: str, kind: str, source: str) -> None:
+        try:
+            data = self._load_pfp_image_bytes(kind, source)
+        except requests.RequestException, OSError, ValueError, AttributeError, IndexError:
+            data = b''
+        try:
+            self._pfp_image_loaded.emit(key, data)
+        except RuntimeError:
+            # The tab was destroyed while the download was in flight.
+            return
+
+    def _load_pfp_image_bytes(self, kind: str, source: str) -> bytes:
+        limit = self._PFP_MAX_IMAGE_BYTES
+        if kind == 'local':
+            # Bound the actual read even if the file grows after stat()
+            with Path(source).open('rb') as image_file:
+                content = image_file.read(limit + 1)
+            return content if len(content) <= limit else b''
+        url = self._fetch_pfp_avatar_url(source) if kind == 'avatar' else source
+        if not url:
+            return b''
+        # requests.get(...).content downloads the entire file before we can
+        # check its size; stream chunks and reject an oversized image early
+        with requests.get(url, timeout=10, stream=True) as resp:
+            if resp.status_code != 200:
+                return b''
+            declared_length = resp.headers.get('Content-Length', '')
+            if (
+                declared_length.isascii()
+                and declared_length.isdecimal()
+                and int(declared_length) > limit
+            ):
+                return b''
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                total += len(chunk)
+                if total > limit:
+                    return b''
+                chunks.append(chunk)
+            return b''.join(chunks)
+
+    def _fetch_pfp_avatar_url(self, user_id: str) -> str:
+        """Bypass Fleasion's own interception when displaying Roblox's original avatar."""
+        proxy_master = self._proxy_master
+        if proxy_master is None:
+            return ''
+        return fetch_original_avatar_url(user_id, proxy_master.original_thumbnail_upstreams())
+
+    def _on_pfp_image_loaded(self, key: str, data: bytes) -> None:
+        self._pfp_image_inflight.discard(key)
+        pixmap = QPixmap()
+        if data:
+            pixmap.loadFromData(data)
+        if not pixmap.isNull():
+            size = self._PFP_ICON_SIZE * 2
+            pixmap = pixmap.scaled(
+                size,
+                size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        if pixmap.isNull():
+            # Transient network/decoder failures must not permanently blank an icon
+            self._pfp_pixmaps.pop(key, None)
+            self._pfp_failed_until[key] = time.monotonic() + self._PFP_RETRY_DELAY_SECONDS
+            self._schedule_pfp_preview_retry()
+        else:
+            self._pfp_failed_until.pop(key, None)
+            self._pfp_pixmaps[key] = pixmap
+        for row in range(self._pfp_table.rowCount()):
+            self._refresh_pfp_row_icons(row)
+
+    def _request_pfp_self_id(self) -> None:
+        if self._pfp_self_id_inflight:
+            return
+        spoofer = getattr(self._proxy_master, 'profile_picture_spoofer', None)
+        if spoofer is None:
+            return
+        self._pfp_self_id_inflight = True
+        self._pfp_executor.submit(
+            self._resolve_pfp_self_id_worker, spoofer, self._pfp_self_id_lookup_generation
+        )
+
+    def _resolve_pfp_self_id_worker(self, spoofer: object, generation: int) -> None:
+        user_id = ''
+        try:
+            getter = getattr(spoofer, 'current_user_id', None)
+            user_id = str(getter() or '') if callable(getter) else ''
+        except AttributeError, OSError, ValueError, TypeError:
+            user_id = ''
+        try:
+            self._pfp_self_id_resolved.emit(generation, user_id)
+        except RuntimeError:
+            return
+
+    def _on_pfp_self_id_resolved(self, generation: int, user_id: str) -> None:
+        if generation != self._pfp_self_id_lookup_generation:
+            return
+        self._pfp_self_id_inflight = False
+        if not user_id:
+            return
+        spoofer = getattr(getattr(self, '_proxy_master', None), 'profile_picture_spoofer', None)
+        if spoofer is not None and spoofer.current_user_id() != user_id:
+            return
+        self._pfp_self_id = user_id
+        for row in range(self._pfp_table.rowCount()):
+            self._refresh_pfp_row_icons(row)
+
+    def invalidate_profile_picture_preview(self) -> None:
+        """Invalidate selection previews even before the deferred UI exists."""
+        self._pfp_self_id_lookup_generation += 1
+        self._pfp_self_id_inflight = False
+        self._pfp_self_id = None
+        table = getattr(self, '_pfp_table', None)
+        if table is None:
+            # Persist the invalidated state; row creation will read the new ID
+            return
+        for row in range(table.rowCount()):
+            self._refresh_pfp_row_icons(row)
+
+    def _on_pfp_add_me(self) -> None:
+        self._add_pfp_row(target=self._PFP_SELF)
+
+    def _on_pfp_add_row(self) -> None:
+        self._add_pfp_row()
+
+    def _add_pfp_row(self, target: str = '', image_url: str = '') -> None:
+        self._pfp_loading = True
+        try:
+            self._append_pfp_row({'enabled': True, 'target': target, 'image_url': image_url})
+        finally:
+            self._pfp_loading = False
+        self._save_pfp_rows()
+        table = self._pfp_table
+        row = table.rowCount() - 1
+        column = self._PFP_COL_IMAGE_URL if target else self._PFP_COL_TARGET
+        table.setCurrentCell(row, column)
+        table.scrollToBottom()
+        item = table.item(row, column)
+        if item is not None and not item.text():
+            table.editItem(item)
+
+    def _on_pfp_browse_local_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr('ui.gui.modifications_tab.pfp_browse_local_image'),
+            '',
+            _file_filter_text(IMAGE_FILTER),
+        )
+        if not path:
+            return
+        self._add_pfp_row(image_url=path)
+
+    def _on_pfp_export(self) -> None:
+        entries = [
+            entry for entry in self._pfp_rows_to_entries() if entry['target'] and entry['image_url']
+        ]
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            tr('ui.gui.modifications_tab.pfp_export'),
+            'fleasion-profile-pictures.json',
+            tr('ui.gui.modifications_tab.json_files_json_all_files'),
+        )
+        if not path:
+            return
+        if not path.lower().endswith('.json'):
+            path += '.json'
+        try:
+            Path(path).write_text(
+                json.dumps(entries, indent=2, ensure_ascii=False), encoding='utf-8'
+            )
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.pfp_export'),
+                tr('ui.gui.modifications_tab.pfp_export_failed', error=exc),
+            )
+            return
+        QMessageBox.information(
+            self,
+            tr('ui.gui.modifications_tab.pfp_export'),
+            tr('ui.gui.modifications_tab.pfp_export_success', count=len(entries), path=path),
+        )
+
+    def _on_pfp_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr('ui.gui.modifications_tab.pfp_import'),
+            '',
+            tr('ui.gui.modifications_tab.json_files_json_all_files'),
+        )
+        if not path:
+            return
+        try:
+            raw = json.loads(Path(path).read_text(encoding='utf-8'))
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.pfp_import'),
+                tr('ui.gui.modifications_tab.pfp_import_failed', error=exc),
+            )
+            return
+        if not isinstance(raw, list):
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.pfp_import'),
+                tr(
+                    'ui.gui.modifications_tab.pfp_import_failed',
+                    error=tr('ui.gui.modifications_tab.pfp_import_not_a_list'),
+                ),
+            )
+            return
+
+        imported = 0
+        self._pfp_loading = True
+        try:
+            for item in cast('list[object]', raw):
+                row = as_json_object(item)
+                if row is None:
+                    continue
+                target = str(row.get('target', '')).strip()
+                image_url = str(row.get('image_url', '')).strip()
+                if not target or not image_url:
+                    continue
+                self._append_pfp_row(
+                    {
+                        'enabled': bool(row.get('enabled', True)),
+                        'target': self._normalize_pfp_target(target),
+                        'image_url': image_url,
+                    }
+                )
+                imported += 1
+        finally:
+            self._pfp_loading = False
+        self._save_pfp_rows()
+        QMessageBox.information(
+            self,
+            tr('ui.gui.modifications_tab.pfp_import'),
+            tr('ui.gui.modifications_tab.pfp_import_success', count=imported, path=path),
+        )
+
+    def _on_pfp_remove_selected(self) -> None:
+        rows = sorted({idx.row() for idx in self._pfp_table.selectedIndexes()}, reverse=True)
+        if not rows:
+            return
+        self._pfp_loading = True
+        try:
+            for row in rows:
+                self._pfp_table.removeRow(row)
+        finally:
+            self._pfp_loading = False
+        self._save_pfp_rows()
+
+    def _on_pfp_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._pfp_loading:
+            return
+        if item.column() == self._PFP_COL_TARGET:
+            target = self._normalize_pfp_target(item.text())
+            self._request_pfp_username(item.row(), target)
+        if item.column() in {self._PFP_COL_TARGET, self._PFP_COL_IMAGE_URL}:
+            self._refresh_pfp_row_icons(item.row())
+        self._save_pfp_rows()
+
+    @staticmethod
+    def _normalize_pfp_target(raw: str) -> str:
+        """Canonical Player ID cell value: ``__self__``, a numeric id, or the
+        text as typed when it is neither (so the user can keep editing it).
+        """
+        text = raw.strip()
+        me_label = tr('ui.gui.modifications_tab.pfp_target_me').strip().lower()
+        if text.lower() in {ModificationsTab._PFP_SELF, 'me', 'self', me_label}:
+            return ModificationsTab._PFP_SELF
+        # Accept a pasted profile link such as roblox.com/users/123456/profile.
+        match = re.search(r'/users/(\d+)', text)
+        return match.group(1) if match else text
+
+    def _pfp_rows_to_entries(self) -> list[dict[str, object]]:
+        table = self._pfp_table
+        entries: list[dict[str, object]] = []
+        for row in range(table.rowCount()):
+            enabled_item = table.item(row, self._PFP_COL_ENABLED)
+            target_item = table.item(row, self._PFP_COL_TARGET)
+            image_item = table.item(row, self._PFP_COL_IMAGE_URL)
+            entries.append(
+                {
+                    'enabled': (
+                        enabled_item is not None
+                        and enabled_item.checkState() == Qt.CheckState.Checked
+                    ),
+                    'target': self._normalize_pfp_target(
+                        target_item.text() if target_item is not None else ''
+                    ),
+                    'image_url': image_item.text().strip() if image_item is not None else '',
+                }
+            )
+        return entries
+
+    def _save_pfp_rows(self) -> None:
+        if self._pfp_loading:
+            return
+        entries = self._pfp_rows_to_entries()
+        if self._config_manager is not None:
+            self._config_manager.profile_picture_entries = cast('list[JsonObject]', entries)
+        self._push_pfp_entries(entries)
+
+    def _push_pfp_entries(self, entries: Sequence[Mapping[str, object]]) -> None:
+        """Hand the rows to the running proxy and refresh which hosts it intercepts."""
+        proxy_master = self._proxy_master
+        spoofer = getattr(proxy_master, 'profile_picture_spoofer', None)
+        if spoofer is None:
+            return
+        spoofer.set_entries(entries)
+        refresh = getattr(proxy_master, 'refresh_username_spoofer_interception', None)
+        if callable(refresh):
+            refresh()
+
     # Section: Avatar Meshes — Add Head Variant
 
-    def _on_add_head_variant(self):
+    def _on_add_head_variant(self) -> None:
         # Filter out already-added variants
-        existing = {r._target_path for r in self._row_widgets.values()}
+        existing = {r.target_path for r in self._row_widgets.values()}
         available = [
             v
             for v in HEAD_VARIANTS
@@ -4548,13 +6190,14 @@ class ModificationsTab(QWidget):
             )
             return
 
+        editable = False
         item, ok = QInputDialog.getItem(
             self,
             tr('ui.gui.modifications_tab.add_head_variant_2'),
             tr('ui.gui.modifications_tab.select_variant'),
             available,
             0,
-            False,
+            editable,
         )
         if ok and item:
             target = target_path_for_current_platform(rf'content\avatar\heads\{item}')
@@ -4576,7 +6219,7 @@ class ModificationsTab(QWidget):
 
     # Section: Skybox — Apply to All
 
-    def _on_apply_all_sky(self):
+    def _on_apply_all_sky(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
             tr('ui.gui.modifications_tab.select_file_for_all_sky_faces'),
@@ -4602,7 +6245,7 @@ class ModificationsTab(QWidget):
 
     # Section: Custom Modifications
 
-    def _on_add_custom(self):
+    def _on_add_custom(self) -> None:
         dlg = _CustomModDialog(self._manager, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             name = dlg.display_name
@@ -4613,8 +6256,7 @@ class ModificationsTab(QWidget):
             if raw_source:
                 # Route through the row's own detection pipeline so that
                 # 'remove', CDN URLs, asset IDs etc. all work correctly.
-                row._set_source_text_silent(raw_source)
-                row._apply_from_text()
+                row.apply_raw_source(raw_source)
 
     def _add_custom_row(self, name: str, target_path: str) -> ModRowWidget:
         row = ModRowWidget(self._manager, name, target_path, deletable=True)
@@ -4628,8 +6270,8 @@ class ModificationsTab(QWidget):
         self._custom_rows.append(row)
         return row
 
-    def _on_row_deleted(self, row: ModRowWidget, _entry_id: str):
-        target = row._target_path
+    def _on_row_deleted(self, row: ModRowWidget, _entry_id: str) -> None:
+        target = row.target_path
         if target in self._row_widgets:
             del self._row_widgets[target]
         if row in self._custom_rows:
@@ -4640,15 +6282,14 @@ class ModificationsTab(QWidget):
 
     # Fast Flags toggle
 
-    def _on_fflag_toggle(self, checked: bool):
+    def _on_fflag_toggle(self, checked: bool) -> None:
         self._manager.fast_flags_enabled = checked
         self._fflag_widget.set_presets_enabled(checked)
         if checked:
             # Immediately write current settings
-            self._fflag_widget._schedule_write()
-            self._fflag_widget._write_framerate_cap()
+            self._fflag_widget.apply_current_settings()
 
-    def _on_roblox_player_status_changed(self, is_running: bool):
+    def _on_roblox_player_status_changed(self, is_running: bool) -> None:
         """Apply all queued modifications when Roblox Player exits."""
         if not is_running:
             # Roblox has exited, apply any pending modifications
@@ -4682,7 +6323,7 @@ def _relative_target_path_for_resource_file(
 class _CustomModDialog(QDialog):
     """Dialog for adding a custom modification entry."""
 
-    def __init__(self, manager: ModificationManager, parent=None):
+    def __init__(self, manager: ModificationManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._manager = manager
         self.display_name = ''
@@ -4746,14 +6387,14 @@ class _CustomModDialog(QDialog):
 
         self.setLayout(layout)
 
-    def _warn_target_outside_roblox_dirs(self):
+    def _warn_target_outside_roblox_dirs(self) -> None:
         QMessageBox.warning(
             self,
             tr('ui.gui.modifications_tab.invalid_target'),
             tr('ui.gui.modifications_tab.target_files_must_be_inside_a_detected'),
         )
 
-    def _on_target_file_dropped(self, path: str):
+    def _on_target_file_dropped(self, path: str) -> None:
         rel = _relative_target_path_for_resource_file(path, self._manager.roblox_dirs)
         if rel is None:
             self._target_edit.clear()
@@ -4761,7 +6402,7 @@ class _CustomModDialog(QDialog):
             return
         self._target_edit.setText(rel)
 
-    def _browse_roblox(self):
+    def _browse_roblox(self) -> None:
         """Open file dialog starting at the first Roblox directory."""
         start = ''
         if self._manager.roblox_dirs:
@@ -4778,7 +6419,7 @@ class _CustomModDialog(QDialog):
                 return
             self._target_edit.setText(rel)
 
-    def _browse_source(self):
+    def _browse_source(self) -> None:
         # Try to open the dialog in the directory/path the user may have pasted
         current_val = self._source_edit.text().strip(' \t"\'')
         initial_dir = ''
@@ -4788,11 +6429,10 @@ class _CustomModDialog(QDialog):
                 if p.exists():
                     # If it's a directory, start there; if it's a file, start in its parent
                     initial_dir = str(p) if p.is_dir() else str(p.parent)
-                else:
-                    # If the exact path doesn't exist but the parent does, use the parent
-                    if p.parent.exists():
-                        initial_dir = str(p.parent)
-            except Exception:
+                # If the exact path doesn't exist but the parent does, use the parent
+                elif p.parent.exists():
+                    initial_dir = str(p.parent)
+            except OSError:
                 initial_dir = ''
 
         path, _ = QFileDialog.getOpenFileName(
@@ -4801,7 +6441,7 @@ class _CustomModDialog(QDialog):
         if path:
             self._source_edit.setText(path)
 
-    def _on_accept(self):
+    def _on_accept(self) -> None:
         name = self._name_edit.text().strip()
         target = self._target_edit.text().strip()
         if not name:

@@ -10,24 +10,35 @@ QOpenGLWidget top-level-window recreation behavior.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QOffscreenSurface, QOpenGLContext, QPainter, QSurfaceFormat
-from PyQt6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
-from PyQt6.QtWidgets import QWidget
+from typing import override
 
-from ..utils.logging import log_buffer
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import (
+    QCloseEvent,
+    QImage,
+    QOffscreenSurface,
+    QOpenGLContext,
+    QPainter,
+    QPaintEvent,
+    QResizeEvent,
+    QSurfaceFormat,
+)
+from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
+from PySide6.QtWidgets import QWidget
+
+from fleasion.utils.logging import log_buffer
 
 
 class OffscreenOpenGLWidget(QWidget):
     """QWidget that renders OpenGL offscreen and presents it as a raster image."""
 
-    framePresented = pyqtSignal()
+    frame_presented = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(120, 120)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
 
         self._requested_gl_format = QSurfaceFormat()
         self._gl_context: QOpenGLContext | None = None
@@ -72,18 +83,21 @@ class OffscreenOpenGLWidget(QWidget):
         context = QOpenGLContext(self)
         context.setFormat(self._requested_gl_format)
         if not context.create() or not context.isValid():
-            raise RuntimeError('Could not create offscreen OpenGL context')
+            msg = 'Could not create offscreen OpenGL context'
+            raise RuntimeError(msg)
 
         surface = QOffscreenSurface()
         surface.setFormat(context.format())
         surface.create()
         if not surface.isValid():
-            raise RuntimeError('Could not create offscreen OpenGL surface')
+            msg = 'Could not create offscreen OpenGL surface'
+            raise RuntimeError(msg)
 
         self._gl_context = context
         self._gl_surface = surface
         if not context.makeCurrent(surface):
-            raise RuntimeError('Could not make offscreen OpenGL context current')
+            msg = 'Could not make offscreen OpenGL context current'
+            raise RuntimeError(msg)
         try:
             self.initializeGL()
             self._gl_initialized = True
@@ -93,7 +107,8 @@ class OffscreenOpenGLWidget(QWidget):
 
     def _ensure_fbo(self, width: int, height: int) -> None:
         if self._gl_context is None:
-            raise RuntimeError('OpenGL context is not available')
+            msg = 'OpenGL context is not available'
+            raise RuntimeError(msg)
 
         width = max(1, int(width))
         height = max(1, int(height))
@@ -106,41 +121,49 @@ class OffscreenOpenGLWidget(QWidget):
         fbo_format.setSamples(max(0, self._gl_context.format().samples()))
         fbo = QOpenGLFramebufferObject(width, height, fbo_format)
         if not fbo.isValid():
-            raise RuntimeError(f'Could not create {width}x{height} OpenGL framebuffer')
+            msg = f'Could not create {width}x{height} OpenGL framebuffer'
+            raise RuntimeError(msg)
         self._gl_fbo = fbo
         self._gl_render_size = (width, height)
         self.resizeGL(width, height)
 
     def _render_to_image(self) -> QImage:
         if not self._ensure_context() or self._gl_context is None or self._gl_surface is None:
-            raise RuntimeError('OpenGL context is unavailable')
+            msg = 'OpenGL context is unavailable'
+            raise RuntimeError(msg)
         if not self._gl_context.makeCurrent(self._gl_surface):
-            raise RuntimeError('Could not make offscreen OpenGL context current')
+            msg = 'Could not make offscreen OpenGL context current'
+            raise RuntimeError(msg)
 
         try:
             self._ensure_fbo(self.width(), self.height())
-            assert self._gl_fbo is not None
+            if self._gl_fbo is None:
+                msg = 'OpenGL framebuffer was not initialized'
+                raise RuntimeError(msg)
             if not self._gl_fbo.bind():
-                raise RuntimeError('Could not bind offscreen OpenGL framebuffer')
+                msg = 'Could not bind offscreen OpenGL framebuffer'
+                raise RuntimeError(msg)
             try:
                 self.paintGL()
-                image = self._gl_fbo.toImage(True)
+                image = self._gl_fbo.toImage(flipped=True)
                 if image.isNull():
-                    raise RuntimeError('OpenGL framebuffer readback returned a null image')
+                    msg = 'OpenGL framebuffer readback returned a null image'
+                    raise RuntimeError(msg)
                 return image
             finally:
                 self._gl_fbo.release()
         finally:
             self._gl_context.doneCurrent()
 
-    def paintEvent(self, event) -> None:
+    @override
+    def paintEvent(self, _event: QPaintEvent) -> None:
         if self._rendering:
             return
         self._rendering = True
         try:
             try:
                 self._frame_image = self._render_to_image()
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 if not self._offscreen_error_logged:
                     self._offscreen_error_logged = True
                     log_buffer.log(
@@ -150,8 +173,13 @@ class OffscreenOpenGLWidget(QWidget):
 
             painter = QPainter(self)
             try:
+                # An offscreen frame may contain transparent pixels. Give them
+                # an opaque local backing rather than leaking the glass window's
+                # desktop backdrop through the 3D viewport
+                background = self.palette().base().color()
+                background.setAlpha(255)
+                painter.fillRect(self.rect(), background)
                 if self._frame_image.isNull():
-                    painter.fillRect(self.rect(), self.palette().window())
                     painter.setPen(self.palette().windowText().color())
                     painter.drawText(
                         self.rect(),
@@ -164,43 +192,49 @@ class OffscreenOpenGLWidget(QWidget):
                 painter.end()
 
             if not self._frame_image.isNull():
-                self.framePresented.emit()
+                self.frame_presented.emit()
         finally:
             self._rendering = False
 
-    def resizeEvent(self, event) -> None:
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self.update()
 
-    def closeEvent(self, event) -> None:
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         context = self._gl_context
         surface = self._gl_surface
         if context is not None and surface is not None:
             try:
                 context.makeCurrent(surface)
                 self._gl_fbo = None
-            except Exception:
+            except RuntimeError:
                 pass
             finally:
                 try:
                     context.doneCurrent()
-                except Exception:
+                except RuntimeError:
                     pass
         if surface is not None:
             try:
                 surface.destroy()
-            except Exception:
+            except RuntimeError:
                 pass
         self._gl_surface = None
         self._gl_context = None
         super().closeEvent(event)
 
     # Hooks implemented by the concrete renderer classes.
-    def initializeGL(self) -> None:  # pragma: no cover - abstract hook
+    def initializeGL(
+        self,
+    ) -> None:  # pragma: no cover - abstract hook
         raise NotImplementedError
 
     def resizeGL(self, width: int, height: int) -> None:  # pragma: no cover - abstract hook
         raise NotImplementedError
 
-    def paintGL(self) -> None:  # pragma: no cover - abstract hook
+    def paintGL(
+        self,
+    ) -> None:  # pragma: no cover - abstract hook
         raise NotImplementedError

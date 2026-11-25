@@ -1,13 +1,28 @@
+from collections.abc import Callable
+from typing import cast
 from urllib.parse import SplitResult
 
 import pytest
+import requests
 from packaging.version import Version
-from pytest import MonkeyPatch
 
 from fleasion.utils import update_resolver
 from fleasion.utils.metadata import APP_REPO
 from fleasion.utils.update_resolver import ReleaseCandidate, UpdateResolver
 from fleasion.utils.updater import QtUpdateChecker
+
+
+def _worker(checker: QtUpdateChecker) -> None:
+    callback = cast('Callable[[], None]', getattr(checker, '_worker'))
+    callback()
+
+
+def _record_found(values: list[tuple[str, str]]) -> Callable[[str, str], None]:
+    def record(tag: str, url: str) -> None:
+        values.append((tag, url))
+
+    return record
+
 
 _REPOSITORY_URL = 'https://github.com/fleasion/Fleasion'
 _LATEST_RELEASE_API = 'https://api.github.com/repos/fleasion/Fleasion/releases/latest'
@@ -19,7 +34,7 @@ def _resolver(current_version: str) -> UpdateResolver:
 
 
 @pytest.mark.parametrize(
-    ('current_version', 'latest_tag', 'expected'),
+    'current_version,latest_tag,expected',
     [
         ('2.4.0', 'v2.4.1', True),
         ('2.4.0', 'v2.4.0', False),
@@ -42,7 +57,7 @@ def test_update_availability_uses_semantic_version_ordering(
 
 
 @pytest.mark.parametrize(
-    ('current_version', 'expected_api'),
+    'current_version,expected_api',
     [
         ('2.4.0', _LATEST_RELEASE_API),
         ('2.4.0.post1', _LATEST_RELEASE_API),
@@ -69,7 +84,7 @@ def test_repository_url_is_normalized_for_github_endpoints() -> None:
     )
 
 
-def test_resolver_caches_parsed_configuration(monkeypatch: MonkeyPatch) -> None:
+def test_resolver_caches_parsed_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     urlsplit_calls: list[str] = []
     original_urlsplit = update_resolver.urlsplit
 
@@ -149,7 +164,7 @@ def test_stable_channel_ignores_drafts_and_prereleases(release: dict[str, object
     assert _resolver('2.4.0').select_update(release) is None
 
 
-def test_resolver_fetches_from_its_channel_endpoint(monkeypatch: MonkeyPatch) -> None:
+def test_resolver_fetches_from_its_channel_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     requested_urls: list[str] = []
     requested_params: list[object] = []
 
@@ -172,7 +187,7 @@ def test_resolver_fetches_from_its_channel_endpoint(monkeypatch: MonkeyPatch) ->
         requested_params.append(_kwargs.get('params'))
         return Response()
 
-    monkeypatch.setattr(update_resolver.requests, 'get', get)
+    monkeypatch.setattr(requests, 'get', get)
     resolver = _resolver('2.4.0b1')
 
     assert resolver.check() == ReleaseCandidate(
@@ -184,7 +199,7 @@ def test_resolver_fetches_from_its_channel_endpoint(monkeypatch: MonkeyPatch) ->
     assert requested_params == [{'per_page': 10}]
 
 
-def test_qt_checker_owns_resolver_and_emits_its_result(monkeypatch: MonkeyPatch) -> None:
+def test_qt_checker_owns_resolver_and_emits_its_result(monkeypatch: pytest.MonkeyPatch) -> None:
     resolver = _resolver('2.4.0b1')
     monkeypatch.setattr(
         resolver,
@@ -197,9 +212,9 @@ def test_qt_checker_owns_resolver_and_emits_its_result(monkeypatch: MonkeyPatch)
     )
     checker = QtUpdateChecker(resolver)
     found: list[tuple[str, str]] = []
-    checker.found.connect(lambda tag, url: found.append((tag, url)))
+    checker.found.connect(_record_found(found))
 
-    checker._worker()
+    _worker(checker)
 
     assert checker.resolver is resolver
     assert found == [('v2.4.0b2', 'https://example.invalid/b2')]

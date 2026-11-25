@@ -1,17 +1,29 @@
 """JSON tree viewer widget."""
 
-from ..localization import tr, tr_count
+from __future__ import annotations
 
 import gzip as gzip_module
 import io
+import json
+import struct
+import tempfile
+import zlib
+from collections.abc import Callable, Iterator
+from functools import partial
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, override
+from urllib.parse import urlparse
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import (
+from defusedxml import ElementTree as DefusedElementTree, minidom as defused_minidom
+from defusedxml.common import DefusedXmlException
+from PySide6.QtCore import QEvent, QObject, QPoint, QSignalBlocker, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QImage, QKeyEvent, QPalette, QPixmap, QResizeEvent
+from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayoutItem,
     QLineEdit,
     QMenu,
     QMessageBox,
@@ -24,13 +36,133 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+lazy import requests as _requests
+lazy from PIL import Image, UnidentifiedImageError
 
-from ..cache.rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
-from ..utils import get_icon_path
-from ..utils.clipboard import copy_pixmap_to_clipboard
+from fleasion.cache.preview_loaders import (
+    ImageLoaderThread,
+    MeshLoaderThread,
+    SolidModelLoaderThread,
+)
+from fleasion.cache.rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
+from fleasion.localization import tr, tr_count
+from fleasion.utils.clipboard import copy_pixmap_to_clipboard
+from fleasion.utils.json_types import JsonValue, require_object_dict, require_object_list
+from fleasion.widgets.image_preview import ImagePreviewLabel
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.text import style_text
+lazy from fleasion.cache.animation_viewer import AnimationViewerPanel
+lazy from fleasion.cache.audio_player import AudioPlayerWidget
+lazy from fleasion.cache.cache_json_viewer import CacheJsonViewer
+lazy from fleasion.cache.font_viewer import FontViewerWidget
+lazy from fleasion.cache.obj_viewer import ObjViewerPanel
+lazy from fleasion.proxy.addons.cache_scraper import (
+    CREATOR_GAME_MAX_SCAN,
+    CREATOR_GAME_PAGE_LIMITS,
+    creator_game_base_paths,
+)
+lazy from fleasion.utils import roblox_auth
+
+if TYPE_CHECKING:
+    from fleasion.config.manager import ConfigManager
 
 
-def _coerce_import_value(value) -> int | str | None:
+type ImportValue = int | str
+type ImportIdsCallback = Callable[[list[ImportValue]], object]
+type ImportReplacementCallback = Callable[[ImportValue], object]
+type TreeItemPath = tuple[int, ...]
+type TreeSearchSnapshot = list[tuple[TreeItemPath, str]]
+
+
+class _CacheScraperLike(Protocol):
+    """Cache scraper surface used by the JSON viewer."""
+
+    def fetch_asset_with_place_id_retry(
+        self,
+        asset_id: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[bytes | None, int | None]: ...
+
+    def https_get(
+        self,
+        hostname: str,
+        path: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> bytes | None: ...
+
+
+def _scraper_fetch_asset(
+    scraper: _CacheScraperLike,
+    asset_id: str,
+    extra_headers: dict[str, str] | None,
+) -> tuple[bytes | None, int | None]:
+    return scraper.fetch_asset_with_place_id_retry(
+        asset_id,
+        extra_headers=extra_headers,
+    )
+
+
+def _scraper_https_get(
+    scraper: _CacheScraperLike,
+    hostname: str,
+    path: str,
+    extra_headers: dict[str, str] | None,
+) -> bytes | None:
+    return scraper.https_get(hostname, path, extra_headers=extra_headers)
+
+
+def _preserve_int_source(value: object) -> str | int | float:
+    if not isinstance(value, str | int | float):
+        msg = 'Expected a number or numeric string'
+        raise TypeError(msg)
+    return value
+
+
+def _tree_child(item: QTreeWidgetItem, index: int) -> QTreeWidgetItem:
+    child = item.child(index)
+    if child is None:
+        msg = f'Missing tree child at index {index}'
+        raise IndexError(msg)
+    return child
+
+
+def _top_level_item(tree: QTreeWidget, index: int) -> QTreeWidgetItem:
+    item = tree.topLevelItem(index)
+    if item is None:
+        msg = f'Missing top-level tree item at index {index}'
+        raise IndexError(msg)
+    return item
+
+
+def _take_layout_item(layout: QVBoxLayout) -> QLayoutItem:
+    item = layout.takeAt(0)
+    if item is None:
+        msg = 'Cannot take an item from an empty layout'
+        raise IndexError(msg)
+    return item
+
+
+def _require_application(value: object) -> QApplication:
+    if not isinstance(value, QApplication):
+        msg = 'A QApplication is required for the viewer'
+        raise TypeError(msg)
+    return value
+
+
+def _key_event(value: QEvent) -> QKeyEvent:
+    if not isinstance(value, QKeyEvent):
+        msg = 'Expected a keyboard event'
+        raise TypeError(msg)
+    return value
+
+
+def _toggle_audio_player(player: AudioPlayerWidget) -> None:
+    player.play_pause_btn.click()
+
+
+def _coerce_import_value(value: object) -> ImportValue | None:
     """Return a safe replacer value without truncating JSON metadata floats."""
     if isinstance(value, bool):
         return None
@@ -43,26 +175,22 @@ def _coerce_import_value(value) -> int | str | None:
     return None
 
 
-TreeItemPath = tuple[int, ...]
-TreeSearchSnapshot = list[tuple[TreeItemPath, str]]
-
-
 class JsonSearchWorker(QThread):
     """Worker thread for searching a plain-data tree snapshot."""
 
-    results_ready = pyqtSignal(list)  # List[TreeItemPath]
-    progress = pyqtSignal(int, int)  # Current, total
+    results_ready = Signal(list)  # List[TreeItemPath]
+    progress = Signal(int, int)  # Current, total
 
-    def __init__(self, snapshot: TreeSearchSnapshot, query: str):
+    def __init__(self, snapshot: TreeSearchSnapshot, query: str) -> None:
         super().__init__()
         self.snapshot = snapshot
         self.query = query.lower().strip()
         self._stop_requested = False
 
-    def stop(self):
+    def stop(self) -> None:
         self._stop_requested = True
 
-    def run(self):
+    def run(self) -> None:
         """Search snapshot text without touching live Qt tree items."""
         if not self.query or self._stop_requested:
             return
@@ -87,332 +215,253 @@ class JsonSearchWorker(QThread):
 class AssetFetcherThread(QThread):
     """Fetch raw bytes for a Roblox asset ID or direct URL in a background thread."""
 
-    data_ready = pyqtSignal(bytes)
-    error = pyqtSignal(str)
+    data_ready = Signal(bytes)
+    error = Signal(str)
 
     # Class-level scraper reference — set once by ProxyMaster/app startup.
     # Avoids threading it through every call site (replacer_config has no scraper ref).
-    _scraper = None
+    _scraper: _CacheScraperLike | None = None
 
     @classmethod
-    def set_scraper(cls, scraper) -> None:
+    def set_scraper(cls, scraper: _CacheScraperLike) -> None:
         """Called by ProxyMaster after the scraper is ready."""
         cls._scraper = scraper
 
-    def __init__(self, asset_id_or_url):
+    def __init__(self, asset_id_or_url: object) -> None:
         super().__init__()
         self._asset = asset_id_or_url
         self._stop_requested = False
 
-    def stop(self):
+    def stop(self) -> None:
         self._stop_requested = True
 
     def _get_roblosecurity(self) -> str | None:
-        from ..utils.roblox_auth import get_roblosecurity
+        return roblox_auth.get_roblosecurity()
 
-        return get_roblosecurity()
+    @staticmethod
+    def _request_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {
+            'User-Agent': 'Roblox/WinInet',
+            'Accept-Encoding': 'gzip, deflate',
+        }
+        if extra:
+            headers.update(extra)
+        return headers
 
-    def run(self):
-        try:
-            val = self._asset
-            scraper = self.__class__._scraper
-
-            if isinstance(val, int) or (
-                isinstance(val, str) and str(val).strip().lstrip('-').isdigit()
-            ):
-                cookie = self._get_roblosecurity()
-                extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
-                status = None
-
-                if scraper is not None:
-                    data, status = scraper._fetch_asset_with_place_id_retry(
-                        str(val),
-                        extra_headers=extra,
-                    )
-                else:
-                    import requests as _req
-
-                    headers = {
-                        'User-Agent': 'Roblox/WinInet',
-                        'Accept-Encoding': 'gzip, deflate',
-                    }
-                    if extra:
-                        headers.update(extra)
-                    r = _req.get(
-                        f'https://assetdelivery.roblox.com/v1/asset/?id={val}',
-                        headers=headers,
-                        timeout=15,
-                    )
-                    status = r.status_code
-                    data = r.content if r.status_code == 200 else None
-                    # Attempt place-ID retry on 403 via inline logic
-                    if data is None and r.status_code == 403:
-                        try:
-                            info_r = _req.get(
-                                f'https://develop.roblox.com/v1/assets?assetIds={val}',
-                                headers={'Accept': 'application/json', **(extra or {})},
-                                timeout=10,
-                            )
-                            if info_r.status_code == 200:
-                                items = info_r.json().get('data', [])
-                                if items:
-                                    cr = items[0].get('creator') or {}
-                                    cid = cr.get('targetId') or items[0].get('creatorTargetId')
-                                    ctype = cr.get('typeId') or items[0].get('creatorType')
-                                    if cid is not None and ctype is not None:
-                                        cid, ctype = int(cid), int(ctype)
-                                        from ..proxy.addons.cache_scraper import (
-                                            CREATOR_GAME_MAX_SCAN,
-                                            CREATOR_GAME_PAGE_LIMITS,
-                                            creator_game_base_paths,
-                                        )
-
-                                        seen_pids = set()
-                                        attempted_paths = set()
-                                        for limit in CREATOR_GAME_PAGE_LIMITS:
-                                            found_before_limit = len(seen_pids)
-                                            max_pages = max(
-                                                1,
-                                                (CREATOR_GAME_MAX_SCAN + limit - 1) // limit,
-                                            )
-                                            for g_path in creator_game_base_paths(
-                                                cid, ctype, limit
-                                            ):
-                                                if g_path in attempted_paths:
-                                                    continue
-                                                attempted_paths.add(g_path)
-                                                cursor = ''
-                                                for _page in range(max_pages):
-                                                    path = g_path + (
-                                                        f'&cursor={cursor}' if cursor else ''
-                                                    )
-                                                    g_r = _req.get(
-                                                        f'https://games.roblox.com{path}',
-                                                        headers={'Accept': 'application/json'},
-                                                        timeout=10,
-                                                    )
-                                                    if g_r.status_code != 200:
-                                                        break
-                                                    resp_json = g_r.json()
-                                                    games = resp_json.get('data', [])
-                                                    for game in games:
-                                                        rp = game.get('rootPlace')
-                                                        if rp and rp.get('id'):
-                                                            pid = int(rp['id'])
-                                                            if pid in seen_pids:
-                                                                continue
-                                                            seen_pids.add(pid)
-                                                            retry_h = {
-                                                                **headers,
-                                                                'Roblox-Place-Id': str(pid),
-                                                            }
-                                                            r2 = _req.get(
-                                                                f'https://assetdelivery.roblox.com/v1/asset/?id={val}',
-                                                                headers=retry_h,
-                                                                timeout=15,
-                                                            )
-                                                            status = r2.status_code
-                                                            if r2.status_code == 200 and r2.content:
-                                                                data = r2.content
-                                                                break  # Found working place ID
-                                                    if data:
-                                                        break
-                                                    cursor = resp_json.get('nextPageCursor') or ''
-                                                    if not cursor:
-                                                        break
-                                                if data:
-                                                    break
-                                            if data or len(seen_pids) > found_before_limit:
-                                                break
-                        except Exception:
-                            pass
-
-                if self._stop_requested:
-                    return
-                if data:
-                    self.data_ready.emit(data)
-                elif status == 404:
-                    self.error.emit(tr('json.fetch.asset_not_found'))
-                elif status == 403:
-                    self.error.emit(tr('json.fetch.asset_private'))
-                else:
-                    self.error.emit(tr('json.fetch.no_data'))
-
-            elif isinstance(val, str) and (val.startswith('http://') or val.startswith('https://')):
-                from urllib.parse import urlparse as _up
-
-                parsed = _up(val)
-                hostname = (parsed.hostname or '').lower()
-                path = parsed.path + ('?' + parsed.query if parsed.query else '')
-                is_roblox = 'roblox.com' in hostname
-
-                cookie = self._get_roblosecurity() if is_roblox else None
-                extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
-
-                if scraper is not None and is_roblox:
-                    data = scraper._https_get(hostname, path, extra_headers=extra)
-                else:
-                    import requests as _req
-
-                    headers = {
-                        'User-Agent': 'Roblox/WinInet',
-                        'Accept-Encoding': 'gzip, deflate',
-                    }
-                    if extra:
-                        headers.update(extra)
-                    r = _req.get(val, headers=headers, timeout=15)
-                    data = r.content if r.status_code == 200 else None
-
-                if self._stop_requested:
-                    return
-                if data:
-                    self.data_ready.emit(data)
-                else:
-                    self.error.emit(tr('json.fetch.no_data'))
-            else:
-                self.error.emit(tr('json.fetch.cannot_fetch', value=val))
-        except Exception as e:
-            if not self._stop_requested:
-                self.error.emit(str(e))
-
-
-class ImageLoaderThread(QThread):
-    """Decode image bytes in a background thread."""
-
-    image_ready = pyqtSignal(bytes, int, int)
-    error = pyqtSignal(str)
-
-    def __init__(self, data: bytes):
-        super().__init__()
-        self.data = data
-        self._stop_requested = False
-
-    def stop(self):
-        self._stop_requested = True
-
-    def run(self):
-        from PIL import Image
-
-        try:
-            image = Image.open(io.BytesIO(self.data))
-            if image.mode not in ('RGB', 'RGBA'):
-                image = image.convert('RGBA')
-            elif image.mode == 'RGB':
-                image = image.convert('RGBA')
-            if self._stop_requested:
-                return
-            rgba = image.tobytes()
-            if not self._stop_requested:
-                self.image_ready.emit(rgba, image.width, image.height)
-        except Exception as e:
-            if not self._stop_requested:
-                self.error.emit(str(e))
-
-
-class MeshLoaderThread(QThread):
-    """Convert raw mesh bytes to OBJ string in a background thread."""
-
-    mesh_ready = pyqtSignal(str)
-    error = pyqtSignal(str)
-
-    def __init__(self, data: bytes):
-        super().__init__()
-        self.data = data
-        self._stop_requested = False
-
-    def stop(self):
-        self._stop_requested = True
-
-    def run(self):
-        from ..cache import mesh_processing
-
-        try:
-            decompressed = self.data
-            if self.data.startswith(b'\x1f\x8b'):
-                decompressed = gzip_module.decompress(self.data)
-            if self._stop_requested:
-                return
-            obj_content = mesh_processing.convert(decompressed)
-            if self._stop_requested:
-                return
-            if obj_content:
-                self.mesh_ready.emit(obj_content)
-            else:
-                self.error.emit(tr('json.preview.mesh_conversion_failed'))
-        except Exception as e:
-            if not self._stop_requested:
-                self.error.emit(str(e))
-
-
-class SolidModelLoaderThread(QThread):
-    """Convert raw SolidModel (CSG) bytes to OBJ string in a background thread."""
-
-    mesh_ready = pyqtSignal(str)
-    error = pyqtSignal(str)
-
-    def __init__(self, data: bytes):
-        super().__init__()
-        self.data = data
-        self._stop_requested = False
-
-    def stop(self):
-        self._stop_requested = True
-
-    def run(self):
-        try:
-            import tempfile
-            from pathlib import Path
-
-            from ..cache.tools.solidmodel_converter.converter import (
-                _export_obj_from_doc,
-                deserialize_rbxm,
+    @staticmethod
+    def _place_ids_for_game_path(
+        game_path: str,
+        max_pages: int,
+        seen_pids: set[int],
+    ) -> Iterator[int]:
+        cursor = ''
+        for _page in range(max_pages):
+            path = game_path + (f'&cursor={cursor}' if cursor else '')
+            response = _requests.get(
+                f'https://games.roblox.com{path}',
+                headers={'Accept': 'application/json'},
+                timeout=10,
             )
+            if response.status_code != 200:
+                break
+            response_payload: object = response.json()
+            response_json = require_object_dict(response_payload)
+            games = require_object_list(response_json.get('data', []))
+            for game_value in games:
+                game = require_object_dict(game_value)
+                root_place_value = game.get('rootPlace')
+                root_place = require_object_dict(root_place_value) if root_place_value else {}
+                if root_place.get('id'):
+                    place_id = int(_preserve_int_source(root_place['id']))
+                    if place_id not in seen_pids:
+                        seen_pids.add(place_id)
+                        yield place_id
+            cursor = str(response_json.get('nextPageCursor') or '')
+            if not cursor:
+                break
 
-            decompressed = self.data
-            if self.data.startswith(b'\x1f\x8b'):
-                decompressed = gzip_module.decompress(self.data)
+    @classmethod
+    def _creator_place_ids(cls, creator_id: int, creator_type: int) -> Iterator[int]:
+        seen_pids: set[int] = set()
+        attempted_paths: set[str] = set()
+        for limit in CREATOR_GAME_PAGE_LIMITS:
+            found_before_limit = len(seen_pids)
+            max_pages = max(1, (CREATOR_GAME_MAX_SCAN + limit - 1) // limit)
+            for game_path in creator_game_base_paths(creator_id, creator_type, limit):
+                if game_path in attempted_paths:
+                    continue
+                attempted_paths.add(game_path)
+                yield from cls._place_ids_for_game_path(game_path, max_pages, seen_pids)
+            if len(seen_pids) > found_before_limit:
+                break
 
-            if self._stop_requested:
-                return
+    def _retry_asset_for_creator_places_impl(
+        self,
+        asset_value: int | str,
+        headers: dict[str, str],
+        extra: dict[str, str] | None,
+    ) -> tuple[bytes | None, int | None]:
+        info_response = _requests.get(
+            f'https://develop.roblox.com/v1/assets?assetIds={asset_value}',
+            headers={'Accept': 'application/json', **(extra or {})},
+            timeout=10,
+        )
+        if info_response.status_code != 200:
+            return None, None
+        info_payload: object = info_response.json()
+        info = require_object_dict(info_payload)
+        items = require_object_list(info.get('data', []))
+        if not items:
+            return None, None
+        first_item = require_object_dict(items[0])
+        creator = require_object_dict(first_item.get('creator') or {})
+        creator_id = creator.get('targetId') or first_item.get('creatorTargetId')
+        creator_type = creator.get('typeId') or first_item.get('creatorType')
+        if creator_id is None or creator_type is None:
+            return None, None
 
-            doc = deserialize_rbxm(decompressed)
+        last_status: int | None = None
+        for place_id in self._creator_place_ids(
+            int(_preserve_int_source(creator_id)),
+            int(_preserve_int_source(creator_type)),
+        ):
+            retry_headers = {**headers, 'Roblox-Place-Id': str(place_id)}
+            retry_response = _requests.get(
+                f'https://assetdelivery.roblox.com/v1/asset/?id={asset_value}',
+                headers=retry_headers,
+                timeout=15,
+            )
+            last_status = retry_response.status_code
+            if retry_response.status_code == 200 and retry_response.content:
+                return retry_response.content, last_status
+        return None, last_status
 
-            with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as f:
-                temp_obj_path = Path(f.name)
+    def _retry_asset_for_creator_places(
+        self,
+        asset_value: int | str,
+        headers: dict[str, str],
+        extra: dict[str, str] | None,
+    ) -> tuple[bytes | None, int | None]:
+        try:
+            return self._retry_asset_for_creator_places_impl(asset_value, headers, extra)
+        except (
+            ImportError,
+            KeyError,
+            TypeError,
+            ValueError,
+            _requests.RequestException,
+        ):
+            return None, None
 
-            try:
-                _export_obj_from_doc(doc, temp_obj_path, decompose=False)
-                obj_content = temp_obj_path.read_text(encoding='utf-8')
-            finally:
-                if temp_obj_path.exists():
-                    temp_obj_path.unlink()
+    def _fetch_asset_id(
+        self,
+        asset_value: int | str,
+        scraper: _CacheScraperLike | None,
+    ) -> tuple[bytes | None, int | None]:
+        cookie = self._get_roblosecurity()
+        extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
+        if scraper is not None:
+            return _scraper_fetch_asset(scraper, str(asset_value), extra)
 
-            if self._stop_requested:
-                return
+        headers = self._request_headers(extra)
+        response = _requests.get(
+            f'https://assetdelivery.roblox.com/v1/asset/?id={asset_value}',
+            headers=headers,
+            timeout=15,
+        )
+        status = response.status_code
+        data = response.content if status == 200 else None
+        if data is None and status == 403:
+            retry_data, retry_status = self._retry_asset_for_creator_places(
+                asset_value,
+                headers,
+                extra,
+            )
+            if retry_status is not None:
+                status = retry_status
+            if retry_data is not None:
+                data = retry_data
+        return data, status
 
-            if obj_content:
-                self.mesh_ready.emit(obj_content)
-            else:
-                self.error.emit(tr('json.preview.solidmodel_conversion_failed'))
-        except Exception as e:
+    def _fetch_url(
+        self,
+        value: str,
+        scraper: _CacheScraperLike | None,
+    ) -> bytes | None:
+        parsed = urlparse(value)
+        hostname = (parsed.hostname or '').lower()
+        path = parsed.path + ('?' + parsed.query if parsed.query else '')
+        is_roblox = 'roblox.com' in hostname
+        cookie = self._get_roblosecurity() if is_roblox else None
+        extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
+        if scraper is not None and is_roblox:
+            return _scraper_https_get(scraper, hostname, path, extra)
+        response = _requests.get(value, headers=self._request_headers(extra), timeout=15)
+        return response.content if response.status_code == 200 else None
+
+    def _emit_asset_result(self, data: bytes | None, status: int | None) -> None:
+        if self._stop_requested:
+            return
+        if data:
+            self.data_ready.emit(data)
+        elif status == 404:
+            self.error.emit(tr('json.fetch.asset_not_found'))
+        elif status == 403:
+            self.error.emit(tr('json.fetch.asset_private'))
+        else:
+            self.error.emit(tr('json.fetch.no_data'))
+
+    def _run_fetch(self) -> None:
+        value = self._asset
+        scraper = self._scraper
+        if isinstance(value, int) or (
+            isinstance(value, str) and value.strip().lstrip('-').isdigit()
+        ):
+            data, status = self._fetch_asset_id(value, scraper)
+            self._emit_asset_result(data, status)
+        elif isinstance(value, str) and value.startswith(('http://', 'https://')):
+            data = self._fetch_url(value, scraper)
             if not self._stop_requested:
-                self.error.emit(str(e))
+                if data:
+                    self.data_ready.emit(data)
+                else:
+                    self.error.emit(tr('json.fetch.no_data'))
+        else:
+            self.error.emit(tr('json.fetch.cannot_fetch', value=value))
+
+    def run(self) -> None:
+        try:
+            self._run_fetch()
+        except (
+            ImportError,
+            KeyError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            _requests.RequestException,
+        ) as exc:
+            if not self._stop_requested:
+                self.error.emit(str(exc))
 
 
 class JsonTreeViewer(QDialog):
     """JSON tree viewer dialog."""
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
-        parent,
-        data,
+        parent: QWidget | None,
+        data: JsonValue,
         filename: str,
-        on_import_ids,
-        on_import_replacement,
-        config_manager=None,
-    ):
+        on_import_ids: ImportIdsCallback,
+        on_import_replacement: ImportReplacementCallback,
+        config_manager: ConfigManager | None = None,
+        *,
+        show_preview_title: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.config_manager = config_manager
+        self._show_preview_title = show_preview_title
         self.setWindowTitle(tr('ui.gui.json_viewer.json_value', value0=filename))
         self.resize(1200, 650)
 
@@ -427,8 +476,8 @@ class JsonTreeViewer(QDialog):
         self.data = data
         self.on_import_ids = on_import_ids
         self.on_import_replacement = on_import_replacement
-        self.node_values = {}
-        self.node_is_leaf = {}
+        self.node_values: dict[int, JsonValue] = {}
+        self.node_is_leaf: dict[int, bool] = {}
 
         # Search worker
         self._search_worker: JsonSearchWorker | None = None
@@ -440,36 +489,30 @@ class JsonTreeViewer(QDialog):
         self._asset_fetcher: AssetFetcherThread | None = None
         self._image_loader: ImageLoaderThread | None = None
         self._mesh_loader: MeshLoaderThread | None = None
-        self._animation_loader = None
+        self._animation_loader: None = None
         self._solidmodel_loader: SolidModelLoaderThread | None = None
         self._current_pixmap: QPixmap | None = None
-        self._previewing_value = None  # track what we started previewing (stale guard)
+        self._previewing_value: ImportValue | None = (
+            None  # track what we started previewing (stale guard)
+        )
         self._audio_key_filter_installed = False  # Track if global audio key filter is installed
         self._last_fetched_data: bytes | None = None  # raw bytes for solidmodel fallback
 
         # Texturepack state
-        self.texturepack_widget = None
-        self._texturepack_data: dict = {}  # map_name -> {id, data}
+        self.texturepack_widget: QWidget | None = None
+        self._texturepack_data: dict[str, dict[str, str | bytes]] = {}  # map_name -> {id, data}
         self._texturepack_xml: str = ''
-        self._tp_image_labels: dict = {}
-        self._tp_pixmaps: dict = {}
-        self._tp_fetchers: list = []  # active AssetFetcherThread instances
+        self._tp_image_labels: dict[str, ImagePreviewLabel] = {}
+        self._tp_pixmaps: dict[str, QPixmap] = {}
+        self._tp_fetchers: list[AssetFetcherThread] = []  # active AssetFetcherThread instances
 
         self._setup_ui()
         self._populate_tree()
-        self._set_icon()
 
-    def _set_icon(self):
-        """Set window icon."""
-        if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
-
-            self.setWindowIcon(QIcon(str(icon_path)))
-
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(*PANEL_MARGINS)
 
         # Search debounce timer
         self._search_debounce = QTimer(self)
@@ -507,7 +550,7 @@ class JsonTreeViewer(QDialog):
         search_layout.addWidget(self.next_match_btn)
 
         clear_btn = QPushButton(tr('ui.gui.json_viewer.clear'))
-        clear_btn.clicked.connect(lambda: self.search_input.clear())
+        clear_btn.clicked.connect(self.search_input.clear)
         search_layout.addWidget(clear_btn)
 
         expand_btn = QPushButton(tr('ui.gui.json_viewer.expand_all'))
@@ -522,7 +565,7 @@ class JsonTreeViewer(QDialog):
 
         # Search progress label
         self.search_progress_label = QLabel('')
-        self.search_progress_label.setStyleSheet('color: #888; font-size: 11px;')
+        style_text(self.search_progress_label, tone='muted', pixel_size=11)
         self.search_progress_label.hide()
         left_layout.addWidget(self.search_progress_label)
 
@@ -560,7 +603,7 @@ class JsonTreeViewer(QDialog):
         btn_layout.addStretch()
 
         self.match_label = QLabel('')
-        self.match_label.setStyleSheet('color: #888; font-size: 11px;')
+        style_text(self.match_label, tone='muted', pixel_size=11)
         btn_layout.addWidget(self.match_label)
 
         btn_layout.addSpacing(8)
@@ -580,7 +623,9 @@ class JsonTreeViewer(QDialog):
 
         self.setLayout(layout)
 
-    def _add_node(self, parent_item, key: str, value) -> QTreeWidgetItem:
+    def _add_node(
+        self, parent_item: QTreeWidget | QTreeWidgetItem, key: str, value: JsonValue
+    ) -> QTreeWidgetItem:
         """Add a node to the tree."""
         if isinstance(value, (dict, list)):
             items = value.items() if isinstance(value, dict) else enumerate(value)
@@ -590,7 +635,8 @@ class JsonTreeViewer(QDialog):
             item.setExpanded(False)
             self.node_is_leaf[id(item)] = False
             for k, v in items:
-                self._add_node(item, f'[{k}]' if isinstance(value, list) else k, v)
+                child_key = f'[{k}]' if isinstance(value, list) else str(k)
+                self._add_node(item, child_key, v)
         else:
             val_str = (
                 'null'
@@ -607,35 +653,36 @@ class JsonTreeViewer(QDialog):
             self.node_is_leaf[id(item)] = True
         return item
 
-    def _populate_tree(self):
+    def _populate_tree(self) -> None:
         """Populate the tree with data."""
-        self.tree.blockSignals(True)
-        self.tree.setUpdatesEnabled(False)
-        try:
-            self.tree.clear()
-            if isinstance(self.data, (dict, list)):
-                items = self.data.items() if isinstance(self.data, dict) else enumerate(self.data)
-                for k, v in items:
-                    self._add_node(self.tree, f'[{k}]' if isinstance(self.data, list) else k, v)
-            else:
-                self._add_node(self.tree, '', self.data)
-        finally:
-            self.tree.setUpdatesEnabled(True)
-            self.tree.blockSignals(False)
+        with QSignalBlocker(self.tree):
+            self.tree.setUpdatesEnabled(False)
+            try:
+                self.tree.clear()
+                if isinstance(self.data, (dict, list)):
+                    items = (
+                        self.data.items() if isinstance(self.data, dict) else enumerate(self.data)
+                    )
+                    for k, v in items:
+                        child_key = f'[{k}]' if isinstance(self.data, list) else str(k)
+                        self._add_node(self.tree, child_key, v)
+                else:
+                    self._add_node(self.tree, '', self.data)
+            finally:
+                self.tree.setUpdatesEnabled(True)
 
     def _get_all_leaf_descendants(self, item: QTreeWidgetItem) -> list[QTreeWidgetItem]:
         """Get all leaf descendants of an item."""
         if self.node_is_leaf.get(id(item)):
             return [item]
-        leaves = []
+        leaves: list[QTreeWidgetItem] = []
         for i in range(item.childCount()):
-            leaves.extend(self._get_all_leaf_descendants(item.child(i)))
+            leaves.extend(self._get_all_leaf_descendants(_tree_child(item, i)))
         return leaves
 
-    def _is_link_or_path(self, value: str) -> bool:
+    @staticmethod
+    def _is_link_or_path(value: str) -> bool:
         """Check if a string is a link or file path."""
-        if not isinstance(value, str):
-            return False
         value = value.strip()
         # Check for URLs
         if value.startswith(('http://', 'https://', 'ftp://', 'file://')):
@@ -644,14 +691,12 @@ class JsonTreeViewer(QDialog):
         if value.startswith('/') or (len(value) > 2 and value[1] == ':'):
             return True
         # Check for relative paths with directory separators
-        if '/' in value or '\\' in value:
-            return True
-        return False
+        return bool('/' in value or '\\' in value)
 
     def _get_selected_values(self) -> list[int | str]:
         """Get numeric values and links/file paths from selected items."""
-        leaves = []
-        leaf_ids = set()  # Track IDs to avoid duplicates
+        leaves: list[QTreeWidgetItem] = []
+        leaf_ids: set[int] = set()  # Track IDs to avoid duplicates
 
         for item in self.tree.selectedItems():
             if self.node_is_leaf.get(id(item)):
@@ -679,7 +724,7 @@ class JsonTreeViewer(QDialog):
                 values.append(val)
         return values
 
-    def _on_selection_change(self):
+    def _on_selection_change(self) -> None:
         """Handle selection change and trigger asset preview."""
         vals = self._get_selected_values()
         self.selection_label.setText(
@@ -699,16 +744,6 @@ class JsonTreeViewer(QDialog):
 
     def _create_preview_panel(self) -> QWidget:
         """Create the right-side preview panel (mirrors cache_viewer's panel)."""
-        from ..cache.animation_viewer import AnimationViewerPanel
-        from ..cache.audio_player import (
-            AudioPlayerWidget,  # noqa: F401 - used dynamically
-        )
-        from ..cache.cache_json_viewer import CacheJsonViewer
-        from ..cache.font_viewer import (
-            FontViewerWidget,  # noqa: F401 - used dynamically
-        )
-        from ..cache.obj_viewer import ObjViewerPanel
-
         preview_widget = QWidget()
         preview_layout = QVBoxLayout()
         preview_layout.setContentsMargins(0, 0, 0, 0)
@@ -716,9 +751,11 @@ class JsonTreeViewer(QDialog):
         self.preview_group = QWidget()
         preview_group_layout = QVBoxLayout()
         preview_group_layout.setContentsMargins(0, 0, 0, 0)
-        preview_group_layout.setSpacing(4)
+        preview_group_layout.setSpacing(GAP)
 
+        # The title naming the previewed asset is opt-in
         self.preview_title_label = QLabel(tr('ui.gui.json_viewer.preview'))
+        self.preview_title_label.setVisible(self._show_preview_title)
         preview_group_layout.addWidget(self.preview_title_label)
 
         self.preview_scroll = QScrollArea()
@@ -728,7 +765,7 @@ class JsonTreeViewer(QDialog):
 
         self.preview_container = QWidget()
         self.preview_container_layout = QVBoxLayout()
-        self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
+        self.preview_container_layout.setContentsMargins(*PANEL_MARGINS)
 
         # 3D viewer for meshes
         self.obj_viewer = ObjViewerPanel(config_manager=self.config_manager)
@@ -745,16 +782,17 @@ class JsonTreeViewer(QDialog):
         self.loading_label.hide()
 
         # Image viewer
-        self.image_label = QLabel(tr('ui.gui.json_viewer.select_a_single_asset_id_or_url'))
+        self.image_label = ImagePreviewLabel(
+            tr('ui.gui.json_viewer.select_a_single_asset_id_or_url'), copyable=True
+        )
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; }')
-        self.image_label.setScaledContents(False)
-        self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
+        self.image_label.setBackgroundRole(QPalette.ColorRole.Base)
+        self.image_label.setAutoFillBackground(True)
+        style_text(self.image_label, tone='muted')
         self.preview_container_layout.addWidget(self.image_label)
 
         # Audio player container with centering wrapper
-        self.audio_player = None
+        self.audio_player: AudioPlayerWidget | None = None
         self.audio_wrapper = QWidget()
         audio_wrapper_layout = QVBoxLayout()
         audio_wrapper_layout.setContentsMargins(0, 0, 0, 0)
@@ -837,7 +875,7 @@ class JsonTreeViewer(QDialog):
 
     # Preview orchestration
 
-    def _preview_value(self, val):
+    def _preview_value(self, val: ImportValue) -> None:
         """Start preview for a selected asset ID (int) or URL (str)."""
         if val == self._previewing_value:
             return  # Already showing this
@@ -856,7 +894,7 @@ class JsonTreeViewer(QDialog):
             if len(display) > 60:
                 display = display[:57] + '...'
             self.preview_title_label.setText(tr('ui.gui.json_viewer.preview_value', value0=display))
-        except Exception:
+        except RuntimeError:
             pass
 
         self._asset_fetcher = AssetFetcherThread(val)
@@ -864,10 +902,19 @@ class JsonTreeViewer(QDialog):
         self._asset_fetcher.error.connect(self._on_fetch_error)
         self._asset_fetcher.start()
 
-    def _on_fetch_error(self, error: str):
+    def _on_fetch_error(self, error: str) -> None:
         self._show_text_preview(tr('json.preview.fetch_failed', error=error))
 
-    def _on_asset_fetched(self, data: bytes):
+    def _on_image_error(self, error: str) -> None:
+        self._show_text_preview(tr('json.preview.image_error', error=error))
+
+    def _on_mesh_error(self, error: str) -> None:
+        self._show_text_preview(tr('json.preview.mesh_error', error=error))
+
+    def _on_solidmodel_error(self, error: str) -> None:
+        self._show_text_preview(tr('json.preview.solidmodel_error', error=error))
+
+    def _on_asset_fetched(self, data: bytes) -> None:
         """Dispatch fetched bytes to the appropriate preview handler."""
         self._last_fetched_data = data
         content_type = self._detect_content_type(data)
@@ -882,7 +929,7 @@ class JsonTreeViewer(QDialog):
             self._preview_font(data)
         elif content_type == 'texturepack':
             self._preview_texturepack(data)
-        elif content_type in ('rbxm', 'rbxmx'):
+        elif content_type in {'rbxm', 'rbxmx'}:
             if is_rbx_model_data(data):
                 self.rbxm_view_btn.show()
             self._preview_animation(data)
@@ -897,85 +944,65 @@ class JsonTreeViewer(QDialog):
         if data[:2] == b'\x1f\x8b':
             try:
                 working = gzip_module.decompress(data)
-            except Exception:
+            except EOFError, OSError, zlib.error:
                 pass
 
-        # Images
-        if working[:4] == b'\x89PNG':
-            return 'image'
-        if working[:2] == b'\xff\xd8':
-            return 'image'
-        if working[:4] == b'RIFF' and working[8:12] == b'WEBP':
-            return 'image'
-        if working[:3] == b'GIF':
-            return 'image'
-
-        # Audio
-        if working[:4] == b'OggS':
-            return 'audio'
-        if working[:3] == b'ID3' or working[:2] in (
-            b'\xff\xfb',
-            b'\xff\xf3',
-            b'\xff\xf2',
-        ):
-            return 'audio'
-
-        # Fonts (TrueType/OpenType)
-        if working[:4] == b'\x00\x01\x00\x00':  # TrueType
-            return 'font'
-        if working[:4] == b'OTTO':  # OpenType (CFF-based)
-            return 'font'
-        if working[:4] == b'ttcf':  # TrueType Collection
-            return 'font'
-        if working[:2] == b'\x01\x00':  # Alternative TrueType magic
-            return 'font'
-
-        # Roblox mesh (starts with "version")
-        if working[:7] == b'version':
-            return 'mesh'
-
-        # RBXM binary
-        if working[:8] == b'<roblox!':
-            return 'rbxm'
-
-        # XML (RBXMX / animation / texturepack)
-        if working[:7] == b'<roblox' or working[:5] == b'<?xml':
-            # Check for texturepack XML (has color/normal/metalness/roughness/emissive elements)
+        image_signatures = (
+            working[:4] == b'\x89PNG',
+            working[:2] == b'\xff\xd8',
+            working[:4] == b'RIFF' and working[8:12] == b'WEBP',
+            working[:3] == b'GIF',
+        )
+        audio_signatures = (
+            working[:4] == b'OggS',
+            working[:3] == b'ID3',
+            working[:2] in {b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'},
+        )
+        font_signatures = (
+            working[:4] == b'\x00\x01\x00\x00',
+            working[:4] == b'OTTO',
+            working[:4] == b'ttcf',
+            working[:2] == b'\x01\x00',
+        )
+        content_type = 'unknown'
+        if any(image_signatures):
+            content_type = 'image'
+        elif any(audio_signatures):
+            content_type = 'audio'
+        elif any(font_signatures):
+            content_type = 'font'
+        elif working[:7] == b'version':
+            content_type = 'mesh'
+        elif working[:8] == b'<roblox!':
+            content_type = 'rbxm'
+        elif working[:7] == b'<roblox' or working[:5] == b'<?xml':
+            content_type = 'rbxmx'
             try:
-                import xml.etree.ElementTree as ET
-
-                root = ET.fromstring(working)
-                tp_elems = ['color', 'normal', 'metalness', 'roughness', 'emissive']
-                if any(root.find(e) is not None for e in tp_elems):
-                    return 'texturepack'
-            except Exception:
+                root = DefusedElementTree.fromstring(working)
+                texture_elements = ('color', 'normal', 'metalness', 'roughness', 'emissive')
+                if any(root.find(element) is not None for element in texture_elements):
+                    content_type = 'texturepack'
+            except DefusedXmlException, DefusedElementTree.ParseError:
                 pass
-            return 'rbxmx'
-
-        # JSON
-        try:
-            stripped = working.lstrip()
-            if stripped[:1] in (b'{', b'['):
-                import json
-
-                json.loads(working.decode('utf-8'))
-                return 'json'
-        except Exception:
-            pass
-
-        return 'unknown'
+        else:
+            try:
+                stripped = working.lstrip()
+                if stripped[:1] in {b'{', b'['}:
+                    json.loads(working.decode('utf-8'))
+                    content_type = 'json'
+            except UnicodeDecodeError, json.JSONDecodeError:
+                pass
+        return content_type
 
     # Per-type preview handlers
 
-    def _preview_image(self, data: bytes):
+    def _preview_image(self, data: bytes) -> None:
         self._image_loader = ImageLoaderThread(data)
         self._image_loader.image_ready.connect(self._on_image_ready)
-        self._image_loader.error.connect(
-            lambda e: self._show_text_preview(tr('json.preview.image_error', error=e))
-        )
+        self._image_loader.error.connect(self._on_image_error)
         self._image_loader.start()
 
-    def _on_image_ready(self, rgba: bytes, width: int, height: int):
+    def _on_image_ready(self, rgba: bytes, width: int, height: int) -> None:
         qimage = QImage(rgba, width, height, QImage.Format.Format_RGBA8888).copy()
         pixmap = QPixmap.fromImage(qimage)
         self._hide_loading()
@@ -984,175 +1011,147 @@ class JsonTreeViewer(QDialog):
         self.image_label.show()
         self.stop_preview_btn.show()
 
-    def _scale_and_show_image(self, pixmap: QPixmap):
-        container_w = self.preview_scroll.viewport().width() - 20
-        container_h = self.preview_scroll.viewport().height() - 20
-        if container_w < 100:
-            container_w = 400
-        if container_h < 100:
-            container_h = 400
-        scaled = pixmap.scaled(
-            container_w,
-            container_h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.image_label.setPixmap(scaled)
+    def _scale_and_show_image(self, pixmap: QPixmap) -> None:
+        self.image_label.set_image(pixmap)
 
-    def _preview_mesh(self, data: bytes):
+    def _preview_mesh(self, data: bytes) -> None:
         self._mesh_loader = MeshLoaderThread(data)
         self._mesh_loader.mesh_ready.connect(self._on_mesh_ready)
-        self._mesh_loader.error.connect(
-            lambda e: self._show_text_preview(tr('json.preview.mesh_error', error=e))
-        )
+        self._mesh_loader.error.connect(self._on_mesh_error)
         self._mesh_loader.start()
 
-    def _on_mesh_ready(self, obj_content: str):
+    def _on_mesh_ready(self, obj_content: str) -> None:
         self._hide_loading()
         self.obj_viewer.load_obj(obj_content, '')
         self.obj_viewer.show()
         self.stop_preview_btn.show()
 
-    def _preview_audio(self, data: bytes):
-        import tempfile
-        from pathlib import Path
+    def _show_audio_preview(self, data: bytes, audio_player_type: type[AudioPlayerWidget]) -> None:
+        temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
+        temp_dir.mkdir(exist_ok=True)
+        temp_file = temp_dir / f'preview_{id(self)}.mp3'
+        temp_file.write_bytes(data)
 
-        from ..cache.audio_player import AudioPlayerWidget
+        self.audio_player = audio_player_type(str(temp_file), self, self.config_manager)
+        while self.audio_container_layout.count():
+            child = _take_layout_item(self.audio_container_layout)
+            child_widget = child.widget()
+            if child_widget:
+                child_widget.deleteLater()
 
+        self.audio_container_layout.addWidget(self.audio_player)
+        self._hide_loading()
+        self.audio_wrapper.show()
+        self.stop_preview_btn.show()
         try:
-            temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
-            temp_dir.mkdir(exist_ok=True)
-            temp_file = temp_dir / f'preview_{id(self)}.mp3'
-            with open(temp_file, 'wb') as f:
-                f.write(data)
+            _require_application(QApplication.instance()).installEventFilter(self)
+            self._audio_key_filter_installed = True
+        except RuntimeError, TypeError:
+            self._audio_key_filter_installed = False
+        try:
+            self.audio_player.stopped.connect(self._remove_audio_key_filter)
+        except RuntimeError, TypeError:
+            pass
 
-            self.audio_player = AudioPlayerWidget(str(temp_file), self, self.config_manager)
+    def _preview_audio(self, data: bytes) -> None:
+        try:
+            self._show_audio_preview(data, AudioPlayerWidget)
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._show_text_preview(tr('json.preview.audio_error', error=exc))
 
-            while self.audio_container_layout.count():
-                child = self.audio_container_layout.takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
+    def _show_font_preview(self, data: bytes, font_viewer_type: type[FontViewerWidget]) -> None:
+        font_viewer = font_viewer_type(data, self)
+        while self.font_container_layout.count():
+            child = _take_layout_item(self.font_container_layout)
+            child_widget = child.widget()
+            if child_widget:
+                child_widget.deleteLater()
+        self.font_container_layout.addWidget(font_viewer)
+        self._hide_loading()
+        self.font_wrapper.show()
+        self.stop_preview_btn.show()
 
-            self.audio_container_layout.addWidget(self.audio_player)
-            self._hide_loading()
-            self.audio_wrapper.show()
-            self.stop_preview_btn.show()
-
-            # Install global event filter to catch Space for play/pause while audio preview is active
-            try:
-                from PyQt6.QtWidgets import QApplication
-
-                QApplication.instance().installEventFilter(self)
-                self._audio_key_filter_installed = True
-            except Exception:
-                self._audio_key_filter_installed = False
-
-            # When audio stops or widget is deleted, remove the event filter
-            try:
-                self.audio_player.stopped.connect(lambda: self._remove_audio_key_filter())
-            except Exception:
-                pass
-
-        except Exception as e:
-            self._show_text_preview(tr('json.preview.audio_error', error=e))
-
-    def _preview_font(self, data: bytes):
+    def _preview_font(self, data: bytes) -> None:
         """Preview a font asset (TTF, OTF, TTC)."""
-        from ..cache.font_viewer import FontViewerWidget
-
         try:
-            font_viewer = FontViewerWidget(data, self)
+            self._show_font_preview(data, FontViewerWidget)
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._show_text_preview(tr('json.preview.font_error', error=exc))
 
-            # Clear previous font widgets
-            while self.font_container_layout.count():
-                child = self.font_container_layout.takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
+    def _show_animation_preview(self, data: bytes) -> None:
+        decompressed = data
+        if data[:2] == b'\x1f\x8b':
+            decompressed = gzip_module.decompress(data)
 
-            # Add new font viewer
-            self.font_container_layout.addWidget(font_viewer)
+        if self.animation_viewer.load_animation(decompressed):
             self._hide_loading()
-            self.font_wrapper.show()
+            self.animation_viewer.show()
             self.stop_preview_btn.show()
+            return
+        if decompressed[:8] == b'<roblox!':
+            self._preview_solidmodel(data)
+            return
 
-        except Exception as e:
-            self._show_text_preview(tr('json.preview.font_error', error=e))
+        text = decompressed.decode('utf-8', errors='replace')
+        if text.strip().startswith('<'):
+            try:
+                dom = defused_minidom.parse(io.BytesIO(decompressed))
+                pretty = dom.toprettyxml(indent='  ')
+            except DefusedXmlException, ValueError:
+                pass
+            else:
+                lines = [line for line in pretty.split('\n') if line.strip()]
+                self._show_text_preview('\n'.join(lines[:500]))
+                return
+        self._preview_hex(decompressed)
 
-    def _preview_animation(self, data: bytes):
+    def _preview_animation(self, data: bytes) -> None:
         """Preview RBXM/RBXMX animation data."""
         try:
-            decompressed = data
-            if data[:2] == b'\x1f\x8b':
-                decompressed = gzip_module.decompress(data)
+            self._show_animation_preview(data)
+        except (EOFError, OSError, RuntimeError, TypeError, ValueError, DefusedXmlException) as exc:
+            self._show_text_preview(tr('json.preview.animation_error', error=exc))
 
-            if self.animation_viewer.load_animation(decompressed):
-                self._hide_loading()
-                self.animation_viewer.show()
-                self.stop_preview_btn.show()
-                return
+    def _show_json_preview(self, data: bytes) -> None:
+        working = gzip_module.decompress(data) if data[:2] == b'\x1f\x8b' else data
+        parsed = json.loads(working.decode('utf-8'))
+        self.json_viewer.load_json(parsed)
+        self._hide_loading()
+        self.json_viewer.show()
+        self.stop_preview_btn.show()
 
-            # Binary RBXM that isn't an animation — try SolidModel
-            if decompressed[:8] == b'<roblox!':
-                self._preview_solidmodel(data)
-                return
-
-            # Fallback: pretty-print XML
-            text = decompressed.decode('utf-8', errors='replace')
-            if text.strip().startswith('<'):
-                try:
-                    import xml.dom.minidom
-
-                    dom = xml.dom.minidom.parseString(decompressed)
-                    pretty = dom.toprettyxml(indent='  ')
-                    lines = [ln for ln in pretty.split('\n') if ln.strip()]
-                    self._show_text_preview('\n'.join(lines[:500]))
-                    return
-                except Exception:
-                    pass
-            self._preview_hex(decompressed)
-        except Exception as e:
-            self._show_text_preview(tr('json.preview.animation_error', error=e))
-
-    def _preview_json(self, data: bytes):
+    def _preview_json(self, data: bytes) -> None:
         """Preview JSON data in the embedded JSON viewer."""
         try:
-            working = data
-            if data[:2] == b'\x1f\x8b':
-                working = gzip_module.decompress(data)
-            import json
+            self._show_json_preview(data)
+        except (EOFError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._show_text_preview(tr('json.preview.json_error', error=exc))
 
-            parsed = json.loads(working.decode('utf-8'))
-            self.json_viewer.load_json(parsed)
-            self._hide_loading()
-            self.json_viewer.show()
-            self.stop_preview_btn.show()
-        except Exception as e:
-            self._show_text_preview(tr('json.preview.json_error', error=e))
+    def _show_rbxm_preview(self, data: bytes, title_prefix: str | None) -> None:
+        if title_prefix is None:
+            title_prefix = tr('json.preview.rbxm_structure')
+        asset_label = '' if self._previewing_value is None else str(self._previewing_value).strip()
+        self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
+        self._hide_loading()
+        self.rbxm_viewer.show()
+        self.stop_preview_btn.show()
+        display = str(self._previewing_value)
+        if len(display) > 60:
+            display = display[:57] + '...'
+        self.preview_title_label.setText(
+            tr('json.preview.title_with_value', title=title_prefix, value=display)
+            if display
+            else title_prefix
+        )
 
-    def _preview_rbxm(self, data: bytes, title_prefix: str | None = None):
+    def _preview_rbxm(self, data: bytes, title_prefix: str | None = None) -> None:
         """Preview raw RBXM/RBXMX structure in the shared RBXM viewer."""
         try:
-            if title_prefix is None:
-                title_prefix = tr('json.preview.rbxm_structure')
-            asset_label = (
-                '' if self._previewing_value is None else str(self._previewing_value).strip()
-            )
-            self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
-            self._hide_loading()
-            self.rbxm_viewer.show()
-            self.stop_preview_btn.show()
-            display = str(self._previewing_value)
-            if len(display) > 60:
-                display = display[:57] + '...'
-            self.preview_title_label.setText(
-                tr('json.preview.title_with_value', title=title_prefix, value=display)
-                if display
-                else title_prefix
-            )
-        except Exception as e:
-            self._preview_hex(data, reason=tr('json.preview.rbxm_parse_failed', error=e))
+            self._show_rbxm_preview(data, title_prefix)
+        except (OSError, RuntimeError, TypeError, ValueError, struct.error) as exc:
+            self._preview_hex(data, reason=tr('json.preview.rbxm_parse_failed', error=exc))
 
-    def _preview_hex(self, data: bytes, reason: str | None = None):
+    def _preview_hex(self, data: bytes, reason: str | None = None) -> None:
         """Show a hex dump for unrecognised content."""
         preview_size = min(1024, len(data))
         lines = [tr('json.preview.hex.size_bytes', count=len(data))]
@@ -1167,7 +1166,7 @@ class JsonTreeViewer(QDialog):
             lines.append(tr('json.preview.hex.more_bytes', count=len(data) - preview_size))
         self._show_text_preview('\n'.join(lines))
 
-    def _swap_to_rbxm_view(self):
+    def _swap_to_rbxm_view(self) -> None:
         """Switch the current animation/solidmodel preview to raw RBXM structure."""
         if self._last_fetched_data is None or not is_rbx_model_data(self._last_fetched_data):
             return
@@ -1176,201 +1175,184 @@ class JsonTreeViewer(QDialog):
         self._hide_all_preview_widgets()
         self._preview_rbxm(self._last_fetched_data)
 
-    def _preview_solidmodel(self, data: bytes):
+    def _preview_solidmodel(self, data: bytes) -> None:
         """Preview a SolidModel (CSG) asset in 3D using background thread."""
         self._solidmodel_loader = SolidModelLoaderThread(data)
         self._solidmodel_loader.mesh_ready.connect(self._on_mesh_ready)
-        self._solidmodel_loader.error.connect(
-            lambda e: self._show_text_preview(tr('json.preview.solidmodel_error', error=e))
-        )
+        self._solidmodel_loader.error.connect(self._on_solidmodel_error)
         self._solidmodel_loader.start()
 
-    def _preview_texturepack(self, data: bytes):
-        """Preview a texture pack by showing all texture maps."""
-        import xml.etree.ElementTree as ET
+    def _show_texturepack_preview(self, data: bytes) -> None:
+        self._cleanup_texturepack()
 
-        try:
-            # Clean up previous texture pack if any
-            self._cleanup_texturepack()
+        # Parse XML to get texture map IDs
+        working = data
+        if data[:2] == b'\x1f\x8b':
+            working = gzip_module.decompress(data)
 
-            # Parse XML to get texture map IDs
-            working = data
-            if data[:2] == b'\x1f\x8b':
-                working = gzip_module.decompress(data)
+        xml_text = working.decode('utf-8', errors='replace')
+        self._texturepack_xml = xml_text
+        root = DefusedElementTree.fromstring(xml_text)
 
-            xml_text = working.decode('utf-8', errors='replace')
-            self._texturepack_xml = xml_text
-            root = ET.fromstring(xml_text)
+        # Extract texture map IDs in order
+        map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
+        map_display_names = {
+            'color': tr('json.texture_map.color'),
+            'normal': tr('json.texture_map.normal'),
+            'metalness': tr('json.texture_map.metalness'),
+            'roughness': tr('json.texture_map.roughness'),
+            'emissive': tr('json.texture_map.emissive'),
+        }
+        maps: dict[str, str] = {}
+        for elem in map_order:
+            node = root.find(elem)
+            if node is not None and node.text:
+                maps[map_display_names[elem]] = node.text
 
-            # Extract texture map IDs in order
-            map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
-            map_display_names = {
-                'color': tr('json.texture_map.color'),
-                'normal': tr('json.texture_map.normal'),
-                'metalness': tr('json.texture_map.metalness'),
-                'roughness': tr('json.texture_map.roughness'),
-                'emissive': tr('json.texture_map.emissive'),
-            }
-            maps = {}
-            for elem in map_order:
-                node = root.find(elem)
-                if node is not None and node.text:
-                    maps[map_display_names[elem]] = node.text
+        if not maps:
+            self._show_text_preview(tr('json.preview.texturepack_no_maps'))
+            return
 
-            if not maps:
-                self._show_text_preview(tr('json.preview.texturepack_no_maps'))
-                return
+        # Clear texture data storage
+        self._texturepack_data = {}
 
-            # Clear texture data storage
-            self._texturepack_data = {}
+        # Create container widget for texture pack preview
+        self.texturepack_widget = QWidget()
+        tp_layout = QVBoxLayout()
+        tp_layout.setContentsMargins(0, 0, 0, 0)
+        tp_layout.setSpacing(10)
 
-            # Create container widget for texture pack preview
-            self.texturepack_widget = QWidget()
-            tp_layout = QVBoxLayout()
-            tp_layout.setContentsMargins(0, 0, 0, 0)
-            tp_layout.setSpacing(10)
+        # Store references for async loading
+        self._tp_image_labels = {}
+        self._tp_pixmaps = {}
 
-            # Store references for async loading
-            self._tp_image_labels = {}
-            self._tp_pixmaps = {}
+        # Create placeholder for each texture map
+        for map_name, map_id in maps.items():
+            header = QLabel(tr('ui.gui.json_viewer.value_value', value0=map_name, value1=map_id))
+            style_text(header, tone='muted', bold=True)
+            header.setContentsMargins(5, 5, 5, 5)
+            header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            tp_layout.addWidget(header)
 
-            # Create placeholder for each texture map
-            for map_name, map_id in maps.items():
-                header = QLabel(
-                    tr('ui.gui.json_viewer.value_value', value0=map_name, value1=map_id)
-                )
-                header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
-                header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                tp_layout.addWidget(header)
-
-                img_label = QLabel(tr('ui.gui.json_viewer.loading'))
-                img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                img_label.setStyleSheet(
-                    'background-color: palette(base); padding: 10px; min-height: 100px;'
-                )
-                img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                img_label.setProperty('map_name', map_name)
-                img_label.setProperty('map_id', map_id)
-                img_label.customContextMenuRequested.connect(
-                    lambda pos, lbl=img_label: self._show_texturepack_context_menu(pos, lbl)
-                )
-                tp_layout.addWidget(img_label)
-                self._tp_image_labels[map_name] = img_label
-
-            tp_layout.addStretch()
-            self.texturepack_widget.setLayout(tp_layout)
-            self.preview_container_layout.addWidget(self.texturepack_widget)
-            self.texturepack_widget.show()
-            self.stop_preview_btn.show()
-
-            # Fetch each texture map via network
-            self._tp_fetchers = []
-            for map_name, map_id in maps.items():
-                fetcher = AssetFetcherThread(map_id)
-                fetcher.data_ready.connect(
-                    lambda d, mn=map_name, mid=map_id: self._on_texturepack_texture_fetched(
-                        mn, mid, d
-                    )
-                )
-                fetcher.error.connect(
-                    lambda e, mn=map_name: self._on_texturepack_texture_error(mn, e)
-                )
-                self._tp_fetchers.append(fetcher)
-                fetcher.start()
-
-            self._hide_loading()
-
-        except Exception as e:
-            self._show_text_preview(tr('json.preview.texturepack_error', error=e))
-
-    def _on_texturepack_texture_fetched(self, map_name: str, map_id: str, data: bytes):
-        """Handle fetched texture data for a texture pack map."""
-        from PIL import Image
-
-        try:
-            if map_name not in self._tp_image_labels:
-                return
-
-            img_label = self._tp_image_labels[map_name]
-            try:
-                _ = img_label.isVisible()
-            except RuntimeError:
-                return
-
-            # Store texture data for context menu
-            self._texturepack_data[map_name] = {'id': map_id, 'data': data}
-
-            working = data
-            if data[:2] == b'\x1f\x8b':
-                try:
-                    working = gzip_module.decompress(data)
-                except Exception:
-                    pass
-
-            image = Image.open(io.BytesIO(working))
-            if image.mode not in ('RGB', 'RGBA'):
-                image = image.convert('RGBA')
-            elif image.mode == 'RGB':
-                image = image.convert('RGBA')
-
-            # Scale up small images to 512x512 minimum
-            min_size = 512
-            if image.width < min_size or image.height < min_size:
-                scale_factor = max(min_size / image.width, min_size / image.height)
-                new_width = int(image.width * scale_factor)
-                new_height = int(image.height * scale_factor)
-                image = image.resize((new_width, new_height), Image.Resampling.NEAREST)
-
-            qimage = QImage(
-                image.tobytes(),
-                image.width,
-                image.height,
-                QImage.Format.Format_RGBA8888,
+            img_label = ImagePreviewLabel(tr('ui.gui.json_viewer.loading'), fit_height=False)
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            img_label.setStyleSheet(
+                'background-color: palette(base); padding: 10px; min-height: 100px;'
             )
-            pixmap = QPixmap.fromImage(qimage)
-            self._tp_pixmaps[map_name] = pixmap
+            img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            img_label.setProperty('map_name', map_name)
+            img_label.setProperty('map_id', map_id)
+            img_label.customContextMenuRequested.connect(
+                partial(self._show_texturepack_context_menu, label=img_label)
+            )
+            tp_layout.addWidget(img_label)
+            self._tp_image_labels[map_name] = img_label
 
-            # Scale to fit container
-            container_width = self.preview_scroll.viewport().width() - 30
-            if container_width < 100:
-                container_width = 400
+        tp_layout.addStretch()
+        self.texturepack_widget.setLayout(tp_layout)
+        self.preview_container_layout.addWidget(self.texturepack_widget)
+        self.texturepack_widget.show()
+        self.stop_preview_btn.show()
 
-            if pixmap.width() > container_width:
-                scaled = pixmap.scaledToWidth(
-                    container_width, Qt.TransformationMode.SmoothTransformation
-                )
-            else:
-                scaled = pixmap
+        # Fetch each texture map via network
+        self._tp_fetchers = []
+        for map_name, map_id in maps.items():
+            fetcher = AssetFetcherThread(map_id)
+            fetcher.data_ready.connect(
+                partial(self._on_texturepack_texture_fetched, map_name, map_id)
+            )
+            fetcher.error.connect(partial(self._on_texturepack_texture_error, map_name))
+            self._tp_fetchers.append(fetcher)
+            fetcher.start()
 
-            img_label.setPixmap(scaled)
-            img_label.setStyleSheet('')
+        self._hide_loading()
 
-        except Exception as e:
-            self._on_texturepack_texture_error(map_name, str(e))
+    def _preview_texturepack(self, data: bytes) -> None:
+        """Preview a texture pack by showing all texture maps."""
+        try:
+            self._show_texturepack_preview(data)
 
-    def _on_texturepack_texture_error(self, map_name: str, error: str):
+        except (EOFError, OSError, RuntimeError, TypeError, ValueError, DefusedXmlException) as exc:
+            self._show_text_preview(tr('json.preview.texturepack_error', error=exc))
+
+    def _update_texturepack_texture(self, map_name: str, map_id: str, data: bytes) -> None:
+        if map_name not in self._tp_image_labels:
+            return
+
+        img_label = self._tp_image_labels[map_name]
+        try:
+            _ = img_label.isVisible()
+        except RuntimeError:
+            return
+
+        # Store texture data for context menu
+        self._texturepack_data[map_name] = {'id': map_id, 'data': data}
+
+        working = data
+        if data[:2] == b'\x1f\x8b':
+            try:
+                working = gzip_module.decompress(data)
+            except EOFError, OSError, zlib.error:
+                pass
+
+        image = Image.open(io.BytesIO(working))
+        if image.mode not in {'RGB', 'RGBA'} or image.mode == 'RGB':
+            image = image.convert('RGBA')
+
+        # Scale up small images to 512x512 minimum
+        min_size = 512
+        if image.width < min_size or image.height < min_size:
+            scale_factor = max(min_size / image.width, min_size / image.height)
+            new_width = int(image.width * scale_factor)
+            new_height = int(image.height * scale_factor)
+            image = image.resize((new_width, new_height), Image.Resampling.NEAREST)
+
+        qimage = QImage(
+            image.tobytes(),
+            image.width,
+            image.height,
+            QImage.Format.Format_RGBA8888,
+        )
+        pixmap = QPixmap.fromImage(qimage)
+        self._tp_pixmaps[map_name] = pixmap
+
+        img_label.setStyleSheet('')
+        img_label.set_image(pixmap)
+
+    def _on_texturepack_texture_fetched(self, map_name: str, map_id: str, data: bytes) -> None:
+        """Handle fetched texture data for a texture pack map."""
+        try:
+            self._update_texturepack_texture(map_name, map_id, data)
+
+        except (OSError, RuntimeError, TypeError, ValueError, UnidentifiedImageError) as exc:
+            self._on_texturepack_texture_error(map_name, str(exc))
+
+    def _show_texturepack_texture_error(self, map_name: str, error: str) -> None:
+        if map_name not in self._tp_image_labels:
+            return
+        img_label = self._tp_image_labels[map_name]
+        try:
+            _ = img_label.isVisible()
+        except RuntimeError:
+            return
+        img_label.setText(tr('ui.gui.json_viewer.error_value', value0=error))
+        img_label.setStyleSheet('color: #ff6b6b; padding: 10px;')
+
+    def _on_texturepack_texture_error(self, map_name: str, error: str) -> None:
         """Handle texture load error for a texture pack map."""
         try:
-            if map_name not in self._tp_image_labels:
-                return
-            img_label = self._tp_image_labels[map_name]
-            try:
-                _ = img_label.isVisible()
-            except RuntimeError:
-                return
-            img_label.setText(tr('ui.gui.json_viewer.error_value', value0=error))
-            img_label.setStyleSheet('color: #ff6b6b; padding: 10px;')
-        except Exception:
+            self._show_texturepack_texture_error(map_name, error)
+        except RuntimeError:
             pass
 
-    def _cleanup_texturepack(self):
+    def _cleanup_texturepack(self) -> None:
         """Clean up texture pack state."""
         for fetcher in self._tp_fetchers:
             try:
                 fetcher.stop()
                 fetcher.quit()
                 fetcher.wait()
-            except Exception:
+            except RuntimeError:
                 pass
         self._tp_fetchers = []
 
@@ -1384,23 +1366,9 @@ class JsonTreeViewer(QDialog):
 
     # Context menus
 
-    def _show_image_context_menu(self, pos):
-        """Show context menu for image preview."""
-        if self._current_pixmap is None or self._current_pixmap.isNull():
-            return
-
-        menu = QMenu(self)
-        copy_action = menu.addAction(tr('ui.gui.json_viewer.copy_image'))
-
-        action = menu.exec(self.image_label.mapToGlobal(pos))
-        if action == copy_action:
-            copy_pixmap_to_clipboard(self._current_pixmap)
-
-    def _show_texturepack_context_menu(self, pos, label: QLabel):
+    def _show_texturepack_context_menu(self, pos: QPoint, label: QLabel) -> None:
         """Show context menu for texturepack image."""
-        from PyQt6.QtWidgets import QApplication
-
-        map_name = label.property('map_name')
+        map_name = str(label.property('map_name'))
         map_id = label.property('map_id')
 
         menu = QMenu(self)
@@ -1427,36 +1395,37 @@ class JsonTreeViewer(QDialog):
 
     # Preview utilities
 
-    def _show_text_preview(self, text: str):
+    def _show_text_preview(self, text: str) -> None:
         self._hide_loading()
         self.text_viewer.setPlainText(text)
         self.text_viewer.show()
         self.stop_preview_btn.show()
 
-    def _show_loading(self):
+    def _show_loading(self) -> None:
         self.loading_label.show()
 
-    def _hide_loading(self):
+    def _hide_loading(self) -> None:
         self.loading_label.hide()
 
-    def _stop_preview(self):
+    def _stop_preview(self) -> None:
         """Stop the current preview and hide the preview panel controls."""
         self._stop_all_loaders()
         self._hide_all_preview_widgets()
         try:
             self.rbxm_viewer.clear()
-        except Exception:
+        except RuntimeError:
             pass
         self.preview_panel.hide()
         self._previewing_value = None
         try:
             self.preview_title_label.setText(tr('ui.gui.json_viewer.preview'))
-        except Exception:
+        except RuntimeError:
             pass
 
-    def _hide_all_preview_widgets(self):
+    def _hide_all_preview_widgets(self) -> None:
         self.obj_viewer.hide()
         self.image_label.hide()
+        self.image_label.clear()
         self.audio_wrapper.hide()
         self.animation_viewer.hide()
         self.text_viewer.hide()
@@ -1479,11 +1448,11 @@ class JsonTreeViewer(QDialog):
             self.audio_player.deleteLater()
             self.audio_player = None
 
-    def _clear_preview(self):
+    def _clear_preview(self) -> None:
         """Hide the preview panel and stop all loaders."""
         self._stop_preview()
 
-    def _stop_all_loaders(self):
+    def _stop_all_loaders(self) -> None:
         for loader in (
             self._asset_fetcher,
             self._image_loader,
@@ -1496,7 +1465,7 @@ class JsonTreeViewer(QDialog):
                     loader.stop()
                     loader.quit()
                     loader.wait()
-                except Exception:
+                except RuntimeError:
                     pass
         self._asset_fetcher = None
         self._image_loader = None
@@ -1510,45 +1479,51 @@ class JsonTreeViewer(QDialog):
                 fetcher.stop()
                 fetcher.quit()
                 fetcher.wait()
-            except Exception:
+            except RuntimeError:
                 pass
         self._tp_fetchers = []
 
-    def _on_splitter_moved(self, pos: int, index: int):
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
         if self._current_pixmap is not None and self.image_label.isVisible():
             self._scale_and_show_image(self._current_pixmap)
 
-    def eventFilter(self, obj, event):
+    def _handle_audio_key_event(self, event: QEvent) -> bool:
+        if event.type() != QEvent.Type.KeyPress:
+            return False
+        key_event = _key_event(event)
+        if (
+            key_event.key() != Qt.Key.Key_Space
+            or not self.audio_player
+            or not self.audio_wrapper.isVisible()
+        ):
+            return False
+        try:
+            _toggle_audio_player(self.audio_player)
+        except RuntimeError:
+            pass
+        return True
+
+    @override
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         """Global event filter to catch space key and toggle audio play/pause."""
         try:
-            from PyQt6.QtCore import QEvent
-
-            if event.type() == QEvent.Type.KeyPress:
-                # Space toggles play/pause when audio preview is active
-                if event.key() == Qt.Key.Key_Space:
-                    if self.audio_player and self.audio_wrapper.isVisible():
-                        try:
-                            # Toggle play/pause on the audio widget
-                            self.audio_player._toggle_play_pause()
-                        except Exception:
-                            pass
-                        return True
-        except Exception:
+            if self._handle_audio_key_event(event):
+                return True
+        except RuntimeError, TypeError:
             pass
         return super().eventFilter(obj, event)
 
-    def _remove_audio_key_filter(self):
+    def _remove_audio_key_filter(self) -> None:
         """Remove global audio key event filter if installed."""
         try:
             if self._audio_key_filter_installed:
-                from PyQt6.QtWidgets import QApplication
-
-                QApplication.instance().removeEventFilter(self)
+                _require_application(QApplication.instance()).removeEventFilter(self)
                 self._audio_key_filter_installed = False
-        except Exception:
+        except RuntimeError:
             pass
 
-    def resizeEvent(self, event):
+    @override
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         if self._current_pixmap is not None and self.image_label.isVisible():
             self._scale_and_show_image(self._current_pixmap)
@@ -1562,7 +1537,8 @@ class JsonTreeViewer(QDialog):
         worker.deleteLater()
         self._search_worker = None
 
-    def closeEvent(self, event):
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Handle dialog close - cleanup all resources including audio."""
         self._search_debounce.stop()
         self._stop_search_worker()
@@ -1570,7 +1546,7 @@ class JsonTreeViewer(QDialog):
         self._stop_all_loaders()
         super().closeEvent(event)
 
-    def _on_search_text_changed(self):
+    def _on_search_text_changed(self) -> None:
         """Handle search text change with debounce."""
         self._stop_search_worker()
 
@@ -1591,32 +1567,24 @@ class JsonTreeViewer(QDialog):
         def walk(item: QTreeWidgetItem, path: TreeItemPath) -> None:
             snapshot.append((path, item.text(0).lower()))
             for child_index in range(item.childCount()):
-                child = item.child(child_index)
-                if child is not None:
-                    walk(child, (*path, child_index))
+                walk(_tree_child(item, child_index), (*path, child_index))
 
         for root_index in range(self.tree.topLevelItemCount()):
-            root = self.tree.topLevelItem(root_index)
-            if root is not None:
-                walk(root, (root_index,))
+            walk(_top_level_item(self.tree, root_index), (root_index,))
         return snapshot
 
     def _tree_item_from_path(self, path: TreeItemPath) -> QTreeWidgetItem | None:
         """Resolve a worker result path against the current live tree."""
         if not path or path[0] >= self.tree.topLevelItemCount():
             return None
-        item = self.tree.topLevelItem(path[0])
-        if item is None:
-            return None
+        item = _top_level_item(self.tree, path[0])
         for child_index in path[1:]:
             if child_index >= item.childCount():
                 return None
-            item = item.child(child_index)
-            if item is None:
-                return None
+            item = _tree_child(item, child_index)
         return item
 
-    def _do_search(self):
+    def _do_search(self) -> None:
         """Execute the actual search after debounce using worker thread."""
         query = self.search_input.text().strip()
 
@@ -1646,7 +1614,7 @@ class JsonTreeViewer(QDialog):
         self._search_worker.finished.connect(self._on_search_finished)
         self._search_worker.start()
 
-    def _on_search_progress(self, current: int, total: int):
+    def _on_search_progress(self, current: int, total: int) -> None:
         """Handle search progress update."""
         if total > 0:
             percent = int((current / total) * 100)
@@ -1659,13 +1627,9 @@ class JsonTreeViewer(QDialog):
                 )
             )
 
-    def _on_search_complete(self, paths: list[TreeItemPath]):
+    def _on_search_complete(self, paths: list[TreeItemPath]) -> None:
         """Resolve worker result paths back to live tree items on the GUI thread."""
-        matches = [
-            item
-            for path in paths
-            if (item := self._tree_item_from_path(path)) is not None
-        ]
+        matches = [item for path in paths if (item := self._tree_item_from_path(path)) is not None]
         # Store matches for cycling
         self._search_matches = matches
         self._current_match_index = 0
@@ -1709,7 +1673,7 @@ class JsonTreeViewer(QDialog):
         finally:
             self.tree.setUpdatesEnabled(True)
 
-    def _on_search_finished(self):
+    def _on_search_finished(self) -> None:
         """Handle search worker finished."""
         self._is_searching = False
         worker = self._search_worker
@@ -1717,7 +1681,7 @@ class JsonTreeViewer(QDialog):
             worker.deleteLater()
             self._search_worker = None
 
-    def _cycle_to_next_match(self):
+    def _cycle_to_next_match(self) -> None:
         """Cycle to next search match."""
         if not self._search_matches or len(self._search_matches) <= 1:
             return
@@ -1726,7 +1690,7 @@ class JsonTreeViewer(QDialog):
         self._current_match_index = (self._current_match_index + 1) % len(self._search_matches)
         self._select_current_match()
 
-    def _cycle_to_prev_match(self):
+    def _cycle_to_prev_match(self) -> None:
         """Cycle to previous search match."""
         if not self._search_matches or len(self._search_matches) <= 1:
             return
@@ -1735,7 +1699,7 @@ class JsonTreeViewer(QDialog):
         self._current_match_index = (self._current_match_index - 1) % len(self._search_matches)
         self._select_current_match()
 
-    def _select_current_match(self):
+    def _select_current_match(self) -> None:
         """Select and scroll to the current match, updating the indicator."""
         self.tree.clearSelection()
         current_item = self._search_matches[self._current_match_index]
@@ -1751,7 +1715,7 @@ class JsonTreeViewer(QDialog):
             )
         )
 
-    def _expand_all(self):
+    def _expand_all(self) -> None:
         """Expand all items."""
         self.tree.setUpdatesEnabled(False)
         try:
@@ -1759,7 +1723,7 @@ class JsonTreeViewer(QDialog):
         finally:
             self.tree.setUpdatesEnabled(True)
 
-    def _collapse_all(self):
+    def _collapse_all(self) -> None:
         """Collapse all items."""
         self.tree.setUpdatesEnabled(False)
         try:
@@ -1767,7 +1731,7 @@ class JsonTreeViewer(QDialog):
         finally:
             self.tree.setUpdatesEnabled(True)
 
-    def _show_replacer_notification(self, title: str, message: str):
+    def _show_replacer_notification(self, title: str, message: str) -> None:
         """Show the replacer success popup unless it is disabled in settings."""
         if self.config_manager is not None and not getattr(
             self.config_manager, 'show_replacer_notifications', True
@@ -1786,13 +1750,13 @@ class JsonTreeViewer(QDialog):
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
         dialog.exec()
 
-    def _maybe_close_after_replace(self):
+    def _maybe_close_after_replace(self) -> None:
         if self.config_manager is None or getattr(
             self.config_manager, 'close_viewer_on_replace', True
         ):
             self.close()
 
-    def _import_as_replace_ids(self):
+    def _import_as_replace_ids(self) -> None:
         """Import selected values as IDs to replace."""
         vals = self._get_selected_values()
         if vals:
@@ -1827,7 +1791,7 @@ class JsonTreeViewer(QDialog):
                 tr('ui.gui.json_viewer.no_valid_values_selected_numeric_or_links'),
             )
 
-    def _import_as_replacement(self):
+    def _import_as_replacement(self) -> None:
         """Import selected value as replacement ID."""
         vals = self._get_selected_values()
         if not vals:

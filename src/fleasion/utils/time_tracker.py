@@ -1,6 +1,17 @@
 """Session time tracker."""
 
+from __future__ import annotations
+
 import time
+from typing import Protocol
+
+
+class _TimeConfig(Protocol):
+    @property
+    def time_wasted_seconds(self) -> int: ...
+
+    @time_wasted_seconds.setter
+    def time_wasted_seconds(self, value: int) -> None: ...
 
 
 class TimeTracker:
@@ -11,7 +22,7 @@ class TimeTracker:
     Call ``save(config_manager)`` to persist (done on exit and periodically).
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._saved_seconds: int = 0
         self._session_start: float = time.monotonic()
 
@@ -24,7 +35,7 @@ class TimeTracker:
         """Return total seconds wasted (all sessions including current)."""
         return self._saved_seconds + int(time.monotonic() - self._session_start)
 
-    def save(self, config_manager) -> None:
+    def save(self, config_manager: _TimeConfig) -> None:
         """Persist current total to settings."""
         config_manager.time_wasted_seconds = self.get_total_seconds()
 

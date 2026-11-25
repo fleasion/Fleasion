@@ -24,7 +24,9 @@ log = logging.getLogger(__name__)
 
 # Env defaults
 DEFAULT_TARGET_ARCHITECTURE = 'universal2'
-DEFAULT_DEPLOYMENT_TARGET = '11.0'
+# PySide6 6.12, the first release supporting Python 3.15, is tagged macOS 14.0,
+# but its Qt frameworks are built with a 14.4 minimum
+DEFAULT_DEPLOYMENT_TARGET = '14.4'
 DEFAULT_X86_ENVIRONMENT_PATH = '.tools/venv-x86'
 ARM64_PYTHON_PLATFORM = 'aarch64-apple-darwin'
 X86_64_PYTHON_PLATFORM = 'x86_64-apple-darwin'
@@ -39,6 +41,15 @@ _ALLOWED_SINGLE_ARCH_MACHO = frozenset(
         'Contents/Frameworks/Cryptodome/Cipher/_raw_aesni.abi3.so',
     }
 )
+# PySide6 6.12 builds its binding modules with the build machine's macOS 26 SDK
+# as their minimum, although the wheels are tagged 14.0 and the bundled Qt
+# frameworks need 14.4. Only these directories get their minimum lowered; Qt
+# itself, under PySide6/Qt, keeps its own and is still checked
+_PATCHED_MINIMUM_DIRECTORIES = (
+    'Contents/Frameworks/PySide6/',
+    'Contents/Frameworks/shiboken6/',
+)
+_UNPATCHED_MINIMUM_DIRECTORIES = ('Contents/Frameworks/PySide6/Qt/',)
 
 
 def subprocess_run(
@@ -51,9 +62,9 @@ def subprocess_run(
 ) -> subprocess.CompletedProcess[str]:
     """Run a command with consistent logging and text output."""
     if log_command:
-        log.info(f'Running {shlex.join(command)}')
+        log.info('Running %s', shlex.join(command))
     return subprocess.run(
-        command, check=check, capture_output=capture_output, env=environment, text=True
+        command, check=check, capture_output=capture_output, env=environment, shell=False, text=True
     )
 
 
@@ -95,7 +106,8 @@ class MacOSBuilder:
         output = result.stdout.strip()
         match = re.fullmatch(r'uv ([^ ]+)(?: .*)?', output)
         if match is None:
-            raise RuntimeError(f'Could not determine the installed uv version from {output!r}.')
+            msg = f'Could not determine the installed uv version from {output!r}.'
+            raise RuntimeError(msg)
         return match.group(1)
 
     @property
@@ -130,19 +142,21 @@ class MacOSBuilder:
         architectures = self._architectures(file_path)
         missing = set(required) - architectures
         if missing:
-            raise RuntimeError(
+            msg = (
                 f'{file_path} is missing {", ".join(sorted(missing))}; '
                 f'found {" ".join(sorted(architectures))!r}.'
             )
+            raise RuntimeError(msg)
 
     def _require_only_architectures(self, file_path: Path, *required: str) -> None:
         architectures = self._architectures(file_path)
         expected = set(required)
         if architectures != expected:
-            raise RuntimeError(
+            msg = (
                 f'{file_path} contains {" ".join(sorted(architectures))!r}; '
                 f'expected only {" ".join(sorted(expected))!r}.'
             )
+            raise RuntimeError(msg)
 
     @staticmethod
     def _payload_path(app_path: Path, relative_path: str) -> Path | None:
@@ -157,9 +171,8 @@ class MacOSBuilder:
     ) -> Path:
         payload_path = self._payload_path(app_path, relative_path)
         if payload_path is None or (executable and not os.access(payload_path, os.X_OK)):
-            raise RuntimeError(
-                f'{build_label} completed, but bundled payload was not found: {relative_path}'
-            )
+            msg = f'{build_label} completed, but bundled payload was not found: {relative_path}'
+            raise RuntimeError(msg)
         return payload_path
 
     def _verify_app_bundle(self, app_path: Path, build_label: str) -> None:
@@ -180,29 +193,33 @@ class MacOSBuilder:
         ]
         missing_directories = [path for path in required_directories if not path.is_dir()]
         if missing_directories:
-            raise RuntimeError(
+            msg = (
                 f'{build_label} completed, but required app directory is missing: '
                 f'{missing_directories[0]}'
             )
+            raise RuntimeError(msg)
         if not info_plist.is_file():
-            raise RuntimeError(f'{build_label} completed, but Info.plist is missing: {info_plist}')
+            msg = f'{build_label} completed, but Info.plist is missing: {info_plist}'
+            raise RuntimeError(msg)
 
         with info_plist.open('rb') as plist_file:
             plist = plistlib.load(plist_file)
         if plist.get('CFBundlePackageType') != 'APPL':
-            raise RuntimeError(f'{info_plist} does not describe an APPL bundle.')
+            msg = f'{info_plist} does not describe an APPL bundle.'
+            raise RuntimeError(msg)
         if plist.get('CFBundleExecutable') != self.executable_name:
-            raise RuntimeError(
+            msg = (
                 f'{info_plist} has an unexpected CFBundleExecutable: '
                 f'{plist.get("CFBundleExecutable")!r}.'
             )
+            raise RuntimeError(msg)
         icon_file = plist.get('CFBundleIconFile')
         if not isinstance(icon_file, str) or not (resources_path / icon_file).is_file():
-            raise RuntimeError(f'{build_label} completed, but its app icon is missing.')
+            msg = f'{build_label} completed, but its app icon is missing.'
+            raise RuntimeError(msg)
         if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
-            raise RuntimeError(
-                f'{build_label} completed, but its executable is missing: {executable_path}'
-            )
+            msg = f'{build_label} completed, but its executable is missing: {executable_path}'
+            raise RuntimeError(msg)
 
         self._require_payload(
             app_path, '_sounddevice_data/portaudio-binaries/libportaudio.dylib', build_label
@@ -212,10 +229,11 @@ class MacOSBuilder:
             '_soundfile_data/libsndfile_x86_64.dylib',
         )
         if not any(self._payload_path(app_path, payload) for payload in soundfile_payloads):
-            raise RuntimeError(
+            msg = (
                 f'{build_label} completed, but bundled payload was not found: '
                 '_soundfile_data/libsndfile_*.dylib'
             )
+            raise RuntimeError(msg)
 
     @staticmethod
     def _is_allowed_single_arch_macho(app_path: Path, file_path: Path, archs: set[str]) -> bool:
@@ -253,13 +271,12 @@ class MacOSBuilder:
 
         if invalid_files:
             details = '\n'.join(invalid_files[:40])
-            raise RuntimeError(
-                f'Universal app still contains single-architecture Mach-O files:\n{details}'
-            )
+            msg = f'Universal app still contains single-architecture Mach-O files:\n{details}'
+            raise RuntimeError(msg)
 
     @staticmethod
-    def _minimum_macos_version(file_path: Path, architecture: str) -> str | None:
-        """Read a Mach-O slice's minimum supported macOS version."""
+    def _macos_versions(file_path: Path, architecture: str) -> tuple[str | None, str | None]:
+        """Read a Mach-O slice's minimum macOS version and the SDK it was built with."""
         result = subprocess_run(
             ['otool', '-arch', architecture, '-l', str(file_path)],
             capture_output=True,
@@ -268,17 +285,67 @@ class MacOSBuilder:
         )
         output = result.stdout if result.returncode == 0 else ''
         command: str | None = None
+        minimum: str | None = None
         for line in output.splitlines():
             value = line.strip()
             if value == 'cmd LC_BUILD_VERSION':
                 command = 'build'
             elif value == 'cmd LC_VERSION_MIN_MACOSX':
                 command = 'minimum'
-            elif command == 'build' and value.startswith('minos '):
-                return value.split(maxsplit=1)[1]
-            elif command == 'minimum' and value.startswith('version '):
-                return value.split(maxsplit=1)[1]
-        return None
+            elif (command == 'build' and value.startswith('minos ')) or (
+                command == 'minimum' and value.startswith('version ')
+            ):
+                minimum = value.split(maxsplit=1)[1]
+            elif command is not None and minimum is not None and value.startswith('sdk '):
+                return minimum, value.split(maxsplit=1)[1]
+        return minimum, None
+
+    @classmethod
+    def _minimum_macos_version(cls, file_path: Path, architecture: str) -> str | None:
+        """Read a Mach-O slice's minimum supported macOS version."""
+        return cls._macos_versions(file_path, architecture)[0]
+
+    def _lower_pyside_minimum_versions(self, app_path: Path) -> None:
+        """Lower the declared macOS minimum of PySide6's bindings to the deployment target.
+
+        Only the load command changes. The bindings call into Qt, which really
+        supports the target, and codesign runs afterwards to re-sign them.
+        """
+        target = self._version_tuple(self.deployment_target)
+        for file_path in self._regular_files(app_path):
+            relative_path = file_path.relative_to(app_path).as_posix()
+            if not relative_path.startswith(_PATCHED_MINIMUM_DIRECTORIES):
+                continue
+            if relative_path.startswith(_UNPATCHED_MINIMUM_DIRECTORIES):
+                continue
+
+            # vtool rewrites one slice per call, so universal files take two passes
+            for architecture in sorted(self._architectures(file_path) & {'arm64', 'x86_64'}):
+                minimum, sdk = self._macos_versions(file_path, architecture)
+                if minimum is None or self._version_tuple(minimum) <= target:
+                    continue
+                temporary_file = file_path.with_name(f'{file_path.name}.minos-tmp')
+                try:
+                    subprocess_run(
+                        [
+                            'vtool',
+                            '-arch',
+                            architecture,
+                            '-set-build-version',
+                            'macos',
+                            self.deployment_target,
+                            sdk or minimum,
+                            '-replace',
+                            '-output',
+                            str(temporary_file),
+                            str(file_path),
+                        ]
+                    )
+                    shutil.copymode(file_path, temporary_file)
+                    temporary_file.replace(file_path)
+                except BaseException:
+                    temporary_file.unlink(missing_ok=True)
+                    raise
 
     @staticmethod
     def _version_tuple(version: str) -> tuple[int, ...]:
@@ -298,10 +365,11 @@ class MacOSBuilder:
                     incompatible.append(f'{file_path} [{architecture}]: macOS {minimum_version}')
         if incompatible:
             details = '\n'.join(incompatible[:40])
-            raise RuntimeError(
+            msg = (
                 f'App contains binaries requiring newer than macOS '
                 f'{self.deployment_target}:\n{details}'
             )
+            raise RuntimeError(msg)
 
     def _build_arm64(self) -> None:
         """Build the native arm64 slice with the active pinned Python."""
@@ -335,26 +403,29 @@ class MacOSBuilder:
             log_command=False,
         )
         if rosetta.returncode != 0:
-            raise RuntimeError(
+            msg = (
                 'Rosetta is required for the Intel build. Install it with: '
                 'softwareupdate --install-rosetta --agree-to-license'
             )
+            raise RuntimeError(msg)
         if self.x86_uv_path.is_file() and os.access(self.x86_uv_path, os.X_OK):
             return
 
-        archive_path = Path(f'/tmp/uv-x86_64-apple-darwin-{self.x86_uv_version}.tar.gz')
         url = (
             'https://github.com/astral-sh/uv/releases/download/'
             f'{self.x86_uv_version}/uv-x86_64-apple-darwin.tar.gz'
         )
-        log.info(f'Downloading x86_64 uv {self.x86_uv_version}')
-        with urllib.request.urlopen(url) as response, archive_path.open('wb') as archive_file:
-            shutil.copyfileobj(response, archive_file)
-        Path('.tools').mkdir(parents=True, exist_ok=True)
-        with tarfile.open(archive_path, 'r:gz') as archive:
-            archive.extractall('.tools', filter='data')
+        log.info('Downloading x86_64 uv %s', self.x86_uv_version)
+        with tempfile.TemporaryDirectory(prefix='fleasion-uv-') as temp_dir:
+            archive_path = Path(temp_dir) / 'uv-x86_64-apple-darwin.tar.gz'
+            with urllib.request.urlopen(url) as response, archive_path.open('wb') as archive_file:  # ruff: ignore[suspicious-url-open-usage]
+                shutil.copyfileobj(response, archive_file)
+            Path('.tools').mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive_path, 'r:gz') as archive:
+                archive.extractall('.tools', filter='data')
         if not self.x86_uv_path.is_file():
-            raise RuntimeError(f'uv archive did not contain {self.x86_uv_path}.')
+            msg = f'uv archive did not contain {self.x86_uv_path}.'
+            raise RuntimeError(msg)
 
     def _build_x86_64(self) -> None:
         """Build the Intel slice in an isolated Rosetta environment."""
@@ -485,6 +556,7 @@ class MacOSBuilder:
     def _finalize_app(self, app_path: Path, architecture: str) -> None:
         """Sign, validate, and package a completed app bundle."""
         self._verify_app_bundle(app_path, 'Final app')
+        self._lower_pyside_minimum_versions(app_path)
         subprocess_run(['codesign', '--force', '--deep', '--sign', '-', str(app_path)])
 
         if architecture == 'universal2':
@@ -503,8 +575,8 @@ class MacOSBuilder:
                 ]
             )
             self._verify_zip_package()
-            log.info(f'Built {app_path} ({architecture})')
-            log.info(f'Built {self.zip_path}')
+            log.info('Built %s (%s)', app_path, architecture)
+            log.info('Built %s', self.zip_path)
             return
 
         self._require_architectures(
@@ -514,18 +586,20 @@ class MacOSBuilder:
             app_path, f'{_HELPER_NAME}-{architecture}', 'Final app', executable=True
         )
         self._require_only_architectures(helper, architecture)
-        log.info(f'Built {app_path} ({architecture})')
+        log.info('Built %s (%s)', app_path, architecture)
 
     def build(self) -> None:
         """Build the configured macOS application architecture."""
         if platform.system() != 'Darwin':
-            raise RuntimeError('The macOS release builder must run on macOS.')
+            msg = 'The macOS release builder must run on macOS.'
+            raise RuntimeError(msg)
         if self.target_architecture not in _SUPPORTED_ARCHITECTURES:
             expected = ', '.join(sorted(_SUPPORTED_ARCHITECTURES))
-            raise RuntimeError(
+            msg = (
                 f'Unsupported MACOS_TARGET_ARCH: {self.target_architecture}. '
                 f'Expected one of: {expected}.'
             )
+            raise RuntimeError(msg)
 
         if self.target_architecture in {'arm64', 'x86_64'}:
             if self.target_architecture == 'arm64':

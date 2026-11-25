@@ -1,4 +1,3 @@
-# -*- mode: python ; coding: utf-8 -*-
 from __future__ import annotations
 
 import importlib.util
@@ -10,7 +9,9 @@ from importlib.metadata import PackageNotFoundError, version as distribution_ver
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fleasion.version import build_artifact_version, macos_bundle_version, read_project_version
+from PyInstaller.building.api import COLLECT, EXE, PYZ
+from PyInstaller.building.build_main import Analysis
+from PyInstaller.building.osx import BUNDLE  # pyright: ignore[reportMissingTypeStubs]
 from PyInstaller.utils.hooks import (
     collect_all,
     collect_data_files,
@@ -18,25 +19,23 @@ from PyInstaller.utils.hooks import (
     copy_metadata,
 )
 
+from fleasion.version import build_artifact_version, macos_bundle_version, read_project_version
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
-    from typing import TypeAlias, TypeVar
+    from typing import TypeVar
 
-    from PyInstaller.building.api import COLLECT, EXE, PYZ
-    from PyInstaller.building.build_main import Analysis
-    from PyInstaller.building.osx import BUNDLE
-
-    CollectionEntry: TypeAlias = tuple[str, str]
-    TocEntry: TypeAlias = tuple[object, ...]
+    type CollectionEntry = tuple[str, str]
+    type TocEntry = tuple[object, ...]
     TocItem = TypeVar('TocItem', bound=tuple[object, ...])
 
 
 _QT_HIDDEN_IMPORTS = [
-    'PyQt6.QtCore',
-    'PyQt6.QtGui',
-    'PyQt6.QtNetwork',
-    'PyQt6.QtOpenGL',
-    'PyQt6.QtWidgets',
+    'PySide6.QtCore',
+    'PySide6.QtGui',
+    'PySide6.QtNetwork',
+    'PySide6.QtOpenGL',
+    'PySide6.QtWidgets',
 ]
 
 _OPENGL_HIDDEN_IMPORTS = [
@@ -47,33 +46,54 @@ _OPENGL_HIDDEN_IMPORTS = [
 _COMPILED_HIDDEN_IMPORTS = [
     'DracoPy',
     'certifi',
+    'numpy',
     'orjson',
     'zstandard',
 ]
 
+# These third-party modules are loaded through importlib at runtime. PyInstaller
+# cannot reliably infer those edges, so keep them explicit just like Fleasion's
+# own lazy feature modules.
+_LAZY_RUNTIME_HIDDEN_IMPORTS = [
+    'OpenGL.GL',
+    'OpenGL.error',
+    'cryptography.fernet',
+    'requests',
+    'sounddevice',
+    'soundfile',
+]
+
 _WINDOWS_HIDDEN_IMPORTS = [
-    'win32crypt',
-    'win32api',
-    'win32con',
-    'win32security',
+    'pythoncom',
     'pywintypes',
+    'win11toast',
+    'win32api',
+    'win32clipboard',
+    'win32com.client',
+    'win32con',
+    'win32crypt',
+    'win32file',
+    'win32security',
     'winreg',
 ]
 
 _BASE_EXCLUDES = [
-    'PySide6',
     'PyQt5',
     'mitmproxy',  # removed - replaced by proxy/server.py
     'mitmproxy_rs',  # removed
+    'setuptools',
     'wsproto',  # mitmproxy dep, no longer needed
-    'h2',  # mitmproxy dep, no longer needed
-    'hyperframe',  # mitmproxy dep, no longer needed
 ]
 
 _NUMPY_EXCLUDES = [
     'numpy._pyinstaller.tests',
     'numpy.conftest',
     'numpy.f2py',
+]
+
+_ZSTANDARD_EXCLUDES = [
+    'zstandard._cffi',
+    'zstandard.backend_cffi',
 ]
 
 # NumPy's native extensions are sensitive to binary rewriting.  Keep them
@@ -87,50 +107,49 @@ _NUMPY_UPX_EXCLUDES = [
 ]
 
 _QT_EXCLUDES = [
-    'PyQt6.QAxContainer',
-    'PyQt6.Qsci',
-    'PyQt6.Qt3DAnimation',
-    'PyQt6.Qt3DCore',
-    'PyQt6.Qt3DExtras',
-    'PyQt6.Qt3DInput',
-    'PyQt6.Qt3DLogic',
-    'PyQt6.Qt3DRender',
-    'PyQt6.QtBluetooth',
-    'PyQt6.QtCharts',
-    'PyQt6.QtDataVisualization',
-    'PyQt6.QtDesigner',
-    'PyQt6.QtGraphs',
-    'PyQt6.QtGraphsWidgets',
-    'PyQt6.QtHelp',
-    'PyQt6.QtMultimedia',
-    'PyQt6.QtMultimediaWidgets',
-    'PyQt6.QtNetworkAuth',
-    'PyQt6.QtNfc',
-    'PyQt6.QtPdf',
-    'PyQt6.QtPdfWidgets',
-    'PyQt6.QtPositioning',
-    'PyQt6.QtPrintSupport',
-    'PyQt6.QtQml',
-    'PyQt6.QtQuick',
-    'PyQt6.QtQuick3D',
-    'PyQt6.QtQuickWidgets',
-    'PyQt6.QtRemoteObjects',
-    'PyQt6.QtSensors',
-    'PyQt6.QtSerialPort',
-    'PyQt6.QtSpatialAudio',
-    'PyQt6.QtSql',
-    'PyQt6.QtStateMachine',
-    'PyQt6.QtSvg',
-    'PyQt6.QtSvgWidgets',
-    'PyQt6.QtTest',
-    'PyQt6.QtTextToSpeech',
-    'PyQt6.QtWebChannel',
-    'PyQt6.QtWebEngineCore',
-    'PyQt6.QtWebEngineQuick',
-    'PyQt6.QtWebEngineWidgets',
-    'PyQt6.QtWebSockets',
-    'PyQt6.QtXml',
-    'PyQt6.uic',
+    'PySide6.QtAxContainer',
+    'PySide6.Qt3DAnimation',
+    'PySide6.Qt3DCore',
+    'PySide6.Qt3DExtras',
+    'PySide6.Qt3DInput',
+    'PySide6.Qt3DLogic',
+    'PySide6.Qt3DRender',
+    'PySide6.QtBluetooth',
+    'PySide6.QtCharts',
+    'PySide6.QtDataVisualization',
+    'PySide6.QtDesigner',
+    'PySide6.QtGraphs',
+    'PySide6.QtGraphsWidgets',
+    'PySide6.QtHelp',
+    'PySide6.QtMultimedia',
+    'PySide6.QtMultimediaWidgets',
+    'PySide6.QtNetworkAuth',
+    'PySide6.QtNfc',
+    'PySide6.QtPdf',
+    'PySide6.QtPdfWidgets',
+    'PySide6.QtPositioning',
+    'PySide6.QtPrintSupport',
+    'PySide6.QtQml',
+    'PySide6.QtQuick',
+    'PySide6.QtQuick3D',
+    'PySide6.QtQuickWidgets',
+    'PySide6.QtRemoteObjects',
+    'PySide6.QtSensors',
+    'PySide6.QtSerialPort',
+    'PySide6.QtSpatialAudio',
+    'PySide6.QtSql',
+    'PySide6.QtStateMachine',
+    'PySide6.QtSvg',
+    'PySide6.QtSvgWidgets',
+    'PySide6.QtTest',
+    'PySide6.QtTextToSpeech',
+    'PySide6.QtWebChannel',
+    'PySide6.QtWebEngineCore',
+    'PySide6.QtWebEngineQuick',
+    'PySide6.QtWebEngineWidgets',
+    'PySide6.QtWebSockets',
+    'PySide6.QtXml',
+    'PySide6.QtUiTools',
 ]
 
 _UNUSED_QT_RUNTIME_NAMES = {
@@ -146,10 +165,10 @@ _UNUSED_QT_RUNTIME_NAMES = {
 }
 
 _UNUSED_QT_RUNTIME_PATH_PARTS = (
-    '/PyQt6/Qt6/translations/',
-    '\\PyQt6\\Qt6\\translations\\',
-    'PyQt6/Qt6/translations/',
-    'PyQt6\\Qt6\\translations\\',
+    '/PySide6/Qt/translations/',
+    '\\PySide6\\Qt\\translations\\',
+    'PySide6/Qt/translations/',
+    'PySide6\\Qt\\translations\\',
 )
 
 _HOST_AUDIO_LIB_PREFIXES = (
@@ -160,6 +179,21 @@ _HOST_AUDIO_LIB_PREFIXES = (
     'libpulsecommon-',
     'libpipewire-',
 )
+
+_HOST_FONTCONFIG_LIB_PREFIXES = ('libfontconfig.so',)
+
+# The Linux virtual-keyboard input plugin is the only consumer of this QML/
+# Qt Quick chain. Fleasion uses Qt Widgets, so its inclusion is unnecessary
+_UNUSED_LINUX_QT_VIRTUAL_KEYBOARD_NAMES = {
+    'libQt6Qml.so.6',
+    'libQt6QmlMeta.so.6',
+    'libQt6QmlModels.so.6',
+    'libQt6QmlWorkerScript.so.6',
+    'libQt6Quick.so.6',
+    'libQt6VirtualKeyboard.so.6',
+    'libQt6VirtualKeyboardQml.so.6',
+    'libqtvirtualkeyboardplugin.so',
+}
 
 
 def _run_pyinstaller_spec(spec_path: str, *, env: dict[str, str] | None = None) -> None:
@@ -193,6 +227,29 @@ def _collect_optional_package(package: str) -> None:
         _collect_package(package)
 
 
+def _runtime_fleasion_modules() -> list[str]:
+    modules: list[str] = []
+    source_root = Path('src/fleasion')
+    excluded_files = {
+        source_root / 'linux_proxy_helper_daemon.py',
+        source_root / 'macos_proxy_helper_daemon.py',
+    }
+    for path in source_root.rglob('*.py'):
+        # Offline analysis modules are not reachable from the application.
+        # They have optional disassembler dependencies not shipped in releases.
+        if (
+            path in excluded_files
+            or source_root / 'scripts' in path.parents
+            or source_root / 'modifications' / 'hyperion' in path.parents
+        ):
+            continue
+        parts = list(path.relative_to('src').with_suffix('').parts)
+        if parts[-1] == '__init__':
+            parts.pop()
+        modules.append('.'.join(parts))
+    return sorted(set(modules))
+
+
 def _entry_name_matches(entry: TocEntry, names: set[str]) -> bool:
     return any(Path(str(part)).name in names for part in entry[:2])
 
@@ -203,7 +260,7 @@ def _entry_path_contains(entry: TocEntry, path_parts: tuple[str, ...]) -> bool:
         normalised = text.replace('\\', '/')
         if any(path_part in text for path_part in path_parts):
             return True
-        if 'PyQt6/Qt6/translations/' in normalised:
+        if 'PySide6/Qt/translations/' in normalised:
             return True
     return False
 
@@ -219,7 +276,7 @@ def _entry_name_startswith(entry: TocEntry, prefixes: tuple[str, ...]) -> bool:
     return any(Path(str(part)).name.startswith(prefixes) for part in entry[:2])
 
 
-def _drop_entries(
+def _drop_entries[TocItem: tuple[object, ...]](
     entries: Iterable[TocItem],
     predicate: Callable[[TocItem], bool],
 ) -> list[TocItem]:
@@ -242,25 +299,26 @@ try:
     _artifact_version = build_artifact_version(_app_version)
     _bundle_version = macos_bundle_version(_app_version)
 except (OSError, ValueError) as exc:
-    raise SystemExit(f'Could not resolve the Fleasion build version: {exc}') from exc
+    msg = f'Could not resolve the Fleasion build version: {exc}'
+    raise SystemExit(msg) from exc
 _exe_name = f'Fleasion-v{_artifact_version}'
 try:
     _distribution_version = distribution_version('fleasion')
-except PackageNotFoundError:
-    raise SystemExit('Fleasion distribution metadata is missing. Run uv sync before building.')
+except PackageNotFoundError as e:
+    msg = 'Fleasion distribution metadata is missing. Run uv sync before building.'
+    raise SystemExit(msg) from e
 if _distribution_version != _app_version:
-    raise SystemExit(
+    msg = (
         f'Fleasion distribution metadata is {_distribution_version}, but pyproject.toml '
         f'declares {_app_version}. Run uv sync before building.'
     )
+    raise SystemExit(msg)
 if sys.platform == 'win32':
     _exe_name = f'{_exe_name}-Windows'
 elif sys.platform.startswith('linux'):
     _exe_name = f'{_exe_name}-Linux'
 _macos_target_arch = (
-    os.environ.get('MACOS_TARGET_ARCH', 'universal2')
-    if sys.platform == 'darwin'
-    else None
+    os.environ.get('MACOS_TARGET_ARCH', 'universal2') if sys.platform == 'darwin' else None
 )
 # Keep UPX's size savings for the Windows one-file build, but leave the native
 # Qt/PyQt graphics stack byte-for-byte as shipped by its wheels. The dashboard
@@ -288,13 +346,17 @@ datas.extend(copy_metadata('fleasion'))
 binaries: list[CollectionEntry] = []
 if sys.platform == 'win32':
     binaries.append(('src/fleasion/cache/tools/ktx_to_png/ktx.dll', '.'))
-hiddenimports: list[str] = []
+hiddenimports: list[str] = _runtime_fleasion_modules()
+
+# PyInstaller follows PEP 810 `lazy import` statements like eager ones, but a
+# few modules are still imported by a name built at runtime (translation
+# tables, the platform backend in fleasion.utils.windows). Include every
+# Fleasion runtime module so those stay bundled. Build orchestration and
+# privileged-helper entry points are excluded above
 
 # NumPy is imported from feature modules that are not all reached during the
-# launcher import walk.  Collecting the package explicitly also preserves its
-# native extensions and the external ``numpy.libs`` runtime directory on
-# Windows.  The excludes above remove NumPy's test/build-only modules again.
-_collect_package('numpy')
+# launcher import walk. Its hidden import invokes PyInstaller's NumPy hook,
+# which collects the native runtime without pulling in tests and build tools.
 
 # lz4.__init__ imports the platform-specific lz4._version extension during
 # package initialization. Some Windows PyInstaller analyses have omitted that
@@ -304,10 +366,11 @@ _collect_package('numpy')
 # guaranteed to travel with the frozen executable.
 _collect_package('lz4')
 
-# Keep Qt collection narrow. collect_all('PyQt6') pulls in QML/QtQuick,
+# Keep Qt collection narrow. collect_all('PySide6') pulls in QML/QtQuick,
 # Designer, SQL drivers, multimedia, translations, and other modules that the
 # app does not use, which more than doubles the one-file executable size
 hiddenimports.extend(_QT_HIDDEN_IMPORTS)
+hiddenimports.extend(_LAZY_RUNTIME_HIDDEN_IMPORTS)
 
 # PyOpenGL resolves platform backends dynamically. The upstream PyInstaller
 # hook includes GLX on Linux, but Wayland sessions can select EGL instead
@@ -333,40 +396,41 @@ elif sys.platform == 'darwin':
         if _macos_target_arch in _bundled_macos_helpers
         else list(_bundled_macos_helpers.values())
     )
-    _existing_macos_helpers = [
-        helper for helper in _wanted_macos_helpers if helper.exists()
-    ]
+    _existing_macos_helpers = [helper for helper in _wanted_macos_helpers if helper.exists()]
     if not _existing_macos_helpers and _bundled_legacy_macos_helper.exists():
         _existing_macos_helpers = [_bundled_legacy_macos_helper]
     if not _existing_macos_helpers:
-        raise SystemExit(
+        msg = (
             'Missing dist/fleasion-proxy-helper-arm64 or dist/fleasion-proxy-helper-x86_64. '
             'Fleasion.spec could not build the macOS helper.'
         )
-    for helper in _existing_macos_helpers:
-        datas.append((str(helper), '.'))
+        raise SystemExit(msg)
+    datas.extend((str(helper), '.') for helper in _existing_macos_helpers)
     _collect_package('browser_cookie3')
     _collect_package('Cryptodome')
 elif sys.platform.startswith('linux'):
+    _collect_package('browser_cookie3')
     _build_linux_helper()
     if not _bundled_linux_helper.exists():
-        raise SystemExit(
+        msg = (
             'Missing dist/fleasion-linux-proxy-helper. '
             'Fleasion.spec could not build the Linux proxy helper.'
         )
-    datas.append((str(_bundled_linux_helper), '.'))
-    datas.append(('src/fleasion/linux_proxy_helper_daemon.py', '.'))
+        raise SystemExit(msg)
+    datas.extend(
+        ((str(_bundled_linux_helper), '.'), ('src/fleasion/linux_proxy_helper_daemon.py', '.'))
+    )
 
 a = Analysis(
-    ['launcher.py'],
+    ['src/fleasion/__main__.py'],
     pathex=['src'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=['pyinstaller_hooks'],
     hooksconfig={},
-    runtime_hooks=[],
-    excludes=[*_BASE_EXCLUDES, *_NUMPY_EXCLUDES, *_QT_EXCLUDES],
+    runtime_hooks=['pyinstaller_hooks/rthook_zstandard_cext.py'],
+    excludes=[*_BASE_EXCLUDES, *_NUMPY_EXCLUDES, *_QT_EXCLUDES, *_ZSTANDARD_EXCLUDES],
     noarchive=False,
     optimize=0,
 )
@@ -374,12 +438,31 @@ a = Analysis(
 a.binaries = _drop_entries(a.binaries, _is_unused_qt_runtime_entry)
 a.datas = _drop_entries(a.datas, _is_unused_qt_runtime_entry)
 if sys.platform.startswith('linux'):
+    # The Qt virtual-keyboard plugin pulls in otherwise unused QML/Qt Quick
+    # libraries; retain desktop input-method plugins such as IBus and Compose
+    a.binaries = _drop_entries(
+        a.binaries,
+        lambda entry: _entry_name_matches(entry, _UNUSED_LINUX_QT_VIRTUAL_KEYBOARD_NAMES),
+    )
+    # PyInstaller also emits top-level SONAME symlinks for these libraries
+    a.datas = _drop_entries(
+        a.datas,
+        lambda entry: _entry_name_matches(entry, _UNUSED_LINUX_QT_VIRTUAL_KEYBOARD_NAMES),
+    )
     # The sounddevice hook and dependency scan can collect the build machine's
     # audio backend stack. That can silence playback on other distros, so the
-    # GUI player uses host PortAudio and host audio backend libraries
+    # GUI player uses host PortAudio and host audio backend libraries.
     a.binaries = _drop_entries(
         a.binaries,
         lambda entry: _entry_name_startswith(entry, _HOST_AUDIO_LIB_PREFIXES),
+    )
+    # Fontconfig configuration files belong to the target Linux system. A
+    # libfontconfig frozen from the build distro can be older than the target's
+    # /etc/fonts syntax, producing a wall of parser warnings at startup. Keep
+    # Qt's other bundled libraries, but resolve Fontconfig from the host.
+    a.binaries = _drop_entries(
+        a.binaries,
+        lambda entry: _entry_name_startswith(entry, _HOST_FONTCONFIG_LIB_PREFIXES),
     )
 pyz = PYZ(a.pure)
 
@@ -392,7 +475,7 @@ exe = EXE(
     name=_exe_name,
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=sys.platform.startswith('linux'),
     upx=_use_upx,
     upx_exclude=[
         *_NUMPY_UPX_EXCLUDES,
@@ -402,7 +485,7 @@ exe = EXE(
         'Qt6Network.dll',
         'Qt6OpenGL.dll',
         'Qt6Svg.dll',
-        'PyQt6/*.pyd',
+        'PySide6/*.pyd',
         'qwindows.dll',
         'opengl32sw.dll',
         'libEGL.dll',
@@ -412,7 +495,7 @@ exe = EXE(
     console=False,  # no console window for end users
     exclude_binaries=sys.platform == 'darwin',
     # uac_admin is intentionally NOT set here.
-    # We handle elevation at runtime in app.py so the user can choose
+    # We handle elevation at runtime in the application module so the user can choose
     # read-only mode if they decline UAC, rather than being blocked entirely
     disable_windowed_traceback=False,
     argv_emulation=False,

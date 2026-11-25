@@ -1,0 +1,319 @@
+# pyright: reportPrivateUsage=false
+"""Bounded profile preview downloads and account-switch cache invalidation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import threading
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
+
+import pytest
+import requests
+
+from fleasion.gui.modifications_tab import ModificationsTab
+from fleasion.gui.rando_stuff_tab import RandoStuffTab
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from fleasion.modifications.manager import ModificationManager
+    from fleasion.proxy.master import ProxyMaster
+
+
+class _ImageResponse:
+    status_code = 200
+
+    def __init__(self, chunks: list[bytes], *, declared_size: str = '') -> None:
+        self.headers = {'Content-Length': declared_size} if declared_size else {}
+        self._chunks = chunks
+        self.read_count = 0
+        self.closed = False
+
+    def __enter__(self) -> _ImageResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.closed = True
+
+    def iter_content(self, *, chunk_size: int) -> Iterator[bytes]:
+        assert chunk_size <= 64 * 1024
+        for chunk in self._chunks:
+            self.read_count += len(chunk)
+            yield chunk
+
+
+def _preview_loader(max_bytes: int) -> ModificationsTab:
+    return cast('ModificationsTab', SimpleNamespace(_PFP_MAX_IMAGE_BYTES=max_bytes))
+
+
+def test_preview_streaming_stops_at_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    response = _ImageResponse([b'123', b'456', b'NEVER-DOWNLOAD'])
+
+    def get(_url: str, *, stream: bool, timeout: int) -> _ImageResponse:
+        assert stream is True
+        assert timeout == 10
+        return response
+
+    monkeypatch.setattr(requests, 'get', get)
+    result = ModificationsTab._load_pfp_image_bytes(
+        _preview_loader(5), 'remote', 'https://example.com/picture.png'
+    )
+    assert result == b''
+    assert response.read_count == 6
+    assert response.closed
+
+
+def test_preview_rejects_oversized_content_length_without_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _ImageResponse([b'NEVER-DOWNLOAD'], declared_size='10000000')
+
+    def get(_url: str, **_kwargs: object) -> _ImageResponse:
+        return response
+
+    monkeypatch.setattr(requests, 'get', get)
+    assert not ModificationsTab._load_pfp_image_bytes(
+        _preview_loader(5), 'remote', 'https://example.com/too-large.png'
+    )
+    assert response.read_count == 0
+    assert response.closed
+
+
+def test_preview_reassembles_small_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    response = _ImageResponse([b'12', b'34'], declared_size='4')
+
+    def get(_url: str, **_kwargs: object) -> _ImageResponse:
+        return response
+
+    monkeypatch.setattr(requests, 'get', get)
+    assert (
+        ModificationsTab._load_pfp_image_bytes(
+            _preview_loader(5), 'remote', 'https://example.com/small.png'
+        )
+        == b'1234'
+    )
+    assert response.closed
+
+
+def test_preview_caps_local_file_reads(tmp_path: Path) -> None:
+    file = tmp_path / 'image.png'
+    file.write_bytes(b'123456')
+    assert not ModificationsTab._load_pfp_image_bytes(_preview_loader(5), 'local', str(file))
+    file.write_bytes(b'1234')
+    assert ModificationsTab._load_pfp_image_bytes(_preview_loader(5), 'local', str(file)) == b'1234'
+
+
+def test_account_change_invalidates_cached_preview_and_stale_completion() -> None:
+    class FakeTab:
+        _pfp_self_id_lookup_generation = 4
+        _pfp_self_id_inflight = True
+        _pfp_self_id = '1'
+        _pfp_table = SimpleNamespace(rowCount=lambda: 2)
+
+        def __init__(self) -> None:
+            self.refreshes: list[int] = []
+
+        def _refresh_pfp_row_icons(self, row: int) -> None:
+            self.refreshes.append(row)
+
+    fake = FakeTab()
+    tab = cast('ModificationsTab', fake)
+    ModificationsTab.invalidate_profile_picture_preview(tab)
+    assert fake._pfp_self_id_lookup_generation == 5
+    assert not fake._pfp_self_id_inflight
+    assert fake._pfp_self_id is None
+    assert fake.refreshes == [0, 1]
+    ModificationsTab._on_pfp_self_id_resolved(tab, 4, '1')
+    assert fake._pfp_self_id is None
+    ModificationsTab._on_pfp_self_id_resolved(tab, 5, '2')
+    assert fake._pfp_self_id == '2'
+    assert fake.refreshes == [0, 1, 0, 1]
+
+
+def test_account_manager_forwards_selected_cookie_to_spoofer() -> None:
+    selected: list[str] = []
+    spoofer = SimpleNamespace(select_account_cookie=selected.append)
+    fake = SimpleNamespace(_proxy_master=SimpleNamespace(profile_picture_spoofer=spoofer))
+    RandoStuffTab._push_profile_picture_current_account(cast('RandoStuffTab', fake), 'cookie-B')
+    assert selected == ['cookie-B']
+
+
+def test_profile_link_lookup_updates_real_qt_username_cell() -> None:
+    from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
+
+    app = QApplication.instance() or QApplication([])
+    table = QTableWidget(1, 4)
+    table.setItem(
+        0,
+        ModificationsTab._PFP_COL_TARGET,
+        QTableWidgetItem('https://www.roblox.com/users/123/profile'),
+    )
+    table.setItem(0, ModificationsTab._PFP_COL_USERNAME, QTableWidgetItem('…'))
+
+    def set_username(item: QTableWidgetItem, value: str) -> None:
+        item.setText(value)
+
+    fake = SimpleNamespace(
+        _pfp_username_inflight={'123'},
+        _pfp_username_cache={},
+        _pfp_table=table,
+        _PFP_COL_TARGET=ModificationsTab._PFP_COL_TARGET,
+        _PFP_COL_USERNAME=ModificationsTab._PFP_COL_USERNAME,
+        _normalize_pfp_target=ModificationsTab._normalize_pfp_target,
+        _set_pfp_username_text=set_username,
+    )
+    ModificationsTab._on_pfp_username_resolved(cast('ModificationsTab', fake), '123', 'Alice')
+    item = table.item(0, ModificationsTab._PFP_COL_USERNAME)
+    assert item is not None and item.text() == 'Alice'
+    assert fake._pfp_username_cache == {'123': 'Alice'}
+    table.deleteLater()
+    app.processEvents()
+
+
+def test_qt_preview_invalidated_on_selected_account_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PySide6.QtWidgets import QApplication, QTableWidget
+
+    from fleasion.proxy.addons import profile_picture_spoofer as module
+
+    app = QApplication.instance() or QApplication([])
+    entered = threading.Event()
+    release = threading.Event()
+
+    def resolve(_cookie: str) -> str:
+        entered.set()
+        assert release.wait(2)
+        return '2'
+
+    monkeypatch.setattr(module, '_selected_account_user_id', resolve)
+    spoofer = module.ProfilePictureSpoofer()
+    spoofer.set_entries(
+        [{'enabled': True, 'target': 'me', 'image_url': 'https://example.com/me.png'}]
+    )
+    spoofer.set_current_user('1')
+    proxy_master = cast('ProxyMaster', SimpleNamespace(profile_picture_spoofer=spoofer))
+    manager = cast('ModificationManager', object())
+    tab = ModificationsTab(manager, proxy_master=proxy_master, defer_setup=True)
+    tab._pfp_table = QTableWidget(0, 4)  # pyright: ignore[reportPrivateUsage]
+    try:
+        tab._pfp_self_id = '1'  # pyright: ignore[reportPrivateUsage]
+        previous = tab._pfp_self_id_lookup_generation  # pyright: ignore[reportPrivateUsage]
+        spoofer.select_account_cookie('cookie-B')
+        assert entered.wait(2)
+        app.processEvents()
+        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
+        assert tab._pfp_self_id_lookup_generation > previous  # pyright: ignore[reportPrivateUsage]
+        assert spoofer.current_user_id() is None
+    finally:
+        release.set()
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()
+
+
+def test_deferred_profile_picture_tab_handles_identity_change_before_table_exists() -> None:
+    """An Account Manager callback during deferred build cannot access an absent table."""
+    from PySide6.QtWidgets import QApplication, QTableWidget
+
+    from fleasion.proxy.addons.profile_picture_spoofer import ProfilePictureSpoofer
+
+    app = QApplication.instance() or QApplication([])
+    spoofer = ProfilePictureSpoofer()
+    proxy_master = cast('ProxyMaster', SimpleNamespace(profile_picture_spoofer=spoofer))
+    manager = cast('ModificationManager', object())
+    tab = ModificationsTab(manager, proxy_master=proxy_master, defer_setup=True)
+    try:
+        assert not hasattr(tab, '_pfp_table')
+        # Direct invocation must not raise: Qt signal callbacks otherwise only
+        # report failures through the application exception hook
+        tab.invalidate_profile_picture_preview()
+        previous = tab._pfp_self_id_lookup_generation  # pyright: ignore[reportPrivateUsage]
+        spoofer.set_current_user('42')
+        app.processEvents()
+        assert tab._pfp_self_id_lookup_generation > previous  # pyright: ignore[reportPrivateUsage]
+        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
+        assert not hasattr(tab, '_pfp_table')
+        # The deferred UI now exists: subsequent notifications refresh its rows
+        tab._pfp_table = QTableWidget(0, 4, tab)  # pyright: ignore[reportPrivateUsage]
+        tab._pfp_self_id = '42'  # pyright: ignore[reportPrivateUsage]
+        spoofer.set_current_user('43')
+        app.processEvents()
+        assert tab._pfp_self_id is None  # pyright: ignore[reportPrivateUsage]
+    finally:
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()
+
+
+def test_failed_preview_retries_and_recovers_in_existing_qt_tab(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A temporary download failure must not leave a permanent blank preview."""
+    import time
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
+
+    app = QApplication.instance() or QApplication([])
+    manager = cast('ModificationManager', object())
+    tab = ModificationsTab(manager, defer_setup=True)
+    tab._pfp_loading = False  # pyright: ignore[reportPrivateUsage]
+    tab._pfp_table = QTableWidget(1, 4, tab)  # pyright: ignore[reportPrivateUsage]
+    tab._PFP_RETRY_DELAY_SECONDS = 0.05  # pyright: ignore[reportPrivateUsage]
+    tab._pfp_table.setItem(  # pyright: ignore[reportPrivateUsage]
+        0,
+        tab._PFP_COL_TARGET,
+        QTableWidgetItem(''),  # pyright: ignore[reportPrivateUsage]
+    )
+    replacement = QTableWidgetItem('https://example.com/profile.png')
+    tab._pfp_table.setItem(  # pyright: ignore[reportPrivateUsage]
+        0,
+        tab._PFP_COL_IMAGE_URL,
+        replacement,  # pyright: ignore[reportPrivateUsage]
+    )
+    image = QImage(1, 1, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.red)
+    image_path = tmp_path / 'preview.png'
+    assert image.save(str(image_path))
+    png = image_path.read_bytes()
+    calls: list[str] = []
+
+    def fetch(kind: str, source: str) -> bytes:
+        assert kind == 'remote'
+        calls.append(source)
+        return b'' if len(calls) == 1 else png
+
+    monkeypatch.setattr(tab, '_load_pfp_image_bytes', fetch)
+    key = 'url:https://example.com/profile.png'
+    try:
+        tab._refresh_pfp_row_icons(0)  # pyright: ignore[reportPrivateUsage]
+        first_deadline = time.monotonic() + 2
+        while time.monotonic() < first_deadline:
+            app.processEvents()
+            if key in tab._pfp_failed_until:  # pyright: ignore[reportPrivateUsage]
+                break
+            QTest.qWait(5)
+        assert len(calls) == 1
+        assert key in tab._pfp_failed_until  # pyright: ignore[reportPrivateUsage]
+        assert replacement.icon().isNull()
+        assert tab._pfp_retry_timer.isActive()  # pyright: ignore[reportPrivateUsage]
+
+        # Do not call refresh manually: the tab must retry and paint by itself
+        recovery_deadline = time.monotonic() + 3
+        while time.monotonic() < recovery_deadline:
+            app.processEvents()
+            if len(calls) >= 2 and not replacement.icon().isNull():
+                break
+            QTest.qWait(5)
+        assert len(calls) == 2
+        assert not replacement.icon().isNull()
+        assert key in tab._pfp_pixmaps  # pyright: ignore[reportPrivateUsage]
+        assert key not in tab._pfp_failed_until  # pyright: ignore[reportPrivateUsage]
+    finally:
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()

@@ -1,25 +1,24 @@
 """About window."""
 
-from ..localization import tr
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
-
-from ..utils import (
+from fleasion.localization import tr
+from fleasion.utils import (
     APP_AUTHOR,
     APP_CONCEPT,
     APP_LOGIC,
     APP_NAME,
     APP_REPO,
     APP_VERSION,
-    get_icon_path,
 )
+from fleasion.widgets.text import style_text
 
 
 class AboutWindow(QDialog):
     """About dialog window."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(tr('ui.gui.about.about'))
         self.setFixedSize(360, 240)
@@ -29,28 +28,21 @@ class AboutWindow(QDialog):
             | Qt.WindowType.WindowCloseButtonHint
         )
         self._setup_ui()
-        self._set_icon()
 
-    def _set_icon(self):
-        if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
-
-            self.setWindowIcon(QIcon(str(icon_path)))
-
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout()
         layout.setSpacing(0)
         layout.setContentsMargins(24, 20, 24, 20)
 
         # App name
         name_label = QLabel(APP_NAME)
-        name_label.setStyleSheet('font-size: 16pt; font-weight: bold;')
+        style_text(name_label, point_size=16, bold=True)
         name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(name_label)
 
         # Version
         version_label = QLabel(tr('ui.gui.about.version_value', value0=APP_VERSION))
-        version_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
+        style_text(version_label, tone='muted', point_size=9)
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version_label)
 
@@ -78,7 +70,7 @@ class AboutWindow(QDialog):
         layout.addWidget(concept_label)
 
         handles_label = QLabel(tr('ui.gui.about.discord_handles'))
-        handles_label.setStyleSheet('color: palette(placeholder-text); font-size: 8pt;')
+        style_text(handles_label, tone='muted', point_size=8)
         handles_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(handles_label)
 

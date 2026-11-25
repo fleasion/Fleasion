@@ -1,14 +1,6 @@
 """Fleasion - Roblox asset interceptor and replacer."""
 
+from . import lazy_imports as lazy_imports
 from .version import read_version
 
-__all__ = ['main']  # type: ignore[reportUnsupportedDunderAll]
 __version__ = read_version()
-
-
-def __getattr__(name: str):
-    if name == 'main':
-        from .app import main
-
-        return main
-    raise AttributeError(name)

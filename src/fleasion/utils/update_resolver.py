@@ -4,16 +4,24 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from functools import cached_property
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, TypeIs
 from urllib.parse import urlsplit
 
-import requests
 from packaging.version import InvalidVersion, Version
+lazy import requests
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from typing import ClassVar
     from urllib.parse import SplitResult
+
+
+def _is_object_mapping(value: object) -> TypeIs[Mapping[object, object]]:
+    return isinstance(value, Mapping)
+
+
+def _is_object_list(value: object) -> TypeIs[list[object]]:
+    return isinstance(value, list)
 
 
 class ReleaseCandidate(NamedTuple):
@@ -60,11 +68,13 @@ class UpdateResolver:
         parsed = self.parsed_repository_url
         path_parts = parsed.path.strip('/').split('/')
         if parsed.scheme != 'https' or parsed.hostname != 'github.com' or len(path_parts) != 2:
-            raise ValueError(f'Unsupported GitHub repository URL: {self.repository_url!r}')
+            msg = f'Unsupported GitHub repository URL: {self.repository_url!r}'
+            raise ValueError(msg)
         owner, repository = path_parts
         repository = repository.removesuffix('.git')
         if not owner or not repository:
-            raise ValueError(f'Unsupported GitHub repository URL: {self.repository_url!r}')
+            msg = f'Unsupported GitHub repository URL: {self.repository_url!r}'
+            raise ValueError(msg)
         return f'{owner}/{repository}'
 
     @cached_property
@@ -142,16 +152,16 @@ class UpdateResolver:
 
         prerelease_channel = current.is_prerelease or current.is_devrelease
         releases: Sequence[object]
-        if isinstance(release_data, Mapping):
+        if _is_object_mapping(release_data):
             releases = (release_data,)
-        elif isinstance(release_data, list):
+        elif _is_object_list(release_data):
             releases = release_data
         else:
             return None
 
         candidates: list[ReleaseCandidate] = []
         for release in releases:
-            if not isinstance(release, Mapping):
+            if not _is_object_mapping(release):
                 continue
             candidate = self._release_candidate(
                 current,
@@ -178,6 +188,6 @@ class UpdateResolver:
             )
             response.raise_for_status()
             release_data = response.json()
-        except Exception:
+        except requests.RequestException, ValueError:
             return None
         return self.select_update(release_data)

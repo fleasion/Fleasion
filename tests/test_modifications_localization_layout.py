@@ -1,82 +1,183 @@
+from __future__ import annotations
+
 import os
+from collections.abc import Callable
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtCore import QEventLoop, QObject, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from fleasion import localization
-from fleasion.gui.modifications_tab import CollapsibleSection, ModificationsTab, ModRowWidget
+from fleasion.gui.collapsible_section import CollapsibleSection
+from fleasion.widgets.spring_animation import SpringAnimation
+from fleasion.gui.modifications_tab import ModificationsTab, ModRowWidget
+from fleasion.gui.rando_stuff_tab import RandoStuffTab
+from fleasion.gui.theme import ThemeManager
 from fleasion.localization import get_language, set_language, tr
 from fleasion.translations.pt import PORTUGUESE
 
+type SourceTuple = tuple[str, str]
 
-_APP = None
-_TRANSLATED_LANGUAGES = [
+
+_app: QApplication | None = None
+
+
+def _qapp() -> QApplication:
+    global _app
+    app = QApplication.instance()
+    _app = cast('QApplication', app) if app is not None else QApplication([])
+    return _app
+
+
+def _register_language(
+    monkeypatch: pytest.MonkeyPatch, code: str, table: dict[str, str]
+) -> None:
+    sources = cast('dict[str, tuple[str, str]]', localization.__dict__['_TRANSLATION_SOURCES'])
+    loaded = cast('dict[str, dict[str, str]]', localization.__dict__['_loaded_translations'])
+    monkeypatch.setitem(sources, code, ('en', 'ENGLISH'))
+    monkeypatch.setitem(loaded, code, table)
+
+
+def _make_row(
+    manager: object, display_name: str, target_path: str, **kwargs: object
+) -> ModRowWidget:
+    factory = cast('Callable[..., ModRowWidget]', ModRowWidget)
+    return factory(manager, display_name, target_path, **kwargs)
+
+
+def _make_tab(manager: object) -> ModificationsTab:
+    factory = cast('Callable[..., ModificationsTab]', ModificationsTab)
+    return factory(manager)
+
+
+def _detect_source(row: ModRowWidget, text: str) -> SourceTuple:
+    callback = cast('Callable[[str], SourceTuple]', getattr(row, '_detect_source_from_text'))
+    return callback(text)
+
+
+def _source_edit(row: ModRowWidget) -> QLineEdit:
+    return cast('QLineEdit', row.__dict__['_source_edit'])
+
+
+def _preview_button(row: ModRowWidget) -> QPushButton:
+    return cast('QPushButton', row.__dict__['_preview_btn'])
+
+
+def _update_row_status(row: ModRowWidget, status: str) -> None:
+    callback = cast('Callable[[str], None]', getattr(row, '_update_status'))
+    callback(status)
+
+
+def _status_label(row: ModRowWidget) -> QLabel:
+    return cast('QLabel', row.__dict__['_status_label'])
+
+
+def _row_is_font(row: ModRowWidget) -> bool:
+    return cast('bool', row.__dict__['_is_font'])
+
+
+def _row_file_filter(row: ModRowWidget) -> str:
+    return cast('str', row.__dict__['_file_filter'])
+
+
+def _browse_row(row: ModRowWidget) -> None:
+    callback = cast('Callable[[], None]', getattr(row, '_on_browse'))
+    callback()
+
+
+def _framerate_value(tab: ModificationsTab) -> int:
+    fflag_widget = cast('object', tab.__dict__['_fflag_widget'])
+    spinbox = cast('QSpinBox', fflag_widget.__dict__['_framerate_cap'])
+    return spinbox.value()
+
+
+def _section_content(section: CollapsibleSection) -> QWidget:
+    return cast('QWidget', section.__dict__['_content'])
+
+
+def _section_layout(section: CollapsibleSection) -> QVBoxLayout:
+    return cast('QVBoxLayout', section.__dict__['_content_layout'])
+
+
+def _section_animation(section: CollapsibleSection) -> SpringAnimation:
+    animation = cast('SpringAnimation | None', section.__dict__['_animation'])
+    assert animation is not None
+    return animation
+
+
+def _header_widget(section: CollapsibleSection) -> QWidget:
+    return cast('QWidget', section.__dict__['_header_widget'])
+
+
+_TRANSLATED_LANGUAGES: list[str] = [
     code
     for code, _name in localization.available_languages()
     if code != localization.DEFAULT_LANGUAGE
 ]
 
 
-def _qapp():
-    global _APP
-    _APP = QApplication.instance() or QApplication([])
-    return _APP
-
-
 class _PendingQueue:
-    def enqueue_framerate_cap(self, *_args):
+    def enqueue_framerate_cap(self, *_args: object) -> None:
         pass
 
-    def enqueue_fast_flags(self, *_args):
+    def enqueue_fast_flags(self, *_args: object) -> None:
         pass
 
 
 class _FakeModificationManager(QObject):
-    entry_status_changed = pyqtSignal(str, str, str)
-    apply_finished = pyqtSignal(str)
-    restore_finished = pyqtSignal()
+    entry_status_changed = Signal(str, str, str)
+    apply_finished = Signal(str)
+    restore_finished = Signal()
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.entries = []
-        self.roblox_dirs = []
-        self.fast_flags_enabled = False
-        self.fast_flags = {}
-        self.framerate_cap = 0
+        self.entries: list[dict[str, object]] = []
+        self.roblox_dirs: list[Path] = []
+        self.fast_flags_enabled: bool = False
+        self.fast_flags: dict[str, str] = {}
+        self.framerate_cap: int | str = 0
         self.pending_modifications_queue = _PendingQueue()
 
-    def reset_framerate_cap(self):
+    def reset_framerate_cap(self) -> None:
         pass
 
-    def sync_saved_global_settings(self):
+    def sync_saved_global_settings(self) -> None:
         pass
 
-    def write_fast_flags(self, *_args):
+    def write_fast_flags(self, *_args: object) -> None:
         pass
 
 
-def test_remove_source_accepts_every_registered_language_token(monkeypatch):
+def test_remove_source_accepts_every_registered_language_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _qapp()
     pseudo = dict(localization.ENGLISH)
     pseudo['replacer.action.remove'] = 'Supprimer'
-    monkeypatch.setitem(localization._TRANSLATIONS, 'fr-test', pseudo)
+    _register_language(monkeypatch, 'fr-test', pseudo)
 
     previous_language = get_language()
     set_language('es')
     row = None
     try:
-        row = ModRowWidget(
+        row = _make_row(
             _FakeModificationManager(),
             'Prueba',
             'content/textures/example.tex',
@@ -93,10 +194,10 @@ def test_remove_source_accepts_every_registered_language_token(monkeypatch):
             'supprimer',
             'SUPPRIMER',
         ):
-            assert row._detect_source_from_text(token) == expected
-        assert row._detect_source_from_text('"eliminar"') == expected
-        assert row._detect_source_from_text(f'"{portuguese_remove}"') == expected
-        assert '"eliminar"' in row._source_edit.placeholderText()
+            assert _detect_source(row, token) == expected
+        assert _detect_source(row, '"eliminar"') == expected
+        assert _detect_source(row, f'"{portuguese_remove}"') == expected
+        assert '"eliminar"' in _source_edit(row).placeholderText()
     finally:
         if row is not None:
             row.close()
@@ -106,20 +207,20 @@ def test_remove_source_accepts_every_registered_language_token(monkeypatch):
 
 
 @pytest.mark.parametrize('language', _TRANSLATED_LANGUAGES)
-def test_translated_modifications_tab_does_not_clip_visible_controls(language):
+def test_translated_modifications_tab_does_not_clip_visible_controls(language: str) -> None:
     app = _qapp()
     previous_language = get_language()
     set_language(language)
     tab = None
     try:
-        tab = ModificationsTab(_FakeModificationManager())
+        tab = _make_tab(_FakeModificationManager())
         # Narrow enough to catch the fixed English-width regressions from the
         # skybox/texture rows while still being a usable application width.
         tab.resize(669, 2500)
         tab.show()
         app.processEvents()
 
-        clipped = []
+        clipped: list[tuple[str, str, int, int]] = []
         for label in tab.findChildren(QLabel):
             if (
                 label.isVisible()
@@ -151,13 +252,13 @@ def test_translated_modifications_tab_does_not_clip_visible_controls(language):
 
 
 @pytest.mark.parametrize('language', _TRANSLATED_LANGUAGES)
-def test_translated_buttons_fit_content_without_consuming_surplus_width(language):
+def test_translated_buttons_fit_content_without_consuming_surplus_width(language: str) -> None:
     app = _qapp()
     previous_language = get_language()
     set_language(language)
     tab = None
     try:
-        tab = ModificationsTab(_FakeModificationManager())
+        tab = _make_tab(_FakeModificationManager())
         tab.resize(1700, 800)
         tab.show()
         app.processEvents()
@@ -172,9 +273,9 @@ def test_translated_buttons_fit_content_without_consuming_surplus_width(language
 
         row = tab.findChild(ModRowWidget)
         assert row is not None
-        assert row._preview_btn.width() == max(82, row._preview_btn.sizeHint().width())
-        assert row._preview_btn.maximumWidth() == row._preview_btn.width()
-        assert row._preview_btn.width() < 120
+        assert _preview_button(row).width() == max(82, _preview_button(row).sizeHint().width())
+        assert _preview_button(row).maximumWidth() == _preview_button(row).width()
+        assert _preview_button(row).width() < 120
     finally:
         if tab is not None:
             tab.close()
@@ -184,13 +285,13 @@ def test_translated_buttons_fit_content_without_consuming_surplus_width(language
 
 
 @pytest.mark.parametrize('language', _TRANSLATED_LANGUAGES)
-def test_translated_modification_statuses_resize_when_text_changes(language):
+def test_translated_modification_statuses_resize_when_text_changes(language: str) -> None:
     app = _qapp()
     previous_language = get_language()
     set_language(language)
     tab = None
     try:
-        tab = ModificationsTab(_FakeModificationManager())
+        tab = _make_tab(_FakeModificationManager())
         tab.resize(669, 2500)
         tab.show()
         app.processEvents()
@@ -198,9 +299,9 @@ def test_translated_modification_statuses_resize_when_text_changes(language):
         row = tab.findChild(ModRowWidget)
         assert row is not None
         for status in ('not_set', 'pending', 'applied', 'orphaned_stash'):
-            row._update_status(status)
+            _update_row_status(row, status)
             app.processEvents()
-            assert row._status_label.sizeHint().width() <= row._status_label.width()
+            assert _status_label(row).sizeHint().width() <= _status_label(row).width()
     finally:
         if tab is not None:
             tab.close()
@@ -209,12 +310,14 @@ def test_translated_modification_statuses_resize_when_text_changes(language):
         app.processEvents()
 
 
-def test_custom_font_browse_uses_filter_identifier(monkeypatch):
+def test_custom_font_browse_uses_filter_identifier(monkeypatch: pytest.MonkeyPatch) -> None:
     app = _qapp()
-    tab = ModificationsTab(_FakeModificationManager())
-    captured = {}
+    tab = _make_tab(_FakeModificationManager())
+    captured: dict[str, str] = {}
 
-    def fake_get_open_file_name(_parent, _caption, _initial_dir, file_filter):
+    def fake_get_open_file_name(
+        _parent: object, _caption: object, _initial_dir: object, file_filter: str
+    ) -> tuple[str, str]:
         captured['filter'] = file_filter
         return '', ''
 
@@ -223,11 +326,9 @@ def test_custom_font_browse_uses_filter_identifier(monkeypatch):
         fake_get_open_file_name,
     )
     try:
-        font_row = next(
-            row for row in tab.findChildren(ModRowWidget) if row._is_font
-        )
-        assert font_row._file_filter == 'modifications.filter.font_files'
-        font_row._on_browse()
+        font_row = next(row for row in tab.findChildren(ModRowWidget) if _row_is_font(row))
+        assert _row_file_filter(font_row) == 'modifications.filter.font_files'
+        _browse_row(font_row)
         assert captured['filter'] == tr('modifications.filter.font_files')
     finally:
         tab.close()
@@ -236,21 +337,23 @@ def test_custom_font_browse_uses_filter_identifier(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ('framerate_cap', 'expected'),
+    'framerate_cap,expected',
     [
         (2**63, 999_999_999),
         (-(2**63), 0),
         ('not-a-number', 0),
     ],
 )
-def test_framerate_cap_load_clamps_values_before_qspinbox(framerate_cap, expected):
+def test_framerate_cap_load_clamps_values_before_qspinbox(
+    framerate_cap: int | str, expected: int
+) -> None:
     app = _qapp()
     manager = _FakeModificationManager()
     manager.framerate_cap = framerate_cap
     tab = None
     try:
-        tab = ModificationsTab(manager)
-        assert tab._fflag_widget._framerate_cap.value() == expected
+        tab = _make_tab(manager)
+        assert _framerate_value(tab) == expected
     finally:
         if tab is not None:
             tab.close()
@@ -258,7 +361,37 @@ def test_framerate_cap_load_clamps_values_before_qspinbox(framerate_cap, expecte
         app.processEvents()
 
 
-def test_collapsing_section_clips_content_without_reflowing_children():
+def test_only_fast_flags_omits_section_header_separator() -> None:
+    app = _qapp()
+    tab = _make_tab(_FakeModificationManager())
+    try:
+        section_layout = cast('QVBoxLayout', tab.__dict__['_container_layout'])
+        sections: list[QWidget | None] = []
+        for i in range(section_layout.count()):
+            item = section_layout.itemAt(i)
+            assert item is not None
+            sections.append(item.widget())
+        assert isinstance(sections[0], CollapsibleSection)
+        assert isinstance(sections[1], CollapsibleSection)
+        for index, section in enumerate(sections[:2]):
+            assert isinstance(section, CollapsibleSection)
+            main_layout = section.layout()
+            assert main_layout is not None
+            second_item = main_layout.itemAt(1)
+            assert second_item is not None
+            second_widget = second_item.widget()
+            assert isinstance(second_widget, QWidget)
+            assert (
+                isinstance(second_widget, QFrame)
+                and second_widget.frameShape() == QFrame.Shape.HLine
+            ) is (index != 0)
+    finally:
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()
+
+
+def test_collapsing_section_clips_content_without_reflowing_children() -> None:
     app = _qapp()
     host = QWidget()
     host.resize(900, 700)
@@ -279,31 +412,37 @@ def test_collapsing_section_clips_content_without_reflowing_children():
     host.show()
     app.processEvents()
     initial_inner_height = inner.height()
-    initial_content_height = section._content.height()
+    initial_content_height = _section_content(section).height()
     assert initial_inner_height > 0
     assert initial_content_height > 0
 
     section.toggle()
-    wait = QEventLoop()
-    QTimer.singleShot(90, wait.quit)
-    wait.exec()
+    _section_animation(section).setCurrentTime(90)
+    app.processEvents()
 
-    assert 0 < section._content.height() < initial_content_height
+    assert 0 < _section_content(section).height() < initial_content_height
     assert inner.height() == initial_inner_height
-    assert not section._content_layout.isEnabled()
+    assert not _section_layout(section).isEnabled()
 
-    wait = QEventLoop()
-    QTimer.singleShot(180, wait.quit)
-    wait.exec()
-    assert section._content.height() == 0
-    assert section._content_layout.isEnabled()
+    _section_animation(section).finish()
+    app.processEvents()
+    assert _section_content(section).height() == 0
+    assert _section_layout(section).isEnabled()
+
+    section.add_widget(QLabel('Added while collapsed'))
+    section.toggle()
+    _section_animation(section).finish()
+    app.processEvents()
+    assert _section_content(section).height() > initial_content_height
+    assert inner.height() == initial_inner_height
+    assert _section_layout(section).isEnabled()
 
     host.close()
     host.deleteLater()
     app.processEvents()
 
 
-def test_collapsible_header_does_not_absorb_transient_collapse_space():
+def test_collapsible_header_does_not_absorb_transient_collapse_space() -> None:
     app = _qapp()
     section = CollapsibleSection('Fast Flags', expanded=True)
     inner = QWidget()
@@ -317,26 +456,112 @@ def test_collapsible_header_does_not_absorb_transient_collapse_space():
     section.resize(900, 700)
     section.show()
     app.processEvents()
-    header_y = section._header_widget.y()
-    header_height = section._header_widget.height()
+    header_y = _header_widget(section).y()
+    header_height = _header_widget(section).height()
 
+    layout = section.layout()
+    assert layout is not None
     for content_height in (400, 200, 50, 0):
-        section._content.setMaximumHeight(content_height)
-        section.layout().activate()
-        assert section._header_widget.y() == header_y
-        assert section._header_widget.height() == header_height
+        _section_content(section).setMaximumHeight(content_height)
+        layout.activate()
+        assert _header_widget(section).y() == header_y
+        assert _header_widget(section).height() == header_height
 
     section.close()
     section.deleteLater()
     app.processEvents()
 
 
-def test_collapsed_sections_do_not_absorb_parent_spare_height():
+def test_opening_section_clips_content_instead_of_squashing_header() -> None:
+    app = _qapp()
+    # The section is not in a layout, so its geometry stays one step behind
+    # the animation the way it does before a scroll area catches up
+    host = QWidget()
+    host.resize(900, 600)
+    section = CollapsibleSection('Fast Flags', expanded=False, parent=host)
+    # Wrapped text gives the content height-for-width, which box layouts
+    # also treat as a minimum
+    note = QLabel('Fast Flags are written to every detected Roblox directory. ' * 4)
+    note.setWordWrap(True)
+    section.add_widget(note)
+    inner = QWidget()
+    inner.setMinimumHeight(300)
+    section.add_widget(inner)
+    section.setGeometry(0, 0, 900, section.sizeHint().height())
+    host.show()
+    app.processEvents()
+    header = _header_widget(section)
+    expected = (header.y(), header.height())
+
+    section.toggle()
+    animation = _section_animation(section)
+    layout = section.layout()
+    assert layout is not None
+    for elapsed in (50, 100, 150):
+        animation.setCurrentTime(elapsed)
+        layout.activate()
+        assert (header.y(), header.height()) == expected
+
+    animation.finish()
+    host.close()
+    host.deleteLater()
+    app.processEvents()
+
+
+def test_sections_animating_together_keep_growing() -> None:
+    app = _qapp()
+    # With every wrapping section sliding, nothing else in the page reports
+    # height-for-width; the scroll area must still size them by their content
+    host = QWidget()
+    host.resize(600, 400)
+    scroll = QScrollArea(host)
+    scroll.setWidgetResizable(True)
+    QVBoxLayout(host).addWidget(scroll)
+    page = QWidget()
+    page_layout = QVBoxLayout(page)
+    sections: list[CollapsibleSection] = []
+    for index in range(2):
+        section = CollapsibleSection(f'Section {index}', expanded=False)
+        note = QLabel('Wrapped text that needs more than one line at this width. ' * 3)
+        note.setWordWrap(True)
+        section.add_widget(note)
+        tall = QWidget()
+        tall.setMinimumHeight(200)
+        section.add_widget(tall)
+        page_layout.addWidget(section)
+        sections.append(section)
+    # A page taller than the viewport, as the Settings tab is
+    filler = QWidget()
+    filler.setFixedHeight(800)
+    page_layout.addWidget(filler)
+    page_layout.addStretch()
+    scroll.setWidget(page)
+    host.show()
+    app.processEvents()
+    collapsed = sections[0].height()
+
+    for section in sections:
+        section.toggle()
+    for section in sections:
+        _section_animation(section).setCurrentTime(150)
+    for _ in range(5):
+        app.processEvents()
+    assert all(section.height() > collapsed + 50 for section in sections)
+
+    for section in sections:
+        animation = _section_animation(section)
+        animation.finish()
+    host.close()
+    host.deleteLater()
+    app.processEvents()
+
+
+def test_collapsed_sections_do_not_absorb_parent_spare_height() -> None:
     app = _qapp()
     host = QWidget()
     host.resize(900, 700)
     host_layout = QVBoxLayout(host)
-    sections = []
+    sections: list[CollapsibleSection] = []
     for index in range(5):
         section = CollapsibleSection(f'Section {index}', expanded=False)
         section.add_widget(QLabel('body'))
@@ -356,3 +581,110 @@ def test_collapsed_sections_do_not_absorb_parent_spare_height():
     host.close()
     host.deleteLater()
     app.processEvents()
+
+
+@pytest.mark.parametrize('tab_name', ['modifications', 'miscellaneous'])
+@pytest.mark.parametrize('theme', ['System', 'Dark', 'Light'])
+def test_preloaded_tab_background_respects_theme(
+    monkeypatch: pytest.MonkeyPatch, tab_name: str, theme: str
+) -> None:
+    app = _qapp()
+    monkeypatch.setattr(ThemeManager, '_current_theme', theme)
+    monkeypatch.setattr(ThemeManager, '_effective_theme', theme)
+    monkeypatch.setattr(ThemeManager, '_color_mode', theme)
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor('#2c3040'))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#202433'))
+    original_palette = app.palette()
+    app.setPalette(palette)
+    parent = QWidget()
+    parent.setEnabled(False)
+    if tab_name == 'modifications':
+        factory = cast('Callable[..., ModificationsTab]', ModificationsTab)
+        tab = factory(_FakeModificationManager(), parent=parent, defer_setup=True)
+        container_name = '_FleasionModContainer'
+    else:
+        tab = RandoStuffTab(parent=parent, defer_setup=True)
+        container_name = '_FleasionMiscContainer'
+    build = tab.build_ui()
+    try:
+        next(build)
+        container = tab.findChild(QWidget, container_name)
+        assert container is not None
+        container.ensurePolished()
+        expected = QColor('#2c3040')
+        assert container.autoFillBackground()
+        assert container.palette().color(container.backgroundRole()) == expected
+        parent.setEnabled(True)
+        parent.show()
+        app.processEvents()
+        assert container.autoFillBackground()
+        assert container.palette().color(container.backgroundRole()) == expected
+
+        palette.setColor(QPalette.ColorRole.Window, QColor('#303848'))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#182030'))
+        app.setPalette(palette)
+        app.processEvents()
+        expected = QColor('#303848')
+        assert container.autoFillBackground()
+        assert container.palette().color(container.backgroundRole()) == expected
+    finally:
+        build.close()
+        parent.close()
+        parent.deleteLater()
+        app.processEvents()
+        app.setPalette(original_palette)
+
+
+def test_modifications_tab_show_triggers_catalog_prefetch_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.gui.modifications_tab import CustomFFlagEditor
+
+    app = _qapp()
+    calls: list[CustomFFlagEditor] = []
+
+    def record_prefetch(editor: CustomFFlagEditor) -> None:
+        calls.append(editor)
+
+    monkeypatch.setattr(CustomFFlagEditor, 'prefetch_flag_catalog_if_needed', record_prefetch)
+    tab = _make_tab(_FakeModificationManager())
+    try:
+        assert not calls
+        tab.show()
+        app.processEvents()
+        assert len(calls) == 1
+        tab.hide()
+        tab.show()
+        app.processEvents()
+        assert len(calls) == 2
+    finally:
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()
+
+
+@pytest.mark.parametrize('language', tuple(localization.LANGUAGES))
+@pytest.mark.parametrize('applied, roblox_count', [(0, 0), (1, 1), (3, 3), (11, 2)])
+def test_modifications_footer_renders_each_count_once(
+    language: str, applied: int, roblox_count: int
+) -> None:
+    _qapp()
+    previous_language = get_language()
+    set_language(language)
+    try:
+        label = QLabel()
+        fake = SimpleNamespace(
+            _manager=SimpleNamespace(
+                entries=[{'status': 'applied'}] * applied,
+                roblox_dirs=[f'dir{index}' for index in range(roblox_count)],
+            ),
+            _status_label=label,
+        )
+        ModificationsTab._update_status_bar(cast('ModificationsTab', fake))  # pyright: ignore[reportPrivateUsage]
+        status_parts = label.text().split(' • ')
+        assert len(status_parts) == 2
+        assert status_parts[0].count(str(applied)) == 1
+        assert status_parts[1].count(str(roblox_count)) == 1
+    finally:
+        set_language(previous_language)

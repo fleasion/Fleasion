@@ -4,43 +4,141 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
+import zstandard
+
+from fleasion.proxy import master as proxy_master, server as proxy_server
+from fleasion.proxy.asset_trace import AssetTrace
+from fleasion.proxy.client_settings_cache import (
+    ClientSettingsLocalCache,
+    client_settings_cache_key,
+)
 from fleasion.proxy.addons import custom_fflags as custom_fflags_module
 from fleasion.proxy.addons.custom_fflags import (
     DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG,
-    EXTERNAL_CA_FLAG,
     CustomFFlagModifier,
     normalize_custom_fflags,
 )
-from fleasion.proxy import master as proxy_master
-from fleasion.proxy.upstream import UpstreamConnectResult
 from fleasion.proxy.server import (
     BASE_INTERCEPT_HOSTS,
     CUSTOM_FFLAGS_INTERCEPT_HOSTS,
     FleasionProxy,
     RawHeaders,
-    _build_modified_response,
-    _compress_dcz,
-    _decompress_body,
-    _decompress_dcz,
-    _dcz_dictionary_sha256,
-    _without_internal_client_settings_headers,
-    _without_conditional_client_settings_headers,
 )
+from fleasion.proxy.upstream import UpstreamConnectResult
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
+
+    import pytest
 
 
-class _BufferWriter:
-    def __init__(self, *, fail_drain: bool = False):
+EMBEDDED_CA_FLAG = 'DFFlagHttpUseEmbeddedCaCerts'
+
+
+type _Headers = dict[bytes, bytes]
+type _FlagSignature = tuple[tuple[str, str], ...]
+type _AutoReplaceRule = dict[str, str | bool]
+
+
+def _private_attr(target: object, name: str) -> object:
+    return getattr(target, name)
+
+
+def _build_modified_response(
+    status_line: bytes,
+    headers: _Headers,
+    body: bytes,
+    content_encoding: bytes | None = None,
+) -> bytes:
+    function = cast(
+        'Callable[[bytes, _Headers, bytes, bytes | None], bytes]',
+        _private_attr(proxy_server, '_build_modified_response'),
+    )
+    return function(status_line, headers, body, content_encoding)
+
+
+def _compress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
+    function = cast(
+        'Callable[[bytes, bytes], bytes | None]',
+        _private_attr(proxy_server, '_compress_dcz'),
+    )
+    return function(body, dictionary)
+
+
+def _dcz_dictionary_sha256(path: str) -> str | None:
+    function = cast(
+        'Callable[[str], str | None]',
+        _private_attr(proxy_server, '_dcz_dictionary_sha256'),
+    )
+    return function(path)
+
+
+def _decompress_body(body: bytes, headers: _Headers) -> bytes:
+    function = cast(
+        'Callable[[bytes, _Headers], bytes]',
+        _private_attr(proxy_server, '_decompress_body'),
+    )
+    return function(body, headers)
+
+
+def _decompress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
+    function = cast(
+        'Callable[[bytes, bytes], bytes | None]',
+        _private_attr(proxy_server, '_decompress_dcz'),
+    )
+    return function(body, dictionary)
+
+
+def _without_conditional_client_settings_headers(headers: _Headers) -> _Headers:
+    function = cast(
+        'Callable[[_Headers], _Headers]',
+        _private_attr(proxy_server, '_without_conditional_client_settings_headers'),
+    )
+    return function(headers)
+
+
+def _without_internal_client_settings_headers(headers: _Headers) -> _Headers:
+    function = cast(
+        'Callable[[_Headers], _Headers]',
+        _private_attr(proxy_server, '_without_internal_client_settings_headers'),
+    )
+    return function(headers)
+
+
+def _modifier_flag_signature(
+    modifier: CustomFFlagModifier,
+    flags: dict[str, str],
+) -> _FlagSignature:
+    function = cast(
+        'Callable[[dict[str, str]], _FlagSignature]',
+        _private_attr(modifier, '_flag_signature'),
+    )
+    return function(flags)
+
+
+def _set_test_attr(target: object, name: str, value: object) -> None:
+    setattr(target, name, value)
+
+
+class _BufferWriter(asyncio.StreamWriter):
+    def __init__(self, *, fail_drain: bool = False) -> None:
         self.buffer = bytearray()
         self.closed = False
         self.fail_drain = fail_drain
 
-    def write(self, data: bytes) -> None:
+    def __del__(self, _warnings: object = None) -> None:
+        pass
+
+    def write(self, data: bytes | bytearray | memoryview) -> None:
         self.buffer.extend(data)
 
     async def drain(self) -> None:
         if self.fail_drain:
-            raise ConnectionResetError('test client disconnected before drain')
+            message = 'test client disconnected before drain'
+            raise ConnectionResetError(message)
 
     def is_closing(self) -> bool:
         return self.closed
@@ -49,33 +147,53 @@ class _BufferWriter:
         self.closed = True
 
 
+class _TestFleasionProxy(FleasionProxy):
+    async def run_http_session(
+        self,
+        first_request: RawHeaders,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        host: str,
+    ) -> None:
+        await self._http_session(first_request, reader, writer, host)
+
+
+class _TestProxyMaster(proxy_master.ProxyMaster):
+    def desired_intercept_hosts(self) -> set[str]:
+        return self._desired_intercept_hosts()
+
+
 def _run_client_settings_session(
     modifier: CustomFFlagModifier,
     upstream_response: bytes,
     *,
     conditional: bool = False,
-    on_connect=None,
-    auto_replace_rules: list[dict] | None = None,
+    if_none_match: bytes | None = None,
+    cache: ClientSettingsLocalCache | None = None,
+    path_override: str | None = None,
+    dictionary: bytes | None = None,
+    on_connect: Callable[[], None] | None = None,
+    auto_replace_rules: list[_AutoReplaceRule] | None = None,
     intercept_response_action: str | None = None,
     client_drain_failure: bool = False,
 ) -> tuple[bytes, bytes]:
     async def _run() -> tuple[bytes, bytes]:
         host = 'clientsettings.roblox.com'
-        path = '/v2/settings/application/PCDesktopClient'
+        path = path_override or '/v2/settings/application/PCDesktopClient'
         headers = {
             b'host': host.encode('ascii'),
             b'connection': b'close',
         }
-        if conditional:
-            headers[b'if-none-match'] = b'"cached"'
+        if conditional or if_none_match is not None:
+            headers[b'if-none-match'] = if_none_match or b'"cached"'
 
         request_lines = [
             f'GET {path} HTTP/1.1'.encode('ascii'),
             f'Host: {host}'.encode('ascii'),
             b'Connection: close',
         ]
-        if conditional:
-            request_lines.append(b'If-None-Match: "cached"')
+        if conditional or if_none_match is not None:
+            request_lines.append(b'If-None-Match: ' + (if_none_match or b'"cached"'))
         request_block = b'\r\n'.join(request_lines) + b'\r\n\r\n'
         first_request = RawHeaders(
             first_line=request_lines[0],
@@ -91,22 +209,33 @@ def _run_client_settings_session(
         upstream_reader.feed_eof()
         upstream_writer = _BufferWriter()
 
-        proxy = FleasionProxy.__new__(FleasionProxy)
-        proxy.texture_stripper = SimpleNamespace(
-            config_manager=SimpleNamespace(get_all_replacements=lambda: [])
+        proxy = _TestFleasionProxy.__new__(_TestFleasionProxy)
+
+        def _empty_replacements() -> list[object]:
+            return []
+
+        texture_stripper = SimpleNamespace(
+            config_manager=SimpleNamespace(get_all_replacements=_empty_replacements)
         )
-        proxy.cache_scraper = SimpleNamespace(enabled=False)
-        proxy.custom_fflag_modifier = modifier
-        proxy._auto_replace_rules = list(auto_replace_rules or [])
-        proxy._module_interceptors = []
-        proxy._wire_preserving_passthrough = False
-        proxy._intercept_all_hosts = intercept_response_action is not None
-        proxy._fallback_diagnostics_seen = set()
-        proxy._client_settings_dictionary_cache = {}
-        proxy._executor = None
+        _set_test_attr(proxy, 'texture_stripper', texture_stripper)
+        _set_test_attr(proxy, 'cache_scraper', SimpleNamespace(enabled=False))
+        _set_test_attr(proxy, 'custom_fflag_modifier', modifier)
+        _set_test_attr(proxy, '_auto_replace_rules', list(auto_replace_rules or []))
+        _set_test_attr(proxy, '_module_interceptors', [])
+        _set_test_attr(proxy, '_asset_trace', AssetTrace(enabled=False))
+        _set_test_attr(proxy, '_wire_preserving_passthrough', value=False)
+        _set_test_attr(proxy, '_intercept_all_hosts', intercept_response_action is not None)
+        _set_test_attr(proxy, '_fallback_diagnostics_seen', set[tuple[str, str]]())
+        dictionary_hash = _dcz_dictionary_sha256(path)
+        _set_test_attr(
+            proxy, '_client_settings_dictionary_cache',
+            {dictionary_hash: dictionary} if dictionary_hash and dictionary is not None else {},
+        )
+        _set_test_attr(proxy, '_client_settings_local_cache', cache)
+        _set_test_attr(proxy, '_executor', None)
 
         if intercept_response_action is not None:
-            entry = {
+            entry: dict[str, int | bool | None] = {
                 'id': 1,
                 'status': None,
                 'size': 0,
@@ -116,12 +245,24 @@ def _run_client_settings_session(
                 'pending_stage': None,
                 'was_intercepted': False,
             }
-            proxy._intercept_match_text = 'clientsettings'
-            proxy._pending = {}
-            proxy._pending_lock = threading.Lock()
-            proxy._record_request = lambda *_args, **_kwargs: entry
 
-        async def _connect_upstream(_host):
+            def _record_request(
+                _host: str,
+                _port: int,
+                _method: str,
+                _path: str,
+                *,
+                intercepted: bool,
+            ) -> dict[str, int | bool | None]:
+                del intercepted
+                return entry
+
+            _set_test_attr(proxy, '_intercept_match_text', 'clientsettings')
+            _set_test_attr(proxy, '_pending', {})
+            _set_test_attr(proxy, '_pending_lock', threading.Lock())
+            _set_test_attr(proxy, '_record_request', _record_request)
+
+        async def _connect_upstream(_host: str) -> UpstreamConnectResult:
             if on_connect is not None:
                 on_connect()
             return UpstreamConnectResult(
@@ -131,29 +272,193 @@ def _run_client_settings_session(
                 endpoint='192.0.2.1',
             )
 
-        proxy._connect_upstream = _connect_upstream
+        _set_test_attr(proxy, '_connect_upstream', _connect_upstream)
 
-        async def _resolve_intercepts() -> None:
+        async def _resolve_intercepts(action: str) -> None:
             while (1, 'request') not in proxy.get_pending_intercepts():
                 await asyncio.sleep(0)
             assert proxy.submit_pending(1, 'request', 'forward')
             while (1, 'response') not in proxy.get_pending_intercepts():
                 await asyncio.sleep(0)
-            assert proxy.submit_pending(1, 'response', intercept_response_action)
+            assert proxy.submit_pending(1, 'response', action)
 
         if intercept_response_action is None:
-            await proxy._http_session(first_request, client_reader, client_writer, host)
+            await proxy.run_http_session(first_request, client_reader, client_writer, host)
         else:
             await asyncio.gather(
-                proxy._http_session(first_request, client_reader, client_writer, host),
-                _resolve_intercepts(),
+                proxy.run_http_session(first_request, client_reader, client_writer, host),
+                _resolve_intercepts(intercept_response_action),
             )
         return bytes(client_writer.buffer), bytes(upstream_writer.buffer)
 
     return asyncio.run(_run())
 
 
-def test_normalize_custom_fflags_matches_roblox_string_values():
+def test_local_dynamic_fastflag_cache_rewrites_dictionary_compressed_android_settings() -> None:
+    dictionary = b'shared dcz dictionary for custom flags ' * 100
+    path = '/v2/settings-compressed/application/GoogleAndroidApp/' + 'a' * 64 + '.dcz'
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    cache = ClientSettingsLocalCache()
+    original = b'{"applicationSettings":{"FFlagExample":"Original"}}'
+    compressed = _compress_dcz(original, dictionary)
+    assert compressed is not None
+    upstream = (
+        b'HTTP/1.1 200 OK\r\nContent-Encoding: dcz\r\n'
+        + f'Content-Length: {len(compressed)}\r\n'.encode('ascii')
+        + b'Connection: close\r\n\r\n' + compressed
+    )
+    first, forwarded = _run_client_settings_session(
+        modifier, upstream, cache=cache, path_override=path, dictionary=dictionary
+    )
+    assert b'GET ' + path.encode('ascii') in forwarded
+    first_header, _, first_body = first.partition(b'\r\n\r\n')
+    assert b'content-encoding: dcz' in first_header.lower()
+    decoded = _decompress_dcz(first_body, dictionary)
+    assert decoded is not None
+    assert json.loads(decoded)['applicationSettings']['FFlagExample'] == 'True'
+    etag = next(
+        line.split(b': ', 1)[1]
+        for line in first_header.split(b'\r\n') if line.startswith(b'etag:')
+    )
+
+    config.custom_fflags['FFlagExample'] = 'False'
+    toggled, forwarded = _run_client_settings_session(
+        modifier, b'', cache=cache, path_override=path,
+        dictionary=dictionary, if_none_match=etag,
+    )
+    assert forwarded == b''
+    toggled_header, _, toggled_body = toggled.partition(b'\r\n\r\n')
+    assert b'HTTP/1.1 200 OK' in toggled_header
+    assert b'content-encoding: dcz' in toggled_header.lower()
+    decoded = _decompress_dcz(toggled_body, dictionary)
+    assert decoded is not None
+    assert json.loads(decoded)['applicationSettings']['FFlagExample'] == 'False'
+
+
+def test_local_dynamic_fastflag_cache_uses_304_and_updates_on_toggle() -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    cache = ClientSettingsLocalCache()
+    body = b'{"applicationSettings":{"Base":"Old","FFlagExample":"Off"}}'
+    upstream = (
+        b'HTTP/1.1 200 OK\r\n'
+        + f'Content-Length: {len(body)}\r\n'.encode('ascii')
+        + b'ETag: "roblox"\r\nCache-Control: public, max-age=0\r\n'
+        + b'Connection: close\r\n\r\n'
+        + body
+    )
+    first, forwarded = _run_client_settings_session(modifier, upstream, cache=cache)
+    assert b'GET /v2/settings/application/PCDesktopClient' in forwarded
+    assert b'HTTP/1.1 200 OK' in first
+    first_header, _, first_body = first.partition(b'\r\n\r\n')
+    etag = next(line.split(b': ', 1)[1] for line in first_header.split(b'\r\n') if line.startswith(b'etag:'))
+    assert etag.startswith(b'"fleasion-')
+    assert b'"roblox"' not in first_header
+    assert json.loads(first_body)['applicationSettings']['FFlagExample'] == 'True'
+
+    unchanged, forwarded = _run_client_settings_session(
+        modifier, b'', if_none_match=etag, cache=cache
+    )
+    assert b'304 Not Modified' in unchanged
+    assert unchanged.endswith(b'\r\n\r\n')
+    assert forwarded == b''
+
+    config.custom_fflags['FFlagExample'] = 'False'
+    toggled, forwarded = _run_client_settings_session(
+        modifier, b'', if_none_match=etag, cache=cache
+    )
+    assert b'HTTP/1.1 200 OK' in toggled
+    assert forwarded == b''
+    second_header, _, second_body = toggled.partition(b'\r\n\r\n')
+    assert json.loads(second_body)['applicationSettings']['FFlagExample'] == 'False'
+    next_etag = next(line.split(b': ', 1)[1] for line in second_header.split(b'\r\n') if line.startswith(b'etag:'))
+    assert next_etag != etag
+    assert not modifier.requires_fresh_response()
+
+    unchanged_again, forwarded = _run_client_settings_session(
+        modifier, b'', if_none_match=next_etag, cache=cache
+    )
+    assert b'304 Not Modified' in unchanged_again
+    assert forwarded == b''
+
+    # Disabling an override must restore the original Roblox base value
+    config.custom_fflags_enabled = False
+    disabled, forwarded = _run_client_settings_session(
+        modifier, b'', if_none_match=next_etag, cache=cache
+    )
+    assert b'200 OK' in disabled
+    assert json.loads(disabled.partition(b'\r\n\r\n')[2])['applicationSettings']['FFlagExample'] == 'Off'
+    assert forwarded == b''
+
+
+def test_local_dynamic_fastflag_cache_revalidates_and_isolates_new_players() -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    cache = ClientSettingsLocalCache()
+
+    def upstream(base: str) -> bytes:
+        body = json.dumps({'applicationSettings': {'Base': base}}).encode('utf-8')
+        return (
+            b'HTTP/1.1 200 OK\r\n'
+            + f'Content-Length: {len(body)}\r\n'.encode('ascii')
+            + b'Connection: close\r\n\r\n' + body
+        )
+
+    first, _ = _run_client_settings_session(modifier, upstream('first'), cache=cache)
+    first_header = first.partition(b'\r\n\r\n')[0]
+    etag = next(line.split(b': ', 1)[1] for line in first_header.split(b'\r\n') if line.startswith(b'etag:'))
+    key = client_settings_cache_key(
+        'clientsettings.roblox.com', '/v2/settings/application/PCDesktopClient', 'GET', {}, b''
+    )
+    assert key is not None
+    snapshot = cache.snapshot(key, modifier.delivery_generation())
+    assert snapshot is not None
+    snapshot.checked_at -= 31.0
+    new_version, forwarded = _run_client_settings_session(
+        modifier, upstream('second'), if_none_match=etag, cache=cache
+    )
+    assert b'if-none-match' not in forwarded.lower()
+    assert json.loads(new_version.partition(b'\r\n\r\n')[2])['applicationSettings']['Base'] == 'second'
+    unchanged, forwarded = _run_client_settings_session(modifier, b'', cache=cache)
+    assert json.loads(unchanged.partition(b'\r\n\r\n')[2])['applicationSettings']['Base'] == 'second'
+    assert forwarded == b''
+
+    modifier.prepare_for_player_launch()
+    relaunched, forwarded = _run_client_settings_session(
+        modifier, upstream('third'), cache=cache
+    )
+    assert b'GET /v2/settings/application/PCDesktopClient' in forwarded
+    assert json.loads(relaunched.partition(b'\r\n\r\n')[2])['applicationSettings']['Base'] == 'third'
+
+
+def test_local_dynamic_fastflag_cache_does_not_commit_on_failed_delivery() -> None:
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+    cache = ClientSettingsLocalCache()
+    body = b'{"applicationSettings":{"Base":"original"}}'
+    upstream = (
+        b'HTTP/1.1 200 OK\r\n' + f'Content-Length: {len(body)}\r\n'.encode()
+        + b'Connection: close\r\n\r\n' + body
+    )
+    _run_client_settings_session(modifier, upstream, cache=cache)
+    key = client_settings_cache_key(
+        'clientsettings.roblox.com', '/v2/settings/application/PCDesktopClient', 'GET', {}, b''
+    )
+    assert key is not None
+    original = cache.snapshot(key, modifier.delivery_generation())
+    assert original is not None
+    config.custom_fflags['FFlagExample'] = 'False'
+    _run_client_settings_session(modifier, b'', cache=cache, client_drain_failure=True)
+    assert modifier.requires_fresh_response()
+    assert cache.snapshot(key, modifier.delivery_generation()) is original
+    delivered, forwarded = _run_client_settings_session(modifier, b'', cache=cache)
+    assert forwarded == b''
+    assert json.loads(delivered.partition(b'\r\n\r\n')[2])['applicationSettings']['FFlagExample'] == 'False'
+    assert not modifier.requires_fresh_response()
+
+
+def test_normalize_custom_fflags_matches_roblox_string_values() -> None:
     assert normalize_custom_fflags(
         {
             'DFIntTaskSchedulerTargetFps': 20,
@@ -171,7 +476,7 @@ def test_normalize_custom_fflags_matches_roblox_string_values():
     }
 
 
-def test_runtime_flags_skip_individually_disabled_custom_fflags():
+def test_runtime_flags_skip_individually_disabled_custom_fflags() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagEnabled': 'True', 'FFlagDisabled': 'False'},
@@ -184,7 +489,7 @@ def test_runtime_flags_skip_individually_disabled_custom_fflags():
     assert 'FFlagDisabled' not in flags
 
 
-def test_modifier_merges_all_platform_application_settings():
+def test_modifier_merges_all_platform_application_settings() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '20'},
@@ -201,7 +506,7 @@ def test_modifier_merges_all_platform_application_settings():
     )
 
     assert modified['applicationSettings']['DFIntTaskSchedulerTargetFps'] == '20'
-    assert modified['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert modified['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
     assert modified['applicationSettings']['Existing'] == 'True'
     android = json.loads(
         modifier.modify_response('/v2/settings/application/GoogleAndroidApp', original)
@@ -210,7 +515,7 @@ def test_modifier_merges_all_platform_application_settings():
     assert modifier.modify_response('/v2/client-version/WindowsPlayer', original) == original
 
 
-def test_modifier_always_enforces_fast_dynamic_reload_without_saving_it():
+def test_modifier_always_enforces_fast_dynamic_reload_without_saving_it() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '120'},
@@ -222,19 +527,18 @@ def test_modifier_always_enforces_fast_dynamic_reload_without_saving_it():
         modifier.modify_response('/v2/settings/application/PCDesktopClient', original)
     )
 
-    assert modified['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert modified['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
     assert config.custom_fflags[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '120'
 
 
-def test_modifier_primes_the_uncompressed_windows_flag_cache(tmp_path):
+def test_modifier_primes_the_uncompressed_windows_flag_cache(tmp_path: Path) -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '37'},
     )
     cache_path = tmp_path / 'flag_cache.dat'
     cache_path.write_bytes(
-        b'\x00\x00\x00\x00\x00'
-        + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
+        b'\x00\x00\x00\x00\x00' + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
     )
     modifier = CustomFFlagModifier(config, flag_cache_path=cache_path)
 
@@ -244,11 +548,11 @@ def test_modifier_primes_the_uncompressed_windows_flag_cache(tmp_path):
     payload = json.loads(cache_path.read_bytes()[5:])
     assert payload['applicationSettings']['Existing'] == 'True'
     assert payload['applicationSettings']['DFIntTaskSchedulerTargetFps'] == '37'
-    assert payload['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert payload['applicationSettings'][DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
     assert DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG not in config.custom_fflags
 
 
-def test_modifier_removes_disabled_override_from_windows_flag_cache(tmp_path):
+def test_modifier_removes_disabled_override_from_windows_flag_cache(tmp_path: Path) -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagFleasionGateMarker': 'True'},
@@ -256,8 +560,7 @@ def test_modifier_removes_disabled_override_from_windows_flag_cache(tmp_path):
     )
     cache_path = tmp_path / 'flag_cache.dat'
     cache_path.write_bytes(
-        b'\x00\x00\x00\x00\x00'
-        + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
+        b'\x00\x00\x00\x00\x00' + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
     )
     modifier = CustomFFlagModifier(config, flag_cache_path=cache_path)
 
@@ -267,10 +570,12 @@ def test_modifier_removes_disabled_override_from_windows_flag_cache(tmp_path):
 
     payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
     assert 'FFlagFleasionGateMarker' not in payload
-    assert payload[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert payload[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
 
 
-def test_modifier_removes_all_saved_overrides_when_windows_feature_is_disabled(tmp_path):
+def test_modifier_removes_all_saved_overrides_when_windows_feature_is_disabled(
+    tmp_path: Path,
+) -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagFleasionGateMarker': 'True'},
@@ -278,8 +583,7 @@ def test_modifier_removes_all_saved_overrides_when_windows_feature_is_disabled(t
     )
     cache_path = tmp_path / 'flag_cache.dat'
     cache_path.write_bytes(
-        b'\x00\x00\x00\x00\x00'
-        + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
+        b'\x00\x00\x00\x00\x00' + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
     )
     modifier = CustomFFlagModifier(config, flag_cache_path=cache_path)
 
@@ -290,12 +594,11 @@ def test_modifier_removes_all_saved_overrides_when_windows_feature_is_disabled(t
     payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
     assert payload == {
         'Existing': 'True',
-        EXTERNAL_CA_FLAG: 'False',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
     }
 
 
-def test_modifier_primes_macos_player_client_settings(tmp_path):
+def test_modifier_primes_macos_player_client_settings(tmp_path: Path) -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'DFFlagDebugDrawBroadPhaseAABBs': 'True', 'FFlagExample': 'False'},
@@ -313,12 +616,11 @@ def test_modifier_primes_macos_player_client_settings(tmp_path):
         'Existing': 'True',
         'DFFlagDebugDrawBroadPhaseAABBs': 'True',
         'FFlagExample': 'False',
-        EXTERNAL_CA_FLAG: 'False',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
     }
 
 
-def test_modifier_removes_previous_macos_seed_when_flags_change_or_disable(tmp_path):
+def test_modifier_removes_previous_macos_seed_when_flags_change_or_disable(tmp_path: Path) -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'FFlagExample': 'True'},
@@ -338,12 +640,11 @@ def test_modifier_removes_previous_macos_seed_when_flags_change_or_disable(tmp_p
     assert modifier.prime_macos_client_settings()
     assert json.loads(settings.read_text(encoding='utf-8')) == {
         'Existing': 'True',
-        EXTERNAL_CA_FLAG: 'False',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
     }
 
 
-def test_modifier_does_not_replace_an_unknown_compressed_flag_cache(tmp_path):
+def test_modifier_does_not_replace_an_unknown_compressed_flag_cache(tmp_path: Path) -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={})
     cache_path = tmp_path / 'flag_cache.dat'
     original = b'\x00\x00\x00\x00\x01compressed'
@@ -353,7 +654,7 @@ def test_modifier_does_not_replace_an_unknown_compressed_flag_cache(tmp_path):
     assert cache_path.read_bytes() == original
 
 
-def test_modifier_requests_fresh_responses_until_each_flag_set_is_delivered():
+def test_modifier_requests_fresh_responses_until_each_flag_set_is_delivered() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
 
@@ -367,7 +668,7 @@ def test_modifier_requests_fresh_responses_until_each_flag_set_is_delivered():
     assert modifier.requires_fresh_response()
 
 
-def test_modifier_requests_a_fresh_response_again_after_player_relaunch():
+def test_modifier_requests_a_fresh_response_again_after_player_relaunch() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
 
@@ -380,7 +681,7 @@ def test_modifier_requests_a_fresh_response_again_after_player_relaunch():
     assert modifier.requires_fresh_response()
 
 
-def test_late_response_from_previous_player_cannot_satisfy_new_launch():
+def test_late_response_from_previous_player_cannot_satisfy_new_launch() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     old_generation = modifier.delivery_generation()
@@ -395,18 +696,18 @@ def test_late_response_from_previous_player_cannot_satisfy_new_launch():
     assert modifier.requires_fresh_response()
 
 
-def test_delivery_generation_check_and_commit_are_atomic(monkeypatch):
+def test_delivery_generation_check_and_commit_are_atomic(monkeypatch: pytest.MonkeyPatch) -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     generation = modifier.delivery_generation()
-    signature = modifier._flag_signature(modifier.runtime_flags())
+    signature = _modifier_flag_signature(modifier, modifier.runtime_flags())
     entered_commit = threading.Event()
     release_commit = threading.Event()
     prepare_done = threading.Event()
-    results = []
+    results: list[bool] = []
     real_monotonic = custom_fflags_module.time.monotonic
 
-    def blocking_monotonic():
+    def blocking_monotonic() -> float:
         entered_commit.set()
         assert release_commit.wait(1.0)
         return real_monotonic()
@@ -421,7 +722,7 @@ def test_delivery_generation_check_and_commit_are_atomic(monkeypatch):
     note_thread.start()
     assert entered_commit.wait(1.0)
 
-    def prepare_launch():
+    def prepare_launch() -> None:
         modifier.prepare_for_player_launch()
         prepare_done.set()
 
@@ -440,7 +741,7 @@ def test_delivery_generation_check_and_commit_are_atomic(monkeypatch):
     assert modifier.requires_fresh_response()
 
 
-def test_modifier_reloads_saved_flags_without_restarting_the_proxy(tmp_path):
+def test_modifier_reloads_saved_flags_without_restarting_the_proxy(tmp_path: Path) -> None:
     settings_path = tmp_path / 'settings.json'
     settings_path.write_text(
         json.dumps(
@@ -474,7 +775,7 @@ def test_modifier_reloads_saved_flags_without_restarting_the_proxy(tmp_path):
     assert modifier.requires_fresh_response()
 
 
-def test_proxy_applies_custom_fflags_when_enabled_while_request_is_in_flight():
+def test_proxy_applies_custom_fflags_when_enabled_while_request_is_in_flight() -> None:
     config = SimpleNamespace(custom_fflags_enabled=False, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = b'{"applicationSettings":{"Existing":"True"}}'
@@ -493,46 +794,49 @@ def test_proxy_applies_custom_fflags_when_enabled_while_request_is_in_flight():
 
     delivered = json.loads(client_response.split(b'\r\n\r\n', 1)[1])['applicationSettings']
     assert delivered['FFlagExample'] == 'True'
-    assert delivered[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+    assert delivered[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '0'
     assert not modifier.requires_fresh_response()
 
 
-def test_proxy_logs_empty_2xx_client_settings_responses_as_delivery_failures():
+def test_proxy_logs_empty_2xx_client_settings_responses_as_delivery_failures() -> None:
     for status_line, status_code in ((b'200 OK', 200), (b'204 No Content', 204)):
         config = SimpleNamespace(
             custom_fflags_enabled=True,
             custom_fflags={'FFlagExample': 'True'},
         )
         modifier = CustomFFlagModifier(config)
-        failures = []
-        modifier.log_response_failure = lambda key, message: failures.append((key, message))
+        failures: list[tuple[str, str]] = []
+
+        def _capture_failure(key: str, message: str) -> None:
+            failures.append((key, message))
+
+        modifier.log_response_failure = _capture_failure
 
         _run_client_settings_session(
             modifier,
-            b'HTTP/1.1 '
-            + status_line
-            + b'\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
+            b'HTTP/1.1 ' + status_line + b'\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
         )
 
         assert failures == [
             (
                 'empty-success',
-                f'ClientSettings upstream returned HTTP {status_code} with an empty body; '
-                'response left unchanged',
+                (
+                    f'ClientSettings upstream returned HTTP {status_code} with an empty body; '
+                    'response left unchanged'
+                ),
             )
         ]
         assert modifier.requires_fresh_response()
 
 
-def test_proxy_counts_already_correct_client_settings_response_as_success():
+def test_proxy_counts_already_correct_client_settings_response_as_success() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = json.dumps(
         {
             'applicationSettings': {
                 'FFlagExample': 'True',
-                EXTERNAL_CA_FLAG: 'False',
-                DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+                DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
             }
         },
         separators=(',', ':'),
@@ -550,7 +854,7 @@ def test_proxy_counts_already_correct_client_settings_response_as_success():
     assert not modifier.requires_fresh_response()
 
 
-def test_failed_fresh_response_keeps_next_conditional_request_armed():
+def test_failed_fresh_response_keeps_next_conditional_request_armed() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
 
@@ -579,7 +883,7 @@ def test_failed_fresh_response_keeps_next_conditional_request_armed():
     assert not modifier.requires_fresh_response()
 
 
-def test_dropped_intercepted_client_settings_response_keeps_freshness_armed():
+def test_dropped_intercepted_client_settings_response_keeps_freshness_armed() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = b'{"applicationSettings":{"Existing":"True"}}'
@@ -600,7 +904,7 @@ def test_dropped_intercepted_client_settings_response_keeps_freshness_armed():
     assert modifier.requires_fresh_response()
 
 
-def test_forwarded_intercepted_client_settings_response_acknowledges_delivery():
+def test_forwarded_intercepted_client_settings_response_acknowledges_delivery() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = b'{"applicationSettings":{"Existing":"True"}}'
@@ -622,7 +926,7 @@ def test_forwarded_intercepted_client_settings_response_acknowledges_delivery():
     assert not modifier.requires_fresh_response()
 
 
-def test_auto_replace_that_changes_injected_flag_keeps_freshness_armed():
+def test_auto_replace_that_changes_injected_flag_keeps_freshness_armed() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = b'{"applicationSettings":{"Existing":"True"}}'
@@ -654,7 +958,7 @@ def test_auto_replace_that_changes_injected_flag_keeps_freshness_armed():
     assert modifier.requires_fresh_response()
 
 
-def test_client_disconnect_before_drain_keeps_freshness_armed():
+def test_client_disconnect_before_drain_keeps_freshness_armed() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = b'{"applicationSettings":{"Existing":"True"}}'
@@ -674,7 +978,7 @@ def test_client_disconnect_before_drain_keeps_freshness_armed():
     assert modifier.requires_fresh_response()
 
 
-def test_request_started_before_launch_generation_bump_cannot_satisfy_new_player():
+def test_request_started_before_launch_generation_bump_cannot_satisfy_new_player() -> None:
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = b'{"applicationSettings":{"Existing":"True"}}'
@@ -696,10 +1000,10 @@ def test_request_started_before_launch_generation_bump_cannot_satisfy_new_player
     assert modifier.requires_fresh_response()
 
 
-def test_fresh_client_settings_request_strips_only_conditional_headers():
+def test_fresh_client_settings_request_strips_only_conditional_headers() -> None:
     original = {
         b'accept-encoding': b'dcz',
-        b'if-none-match': b'\"old-etag\"',
+        b'if-none-match': b'"old-etag"',
         b'if-modified-since': b'last week',
     }
 
@@ -709,7 +1013,7 @@ def test_fresh_client_settings_request_strips_only_conditional_headers():
     assert b'if-none-match' in original
 
 
-def test_browser_bypass_header_is_never_sent_upstream():
+def test_browser_bypass_header_is_never_sent_upstream() -> None:
     original = {
         b'accept-encoding': b'dcz',
         b'x-fleasion-bypass-custom-fflags': b'1',
@@ -719,7 +1023,7 @@ def test_browser_bypass_header_is_never_sent_upstream():
     assert b'x-fleasion-bypass-custom-fflags' in original
 
 
-def test_modifier_passes_the_windows_bootstrapper_through_unchanged():
+def test_modifier_passes_the_windows_bootstrapper_through_unchanged() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '20'},
@@ -734,7 +1038,7 @@ def test_modifier_passes_the_windows_bootstrapper_through_unchanged():
     )
 
 
-def test_modifier_keeps_compatibility_when_custom_flags_are_disabled():
+def test_modifier_keeps_dynamic_refresh_with_custom_flags_disabled() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=False,
         custom_fflags={'DFIntTaskSchedulerTargetFps': '20'},
@@ -745,12 +1049,11 @@ def test_modifier_keeps_compatibility_when_custom_flags_are_disabled():
     modified = modifier.modify_response('/v2/settings/application/PCDesktopClient', original)
     assert json.loads(modified)['applicationSettings'] == {
         'Existing': 'True',
-        EXTERNAL_CA_FLAG: 'False',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
     }
 
 
-def test_proxy_delivers_trust_flag_with_custom_flags_off() -> None:
+def test_proxy_preserves_upstream_certificate_flag_with_custom_flags_off() -> None:
     config = SimpleNamespace(custom_fflags_enabled=False, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     body = b'{"applicationSettings":{"DFFlagHttpUseEmbeddedCaCerts":"True","Existing":"True"}}'
@@ -765,8 +1068,8 @@ def test_proxy_delivers_trust_flag_with_custom_flags_off() -> None:
 
     payload = json.loads(delivered.split(b'\r\n\r\n', 1)[1])['applicationSettings']
     assert payload == {
-        EXTERNAL_CA_FLAG: 'False',
-        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+        EMBEDDED_CA_FLAG: 'True',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '0',
         'Existing': 'True',
     }
     assert b'if-none-match' not in forwarded.lower()
@@ -775,7 +1078,7 @@ def test_proxy_delivers_trust_flag_with_custom_flags_off() -> None:
     assert config.custom_fflags == {'FFlagExample': 'True'}
 
 
-def test_modified_response_removes_body_integrity_headers():
+def test_modified_response_removes_body_integrity_headers() -> None:
     response = _build_modified_response(
         b'HTTP/1.1 200 OK',
         {
@@ -796,7 +1099,7 @@ def test_modified_response_removes_body_integrity_headers():
     assert b'content-length: 2' in head
 
 
-def test_modified_dcz_response_retains_only_the_required_content_encoding():
+def test_modified_dcz_response_retains_only_the_required_content_encoding() -> None:
     response = _build_modified_response(
         b'HTTP/1.1 200 OK',
         {
@@ -815,9 +1118,7 @@ def test_modified_dcz_response_retains_only_the_required_content_encoding():
     assert b'etag' not in head
 
 
-def test_current_zstd_response_shape_can_be_decompressed_and_modified():
-    import zstandard
-
+def test_current_zstd_response_shape_can_be_decompressed_and_modified() -> None:
     plain = b'{"applicationSettings":{"Existing":"True"}}'
     compressed = zstandard.ZstdCompressor().compress(plain)
     decoded = _decompress_body(compressed, {b'content-encoding': b'zstd'})
@@ -825,7 +1126,7 @@ def test_current_zstd_response_shape_can_be_decompressed_and_modified():
     assert decoded == plain
 
 
-def test_dcz_round_trip_uses_the_client_dictionary_and_extracts_its_hash():
+def test_dcz_round_trip_uses_the_client_dictionary_and_extracts_its_hash() -> None:
     dictionary = b'custom fast flag dictionary ' * 100
     plain = b'{"applicationSettings":{"FFlagDebugSkyGray":"True"}}'
 
@@ -833,34 +1134,43 @@ def test_dcz_round_trip_uses_the_client_dictionary_and_extracts_its_hash():
 
     assert compressed is not None
     assert _decompress_dcz(compressed, dictionary) == plain
-    assert _dcz_dictionary_sha256(
-        '/v2/settings-compressed/application/GoogleAndroidApp/'
-        '69341cc9f35ea6437489227f58455ee226e77c469204ec273eb3e4a05e2f947b.dcz?x=1'
-    ) == '69341cc9f35ea6437489227f58455ee226e77c469204ec273eb3e4a05e2f947b'
+    assert (
+        _dcz_dictionary_sha256(
+            '/v2/settings-compressed/application/GoogleAndroidApp/'
+            '69341cc9f35ea6437489227f58455ee226e77c469204ec273eb3e4a05e2f947b.dcz?x=1'
+        )
+        == '69341cc9f35ea6437489227f58455ee226e77c469204ec273eb3e4a05e2f947b'
+    )
     assert _dcz_dictionary_sha256('/v2/client-version/WindowsPlayer') is None
 
 
-def test_windows_custom_fflags_intercept_clientsettings_before_player_starts(monkeypatch):
+def test_windows_custom_fflags_intercept_clientsettings_before_player_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
 
-    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    proxy.config_manager = SimpleNamespace(settings={})
-    proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: False)
-    proxy.custom_fflag_modifier = SimpleNamespace(is_enabled=lambda: True)
-    proxy._roblox_player_running = False
+    proxy = _TestProxyMaster.__new__(_TestProxyMaster)
+    settings: dict[str, object] = {}
+    _set_test_attr(proxy, 'config_manager', SimpleNamespace(settings=settings))
+    _set_test_attr(proxy, 'username_spoofer', SimpleNamespace(is_enabled=lambda: False))
+    _set_test_attr(proxy, 'custom_fflag_modifier', SimpleNamespace(is_enabled=lambda: True))
+    _set_test_attr(proxy, '_roblox_player_running', value=False)
 
-    assert proxy._desired_intercept_hosts() == (
+    assert proxy.desired_intercept_hosts() == (
         set(BASE_INTERCEPT_HOSTS) | set(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
     )
 
 
-def test_master_primes_custom_flag_cache_only_while_player_is_closed(monkeypatch):
-    calls = []
-    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    proxy.custom_fflag_modifier = SimpleNamespace(
+def test_master_primes_custom_flag_cache_only_while_player_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    proxy = _TestProxyMaster.__new__(_TestProxyMaster)
+    modifier = SimpleNamespace(
         is_enabled=lambda: True,
         prime_windows_flag_cache=lambda: calls.append('primed') or True,
     )
+    _set_test_attr(proxy, 'custom_fflag_modifier', modifier)
 
     monkeypatch.setattr(proxy_master, 'is_roblox_running', lambda: False)
     assert proxy.prime_custom_fflag_cache()
@@ -871,51 +1181,68 @@ def test_master_primes_custom_flag_cache_only_while_player_is_closed(monkeypatch
     assert calls == ['primed']
 
 
-def test_master_launch_preparation_seeds_startup_flags_before_relaunch(monkeypatch):
-    calls = []
-    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    proxy.custom_fflag_modifier = SimpleNamespace(
+def test_master_launch_preparation_seeds_startup_flags_before_relaunch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    proxy = _TestProxyMaster.__new__(_TestProxyMaster)
+    modifier = SimpleNamespace(
         is_enabled=lambda: True,
         prepare_for_player_launch=lambda: calls.append('armed'),
         prime_startup_flag_cache=lambda: calls.append('seeded') or True,
     )
-    monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=lambda *_args: None))
+    _set_test_attr(proxy, 'custom_fflag_modifier', modifier)
+
+    def _discard_log(_category: str, _message: str) -> None:
+        pass
+
+    monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=_discard_log))
 
     proxy.prepare_custom_fflags_for_player_launch()
 
     assert calls == ['armed', 'seeded']
 
 
-def test_master_launch_preparation_cleans_startup_cache_when_custom_flags_are_off(monkeypatch):
-    calls = []
-    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    proxy.custom_fflag_modifier = SimpleNamespace(
+def test_master_launch_preparation_cleans_startup_cache_when_custom_flags_are_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    proxy = _TestProxyMaster.__new__(_TestProxyMaster)
+    modifier = SimpleNamespace(
         is_enabled=lambda: False,
         prepare_for_player_launch=lambda: calls.append('armed'),
         prime_startup_flag_cache=lambda: calls.append('seeded') or True,
     )
+    _set_test_attr(proxy, 'custom_fflag_modifier', modifier)
 
     proxy.prepare_custom_fflags_for_player_launch()
 
     assert calls == ['seeded']
 
 
-def test_master_rearms_delivery_after_outgoing_player_stops():
-    calls = []
-    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    proxy.custom_fflag_modifier = SimpleNamespace(
+def test_master_rearms_delivery_after_outgoing_player_stops() -> None:
+    calls: list[str] = []
+    proxy = _TestProxyMaster.__new__(_TestProxyMaster)
+    modifier = SimpleNamespace(
         is_enabled=lambda: True,
         prepare_for_player_launch=lambda: calls.append('rearmed'),
     )
+    _set_test_attr(proxy, 'custom_fflag_modifier', modifier)
 
     proxy.rearm_custom_fflag_delivery_for_player_launch()
 
     assert calls == ['rearmed']
 
 
-def test_successful_client_settings_injection_does_not_log_per_refresh(monkeypatch):
-    calls = []
-    monkeypatch.setattr(custom_fflags_module.log_buffer, 'log', lambda *args: calls.append(args))
+def test_successful_client_settings_injection_does_not_log_per_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def _capture_log(category: str, message: str) -> None:
+        calls.append((category, message))
+
+    monkeypatch.setattr(custom_fflags_module.log_buffer, 'log', _capture_log)
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
     original = b'{"applicationSettings":{"Existing":"True"}}'
@@ -926,11 +1253,17 @@ def test_successful_client_settings_injection_does_not_log_per_refresh(monkeypat
     assert calls == []
 
 
-def test_repeated_client_settings_failures_are_rate_limited_and_report_stall(monkeypatch):
-    calls = []
+def test_repeated_client_settings_failures_are_rate_limited_and_report_stall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
     now = [100.0]
+
+    def _capture_log(category: str, message: str) -> None:
+        calls.append((category, message))
+
     monkeypatch.setattr(custom_fflags_module.time, 'monotonic', lambda: now[0])
-    monkeypatch.setattr(custom_fflags_module.log_buffer, 'log', lambda *args: calls.append(args))
+    monkeypatch.setattr(custom_fflags_module.log_buffer, 'log', _capture_log)
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
 
@@ -946,11 +1279,17 @@ def test_repeated_client_settings_failures_are_rate_limited_and_report_stall(mon
     assert 'no successfully delivered ClientSettings response for 31s' in calls[1][1]
 
 
-def test_successful_client_settings_response_resets_failure_stall_timer(monkeypatch):
-    calls = []
+def test_successful_client_settings_response_resets_failure_stall_timer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
     now = [200.0]
+
+    def _capture_log(category: str, message: str) -> None:
+        calls.append((category, message))
+
     monkeypatch.setattr(custom_fflags_module.time, 'monotonic', lambda: now[0])
-    monkeypatch.setattr(custom_fflags_module.log_buffer, 'log', lambda *args: calls.append(args))
+    monkeypatch.setattr(custom_fflags_module.log_buffer, 'log', _capture_log)
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
     modifier = CustomFFlagModifier(config)
 
@@ -964,7 +1303,7 @@ def test_successful_client_settings_response_resets_failure_stall_timer(monkeypa
     assert calls[1][1] == 'second failure'
 
 
-def test_runtime_flags_skip_members_of_disabled_fastflag_folders():
+def test_runtime_flags_skip_members_of_disabled_fastflag_folders() -> None:
     config = SimpleNamespace(
         custom_fflags_enabled=True,
         custom_fflags={

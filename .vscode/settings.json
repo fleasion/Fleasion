@@ -1,9 +1,10 @@
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv",
   "python.languageServer": "Pylance",
-  "python.analysis.typeCheckingMode": "strict",
   "python.analysis.diagnosticMode": "workspace",
-  "python.analysis.useLibraryCodeForTypes": true,
+  "files.associations": {
+    "*.spec": "python"
+  },
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,

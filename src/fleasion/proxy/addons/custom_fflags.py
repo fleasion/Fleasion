@@ -9,18 +9,42 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Protocol, TypeGuard
 
-from ...utils import log_buffer
-from ...utils.paths import CONFIG_FILE, LOCAL_APPDATA
+if sys.platform == 'darwin':
+    from fleasion.utils.platform_macos import find_roblox_resource_dirs
+
+from fleasion.utils import log_buffer
+from fleasion.utils.fflag_resolution import expand_unprefixed_fflags
+from fleasion.utils.json_types import (
+    JsonObject,
+    JsonValue,
+    as_json_array,
+    as_json_object,
+    as_object_dict,
+)
+from fleasion.utils.paths import CONFIG_FILE, LOCAL_APPDATA
+
+
+class _CustomFFlagConfig(Protocol):
+    @property
+    def custom_fflags_enabled(self) -> bool: ...
+
+    @property
+    def custom_fflags(self) -> object: ...
+
+
+def _is_custom_fflag_config(value: object) -> TypeGuard[_CustomFFlagConfig]:
+    return isinstance(getattr(value, 'custom_fflags_enabled', None), bool) and isinstance(
+        getattr(value, 'custom_fflags', None), dict
+    )
 
 
 CLIENT_SETTINGS_APPLICATION_PATH = '/settings/application/'
 CLIENT_SETTINGS_COMPRESSED_PATH = '/settings-compressed/application/'
 BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM = 'PCClientBootstrapper'
 DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG = 'DFIntSecondsBetweenDynamicVariableReloading'
-DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS = '1'
-EXTERNAL_CA_FLAG = 'DFFlagHttpUseEmbeddedCaCerts'
+DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS = '0'
 IS_WINDOWS = sys.platform == 'win32'
 WINDOWS_FLAG_CACHE_PATH = LOCAL_APPDATA / 'Temp' / 'Roblox' / 'cache' / 'flag_cache.dat'
 MACOS_CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
@@ -28,7 +52,13 @@ CLIENT_SETTINGS_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 CLIENT_SETTINGS_STALE_SUCCESS_SECONDS = 15.0
 
 
-def normalize_flag_value(value: Any) -> str:
+def _find_macos_resource_dirs() -> list[Path]:
+    if sys.platform != 'darwin':
+        return []
+    return find_roblox_resource_dirs(include_studio=False)
+
+
+def normalize_flag_value(value: object) -> str:
     """Return the string representation Roblox uses for FastFlag values."""
     if isinstance(value, bool):
         return 'True' if value else 'False'
@@ -36,16 +66,18 @@ def normalize_flag_value(value: Any) -> str:
         return value
     if isinstance(value, int | float):
         return str(value)
-    raise ValueError('FastFlag values must be strings, numbers, or booleans')
+    msg = 'FastFlag values must be strings, numbers, or booleans'
+    raise ValueError(msg)
 
 
-def normalize_custom_fflags(value: Any) -> dict[str, str]:
+def normalize_custom_fflags(value: object) -> dict[str, str]:
     """Validate and normalize a custom FastFlag mapping."""
-    if not isinstance(value, dict):
+    value_map = as_object_dict(value)
+    if value_map is None:
         return {}
 
     normalized: dict[str, str] = {}
-    for raw_name, raw_value in value.items():
+    for raw_name, raw_value in value_map.items():
         name = str(raw_name).strip()
         if not name:
             continue
@@ -61,12 +93,15 @@ class CustomFFlagModifier:
 
     def __init__(
         self,
-        config_manager,
+        config_manager: object,
         flag_cache_path: Path | None = None,
         settings_path: Path | None = None,
         reload_settings_from_disk: bool = False,
         macos_resource_dirs: list[Path] | None = None,
-    ):
+    ) -> None:
+        if not _is_custom_fflag_config(config_manager):
+            msg = 'Custom FastFlag config is missing its enabled state or flag mapping'
+            raise TypeError(msg)
         self.config_manager = config_manager
         self._flag_cache_path = flag_cache_path
         self._macos_resource_dirs = (
@@ -80,10 +115,10 @@ class CustomFFlagModifier:
         self._settings_path = settings_path or (CONFIG_FILE if reload_settings_from_disk else None)
         self._settings_signature: tuple[int, int] | None = None
         self._disk_enabled: bool | None = None
-        self._disk_flags: dict | None = None
-        self._disk_disabled: list | None = None
-        self._disk_folders: dict | None = None
-        self._disk_disabled_folders: list | None = None
+        self._disk_flags: JsonObject | None = None
+        self._disk_disabled: list[JsonValue] | None = None
+        self._disk_folders: JsonObject | None = None
+        self._disk_disabled_folders: list[JsonValue] | None = None
         self._last_response_success_at: float | None = None
         self._first_response_failure_at: float | None = None
         self._last_failure_log_at: dict[str, float] = {}
@@ -164,27 +199,26 @@ class CustomFFlagModifier:
             signature = (stat_result.st_mtime_ns, stat_result.st_size)
             if signature == self._settings_signature:
                 return
-            data = json.loads(self._settings_path.read_text(encoding='utf-8'))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            data_value: object = json.loads(self._settings_path.read_text(encoding='utf-8'))
+        except OSError, UnicodeDecodeError, json.JSONDecodeError:
             return
 
         self._settings_signature = signature
-        if isinstance(data, dict):
+        data = as_json_object(data_value)
+        if data is not None:
             self._disk_enabled = bool(data.get('custom_fflags_enabled', False))
-            saved_flags = data.get('custom_fflags', {})
-            self._disk_flags = saved_flags if isinstance(saved_flags, dict) else {}
-            disabled = data.get('custom_fflag_disabled', [])
-            self._disk_disabled = disabled if isinstance(disabled, list) else []
-            folders = data.get('custom_fflag_folders', {})
-            self._disk_folders = folders if isinstance(folders, dict) else {}
-            disabled_folders = data.get('custom_fflag_disabled_folders', [])
-            self._disk_disabled_folders = (
-                disabled_folders if isinstance(disabled_folders, list) else []
-            )
+            saved_flags = as_json_object(data.get('custom_fflags', {}))
+            self._disk_flags = saved_flags or {}
+            disabled = as_json_array(data.get('custom_fflag_disabled', []))
+            self._disk_disabled = disabled or []
+            folders = as_json_object(data.get('custom_fflag_folders', {}))
+            self._disk_folders = folders or {}
+            disabled_folders = as_json_array(data.get('custom_fflag_disabled_folders', []))
+            self._disk_disabled_folders = disabled_folders or []
 
     @staticmethod
     def is_enabled() -> bool:
-        """Keep proxy certificate compatibility active independently of user flags."""
+        """Keep ClientSettings refresh behavior active independently of user flags."""
         return True
 
     def custom_flags_enabled(self) -> bool:
@@ -192,7 +226,7 @@ class CustomFFlagModifier:
         self._refresh_settings_from_disk()
         if self._disk_enabled is not None:
             return self._disk_enabled
-        return bool(getattr(self.config_manager, 'custom_fflags_enabled', False))
+        return self.config_manager.custom_fflags_enabled
 
     @staticmethod
     def handles_path(path: str) -> bool:
@@ -209,20 +243,21 @@ class CustomFFlagModifier:
             CLIENT_SETTINGS_APPLICATION_PATH in path_only
             or CLIENT_SETTINGS_COMPRESSED_PATH in path_only
         )
-        return (
-            is_application_settings
-            and BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM not in path_only
-        )
+        return is_application_settings and BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM not in path_only
 
     def runtime_flags(self) -> dict[str, str]:
-        """Return enabled custom flags and mandatory, non-persisted companions."""
+        """Return enabled custom flags and the non-persisted refresh companion."""
         self._refresh_settings_from_disk()
         saved_flags = (
-            self._disk_flags
-            if self._disk_flags is not None
-            else getattr(self.config_manager, 'custom_fflags', {})
+            self._disk_flags if self._disk_flags is not None else self.config_manager.custom_fflags
         )
-        flags = normalize_custom_fflags(saved_flags) if self.custom_flags_enabled() else {}
+        # The file signature was checked above; do not stat it again
+        enabled = (
+            self._disk_enabled
+            if self._disk_enabled is not None
+            else self.config_manager.custom_fflags_enabled
+        )
+        flags = normalize_custom_fflags(saved_flags) if enabled else {}
         disabled = (
             self._disk_disabled
             if self._disk_disabled is not None
@@ -239,20 +274,18 @@ class CustomFFlagModifier:
             if self._disk_disabled_folders is not None
             else getattr(self.config_manager, 'custom_fflag_disabled_folders', [])
         )
-        folder_mapping = folders if isinstance(folders, dict) else {}
-        for folder_name in {str(name).strip() for name in disabled_folders}:
-            members = folder_mapping.get(folder_name, [])
-            if isinstance(members, list | tuple | set):
-                disabled_names.update(str(name).strip() for name in members)
+        folder_mapping = as_json_object(folders) or {}
+        disabled_folder_names = {str(name).strip() for name in disabled_folders}
+        for folder_name in disabled_folder_names:
+            members = as_json_array(folder_mapping.get(folder_name, [])) or []
+            disabled_names.update(str(name).strip() for name in members)
         flags = {name: value for name, value in flags.items() if name not in disabled_names}
-        # Player must use the cacert.pem bundle containing Fleasion's CA
-        # Apply this after user filters so a saved value or folder cannot disable it
-        flags[EXTERNAL_CA_FLAG] = 'False'
+        flags = expand_unprefixed_fflags(flags)
         # Roblox/Sober reads the reloader interval before applying the response
         # it has just fetched. Therefore, when this companion flag first
         # arrives through Sober's 120-second dynamic fetch, its next wait can
-        # still be 120 seconds. The following refresh uses this one-second
-        # interval. It deliberately overrides any saved value and is never
+        # still be 120 seconds. The following refresh uses this zero-second
+        # interval for testing. It deliberately overrides any saved value and is never
         # persisted to the user's custom flag list
         flags[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] = DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS
         return flags
@@ -260,7 +293,7 @@ class CustomFFlagModifier:
     def requires_fresh_response(self) -> bool:
         """Return whether changed overrides still need successful delivery.
 
-        Roblox normally answers the one-second reloader request with HTTP 304.
+        Roblox normally answers unchanged reloader requests with HTTP 304.
         That is ideal when flags have not changed, but it cannot deliver a
         newly added, changed, or removed override.  Keep stripping conditional
         headers until a response carrying the active override set is actually
@@ -286,68 +319,76 @@ class CustomFFlagModifier:
             self._delivery_generation += 1
             self._last_fresh_response_flags = None
 
-    def prime_windows_flag_cache(self) -> bool:
-        """Synchronize active overrides into Roblox's uncompressed Windows flag cache.
+    def _windows_flag_cache_update(
+        self, raw: bytes
+    ) -> tuple[bytes, dict[str, str], set[str]] | None:
+        if len(raw) < 5:
+            return None
+        signature_length = int.from_bytes(raw[:4], 'little')
+        compression_offset = 4 + signature_length
+        payload_offset = compression_offset + 1
+        if payload_offset >= len(raw) or raw[compression_offset] != 0:
+            return None
 
-        Some flags, including the task-scheduler target FPS, are consumed before
-        the dynamic reloader's first network request.  Roblox's current cache
-        layout is a four-byte signature length, that many signature bytes, one
-        compression byte, then the ClientSettings JSON.  We preserve the header,
-        remove stale overrides when disabled, and replace the JSON atomically
-        only for the known uncompressed layout.  Turning custom flags off clears
-        their seeded values while retaining the mandatory compatibility flags.
-        """
+        payload_value: object = json.loads(raw[payload_offset:])
+        payload = as_json_object(payload_value)
+        if payload is None:
+            return None
+        application_settings = as_json_object(payload.get('applicationSettings'))
+        if application_settings is None:
+            return None
+
+        enabled = self.is_enabled()
+        flags = self.runtime_flags() if enabled else {}
+        self._refresh_settings_from_disk()
+        saved_flags = (
+            self._disk_flags if self._disk_flags is not None else self.config_manager.custom_fflags
+        )
+        saved_names = set(normalize_custom_fflags(saved_flags))
+        stale_names = (
+            self._windows_seeded_flag_names | saved_names | {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG}
+        ) - set(flags)
+        removed_names = {
+            name for name in stale_names if application_settings.pop(name, None) is not None
+        }
+        application_settings.update(flags)
+        updated = raw[:payload_offset] + json.dumps(
+            payload, separators=(',', ':'), ensure_ascii=False
+        ).encode('utf-8')
+        self._windows_seeded_flag_names = set(flags)
+        return updated, flags, removed_names
+
+    def _prime_windows_flag_cache_unchecked(
+        self, cache_path: Path
+    ) -> tuple[dict[str, str], set[str]] | None:
+        raw = cache_path.read_bytes()
+        update = self._windows_flag_cache_update(raw)
+        if update is None:
+            return None
+        updated, flags, removed_names = update
+        if updated == raw:
+            return None
+        temporary_path = cache_path.with_name(f'.{cache_path.name}.{os.getpid()}.tmp')
+        try:
+            temporary_path.write_bytes(updated)
+            temporary_path.replace(cache_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+        return flags, removed_names
+
+    def prime_windows_flag_cache(self) -> bool:
+        """Synchronize active overrides into Roblox's uncompressed Windows flag cache."""
         if self._flag_cache_path is None and not IS_WINDOWS:
             return False
 
         cache_path = self._flag_cache_path or WINDOWS_FLAG_CACHE_PATH
         try:
-            raw = cache_path.read_bytes()
-            if len(raw) < 5:
-                return False
-            signature_length = int.from_bytes(raw[:4], 'little')
-            compression_offset = 4 + signature_length
-            payload_offset = compression_offset + 1
-            if payload_offset >= len(raw) or raw[compression_offset] != 0:
-                return False
-
-            payload = json.loads(raw[payload_offset:])
-            application_settings = payload.get('applicationSettings')
-            if not isinstance(application_settings, dict):
-                return False
-
-            enabled = self.is_enabled()
-            flags = self.runtime_flags() if enabled else {}
-            self._refresh_settings_from_disk()
-            saved_flags = (
-                self._disk_flags
-                if self._disk_flags is not None
-                else getattr(self.config_manager, 'custom_fflags', {})
-            )
-            saved_names = set(normalize_custom_fflags(saved_flags))
-            stale_names = (
-                self._windows_seeded_flag_names
-                | saved_names
-                | {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG}
-            ) - set(flags)
-            removed_names = {
-                name for name in stale_names if application_settings.pop(name, None) is not None
-            }
-            application_settings.update(flags)
-            updated = raw[:payload_offset] + json.dumps(
-                payload, separators=(',', ':'), ensure_ascii=False
-            ).encode('utf-8')
-            self._windows_seeded_flag_names = set(flags)
-            if updated == raw:
-                return False
-            temporary_path = cache_path.with_name(f'.{cache_path.name}.{os.getpid()}.tmp')
-            try:
-                temporary_path.write_bytes(updated)
-                temporary_path.replace(cache_path)
-            finally:
-                temporary_path.unlink(missing_ok=True)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            result = self._prime_windows_flag_cache_unchecked(cache_path)
+        except OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError:
             return False
+        if result is None:
+            return False
+        flags, removed_names = result
 
         if flags:
             log_buffer.log(
@@ -368,10 +409,8 @@ class CustomFFlagModifier:
             if sys.platform != 'darwin':
                 return []
             try:
-                from ...utils.platform_macos import find_roblox_resource_dirs
-
-                resource_dirs = find_roblox_resource_dirs(include_studio=False)
-            except Exception:
+                resource_dirs = _find_macos_resource_dirs()
+            except ImportError, OSError:
                 return []
 
         paths: list[Path] = []
@@ -395,14 +434,78 @@ class CustomFFlagModifier:
         except OSError:
             pass
 
-    def prime_macos_client_settings(self) -> bool:
-        """Seed custom flags into Player's local macOS startup settings.
+    @staticmethod
+    def _load_macos_client_settings(target: Path) -> JsonObject | None:
+        if not target.exists():
+            return {}
+        try:
+            loaded_value: object = json.loads(target.read_text(encoding='utf-8'))
+        except json.JSONDecodeError:
+            log_buffer.log(
+                'CustomFFlags',
+                f'Could not decode macOS ClientSettings file; left unchanged: {target}',
+            )
+            return None
+        loaded = as_json_object(loaded_value)
+        if loaded is None:
+            log_buffer.log(
+                'CustomFFlags',
+                f'macOS ClientSettings root was not an object; left unchanged: {target}',
+            )
+        return loaded
 
-        Roblox loads the Resources ClientSettings file before its first remote
-        ClientSettings request.  Seeding the file makes startup-only custom
-        flags available immediately; the proxy response path remains in place
-        for live changes after launch.
-        """
+    def _prime_macos_client_settings_path_unchecked(
+        self,
+        target: Path,
+        flags: dict[str, str],
+        stale_names: set[str],
+    ) -> bool:
+        existing = self._load_macos_client_settings(target)
+        if existing is None:
+            return False
+        merged = dict(existing)
+        for name in stale_names:
+            merged.pop(name, None)
+        merged.update(flags)
+        if merged == existing:
+            return False
+
+        original_mode = None
+        if target.exists():
+            original_mode = stat.S_IMODE(target.stat().st_mode)
+            self._clear_read_only(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f'.{target.name}.fleasion-{os.getpid()}.tmp')
+        try:
+            temporary.write_text(json.dumps(merged, indent=2), encoding='utf-8')
+            if original_mode is not None:
+                temporary.chmod(original_mode)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return True
+
+    def _prime_macos_client_settings_path(
+        self,
+        target: Path,
+        flags: dict[str, str],
+        stale_names: set[str],
+    ) -> bool:
+        try:
+            return self._prime_macos_client_settings_path_unchecked(
+                target,
+                flags,
+                stale_names,
+            )
+        except (OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
+            log_buffer.log(
+                'CustomFFlags',
+                f'Failed to seed macOS ClientSettings file {target}: {exc}',
+            )
+            return False
+
+    def prime_macos_client_settings(self) -> bool:
+        """Seed custom flags into Player's local macOS startup settings."""
         paths = self._macos_client_settings_paths()
         if not paths:
             return False
@@ -410,69 +513,20 @@ class CustomFFlagModifier:
         enabled = self.is_enabled()
         flags = self.runtime_flags() if enabled else {}
         desired_names = set(flags)
-        saved_names = set()
+        saved_names: set[str] = set()
         if not self.custom_flags_enabled():
             self._refresh_settings_from_disk()
             saved_flags = (
                 self._disk_flags
                 if self._disk_flags is not None
-                else getattr(self.config_manager, 'custom_fflags', {})
+                else self.config_manager.custom_fflags
             )
             saved_names = set(normalize_custom_fflags(saved_flags))
             saved_names.add(DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG)
         stale_names = (self._macos_seeded_flag_names | saved_names) - desired_names
-        updated_paths = 0
-
-        for target in paths:
-            try:
-                existing: dict[str, Any]
-                if target.exists():
-                    try:
-                        loaded = json.loads(target.read_text(encoding='utf-8'))
-                    except json.JSONDecodeError:
-                        log_buffer.log(
-                            'CustomFFlags',
-                            f'Could not decode macOS ClientSettings file; left unchanged: {target}',
-                        )
-                        continue
-                    if not isinstance(loaded, dict):
-                        log_buffer.log(
-                            'CustomFFlags',
-                            f'macOS ClientSettings root was not an object; left unchanged: {target}',
-                        )
-                        continue
-                    existing = loaded
-                else:
-                    existing = {}
-
-                merged = dict(existing)
-                for name in stale_names:
-                    merged.pop(name, None)
-                merged.update(flags)
-                if merged == existing:
-                    continue
-
-                original_mode = None
-                if target.exists():
-                    original_mode = stat.S_IMODE(target.stat().st_mode)
-                    self._clear_read_only(target)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                temporary = target.with_name(
-                    f'.{target.name}.fleasion-{os.getpid()}.tmp'
-                )
-                try:
-                    temporary.write_text(json.dumps(merged, indent=2), encoding='utf-8')
-                    if original_mode is not None:
-                        temporary.chmod(original_mode)
-                    temporary.replace(target)
-                finally:
-                    temporary.unlink(missing_ok=True)
-                updated_paths += 1
-            except (OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
-                log_buffer.log(
-                    'CustomFFlags',
-                    f'Failed to seed macOS ClientSettings file {target}: {exc}',
-                )
+        updated_paths = sum(
+            self._prime_macos_client_settings_path(target, flags, stale_names) for target in paths
+        )
 
         self._macos_seeded_flag_names = desired_names
         if updated_paths:
@@ -498,18 +552,16 @@ class CustomFFlagModifier:
     ) -> bool:
         """Return whether a final plain ClientSettings body still carries a signature."""
         try:
-            payload = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload_value: object = json.loads(body)
+        except json.JSONDecodeError, UnicodeDecodeError:
             return False
-        if not isinstance(payload, dict):
+        payload = as_json_object(payload_value)
+        if payload is None:
             return False
-        application_settings = payload.get('applicationSettings')
-        if not isinstance(application_settings, dict):
+        application_settings = as_json_object(payload.get('applicationSettings'))
+        if application_settings is None:
             return False
-        return all(
-            application_settings.get(name) == value
-            for name, value in delivered_signature
-        )
+        return all(application_settings.get(name) == value for name, value in delivered_signature)
 
     def modify_response_with_delivery(
         self,
@@ -531,7 +583,7 @@ class CustomFFlagModifier:
         delivered_signature = self._flag_signature(flags)
 
         try:
-            payload = json.loads(body)
+            payload_value = json.loads(body)
         except json.JSONDecodeError, UnicodeDecodeError:
             self.log_response_failure(
                 'decode',
@@ -539,15 +591,16 @@ class CustomFFlagModifier:
             )
             return body, None
 
-        if not isinstance(payload, dict):
+        payload = as_json_object(payload_value)
+        if payload is None:
             self.log_response_failure(
                 'invalid-root',
                 f'ClientSettings response for {path[:160]} was not a JSON object; response left unchanged',
             )
             return body, None
 
-        application_settings = payload.get('applicationSettings')
-        if not isinstance(application_settings, dict):
+        application_settings = as_json_object(payload.get('applicationSettings'))
+        if application_settings is None:
             self.log_response_failure(
                 'missing-application-settings',
                 f'ClientSettings response for {path[:160]} had no applicationSettings object; response left unchanged',

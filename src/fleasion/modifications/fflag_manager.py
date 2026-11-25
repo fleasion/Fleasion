@@ -12,8 +12,17 @@ import shutil
 import stat
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..utils import format_count, log_buffer
+if TYPE_CHECKING or sys.platform.startswith('linux'):
+    from fleasion.utils import platform_linux
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+from fleasion.utils import format_count, log_buffer
+from fleasion.utils.json_types import JsonObject, as_json_object
+
 from .stash_paths import resource_stash_dir
 
 # Preset flag name mapping (mirrors Fishstrap PresetFlags)
@@ -51,6 +60,21 @@ APPLEBLOX_CLIENT_SETTINGS_REL = Path('MacOS') / 'ClientSettings' / 'ClientAppSet
 LOD_LEVELS = ('L0', 'L12', 'L23', 'L34')
 
 
+type FlagValue = str | bool | int
+
+
+def _setting_str(settings: Mapping[str, object], key: str, default: str) -> str:
+    value = settings.get(key, default)
+    return value if isinstance(value, str) else default
+
+
+def _int_value(value: object) -> int:
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        msg = 'FastFlag setting must be numeric'
+        raise TypeError(msg)
+    return int(value)
+
+
 def _clear_read_only(path: Path) -> None:
     """Clear the read-only attribute on an existing file."""
     if not path.exists():
@@ -80,10 +104,12 @@ def _sober_config_path_for_resource_dir(roblox_dir: Path) -> Path | None:
     if not sys.platform.startswith('linux'):
         return None
     try:
-        from ..utils.platform_linux import SOBER_CONFIG_FILE, is_sober_resource_dir
-
-        return SOBER_CONFIG_FILE if is_sober_resource_dir(roblox_dir) else None
-    except Exception:
+        return (
+            platform_linux.SOBER_CONFIG_FILE
+            if platform_linux.is_sober_resource_dir(roblox_dir)
+            else None
+        )
+    except ImportError, AttributeError, OSError:
         return None
 
 
@@ -111,7 +137,7 @@ def client_settings_paths_for_resource_dir(roblox_dir: Path) -> list[Path]:
     return [path for path, _stash_rel in client_settings_targets_for_resource_dir(roblox_dir)]
 
 
-def _sober_flag_value(value: str):
+def _sober_flag_value(value: str) -> FlagValue:
     lowered = value.lower()
     if lowered == 'true':
         return True
@@ -123,31 +149,132 @@ def _sober_flag_value(value: str):
         return value
 
 
+def _write_client_settings_target(dst: Path, stash: Path, content: bytes) -> None:
+    if dst.exists() and not stash.exists():
+        stash.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(dst, stash)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    _clear_read_only(dst)
+    dst.write_bytes(content)
+
+
+def _write_sober_config(sober_config: Path, stash_config: Path, flags: dict[str, str]) -> None:
+    config_payload: JsonObject = {}
+    if sober_config.exists():
+        if not stash_config.exists():
+            stash_config.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sober_config, stash_config)
+        try:
+            loaded_value: object = json.loads(sober_config.read_text(encoding='utf-8'))
+            loaded = as_json_object(loaded_value)
+            if loaded is not None:
+                config_payload = loaded
+        except json.JSONDecodeError:
+            config_payload = {}
+    config_payload['fflags'] = {key: _sober_flag_value(value) for key, value in flags.items()}
+    sober_config.parent.mkdir(parents=True, exist_ok=True)
+    restore_read_only = _is_read_only(sober_config)
+    _clear_read_only(sober_config)
+    try:
+        sober_config.write_text(json.dumps(config_payload, indent=2), encoding='utf-8')
+    finally:
+        if restore_read_only:
+            _restore_read_only(sober_config)
+
+
+def _merge_bootstrapper_flag_file(target: Path, flags: dict[str, str]) -> bool:
+    try:
+        existing_value: object = json.loads(target.read_text(encoding='utf-8'))
+        existing = as_json_object(existing_value) or {}
+    except UnicodeDecodeError, json.JSONDecodeError:
+        existing = {}
+    merged = {**existing, **flags}
+    if merged == existing:
+        return False
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _clear_read_only(target)
+    temporary = target.with_name(f'.{target.name}.fleasion-{os.getpid()}.tmp')
+    try:
+        temporary.write_text(json.dumps(merged, indent=2), encoding='utf-8')
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def _restore_client_settings_target(dst: Path, stash: Path) -> bool:
+    if stash.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        _clear_read_only(dst)
+        shutil.copy2(stash, dst)
+        _clear_read_only(stash)
+        stash.unlink()
+        return True
+    if dst.exists():
+        _clear_read_only(dst)
+        dst.unlink()
+        return True
+    return False
+
+
+def _restore_sober_config(sober_config: Path, stash_config: Path) -> None:
+    if stash_config.exists():
+        sober_config.parent.mkdir(parents=True, exist_ok=True)
+        _clear_read_only(sober_config)
+        shutil.copy2(stash_config, sober_config)
+        _clear_read_only(stash_config)
+        stash_config.unlink()
+        return
+    if not sober_config.exists():
+        return
+
+    restore_read_only = _is_read_only(sober_config)
+    try:
+        payload_value: object = json.loads(sober_config.read_text(encoding='utf-8'))
+        payload = as_json_object(payload_value) or {}
+    except json.JSONDecodeError:
+        payload = {}
+    if 'fflags' not in payload:
+        return
+    payload.pop('fflags', None)
+    _clear_read_only(sober_config)
+    try:
+        sober_config.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    finally:
+        if restore_read_only:
+            _restore_read_only(sober_config)
+
+
 class FastFlagManager:
     """Builds and writes ``ClientAppSettings.json`` from a UI settings dict."""
 
-    def __init__(self, roblox_dirs: list[Path], stash_dir: Path):
+    def __init__(self, roblox_dirs: list[Path], stash_dir: Path) -> None:
         self._roblox_dirs = roblox_dirs
         self._stash_dir = stash_dir
 
+    def update_roblox_dirs(self, roblox_dirs: list[Path]) -> None:
+        """Replace the Roblox resource roots used for subsequent flag operations."""
+        self._roblox_dirs = roblox_dirs
+
     # Public API
 
-    def build_json(self, settings: dict) -> dict:
+    def build_json(self, settings: Mapping[str, object]) -> dict[str, str]:
         """Convert a UI settings dict into the flags dict that becomes ClientAppSettings.json."""
         flags: dict[str, str] = {}
 
         # Rendering Mode
-        mode = settings.get('rendering_mode', 'Default')
+        mode = _setting_str(settings, 'rendering_mode', 'Default')
         if mode != 'Default':
             flag_key = f'Rendering.Mode.{mode}'
             if flag_key in PRESET_FLAGS:
                 flags[PRESET_FLAGS[flag_key]] = 'True'
             # Vulkan and OpenGL require disabling D3D11
-            if mode in ('Vulkan', 'OpenGL'):
+            if mode in {'Vulkan', 'OpenGL'}:
                 flags[PRESET_FLAGS['Rendering.Mode.DisableD3D11']] = 'True'
 
         # MSAA
-        msaa = settings.get('msaa', 'Default')
+        msaa = _setting_str(settings, 'msaa', 'Default')
         if msaa != 'Default':
             # Strip "x" suffix and any "(Lowest)"/"(Highest)" suffix (e.g., "1x (Lowest)" -> "1")
             msaa_val = msaa.replace('x', '').split(' ')[0]
@@ -161,7 +288,7 @@ class FastFlagManager:
             flags[PRESET_FLAGS['Rendering.ManualFullscreen']] = 'True'
 
         # Texture Quality
-        tex = settings.get('texture_quality', 'Default')
+        tex = _setting_str(settings, 'texture_quality', 'Default')
         if tex != 'Default':
             # Extract numeric value from "Level X" or "Level X (Lowest/Highest)" format
             tex_val = tex.replace('Level ', '').split(' ')[0]
@@ -171,7 +298,7 @@ class FastFlagManager:
         # Mesh LOD (mirrors Fishstrap MeshQuality setter)
         # Slider: 0 = Default (no flag), 1 = Level 0, 2 = Level 1, 3 = Level 2, 4 = Level 3
         if settings.get('mesh_lod_enabled'):
-            level = int(settings.get('mesh_lod', 4))
+            level = _int_value(settings.get('mesh_lod', 4))
             if level > 0:  # 0 = Default means no flag written
                 level = max(1, min(level, len(LOD_LEVELS)))  # 1-4 maps to Level 0-3
                 for i, lod_name in enumerate(LOD_LEVELS):
@@ -182,7 +309,7 @@ class FastFlagManager:
         # FRM Quality Override
         # Slider: 0 = Default (no flag), 1-21 = quality level
         if settings.get('frm_quality_enabled'):
-            val = int(settings.get('frm_quality', 21))
+            val = _int_value(settings.get('frm_quality', 21))
             if val > 0:  # 0 = Default means no flag written
                 flags[PRESET_FLAGS['Rendering.FRMQualityOverride']] = str(val)
 
@@ -194,12 +321,12 @@ class FastFlagManager:
 
         for key in ('grass_max', 'grass_min', 'grass_motion'):
             val = settings.get(key)
-            if val is not None and val != '':
-                flags[EXTRA_FLAGS[key]] = str(int(val))
+            if val not in {None, ''}:
+                flags[EXTRA_FLAGS[key]] = str(_int_value(val))
 
         return flags
 
-    def write(self, settings: dict) -> set[Path]:
+    def write(self, settings: Mapping[str, object]) -> set[Path]:
         """Build flags and write settings, returning dirs blocked by permissions."""
         flags = self.build_json(settings)
         content = json.dumps(flags, indent=2).encode('utf-8') if flags else b'{}'
@@ -214,47 +341,19 @@ class FastFlagManager:
             for dst, stash_rel in client_settings_targets_for_resource_dir(roblox_dir):
                 stash = install_stash / stash_rel
                 try:
-                    # Stash original once
-                    if dst.exists() and not stash.exists():
-                        stash.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(dst, stash)
-
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    _clear_read_only(dst)
-                    dst.write_bytes(content)
-                    wrote_dir = True
+                    _write_client_settings_target(dst, stash, content)
                 except PermissionError as exc:
                     failed += 1
                     failed_dirs.add(roblox_dir)
                     log_buffer.log('FastFlags', f'Permission denied writing {dst}: {exc}')
+                else:
+                    wrote_dir = True
+
             sober_config = _sober_config_path_for_resource_dir(roblox_dir)
             if sober_config is not None:
                 stash_config = install_stash / 'sober_config.json'
                 try:
-                    config_payload = {}
-                    if sober_config.exists():
-                        if not stash_config.exists():
-                            stash_config.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(sober_config, stash_config)
-                        try:
-                            loaded = json.loads(sober_config.read_text(encoding='utf-8'))
-                            if isinstance(loaded, dict):
-                                config_payload = loaded
-                        except json.JSONDecodeError:
-                            config_payload = {}
-                    config_payload['fflags'] = {
-                        key: _sober_flag_value(value) for key, value in flags.items()
-                    }
-                    sober_config.parent.mkdir(parents=True, exist_ok=True)
-                    restore_read_only = _is_read_only(sober_config)
-                    _clear_read_only(sober_config)
-                    try:
-                        sober_config.write_text(
-                            json.dumps(config_payload, indent=2), encoding='utf-8'
-                        )
-                    finally:
-                        if restore_read_only:
-                            _restore_read_only(sober_config)
+                    _write_sober_config(sober_config, stash_config, flags)
                 except PermissionError as exc:
                     failed += 1
                     failed_dirs.add(roblox_dir)
@@ -272,15 +371,13 @@ class FastFlagManager:
             if wrote_dir:
                 written_dirs += 1
 
-        message = (
-            f'Wrote {format_count(flags, "flag")} to {format_count(written_dirs, "Roblox dir")}'
-        )
+        message = f'Wrote {format_count(len(flags), "flag")} to {format_count(written_dirs, "Roblox dir")}'
         if failed:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
         log_buffer.log('FastFlags', message)
         return failed_dirs
 
-    def reassert_macos_bootstrapper_flags(self, settings: dict) -> int:
+    def reassert_macos_bootstrapper_flags(self, settings: Mapping[str, object]) -> int:
         """Merge Fleasion flags into settings rewritten just before a macOS launch.
 
         AppleBlox removes and recreates ``Contents/MacOS/ClientSettings`` during
@@ -310,32 +407,15 @@ class FastFlagManager:
                 continue
 
             try:
-                try:
-                    existing = json.loads(target.read_text(encoding='utf-8'))
-                except UnicodeDecodeError, json.JSONDecodeError:
-                    existing = {}
-                if not isinstance(existing, dict):
-                    existing = {}
-
-                merged = {**existing, **flags}
-                if merged == existing:
-                    continue
-
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _clear_read_only(target)
-                temporary = target.with_name(f'.{target.name}.fleasion-{os.getpid()}.tmp')
-                try:
-                    temporary.write_text(json.dumps(merged, indent=2), encoding='utf-8')
-                    temporary.replace(target)
-                finally:
-                    temporary.unlink(missing_ok=True)
-                updated_count += 1
+                updated = _merge_bootstrapper_flag_file(target, flags)
             except (PermissionError, OSError) as exc:
                 log_buffer.log(
                     'FastFlags',
                     f'Failed to merge Fleasion flags into bootstrapper launch settings '
                     f'{target}: {exc}',
                 )
+            else:
+                updated_count += int(updated)
 
         if updated_count:
             log_buffer.log(
@@ -356,20 +436,12 @@ class FastFlagManager:
             for dst, stash_rel in client_settings_targets_for_resource_dir(roblox_dir):
                 stash = install_stash / stash_rel
                 try:
-                    if stash.exists():
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        _clear_read_only(dst)
-                        shutil.copy2(stash, dst)
-                        _clear_read_only(stash)
-                        stash.unlink()
-                        restored_dir = True
-                    elif dst.exists():
-                        _clear_read_only(dst)
-                        dst.unlink()
-                        restored_dir = True
+                    restored_target = _restore_client_settings_target(dst, stash)
                 except PermissionError as exc:
                     failed += 1
                     log_buffer.log('FastFlags', f'Permission denied restoring {dst}: {exc}')
+                else:
+                    restored_dir = restored_dir or restored_target
             if restored_dir:
                 restored += 1
 
@@ -377,28 +449,7 @@ class FastFlagManager:
             if sober_config is not None:
                 stash_config = install_stash / 'sober_config.json'
                 try:
-                    if stash_config.exists():
-                        sober_config.parent.mkdir(parents=True, exist_ok=True)
-                        _clear_read_only(sober_config)
-                        shutil.copy2(stash_config, sober_config)
-                        _clear_read_only(stash_config)
-                        stash_config.unlink()
-                    elif sober_config.exists():
-                        restore_read_only = _is_read_only(sober_config)
-                        try:
-                            payload = json.loads(sober_config.read_text(encoding='utf-8'))
-                        except json.JSONDecodeError:
-                            payload = {}
-                        if isinstance(payload, dict) and 'fflags' in payload:
-                            payload.pop('fflags', None)
-                            _clear_read_only(sober_config)
-                            try:
-                                sober_config.write_text(
-                                    json.dumps(payload, indent=2), encoding='utf-8'
-                                )
-                            finally:
-                                if restore_read_only:
-                                    _restore_read_only(sober_config)
+                    _restore_sober_config(sober_config, stash_config)
                 except PermissionError as exc:
                     failed += 1
                     log_buffer.log(

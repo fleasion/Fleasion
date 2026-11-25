@@ -1,30 +1,41 @@
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
 
 from fleasion.config import manager as manager_module
 from fleasion.config.manager import ConfigManager
 from fleasion.gui.replacer_config import ReplacerConfigWindow
 from fleasion.localization import DEFAULT_LANGUAGE, available_languages, get_language, set_language
 
+_app: QApplication | None = None
+_TRANSLATED_LANGUAGES: list[str] = [
+    code for code, _name in available_languages() if code != DEFAULT_LANGUAGE
+]
 
-_APP = None
-_TRANSLATED_LANGUAGES = [code for code, _name in available_languages() if code != DEFAULT_LANGUAGE]
+
+def _qapp() -> QApplication:
+    global _app
+    app = QApplication.instance()
+    _app = cast('QApplication', app) if app is not None else QApplication([])
+    return _app
 
 
-def _qapp():
-    global _APP
-    _APP = QApplication.instance() or QApplication([])
-    return _APP
+def _window(config_manager: ConfigManager) -> ReplacerConfigWindow:
+    factory = cast('Callable[..., ReplacerConfigWindow]', ReplacerConfigWindow)
+    return factory(config_manager)
 
 
 @pytest.mark.parametrize('language', _TRANSLATED_LANGUAGES)
-def test_translated_replacer_controls_do_not_clip_text(tmp_path, monkeypatch, language):
+def test_translated_replacer_controls_do_not_clip_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, language: str
+) -> None:
     app = _qapp()
     config_dir = Path(tmp_path) / 'FleasionNT'
     configs_dir = config_dir / 'configs'
@@ -36,12 +47,12 @@ def test_translated_replacer_controls_do_not_clip_text(tmp_path, monkeypatch, la
     set_language(language)
     window = None
     try:
-        window = ReplacerConfigWindow(ConfigManager())
+        window = _window(ConfigManager())
         window.resize(900, 750)
         window.show()
         app.processEvents()
 
-        clipped = []
+        clipped: list[tuple[str, str, int, int]] = []
         for label in window.findChildren(QLabel):
             if label.isVisible() and label.text() and label.sizeHint().width() > label.width():
                 clipped.append(('label', label.text(), label.width(), label.sizeHint().width()))
@@ -65,5 +76,6 @@ def test_translated_replacer_controls_do_not_clip_text(tmp_path, monkeypatch, la
         if window is not None:
             window.enabled_menu.hide()
             window.close()
+            window.deleteLater()
         set_language(previous_language)
         app.processEvents()

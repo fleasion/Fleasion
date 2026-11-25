@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import socket
-import ssl
 import time
 from dataclasses import dataclass
-from enum import Enum
-from typing import Optional, Sequence
+from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import ssl
+    from collections.abc import Mapping, Sequence
 
 
-class UpstreamMode(str, Enum):
+class UpstreamMode(StrEnum):
     AUTO = 'auto'
     DIRECT_IP = 'direct_ip'
     SYSTEM_PROXY = 'system_proxy'
@@ -24,17 +28,17 @@ class UpstreamMode(str, Enum):
 class UpstreamEndpoint:
     host: str
     port: int = 443
-    ip: Optional[str] = None
-    family: Optional[int] = None
+    ip: str | None = None
+    family: int | None = None
 
 
 @dataclass
 class UpstreamConnectResult:
-    reader: Optional[asyncio.StreamReader]
-    writer: Optional[asyncio.StreamWriter]
+    reader: asyncio.StreamReader | None
+    writer: asyncio.StreamWriter | None
     method: str
     endpoint: str
-    error: Optional[str] = None
+    error: str | None = None
     prior_errors: tuple[str, ...] = ()
 
 
@@ -42,24 +46,24 @@ class UpstreamConnectResult:
 class HttpProxyConfig:
     host: str
     port: int
-    username: Optional[str] = None
-    password: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
 
 
 @dataclass(frozen=True)
 class Socks5ProxyConfig:
     host: str
     port: int
-    username: Optional[str] = None
-    password: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
 
 
 @dataclass
 class HostTransportState:
-    preferred_method: Optional[str] = None
+    preferred_method: str | None = None
     preferred_until: float = 0.0
     direct_ip_unhealthy_until: float = 0.0
-    last_success_method: Optional[str] = None
+    last_success_method: str | None = None
 
 
 class BaseUpstreamConnector:
@@ -67,7 +71,7 @@ class BaseUpstreamConnector:
         self,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
-        ssl_ctx: ssl.SSLContext,
+        ssl_ctx: ssl.SSLContext | None,
         timeout: float,
     ) -> UpstreamConnectResult:
         raise NotImplementedError
@@ -89,8 +93,12 @@ def normalize_upstream_mode(value: object) -> UpstreamMode:
         return UpstreamMode.AUTO
 
 
+def _string_value(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 def normalize_endpoints(
-    upstream_endpoints: dict[str, Sequence[UpstreamEndpoint | str]] | None,
+    upstream_endpoints: Mapping[str, Sequence[UpstreamEndpoint | str]] | None,
 ) -> dict[str, list[UpstreamEndpoint]]:
     normalized: dict[str, list[UpstreamEndpoint]] = {}
     for host, endpoints in (upstream_endpoints or {}).items():
@@ -98,8 +106,10 @@ def normalize_endpoints(
         for ep in endpoints or ():
             if isinstance(ep, UpstreamEndpoint):
                 items.append(ep)
-            elif isinstance(ep, str):
-                items.append(UpstreamEndpoint(host=host, ip=ep))
+            else:
+                endpoint_ip = _string_value(ep)
+                if endpoint_ip is not None:
+                    items.append(UpstreamEndpoint(host=host, ip=endpoint_ip))
         normalized[host] = items
     return normalized
 
@@ -109,7 +119,7 @@ class DirectIpConnector(BaseUpstreamConnector):
         self,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
-        ssl_ctx: ssl.SSLContext,
+        ssl_ctx: ssl.SSLContext | None,
         timeout: float,
     ) -> UpstreamConnectResult:
         failures: list[str] = []
@@ -123,7 +133,7 @@ class DirectIpConnector(BaseUpstreamConnector):
                         target,
                         ep.port,
                         ssl=ssl_ctx,
-                        server_hostname=host,
+                        server_hostname=host if ssl_ctx is not None else None,
                         family=ep.family or 0,
                     ),
                     timeout=timeout,
@@ -134,7 +144,7 @@ class DirectIpConnector(BaseUpstreamConnector):
                     method=UpstreamMode.DIRECT_IP.value,
                     endpoint=target,
                 )
-            except Exception as exc:
+            except OSError as exc:
                 failures.append(f'{target}={_format_exc(exc)}')
 
         return UpstreamConnectResult(
@@ -151,11 +161,54 @@ def _recv_until_header_end(sock: socket.socket) -> bytes:
     while b'\r\n\r\n' not in buf:
         chunk = sock.recv(4096)
         if not chunk:
-            raise OSError('proxy closed during CONNECT')
+            msg = 'proxy closed during CONNECT'
+            raise OSError(msg)
         buf += chunk
         if len(buf) > 65536:
-            raise OSError('proxy CONNECT response too large')
+            msg = 'proxy CONNECT response too large'
+            raise OSError(msg)
     return bytes(buf)
+
+
+def _http_connect_request(
+    target_host: str,
+    target_port: int,
+    *,
+    username: str | None,
+    password: str | None,
+) -> bytes:
+    headers = [
+        f'CONNECT {target_host}:{target_port} HTTP/1.1',
+        f'Host: {target_host}:{target_port}',
+        'Proxy-Connection: Keep-Alive',
+    ]
+    if username:
+        raw = f'{username}:{password or ""}'.encode('utf-8', errors='replace')
+        token = base64.b64encode(raw).decode('ascii')
+        headers.append(f'Proxy-Authorization: Basic {token}')
+    return ('\r\n'.join(headers) + '\r\n\r\n').encode('ascii')
+
+
+def _http_connect_handshake(
+    sock: socket.socket,
+    target_host: str,
+    target_port: int,
+    *,
+    username: str | None,
+    password: str | None,
+) -> None:
+    request = _http_connect_request(
+        target_host,
+        target_port,
+        username=username,
+        password=password,
+    )
+    sock.sendall(request)
+    response = _recv_until_header_end(sock)
+    status_line = response.split(b'\r\n', 1)[0]
+    if b' 200 ' not in status_line and not status_line.startswith(b'HTTP/1.1 200'):
+        msg = f'proxy CONNECT failed: {status_line!r}'
+        raise OSError(msg)
 
 
 def _blocking_http_connect_socket(
@@ -164,37 +217,30 @@ def _blocking_http_connect_socket(
     target_host: str,
     target_port: int,
     timeout: float,
-    username: Optional[str] = None,
-    password: Optional[str] = None,
+    *,
+    username: str | None = None,
+    password: str | None = None,
 ) -> socket.socket:
     sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
     try:
-        headers = [
-            f'CONNECT {target_host}:{target_port} HTTP/1.1',
-            f'Host: {target_host}:{target_port}',
-            'Proxy-Connection: Keep-Alive',
-        ]
-        if username:
-            raw = f'{username}:{password or ""}'.encode('utf-8', errors='replace')
-            token = base64.b64encode(raw).decode('ascii')
-            headers.append(f'Proxy-Authorization: Basic {token}')
-        req = ('\r\n'.join(headers) + '\r\n\r\n').encode('ascii')
-
-        sock.sendall(req)
-        response = _recv_until_header_end(sock)
-        status_line = response.split(b'\r\n', 1)[0]
-        if b' 200 ' not in status_line and not status_line.startswith(b'HTTP/1.1 200'):
-            raise OSError(f'proxy CONNECT failed: {status_line!r}')
-
-        sock.setblocking(False)
-        return sock
+        _http_connect_handshake(
+            sock,
+            target_host,
+            target_port,
+            username=username,
+            password=password,
+        )
     except Exception:
         sock.close()
         raise
+    sock.settimeout(0.0)
+    return sock
 
 
 class HttpConnectConnector(BaseUpstreamConnector):
-    def __init__(self, proxy: HttpProxyConfig, method: str = UpstreamMode.HTTP_CONNECT.value):
+    def __init__(
+        self, proxy: HttpProxyConfig, method: str = UpstreamMode.HTTP_CONNECT.value
+    ) -> None:
         self.proxy = proxy
         self.method = method
 
@@ -202,31 +248,31 @@ class HttpConnectConnector(BaseUpstreamConnector):
         self,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
-        ssl_ctx: ssl.SSLContext,
+        ssl_ctx: ssl.SSLContext | None,
         timeout: float,
     ) -> UpstreamConnectResult:
         loop = asyncio.get_running_loop()
         target_port = _target_port(endpoints)
         endpoint = f'{self.proxy.host}:{self.proxy.port}->{host}:{target_port}'
-        raw_sock: Optional[socket.socket] = None
+        raw_sock: socket.socket | None = None
         try:
-            raw_sock = await loop.run_in_executor(
-                None,
+            connect_socket = functools.partial(
                 _blocking_http_connect_socket,
                 self.proxy.host,
                 self.proxy.port,
                 host,
                 target_port,
                 timeout,
-                self.proxy.username,
-                self.proxy.password,
+                username=self.proxy.username,
+                password=self.proxy.password,
             )
+            raw_sock = await loop.run_in_executor(None, connect_socket)
 
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(
                     sock=raw_sock,
                     ssl=ssl_ctx,
-                    server_hostname=host,
+                    server_hostname=host if ssl_ctx is not None else None,
                 ),
                 timeout=timeout,
             )
@@ -238,7 +284,7 @@ class HttpConnectConnector(BaseUpstreamConnector):
                 method=self.method,
                 endpoint=endpoint,
             )
-        except Exception as exc:
+        except OSError as exc:
             if raw_sock is not None:
                 raw_sock.close()
             return UpstreamConnectResult(
@@ -255,9 +301,71 @@ def _recv_exact(sock: socket.socket, length: int) -> bytes:
     while len(data) < length:
         chunk = sock.recv(length - len(data))
         if not chunk:
-            raise OSError('SOCKS5 proxy closed connection')
+            msg = 'SOCKS5 proxy closed connection'
+            raise OSError(msg)
         data += chunk
     return bytes(data)
+
+
+def _socks5_negotiate_auth(
+    sock: socket.socket,
+    *,
+    username: str | None,
+    password: str | None,
+) -> None:
+    methods = [0x00]
+    if username:
+        methods.append(0x02)
+    sock.sendall(bytes([0x05, len(methods), *methods]))
+    response = _recv_exact(sock, 2)
+    if response[0] != 0x05:
+        msg = f'SOCKS5 bad greeting response: {response!r}'
+        raise OSError(msg)
+    if response[1] == 0x02:
+        user_bytes = username.encode('utf-8', errors='replace') if username else b''
+        pass_bytes = (password or '').encode('utf-8', errors='replace')
+        if len(user_bytes) > 255 or len(pass_bytes) > 255:
+            msg = 'SOCKS5 username/password too long'
+            raise OSError(msg)
+        sock.sendall(
+            b'\x01' + bytes([len(user_bytes)]) + user_bytes + bytes([len(pass_bytes)]) + pass_bytes
+        )
+        auth = _recv_exact(sock, 2)
+        if auth != b'\x01\x00':
+            msg = f'SOCKS5 username/password rejected: {auth!r}'
+            raise OSError(msg)
+    elif response[1] != 0x00:
+        msg = f'SOCKS5 no-auth rejected: {response!r}'
+        raise OSError(msg)
+
+
+def _socks5_connect_target(sock: socket.socket, target_host: str, target_port: int) -> None:
+    host_bytes = target_host.encode('idna')
+    if len(host_bytes) > 255:
+        msg = 'SOCKS5 target host too long'
+        raise OSError(msg)
+    request = (
+        b'\x05\x01\x00\x03' + bytes([len(host_bytes)]) + host_bytes + target_port.to_bytes(2, 'big')
+    )
+    sock.sendall(request)
+
+    response = _recv_exact(sock, 4)
+    if response[0] != 0x05 or response[1] != 0:
+        msg = f'SOCKS5 connect failed: {response!r}'
+        raise OSError(msg)
+
+    address_type = response[3]
+    if address_type == 1:
+        _recv_exact(sock, 4)
+    elif address_type == 3:
+        length = _recv_exact(sock, 1)[0]
+        _recv_exact(sock, length)
+    elif address_type == 4:
+        _recv_exact(sock, 16)
+    else:
+        msg = f'SOCKS5 unknown address type: {address_type}'
+        raise OSError(msg)
+    _recv_exact(sock, 2)
 
 
 def _blocking_socks5_connect_socket(
@@ -266,73 +374,23 @@ def _blocking_socks5_connect_socket(
     target_host: str,
     target_port: int,
     timeout: float,
-    username: Optional[str] = None,
-    password: Optional[str] = None,
+    *,
+    username: str | None = None,
+    password: str | None = None,
 ) -> socket.socket:
     sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
     try:
-        methods = [0x00]
-        if username:
-            methods.append(0x02)
-        sock.sendall(bytes([0x05, len(methods), *methods]))
-        resp = _recv_exact(sock, 2)
-        if resp[0] != 0x05:
-            raise OSError(f'SOCKS5 bad greeting response: {resp!r}')
-        if resp[1] == 0x02:
-            user_bytes = username.encode('utf-8', errors='replace') if username else b''
-            pass_bytes = (password or '').encode('utf-8', errors='replace')
-            if len(user_bytes) > 255 or len(pass_bytes) > 255:
-                raise OSError('SOCKS5 username/password too long')
-            sock.sendall(
-                b'\x01'
-                + bytes([len(user_bytes)])
-                + user_bytes
-                + bytes([len(pass_bytes)])
-                + pass_bytes
-            )
-            auth = _recv_exact(sock, 2)
-            if auth != b'\x01\x00':
-                raise OSError(f'SOCKS5 username/password rejected: {auth!r}')
-        elif resp[1] != 0x00:
-            raise OSError(f'SOCKS5 no-auth rejected: {resp!r}')
-
-        host_bytes = target_host.encode('idna')
-        if len(host_bytes) > 255:
-            raise OSError('SOCKS5 target host too long')
-        req = (
-            b'\x05\x01\x00'
-            + b'\x03'
-            + bytes([len(host_bytes)])
-            + host_bytes
-            + target_port.to_bytes(2, 'big')
-        )
-        sock.sendall(req)
-
-        resp = _recv_exact(sock, 4)
-        if resp[0] != 0x05 or resp[1] != 0:
-            raise OSError(f'SOCKS5 connect failed: {resp!r}')
-
-        atyp = resp[3]
-        if atyp == 1:
-            _recv_exact(sock, 4)
-        elif atyp == 3:
-            n = _recv_exact(sock, 1)[0]
-            _recv_exact(sock, n)
-        elif atyp == 4:
-            _recv_exact(sock, 16)
-        else:
-            raise OSError(f'SOCKS5 unknown address type: {atyp}')
-        _recv_exact(sock, 2)
-
-        sock.setblocking(False)
-        return sock
+        _socks5_negotiate_auth(sock, username=username, password=password)
+        _socks5_connect_target(sock, target_host, target_port)
     except Exception:
         sock.close()
         raise
+    sock.settimeout(0.0)
+    return sock
 
 
 class Socks5Connector(BaseUpstreamConnector):
-    def __init__(self, proxy: Socks5ProxyConfig, method: str = UpstreamMode.SOCKS5.value):
+    def __init__(self, proxy: Socks5ProxyConfig, method: str = UpstreamMode.SOCKS5.value) -> None:
         self.proxy = proxy
         self.method = method
 
@@ -340,30 +398,30 @@ class Socks5Connector(BaseUpstreamConnector):
         self,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
-        ssl_ctx: ssl.SSLContext,
+        ssl_ctx: ssl.SSLContext | None,
         timeout: float,
     ) -> UpstreamConnectResult:
         loop = asyncio.get_running_loop()
         target_port = _target_port(endpoints)
         endpoint = f'{self.proxy.host}:{self.proxy.port}->{host}:{target_port}'
-        raw_sock: Optional[socket.socket] = None
+        raw_sock: socket.socket | None = None
         try:
-            raw_sock = await loop.run_in_executor(
-                None,
+            connect_socket = functools.partial(
                 _blocking_socks5_connect_socket,
                 self.proxy.host,
                 self.proxy.port,
                 host,
                 target_port,
                 timeout,
-                self.proxy.username,
-                self.proxy.password,
+                username=self.proxy.username,
+                password=self.proxy.password,
             )
+            raw_sock = await loop.run_in_executor(None, connect_socket)
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(
                     sock=raw_sock,
                     ssl=ssl_ctx,
-                    server_hostname=host,
+                    server_hostname=host if ssl_ctx is not None else None,
                 ),
                 timeout=timeout,
             )
@@ -375,7 +433,7 @@ class Socks5Connector(BaseUpstreamConnector):
                 method=self.method,
                 endpoint=endpoint,
             )
-        except Exception as exc:
+        except OSError as exc:
             if raw_sock is not None:
                 raw_sock.close()
             return UpstreamConnectResult(
@@ -388,7 +446,7 @@ class Socks5Connector(BaseUpstreamConnector):
 
 
 class UnavailableConnector(BaseUpstreamConnector):
-    def __init__(self, method: str, reason: str):
+    def __init__(self, method: str, reason: str) -> None:
         self.method = method
         self.reason = reason
 
@@ -396,9 +454,10 @@ class UnavailableConnector(BaseUpstreamConnector):
         self,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
-        ssl_ctx: ssl.SSLContext,
+        ssl_ctx: ssl.SSLContext | None,
         timeout: float,
     ) -> UpstreamConnectResult:
+        del endpoints, ssl_ctx, timeout
         return UpstreamConnectResult(
             reader=None,
             writer=None,
@@ -411,10 +470,10 @@ class UnavailableConnector(BaseUpstreamConnector):
 class AutoConnector(BaseUpstreamConnector):
     def __init__(
         self,
-        direct: Optional[BaseUpstreamConnector] = None,
-        system_http_proxy: Optional[BaseUpstreamConnector] = None,
-        manual_http_proxy: Optional[BaseUpstreamConnector] = None,
-        manual_socks5: Optional[BaseUpstreamConnector] = None,
+        direct: BaseUpstreamConnector | None = None,
+        system_http_proxy: BaseUpstreamConnector | None = None,
+        manual_http_proxy: BaseUpstreamConnector | None = None,
+        manual_socks5: BaseUpstreamConnector | None = None,
         cooldown_seconds: float = 120.0,
     ) -> None:
         self.direct = direct or DirectIpConnector()
@@ -477,8 +536,9 @@ class AutoConnector(BaseUpstreamConnector):
         connector: BaseUpstreamConnector,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
-        ssl_ctx: ssl.SSLContext,
+        ssl_ctx: ssl.SSLContext | None,
         timeout: float,
+        *,
         failures: list[str],
     ) -> UpstreamConnectResult:
         result = await connector.connect(host, endpoints, ssl_ctx, timeout)
@@ -493,7 +553,7 @@ class AutoConnector(BaseUpstreamConnector):
         self,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
-        ssl_ctx: ssl.SSLContext,
+        ssl_ctx: ssl.SSLContext | None,
         timeout: float,
     ) -> UpstreamConnectResult:
         now = time.monotonic()
@@ -511,7 +571,7 @@ class AutoConnector(BaseUpstreamConnector):
                 endpoints,
                 ssl_ctx,
                 timeout,
-                failures,
+                failures=failures,
             )
             if result.writer is not None:
                 state.last_success_method = result.method
@@ -522,7 +582,12 @@ class AutoConnector(BaseUpstreamConnector):
         if UpstreamMode.DIRECT_IP.value not in attempted and not direct_unhealthy:
             attempted.add(UpstreamMode.DIRECT_IP.value)
             result = await self._try_connector(
-                self.direct, host, endpoints, ssl_ctx, timeout, failures
+                self.direct,
+                host,
+                endpoints,
+                ssl_ctx,
+                timeout,
+                failures=failures,
             )
             if result.writer is not None:
                 state.last_success_method = result.method
@@ -545,7 +610,12 @@ class AutoConnector(BaseUpstreamConnector):
                 continue
             attempted.add(method)
             result = await self._try_connector(
-                connector, host, endpoints, ssl_ctx, timeout, failures
+                connector,
+                host,
+                endpoints,
+                ssl_ctx,
+                timeout,
+                failures=failures,
             )
             if result.writer is not None:
                 state.preferred_method = result.method

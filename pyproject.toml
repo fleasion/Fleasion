@@ -1,38 +1,39 @@
 [build-system]
-requires = ['uv_build>=0.11.0,<0.12.0']
+requires = ['uv_build>=0.13.8,<0.14.0']
 build-backend = 'uv_build'
 
 [project]
 name = 'fleasion'
 version = "2.4.2b1"
-description = 'Roblox asset interceptor and replacer with PyQt6 GUI'
+description = 'Roblox asset interceptor and replacer with PySide6 GUI'
 readme = 'README.md'
-requires-python = '>=3.14'
+requires-python = '>=3.15'
 dependencies = [
     'browser-cookie3>=0.20.1; sys_platform == "darwin" or sys_platform == "linux"',
-    'cryptography>=42.0.0,<49; sys_platform == "darwin"',
-    'cryptography>=49; sys_platform != "darwin"',
     'win11toast>=0.36.3; sys_platform == "win32"',
-    'pywin32>=307; sys_platform == "win32"',
-    'pyqt6==6.7.1; sys_platform == "darwin"',
-    'pyqt6-qt6==6.7.3; sys_platform == "darwin"',
-    'pyqt6>=6.8.0; sys_platform != "darwin"',
-    'python-dateutil>=2.9.0',
-    'platformdirs>=4.0.0',
+    'pywin32>=312; sys_platform == "win32"',
+    # cryptography 49+ ships no x86_64 macOS wheels, and the universal build needs one
+    'cryptography>=48.0.1,<49; sys_platform == "darwin"',
+    'cryptography>=50.0.2; sys_platform != "darwin"',
+    'pyside6>=6.12.0',
+    'numpy>=2.5.5',
+    'python-dateutil>=4.0.0',
+    'platformdirs>=4.14.8',
     'sounddevice>=0.5.6',
-    'soundfile>=0.13.1',
-    'zstandard>=0.21.0',
-    'certifi>=2024.7.4',
-    'requests>=2.32.0',
+    'soundfile>=0.14.0',
+    'zstandard>=0.25.0',
+    'certifi>=2026.11.20',
+    'requests>=2.34.2',
+    'defusedxml>=0.7.1',
     'colorama>=0.4.6',
-    'pyopengl>=3.1.0',
-    'pillow>=11.0.0',
-    'DracoPy>=1.3.0',
-    'orjson>=3.9.0',
-    'numpy==2.3.5; sys_platform == "win32"',
-    'numpy>=2.0.0; sys_platform != "win32"',
+    'packaging>=26.3',
+    'pyopengl>=3.1.10',
+    'pillow>=13.0.0',
+    'DracoPy>=2.2.0',
+    'orjson>=3.13.0',
     'lz4>=4.4.5',
-    'packaging>=26.2',
+    'h2>=4.4.1,<5',
+    'tomlkit>=0.15.2',
 ]
 
 [project.urls]
@@ -41,47 +42,120 @@ Issues = 'https://github.com/fleasion/Fleasion/issues'
 Releases = 'https://github.com/fleasion/Fleasion/releases'
 
 [project.scripts]
-fleasion = 'fleasion:main'
-app = 'fleasion:main'
+fleasion = 'fleasion.__main__:main'
+app = 'fleasion.__main__:main'
 build = 'fleasion.scripts.build:main'
 
 [dependency-groups]
 dev = [
-    "pyinstaller>=6.19.0",
-    "pyright>=1.1.411",
-    "pytest>=9.0.0",
-    "ruff>=0.16.5",
+    "pyinstaller>=6.22.3",
+    "pyright>=1.1.414",
+    "pytest>=9.2.0",
+    "ruff>=0.17.5",
 ]
+
+[tool.uv.extra-build-variables]
+# lz4 has no Python 3.15 wheels, and its source build links any system liblz4
+# that pkg-config finds. That is an arm64-only Homebrew copy on macOS runners,
+# which breaks the universal build, so always compile the bundled sources
+lz4 = { PYLZ4_USE_SYSTEM_LZ4 = 'False' }
 
 [tool.pyright]
 typeCheckingMode = "strict"
-pythonVersion = "3.14"
-include = ["src", "tests", "launcher.py", "conftest.py"]
-exclude = ["build", "dist", ".agents"]
-
-[tool.pytest.ini_options]
-markers = [
-    "threaded_asyncio: requires working cross-thread event-loop socket wakeups",
-]
+pythonVersion = "3.15"
+include = ["src", "tests", "conftest.py"]
+exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv", "build", "dist", ".agents"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
-extend-exclude = [".agents"]
+target-version = "py315"
+extend-exclude = [".agents", "tests"]
+force-exclude = true
 
 [tool.ruff.lint]
 preview = true
 select = ["ALL"]
 ignore = [
-    "COM812",  # Conflicts with ruff format
-    "CPY001",  # No repository-wide copyright-header policy
-    "D",       # Docstrings are opt-in per AGENTS.md
-    "DOC",     # Docstrings are opt-in per AGENTS.md
-    "ISC001",  # Conflicts with ruff format
+    # Handled by Ruff format
+    "line-too-long",
+    "blank-line-with-whitespace",
+    "too-many-blank-lines",
+    "missing-trailing-comma",
+    "bad-quotes-inline-string",
+    "extraneous-parentheses",
+
+    # Documentation and type annotations
+    "D",  # Not needed here
+    "DOC",
+    "any-type",
+    "missing-return-type-special-method",
+    "missing-return-type-public-function",
+    "missing-return-type-private-function",
+
+    # Imports and package structure
+    "implicit-namespace-package",  # Package lookup can make this annoying
+    "useless-import-alias",  # Pyright requires some `as` imports
+    # "typing-only-first-party-import",  # False positives with Pydantic
+    # "typing-only-third-party-import",  # False positives with Pydantic
+    # "typing-only-standard-library-import",  # False positives with Pydantic
+
+    # Function and class design
+    "no-self-use",  # Can easily break code
+    "boolean-type-hint-positional-argument",
+    "boolean-default-value-positional-argument",
+    "too-many-arguments",
+    "too-many-public-methods",
+
+    # Complexity and control flow
+    "complex-structure",
+    "too-many-branches",
+    "too-many-locals",
+    "too-many-statements",
+    "magic-value-comparison",  # I hate this rule
+    "implicit-return-value",
+
+    # Exceptions
+    "suppressible-exception",
+    "raise-vanilla-args",  # Over-eager rule
+    "raise-within-try",  # Unrealistic rule
+    # "raw-string-in-exception",  # Fine for libs like discord.py
+
+    # Async code
+    "unused-async",  # Can easily break code
+    "async-function-with-timeout",
+
+    # Logging and console output
+    "print",
+    "logging-f-string",  # I hate this rule
+
+    # Subprocess security
+    "suspicious-subprocess-import",
+    "subprocess-popen-with-shell-equals-true",
+    "subprocess-without-shell-equals-true",
+
+    # Source and repository hygiene
+    "ERA",  # Keep commented-out code
+    "missing-todo-link",
+    "line-contains-todo",
+    "missing-copyright-notice",
+    "shebang-missing-executable-file",
+    "ambiguous-unicode-character-string",
+    "unsorted-dunder-all",  # Public export order is a tested compatibility contract
+    "unsorted-dunder-slots",  # Slot order is a tested compatibility contract
+
+    # Data models and library-specific rules
+    "function-call-in-dataclass-default-argument",
+    "pandas-use-of-dot-values",  # Not a pandas codebase
+]
+unfixable = [
+    "ERA",  # Don't delete commented-out code
+    "line-too-long",  # Ruff format handles line length
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101"]  # pytest uses plain assert
+# The macOS helper daemon can run from source under an older system Python
+# through launchd, so it keeps importlib instead of lazy imports
+'src/fleasion/macos_proxy_helper_daemon.py' = ['banned-api']
 
 [tool.ruff.format]
 quote-style = "single"
@@ -96,6 +170,10 @@ combine-as-imports = true
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Python 3.15 lazy imports defer loading with full typing and PyInstaller visibility
+"importlib.import_module".msg = "Use a module-level `lazy import` unless the module name is built at runtime"
+
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
 
@@ -106,3 +184,51 @@ parametrize-names-type = "csv"
 
 [tool.ruff.lint.flake8-quotes]
 inline-quotes = "single"
+
+[tool.pytest.ini_options]
+markers = [
+    "threaded_asyncio: requires working cross-thread event-loop socket wakeups",
+]
+
+[tool.ruff.lint.pep8-naming]
+extend-ignore-names = [
+    # Qt compatibility hooks and generated UI APIs.
+    "defaultFramebufferObject",
+    "doneCurrent",
+    "fileDropped",
+    "initializeGL",
+    "isExposed",
+    "makeCurrent",
+    "paintGL",
+    "resizeGL",
+    "retranslateUi",
+    "setFormat",
+    "setupUi",
+
+    # Third-party API spellings mirrored by local typing stubs.
+    "gl*",
+    "vtk*",
+    "AddLight",
+    "Azimuth",
+    "Close",
+    "CreateKey",
+    "CreateKeyEx",
+    "DeleteValue",
+    "EnumKey",
+    "GetElement",
+    "Identity",
+    "Invert",
+    "Multiply4x4",
+    "OpenKey",
+    "QueryValueEx",
+    "RemoveAllLights",
+    "SetClippingRange",
+    "SetElement",
+    "SetFocalPoint",
+    "SetIntensity",
+    "SetLightTypeToHeadlight",
+    "SetLightTypeToSceneLight",
+    "SetPosition",
+    "SetUserMatrix",
+    "SetValueEx",
+]

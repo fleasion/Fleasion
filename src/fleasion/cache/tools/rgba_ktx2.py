@@ -13,11 +13,14 @@ linear maps such as ORM/height are area-filtered channel-by-channel.
 from __future__ import annotations
 
 import struct
-from pathlib import Path
-from typing import Literal
+from itertools import starmap
+from typing import TYPE_CHECKING, Literal
 
-import numpy as np
-from PIL import Image
+lazy import numpy as np
+lazy from PIL import Image
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 KTX2_MAGIC = b'\xabKTX 20\xbb\r\n\x1a\n'
 VK_FORMAT_R8G8B8A8_UNORM = 37
@@ -68,14 +71,17 @@ def generate_rgba8_mip_chain(
     """
 
     if width <= 0 or height <= 0:
-        raise ValueError(f'invalid KTX2 dimensions {width}x{height}')
-    if mipmap_mode not in ('color', 'linear', 'normal'):
-        raise ValueError(f'unsupported mipmap mode: {mipmap_mode}')
+        msg = f'invalid KTX2 dimensions {width}x{height}'
+        raise ValueError(msg)
+    if mipmap_mode not in {'color', 'linear', 'normal'}:
+        msg = f'unsupported mipmap mode: {mipmap_mode}'
+        raise ValueError(msg)
 
     rgba = bytes(rgba)
     expected_size = width * height * 4
     if len(rgba) != expected_size:
-        raise ValueError(f'RGBA buffer size mismatch: {len(rgba)} != {expected_size}')
+        msg = f'RGBA buffer size mismatch: {len(rgba)} != {expected_size}'
+        raise ValueError(msg)
 
     current = np.frombuffer(rgba, dtype=np.uint8).reshape((height, width, 4))
     base = current
@@ -127,26 +133,30 @@ def write_rgba8_ktx2_levels(
     """Write an explicitly supplied RGBA8 mip chain without resampling it."""
 
     if width <= 0 or height <= 0:
-        raise ValueError(f'invalid KTX2 dimensions {width}x{height}')
+        msg = f'invalid KTX2 dimensions {width}x{height}'
+        raise ValueError(msg)
     if not levels:
-        raise ValueError('KTX2 requires at least one mip level')
+        msg = 'KTX2 requires at least one mip level'
+        raise ValueError(msg)
 
     level_bytes = [bytes(level) for level in levels]
     max_level_count = _full_mip_level_count(width, height)
     if len(level_bytes) > max_level_count:
-        raise ValueError(
+        msg = (
             f'too many KTX2 mip levels: {len(level_bytes)} > {max_level_count} for {width}x{height}'
         )
+        raise ValueError(msg)
 
     for level_index, level in enumerate(level_bytes):
         level_width = max(1, width >> level_index)
         level_height = max(1, height >> level_index)
         expected_size = level_width * level_height * 4
         if len(level) != expected_size:
-            raise ValueError(
+            msg = (
                 f'RGBA mip {level_index} size mismatch: {len(level)} != {expected_size} '
                 f'({level_width}x{level_height})'
             )
+            raise ValueError(msg)
 
     level_count = len(level_bytes)
     level_index_size = 24 * level_count
@@ -230,17 +240,18 @@ def read_rgba8_ktx2_levels(data: bytes) -> tuple[list[bytes], int, int] | None:
     # levelCount as a single base level.
     effective_level_count = level_count or 1
     level_index_end = _KTX2_HEADER_SIZE + 24 * effective_level_count
-    if (
-        vk_format != VK_FORMAT_R8G8B8A8_UNORM
-        or type_size != 1
-        or width <= 0
-        or height <= 0
-        or depth != 0
-        or layer_count != 0
-        or face_count != 1
-        or effective_level_count > _full_mip_level_count(width, height)
-        or supercompression != 0
-        or level_index_end > len(data)
+    invalid_format = vk_format != VK_FORMAT_R8G8B8A8_UNORM or type_size != 1
+    invalid_dimensions = width <= 0 or height <= 0 or depth != 0 or layer_count != 0
+    invalid_layout = face_count != 1 or supercompression != 0
+    invalid_level_count = effective_level_count > _full_mip_level_count(width, height)
+    if any(
+        (
+            invalid_format,
+            invalid_dimensions,
+            invalid_layout,
+            invalid_level_count,
+            level_index_end > len(data),
+        )
     ):
         return None
 
@@ -383,12 +394,14 @@ def _full_mip_level_count(width: int, height: int) -> int:
 
 def _make_rgba8_dfd() -> bytes:
     samples = b''.join(
-        _make_sample(bit_offset, channel)
-        for bit_offset, channel in (
-            (0, _DFD_CHANNEL_RED),
-            (8, _DFD_CHANNEL_GREEN),
-            (16, _DFD_CHANNEL_BLUE),
-            (24, _DFD_CHANNEL_ALPHA),
+        starmap(
+            _make_sample,
+            (
+                (0, _DFD_CHANNEL_RED),
+                (8, _DFD_CHANNEL_GREEN),
+                (16, _DFD_CHANNEL_BLUE),
+                (24, _DFD_CHANNEL_ALPHA),
+            ),
         )
     )
     descriptor_block_size = 24 + len(samples)

@@ -1,9 +1,7 @@
 """Reusable UI gate for sections that require Fleasion's proxy."""
 
-from ..localization import tr
-
-from PyQt6.QtCore import QEvent, Qt
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -11,6 +9,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from fleasion.localization import tr
 
 
 class ProxyGate(QWidget):
@@ -21,8 +21,8 @@ class ProxyGate(QWidget):
         content: QWidget,
         message: str | None = None,
         compact: bool = False,
-        parent=None,
-    ):
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._content = content
         self._compact = compact
@@ -70,13 +70,13 @@ class ProxyGate(QWidget):
         overlay_layout.addStretch()
         self._apply_style()
 
-    def event(self, event):
-        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+    def event(self, event: QEvent) -> bool:
+        if event.type() in {QEvent.Type.Resize, QEvent.Type.Show}:
             self._overlay.setGeometry(self.rect())
             self._overlay.raise_()
         return super().event(event)
 
-    def set_proxy_enabled(self, enabled: bool):
+    def set_proxy_enabled(self, enabled: bool) -> None:
         effective_enabled = enabled or self._dismissed_for_session
         self._content.setEnabled(effective_enabled)
         self._overlay.setVisible(not effective_enabled)
@@ -84,11 +84,11 @@ class ProxyGate(QWidget):
             self._overlay.setGeometry(self.rect())
             self._overlay.raise_()
 
-    def dismiss_for_session(self):
+    def dismiss_for_session(self) -> None:
         self._dismissed_for_session = True
         self.set_proxy_enabled(True)
 
-    def _apply_style(self):
+    def _apply_style(self) -> None:
         if self._compact:
             radius = 6
             label_padding = '10px 14px'

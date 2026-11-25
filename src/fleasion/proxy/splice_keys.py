@@ -1,0 +1,250 @@
+"""Bounded-lifetime traffic keys for local splice connections."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+import threading
+import time
+from typing import TYPE_CHECKING
+
+from fleasion.utils import macos_rosemary_gate
+from fleasion.utils.logging import log_buffer
+lazy from fleasion.utils import macos_rosemary_memory
+
+from .android_community_keys import find_android_community_pid, scan as scan_android_community
+from .live_keys import find_roblox_pid, scan
+from .rosemary_keys import find_rosemary_pid, scan as scan_rosemary
+from .sober_keys import find_sober_pid, scan as scan_sober
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+type ConnectionSecrets = dict[str, bytes]
+type SecretMap = dict[str, ConnectionSecrets]
+
+KEYLOG_FIELD_COUNT = 3
+CLIENT_RANDOM_SIZE = 32
+MIN_REFRESH_INTERVAL = 0.1
+MAX_CACHED_CONNECTIONS = 4096
+MAX_PENDING_SCANS = 16
+
+
+def _parse_keylog_line(line: str, keys: SecretMap) -> None:
+    """Parse one line of NSS keylog format."""
+    parts = line.split()
+    if len(parts) != KEYLOG_FIELD_COUNT or parts[0].startswith('#'):
+        return
+    label, random_hex, value_hex = parts
+    try:
+        secret = bytes.fromhex(value_hex)
+        client_random = bytes.fromhex(random_hex)
+    except ValueError:
+        return
+    if len(client_random) == CLIENT_RANDOM_SIZE and len(secret) in {32, 48}:
+        keys.setdefault(random_hex.lower(), {})[label] = secret
+
+
+class KeyProvider:
+    """Provider for TLS traffic keys via keylog or memory scanner."""
+
+    def __init__(
+        self,
+        keylog: Path | None = None,
+        *,
+        linux_client_key: str | None = None,
+        sober_native_keylog: Path | None = None,
+    ) -> None:
+        self.keylog = keylog
+        self.linux_client_key = linux_client_key
+        self.sober_native_keylog = sober_native_keylog
+        self._keys: SecretMap = {}
+        self._scan_slots = asyncio.Semaphore(2)
+        self._inflight: dict[str, asyncio.Task[None]] = {}
+        self._running_scans: set[str] = set()
+        self._waiters: dict[str, int] = {}
+        self._last_refresh: dict[str, float] = {}
+        self._stop = threading.Event()
+
+    @staticmethod
+    def _read_keylog(path: Path) -> SecretMap:
+        keys: SecretMap = {}
+        try:
+            if path.is_symlink() or path.stat().st_size > 8 * 1024 * 1024:
+                return keys
+            with path.open(encoding='ascii') as source:
+                for line in source:
+                    _parse_keylog_line(line, keys)
+        except OSError, UnicodeError:
+            pass
+        return keys
+
+    def _read(self, client_random: str) -> SecretMap:  # ruff: ignore[too-many-return-statements]
+        if self.keylog is not None:
+            return self._read_keylog(self.keylog)
+        native_keys: SecretMap = {}
+        if sys.platform == 'linux' and self.linux_client_key == 'sober':
+            if self.sober_native_keylog is not None:
+                native_keys = self._read_keylog(self.sober_native_keylog)
+            if client_random in native_keys:
+                return native_keys
+        if sys.platform == 'darwin':
+            if not macos_rosemary_gate.MACOS_ROSEMARY_AVAILABLE:
+                return {}
+
+            return macos_rosemary_memory.scan_active(client_random=client_random, stop=self._stop)
+        if sys.platform == 'win32':
+            pid = find_roblox_pid()
+            return scan(pid, stop=self._stop, client_random=client_random) if pid else {}
+        if sys.platform == 'linux':
+            # Never read another client's secrets merely because its process
+            # is running. The active Fleasion selection owns this proxy.
+            if self.linux_client_key in {'mocktail', 'nightcap', 'cordial'}:
+                match = find_android_community_pid(self.linux_client_key)
+                return (
+                    scan_android_community(match[0], stop=self._stop, client_random=client_random)
+                    if match
+                    else {}
+                )
+            if self.linux_client_key == 'sober':
+                sober_pid = find_sober_pid()
+                android_keys = (
+                    scan_sober(sober_pid, stop=self._stop, client_random=client_random)
+                    if sober_pid
+                    else {}
+                )
+                return {**android_keys, **native_keys}
+            if self.linux_client_key == 'rosemary':
+                rosemary_pid = find_rosemary_pid()
+                return (
+                    scan_rosemary(rosemary_pid, stop=self._stop, client_random=client_random)
+                    if rosemary_pid
+                    else {}
+                )
+            rosemary_pid = find_rosemary_pid()
+            if rosemary_pid:
+                return scan_rosemary(rosemary_pid, stop=self._stop, client_random=client_random)
+            android_match = find_android_community_pid()
+            if android_match:
+                return scan_android_community(
+                    android_match[0], stop=self._stop, client_random=client_random
+                )
+            sober_pid = find_sober_pid()
+            if sober_pid:
+                return scan_sober(sober_pid, stop=self._stop, client_random=client_random)
+            return {}
+        msg = f'Live splice key recovery is not supported on {sys.platform}'
+        raise RuntimeError(msg)
+
+    async def get(self, client_random: str, label: str, *, wait_seconds: float = 10.0) -> bytes:
+        """Wait for and retrieve a secret for the given client_random and label.
+
+        Parameters
+        ----------
+        client_random : str
+            Hexadecimal 32-byte TLS client random.
+        label : str
+            Secret label name (e.g. 'CLIENT_TRAFFIC_SECRET_0').
+        wait_seconds : float, optional
+            Maximum seconds to wait before raising TimeoutError.
+
+        Returns
+        -------
+        bytes
+            The recovered traffic secret.
+        """
+        client_random = client_random.lower()
+        self._waiters[client_random] = self._waiters.get(client_random, 0) + 1
+        try:
+            async with asyncio.timeout(wait_seconds):
+                return await self._wait_for_secret(client_random, label)
+        finally:
+            remaining = self._waiters.get(client_random, 0) - 1
+            if remaining > 0:
+                self._waiters[client_random] = remaining
+            else:
+                self._waiters.pop(client_random, None)
+                task = self._inflight.get(client_random)
+                if task is not None and client_random not in self._running_scans:
+                    # The caller is gone: discard queued work before it burns
+                    # precious Windows process-memory scan slots
+                    task.cancel()
+                    self._inflight.pop(client_random, None)
+
+    async def _scan_for_secret(self, client_random: str) -> None:
+        """Bound process scans without blocking unrelated TLS connections."""
+        started = time.monotonic()
+        entered_scan = False
+        try:
+            async with self._scan_slots:
+                if self._stop.is_set() or not self._waiters.get(client_random):
+                    return
+                entered_scan = True
+                self._running_scans.add(client_random)
+                scan_started = time.monotonic()
+                found = await asyncio.to_thread(self._read, client_random)
+                scan_ended = time.monotonic()
+                if not self._stop.is_set():
+                    if len(self._keys) >= MAX_CACHED_CONNECTIONS:
+                        self._keys.clear()
+                    self._keys.update(found)
+                elapsed = scan_ended - started
+                if elapsed >= 1.0:
+                    log_buffer.log(
+                        'TLS',
+                        f'Slow TLS key lookup: client={self.linux_client_key or "default"} '
+                        f'elapsed_ms={int(elapsed * 1000)} '
+                        f'queue_ms={int((scan_started - started) * 1000)} '
+                        f'scan_ms={int((scan_ended - scan_started) * 1000)} '
+                        f'found={client_random in found}',
+                    )
+        finally:
+            self._running_scans.discard(client_random)
+            if entered_scan:
+                if len(self._last_refresh) >= MAX_CACHED_CONNECTIONS:
+                    self._last_refresh.clear()
+                self._last_refresh[client_random] = time.monotonic()
+            if self._inflight.get(client_random) is asyncio.current_task():
+                self._inflight.pop(client_random, None)
+
+    async def _wait_for_secret(self, client_random: str, label: str) -> bytes:
+        while True:
+            if self._stop.is_set():
+                msg = 'Splice key provider has stopped'
+                raise ConnectionAbortedError(msg)
+            secret = self._keys.get(client_random, {}).get(label)
+            if secret is not None:
+                return secret
+            scan_task = self._inflight.get(client_random)
+            if (
+                scan_task is None
+                and len(self._inflight) < MAX_PENDING_SCANS
+                and time.monotonic() - self._last_refresh.get(client_random, 0.0)
+                >= MIN_REFRESH_INTERVAL
+            ):
+                scan_task = asyncio.create_task(self._scan_for_secret(client_random))
+                self._inflight[client_random] = scan_task
+                # A timed-out caller must not abandon a still-running memory scan
+                scan_task.add_done_callback(
+                    lambda done: done.exception() if not done.cancelled() else None
+                )
+            if scan_task is not None:
+                await asyncio.shield(scan_task)
+            else:
+                await asyncio.sleep(0.05)
+
+    @property
+    def pending_scan_count(self) -> int:
+        """Number of in-flight and queued memory scans."""
+        return len(self._inflight)
+
+    def clear(self) -> None:
+        """Signal provider to stop and clear cached keys."""
+        self._stop.set()
+        for random, task in tuple(self._inflight.items()):
+            if random not in self._running_scans:
+                task.cancel()
+        self._keys.clear()

@@ -1,0 +1,92 @@
+# Synthetic TLS 1.3 record layer foundation
+
+`src/fleasion/proxy/tls_records.py` contains **post-handshake** TLS 1.3
+application-record primitives. It is not connected to a production listener,
+secret extractor, certificate proxy, Roblox process, or any platform-specific
+provider. It assumes a caller has already established and authenticated the
+session and provided traffic secrets from a **controlled test session**.
+
+## Implemented and tested
+
+- TLS 1.3 AEAD suites: AES-128-GCM/SHA-256, AES-256-GCM/SHA-384, and
+  ChaCha20-Poly1305/SHA-256
+- RFC 8446 `HKDF-Expand-Label` for `key`, `iv`, and `traffic upd`, with key and
+  IV derivation checked against the public RFC 8448 example values
+- TLSCiphertext framing over arbitrarily fragmented TCP chunks, including
+  coalesced records and strict length/version limits
+- Per-direction sequence counters and nonces, additional authenticated data,
+  record padding, message fragmentation into bounded TLS records, and AEAD
+  authentication with fail-closed rejection of altered/replayed ciphertext
+- Post-handshake KeyUpdate rotation and sequence reset per direction. A
+  requested update is surfaced to the duplex session, which requires an
+  outbound response before further application data
+- Bounded NewSessionTicket message reconstruction across TLS records, including
+  multiple tickets in one record and record-aligned KeyUpdate after a ticket;
+  basic ticket field/length validation without storing resumption credentials
+- Strict rejection of interleaved handshake fragments and unfinished ticket
+  fragments at EOF, plus invalid alert lengths and unsupported fatal alerts
+- Directional close_notify handling: sending shuts down only outbound TLS
+  application data; receiving shuts down only inbound data, with authenticated
+  closure records and no application records accepted after close_notify
+- Terminal-session invalidation: malformed framing, failed AEAD authentication,
+  unsupported fatal alerts, and truncated records at EOF prevent further reads
+  **and** writes on the same duplex session; a valid record cannot silently
+  resume a failed session
+- Bounded record-length checks and explicit incomplete-record errors at EOF
+- Localhost TCP lifecycle tests for KeyUpdate, fragmentation across socket
+  reads, two-way close_notify, tampering, EOF truncation and task cancellation
+- Controlled localhost loopback integration tests where synthetic encrypted
+  TLS records traverse Fleasion's HTTP/1.1 **and HTTP/2** adapters, pass through
+  request/response replacement rules, and return an encrypted modified response
+  for all three cipher suites. HTTP/2 additionally exercises fragmented TCP
+  records, multiplexed protocol setup, and flow-control acknowledgments
+
+## Current API
+
+- `CipherSuite`: supported TLS 1.3 ciphers and hash functions
+- `EncryptedRecordFramer.feed(bytes)`: decode complete TLSCiphertext frames
+- `TLS13RecordCipher(secret, suite)`: one **unidirectional** application epoch;
+  `encrypt_record`, `decrypt_record`, `encrypt_application`, `send_key_update`
+- `TLS13RecordSession(inbound_secret=..., outbound_secret=..., suite=...)`:
+  pair of separate direction-specific cipher states, with `receive`,
+  `send_application`, and `send_key_update`
+
+**Never reuse the same cipher instance for both traffic directions.** A
+KeyUpdate request received using the inbound secret requires a response
+encrypted using the independent outbound secret. TLS 1.3 secrets must not be
+logged, cached in application settings, or exposed in GUI request logs.
+
+## Not yet supported
+
+- TLS handshake negotiation, certificate verification, ALPN selection, or
+  generation of application traffic secrets
+- Initial handshake/early-data records and 0-RTT, post-handshake certificate
+  authentication, or fragmented KeyUpdate messages: KeyUpdate must complete at
+  a TLS record boundary, and other unsupported handshake types fail closed
+- NewSessionTicket resumption processing: the decoder checks ticket structure
+  and message bounds but does not derive resumption PSKs, negotiate resumptions,
+  or interpret ticket extensions
+- Mandatory authenticated close_notify at EOF is not enforced by default;
+  callers may explicitly require it if their application protocol demands it
+- Automatic handshake-to-application key epoch switching or traffic-secret
+  provenance checks; callers must not use this codec before the application
+  epoch is authenticated and active
+- A production stream shim that maps live encrypted records into the existing
+  plaintext HTTP transport adapters, session/lifecycle routing, or recovery
+  from protocol changes in a real client
+- Live platform compatibility, anti-cheat behavior, or real-client end-to-end
+  tests. All five provider placeholders remain explicitly unavailable
+
+The synthetic record tests are **not** a claim that a live interception
+transport is operational. The current production proxy is unchanged. This
+module is a separately testable building block for protocol correctness.
+
+Run tests with:
+
+```sh
+uv run --no-sync pytest -q tests/test_tls_records.py tests/test_tls_record_loopback.py \
+    tests/test_tls_post_handshake.py tests/test_tls_record_alerts.py \
+    tests/test_tls_record_terminal_errors.py tests/test_tls_record_lifecycle.py
+```
+
+References: RFC 8446 sections 4.6.3, 5.2–5.3 and 7.1–7.3; RFC 8448 section 3.

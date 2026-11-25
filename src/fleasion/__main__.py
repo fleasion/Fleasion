@@ -1,0 +1,37 @@
+"""Fleasion application entry point."""
+
+# ruff: file-ignore[import-outside-top-level]
+
+from __future__ import annotations
+
+import importlib
+import sys
+
+lazy from fleasion.linux_proxy_helper_daemon import main as run_linux_proxy_helper
+lazy from fleasion.startup_errors import report_blocked_startup
+
+
+def main() -> None:
+    """Start Fleasion or its bundled Linux proxy helper."""
+    if '--linux-proxy-helper' in sys.argv[1:]:
+        sys.argv.remove('--linux-proxy-helper')
+
+        run_linux_proxy_helper()
+        return
+
+    try:
+        # Load NumPy before PySide6 on Windows so its native DLLs initialize first
+        if sys.platform == 'win32':
+            importlib.import_module('numpy')  # ruff: ignore[banned-api] - Eager, before Qt
+
+        from fleasion.app.core import run_application
+    except (ImportError, OSError) as exc:
+        if not report_blocked_startup(exc):
+            raise
+        sys.exit(1)
+
+    run_application()
+
+
+if __name__ == '__main__':
+    main()

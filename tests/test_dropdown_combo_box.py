@@ -2,23 +2,26 @@ import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtGui import QImage, QPainter
-from PyQt6.QtWidgets import QApplication, QStyle, QStyleFactory, QStyleOptionComboBox
+from typing import cast
 
-from fleasion.gui.modifications_tab import DropdownComboBox
+from PySide6.QtCore import QPoint, QRect
+from PySide6.QtGui import QImage, QPainter, QPalette
+from PySide6.QtWidgets import QApplication, QStyle, QStyleFactory, QStyleOptionComboBox
+
+from fleasion.widgets.no_wheel import DropdownComboBox
 from fleasion.gui.theme import ThemeManager
 
-
-_APP = None
-
-
-def _qapp():
-    global _APP
-    _APP = QApplication.instance() or QApplication([])
-    return _APP
+_app: QApplication | None = None
 
 
-def _render_combo(palette, *, enabled):
+def _qapp() -> QApplication:
+    global _app
+    app = QApplication.instance()
+    _app = cast('QApplication', app) if app is not None else QApplication([])
+    return _app
+
+
+def _render_combo(palette: QPalette, *, enabled: bool) -> tuple[DropdownComboBox, QImage, QRect]:
     app = _qapp()
     combo = DropdownComboBox()
     combo.setStyle(QStyleFactory.create('Fusion'))
@@ -32,7 +35,7 @@ def _render_combo(palette, *, enabled):
     image = QImage(combo.size(), QImage.Format.Format_ARGB32)
     image.fill(0)
     painter = QPainter(image)
-    combo.render(painter)
+    combo.render(painter, QPoint())
     painter.end()
 
     option = QStyleOptionComboBox()
@@ -46,8 +49,8 @@ def _render_combo(palette, *, enabled):
     return combo, image, arrow_rect
 
 
-def test_dropdown_arrow_background_matches_combo_surface():
-    for palette in (ThemeManager._light_palette(), ThemeManager._dark_palette()):
+def test_dropdown_arrow_background_matches_combo_surface() -> None:
+    for palette in (ThemeManager.theme_palette('Light'), ThemeManager.theme_palette('Dark')):
         for enabled in (True, False):
             combo, image, arrow_rect = _render_combo(palette, enabled=enabled)
             body_x = arrow_rect.left() - 20

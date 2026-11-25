@@ -1,18 +1,14 @@
 """Font viewer widget for previewing TrueType and OpenType fonts."""
 
-from ..localization import tr
-
-import io
 import tempfile
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QFont, QFontDatabase, QPalette
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QScrollArea,
     QSlider,
     QTextEdit,
@@ -20,13 +16,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..utils import log_buffer
+from fleasion.localization import tr
+from fleasion.utils import log_buffer
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.text import style_text
 
 
 class FontViewerWidget(QWidget):
     """Widget for previewing font files (TTF, OTF, TTC)."""
 
-    def __init__(self, font_data: bytes, parent=None):
+    def __init__(self, font_data: bytes, parent: QWidget | None = None) -> None:
         """
         Initialize font viewer.
 
@@ -42,48 +41,45 @@ class FontViewerWidget(QWidget):
         self._load_font()
         self._setup_ui()
 
-    def _load_font(self):
+    def _load_font(self) -> None:
         """Load font from bytes and register with Qt."""
+        log_buffer.log('FontViewer', f'Loading font ({len(self.font_data)} bytes)')
+
+        # Determine extension based on magic bytes
+        ext = '.ttf'
+        if self.font_data.startswith(b'OTTO'):
+            ext = '.otf'
+        elif self.font_data.startswith(b'ttcf'):
+            ext = '.ttc'
+
+        # Write to temporary file so Qt can load it
+        temp_dir = Path(tempfile.gettempdir()) / 'fleasion_fonts'
+        temp_file = temp_dir / f'preview_font{ext}'
         try:
-            log_buffer.log('FontViewer', f'Loading font ({len(self.font_data)} bytes)')
-
-            # Write to temporary file so Qt can load it
-            temp_dir = Path(tempfile.gettempdir()) / 'fleasion_fonts'
             temp_dir.mkdir(exist_ok=True)
-
-            # Determine extension based on magic bytes
-            ext = '.ttf'
-            if self.font_data.startswith(b'\x00\x01\x00\x00'):
-                ext = '.ttf'
-            elif self.font_data.startswith(b'OTTO'):
-                ext = '.otf'
-            elif self.font_data.startswith(b'ttcf'):
-                ext = '.ttc'
-
-            temp_file = temp_dir / f'preview_font{ext}'
             temp_file.write_bytes(self.font_data)
+        except OSError as exc:
+            log_buffer.log('FontViewer', f'Font load error: {exc}')
+            return
 
-            # Register font with Qt
-            self.font_id = QFontDatabase.addApplicationFont(str(temp_file))
+        # Register font with Qt
+        self.font_id = QFontDatabase.addApplicationFont(str(temp_file))
 
-            if self.font_id >= 0:
-                families = QFontDatabase.applicationFontFamilies(self.font_id)
-                if families:
-                    self.font_family = families[0]
-                    log_buffer.log('FontViewer', f'Font loaded: {self.font_family}')
-                else:
-                    log_buffer.log('FontViewer', 'Font loaded but no family names found')
+        if self.font_id >= 0:
+            families = QFontDatabase.applicationFontFamilies(self.font_id)
+            if families:
+                self.font_family = families[0]
+                log_buffer.log('FontViewer', f'Font loaded: {self.font_family}')
             else:
-                log_buffer.log('FontViewer', 'Failed to load font')
+                log_buffer.log('FontViewer', 'Font loaded but no family names found')
+        else:
+            log_buffer.log('FontViewer', 'Failed to load font')
 
-        except Exception as e:
-            log_buffer.log('FontViewer', f'Font load error: {e}')
-
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(*PANEL_MARGINS)
+        layout.setSpacing(GAP)
 
         # Font info section
         info_group = QGroupBox(tr('ui.cache.font_viewer.font_information'))
@@ -97,7 +93,7 @@ class FontViewerWidget(QWidget):
         # Check if font loaded successfully
         if self.font_id < 0:
             error_label = QLabel(tr('ui.cache.font_viewer.font_could_not_be_loaded_for_preview'))
-            error_label.setStyleSheet('color: #c90;')
+            style_text(error_label, tone='warning')
             info_layout.addWidget(error_label)
 
         info_group.setLayout(info_layout)
@@ -185,7 +181,7 @@ class FontViewerWidget(QWidget):
 
         self.setLayout(layout)
 
-    def _update_preview(self):
+    def _update_preview(self) -> None:
         """Update preview text size based on slider."""
         size = self.size_slider.value()
         self.size_label.setText(tr('ui.cache.font_viewer.value_pt', value0=size))
@@ -195,7 +191,7 @@ class FontViewerWidget(QWidget):
             preview_font.setPointSize(size)
             self.preview_text.setFont(preview_font)
 
-    def _on_preview_text_changed(self):
+    def _on_preview_text_changed(self) -> None:
         """Handle preview text changes."""
         # Text can be changed by user, just update the font if needed
         if self.font_id >= 0:

@@ -1,17 +1,17 @@
 """Audio player widget using sounddevice for Python 3.14 compatibility."""
 
-from ..localization import tr
+from __future__ import annotations
 
 import ctypes.util
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, override
 
-import numpy as np
-import soundfile as sf
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -19,8 +19,68 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+lazy import numpy as np
+lazy import soundfile as sf  # pyright: ignore[reportMissingTypeStubs]
+lazy from numpy.typing import NDArray
 
-from ..utils import log_buffer
+from fleasion.localization import tr
+from fleasion.widgets.spacing import GAP, PANEL_MARGINS
+from fleasion.widgets.text import style_text
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QCloseEvent
+
+from fleasion.utils import log_buffer
+
+type AudioArray = NDArray[np.float32]
+type AudioCallback = Callable[[AudioArray, int, object, object], None]
+
+
+class _AudioConfig(Protocol):
+    @property
+    def audio_volume(self) -> int: ...
+
+    @audio_volume.setter
+    def audio_volume(self, value: int) -> None: ...
+
+
+class _OutputStreamLike(Protocol):
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    def close(self) -> None: ...
+
+
+class _OutputStreamFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        samplerate: int,
+        channels: int,
+        dtype: str,
+        callback: AudioCallback,
+        blocksize: int,
+    ) -> _OutputStreamLike: ...
+
+
+class _SoundDeviceDefault(Protocol):
+    device: object
+
+
+class _SoundDeviceModule(Protocol):
+    OutputStream: _OutputStreamFactory
+    PortAudioError: type[Exception]
+    default: _SoundDeviceDefault
+
+    def query_devices(self) -> Sequence[object]: ...
+    def get_portaudio_version(self) -> object: ...
+
+
+def _import_sounddevice_runtime() -> _SoundDeviceModule:
+    # Imported here, after the PortAudio library path is configured
+    import sounddevice  # pyright: ignore[reportMissingTypeStubs]  # ruff: ignore[import-outside-top-level]
+
+    return sounddevice  # pyright: ignore[reportReturnType]
+
 
 _LINUX_LIBRARY_SEARCH_DIRS = (
     '/lib64',
@@ -33,7 +93,9 @@ _LINUX_LIBRARY_SEARCH_DIRS = (
 )
 
 
-def _resolve_library_path(library_name: str, search_dirs=None) -> Path | None:
+def _resolve_library_path(
+    library_name: str, search_dirs: Iterable[str] | None = None
+) -> Path | None:
     """Resolve a system shared library to an absolute path when possible."""
     resolved = ctypes.util.find_library(library_name)
     if not resolved:
@@ -42,7 +104,7 @@ def _resolve_library_path(library_name: str, search_dirs=None) -> Path | None:
     candidate = Path(resolved)
     if candidate.is_file():
         return candidate
-    if Path(resolved).parent != Path('.'):
+    if Path(resolved).parent != Path():
         return None
 
     for search_dir in search_dirs or _LINUX_LIBRARY_SEARCH_DIRS:
@@ -78,12 +140,12 @@ def _preferred_portaudio_path() -> Path | None:
     return _resolve_library_path('portaudio') or _bundled_portaudio_path()
 
 
-def _import_sounddevice_with_preferred_portaudio():
+def _import_sounddevice_with_preferred_portaudio() -> _SoundDeviceModule:
     """Import sounddevice with a deterministic PortAudio path on Linux."""
     original_find_library = ctypes.util.find_library
     preferred_portaudio = _preferred_portaudio_path()
 
-    def find_library(name):
+    def find_library(name: str) -> str | None:
         if name == 'portaudio' and preferred_portaudio is not None:
             return str(preferred_portaudio)
         return original_find_library(name)
@@ -91,74 +153,94 @@ def _import_sounddevice_with_preferred_portaudio():
     if preferred_portaudio is not None:
         ctypes.util.find_library = find_library
     try:
-        import sounddevice as sounddevice
+        sounddevice = _import_sounddevice_runtime()
     finally:
         ctypes.util.find_library = original_find_library
 
     return sounddevice
 
 
-# A missing or incompatible PortAudio library must not prevent Fleasion from
-# launching, so audio playback is disabled instead
-try:
-    sd = _import_sounddevice_with_preferred_portaudio()
-    _SOUNDDEVICE_IMPORT_ERROR: str | None = None
-except OSError as exc:
-    sd = None
-    _SOUNDDEVICE_IMPORT_ERROR = f'{type(exc).__name__}: {exc}'
-_AUDIO_BACKEND_LOGGED = False
-
-
-def _log_audio_backend_once():
-    """Log the PortAudio backend selected by the GUI player once per process."""
-    global _AUDIO_BACKEND_LOGGED
-    if _AUDIO_BACKEND_LOGGED:
-        return
-    _AUDIO_BACKEND_LOGGED = True
-
-    if sd is None:
-        log_buffer.log(
-            'Audio', f'PortAudio unavailable, playback disabled: {_SOUNDDEVICE_IMPORT_ERROR}'
-        )
-        return
-
+def _load_sounddevice() -> tuple[_SoundDeviceModule | None, str | None]:
+    # Disable playback when PortAudio is missing or incompatible so Fleasion can start
     try:
-        preferred = _preferred_portaudio_path()
-        loaded = getattr(sd, '_libname', None)
-        version = getattr(sd, '__version__', 'unknown')
-        try:
-            portaudio_version = sd.get_portaudio_version()
-        except Exception as exc:
-            portaudio_version = f'unavailable ({type(exc).__name__}: {exc})'
-        try:
-            default_device = sd.default.device
-        except Exception as exc:
-            default_device = f'unavailable ({type(exc).__name__}: {exc})'
-        try:
-            device_count = len(sd.query_devices())
-        except Exception as exc:
-            device_count = f'unavailable ({type(exc).__name__}: {exc})'
+        return _import_sounddevice_with_preferred_portaudio(), None
+    except OSError as exc:
+        return None, f'{type(exc).__name__}: {exc}'
+
+
+# Importing sounddevice initializes PortAudio, which enumerates every audio
+# device (about 90 ms), so it is loaded on first playback instead of at startup
+sd: _SoundDeviceModule | None = None
+_sounddevice_import_error: str | None = None
+_sounddevice_loaded = False
+_sounddevice_lock = threading.Lock()
+_audio_backend_logged = threading.Event()
+
+
+def _ensure_sounddevice() -> _SoundDeviceModule | None:
+    """Load sounddevice once and return it, or None when PortAudio is unusable."""
+    global sd, _sounddevice_import_error, _sounddevice_loaded  # ruff: ignore[global-statement]
+    with _sounddevice_lock:
+        if not _sounddevice_loaded:
+            sd, _sounddevice_import_error = _load_sounddevice()
+            _sounddevice_loaded = True
+    return sd
+
+
+def _portaudio_error() -> type[Exception]:
+    return sd.PortAudioError if sd is not None else RuntimeError
+
+
+def _audio_diagnostic_value(callback: Callable[[], object]) -> object:
+    try:
+        return callback()
+    except (OSError, RuntimeError, _portaudio_error()) as exc:
+        return f'unavailable ({type(exc).__name__}: {exc})'
+
+
+def _log_audio_backend_once() -> None:
+    """Log the PortAudio backend selected by the GUI player once per process."""
+    if _audio_backend_logged.is_set():
+        return
+    _audio_backend_logged.set()
+
+    sounddevice = _ensure_sounddevice()
+    if sounddevice is None:
         log_buffer.log(
-            'Audio',
-            'Backend '
-            f'sounddevice={version} '
-            f'preferred_portaudio={preferred or "default"} '
-            f'loaded_portaudio={loaded or "unknown"} '
-            f'portaudio_version={portaudio_version} '
-            f'default_device={default_device} '
-            f'device_count={device_count}',
+            'Audio', f'PortAudio unavailable, playback disabled: {_sounddevice_import_error}'
         )
-    except Exception as exc:
-        log_buffer.log('Audio', f'Backend diagnostic failed: {type(exc).__name__}: {exc}')
+        return
+
+    preferred = _audio_diagnostic_value(_preferred_portaudio_path)
+    loaded = getattr(sounddevice, '_libname', None)
+    version = getattr(sounddevice, '__version__', 'unknown')
+    portaudio_version = _audio_diagnostic_value(sounddevice.get_portaudio_version)
+    default_device = _audio_diagnostic_value(lambda: sounddevice.default.device)
+    device_count = _audio_diagnostic_value(lambda: len(sounddevice.query_devices()))
+    log_buffer.log(
+        'Audio',
+        'Backend '
+        f'sounddevice={version} '
+        f'preferred_portaudio={preferred or "default"} '
+        f'loaded_portaudio={loaded or "unknown"} '
+        f'portaudio_version={portaudio_version} '
+        f'default_device={default_device} '
+        f'device_count={device_count}',
+    )
 
 
 class AudioPlayerWidget(QWidget):
     """Audio player widget with play/pause, volume, and seek controls."""
 
-    stopped = pyqtSignal()
-    _playback_ui_update = pyqtSignal(str)
+    stopped = Signal()
+    _playback_ui_update = Signal(str)
 
-    def __init__(self, audio_file_path: str, parent=None, config_manager=None):
+    def __init__(
+        self,
+        audio_file_path: str,
+        parent: QWidget | None = None,
+        config_manager: _AudioConfig | None = None,
+    ) -> None:
         """
         Initialize audio player.
 
@@ -181,15 +263,12 @@ class AudioPlayerWidget(QWidget):
         self.playback_position = 0
 
         # Audio data
-        self.audio_data = None
-        self.sample_rate = None
+        self.audio_data: AudioArray | None = None
+        self.sample_rate: int | None = None
         self.duration = 0.0
 
         # Volume
-        if config_manager:
-            initial_slider = config_manager.audio_volume
-        else:
-            initial_slider = 70
+        initial_slider = config_manager.audio_volume if config_manager else 70
 
         if initial_slider <= 0:
             self.volume = 0.0
@@ -198,9 +277,9 @@ class AudioPlayerWidget(QWidget):
             self.volume = (pow(10, initial_slider / 100.0) - 1.0) / 9.0
 
         # Playback thread and stream
-        self.stream = None
-        self.playback_thread = None
-        self.stop_event = None
+        self.stream: _OutputStreamLike | None = None
+        self.playback_thread: threading.Thread | None = None
+        self.stop_event: threading.Event | None = None
         self.position_lock = threading.Lock()
         self.stream_lock = threading.Lock()
 
@@ -213,38 +292,40 @@ class AudioPlayerWidget(QWidget):
         self.timer.timeout.connect(self._update_ui)
         self.timer.start(50)  # 20 FPS
 
-    def _load_audio(self):
+    def _read_audio_data(self) -> None:
+        source_audio, sample_rate = sf.read(self.audio_file_path, dtype='float32')
+        audio_data = np.asarray(source_audio, dtype=np.float32)
+        if len(audio_data.shape) == 1:
+            audio_data = np.column_stack((audio_data, audio_data))
+        elif audio_data.shape[1] == 1:
+            audio_data = np.repeat(audio_data, 2, axis=1)
+        elif audio_data.shape[1] > 2:
+            mono = audio_data.mean(axis=1)
+            audio_data = np.column_stack((mono, mono))
+
+        self.audio_data = np.ascontiguousarray(np.clip(audio_data, -1.0, 1.0), dtype=np.float32)
+        self.sample_rate = sample_rate
+        self.duration = len(self.audio_data) / sample_rate
+
+    def _loaded_audio(self) -> tuple[AudioArray, int]:
+        if self.audio_data is None or self.sample_rate is None:
+            msg = 'Audio data has not been loaded'
+            raise RuntimeError(msg)
+        return self.audio_data, self.sample_rate
+
+    def _load_audio(self) -> None:
         """Load audio file and get metadata."""
         try:
-            # Load audio as float32 so the callback writes the same dtype that
-            # PortAudio receives from sounddevice.
-            self.audio_data, self.sample_rate = sf.read(self.audio_file_path, dtype='float32')
-
-            # Convert to exactly stereo for the fixed two-channel output stream.
-            if len(self.audio_data.shape) == 1:
-                self.audio_data = np.column_stack((self.audio_data, self.audio_data))
-            elif self.audio_data.shape[1] == 1:
-                self.audio_data = np.repeat(self.audio_data, 2, axis=1)
-            elif self.audio_data.shape[1] > 2:
-                mono = self.audio_data.mean(axis=1)
-                self.audio_data = np.column_stack((mono, mono))
-
-            self.audio_data = np.ascontiguousarray(
-                np.clip(self.audio_data, -1.0, 1.0), dtype=np.float32
-            )
-
-            # Calculate duration
-            self.duration = len(self.audio_data) / self.sample_rate
-
-        except Exception as e:
-            log_buffer.log('Audio', f'Error loading audio: {e}')
+            self._read_audio_data()
+        except (OSError, RuntimeError, TypeError, ValueError, sf.LibsndfileError) as exc:
+            log_buffer.log('Audio', f'Error loading audio: {exc}')
             self.duration = 0
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(*PANEL_MARGINS)
+        layout.setSpacing(GAP)
         layout.addStretch()
 
         # Central container for all controls (centered)
@@ -254,7 +335,7 @@ class AudioPlayerWidget(QWidget):
 
         # Volume slider row
         volume_layout = QHBoxLayout()
-        volume_layout.setSpacing(8)
+        volume_layout.setSpacing(GAP)
         volume_layout.addStretch()
         volume_layout.addWidget(QLabel(tr('ui.cache.audio_player.volume')))
 
@@ -284,11 +365,11 @@ class AudioPlayerWidget(QWidget):
 
         # Play/Replay buttons and time label row
         button_time_layout = QHBoxLayout()
-        button_time_layout.setSpacing(8)
+        button_time_layout.setSpacing(GAP)
         button_time_layout.addStretch()
 
         self.play_pause_btn = QPushButton(tr('ui.cache.audio_player.text'))
-        self.play_pause_btn.clicked.connect(self._toggle_play_pause)
+        self.play_pause_btn.clicked.connect(self.toggle_play_pause)
         self.play_pause_btn.setFixedSize(32, 32)
         self.play_pause_btn.setToolTip(tr('ui.cache.audio_player.play_pause'))
         button_time_layout.addWidget(self.play_pause_btn)
@@ -302,7 +383,7 @@ class AudioPlayerWidget(QWidget):
         self.time_label = QLabel(
             tr('ui.cache.audio_player.00_00_000_value', value0=self._format_time(self.duration))
         )
-        self.time_label.setStyleSheet('color: #888; font-size: 11px;')
+        style_text(self.time_label, tone='muted', pixel_size=11)
         button_time_layout.addWidget(self.time_label)
 
         button_time_layout.addStretch()
@@ -313,19 +394,19 @@ class AudioPlayerWidget(QWidget):
 
         self.setLayout(layout)
 
-    def _toggle_play_pause(self):
+    def toggle_play_pause(self) -> None:
         """Toggle play/pause state."""
         if not self.is_playing:
             self._play()
         else:
             self._pause()
 
-    def _play(self):
+    def _play(self) -> None:
         """Start playback."""
-        if self.audio_data is None:
+        if self.audio_data is None or self.sample_rate is None:
             return
-        if sd is None:
-            log_buffer.log('Audio', f'Playback unavailable: {_SOUNDDEVICE_IMPORT_ERROR}')
+        if _ensure_sounddevice() is None:
+            log_buffer.log('Audio', f'Playback unavailable: {_sounddevice_import_error}')
             return
 
         # Reset if at end
@@ -347,7 +428,7 @@ class AudioPlayerWidget(QWidget):
         )
         self.playback_thread.start()
 
-    def _pause(self):
+    def _pause(self) -> None:
         """Pause playback."""
         self.is_playing = False
         self.should_stop = True
@@ -359,7 +440,7 @@ class AudioPlayerWidget(QWidget):
         # inside Pa_CloseStream on some device/backend transitions, and this
         # method runs on the Qt UI thread.
 
-    def _replay(self):
+    def _replay(self) -> None:
         """Replay from beginning."""
         # Stop current playback
         if self.is_playing:
@@ -372,119 +453,134 @@ class AudioPlayerWidget(QWidget):
         # Start playing
         self._play()
 
-    def _playback_worker(self, stop_event):
-        """Worker thread for audio playback."""
+    def _write_audio_callback(
+        self,
+        stop_event: threading.Event,
+        outdata: AudioArray,
+        frames: int,
+        status: object,
+    ) -> None:
+        if status:
+            log_buffer.log('Audio', f'Audio callback status: {status}')
+        with self.position_lock:
+            start_pos = self.playback_position
+            audio_data, _sample_rate = self._loaded_audio()
+            end_pos = min(start_pos + frames, len(audio_data))
+            chunk_size = end_pos - start_pos
+            if chunk_size <= 0 or stop_event.is_set():
+                outdata[:] = 0
+                stop_event.set()
+                return
+            outdata[:chunk_size] = audio_data[start_pos:end_pos] * self.volume
+            if chunk_size < frames:
+                outdata[chunk_size:] = 0
+            self.playback_position = end_pos
+
+    def _create_output_stream(self, stop_event: threading.Event) -> _OutputStreamLike:
+        sounddevice = _ensure_sounddevice()
+        if sounddevice is None:
+            msg = f'Playback unavailable: {_sounddevice_import_error}'
+            raise RuntimeError(msg)
+
+        def callback(
+            outdata: AudioArray,
+            frames: int,
+            _time_info: object,
+            status: object,
+        ) -> None:
+            self._write_audio_callback(stop_event, outdata, frames, status)
+
+        _audio_data, sample_rate = self._loaded_audio()
+        return sounddevice.OutputStream(
+            samplerate=sample_rate,
+            channels=2,
+            dtype='float32',
+            callback=callback,
+            blocksize=2048,
+        )
+
+    def _wait_for_playback_stop(self, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            time.sleep(0.01)
+            with self.position_lock:
+                audio_data, _sample_rate = self._loaded_audio()
+                if self.playback_position >= len(audio_data):
+                    self.should_stop = True
+                    stop_event.set()
+
+    @staticmethod
+    def _close_output_stream(stream: _OutputStreamLike) -> None:
         try:
-
-            def callback(outdata, frames, time_info, status):
-                if status:
-                    log_buffer.log('Audio', f'Audio callback status: {status}')
-
-                with self.position_lock:
-                    start_pos = self.playback_position
-                    end_pos = min(start_pos + frames, len(self.audio_data))
-                    chunk_size = end_pos - start_pos
-
-                    if chunk_size <= 0 or stop_event.is_set():
-                        outdata[:] = 0
-                        stop_event.set()
-                        return
-
-                    # Get audio data and apply volume
-                    chunk = self.audio_data[start_pos:end_pos] * self.volume
-                    outdata[:chunk_size] = chunk
-
-                    # Fill remaining with silence
-                    if chunk_size < frames:
-                        outdata[chunk_size:] = 0
-
-                    self.playback_position = end_pos
-
-            # Create and start stream
-            stream = sd.OutputStream(
-                samplerate=self.sample_rate,
-                channels=2,
-                dtype='float32',
-                callback=callback,
-                blocksize=2048,
-            )
-            with self.stream_lock:
-                self.stream = stream
-
-            stream.start()
-            try:
-                while not stop_event.is_set():
-                    time.sleep(0.01)
-
-                    # Check if reached end
-                    with self.position_lock:
-                        if self.playback_position >= len(self.audio_data):
-                            self.should_stop = True
-                            stop_event.set()
-            finally:
-                try:
-                    stream.stop()
-                except Exception as e:
-                    log_buffer.log('Audio', f'Error stopping audio stream: {e}')
-                try:
-                    stream.close()
-                except Exception as e:
-                    log_buffer.log('Audio', f'Error closing audio stream: {e}')
-
-        except Exception as e:
-            log_buffer.log('Audio', f'Playback error: {e}')
-        finally:
-            is_current_playback = False
-            try:
-                with self.stream_lock:
-                    if self.stream is locals().get('stream'):
-                        self.stream = None
-                    if self.stop_event is stop_event:
-                        self.stop_event = None
-                        is_current_playback = True
-            except Exception:
-                pass
-            if is_current_playback:
-                self.is_playing = False
-                # Schedule UI update on the main thread to avoid manipulating
-                # Qt widgets from this worker thread (which can cause
-                # "wrapped C/C++ object ... has been deleted" errors).
-                try:
-                    self._playback_ui_update.emit('▶')
-                except Exception:
-                    # If scheduling fails for any reason, ignore silently.
-                    pass
-
-    def _safe_set_play_pause_text(self, text: str):
-        """Set play/pause button text from the main thread, safely.
-
-        This method swallows exceptions that occur if the underlying
-        C++ widget has been deleted.
-        """
+            stream.stop()
+        except (RuntimeError, _portaudio_error()) as exc:
+            log_buffer.log('Audio', f'Error stopping audio stream: {exc}')
         try:
-            self.play_pause_btn.setText(text)
-        except Exception:
-            # Widget may have been deleted; ignore.
+            stream.close()
+        except (RuntimeError, _portaudio_error()) as exc:
+            log_buffer.log('Audio', f'Error closing audio stream: {exc}')
+
+    def _finish_playback(
+        self,
+        stop_event: threading.Event,
+        stream: _OutputStreamLike | None,
+    ) -> None:
+        is_current_playback = False
+        with self.stream_lock:
+            if self.stream is stream:
+                self.stream = None
+            if self.stop_event is stop_event:
+                self.stop_event = None
+                is_current_playback = True
+        if not is_current_playback:
+            return
+        self.is_playing = False
+        try:
+            self._playback_ui_update.emit('▶')
+        except RuntimeError:
             pass
 
-    def _start_scrub(self):
+    def _playback_worker(self, stop_event: threading.Event) -> None:
+        """Worker thread for audio playback."""
+        stream: _OutputStreamLike | None = None
+        try:
+            stream = self._create_output_stream(stop_event)
+            with self.stream_lock:
+                self.stream = stream
+            stream.start()
+            self._wait_for_playback_stop(stop_event)
+        except (RuntimeError, TypeError, ValueError, _portaudio_error()) as exc:
+            log_buffer.log('Audio', f'Playback error: {exc}')
+        finally:
+            if stream is not None:
+                self._close_output_stream(stream)
+            self._finish_playback(stop_event, stream)
+
+    def _safe_set_play_pause_text(self, text: str) -> None:
+        """Set play/pause button text from the main thread, safely."""
+        try:
+            self.play_pause_btn.setText(text)
+        except RuntimeError:
+            pass
+
+    def _start_scrub(self) -> None:
         """Called when user starts dragging progress slider."""
         self.is_scrubbing = True
         if self.is_playing:
             self._pause()
 
-    def _end_scrub(self):
+    def _end_scrub(self) -> None:
         """Called when user releases progress slider."""
         # Seek to new position
         new_time = self.progress_slider.value() / 1000.0
         new_time = max(0, min(new_time, self.duration))
 
         with self.position_lock:
-            self.playback_position = int(new_time * self.sample_rate)
+            _audio_data, sample_rate = self._loaded_audio()
+            self.playback_position = int(new_time * sample_rate)
 
         self.is_scrubbing = False
 
-    def _set_volume(self, value):
+    def _set_volume(self, value: int) -> None:
         """Set volume level."""
         # Logarithmic mapping: volume = (10^(value/100) - 1) / 9
         if value <= 0:
@@ -495,7 +591,7 @@ class AudioPlayerWidget(QWidget):
         if self.config_manager:
             self.config_manager.audio_volume = value
 
-    def _update_ui(self):
+    def _update_ui(self) -> None:
         """Update progress slider and time label."""
         if not self.is_scrubbing and self.sample_rate:
             with self.position_lock:
@@ -522,7 +618,7 @@ class AudioPlayerWidget(QWidget):
         millis = int((seconds % 1) * 1000)
         return f'{minutes:02d}:{secs:02d}.{millis:03d}'
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop playback and cleanup."""
         self.should_stop = True
         self.is_playing = False
@@ -534,7 +630,8 @@ class AudioPlayerWidget(QWidget):
 
         self.stopped.emit()
 
-    def closeEvent(self, event):
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Handle widget close."""
         self.stop()
         super().closeEvent(event)
