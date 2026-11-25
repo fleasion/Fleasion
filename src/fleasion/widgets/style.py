@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
+from .dialog_icons import dialog_icon, tinted
 from .menu_items import use_menu_items
 from .painting import pixel_aligned
 from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING, SPLITTER_WIDTH
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from PySide6.QtCore import QSize
-    from PySide6.QtGui import QColor
+    from PySide6.QtGui import QColor, QIcon
     from PySide6.QtWidgets import (
         QStyleHintReturn,
         QStyleOption,
@@ -157,6 +158,25 @@ _SHARED_METRICS: Final[dict[QStyle.PixelMetric, int]] = {
 }
 
 
+def _label_icon_tinted(element: QStyle.ControlElement, option: QStyleOption) -> QStyleOption:
+    """A button label's option with its line icon in the label's text color.
+
+    Runs after a presentation has picked the label colors, so the icon on an
+    accent default button turns the same color as its text
+    """
+    if element != QStyle.ControlElement.CE_PushButtonLabel or not isinstance(
+        option, QStyleOptionButton
+    ):
+        return option
+
+    color = option.palette.color(QPalette.ColorRole.ButtonText)  # pyright: ignore[reportAttributeAccessIssue] - Qt option field
+    if (icon := tinted(option.icon, color)) is None:
+        return option
+    changed = QStyleOptionButton(option)
+    changed.icon = icon
+    return changed
+
+
 class ButtonOrderStyle(QProxyStyle):
     """A style with dialog buttons in the Windows order on every desktop.
 
@@ -278,9 +298,24 @@ class LayoutStyle(ButtonOrderStyle):
             return 0
         if hint == QStyle.StyleHint.SH_DialogButtonLayout:
             return QDialogButtonBox.ButtonLayout.WinLayout.value
+        if hint == QStyle.StyleHint.SH_DialogButtonBox_ButtonsHaveIcons:
+            # Windows and macOS leave dialog buttons bare; every desktop shows icons
+            return 1
         # Straight to Qt: this runs hundreds of times a frame, and the button
         # order above is all ButtonOrderStyle adds
         return QProxyStyle.styleHint(self, hint, option, widget, returnData)
+
+    @override
+    def standardIcon(
+        self,
+        standardIcon: QStyle.StandardPixmap,
+        option: QStyleOption | None = None,
+        widget: QWidget | None = None,
+    ) -> QIcon:
+        # Line icons stand in for Qt's bitmap ones where no icon theme has them
+        if (icon := dialog_icon(standardIcon)) is not None:
+            return icon
+        return super().standardIcon(standardIcon, option, widget)
 
     @override
     def drawPrimitive(
@@ -368,11 +403,13 @@ class LayoutStyle(ButtonOrderStyle):
         if (presentation := LayoutStyle.presentation) is not None:
 
             def fusion(changed: QStyleOption) -> None:
-                QProxyStyle.drawControl(self, element, changed, painter, widget)
+                QProxyStyle.drawControl(
+                    self, element, _label_icon_tinted(element, changed), painter, widget
+                )
 
             if presentation.draw_control(element, option, painter, widget, fusion):
                 return
-        super().drawControl(element, option, painter, widget)
+        super().drawControl(element, _label_icon_tinted(element, option), painter, widget)
 
     def _draw_cached_button(
         self, option: QStyleOptionButton, painter: QPainter, widget: QWidget | None
@@ -406,6 +443,10 @@ class LayoutStyle(ButtonOrderStyle):
             local.setFont(font)
             local.setPen(painter.pen())
             local.setRenderHints(painter.renderHints())
+
+            # A pixmap painter starts with an automatic direction, which makes
+            # Qt push the label of a button with an icon against its far edge
+            local.setLayoutDirection(painter.layoutDirection())
             moved = QStyleOptionButton(option)
             moved.rect = QRect(0, 0, rect.width(), rect.height())
             self._draw_control(QStyle.ControlElement.CE_PushButton, moved, local, widget)
