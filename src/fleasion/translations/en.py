@@ -669,7 +669,7 @@ ENGLISH: dict[str, str] = {
     'modifications.fastflags.windows_summary': 'Showing {visible} of {total} initial Windows slots · {hinted} FVariables type hints (unverified)',
     'modifications.fastflags.unverified_fvariables_hint': 'FVariables (unverified cross-build hint)',
     'modifications.fastflags.type_unknown': 'Unknown',
-    'modifications.fastflags.raw_slot_tooltip': '{name}\\nType: {source}\\nValue RVA: 0x{rva}\\nRaw initialized qword: 0x{raw}',
+    'modifications.fastflags.raw_slot_tooltip': '{name}\nType: {source}\nValue RVA: 0x{rva}\nRaw initialized qword: 0x{raw}',
     'modifications.fastflags.multiple_types_tooltip': 'This unprefixed FastFlag applies to multiple types: {types}.',
     'modifications.fastflags.possible_types_tooltip': 'No matching type was found in the current flag inventory. Fleasion will try these client types: {types}.',
     'modifications.fastflags.cached_suffix': ' • cached',
