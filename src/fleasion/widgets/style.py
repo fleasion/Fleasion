@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialogButtonBox,
+    QLabel,
     QProxyStyle,
     QStyle,
     QStyleOptionButton,
@@ -23,7 +24,15 @@ from shiboken6 import isValid
 from .dialog_icons import dialog_icon, tinted
 from .menu_items import use_menu_items
 from .painting import pixel_aligned
-from .spacing import CONTROL_HEIGHT, CONTROL_PADDING, GAP, PANEL_PADDING, SPLITTER_WIDTH
+from .spacing import (
+    CONTROL_HEIGHT,
+    CONTROL_PADDING,
+    GAP,
+    PANEL_PADDING,
+    SPLITTER_WIDTH,
+    TOOLTIP_PADDING_H,
+    TOOLTIP_PADDING_V,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -146,6 +155,8 @@ _SHARED_METRICS: Final[dict[QStyle.PixelMetric, int]] = {
     _PM.PM_TabBarTabVSpace: CONTROL_PADDING * 2 + 2,
     _PM.PM_HeaderMargin: CONTROL_PADDING,
     _PM.PM_SplitterWidth: SPLITTER_WIDTH,
+    # Qt pads tooltip text by one pixel more than this, on every side
+    _PM.PM_ToolTipLabelFrameWidth: TOOLTIP_PADDING_V - 1,
     **dict.fromkeys(
         (
             _PM.PM_IndicatorWidth,
@@ -262,6 +273,10 @@ class LayoutStyle(ButtonOrderStyle):
             # Tables and column trees stripe their rows like the Scraper, so wide rows
             # stay easy to follow
             target.setAlternatingRowColors(True)
+        elif isinstance(target, QLabel) and target.windowType() == Qt.WindowType.ToolTip:
+            # The frame width pads tooltips evenly; the sides get the rest
+            side = TOOLTIP_PADDING_H - TOOLTIP_PADDING_V
+            target.setContentsMargins(side, 0, side, 0)
         super().polish(target)
 
     @override

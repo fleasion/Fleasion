@@ -22,14 +22,15 @@ _PM = QStyle.PixelMetric
 PANEL_RADIUS: Final = 12.0
 _ITEM_RADIUS: Final = 7.0
 
-# The panel's border, and the padding between it and the items; tooltips pad their text
+# The panel's border, and the padding between it and the items
 MENU_METRICS: Final = {
     _PM.PM_MenuPanelWidth: 1,
     _PM.PM_MenuHMargin: 5,
     _PM.PM_MenuVMargin: 5,
-    _PM.PM_ToolTipLabelFrameWidth: 17,
 }
-_TOOLTIP_RADIUS: Final = 8.0
+
+# Tooltips are rounded less than a button, to suit their small size
+TOOLTIP_RADIUS: Final = 6.0
 
 # Items are a little roomier than Fusion's; separators are a hairline with air around it
 _ITEM_GROWTH: Final = QSize(4, 4)
@@ -118,6 +119,6 @@ def paint_tooltip(painter: QPainter, option: QStyleOption) -> bool:
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(QPen(_tint(colors.ink, 0.14), 1.0))
     painter.setBrush(_tint(colors.popup, 0.96))
-    painter.drawRoundedRect(rect, _TOOLTIP_RADIUS, _TOOLTIP_RADIUS)
+    painter.drawRoundedRect(rect, TOOLTIP_RADIUS, TOOLTIP_RADIUS)
     painter.restore()
     return True

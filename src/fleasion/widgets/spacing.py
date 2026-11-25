@@ -9,6 +9,11 @@ PANEL_PADDING: Final = 12
 PANEL_MARGINS: Final = (PANEL_PADDING,) * 4
 CONTROL_PADDING: Final = 4
 CONTROL_HEIGHT: Final = 28
+
+# Tooltips are small labels: shorter than a control and padded wider than tall
+TOOLTIP_PADDING_V: Final = CONTROL_PADDING
+TOOLTIP_PADDING_H: Final = CONTROL_PADDING * 2
+
 # Splitter handles leave room on both sides of their grip
 SPLITTER_WIDTH: Final = 10
 

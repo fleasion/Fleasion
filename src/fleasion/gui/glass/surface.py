@@ -31,6 +31,7 @@ from shiboken6 import isValid
 
 from .desktop_blur import blur
 from .itemview import ItemViewChrome, RoundedItemViewEffect
+from .menus import TOOLTIP_RADIUS
 from .state import state
 from .style import RADIUS, glass_colors
 from .transparency import (
@@ -409,7 +410,7 @@ class GlassWindows(QObject):
             return 12
 
         if widget.isWindow() and widget.windowType() == Qt.WindowType.ToolTip:
-            return 8
+            return round(TOOLTIP_RADIUS)
 
         return 0
 
