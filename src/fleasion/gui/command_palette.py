@@ -140,7 +140,14 @@ def rank(commands: list[Command], query: str) -> list[Command]:
 
 class CommandPalette(QDialog):
     def __init__(self, parent: QWidget, commands: Callable[[], list[Command]]) -> None:
-        super().__init__(parent, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Popup)
+        # Windows gives popups a square system shadow around the whole window,
+        # margin included; the card draws its own rounded one instead
+        super().__init__(
+            parent,
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Popup
+            | Qt.WindowType.NoDropShadowWindowHint,
+        )
         self._provider = commands
         self._commands: list[Command] = []
         self._fade: QPropertyAnimation | None = None
