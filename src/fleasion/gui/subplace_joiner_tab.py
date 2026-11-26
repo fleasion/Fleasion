@@ -772,6 +772,11 @@ class SubplaceJoinerTab(QWidget):
         self._resize_timer.timeout.connect(self._on_resize_settled)
         self._last_cols = 0
 
+        # Set once the results grid exists. A deferred build runs in steps, and
+        # QWidget.render elsewhere in the window delivers this tab's pending
+        # resize to it before then, even while it is hidden
+        self._ui_ready = False
+
         if not defer_setup:
             for _ in self.build_ui():
                 pass
@@ -984,6 +989,8 @@ class SubplaceJoinerTab(QWidget):
         clear_cache_btn.setObjectName('SubplaceClearCacheButton')
         footer_layout.addWidget(clear_cache_btn)
         root.addWidget(footer_widget)
+
+        self._ui_ready = True
 
     # Settings persistence
 
@@ -1823,7 +1830,10 @@ class SubplaceJoinerTab(QWidget):
     @override
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        self._resize_timer.start(60)
+
+        # Nothing to lay out before the results grid is built
+        if self._ui_ready:
+            self._resize_timer.start(60)
 
     @override
     def showEvent(self, event: QShowEvent) -> None:
