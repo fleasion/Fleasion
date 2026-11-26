@@ -317,6 +317,12 @@ class _TabFade(QWidget):
     @override
     def paintEvent(self, _event: QPaintEvent) -> None:
         painter = QPainter(self)
+
+        # Cross-fade rather than layer: the snapshot already holds the window's
+        # backdrop and rim, and drawing it over them would thicken their
+        # translucent edges until the fade ends. With an opacity, Source mode
+        # blends the snapshot and what lies beneath by that weight
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
         painter.setOpacity(self._opacity)
         painter.drawPixmap(0, 0, self._frame)
         painter.end()

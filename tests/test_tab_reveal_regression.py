@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import os
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PySide6.QtCore import QCoreApplication, QEvent, QPropertyAnimation, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPropertyAnimation, Qt
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QGraphicsOpacityEffect, QTabWidget, QWidget
 
@@ -19,6 +19,8 @@ from fleasion.gui import command_palette
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from PySide6.QtGui import QPaintEvent
 
 
 @pytest.fixture
@@ -152,3 +154,49 @@ def test_first_visit_frame_shows_the_page_settled(app: QApplication) -> None:
         assert captured == settled
     finally:
         tabs.close()
+
+
+class _TranslucentWindow(QWidget):
+    """A window painting a translucent surface, as Glass does around its rim."""
+
+    @override
+    def paintEvent(self, _event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(self.rect(), QColor(60, 62, 70, 90))
+        painter.end()
+
+
+def test_tab_frame_cross_fades_translucent_surfaces(app: QApplication) -> None:
+    window = _TranslucentWindow()
+    window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    tabs = QTabWidget(window)
+    tabs.setDocumentMode(True)
+    tabs.tabBar().hide()
+    for name in ('First', 'Second'):
+        tabs.addTab(QWidget(), name)
+    tabs.resize(400, 300)
+    window.resize(400, 300)
+    command_palette.fade_tabs(tabs)
+    window.show()
+    try:
+        app.processEvents()
+        point = QPoint(200, 150)
+        settled = window.grab().toImage().pixelColor(point)
+
+        # Halfway through, the snapshot of the same surface must blend in
+        # without thickening it
+        tabs.setCurrentIndex(1)
+        app.processEvents()
+        frame = tabs.findChild(command_palette._TabFade)  # pyright: ignore[reportPrivateUsage]
+        assert frame is not None
+        frame._animation.stop()  # pyright: ignore[reportPrivateUsage]
+        frame.setProperty('opacity', 0.5)
+        fading = window.grab().toImage().pixelColor(point)
+
+        assert fading.alpha() == settled.alpha()
+        assert fading.rgb() == settled.rgb()
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()
