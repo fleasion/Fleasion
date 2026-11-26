@@ -31,6 +31,7 @@ from shiboken6 import isValid
 
 from .desktop_blur import blur
 from .itemview import ItemViewChrome, RoundedItemViewEffect
+from .layered import LayeredResizeGuard
 from .menus import TOOLTIP_RADIUS
 from .state import state
 from .style import RADIUS, glass_colors
@@ -240,6 +241,7 @@ _SURFACE_EVENTS: Final = frozenset(
         QEvent.Type.Move,
         QEvent.Type.StyleChange,
         QEvent.Type.Paint,
+        QEvent.Type.UpdateRequest,
     }
 )
 
@@ -268,6 +270,9 @@ class GlassWindows(QObject):
             WeakKeyDictionary(original_popup_attributes or {})
         )
         self._original_masks: WeakKeyDictionary[QWidget, QRegion] = WeakKeyDictionary()
+
+        # Layered windows on Windows must not repaint ahead of a pending resize
+        self._layered = LayeredResizeGuard(self)
 
         # Poll for wallpaper and compositor blur changes made outside Fleasion
         self._wallpaper_timer = QTimer(self)
@@ -485,6 +490,10 @@ class GlassWindows(QObject):
             self._stylesheets.polish(watched)
 
         elif kind in {QEvent.Type.Show, QEvent.Type.Resize, QEvent.Type.WindowStateChange}:
+            # Qt has caught up with the native size of a window holding back an update
+            if kind == QEvent.Type.Resize:
+                self._layered.resized(watched)
+
             if (
                 kind == QEvent.Type.Show
                 and self._stylesheets is not None
@@ -505,6 +514,9 @@ class GlassWindows(QObject):
             rect = QRectF(watched.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
             paint_glass(painter, rect, RADIUS if framed else 0, watched, rim=framed)
             painter.end()
+
+        elif kind == QEvent.Type.UpdateRequest:
+            return self._layered.defer(watched)
 
         elif (
             kind == QEvent.Type.Move
