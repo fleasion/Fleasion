@@ -31,6 +31,8 @@ LANGUAGES: dict[str, str] = {
     'zh': '简体中文',
     'pl': 'Polski',
     'vi': 'Tiếng Việt',
+    'it': 'Italiano',
+    'sv': 'Svenska',
 }
 
 # Each table is a large literal, so only English and the active language load.
@@ -50,6 +52,8 @@ _TRANSLATION_SOURCES: dict[str, tuple[str, str]] = {
     'zh': ('zh', 'CHINESE'),
     'pl': ('pl', 'POLISH'),
     'vi': ('vi', 'VIETNAMESE'),
+    'it': ('it', 'ITALIAN'),
+    'sv': ('sv', 'SWEDISH'),
 }
 _loaded_translations: dict[str, Mapping[str, str]] = {DEFAULT_LANGUAGE: ENGLISH}
 _LANGUAGE_ALIASES = {
