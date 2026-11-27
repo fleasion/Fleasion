@@ -45,18 +45,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
+lazy from compression.zstd import ZstdDict, compress as zstd_compress
 
 from fleasion.utils import is_roblox_running, log_buffer, macos_rosemary_gate
 from fleasion.utils.json_types import JsonValue
 from fleasion.utils.sober_bootstrap_keys import native_keylog_path
 lazy from fleasion.cache.tools.solidmodel_converter import obj_to_mesh
 lazy from fleasion.utils import anim_converter, certs, linux_clients
-lazy from fleasion.utils.zstd import (
-    ZSTD_MAGIC,
-    ZstdError,
-    zstd_compress_with_raw_dictionary,
-    zstd_decompress_frame,
-)
+lazy from fleasion.utils.zstd import ZSTD_MAGIC, ZstdError, zstd_decompress_frame
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -428,7 +424,8 @@ def _decompress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
 
 def _compress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
     """Encode a modified ClientSettings document using the client's ``dcz`` dictionary."""
-    return _zstd_or(lambda: zstd_compress_with_raw_dictionary(body, dictionary), None)
+    zstd_dict = ZstdDict(dictionary, is_raw=True)
+    return _zstd_or(lambda: zstd_compress(body, zstd_dict=zstd_dict), None)
 
 
 def _build_modified_response(

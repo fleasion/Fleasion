@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from compression.zstd import ZstdCompressor, compress
+from compression.zstd import ZstdCompressor, ZstdDict, compress
 from typing import TYPE_CHECKING
 
 import pytest
 
-from fleasion.utils.zstd import (
-    ZstdError,
-    zstd_compress_with_raw_dictionary,
-    zstd_decompress_frame,
-)
+from fleasion.utils.zstd import ZstdError, zstd_decompress_frame
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -58,7 +54,7 @@ def test_raw_dictionary_round_trip() -> None:
     dictionary = b'"FFlagExample": "True", "DFIntExample": "10", ' * 40
     body = b'{"FFlagExample": "False", "DFIntExample": "20"}'
 
-    frame = zstd_compress_with_raw_dictionary(body, dictionary)
+    frame = compress(body, zstd_dict=ZstdDict(dictionary, is_raw=True))
 
     assert zstd_decompress_frame(frame, max_size=1 << 20, raw_dictionary=dictionary) == body
     with pytest.raises(ZstdError):

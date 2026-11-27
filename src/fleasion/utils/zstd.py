@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from compression.zstd import ZstdCompressor, ZstdDecompressor, ZstdDict, ZstdError
+from compression.zstd import ZstdDecompressor, ZstdDict, ZstdError
 
 __all__ = [
     'ZSTD_MAGIC',
     'ZstdError',
-    'zstd_compress_with_raw_dictionary',
     'zstd_decompress_frame',
 ]
 
@@ -55,22 +54,3 @@ def zstd_decompress_frame(
         msg = f'Zstandard frame is truncated or larger than {max_size} bytes'
         raise ZstdError(msg)
     return output
-
-
-def zstd_compress_with_raw_dictionary(data: bytes, raw_dictionary: bytes) -> bytes:
-    """Compress ``data`` into one Zstandard frame against a raw-content dictionary.
-
-    Parameters
-    ----------
-    data : bytes
-        Bytes to compress.
-    raw_dictionary : bytes
-        Raw-content dictionary shared with the reader.
-
-    Returns
-    -------
-    bytes
-        A complete Zstandard frame.
-    """
-    compressor = ZstdCompressor(zstd_dict=ZstdDict(raw_dictionary, is_raw=True))
-    return compressor.compress(data, mode=ZstdCompressor.FLUSH_FRAME)
