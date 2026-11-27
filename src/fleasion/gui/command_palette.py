@@ -27,6 +27,7 @@ from PySide6.QtGui import (
     QShortcut,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QGraphicsDropShadowEffect,
     QLabel,
@@ -57,6 +58,11 @@ _WORD_START_BONUS: Final = 6
 _LENGTH_PENALTY_EVERY: Final = 12
 _FADE_MS: Final = 140
 _TAB_FADE_MS: Final = 180
+
+# Platform plugins that implement window opacity. The others, Wayland among
+# them, ignore it and log a warning on every animation step
+_WINDOW_OPACITY_PLATFORMS: Final = frozenset({'windows', 'xcb', 'cocoa'})
+
 _SHADOW_MARGIN: Final = 24
 # The card, its search field and result rows, as Fusion draws them
 _FUSION_STYLE: Final = """
@@ -226,9 +232,16 @@ class CommandPalette(QDialog):
         self.move(center.x() - width // 2, top)
         self.search.clear()
         self._refresh('')
-        self.setWindowOpacity(0.0)
+
+        # Without window opacity the palette simply appears
+        fades = QApplication.platformName() in _WINDOW_OPACITY_PLATFORMS
+        if fades:
+            self.setWindowOpacity(0.0)
         self.show()
         self.search.setFocus()
+        if not fades:
+            return
+
         self._fade = QPropertyAnimation(self, b'windowOpacity', self)
         self._fade.setDuration(_FADE_MS)
         self._fade.setStartValue(0.0)
