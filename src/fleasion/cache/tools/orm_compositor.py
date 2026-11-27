@@ -22,11 +22,11 @@ import struct
 from typing import TYPE_CHECKING
 
 import numpy as np
-import zstandard
 lazy from PIL import Image
 
 from fleasion.utils import log_buffer
 from fleasion.utils.paths import APP_CACHE_DIR
+from fleasion.utils.zstd import ZstdError, zstd_decompress_frame
 
 from .ktx_to_png import convert
 from .ktx_to_png.ktx_to_png import KTX2_MAGIC, strip_prefixed_ktx
@@ -155,7 +155,7 @@ def composite_orm(
             log_buffer.log('TexPackTrace', f'ORM compositor decoding baseline={baseline.name}')
             rgba, width, height = _decode_texture_rgba(baseline)
             log_buffer.log('TexPackTrace', f'ORM compositor baseline decoded: {width}x{height}')
-        except (OSError, ValueError, struct.error, zstandard.ZstdError) as exc:
+        except (OSError, ValueError, struct.error, ZstdError) as exc:
             log_buffer.log('ORM', f'Baseline decode failed ({baseline.name}): {exc}')
             log_buffer.log(
                 'TexPackTrace',
@@ -242,7 +242,7 @@ def composite_orm(
                 'TexPackTrace',
                 f'ORM compositor roughness variance source={normal_path.name}',
             )
-        except (OSError, ValueError, struct.error, zstandard.ZstdError) as exc:
+        except (OSError, ValueError, struct.error, ZstdError) as exc:
             log_buffer.log('ORM', f'Normal decode failed ({normal_path.name}): {exc}')
             normal_rgba = None
 
@@ -254,7 +254,7 @@ def composite_orm(
             f'Composited [{", ".join(applied)}] → {out_path.name} ({width}×{height})',
         )
         return str(out_path)
-    except (OSError, ValueError, struct.error, zstandard.ZstdError) as exc:
+    except (OSError, ValueError, struct.error, ZstdError) as exc:
         log_buffer.log('ORM', f'KTX2 write failed: {exc}')
         with contextlib.suppress(OSError):
             out_path.unlink(missing_ok=True)
@@ -291,10 +291,7 @@ def _decode_bc_ktx2(data: bytes) -> tuple[np.ndarray, int, int]:
     level_data = data[byte_offset : byte_offset + byte_length]
 
     if supercompression == 2:  # zstd
-        level_data = zstandard.ZstdDecompressor().decompress(
-            level_data,
-            max_output_size=64 * 1024 * 1024,
-        )
+        level_data = zstd_decompress_frame(level_data, max_size=64 * 1024 * 1024)
     elif supercompression != 0:
         msg = f'Unsupported KTX2 supercompressionScheme {supercompression}'
         raise ValueError(msg)

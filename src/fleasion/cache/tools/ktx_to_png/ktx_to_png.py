@@ -27,11 +27,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import zstandard
 lazy import numpy as np
 lazy from PIL import Image
 
 from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2
+lazy from fleasion.utils.zstd import ZstdError, zstd_decompress_frame
 
 logger = logging.getLogger(__name__)
 
@@ -750,11 +750,8 @@ def _ktx2_etc_level_data(data: bytes, level: _Ktx2EtcLevel, expected_size: int) 
     image_data = data[level.level_offset : level.level_offset + level.byte_length]
     if level.supercompression == _KTX2_SUPERCOMPRESSION_ZSTD:
         try:
-            image_data = zstandard.ZstdDecompressor().decompress(
-                image_data,
-                max_output_size=level.uncompressed_length,
-            )
-        except zstandard.ZstdError:
+            image_data = zstd_decompress_frame(image_data, max_size=level.uncompressed_length)
+        except ZstdError:
             return None
     elif level.byte_length != level.uncompressed_length:
         return None

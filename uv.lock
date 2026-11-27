@@ -258,7 +258,6 @@ dependencies = [
     { name = "soundfile" },
     { name = "tomlkit" },
     { name = "win11toast", marker = "sys_platform == 'win32'" },
-    { name = "zstandard" },
 ]
 
 [package.dev-dependencies]
@@ -294,7 +293,6 @@ requires-dist = [
     { name = "soundfile", specifier = ">=0.14.0" },
     { name = "tomlkit", specifier = ">=0.15.2" },
     { name = "win11toast", marker = "sys_platform == 'win32'", specifier = ">=0.36.3" },
-    { name = "zstandard", specifier = ">=0.25.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -1067,9 +1065,3 @@ sdist = { url = "https://files.pythonhosted.org/packages/e6/f7/3decadf1cae14deb1
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9a/ca/985b65ada4f5bdca166a01f15239e5cbb25b5f5bd703f7bb54d80f5f2b19/winrt_windows_ui_notifications-4!10.0.28000.2957-py3-none-any.whl", hash = "sha256:2d4e78018df29bb107d0490926ae0a7254be68b6b9c1bd81547d0df569682ea7", size = 30930, upload-time = "2026-10-31T23:42:15.239Z" },
 ]
-
-[[package]]
-name = "zstandard"
-version = "0.25.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fd/aa/3e0508d5a5dd96529cdc5a97011299056e14c6505b678fd58938792794b1/zstandard-0.25.0.tar.gz", hash = "sha256:7713e1179d162cf5c7906da876ec2ccb9c3a9dcbdffef0cc7f70c3667a205f0b", size = 711513, upload-time = "2025-09-14T22:15:54.002Z" }

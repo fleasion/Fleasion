@@ -46,9 +46,9 @@ _OPENGL_HIDDEN_IMPORTS = [
 _COMPILED_HIDDEN_IMPORTS = [
     'DracoPy',
     'certifi',
+    'compression.zstd',
     'numpy',
     'orjson',
-    'zstandard',
 ]
 
 # These third-party modules are loaded through importlib at runtime. PyInstaller
@@ -89,11 +89,6 @@ _NUMPY_EXCLUDES = [
     'numpy._pyinstaller.tests',
     'numpy.conftest',
     'numpy.f2py',
-]
-
-_ZSTANDARD_EXCLUDES = [
-    'zstandard._cffi',
-    'zstandard.backend_cffi',
 ]
 
 # NumPy's native extensions are sensitive to binary rewriting.  Keep them
@@ -429,8 +424,8 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=['pyinstaller_hooks'],
     hooksconfig={},
-    runtime_hooks=['pyinstaller_hooks/rthook_zstandard_cext.py'],
-    excludes=[*_BASE_EXCLUDES, *_NUMPY_EXCLUDES, *_QT_EXCLUDES, *_ZSTANDARD_EXCLUDES],
+    runtime_hooks=[],
+    excludes=[*_BASE_EXCLUDES, *_NUMPY_EXCLUDES, *_QT_EXCLUDES],
     noarchive=False,
     optimize=0,
 )

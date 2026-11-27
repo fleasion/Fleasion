@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from compression.zstd import compress as zstd_compress
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-
-import zstandard
 
 from fleasion.proxy import master as proxy_master, server as proxy_server
 from fleasion.proxy.asset_trace import AssetTrace
@@ -1120,7 +1119,7 @@ def test_modified_dcz_response_retains_only_the_required_content_encoding() -> N
 
 def test_current_zstd_response_shape_can_be_decompressed_and_modified() -> None:
     plain = b'{"applicationSettings":{"Existing":"True"}}'
-    compressed = zstandard.ZstdCompressor().compress(plain)
+    compressed = zstd_compress(plain)
     decoded = _decompress_body(compressed, {b'content-encoding': b'zstd'})
 
     assert decoded == plain

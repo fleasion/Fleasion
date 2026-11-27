@@ -33,7 +33,6 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-import zstandard
 from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
 
@@ -46,6 +45,7 @@ from fleasion.utils.json_types import (
     require_object_dict,
     require_object_list,
 )
+from fleasion.utils.zstd import ZstdError, zstd_decompress_frame
 lazy from fleasion.cache.tools import ktx_to_png
 lazy from fleasion.utils import roblox_auth
 
@@ -820,10 +820,8 @@ class CacheScraper:
                 inner = body
         elif body[:4] == b'\x28\xb5\x2f\xfd':
             try:
-                inner = zstandard.ZstdDecompressor().decompress(
-                    body, max_output_size=64 * 1024 * 1024
-                )
-            except zstandard.ZstdError:
+                inner = zstd_decompress_frame(body, max_size=64 * 1024 * 1024)
+            except ZstdError:
                 inner = body
 
         # For TexturePack slots: archive the exact raw response under every
@@ -989,10 +987,8 @@ class CacheScraper:
                 return data
         if data[:4] == b'\x28\xb5\x2f\xfd':
             try:
-                return zstandard.ZstdDecompressor().decompress(
-                    data, max_output_size=32 * 1024 * 1024
-                )
-            except zstandard.ZstdError:
+                return zstd_decompress_frame(data, max_size=32 * 1024 * 1024)
+            except ZstdError:
                 return data
         return data
 

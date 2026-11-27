@@ -9,6 +9,7 @@ import importlib
 import re
 import struct
 import zlib
+from compression.zstd import ZstdError
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from defusedxml import ElementTree as DefusedElementTree
@@ -47,18 +48,17 @@ def _rbxm_parse_errors() -> tuple[type[Exception], ...]:
         TypeError,
         UnicodeDecodeError,
         ValueError,
+        ZstdError,
         struct.error,
     ]
-    for module_name, exception_name in (
-        ('lz4.block', 'LZ4BlockError'),
-        ('zstandard', 'ZstdError'),
-    ):
-        try:
-            module = importlib.import_module(module_name)  # ruff: ignore[banned-api] - Optional dependency probe
-        except ImportError:
-            continue
-        error_type = cast('type[Exception]', vars(module)[exception_name])
-        errors.append(error_type)
+
+    # LZ4 chunk errors only exist when the optional lz4 package is installed
+    try:
+        module = importlib.import_module('lz4.block')  # ruff: ignore[banned-api] - Optional dependency probe
+    except ImportError:
+        pass
+    else:
+        errors.append(cast('type[Exception]', vars(module)['LZ4BlockError']))
     return tuple(errors)
 
 

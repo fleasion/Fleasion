@@ -178,16 +178,12 @@ def test_linux_packaging_prunes_only_the_optional_qt_virtual_keyboard_chain() ->
     assert "'libQt6Widgets.so.6'" not in linux_section
 
 
-def test_packaging_uses_only_zstandard_c_extension() -> None:
+def test_packaging_bundles_stdlib_zstd() -> None:
     root = Path(__file__).resolve().parents[1]
     spec_source = (root / 'Fleasion.spec').read_text(encoding='utf-8')
-    runtime_hook = (root / 'pyinstaller_hooks/rthook_zstandard_cext.py').read_text(
-        encoding='utf-8'
-    )
 
-    assert "'zstandard._cffi'," in spec_source
-    assert "'zstandard.backend_cffi'," in spec_source
-    assert "os.environ['PYTHON_ZSTANDARD_IMPORT_POLICY'] = 'cext'" in runtime_hook
+    assert "'compression.zstd'," in spec_source
+    assert 'zstandard' not in spec_source
 
 
 def test_windows_packaging_uses_upx_but_excludes_graphics_runtime() -> None:

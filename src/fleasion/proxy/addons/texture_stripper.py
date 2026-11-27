@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, overload
 from urllib.parse import parse_qsl, urlparse, urlsplit
 lazy import xml.etree.ElementTree as ET  # ruff: ignore[suspicious-xml-etree-import] - Writer only
 
-lazy import zstandard
 lazy from defusedxml.ElementTree import fromstring as defused_fromstring
 
 from fleasion.config.manager import ANIMATION_TYPE_KEYS
@@ -56,6 +55,7 @@ lazy from fleasion.cache.tools.solidmodel_converter import (
 lazy from fleasion.cache.tools.solidmodel_converter.rbxm import serializer
 lazy from fleasion.cache.tools.solidmodel_converter.rbxm.types import PropertyFormat, RbxProperty
 lazy from fleasion.utils import anim_converter, r15_to_r6, rig_data
+lazy from fleasion.utils.zstd import zstd_decompress_frame
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -224,7 +224,7 @@ def _scraper_fetch_asset_with_place_id_retry(
 
 def _zstd_decompress(data: bytes) -> bytes:
     with _dynamic_boundary:
-        return zstandard.ZstdDecompressor().decompress(data, max_output_size=64 * 1024 * 1024)
+        return zstd_decompress_frame(data, max_size=64 * 1024 * 1024)
 
 
 def _deserialize_rbxm(data: bytes) -> RbxDocument:

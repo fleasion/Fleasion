@@ -11,7 +11,8 @@ import struct
 from typing import Any
 
 import lz4.block  # type: ignore[import-untyped]
-lazy import zstandard
+
+lazy from fleasion.utils.zstd import zstd_decompress_frame
 
 from .binary_reader import (
     decode_ids,
@@ -49,12 +50,7 @@ ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 
 def decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
     if raw.startswith(ZSTD_MAGIC):
-        try:
-            decompressor = zstandard.ZstdDecompressor()
-        except ImportError as exc:
-            msg = 'RBXM contains a ZSTD-compressed chunk; install zstandard to read it'
-            raise RuntimeError(msg) from exc
-        return decompressor.decompress(raw, max_output_size=uncompressed_size)
+        return zstd_decompress_frame(raw, max_size=uncompressed_size)
 
     return lz4.block.decompress(  # type: ignore[no-any-return]
         raw, uncompressed_size=uncompressed_size

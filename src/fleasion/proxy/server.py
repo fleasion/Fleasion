@@ -46,13 +46,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
-lazy import zstandard
-
 from fleasion.utils import is_roblox_running, log_buffer, macos_rosemary_gate
 from fleasion.utils.json_types import JsonValue
 from fleasion.utils.sober_bootstrap_keys import native_keylog_path
 lazy from fleasion.cache.tools.solidmodel_converter import obj_to_mesh
 lazy from fleasion.utils import anim_converter, certs, linux_clients
+lazy from fleasion.utils.zstd import (
+    ZSTD_MAGIC,
+    ZstdError,
+    zstd_compress_with_raw_dictionary,
+    zstd_decompress_frame,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -150,8 +154,11 @@ UPSTREAM_ENDPOINT_REFRESH_RETRY_TIMEOUT = 3.0
 # middlebox failures.
 PROXY_TLS_MAX_VERSION = ssl.TLSVersion.TLSv1_2
 
-_ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC = b'\x1f\x8b'
+
+# Largest body the proxy will inflate from a zstd payload
+_ZSTD_MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024
+
 _DCZ_DICTIONARY_PATH_RE = re.compile(r'/([0-9a-f]{64})\.dcz(?:$|[?])', re.IGNORECASE)
 
 
@@ -205,32 +212,14 @@ def _run_isolated(
 def _zstd_or[T](operation: Callable[[], T], fallback: T) -> T:
     try:
         return operation()
-    except ImportError:
-        # The zstandard module failed to load, so the next clause cannot name its error
-        return fallback
-    except AttributeError, TypeError, ValueError, zstandard.ZstdError:
+    except TypeError, ValueError, ZstdError:
         return fallback
 
 
 def _decompress_zstd(body: bytes, dictionary: bytes | None = None) -> bytes:
-    if dictionary is None:
-        return zstandard.ZstdDecompressor().decompress(body, max_output_size=64 * 1024 * 1024)
-    zstd_dictionary = zstandard.ZstdCompressionDict(
-        dictionary,
-        dict_type=zstandard.DICT_TYPE_RAWCONTENT,
+    return zstd_decompress_frame(
+        body, max_size=_ZSTD_MAX_DECOMPRESSED_BYTES, raw_dictionary=dictionary
     )
-    return zstandard.ZstdDecompressor(dict_data=zstd_dictionary).decompress(
-        body,
-        max_output_size=64 * 1024 * 1024,
-    )
-
-
-def _compress_zstd(body: bytes, dictionary: bytes) -> bytes:
-    zstd_dictionary = zstandard.ZstdCompressionDict(
-        dictionary,
-        dict_type=zstandard.DICT_TYPE_RAWCONTENT,
-    )
-    return zstandard.ZstdCompressor(dict_data=zstd_dictionary).compress(body)
 
 
 def _build_host_ssl_context(
@@ -290,7 +279,7 @@ def _decompress_body(body: bytes, headers: dict[bytes, bytes]) -> bytes:
             return gzip.decompress(body)
         except EOFError, OSError, zlib.error:
             return body
-    if ce == b'zstd' or body[:4] == _ZSTD_MAGIC:
+    if ce == b'zstd' or body[:4] == ZSTD_MAGIC:
         return _zstd_or(lambda: _decompress_zstd(body), body)
     return body
 
@@ -439,7 +428,7 @@ def _decompress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
 
 def _compress_dcz(body: bytes, dictionary: bytes) -> bytes | None:
     """Encode a modified ClientSettings document using the client's ``dcz`` dictionary."""
-    return _zstd_or(lambda: _compress_zstd(body, dictionary), None)
+    return _zstd_or(lambda: zstd_compress_with_raw_dictionary(body, dictionary), None)
 
 
 def _build_modified_response(

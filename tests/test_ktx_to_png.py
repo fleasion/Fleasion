@@ -3,10 +3,10 @@ from __future__ import annotations
 import io
 import struct
 from collections.abc import Callable
+from compression.zstd import compress as zstd_compress
 from typing import cast
 
 import numpy as np
-import zstandard
 from PIL import Image
 
 from fleasion.cache.tools.ktx_to_png import ktx_to_png as ktx_module
@@ -39,7 +39,7 @@ def _make_etc2_ktx2(
     zstd: bool,
     color_space: str | None = None,
 ) -> bytes:
-    payload = zstandard.ZstdCompressor().compress(raw_blocks) if zstd else raw_blocks
+    payload = zstd_compress(raw_blocks) if zstd else raw_blocks
     supercompression = 2 if zstd else 0
     kvd = b''
     if color_space is not None:

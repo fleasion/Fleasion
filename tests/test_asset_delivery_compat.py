@@ -7,13 +7,13 @@ import gzip
 import json
 import socket
 import ssl
+from compression.zstd import compress as zstd_compress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
 import pytest
-import zstandard
 
 from fleasion.proxy.addons.cache_scraper import CacheScraper
 from fleasion.proxy.addons.texture_stripper import TextureStripper
@@ -331,7 +331,7 @@ def test_proxy_batch_transport_compat(
         elif kind in {'gzip_passthrough', 'gzip_modified'}:
             wire_body, ce = gzip.compress(body), b'gzip'
         elif kind in {'zstd_passthrough', 'zstd_modified'}:
-            wire_body, ce = zstandard.ZstdCompressor().compress(body), b'zstd'
+            wire_body, ce = zstd_compress(body), b'zstd'
         else:
             wire_body, ce = body, b''
         path = f'/{version}/assets/batch'

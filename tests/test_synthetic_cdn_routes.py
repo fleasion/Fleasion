@@ -7,13 +7,13 @@ import gzip
 import json
 import socket
 import ssl
+from compression.zstd import compress as zstd_compress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
 import pytest
-import zstandard
 
 from fleasion.proxy.addons.texture_stripper import TextureStripper, is_synthetic_cdn_request
 from fleasion.proxy.server import FleasionProxy
@@ -186,7 +186,7 @@ def test_synthetic_url_live_https_get_head_range_and_stale(
                 if compression == 'gzip':
                     body = gzip.compress(body)
                 elif compression == 'zstd':
-                    body = zstandard.ZstdCompressor().compress(body)
+                    body = zstd_compress(body)
                 encoding = (
                     f'Content-Encoding: {compression}\r\n' if compression != 'identity' else ''
                 )

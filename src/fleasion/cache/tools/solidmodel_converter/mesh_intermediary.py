@@ -23,10 +23,10 @@ import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import zstandard
 from defusedxml.ElementTree import parse as _xml_parse
 
 from fleasion.utils import APP_CACHE_DIR, log_buffer
+from fleasion.utils.zstd import ZSTD_MAGIC, zstd_decompress_frame
 
 # Keep DracoPy, mesh processing and the RBXM converters out of the import path
 lazy from fleasion.cache import mesh_processing
@@ -36,14 +36,13 @@ if TYPE_CHECKING:
     from .csg_mesh import CSGVertex
 
 # Compression detection
-_ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC = b'\x1f\x8b'
 
 
 def _decompress(data: bytes) -> bytes:
     """Strip zstd or gzip application-level wrapping if present."""
-    if data[:4] == _ZSTD_MAGIC:
-        data = zstandard.ZstdDecompressor().decompress(data, max_output_size=64 * 1024 * 1024)
+    if data[:4] == ZSTD_MAGIC:
+        data = zstd_decompress_frame(data, max_size=64 * 1024 * 1024)
     elif data[:2] == _GZIP_MAGIC:
         data = gzip.decompress(data)
     return data
