@@ -353,13 +353,10 @@ hiddenimports: list[str] = _runtime_fleasion_modules()
 # launcher import walk. Its hidden import invokes PyInstaller's NumPy hook,
 # which collects the native runtime without pulling in tests and build tools.
 
-# lz4.__init__ imports the platform-specific lz4._version extension during
-# package initialization. Some Windows PyInstaller analyses have omitted that
-# extension even when lz4.block itself was discovered, causing the replacement
-# process used by Env Proxy -> Hosts File mode switches to die before main().
-# Collect the package as a unit so _version and block/frame native modules are
-# guaranteed to travel with the frozen executable.
-_collect_package('lz4')
+# cramjam is a package wrapping one native extension, and Fleasion reaches it
+# only through lazy imports. Collect the package as a unit so the extension
+# always travels with the frozen executable.
+_collect_package('cramjam')
 
 # Keep Qt collection narrow. collect_all('PySide6') pulls in QML/QtQuick,
 # Designer, SQL drivers, multimedia, translations, and other modules that the

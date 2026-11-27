@@ -8,6 +8,7 @@ from http.cookiejar import Cookie, CookieJar
 from pathlib import Path
 from typing import Never, Protocol, cast
 
+import cramjam
 import pytest
 
 from fleasion.utils import roblox_auth
@@ -898,3 +899,23 @@ def test_macos_cached_browser_cookie_preserves_malformed_json(
     assert roblox_auth.discover_browser_roblosecurity(include_keychain=False) == (None, '')
     assert cache_path.exists()
     assert calls == [False]
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='browser-cookie3 is not installed on Windows')
+def test_browser_cookie3_loads_with_cramjam_lz4_stand_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ('lz4', 'lz4.block', 'browser_cookie3'):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(roblox_auth, '_browser_cookie3', None)
+    monkeypatch.setattr(roblox_auth, '_browser_cookie3_loaded', False)
+
+    module = roblox_auth._load_browser_cookie3()  # pyright: ignore[reportPrivateUsage]
+
+    # browser-cookie3 decompresses size-prefixed Firefox session files
+    session = b'{"cookies": []}' * 20
+    framed = bytes(cramjam.lz4.compress_block(session, store_size=True))
+    assert module is not None
+    assert sys.modules['lz4.block'].decompress(framed) == session  # pyright: ignore[reportAttributeAccessIssue]
+
+    # Drop the stand-in so later tests see the modules as they were
+    for name in ('lz4', 'lz4.block', 'browser_cookie3'):
+        sys.modules.pop(name, None)

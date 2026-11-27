@@ -9,7 +9,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-import lz4.block as lz4_block  # pyright: ignore[reportMissingTypeStubs]
+import cramjam
 
 
 class CFrameValue(TypedDict):
@@ -107,17 +107,14 @@ def decompress_chunk(data: bytes, compressed_size: int, uncompressed_size: int) 
     if compressed_size == 0:
         return data[:uncompressed_size]
 
+    block = data[:compressed_size]
     try:
-        return lz4_block.decompress(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            data[:compressed_size], uncompressed_size=uncompressed_size
-        )
-    except ValueError, lz4_block.LZ4BlockError:  # pyright: ignore[reportUnknownMemberType]
-        # Try without size hint
+        return bytes(cramjam.lz4.decompress_block(block, output_len=uncompressed_size))
+    except ValueError, cramjam.DecompressionError:
+        # Try reading a size prefix instead
         try:
-            return lz4_block.decompress(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-                data[:compressed_size]
-            )
-        except ValueError, lz4_block.LZ4BlockError:  # pyright: ignore[reportUnknownMemberType]
+            return bytes(cramjam.lz4.decompress_block(block))
+        except ValueError, cramjam.DecompressionError:
             # Return raw data if decompression fails
             return data[:compressed_size]
 

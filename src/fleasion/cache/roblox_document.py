@@ -5,13 +5,13 @@ from __future__ import annotations
 import base64
 import binascii
 import gzip
-import importlib
 import re
 import struct
 import zlib
 from compression.zstd import ZstdError
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from cramjam import DecompressionError
 from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import ParseError
@@ -40,29 +40,19 @@ type RobloxDocumentKind = Literal['rbxm', 'rbxmx', 'rbxl']
 type NumberCaster = type[int | float]
 
 
-def _rbxm_parse_errors() -> tuple[type[Exception], ...]:
-    errors: list[type[Exception]] = [
-        IndexError,
-        KeyError,
-        RuntimeError,
-        TypeError,
-        UnicodeDecodeError,
-        ValueError,
-        ZstdError,
-        struct.error,
-    ]
-
-    # LZ4 chunk errors only exist when the optional lz4 package is installed
-    try:
-        module = importlib.import_module('lz4.block')  # ruff: ignore[banned-api] - Optional dependency probe
-    except ImportError:
-        pass
-    else:
-        errors.append(cast('type[Exception]', vars(module)['LZ4BlockError']))
-    return tuple(errors)
-
-
-_RBXM_PARSE_ERRORS = _rbxm_parse_errors()
+# Everything a malformed RBXM can raise while parsing, including chunk
+# decompression failures from LZ4 (cramjam) and Zstandard
+_RBXM_PARSE_ERRORS: tuple[type[Exception], ...] = (
+    IndexError,
+    KeyError,
+    RuntimeError,
+    TypeError,
+    UnicodeDecodeError,
+    ValueError,
+    DecompressionError,
+    ZstdError,
+    struct.error,
+)
 
 
 def decompress_if_needed(data: bytes) -> bytes:

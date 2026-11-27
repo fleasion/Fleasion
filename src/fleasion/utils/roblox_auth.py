@@ -16,10 +16,11 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 from typing import TYPE_CHECKING, Protocol, cast
 lazy import fcntl
 
+import cramjam
 from cryptography.fernet import Fernet, InvalidToken
 lazy import requests
 
@@ -87,7 +88,7 @@ class _BrowserCookieModule(Protocol):
     vivaldi: _BrowserLoader
 
 
-# browser_cookie3 pulls in Cryptodome, lz4 and jeepney (about 45 ms), and is
+# browser_cookie3 pulls in Cryptodome and jeepney (about 45 ms), and is
 # only needed once a browser cookie is actually read
 _browser_cookie3: _BrowserCookieModule | None = None
 _browser_cookie3_loaded = False
@@ -102,6 +103,19 @@ def _load_browser_cookie3() -> _BrowserCookieModule | None:
             return _browser_cookie3
         _browser_cookie3_loaded = True
         if sys.platform == 'darwin' or sys.platform.startswith('linux'):
+            # browser_cookie3 imports lz4.block at module level, but Fleasion ships
+            # cramjam instead of lz4. Its only call is decompress on size-prefixed
+            # Firefox session files, so serve that from cramjam
+            def decompress(data: bytes) -> bytes:
+                return bytes(cramjam.lz4.decompress_block(data))
+
+            lz4_block = ModuleType('lz4.block')
+            vars(lz4_block)['decompress'] = decompress
+            lz4_package = ModuleType('lz4')
+            vars(lz4_package).update(__path__=[], block=lz4_block)
+            sys.modules.setdefault('lz4', lz4_package)
+            sys.modules.setdefault('lz4.block', lz4_block)
+
             try:
                 import browser_cookie3 as module  # pyright: ignore[reportMissingTypeStubs]  # ruff: ignore[import-outside-top-level]
             except ImportError:

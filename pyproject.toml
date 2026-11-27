@@ -30,7 +30,7 @@ dependencies = [
     'pillow>=13.0.0',
     'DracoPy>=2.2.0',
     'orjson>=3.13.0',
-    'lz4>=4.4.5',
+    'cramjam>=2.14.0',
     'h2>=4.4.1,<5',
     'tomlkit>=0.15.2',
 ]
@@ -53,11 +53,11 @@ dev = [
     "ruff>=0.17.5",
 ]
 
-[tool.uv.extra-build-variables]
-# lz4 has no Python 3.15 wheels, and its source build links any system liblz4
-# that pkg-config finds. That is an arm64-only Homebrew copy on macOS runners,
-# which breaks the universal build, so always compile the bundled sources
-lz4 = { PYLZ4_USE_SYSTEM_LZ4 = 'False' }
+[tool.uv]
+# browser-cookie3 requires lz4, which ships no Python 3.15 wheels. The marker
+# never matches, so lz4 is never installed; roblox_auth gives browser-cookie3 a
+# cramjam-backed lz4.block in its place
+override-dependencies = ['lz4; sys_platform == "never"']
 
 [tool.pyright]
 typeCheckingMode = "strict"

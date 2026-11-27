@@ -10,7 +10,7 @@ import logging
 import struct
 from typing import Any
 
-import lz4.block  # type: ignore[import-untyped]
+import cramjam
 
 lazy from fleasion.utils.zstd import zstd_decompress_frame
 
@@ -52,9 +52,7 @@ def decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
     if raw.startswith(ZSTD_MAGIC):
         return zstd_decompress_frame(raw, max_size=uncompressed_size)
 
-    return lz4.block.decompress(  # type: ignore[no-any-return]
-        raw, uncompressed_size=uncompressed_size
-    )
+    return bytes(cramjam.lz4.decompress_block(raw, output_len=uncompressed_size))
 
 
 # 24 axis-aligned rotation matrices keyed by Roblox's sparse orientation IDs

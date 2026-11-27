@@ -14,7 +14,7 @@ import struct
 from collections import defaultdict
 from typing import Any
 
-import lz4.block as lz4_block  # pyright: ignore[reportMissingTypeStubs]
+import cramjam
 
 from .binary_writer import (
     encode_ids,
@@ -154,11 +154,7 @@ class RbxmSerializer:
         if uncompressed_size == 0:
             return name_b + struct.pack('<III', 0, 0, 0)
 
-        compressed = bytes(
-            lz4_block.compress(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-                data, store_size=False
-            )
-        )
+        compressed = bytes(cramjam.lz4.compress_block(data, store_size=False))
         if len(compressed) < uncompressed_size:
             return name_b + struct.pack('<III', len(compressed), uncompressed_size, 0) + compressed
         # Uncompressed: compressed_size field = 0

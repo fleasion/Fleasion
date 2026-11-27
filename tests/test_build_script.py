@@ -233,11 +233,12 @@ def test_linux_runtime_archive_check_recurses_into_pyz() -> None:
         assert required_module in linux_check
 
 
-def test_packaging_collects_lz4_native_extensions() -> None:
+def test_packaging_collects_cramjam_native_extension() -> None:
     spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
     spec_source = spec_path.read_text(encoding='utf-8')
 
-    assert "_collect_package('lz4')" in spec_source
+    assert "_collect_package('cramjam')" in spec_source
+    assert "_collect_package('lz4')" not in spec_source
 
 
 def test_linux_package_uses_host_fontconfig_library() -> None:
