@@ -1,5 +1,5 @@
 > [!IMPORTANT]
-> Roblox has patched Fleasion and it currently does not work. There is **no ETA** for a fix.
+> Roblox has patched Fleasion and it currently does not work. A fix is being worked on, but there is **no ETA** for when it will be released. For more updates, join our [Discord server](https://discord.gg/hXyhKehEZF).
 
 > [!CAUTION]
 > Official Fleasion downloads are published only on this repository's [Releases](https://github.com/fleasion/Fleasion/releases) page. The official website is [fleasion.github.io](https://fleasion.github.io/), and the official community is our [Discord server](https://discord.gg/hXyhKehEZF).
